@@ -1,7 +1,7 @@
 /**
  * `cotal_docs` is the Cotal knowledge base bundled with each release.
  *
- * The docs ship inside the connector as a generated bundle ({@link loadDocsBundle}), built at
+ * The docs ship inside the connector as a generated bundle ({@link loadDocsSource}), built at
  * release time from /docs, /SPEC.md and the message schema and stamped with the installed
  * version. The baseline matches the running version, works offline, and cannot drift from what is
  * installed.
@@ -11,7 +11,7 @@
  * installed release. When that path is absent (version-pinned docs are not published yet) or
  * unreachable, the tool falls back to the bundled copy and reports which source answered.
  */
-import { DOCS_VERSION, loadDocsBundle, loadDocsIndex, loadDocsMetadata } from "./docs-bundle.generated.js";
+import { DOCS_VERSION, loadDocsIndex, loadDocsMetadata, loadDocsSource, loadDocsSourceLengths } from "./docs-bundle.generated.js";
 import { decodeIndex, STOP, tokenize } from "./docs-index-core.js";
 import type { ToolResult } from "./tool-specs.js";
 
@@ -63,11 +63,18 @@ function metadata(): DocsMetadata {
   return (indexed ??= loadDocsMetadata());
 }
 
-// Built on the first page or search, not an index call or import: every connector process
-// loads this module, each hook event included, and most never read the docs.
-let bundled: DocsBundle | undefined;
-function bundle(): DocsBundle {
-  return (bundled ??= loadDocsBundle());
+// A search needs only the bodies of its selected hits, not every page in the corpus.
+const pages = new Map<number, DocsPage>();
+function localPage(source: number): DocsPage {
+  let page = pages.get(source);
+  if (!page) {
+    page = { ...metadata().pages[source], body: loadDocsSource(source) };
+    pages.set(source, page);
+  }
+  return page;
+}
+function sourceBody(source: number): string {
+  return source < metadata().pages.length ? localPage(source).body : loadDocsSource(source);
 }
 
 const REMOTE_BASE = "https://docs.cotal.ai";
@@ -76,16 +83,21 @@ const REMOTE_BASE = "https://docs.cotal.ai";
  *  non-page docs; everything else matches a page slug (case-insensitive). */
 function resolvePage(page: string): DocsPage | undefined {
   const key = page.trim().toLowerCase().replace(/\.md$/, "");
-  if (key === "spec") return { slug: "spec", title: bundle().spec.title, kind: "normative", category: "normative", summary: "", body: bundle().spec.body };
-  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: bundle().lang.title, kind: "normative", category: "normative", summary: "", body: bundle().lang.body };
-  if (key === "schema") return { slug: "schema", title: bundle().schema.title, kind: "reference", category: "reference", summary: "", body: bundle().schema.body };
-  return bundle().pages.find((p) => p.slug === key);
+  const meta = metadata();
+  // Page reads still fail closed on a missing or mismatched corpus, including unknown page names.
+  loadDocsSourceLengths();
+  const count = meta.pages.length;
+  if (key === "spec") return { slug: "spec", title: meta.spec.title, kind: "normative", category: "normative", summary: "", body: loadDocsSource(count) };
+  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: meta.lang.title, kind: "normative", category: "normative", summary: "", body: loadDocsSource(count + 1) };
+  if (key === "schema") return { slug: "schema", title: meta.schema.title, kind: "reference", category: "reference", summary: "", body: loadDocsSource(count + 2) };
+  const source = meta.pages.findIndex((p, source) => (pages.get(source) ?? p).slug === key);
+  return source < 0 ? undefined : localPage(source);
 }
 
 /** Map a resolved slug to an IMMUTABLE, version-pinned URL on docs.cotal.ai. Pinning the version
  *  into the path is what makes a fetched body provably belong to the installed version. */
 function remoteUrl(slug: string): string {
-  const base = `${REMOTE_BASE}/v/${bundle().version}`;
+  const base = `${REMOTE_BASE}/v/${DOCS_VERSION}`;
   if (slug === "schema") return `${base}/cotal.schema.json`;
   if (slug === "lang") return `${base}/cotal-lang.md`;
   return `${base}/${slug}.md`;
@@ -139,10 +151,10 @@ const K1 = 1.2;
 const B = 0.75;
 
 /** The sources the index numbers, in its order: each page, the spec, the language reference, the schema. */
-function sources(): { slug: string; title: string; body: string }[] {
-  const b = bundle();
+function sources(): { slug: string; title: string }[] {
+  const b = metadata();
   return [
-    ...b.pages,
+    ...b.pages.map((page, source) => pages.get(source) ?? page),
     { slug: "spec", ...b.spec },
     { slug: "lang", ...b.lang },
     { slug: "schema", ...b.schema },
@@ -152,7 +164,11 @@ function sources(): { slug: string; title: string; body: string }[] {
 // Read, checked and decoded on the first search from the index asset the generator precomputed, for the same reason as the bundle.
 let index: ReturnType<typeof decodeIndex> | undefined;
 function searchIndex(): ReturnType<typeof decodeIndex> {
-  return (index ??= decodeIndex(loadDocsIndex(), sources().map((source) => source.body.length), DOCS_VERSION));
+  if (index) return index;
+  const lengths = loadDocsSourceLengths();
+  // A returned ordinary page remains mutable, as before selective decoding.
+  for (const [source, page] of pages) lengths[source] = page.body.length;
+  return (index = decodeIndex(loadDocsIndex(), lengths, DOCS_VERSION));
 }
 
 /** The id of a term in the sorted term list, by binary search, or -1. */
@@ -216,7 +232,7 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
     const seen = perPage.get(source.slug) ?? 0;
     if (seen >= 2) continue; // don't let one page crowd out the rest
     perPage.set(source.slug, seen + 1);
-    hits.push({ slug: source.slug, pageTitle: source.title, heading: idx.headings[s], text: source.body.slice(idx.start[s], idx.end[s]), score });
+    hits.push({ slug: source.slug, pageTitle: source.title, heading: idx.headings[s], text: sourceBody(idx.source[s]).slice(idx.start[s], idx.end[s]), score });
     if (hits.length >= limit) break;
   }
   return hits;
@@ -231,13 +247,13 @@ export function capSection(text: string, maxLines = 48): string {
 
 function renderSearch(query: string, hits: DocHit[]): string {
   if (!hits.length) {
-    return `No matches for "${query}" in the Cotal v${bundle().version} docs. Call cotal_docs() for the page index, or search an exact identifier (a subject, a cotal_* tool, a field name).`;
+    return `No matches for "${query}" in the Cotal v${DOCS_VERSION} docs. Call cotal_docs() for the page index, or search an exact identifier (a subject, a cotal_* tool, a field name).`;
   }
   const blocks = hits.map(
     (h) => `## ${h.heading}\n${capSection(h.text)}\n\n→ read the full page: cotal_docs(page: "${h.slug}")`,
   );
   return [
-    `# Cotal v${bundle().version} docs: top matches for "${query}"`,
+    `# Cotal v${DOCS_VERSION} docs: top matches for "${query}"`,
     "The most relevant sections are below. Read the full page before writing code or wire frames.",
     ...blocks,
   ].join("\n\n");
@@ -276,7 +292,7 @@ export interface DocsPageRead {
 export async function readDocsPage(page: string, opts: { refresh?: boolean } = {}): Promise<DocsPageRead | undefined> {
   const found = resolvePage(page);
   if (!found) return undefined;
-  const version = bundle().version;
+  const version = DOCS_VERSION;
   if (!opts.refresh) return { version, page: found, source: "bundled", refresh: null };
   const remote = await remoteBody(found.slug);
   if ("miss" in remote) return { version, page: found, source: "bundled", refresh: remote.miss };
@@ -308,7 +324,7 @@ export async function runDocs(args: DocsArgs): Promise<ToolResult> {
   if (page) {
     const read = await readDocsPage(page, { refresh: args.refresh });
     if (!read) {
-      const names = bundle().pages.map((p) => p.slug).join(", ");
+      const names = metadata().pages.map((p, source) => (pages.get(source) ?? p).slug).join(", ");
       return {
         text: `No Cotal doc page "${page}". Available: spec, lang, schema, ${names}. Call cotal_docs() for the index.`,
         isError: true,

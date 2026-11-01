@@ -17,8 +17,10 @@ C0/C1 controls, Unicode line/paragraph separators and brackets become spaces. Or
 Unicode and surrounding spacing are preserved; channel/kind renderers keep their own
 existing trim and empty-value labels. Message-body formatting remains separate.
 
-Bundled docs use an inline gzip/base64 payload generated from the versioned sources.
-Text and structured indexes read separately generated metadata without decoding the corpus.
-`loadDocsBundle()` decodes bodies synchronously on the first page or search; reading
-`DOCS_VERSION` does not decode them. Structured index results remain independently mutable.
-The payload stays inside each ESM or CJS bundle, so package and plugin asset layouts do not change.
+Bundled docs use two length/SHA256-coupled data files beside each ESM/CJS carrier.
+Text and structured indexes use generated metadata without reading either file. A search
+checks both assets, decodes the precomputed index, and decodes only the source bodies of
+its selected hits. Pages and searches share per-source caches. Corpus sources are ordinary
+JSON string records in independent gzip members; no new dependency or public async API.
+`loadDocsBundle()` still materializes the complete corpus for build tooling. Structured
+index results remain independently mutable. Package/plugin layouts retain the same two assets.
