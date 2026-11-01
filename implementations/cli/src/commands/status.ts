@@ -1005,7 +1005,7 @@ function processRow(name: string, p: PidfileState, detail: string | null): Proce
  *
  *  Three outcomes:
  *  - answered: `running` with the delivery-aware detail.
- *  - a DEFINITIVE no-answer — the same predicate `managerHealth`'s not-serving branch uses
+ *  - a DEFINITIVE no-answer — `managerNoService`, the predicate `managerHealth`'s not-serving branch also uses
  *    (`unansweredRequest`, or the service-registry-missing text): `not-serving` with
  *    `service endpoint not answering`, plus the marker error when the marker could not be read.
  *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running` with
@@ -1087,6 +1087,12 @@ async function userManagerStatus(target: MeshTarget, instanceId?: string): Promi
  *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
  *  `instanceId` an answer from another manager instance is `unchecked` too. Omitting
  *  `instanceId` leaves the answer unpinned, for a probe that is not attributing a local process. */
+/** A no-responder service rail or an absent manager registry: the definitive no-service evidence
+ *  that both the manager row and the manager health check grade on, kept in one place (#3046). */
+function managerNoService(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
+}
+
 async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerEndpoint> {
   try {
     let status: ManagerServiceStatus;
@@ -1099,7 +1105,7 @@ async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise
     }
     return instanceId === undefined || status.instanceId === instanceId ? "answered" : "unchecked";
   } catch (e) {
-    return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message)) ? "not-answering" : "unchecked";
+    return managerNoService(e) ? "not-answering" : "unchecked";
   }
 }
 
@@ -2471,7 +2477,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
     // The lease and PID answer whether that missing service belongs to an extant component (not
     // serving) or an absent one; any other failed probe remains a refusal.
-    const noService = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
+    const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";
