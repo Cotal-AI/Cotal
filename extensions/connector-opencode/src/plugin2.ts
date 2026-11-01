@@ -116,22 +116,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
 
   const agent = new MeshAgent(config);
   const controller = new AbortController(); // aborted when teardown begins
-  // Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would deadlock the
-  // server if setup is running while answering the very request the check's fetch targets. Refuse
-  // loud and exit rather than wait forever or join with an unverified model. A teardown that lands
-  // before the check settles owns what is queued here: it must neither start the stopped agent nor
-  // exit the host process over a refusal nobody is waiting for.
-  void modelReady.then(
-    () => {
-      if (controller.signal.aborted) return;
-      return agent.start();
-    },
-    (error: Error) => {
-      if (controller.signal.aborted) return;
-      log(error.message);
-      process.exit(1);
-    },
-  );
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -357,6 +341,25 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   await ctx.tool.transform((ed) => {
     for (const t of buildCotalTools2(agent, config)) ed.add(t);
   });
+
+  // Queued only now, after the last step that can throw: a setup the host refuses returns no
+  // teardown, so an agent started before the refusal would stay joined with nothing to stop it
+  // (#4042). Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would
+  // deadlock the server if setup is running while answering the very request the check's fetch
+  // targets. Refuse loud and exit rather than wait forever or join with an unverified model. A
+  // teardown that lands before the check settles owns what is queued here: it must neither start
+  // the stopped agent nor exit the host process over a refusal nobody is waiting for.
+  void modelReady.then(
+    () => {
+      if (controller.signal.aborted) return;
+      return agent.start();
+    },
+    (error: Error) => {
+      if (controller.signal.aborted) return;
+      log(error.message);
+      process.exit(1);
+    },
+  );
 
   // The event stream — a detached loop, never awaited here (setup must return). Maps
   // `session.execution.*`, `permission.asked` and session lifecycle events to presence and
