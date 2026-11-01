@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.133.4
+
+### Patch Changes
+
+- f20091d: `Manager.startAgent` refuses a `supervise` policy whose `restarts` or `windowMs` is not a positive integer before anything launches, with the same refusal the `spawn` command gives. Before, an in-process caller's bad policy was admitted, the seat launched and joined, and it was then torn down when its seat record refused the policy.
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+  - @cotal-ai/seat@0.133.4
+
 ## 0.133.3
 
 ### Patch Changes

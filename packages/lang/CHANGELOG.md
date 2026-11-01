@@ -1,5 +1,12 @@
 # @cotal-ai/lang
 
+## 0.133.4
+
+### Patch Changes
+
+- 5629f59: L3022 now reads a scope's body from the scope table, as the captured-write check does, instead of naming `parallel`, `race` and `fanOut`. A new scope primitive is judged without being added to the check, and a single-body scope that runs its function once (`once`, `conclave`) is left alone.
+- 60b5c33: The scope runner and the compiled engine's scope helpers dispatch on the typed `ScopeKind` instead of the primitive's name. A scope kind added to the union without its runner arm, or without its calling convention in the engine, now fails the build rather than throwing an interpreter defect the first time a program opens it.
+
 ## 0.133.3
 
 No changes in this release.
