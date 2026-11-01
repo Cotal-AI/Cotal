@@ -4,6 +4,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkMdx from 'remark-mdx';
 import remarkGfm from 'remark-gfm';
+import remarkStringify from 'remark-stringify';
 import { frontmatter } from 'fumadocs-core/content/md/frontmatter';
 import { remarkLLMs } from 'fumadocs-core/mdx-plugins/remark-llms';
 import { replaceSource } from 'fumadocs-core/mdx-plugins/stringifier';
@@ -77,8 +78,14 @@ function requiredText(attrs, name, node, path) {
 /** @param {string} text */
 function escapeLabel(text) { return text.replace(/[\\[\]*_`<>&]/g, '\\$&'); }
 
-/** @param {string} text */
-function linkTarget(text) { return text.replace(/[\\()\s]/g, value => encodeURIComponent(value)); }
+const markdownWriter = unified().use(remarkStringify);
+
+/** @param {string} title @param {string} href */
+function cardLink(title, href) {
+  return markdownWriter.stringify({ type: 'root', children: [
+    { type: 'paragraph', children: [{ type: 'link', url: href, children: [{ type: 'text', value: title }] }] },
+  ] }).trimEnd();
+}
 
 /** @param {string} path @returns {import('unified').Plugin<[], import('mdast').Root>} */
 function semanticComponents(path) {
@@ -113,7 +120,7 @@ function semanticComponents(path) {
           } else if (node.name === 'Card') {
             const title = requiredText(attrs, 'title', node, path);
             const href = attrs.href === undefined ? undefined : requiredText(attrs, 'href', node, path);
-            const label = href ? `[${escapeLabel(title)}](${linkTarget(href)})` : `**${escapeLabel(title)}**`;
+            const label = href ? cardLink(title, href) : `**${escapeLabel(title)}**`;
             replaceSource(file, node, s => `${label}\n\n${s.inner(node).trim()}\n\n`);
           } else if (node.name === 'Tab') {
             if (parent?.name !== 'Tabs') fail(path, node, 'Tab must be a direct child of Tabs');

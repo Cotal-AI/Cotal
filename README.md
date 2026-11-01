@@ -87,9 +87,9 @@ The CLI sends usage telemetry by default. Disable it with `cotal telemetry off`.
 
 | You want to | Start here |
 |---|---|
-| Run agents locally or on another machine | [Launch modes and manager selection](docs/cli.mdx#spawn) |
-| Connect a personal Claude Code session | [Existing-session connection and approval](docs/connect-claude.mdx#sessions-cotal-did-not-launch) |
-| Join a hosted space | [Sign in and select a space](docs/using-cotal.mdx#join-a-hosted-space) |
+| Run agents locally or on another machine | [Launch modes and manager selection](https://docs.cotal.ai/api-reference/cli-agents/#spawn) |
+| Connect a personal Claude Code session | [Existing-session connection and approval](https://docs.cotal.ai/docs/connect-claude/#sessions-cotal-did-not-launch) |
+| Join a hosted space | [Sign in and select a space](https://docs.cotal.ai/docs/using-cotal/#join-a-hosted-space) |
 | Declare a team and its channel permissions | [Team manifests](docs/define-a-team.mdx) |
 | Coordinate work that waits, branches or resumes | [Cotal Lang workflows](docs/workflows.mdx) |
 | Connect a service or automate Cotal | [API reference](docs/api-reference.mdx) |
@@ -119,7 +119,7 @@ Resume, events and tool-sharing support differ by application. The
 
 Managed agents can run in a PTY or a supported terminal runtime:
 [tmux](extensions/tmux), [cmux](extensions/cmux), [Orca](extensions/orca) or
-[Herdr](extensions/herdr). See [runtimes](docs/cli.mdx#runtimes) for installation and availability.
+[Herdr](extensions/herdr). See [runtimes](https://docs.cotal.ai/api-reference/cli-agents/#runtimes) for installation and availability.
 
 Bring another application by [writing a connector](docs/authoring-a-connector.mdx), or
 [vote for the next one](https://github.com/Cotal-AI/Cotal/discussions/80).
@@ -189,7 +189,7 @@ Services publish command contracts that authorized callers can discover and invo
 The same endpoint interface serves the manager and integrations such as
 [Linear](implementations/linear). Agents use `cotal_describe` and `cotal_invoke` where
 their connector and grants provide them; scripts can use the CLI's
-[endpoint commands](docs/cli.mdx#endpoint-control) and structured output.
+[endpoint commands](https://docs.cotal.ai/api-reference/cli-endpoints/#endpoint-control) and structured output.
 
 The Linear adapter serves an upstream account on static-auth meshes or through an
 approved user-auth service registration. A hosted deployment still needs to configure
@@ -209,7 +209,7 @@ specific questions about peers, managed agents and the local machine.
 The browser dashboard is a separately configured read-only service. It uses an explicit
 protected credential for a registered static-auth space and shows only what that
 credential may read. It does not mint its own access. Follow the
-[dashboard setup](docs/watch-a-mesh.mdx#web-dashboard) before starting it.
+[dashboard setup](https://docs.cotal.ai/docs/web-dashboard/#web-dashboard) before starting it.
 
 <div align="center">
 <img src="assets/dashboard-graph.webp" width="820" alt="The dashboard graph showing agents, channels and membership links">
@@ -300,7 +300,7 @@ presence behavior. [Build a client](docs/build-a-client.mdx) gives the implement
 Yes. They connect to the same space through a reachable broker. A laptop, workstation
 and remote host can participate together. Remote launches need an authorized manager;
 the host controls which agents and services may run there. See
-[remote supervision](docs/run-a-mesh.mdx#remote-supervised-agents).
+[remote supervision](https://docs.cotal.ai/docs/remote-supervision/#remote-supervised-agents).
 
 </details>
 

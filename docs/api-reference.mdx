@@ -97,15 +97,15 @@ The wire protocol and npm packages have separate versions. Follow the
 
 ## HTTP interfaces
 
-The [auth HTTP reference](https://docs.cotal.ai/api/auth/) covers the public listener's token exchange,
+The [auth HTTP reference](auth-api.mdx) covers the public listener's token exchange,
 authority and chat-session operations, including their proof requirements.
 Public-listener access does not grant permission to perform an operation.
 
-The [auth host HTTP reference](https://docs.cotal.ai/api/auth-host/) covers capability-gated
+The [auth host HTTP reference](auth-host-api.mdx) covers capability-gated
 lifecycle, enrollment and private-result proof operations. These routes are absent
 from the public listener.
 
-The [dashboard HTTP reference](https://docs.cotal.ai/api/dashboard/) covers reads,
+The [dashboard HTTP reference](dashboard-api.mdx) covers reads,
 session authentication, response schemas, live events and readiness metadata.
 It also describes channel deletion in the legacy dashboard. The native dashboard
 service refuses that operation. The complete schemas are in the
@@ -116,9 +116,9 @@ integration contract. For a hosted or Cloud composition, start with the
 [embedding guide](embedding.mdx#what-you-embed); the deployment must supply its
 connection and authority material.
 
-The [manager console HTTP reference](https://docs.cotal.ai/api/manager-console/) covers
+The [manager console HTTP reference](manager-console-api.mdx) covers
 the credentialed roster, event feed and browser-session bootstrap.
-The [feedback intake HTTP reference](https://docs.cotal.ai/api/feedback-intake/) covers
+The [feedback intake HTTP reference](feedback-intake-api.mdx) covers
 tester-authenticated feedback submission and service health.
 
 The [cotal.ai API reference](https://cotal.ai/api) documents the website's HTTP

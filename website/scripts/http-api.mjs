@@ -129,6 +129,12 @@ export function referencePages(reference, spec) {
   return pages;
 }
 
+export function assertReferenceCurrent(reference, spec = loadReferenceSpec(reference)) {
+  const source = readFileSync(new URL(reference.docSource, repoRoot), 'utf8');
+  if (source !== referenceMdx(reference, spec))
+    throw new Error(`${reference.label} reference is stale; run npm --prefix website run gen:api`);
+}
+
 export function referenceMdx(reference, spec) {
   const metadata = {
     title: spec.info.title,

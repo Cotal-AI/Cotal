@@ -7,5 +7,5 @@ service preset. Install it into the published CLI with `cotal ext add @cotal-ai/
 **Tier:** `implementations/`. Peer-depends [`@cotal-ai/core`](../../packages/core) and
 [`@cotal-ai/workspace`](../../packages/workspace); self-registers on import.
 
-See [docs/cli.mdx](../../docs/cli-integrations.mdx#linear) and the [root AGENTS.md](../../AGENTS.md) for the tier
+See [CLI integrations](https://docs.cotal.ai/api-reference/cli-integrations/#linear) and the [root AGENTS.md](../../AGENTS.md) for the tier
 rules.

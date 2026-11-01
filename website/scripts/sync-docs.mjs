@@ -13,6 +13,7 @@ import { readDocument } from '@cotal-ai/docs-content';
 import { connectorIcons } from '../src/lib/connector-icons.mjs';
 import { httpReferences } from '../src/http-references.js';
 import { publishHttpReferences } from './publish-http.mjs';
+import { assertReferenceCurrent } from './http-api.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -273,6 +274,8 @@ visit(parseHtml(marked.parse(readFileSync(join(repoRoot, 'docs', 'README.md'), '
 for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
 for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group map but not indexed: ${rel}`);
 
+for (const reference of httpReferences) assertReferenceCurrent(reference);
+
 const documents = new Map(await Promise.all(sources.map(async rel =>
   [rel, await readDocument(join(repoRoot, rel))],
 )));
@@ -454,7 +457,7 @@ const publishedNavigation = navigation.map(section => {
 writeFileSync(join(genDir, 'navigation.mjs'), `// @ts-check\n/** @type {import('../lib/navigation').NavigationSection[]} */\nexport const navigation = ${JSON.stringify(publishedNavigation, null, 2)};\n`);
 writeFileSync(join(genDir, 'pages.json'), JSON.stringify(pages, null, 2));
 writeFileSync(join(genDir, 'routes.json'), JSON.stringify(pages.map(({slug,url}) => ({slug,url}))));
-const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/overview/ 301', '/api-reference/ /api-reference/overview/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
+const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/api-reference/ 301', '/api-reference/ /api-reference/api-reference/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
 for (const page of pages.filter(page => page.section !== 'api' && page.slug !== 'api-reference')) redirects.push(`/${page.slug} ${page.url} 301`, `/${page.slug}/ ${page.url} 301`, `/${page.slug}.md ${page.url.slice(0, -1)}.md 301`);
 redirects.push('/api-reference.md /api-reference/api-reference.md 301');
 for (const reference of httpReferences) redirects.push(`/${reference.docSlug} /${reference.base}/ 301`, `/${reference.docSlug}/ /${reference.base}/ 301`);

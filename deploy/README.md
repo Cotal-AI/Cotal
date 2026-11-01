@@ -182,7 +182,7 @@ agents:
   - { name: builder, agent: opencode, role: builder }
 ```
 
-- [Roster files](../docs/define-a-team.mdx#roster-files) lists every key an entry takes.
+- [Roster files](https://docs.cotal.ai/docs/define-a-team/#roster-files) lists every key an entry takes.
 - **Persona and model** come from `.cotal/agents/<name>.md` (mounted read-only): the Markdown
   body is the system prompt, `model:` the model override, `subscribe:` the active read set,
   `allowSubscribe:` the read ACL, `allowPublish:` the post ACL (default-deny).

@@ -33,7 +33,9 @@ section tabs sit above the page; mobile uses the section dropdown.
 
 Docs live at `/docs/<page>/`; API Reference lives at `/api-reference/<page>/`.
 The root opens What is Cotal through a Pages redirect. Old page and Markdown
-URLs redirect to their new section. Changelog will be added later.
+URLs redirect to their new section. The legacy `/api-reference/` URL retains its
+Integration interfaces document and heading bookmarks; the API tab opens the overview.
+Changelog will be added later.
 
 The navigation tree in `scripts/sync-docs.mjs` controls publication and order.
 Its published page set must match `docs/README.md`. Guides and Concepts contain

@@ -22,6 +22,8 @@ A directory cannot contain both `.md` and `.mdx` files with the same basename.
 
 To preserve an existing heading fragment, use the native suffix `[#id]`.
 For example, `## Request routes [#the-ep-rails]` retains `#the-ep-rails`.
+Repository Markdown pages should link to the rendered site when targeting these custom IDs.
+GitHub does not interpret the suffix.
 
 Import supported components by their original names from Fumadocs UI:
 

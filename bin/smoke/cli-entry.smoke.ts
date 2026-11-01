@@ -43,6 +43,7 @@ import "@cotal-ai/runtime";
 import "@cotal-ai/auth";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { DEFAULT_AGENT } from "../../implementations/cli/src/lib/default-persona.js";
+import { readDocument } from "@cotal-ai/docs-content";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -167,9 +168,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     everyday !== -1 && setup > everyday && /^\s+send\s/m.test(help.stdout) && /^\s+endpoint, ep\s/m.test(help.stdout)
       && !/^\s+start\b/m.test(help.stdout) && !help.stdout.includes("--all"), shown(help));
   // A legacy command hidden from help says so on its own help page, naming what replaces it in the
-  // words of its docs/cli.mdx row.
-  const legacyRows = [...readFileSync(join(REPO, "docs", "cli.md"), "utf8").matchAll(/^\| [^|]+ \| \[`([a-z-]+)`\]\([^)]*\) \| Legacy, hidden from `cotal help`: [^|]*; ([^;|]+ replaces? it) \|$/gm)];
-  check("docs/cli.mdx names what replaces each of the ten hidden legacy commands", legacyRows.length === 10, legacyRows.map((row) => row[1]));
+  // words of its docs/cli-usage.mdx row.
+  const legacyRows = [...(await readDocument(join(REPO, "docs", "cli-usage.mdx"))).markdown.matchAll(/^\| [^|]+ \| \[`([a-z-]+)`\]\([^)]*\) \| Legacy, hidden from `cotal help`: [^|]*; ([^;|]+ replaces? it) \|$/gm)];
+  check("docs/cli-usage.mdx names what replaces each of the ten hidden legacy commands", legacyRows.length === 10, legacyRows.map((row) => row[1]));
   for (const [, name, replacement] of legacyRows) {
     const page = cotal([name!, "--help"]), words = page.stdout.split(/\s+/).join(" ");
     check(`${name} is not listed, and its --help says it is legacy and ${replacement}`, !new RegExp(`^\\s+${name}\\b`, "m").test(help.stdout)

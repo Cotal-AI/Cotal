@@ -43,6 +43,16 @@ test('exports native Card groups without a destination and retains child links',
   await assert.rejects(readDocument(await fixture(t, imports + '<Card title="Empty" href="" />')), /static href/);
 });
 
+test('preserves Card destinations containing parentheses', async t => {
+  for (const href of ['https://example.test/a)b', 'https://example.test/a(b', 'https://example.test/a(b)c']) {
+    const doc = await readDocument(await fixture(t, imports + `<Card title="Read the reference" href="${href}" />`));
+    const tree = unified().use(remarkParse).parse(doc.markdown);
+    const paragraph = tree.children.find(node => node.type === 'paragraph');
+    assert.equal(paragraph?.children[0]?.type, 'link');
+    assert.equal(paragraph.children[0].url, href, 'the exported link retains its complete destination');
+  }
+});
+
 test('exports complete component content with native Markdown processing', async t => {
   const path = await fixture(t, imports + `<Cards>
 <Card title="Install Cotal" href="installation.mdx#check-the-installation">

@@ -25,10 +25,10 @@ there has a Markdown twin (append `.md` to its URL).
 - [docs/cli.mdx](docs/cli.mdx): every `cotal` command.
 - [docs/mcp-tools.mdx](docs/mcp-tools.mdx): the `cotal_*` tool catalog agents use in-session.
 - [docs/manifest.mdx](docs/manifest.mdx): every field of the `cotal.yaml` mesh manifest.
-- [docs/identity-and-auth.md](docs/identity-and-auth.md): who can do what, and how it is enforced (static and per-user auth).
+- [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx): who can do what, and how it is enforced (static and per-user auth).
 - [docs/transport.mdx](docs/transport.mdx): protocol vs transport, and the capability contract.
 - [docs/spaces.mdx](docs/spaces.mdx): spaces vs channels, and the federation direction.
-- [docs/security.md](docs/security.md): the trust boundary and threat model.
+- [docs/security.mdx](docs/security.mdx): the trust boundary and threat model.
 - [docs/build-a-client.mdx](docs/build-a-client.mdx): implement a conformant client in another language.
 - [docs/examples.mdx](docs/examples.mdx): index of runnable examples.
 

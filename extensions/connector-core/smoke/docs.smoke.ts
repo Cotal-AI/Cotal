@@ -73,6 +73,14 @@ console.log("✓ 2 — the index names the version and offers real page slugs");
   assert.match(quickstart.text, /Choose several agents and their channels in one file/, "Card children reach the installed tool");
   assert.doesNotMatch(quickstart.text, /<(?:Card|Cards|Step|Steps|Callout)\b|^import /m);
 
+  const interfaces = await runDocs({ page: "api-reference" });
+  for (const slug of ["auth-api", "auth-host-api", "dashboard-api", "manager-console-api", "feedback-intake-api"]) {
+    assert.ok(interfaces.text.includes(`](${slug}.mdx)`), `${slug} remains a bundled HTTP reference link`);
+    const reference = await runDocs({ page: `${slug}.mdx` });
+    assert.equal(reference.isError, undefined, `${slug} resolves without the network`);
+    assert.match(reference.text, /## Schemas/);
+  }
+
   // Case-insensitive and tolerant of a trailing .md.
   const alt = await runDocs({ page: "Architecture.md" });
   assert.match(alt.text, /# Architecture/);

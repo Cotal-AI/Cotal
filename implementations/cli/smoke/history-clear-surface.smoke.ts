@@ -7,7 +7,7 @@
  * a standard `TARGET_UNAVAILABLE` refusal, exit 2, with a JSON envelope. A registered space whose
  * broker is not running still previews, which shows the dry run connects nowhere.
  *
- * docs/cli.mdx used to document `history clear --force`, which the CLI refuses. The page and the help
+ * docs/cli-messaging.mdx used to document `history clear --force`, which the CLI refuses. The page and the help
  * now both name `--yes` and `--dry-run`.
  *
  * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started.
@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { chatStream } from "@cotal-ai/core";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
+import { readDocument } from "@cotal-ai/docs-content";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -83,8 +84,9 @@ check("the old --force spelling is a usage refusal, exit 1, and names --yes", fo
 const help = run(["history", "clear", "--help"]);
 check("help for history clear lists --yes, --dry-run and its structured outputs", help.status === 0 && help.stdout.includes("--yes") && help.stdout.includes("--dry-run") && help.stdout.includes("Structured output: json, plain"), help.stdout.slice(0, 1600));
 
-const docs = readFileSync(join(REPO, "docs", "cli.md"), "utf8");
-const section = docs.slice(docs.indexOf("\n## history\n"), docs.indexOf("\n## console\n"));
+const docs = (await readDocument(join(REPO, "docs", "cli-messaging.mdx"))).markdown;
+const start = docs.indexOf("\n## history\n");
+const section = docs.slice(start, docs.indexOf("\n## ", start + 1));
 const clearLine = section.split("\n").find((line) => line.startsWith("cotal history clear")) ?? "";
 check("docs: the history synopsis names --yes and --dry-run for clear", clearLine.includes("--yes") && clearLine.includes("--dry-run") && !clearLine.includes("--force"), clearLine);
 check("docs: the history flag table has no --force row", !section.includes("| `--force` |"), section.slice(0, 400));

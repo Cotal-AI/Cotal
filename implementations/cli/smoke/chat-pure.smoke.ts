@@ -14,7 +14,7 @@
  *     senders heard on a DM and on a channel;
  *   - grantRefusal (native-session.ts): the pre-effect refusal for a channel outside the grant;
  *   - transcript times, shown in local time as `history` shows them;
- *   - the inbox bound (engine.ts MAX_BUFFER): a replay past it keeps the newest, and docs/cli.mdx
+ *   - the inbox bound (engine.ts MAX_BUFFER): a replay past it keeps the newest, and docs/cli-messaging.mdx
  *     states the same number.
  * It constructs plain data values (SessionIdentity, SessionMessage, PublishResult, CloseReport,
  * Presence) and NEVER an AdmittedChatSession: no fake session, no factory, no authority claim.
@@ -22,7 +22,8 @@
  * admitted session and are deliberately NOT covered here. Nothing here proves admission,
  * confinement, delivery or any native behavior.
  */
-import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { readDocument } from "@cotal-ai/docs-content";
 import { LineFramer } from "../src/chat/stdio-io.js";
 import { MAX_REQUEST_ID, MAX_REQUEST_LINE, MAX_MESSAGE_ID, INVOKE_DEFAULT_TIMEOUT_MS, INVOKE_MAX_TIMEOUT_MS, messageRecord, parseRequestLine, serializeRecord } from "../src/chat/stdio.js";
 import {
@@ -512,8 +513,8 @@ console.log("10. a session's inbox keeps the newest MAX_BUFFER replayed channel 
   const held = engine.inbox();
   check(`a replay of ${MAX_BUFFER + 100} channel messages leaves the newest ${MAX_BUFFER} in the inbox, the oldest dropped`,
     held.length === MAX_BUFFER && held[0]?.text === "msg-101" && held.at(-1)?.text === `msg-${MAX_BUFFER + 100}`, { held: held.length, first: held[0]?.text, last: held.at(-1)?.text });
-  const doc = readFileSync(new URL("../../../docs/cli.mdx", import.meta.url), "utf8").replace(/\s+/g, " ");
-  check(`docs/cli.mdx states the inbox bound as MAX_BUFFER (${MAX_BUFFER})`,
+  const doc = (await readDocument(fileURLToPath(new URL("../../../docs/cli-messaging.mdx", import.meta.url)))).markdown.replace(/\s+/g, " ");
+  check(`docs/cli-messaging.mdx states the inbox bound as MAX_BUFFER (${MAX_BUFFER})`,
     doc.includes(`The inbox keeps at most ${MAX_BUFFER} unread messages, so a channel that holds more replays only its newest ${MAX_BUFFER}`));
 }
 

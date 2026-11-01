@@ -78,6 +78,8 @@ for (const slug of slugs) assert.equal(homes.get(`/api-reference/${slug}/`)?.[0]
 for (const slug of focused) assert(homes.get(`/api-reference/${slug}/`).includes('CLI'), `CLI topic grouping: ${slug}`);
 for (const slug of Object.keys(configuration)) assert(homes.get(`/api-reference/${slug}/`).includes('Configuration'), `configuration grouping: ${slug}`);
 for (const slug of Object.keys(models)) assert(homes.get(`/api-reference/${slug}/`).includes('Models'), `models grouping: ${slug}`);
-assert(artifact('_redirects').includes('/api-reference /api-reference/overview/ 301'), 'API root opens the overview');
+for (const path of ['/api-reference', '/api-reference/'])
+  assert(artifact('_redirects').includes(`${path} /api-reference/api-reference/ 301`), 'legacy API root keeps its original document');
+assert(artifact('_redirects').includes('/api-reference.md /api-reference/api-reference.md 301'), 'legacy HTML and Markdown resolve to the same document');
 assert(artifact('api-reference/overview/index.html').includes('href="/api-reference/overview/"'), 'API tab opens overview');
 console.log(`check-api-reference: ${slugs.length} direct MDX references, ${Object.values(legacy).flat().length} legacy fragments, native Cards, Markdown and navigation verified`);

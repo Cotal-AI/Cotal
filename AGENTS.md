@@ -52,7 +52,7 @@ pnpm check         # every local check, :live suites included; runs every step a
 
 ESM only (`"type": "module"`); `tsx` runs TS directly, but packages import each other from their
 built `dist/`, so run `pnpm build` after `pnpm install` and after editing a package
-([docs/cli-usage.mdx](docs/cli-usage.mdx#running-it)). Node &gt;= 22.10.
+([CLI usage](https://docs.cotal.ai/api-reference/cli-usage/#running-it)). Node &gt;= 22.10.
 
 ## Repository map
 

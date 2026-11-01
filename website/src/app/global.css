@@ -2,7 +2,7 @@
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
 @import 'fumadocs-openapi/css/preset.css';
-@theme { --color-fd-primary: #cc8b00; }
+@theme { --color-fd-primary: #885b00; }
 :root:not(.dark) { --color-fd-background: #fff; }
 .dark { --color-fd-primary: #fff383; }
 body { font-family: Arial, Helvetica, sans-serif; }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { get } from 'node:http';
 import { httpReferences } from '../src/http-references.js';
 const origin = process.env.DOCS_TEST_ORIGIN ?? 'http://localhost:8788';
-for (const [path,destination] of [['/','/docs/what-is-cotal/'],['/spec/','/docs/spec/'],['/cli/','/api-reference/cli/'],['/spec.md','/docs/spec.md'],['/agent-frameworks/','/docs/connect-pi/'],['/agent-frameworks.md','/docs/connect-pi.md']]) {
+for (const [path,destination] of [['/','/docs/what-is-cotal/'],['/spec/','/docs/spec/'],['/cli/','/api-reference/cli/'],['/api-reference/','/api-reference/api-reference/'],['/api-reference.md','/api-reference/api-reference.md'],['/spec.md','/docs/spec.md'],['/agent-frameworks/','/docs/connect-pi/'],['/agent-frameworks.md','/docs/connect-pi.md']]) {
  const response = await fetch(origin + path, { redirect:'manual' });
  assert.equal(response.status,301,path);
  assert.equal(response.headers.get('location'),destination,path);

@@ -1,8 +1,24 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { httpReferences, referenceMarkdown, referenceOperations, referencePages, loadReferenceSpec } from './http-api.mjs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { httpReferences, referenceMarkdown, referenceMdx, referenceOperations, referencePages, loadReferenceSpec, assertReferenceCurrent } from './http-api.mjs';
 
 for (const reference of httpReferences) {
+  test(`${reference.id}: stale canonical references are refused`, t => {
+    const dir = mkdtempSync(join(tmpdir(), 'cotal-http-reference-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, 'reference.mdx');
+    const fixture = { ...reference, docSource: pathToFileURL(path).href };
+    const spec = loadReferenceSpec(reference);
+    writeFileSync(path, referenceMdx(reference, spec));
+    assert.doesNotThrow(() => assertReferenceCurrent(fixture, spec));
+    spec.info.description += ' Changed contract description.';
+    assert.throws(() => assertReferenceCurrent(fixture, spec), /reference is stale/);
+  });
+
   test(`${reference.id}: downloadable schemas resolve locally and deterministically`, () => {
     const spec = loadReferenceSpec(reference);
     const check = (value, path = '') => {
