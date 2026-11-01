@@ -382,24 +382,27 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           case "session.execution.started": {
             // A replayed start belongs to a turn whose end already came, so it would hold the session for good.
             // One at or before the last start is a late copy: taking it would let an earlier end pass as this execution's.
-            if ((sessionID && data.sessionID !== sessionID) || replayed(ev) || replayed(ev, started)) break;
+            // Until our own session id is known, no execution can be ours: our turns need it to be
+            // submitted, and a session created before it resolves is adopted above. Taking another
+            // session's start here would set `execution` for an end this guard then drops (#3848).
+            if (data.sessionID !== sessionID || replayed(ev) || replayed(ev, started)) break;
             execution = "running";
             started = ev.durable;
             await safeStatus("working");
             break;
           }
           case "session.execution.succeeded": {
-            if (sessionID && data.sessionID !== sessionID) break;
+            if (data.sessionID !== sessionID) break;
             await completeTurn(ev, () => batch.ack()); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
             break;
           }
           case "session.execution.failed": {
-            if (sessionID && data.sessionID !== sessionID) break;
+            if (data.sessionID !== sessionID) break;
             await completeTurn(ev, () => batch.abandon()); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {
-            if (sessionID && data.sessionID !== sessionID) break;
+            if (data.sessionID !== sessionID) break;
             await completeTurn(ev, () => batch.ack()); // explicit user Stop: treat the surfaced batch as dismissed, not failed
             break;
           }
