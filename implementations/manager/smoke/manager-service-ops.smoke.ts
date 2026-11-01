@@ -96,8 +96,9 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
+// No role: the suite's caller holds no issued evidence, so it hands on no role (SPEC 13.15).
 for (const n of ["w1", "w2", "w3", "wp1", "wp2", "wpmissing", "m6pin", "wroute"])
-  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
@@ -595,7 +596,7 @@ try {
     // --model override) must surface that model in the row - the manager folds def.model into the
     // launch record just as it folds def.variant. Before the fix, launch.model stayed undefined and
     // ps reported the model ABSENT while the connector ran the seat on the persona's model.
-    writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nrole: worker\nmodel: persona-m\n---\n`);
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nmodel: persona-m\n---\n`);
     const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psP = await A.call("ps");
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
@@ -605,7 +606,7 @@ try {
     // reports any parser refusal without the file's contents, so the reply names only the file and the
     // selector class; the native parser, run on the same bytes, shows the model rule is the refusal.
     const emodelPath = join(workspaceRoot, ".cotal", "agents", "emodel.md");
-    writeFileSync(emodelPath, `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
+    writeFileSync(emodelPath, `---\nname: emodel\nmodel: "   "\n---\n`);
     let parserRefusal = "";
     try { loadAgentFile(emodelPath); } catch (e) { parserRefusal = (e as Error).message; }
     const rE = await A.call("spawn", { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
