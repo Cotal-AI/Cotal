@@ -44,7 +44,7 @@ export function WatchView({ view, initialFilter, onLeave }: { view: MeshView; in
     : renderReport(watchReport(snapshot, filter), "plain", size.width).split("\n"), [snapshot, filter, size.width]);
   const title = lines(`cotal watch · ${snapshot.status.space}`, size.width);
   const connected = snapshot.status.connected && !snapshot.status.error;
-  const connection = lines(connected ? `live · authorized ${filter}` : "Observer reported an error · last observations", size.width);
+  const connection = lines(connected ? `live · authorized ${filter}` : snapshot.status.error ? "Observer reported an error · last observations" : "Reconnecting · last observations", size.width);
   const note = size.height < 12 ? [] : lines("Recent observations only. A turn ending is not task completion.", size.width);
   const keys = lines(size.width < 60 ? "f view · ↑↓ scroll · q leave" : "f view · ↑↓ scroll · g reset scroll · q leave · agents keep running", size.width);
   const bodyHeight = Math.max(1, size.height - title.length - connection.length - note.length - keys.length - 2);
