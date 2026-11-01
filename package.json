@@ -1041,6 +1041,7 @@
     "smoke:codex-events-lifecycle": "tsx extensions/connector-codex/smoke/events-lifecycle.smoke.ts",
     "smoke:presence-watch-rebuild:auth": "tsx packages/core/smoke/presence-watch-rebuild.smoke.ts",
     "smoke:presence-watch-stall": "tsx packages/core/smoke/presence-watch-stall.smoke.ts",
+    "smoke:presence-broker-restart": "tsx packages/core/smoke/presence-broker-restart.smoke.ts",
     "smoke:presence-watch-rebind": "tsx packages/core/smoke/presence-watch-rebind.smoke.ts",
     "smoke:presence-view-refill": "tsx packages/core/smoke/presence-view-refill.smoke.ts",
     "smoke:presence-read": "tsx packages/core/smoke/presence-read.smoke.ts",
