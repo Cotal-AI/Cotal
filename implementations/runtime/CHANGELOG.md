@@ -1,5 +1,15 @@
 # @cotal-ai/runtime
 
+## 0.133.5
+
+### Patch Changes
+
+- 42713d5: A `wait` decides which deadlines it arms in one place, `waitTimers`, and the binding, `wait`, `waitDown` and `waitReplied` all take its result. Behavior is unchanged.
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+  - @cotal-ai/lang@0.133.5
+
 ## 0.133.4
 
 ### Patch Changes

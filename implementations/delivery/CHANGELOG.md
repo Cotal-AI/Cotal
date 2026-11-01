@@ -1,5 +1,14 @@
 # @cotal-ai/delivery
 
+## 0.133.5
+
+### Patch Changes
+
+- b7053ec: The delivery daemon gives its shard back through one release step on every exit path, and a held context's lost lease stops through the same step as its lost broker connection. Behavior is unchanged.
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+
 ## 0.133.4
 
 ### Patch Changes
