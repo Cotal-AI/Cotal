@@ -918,7 +918,7 @@ try {
     const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
     check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
     const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
-    check("with NODE_EXTRA_CA_CERTS set, as docs/cli.md says, the participant's manager start comes up",
+    check("with NODE_EXTRA_CA_CERTS set, as docs/cli.mdx says, the participant's manager start comes up",
       trusted.status === 0 && plain(trusted.out).includes("Owned process running"), trusted.out);
     const childPid = /^\s*PID:\s+(\d+)$/m.exec(plain(trusted.out))?.[1];
     const childEnvironment = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0") : [];

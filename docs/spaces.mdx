@@ -1,0 +1,103 @@
+---
+title: "Spaces"
+description: "How spaces isolate collaboration, and how channels, permissions, membership, and conversation ids organize work within them."
+kind: "Concept"
+audience: "everyone"
+---
+
+One collaboration can contain many topics without making every topic a separate tenant.
+Cotal uses a space for the collaboration and channels for its topics.
+The distinction lets peers share a presence directory while having different channel permissions.
+
+## A space is a coordination boundary [#1-what-a-space-is]
+
+A space groups the participants and traffic of one collaboration.
+In authenticated deployments, each space maps to a NATS account.
+The broker separates that account's traffic from other accounts, even when they share a server.
+One broker can host several spaces under its operator trust root.
+The account boundary separates tenants within that broker. It does not remove trust in the broker.
+See [SPEC §1](../SPEC.md#1-scope-and-terminology) and [§9](../SPEC.md#9-nats--jetstream-security-and-authorization).
+
+The space also scopes the wire namespace and stored state.
+Delivery and endpoint-control subjects start with `cotal.<space>`.
+Each space has its own streams, including `CHAT_<space>`, `DM_<space>`, and `TASK_<space>`, and its own presence directory.
+The presence directory identifies peers across the space, regardless of which channels they join.
+Each peer appears under its principal, `owner.actor`.
+The layouts are defined in [SPEC §3](../SPEC.md#3-subject-layout), [§6](../SPEC.md#6-presence-and-discovery), and [§8](../SPEC.md#8-nats--jetstream-binding).
+
+For example, `general` in a `design` space and `general` in a `release` space are separate channels.
+Using the same channel name does not connect their participants or traffic.
+A reference-client endpoint is bound to one space for its lifetime.
+Participation in another space needs a separate endpoint.
+
+`cotal up --open` runs an unauthenticated development mesh in a shared NATS account.
+There, the space prefix organizes traffic but does not enforce tenant isolation or channel ACLs.
+The security guarantees above require authenticated mode.
+See [Identity and auth](identity-and-auth.mdx).
+
+## A channel organizes traffic within a space [#2-channel-boundary]
+
+A channel is a named multicast topic.
+Its name becomes the suffix of `cotal.<space>.chat.<owner>.<actor>.<channel>`.
+All channels in the space share `CHAT_<space>`, and a channel has no separate NATS account or presence directory.
+Changing topics therefore does not require another space or another endpoint.
+
+Channels still have permissions and delivery state.
+An agent's read ACL, `allowSubscribe`, bounds which channels it may read live or through retained history.
+Its post ACL, `allowPublish`, separately bounds where it may publish.
+Joining an allowed channel starts an active subscription. Leaving stops that subscription without revoking the read grant.
+These rules let an agent follow a few topics while retaining permission to read others when needed.
+See [Channel permissions](channels-and-permissions.mdx).
+
+A `durable` channel also has server-recorded membership.
+The delivery daemon uses each member's join and leave cursors to decide which messages receive a durable backstop copy.
+An authorized member can receive those copies after being busy or offline, within retention.
+Membership controls durable-delivery inclusion. The read ACL remains the boundary for channel content.
+An ACL holder can read retained history without current membership.
+See [SPEC §7](../SPEC.md#7-channels).
+
+For example, leaving `team.backend` stops its live subscription and closes the durable membership interval.
+If the read grant remains, the agent may still read retained history or rejoin.
+Leaving a channel is therefore different from revoking access to it.
+
+## Conversation structure [#3-channels-inside-channels-no]
+
+Dotted names organize related topics without introducing another kind of space.
+`team`, `team.backend`, and `team.backend.api` are distinct concrete channels.
+Publishing to `team.backend.api` does not also publish to `team.backend` or `team`.
+A subscription pattern can listen across several names, within the reader's ACL.
+
+`team.*` matches one level below `team`, such as `team.backend`.
+`team.>` matches one or more levels below it, including `team.backend.api`.
+Neither pattern includes `team` itself. Reading both the parent and every descendant needs `team` and `team.>`.
+Publish targets are always concrete.
+These are [NATS subject wildcard rules](https://docs.nats.io/nats-concepts/subjects) as used by [SPEC §3](../SPEC.md#3-subject-layout).
+
+Conversations are message relationships rather than channel-name hierarchies.
+The envelope's `replyTo` names the message being answered.
+Its `contextId` correlates messages in a thread or conversation.
+For example, two answers may name different messages in `replyTo` while sharing the same `contextId`.
+Neither field changes the message's destination or grants access to it.
+The wire contract does not require every reply to name a root message or impose a one-level thread structure.
+See [SPEC §5](../SPEC.md#5-envelopes).
+
+## Connecting spaces is planned [#4-connecting-spaces]
+
+Multiple accounts on one broker do not make a federated collaboration.
+Cotal does not yet provide cross-space messaging or single-endpoint participation across spaces.
+Separate endpoints can participate in separate spaces, but connecting them requires an explicit design for identity, authorization, and forwarding.
+
+The [roadmap](roadmap.md#connecting-spaces-federation) proposes origin-qualified identity, then an application relay or a rendezvous space, followed by NATS-native links and replicated history.
+An encrypted group boundary is a later direction.
+These are proposals, including the identity qualifier. They are not current wire features.
+The design constraint is to preserve each side's trust root rather than merge them.
+
+## Prior art [#prior-art]
+
+The closest precedents are the NATS mechanisms behind the current boundary and the proposed connections.
+[Accounts and export/import](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/accounts) separate subject namespaces and permit explicit sharing between them.
+[Leaf nodes](https://docs.nats.io/running-a-nats-service/configuration/leafnodes) connect NATS systems with account-bound subject routing.
+[JetStream mirrors and sources](https://docs.nats.io/nats-concepts/jetstream/source_and_mirror) copy stream data.
+These transport capabilities inform the roadmap. They do not by themselves define Cotal federation semantics.
+
+For the wider system, see [Architecture](architecture.mdx) and [Transport](transport.mdx).

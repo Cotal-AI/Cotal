@@ -468,6 +468,27 @@ try {
     await rawNc.close();
   }
 
+  // #3839: a DM that lands while a turn runs is buffered for that turn's end. A user Stop ends the
+  // turn as `session.error` MessageAbortedError, and the buffered DM must then drive its own turn.
+  const beforeStopCell = prompts.length;
+  await pub.unicast(ottoId, "turn the user stops");
+  for (let i = 0; i < 50 && prompts.length === beforeStopCell; i++) await sleep(100);
+  await pub.unicast(ottoId, "dm during the stopped turn");
+  await sleep(500); // buffered: the stopped turn is still running
+  const beforeAbort = prompts.length;
+  await fire(hooks, {
+    type: "session.error",
+    properties: { sessionID: SID, error: { name: "MessageAbortedError", data: { message: "The operation was aborted" } } },
+  });
+  for (let i = 0; i < 30 && prompts.length === beforeAbort; i++) await sleep(100);
+  check(
+    "a DM buffered during a turn the user stops drives its own turn after the stop",
+    beforeAbort === beforeStopCell + 1 && prompts.length === beforeAbort + 1 && promptText(prompts.at(-1)).includes("dm during the stopped turn"),
+    prompts.slice(beforeStopCell).map((p) => promptText(p).slice(0, 80)),
+  );
+  await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+  await sleep(300);
+
   // Stop: a retry is now pending (delay back at 2s after this failure). A cooperative stop landing
   // while it is pending must cancel the timer and submit nothing — two guards hold this: the timer
   // clear in dispose's teardown (`clearErrorRetry` in `quiesce`) and the `stopping` refusal in
@@ -505,6 +526,8 @@ try {
   const prompts2: { body: { text?: string } }[] = [];
   let modelListing: Array<{ providerID: string; modelID: string }> = [];
   let modelReads = 0;
+  // Holds the `POST /api/session` answer, so a cell can feed events before the adapter knows its session.
+  let sessionGate: Promise<void> | undefined;
 
   const oc2 = createHttpServer((req, res) => {
     if (req.headers.authorization !== auth2) {
@@ -516,7 +539,9 @@ try {
     req.on("data", (d) => (raw += d));
     req.on("end", () => {
       if (req.method === "POST" && req.url === "/api/session") {
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } }));
+        void (sessionGate ?? Promise.resolve()).then(() =>
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } })),
+        );
         return;
       }
       if (req.method === "GET" && req.url === "/api/model") {
@@ -687,12 +712,24 @@ try {
       if (line.includes("[cotal-session]")) sessionLine = line;
       return originalStderrWrite2!.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
     }) as typeof process.stderr.write;
-    dispose2 = await bootPlugin2(ctx2);
+    // #3848: another session's execution starts before the adapter's own session id is known and
+    // ends after it is. Neither may touch this adapter's turn state, or `busy` wedges every later drive
+    // (the "one DM drives exactly one prompt POST" cell below goes red).
+    let releaseSession!: () => void;
+    sessionGate = new Promise<void>((r) => (releaseSession = r));
+    const booting = bootPlugin2(ctx2);
+    await sleep(500);
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: "ses_foreign", seq: 1 }, data: { sessionID: "ses_foreign" } });
+    await sleep(200);
+    releaseSession();
+    dispose2 = await booting;
 
     for (let i = 0; i < 50; i++) {
       if (sessionLine) break;
       await sleep(100);
     }
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: "ses_foreign", seq: 2 }, data: { sessionID: "ses_foreign" } });
+    await sleep(200);
     check("2.x: the session id is printed as [cotal-session]", sessionLine.includes(SID2), sessionLine);
 
     for (let i = 0; i < 50; i++) {
@@ -754,6 +791,27 @@ try {
     await prompt2(again);
     check("2.x: a second native prompt does not carry the open batch again", again.prompt.text === "typed again" && prompts2.length === 3, { again, prompts2 });
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 8 }, data: { sessionID: SID2 } });
+    await sleep(300);
+
+    // #3859: a focus @mention wake that fires while a turn runs is acked at ingest, so nothing but
+    // the nudge carries it. The turn's end must deliver that nudge.
+    const focusTool = ctx2.addedTools.find((t) => t.name === "cotal_status");
+    await focusTool?.execute({ attention: "focus" });
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 9 }, data: { sessionID: SID2 } });
+    await sleep(200);
+    const beforeMention = prompts2.length;
+    await pub2.multicast("@Otto2 look at this mid-turn", { channel: "team", mentions: ["Otto2"] });
+    await sleep(500);
+    const midTurn = prompts2.length;
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 10 }, data: { sessionID: SID2 } });
+    for (let i = 0; i < 30 && prompts2.length === midTurn; i++) await sleep(100);
+    check(
+      "2.x: a focus @mention wake that fires mid-turn is delivered when the turn ends",
+      midTurn === beforeMention && prompts2.length === midTurn + 1 && String(prompts2.at(-1)?.body.text).includes("You were mentioned"),
+      prompts2.slice(beforeMention).map((p) => String(p.body.text).slice(0, 80)),
+    );
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 11 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 12 }, data: { sessionID: SID2 } });
     await sleep(300);
 
     const names1x = cotalToolSpecs(configFromEnv(), "opencode").map((s) => s.name).sort();

@@ -1,0 +1,111 @@
+---
+title: "Back up a mesh"
+description: "Preserve a supported mesh, create an offline backup, and restore it within the original trust boundary."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Create a consistent offline backup while the mesh is stopped.
+Use the [backup and restore reference](cli-backups.mdx#backups) for the complete artifact and recovery contract.
+
+<Callout type="warn" title="Controller stacks cannot be preserved">
+
+A root with `.cotal/stack-controller.json` cannot be preserved in this release.
+Preservation, backup, and restore refuse before any effect on that controller-owned stack.
+Plain `cotal down` and `cotal up` retain its store, channels, and history.
+
+</Callout>
+
+## Create an offline backup [#offline-backup]
+
+Run these commands from the supported mesh's project folder:
+
+1. Stop and preserve the whole stack:
+
+   ```bash
+   cotal down --preserve-state
+   ```
+
+   A refused cut leaves the mesh running and unfenced. Follow the refusal's remedy, then retry preservation.
+
+2. Once the stack is preserved and stopped, create the artifact:
+
+   ```bash
+   cotal backup create ./space-backup
+   ```
+
+   This creates a full backup by default. Keep the stack down throughout the backup.
+
+Backup does not stop or restart the mesh for you. It reads an isolated copy rather than opening the original store.
+The artifact contains no credentials or trust secrets.
+Keep the original trust material through your deployment's protected backup procedure.
+
+If you use a custom JetStream store, pass the same `--store-dir` to preservation and backup.
+A cap set with `cotal up --max-file-store <bytes>` is recorded in the preserved state and rendered again on resume.
+Changing that cap needs a broker restart because nats-server reads it at startup and refuses a reload that changes it.
+
+### Resume the unchanged source
+
+To resume without restoring an artifact, run:
+
+```bash
+cotal up --detach
+```
+
+The preserved cut records each retained seat's chat frontier.
+A resumed seat catches up from that position instead of replaying all its channels.
+
+A full static-auth or open backup also retains workflow runs. Checkpoints and timers return after a full restore within the same trust boundary.
+
+## Restore the preserved state [#restore-the-preserved-state]
+
+Restore before the normal broker listener opens:
+
+```bash
+cotal up --restore ./space-backup --detach
+```
+
+A full restore requires the same space and the current local trust continuity.
+It validates the complete space trust bundle before staging or changing the preserved store.
+That commitment includes the validated operator, system, and data-account root chain, plus the static or user-auth authority state.
+
+A successful full restore recreates conservative consumer checkpoints bound to the snapshot's stream sequences.
+Retained agents resume under their original principals.
+A role request that a holder had taken and not yet acked when the backup was made is on its queue again, even if that holder finished it afterwards.
+The broker delivers it again at delivery count 1, as it redelivers any unacked request, so any holder of the role may take it and do the work again.
+Its sender reads it as waiting until that take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
+In every auth mode, including open mode, maintenance uses isolated, operation-specific logins.
+Ordinary agent credentials cannot enter that listener.
+
+### Restore only the registry
+
+`registry` is the only partial selection.
+Create it with `backup create ... --only registry` and restore it with `up --restore ... --restore-only registry`.
+
+A registry-only restore creates the canonical empty infrastructure but leaves retained agents stopped.
+Their DM, delivery, task, and ACL state is outside this selection.
+
+### Handle an interrupted attempt
+
+An interrupted ordinary resume retries its durable attempt after the previous listener has stopped.
+Restore re-entry adopts a surviving normal listener only when all recorded ownership evidence matches:
+
+- The attempt nonce and NATS server name.
+- The process owner and endpoint.
+- The target-store identity and its fsynced proof.
+
+A provably dead, uncommitted owner is retired under lock and replaced by a fresh attempt-bound listener.
+A foreign occupied listener or an ambiguous owner is never adopted.
+
+During the manager commit, retained cleanup stays suppressed.
+The CLI durably records its attempt-bound 64-hex token in `manager-committed` or `resume-committed` before `finalizeResume` can release that suppression.
+A newly launched manager receives the token through a protected one-read file, identified by its path and digest, never on the command line.
+
+A retry from a committed state goes directly to finalization with that exact token.
+If finalization fails, the committed gate and retained cleanup suppression remain in place.
+Missing commit evidence, interrupted finalization, a live recorded endpoint despite missing pidfiles, or ambiguous ownership proof refuses recovery.
+
+Do not erase the journal or start another listener to bypass that refusal.
+Follow the [backup recovery reference](cli-backups.mdx#backups) for artifact validation, fallback, disaster consent, and degraded recovery.

@@ -136,7 +136,7 @@ the principal stays stable across reconnects.
   the security claims in §9 and is not a conformant authenticated deployment.
 
 Future binding, not v0: portable `did:key` identity plus signed envelopes so authenticity
-survives an untrusted relay. See the threat model in [docs/security.md](docs/security.md).
+survives an untrusted relay. See the threat model in [docs/security.mdx](docs/security.mdx).
 
 ---
 
@@ -885,9 +885,9 @@ holder asks again, so its ack wait can run out, and the broker then redelivers t
 
 **On by default.** A space is provisioned with decentralized JWT auth. Open unauthenticated
 dev mode is available but out of scope for the security claims here. *(Informative
-operator-facing views of this section: [docs/identity-and-auth.md](docs/identity-and-auth.md),
-[docs/channels-and-permissions.md](docs/channels-and-permissions.md); the threat model is
-[docs/security.md](docs/security.md).)*
+operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx),
+[docs/channels-and-permissions.mdx](docs/channels-and-permissions.mdx); the threat model is
+[docs/security.mdx](docs/security.mdx).)*
 
 - **Account = space, user = agent.** A space is one NATS account. The **broker's** operator signs
   the account; an account signing key mints per-agent user JWTs. A broker (one nats-server trust
@@ -1016,7 +1016,7 @@ DLV, and EPC carry **no** agent `STREAM.INFO` grant: `subjects_filter` is a requ
 ACL can narrow to counts alone, so INFO there would enumerate who DMed whom, and no agent-side
 reader needs it (§13.1 reaches DM and DLV by durable name, EPC by subject-scoped `DIRECT.GET`).
 Hiding the remaining metadata is deferred strict-containment work.
-See [docs/security.md](docs/security.md).
+See [docs/security.mdx](docs/security.mdx).
 
 **Consumer-delivery confused deputy on the read grants.** A JetStream consumer delivers stored
 bytes to a **caller-chosen destination the broker does NOT confine to the requester's
@@ -1036,7 +1036,7 @@ original captured subject and how the receiver's subject-derived kind check (§1
 classifies it; the reference implementation determines this by test and pins the exact grants.
 On the v0.3 rails without this mediation, read containment holds only against a *conforming*
 client; the broker does not enforce it.
-See [docs/security.md](docs/security.md).
+See [docs/security.mdx](docs/security.mdx).
 
 ---
 
@@ -1293,7 +1293,7 @@ surface: v0.4 defines it normatively via the credential ledger and the lifecycle
 ## 12. Conformance
 
 *(An informative build-order walkthrough of this checklist is
-[docs/build-a-client.md](docs/build-a-client.md).)*
+[docs/build-a-client.mdx](docs/build-a-client.mdx).)*
 
 A conformant authenticated NATS client MUST:
 
@@ -6544,7 +6544,7 @@ The participant manager refuses a program that places a spawn on any other insta
 ## Appendix B: Profile ACLs
 
 This appendix is normative for the NATS binding. *(The operator-facing summary of these
-grants is [docs/identity-and-auth.md](docs/identity-and-auth.md).)* Names below use these
+grants is [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx).)* Names below use these
 placeholders:
 
 - `P = cotal.<space>`

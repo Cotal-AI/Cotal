@@ -1,0 +1,43 @@
+{
+  "authoring-a-connector": [
+    "the-contract",
+    "private-launch-files",
+    "local-listeners",
+    "packaging-rules-enforced-at-ext-add",
+    "connector-lifecycle"
+  ],
+  "build-a-client": [
+    "what-you-are-implementing",
+    "prerequisites",
+    "build-order",
+    "testing-conformance",
+    "what-not-to-build"
+  ],
+  "embedding": [
+    "what-you-embed",
+    "interactive-manager-primary",
+    "account-connection-census",
+    "service-authority-contracts",
+    "owner-bound-platform-supervisors",
+    "the-export-surface",
+    "remote-mcp-gateway",
+    "private-tool-results",
+    "browser-control",
+    "remote-manager-client-composition",
+    "long-lived-endpoints-take-a-bearer-function",
+    "booting-the-daemons",
+    "auth-service",
+    "delivery",
+    "supervisor-signing-authority",
+    "delegated-seats-outside-the-managers-filesystem",
+    "delegated-recovery-contracts",
+    "provisioning-a-space-one-space-reference-shape",
+    "hazardous-provisioning-primitives",
+    "hosted-composition-gaps",
+    "hosted-durability",
+    "see-also",
+    "hosted-run-revocation",
+    "private-tool-result-prerequisites-not-serving",
+    "native-service-custody-guards"
+  ]
+}

@@ -575,14 +575,17 @@ export function ttlBuckets(space: string): ReadonlyArray<readonly [string, numbe
  *  it: a `cotal up` against a running mesh now performs a config write, and a write the operator
  *  cannot see is the kind of silent behaviour this change exists to remove. `undefined` means the
  *  bucket already carried the intended TTL and nothing was written. */
-export type TtlReconciled = { stream: string; fromMs: number; toMs: number };
+export type TtlReconciled = { stream: string; fromMs: number; toMs: number; recreated?: true };
 
 /** #286: reconcile all three TTL'd buckets for a space, over a connection of its own.
  *
  *  Exists because `setupSpaceStreams` is only reachable on the CREATE path (`cotal up` starting a
  *  mesh), while the drifted-bucket case this fixes is by definition a mesh that is ALREADY RUNNING —
  *  an old deployment being upgraded in place. That path starts nothing and so must not run the
- *  create-everything routine; it needs exactly the reconcile and nothing else.
+ *  create-everything routine; it needs exactly the reconcile and nothing else. The one exception is
+ *  a MEMORY-backed bucket (presence): a broker restart drops it while the mesh keeps running, so a
+ *  missing one is re-created from the same `ttlBuckets` row and reported `recreated` (AGENT-2889). A
+ *  missing FILE bucket is lost state and still refuses.
  *
  *  Read-first by construction: each bucket is skipped when its `max_age` already matches, so a
  *  steady-state repeat `cotal up` issues three `STREAM.INFO` reads and ZERO writes. Returns only the
@@ -601,8 +604,17 @@ export async function reconcileSpaceTtls(opts: {
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     const js = jetstream(nc);
+    const kvm = new Kvm(nc);
     const reconciled = await Promise.all(
-      ttlBuckets(opts.space).map(([bucket, ttl]) => reconcileBucketTtl(jsm, js, `KV_${bucket}`, bucket, ttl)),
+      ttlBuckets(opts.space).map(async ([bucket, ttl, storage]): Promise<TtlReconciled | undefined> => {
+        try {
+          return await reconcileBucketTtl(jsm, js, `KV_${bucket}`, bucket, ttl);
+        } catch (e) {
+          if (storage !== StorageType.Memory || !isStreamNotFound(e)) throw e;
+          await kvm.create(bucket, { ttl, storage });
+          return { stream: `KV_${bucket}`, fromMs: 0, toMs: ttl, recreated: true };
+        }
+      }),
     );
     return reconciled.filter((done): done is TtlReconciled => done !== undefined);
   } finally {

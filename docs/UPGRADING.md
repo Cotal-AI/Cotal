@@ -1,6 +1,6 @@
 # Upgrading a running deployment
 
-> **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Substrate stability](stability.md), [Run a mesh](run-a-mesh.md), [Identity and auth](identity-and-auth.md)
+> **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Substrate stability](stability.md), [Run a mesh](run-a-mesh.mdx), [Identity and auth](identity-and-auth.mdx)
 
 [Substrate stability](stability.md) tells you what the version numbers promise. This page is the
 other half: what to actually do when the deployment already exists, has credentials in it, and
@@ -58,7 +58,7 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Anycast takes after 0.132.7
+## Anycast takes after 0.133.11
 
 On an authenticated mesh a role holder now shows a role request only after the delivery daemon
 records its take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). The sender gets a notice
@@ -336,7 +336,7 @@ another user owns, now stops the host at startup with nothing opened:
   manifest into a directory that user can write and point the unit at the new path.
 - The file holds `{"version": 1, "sha256": "<hex>"}`, the SHA-256 of the manifest the host
   applied. A tool that stops one space by removing it from the manifest can wait for that hash
-  ([server daemons](cli.md#server-daemons)).
+  ([server daemons](cli.mdx#server-daemons)).
 
 ## Issued-authority stores after 0.111.0
 
@@ -384,7 +384,7 @@ those releases mint can run either command. From 0.113.0 `cotal up --recreate-is
 5. Start the callout replicas and other issuers again, and respawn the static agents.
 
 A space your own composition provisions, rather than `cotal up`, runs the same step through
-`removeIssuedStoresBeforeRetention` ([Embedding](embedding.md#issued-authority-stores-from-before-01110)).
+`removeIssuedStoresBeforeRetention` ([Embedding](embedding.mdx#issued-authority-stores-from-before-01110)).
 
 ### What refuses
 
@@ -1669,8 +1669,6 @@ that many seconds. Both kinds of token are now refused.
 Remove `clockToleranceSec` from each call and each `IdpConfig`. A host whose clock is more than 5
 seconds off the issuer's needs its time synchronized.
 
-<a id="auth-context-closure-in-0710-unreleased"></a>
-
 ## Auth context closure in 0.72.0
 
 Existing deployments need no credential migration or restart for these additive APIs. Embedded
@@ -1692,8 +1690,6 @@ credentials or evicts connections. Zero rows prove absence only with a complete 
 single-server proof. An embedded endpoint's trusted composition can retain transport custody
 through `EndpointOptions.onConnection`.
 
-<a id="unreleased"></a>
-
 ## Event plane of an owned spawn in 0.72.1
 
 On a per-user-auth mesh, a spawn-scoped caller can arm the event plane of a child under its own
@@ -1702,8 +1698,6 @@ plane. Upgrade the manager to pick up the admission change. No credential or sta
 needed. Cross-owner arming still requires `admin`, and the child's own-channel rule and ledger
 envelope are unchanged. A silent non-owner caller in a space without the policy still has the
 plane disarmed, with a notice if provisioning succeeds.
-
-<a id="hosted-auth-plane-identity-in-the-store-unreleased"></a>
 
 ## Hosted auth plane identity in the store in 0.76.0
 
@@ -1865,7 +1859,7 @@ it reaches.
 
 The cotal config reader now checks each server under `connectors.<name>.mcpServers` when it reads
 the file, and refuses one that cannot launch as written, naming the file and the field. The rules
-are in [the config file](config.md#the-config-file).
+are in [the config file](config.mdx#the-config-file).
 
 ### What stops working
 
@@ -2291,7 +2285,7 @@ session. The broker may or may not already hold that frame, so the halt cannot s
    pending frame may never have reached the broker, so a `cas-loss` does not tell you whether it
    landed. Find and stop any second writer and rule out a restored state first. Clearing the halt
    then means purging the agent's event channel and removing the agent's directory under the events
-   state root whole (see [Event plane](connect-claude.md#event-plane)). That abandons the pending
+   state root whole (see [Event plane](connect-claude.mdx#event-plane)). That abandons the pending
    frame whether or not the broker has it, and the purge also drops the earlier frames of every
    session of that agent.
 4. Upgrade once step 2 prints nothing.
@@ -2524,7 +2518,7 @@ outage. Mixed versions can refuse discovery or commands; there is no promised ro
 Ordinary agent sessions survive only where their runtime and credentials permit it. If verification
 fails, keep mutations paused and repair forward from the preserved state rather than resetting it.
 This release does not add host-backed enrollment or terminal release for stock participant detached
-agents; see [Remote supervised agents](run-a-mesh.md#remote-supervised-agents).
+agents; see [Remote supervised agents](run-a-mesh.mdx#remote-supervised-agents).
 
 ## From 0.48.2 to 0.49.0
 
@@ -2907,7 +2901,7 @@ marks it read-only and hides delete; the server independently rejects that mutat
 alternate connection. The private session file holds the full-launch bootstrap; logs give its
 reference only. User-auth/open targets and OS installation remain unsupported in this route.
 Existing legacy process records are still observed, never silently adopted. An already-running
-legacy dashboard is not restarted or converted by loading metadata. See [dashboard setup](watch-a-mesh.md#web-dashboard).
+legacy dashboard is not restarted or converted by loading metadata. See [dashboard setup](watch-a-mesh.mdx#web-dashboard).
 
 ## Registered lifecycle retirement in 0.91.0
 
@@ -2924,3 +2918,23 @@ the dashboard became a service. Operators have nothing to migrate, snapshot or o
 no outage: a manifest that an older install cached with the field still loads, and the next
 manifest rewrite drops it. An extension author removes the field from each `LocalProcess`
 declaration, where TypeScript now reports it as an unknown property.
+
+## Earlier section links
+
+These links lead to the current guidance for sections renamed in earlier versions.
+
+### Auth context closure in 0.71.0 (unreleased) [#auth-context-closure-in-0710-unreleased]
+
+See [Auth context closure in 0.72.0](#auth-context-closure-in-0720).
+
+### Unreleased migrations [#unreleased]
+
+See [The pre-1.0 upgrade contract](#the-pre-10-upgrade-contract).
+
+### Hosted auth plane identity in the store (unreleased) [#hosted-auth-plane-identity-in-the-store-unreleased]
+
+See [Hosted auth plane identity in 0.76.0](#hosted-auth-plane-identity-in-the-store-in-0760).
+
+### Manager-service authority policy flag in 0.75.0 [#manager-service-authority-policy-flag-in-0750]
+
+See [Manager-service authority policy flag in 0.76.0](#manager-service-authority-policy-flag-in-0760).

@@ -2284,7 +2284,7 @@ export class MeshAgent extends EventEmitter {
    *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
    *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has read
    *  — an offline peer lingers in the roster, but one no read has seen throws. See
-   *  docs/architecture.md.
+   *  docs/architecture.mdx.
    *
    *  #1229: only a read that succeeded supports an ABSENCE verdict. A name already in the roster
    *  is accepted whatever the read did; an absent name under a failed read refuses with the read's
