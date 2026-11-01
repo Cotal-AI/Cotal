@@ -777,6 +777,27 @@ try {
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 8 }, data: { sessionID: SID2 } });
     await sleep(300);
 
+    // #3859: a focus @mention wake that fires while a turn runs is acked at ingest, so nothing but
+    // the nudge carries it. The turn's end must deliver that nudge.
+    const focusTool = ctx2.addedTools.find((t) => t.name === "cotal_status");
+    await focusTool?.execute({ attention: "focus" });
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 9 }, data: { sessionID: SID2 } });
+    await sleep(200);
+    const beforeMention = prompts2.length;
+    await pub2.multicast("@Otto2 look at this mid-turn", { channel: "team", mentions: ["Otto2"] });
+    await sleep(500);
+    const midTurn = prompts2.length;
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 10 }, data: { sessionID: SID2 } });
+    for (let i = 0; i < 30 && prompts2.length === midTurn; i++) await sleep(100);
+    check(
+      "2.x: a focus @mention wake that fires mid-turn is delivered when the turn ends",
+      midTurn === beforeMention && prompts2.length === midTurn + 1 && String(prompts2.at(-1)?.body.text).includes("You were mentioned"),
+      prompts2.slice(beforeMention).map((p) => String(p.body.text).slice(0, 80)),
+    );
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 11 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 12 }, data: { sessionID: SID2 } });
+    await sleep(300);
+
     const names1x = cotalToolSpecs(configFromEnv(), "opencode").map((s) => s.name).sort();
     const names2x = ctx2.addedTools.map((t) => t.name).sort();
     check("2.x: the registered tool set equals the 1.x tool names", JSON.stringify(names1x) === JSON.stringify(names2x), { names1x, names2x });
