@@ -12,7 +12,7 @@
  * on the recipient's durable and lands once a redelivery finds room.
  */
 import assert from "node:assert/strict";
-import { MeshAgent } from "../src/agent.js";
+import { MAX_INBOX, MeshAgent } from "../src/agent.js";
 import type { InboxItem } from "../src/agent.js";
 
 let pass = 0;
@@ -28,7 +28,6 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   console.log(`  ✗ ${detail}`);
 };
 
-const MAX_INBOX = 200;
 const EVICTIONS = 12; // well past the five evictions after which the old valve gave up
 
 interface H {
