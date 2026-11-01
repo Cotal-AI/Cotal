@@ -37,6 +37,10 @@ for (const reference of httpReferences) {
         for (const [type, content] of Object.entries(operation.requestBody.content)) {
           assert(markdown.includes(type));
           assert(markdown.includes(JSON.stringify(content.schema, null, 2)));
+          for (const example of Object.values(content.examples ?? {})) {
+            assert(markdown.includes(JSON.stringify(example.value, null, 2)), 'Markdown lost the authored request example');
+            if (example.description) assert(markdown.includes(example.description));
+          }
         }
       }
       for (const name of Object.keys(operation['x-sse-events'] ?? {})) assert(markdown.includes(name));

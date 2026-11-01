@@ -27,7 +27,7 @@ public/.well-known/agent-skills/*/
 .next/
 out/
 .source/
-content/
+/content/
 *.tsbuildinfo
 next-env.d.ts
 public/docs/
@@ -36,7 +36,6 @@ public/llms*.txt
 public/sitemap*.xml
 public/_redirects
 
-public/dashboard.openapi.json
-public/auth.openapi.json
+public/*.openapi.json
 
 public/api/

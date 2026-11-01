@@ -13,13 +13,14 @@
     "postinstall": "fumadocs-mdx",
     "check:runtime": "node scripts/check-runtime.mjs",
     "gen:api": "node scripts/generate-openapi-docs.mjs",
-    "test": "node --test scripts/http-api.test.mjs"
+    "test": "node scripts/check-http-coverage.mjs && node --test scripts/http-api.test.mjs"
   },
   "dependencies": {
     "@cotal-ai/docs-content": "file:../tools/docs-content",
     "@tailwindcss/postcss": "^4.1.0",
     "fumadocs-core": "^16.17.9",
     "fumadocs-mdx": "^15.4.10",
+    "fumadocs-openapi": "12.5.7",
     "fumadocs-ui": "^16.17.9",
     "lucide-react": "^1.64.0",
     "marked": "^18.0.6",
@@ -34,6 +35,7 @@
     "parse5": "^7.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "shiki": "4.5.0",
     "tailwindcss": "^4.1.0",
     "zod": "^4.4.3"
   },

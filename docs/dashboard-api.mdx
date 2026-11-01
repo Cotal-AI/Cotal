@@ -6,11 +6,11 @@ audience: "HTTP client authors"
 ---
 Source: [OpenAPI description](../implementations/web/openapi.json).
 
-HTTP interface of the @cotal-ai/web reference implementation. This description covers seven read operations; it does not establish a separate stable product or Cloud management API. Start the dashboard using the web service preset described in the operator guide. The server defaults to 127.0.0.1:7799; use the host and port configured for your dashboard.
+HTTP interface of the @cotal-ai/web reference implementation. This description covers read operations, readiness metadata and the legacy channel deletion route; it does not establish a separate stable product or Cloud management API. Start the dashboard using the web service preset described in the operator guide. The server defaults to 127.0.0.1:7799; use the host and port configured for your dashboard.
 
 Open the owner-private launch URL once to exchange its k query token for the cotal\_web\_session cookie. Keep the session on the same host. With the default bind, the permitted browser origins are [http://127.0.0.1](http://127.0.0.1):\<port>, [http://localhost](http://localhost):\<port> and [http://cotal.localhost](http://cotal.localhost):\<port>. A custom host uses its own HTTP origin. A cross-origin request is refused before session checks. The readiness nonce only opens /api/meta.
 
-All documented operations use GET and take no request body. Some read handlers also accept other bodyless methods; this description does not promise a 405 response for them. Internal readiness and channel deletion are outside this read reference. The native web service is read-only. Description version 1 identifies this document, not the wire or npm package version.
+Read operations use GET and take no request body. Some read handlers also accept other bodyless methods; this description does not promise a 405 response for them. The native web service is read-only and always refuses channel deletion with 403. Legacy direct dashboard instances can enable deletion; /api/meta reports channelDeleteSupported. Description version 1 identifies this document, not the wire or npm package version.
 
 ## Reading the contract
 
@@ -865,6 +865,251 @@ Each named event carries the following JSON data schema.
 }
 ```
 
+## Read dashboard metadata [#read-dashboard-meta]
+
+```http
+GET /api/meta
+```
+
+Return the space, process ID and whether channel deletion is supported. An authenticated browser session, one-use launch token or the private readiness nonce can access this route. The readiness nonce is accepted only here and does not mint a session. Query strings are accepted. Other bodyless methods also reach this read handler; no 405 behavior is promised.
+
+### Parameters
+
+No operation parameters.
+
+### Responses
+
+#### HTTP 200
+
+Dashboard metadata.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/DashboardMeta"
+}
+```
+
+#### HTTP 302
+
+A valid one-use k query token is exchanged for a dashboard session. The response redirects to the same path without its query. A valid existing cookie takes precedence over k.
+
+`Location`: The requested path without the query string.
+
+`Set-Cookie`: cotal\_web\_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+
+#### HTTP 401
+
+No valid session, an invalid launch token, or a spent launch token. The readiness credential does not authorize these routes.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/AuthenticationError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "unauthenticated"
+}
+```
+
+#### HTTP 403
+
+Origin is checked before session authentication. An origin outside this listener's allowed origins is refused.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/OriginError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "cross-origin"
+}
+```
+
+#### HTTP 413
+
+These read routes accept no request body. An announced body is refused before it is read; the connection is closed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+The request failed. The body names the failure; a failed read does not terminate the dashboard.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+## Delete a legacy dashboard channel [#delete-dashboard-channel]
+
+```http
+POST /api/channel/delete
+```
+
+Legacy direct dashboard operation. The native lifecycle web service always returns 403 before reading the body because it has no channel-purger authority. Check channelDeleteSupported in /api/meta. A legacy instance deletes one concrete canonical channel and its content using its configured purger authority. Wildcards, aliases and missing channels are refused. The body limit is 8192 bytes. JSON is parsed without a Content-Type check. Other methods fall through to 404.
+
+### Parameters
+
+No operation parameters.
+
+### Request body
+
+The request uses the schema below.
+
+Required: yes.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "channel": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "channel"
+  ]
+}
+```
+
+Example:
+
+```json
+{
+  "channel": "general"
+}
+```
+
+### Responses
+
+#### HTTP 200
+
+Channel content was purged and its configuration removed as reported.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/ChannelDeleted"
+}
+```
+
+#### HTTP 302
+
+A valid one-use k query token is exchanged for a dashboard session. The response redirects to the same path without its query. A valid existing cookie takes precedence over k.
+
+`Location`: The requested path without the query string.
+
+`Set-Cookie`: cotal\_web\_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+
+#### HTTP 400
+
+Missing or non-canonical channel, malformed JSON, or deletion refusal.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+No valid session, an invalid launch token, or a spent launch token. The readiness credential does not authorize these routes.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/AuthenticationError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "unauthenticated"
+}
+```
+
+#### HTTP 403
+
+A browser origin was refused, or the native service is configured read-only. A read-only refusal includes code PERMISSION\_DENIED.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "PERMISSION_DENIED"
+      ]
+    }
+  },
+  "required": [
+    "error"
+  ]
+}
+```
+
+#### HTTP 413
+
+These read routes accept no request body. An announced body is refused before it is read; the connection is closed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+The request failed. The body names the failure; a failed read does not terminate the dashboard.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
 ## Schemas
 
 These schemas describe the HTTP request and response wrappers. The downloadable specification includes the referenced definitions.
@@ -1258,5 +1503,60 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
     "mode",
     "msg"
   ]
+}
+```
+
+### DashboardMeta
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "space": {
+      "type": "string"
+    },
+    "pid": {
+      "type": "integer"
+    },
+    "channelDeleteSupported": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "space",
+    "pid",
+    "channelDeleteSupported"
+  ],
+  "additionalProperties": false
+}
+```
+
+### ChannelDeleted
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "ok": {
+      "const": true
+    },
+    "channel": {
+      "type": "string"
+    },
+    "purged": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "removed": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "ok",
+    "channel",
+    "purged",
+    "removed"
+  ],
+  "additionalProperties": false
 }
 ```

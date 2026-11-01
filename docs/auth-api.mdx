@@ -150,6 +150,30 @@ Content type: `application/json`.
 }
 ```
 
+Example: Human identity
+
+Replace the placeholder with a fresh proof from the configured identity provider.
+
+```json
+{
+  "actor": "worker",
+  "idpToken": "<idp-token>"
+}
+```
+
+Example: Managed agent
+
+Replace the owner and secret with the managed agent grant.
+
+```json
+{
+  "owner": "<owner>",
+  "actor": "worker",
+  "actorToken": "<managed-agent-secret>",
+  "view": "manager-caller"
+}
+```
+
 ### Responses
 
 #### HTTP 200
@@ -2077,7 +2101,8 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
         "required": [
           "actorToken"
         ]
-      }
+      },
+      "title": "Human identity"
     },
     {
       "required": [
@@ -2088,7 +2113,8 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
         "required": [
           "idpToken"
         ]
-      }
+      },
+      "title": "Managed agent"
     }
   ]
 }

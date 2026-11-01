@@ -85,8 +85,23 @@ Verify a preview deployment before production cutover.
 
 ## HTTP references
 
-The Auth and Dashboard OpenAPI contracts live in their implementation packages.
+Short reference overviews are authored in `src/content/api-overviews/`.
+They describe connection details, authentication, and shared limits.
+Complete Markdown exports still come from the implementation OpenAPI contracts.
+
+The OpenAPI contracts live in their implementation packages. The reference registry
+in `src/http-references.js` maps each contract to its website and Markdown URLs.
 `npm run gen:api` generates canonical MDX, and sync checks that it remains current.
-The site publishes `/api/auth/` and `/api/dashboard/` with operation pages, native
-endpoint copy controls, complete Markdown twins, schema definitions, and portable
-OpenAPI downloads. These canonical sources also reach offline `cotal_docs` without Next.js.
+
+Operation pages use Fumadocs' native OpenAPI renderer for request examples and
+expandable parameter, request and response schemas. Overviews link to operations
+and retain a schema index. The complete HTTP contract is available in a collapsed
+section on each operation page, preserving its previous heading links.
+
+The native request playground is disabled. These listeners have local capabilities,
+cookie checks or Origin restrictions that prevent calls from the docs website.
+The site does not proxy requests or change service access rules.
+
+Complete Markdown twins and portable OpenAPI downloads describe the same operations.
+The canonical Markdown sources also reach offline `cotal_docs` without Next.js or
+the OpenAPI renderer's browser dependencies.

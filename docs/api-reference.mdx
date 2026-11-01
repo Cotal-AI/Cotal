@@ -101,15 +101,25 @@ The [auth HTTP reference](https://docs.cotal.ai/api/auth/) covers the public lis
 authority and chat-session operations, including their proof requirements.
 Public-listener access does not grant permission to perform an operation.
 
-The [dashboard HTTP reference](https://docs.cotal.ai/api/dashboard/) covers seven read operations,
-session authentication, response schemas and live events. It is also available as
-an [interactive reference](https://docs.cotal.ai/api/dashboard/) and a
+The [auth host HTTP reference](https://docs.cotal.ai/api/auth-host/) covers capability-gated
+lifecycle, enrollment and private-result proof operations. These routes are absent
+from the public listener.
+
+The [dashboard HTTP reference](https://docs.cotal.ai/api/dashboard/) covers reads,
+session authentication, response schemas, live events and readiness metadata.
+It also describes channel deletion in the legacy dashboard. The native dashboard
+service refuses that operation. The complete schemas are in the
 [downloadable OpenAPI specification](https://docs.cotal.ai/dashboard.openapi.json).
 See [Watch a mesh](watch-a-mesh.mdx#web-dashboard) for dashboard launch and access limits.
 For your own browser client, use the [browser control](embedding.mdx#browser-control)
 integration contract. For a hosted or Cloud composition, start with the
 [embedding guide](embedding.mdx#what-you-embed); the deployment must supply its
 connection and authority material.
+
+The [manager console HTTP reference](https://docs.cotal.ai/api/manager-console/) covers
+the credentialed roster, event feed and browser-session bootstrap.
+The [feedback intake HTTP reference](https://docs.cotal.ai/api/feedback-intake/) covers
+tester-authenticated feedback submission and service health.
 
 The [cotal.ai API reference](https://cotal.ai/api) documents the website's HTTP
 endpoints, including search, feedback and waitlist intake. Its

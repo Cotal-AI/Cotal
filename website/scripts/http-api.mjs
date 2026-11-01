@@ -71,6 +71,10 @@ function operationMarkdown(spec, operation) {
     for (const [type, content] of Object.entries(body.content)) {
       lines.push(`Content type: \`${type}\`.`, '', fence(content.schema), '');
       if (content.example !== undefined) lines.push('Example:', '', fence(content.example), '');
+      for (const [name, example] of Object.entries(content.examples ?? {})) {
+        assert(Object.hasOwn(example, 'value'), `Request example needs an inline value: ${operation.operationId}/${name}`);
+        lines.push(`Example: ${example.summary ?? name}`, '', example.description ?? '', '', fence(example.value), '');
+      }
     }
   }
   lines.push('', '### Responses', '');

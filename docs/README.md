@@ -283,7 +283,10 @@ Task dispatch:
 | Reference | Covers |
 |---|---|
 | [Auth HTTP](auth-api.mdx) | The complete authority HTTP contract and component schemas. |
+| [Auth host HTTP](auth-host-api.mdx) | Capability-gated host listener operations for lifecycle, enrollment and private-result proofs. |
 | [Dashboard HTTP](dashboard-api.mdx) | The complete dashboard HTTP contract and component schemas. |
+| [Manager console HTTP](manager-console-api.mdx) | The credentialed roster, event feed and browser-session bootstrap. |
+| [Feedback intake HTTP](feedback-intake-api.mdx) | Tester-authenticated feedback submission and intake health. |
 
 ## Normative artifacts
 
