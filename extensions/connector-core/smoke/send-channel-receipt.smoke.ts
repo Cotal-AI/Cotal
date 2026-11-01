@@ -13,6 +13,7 @@
  *
  * Run: `pnpm smoke:send-channel-receipt`
  */
+import { MAX_CHANNEL_LENGTH } from "@cotal-ai/core";
 import { closeChannelNames, MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
@@ -376,6 +377,146 @@ const proto = MeshAgent.prototype as unknown as {
   const open = { ...base, subscribe: ["announce", "lobby"], allowSubscribe: ["announce", "lobby"], allowPublish: [] } as AgentConfig;
   const unchanged = await run(open, ["announce", "lobby"]);
   check("an open mesh, which enforces no post ACL, keeps the first channel read", !unchanged.result.isError && unchanged.sent[0] === "announce", unchanged);
+}
+
+// A pattern as the channel is refused before any read or publish, and the refusal names the two ways
+// to reach a channel family: one post to a channel the pattern matches, or a post to each by name.
+{
+  const cfg = {
+    space: "demo",
+    name: "alice",
+    servers: "nats://127.0.0.1:4222",
+    subscribe: ["team.>"],
+    allowSubscribe: ["team.>"],
+    allowPublish: ["team.>"],
+    kind: "agent",
+    tls: false,
+  } as AgentConfig;
+  const calls: string[] = [];
+  const agent = stubAgent({ joined: ["team.>"], listed: [] });
+  (agent as unknown as { joinedChannels: MeshAgentType["joinedChannels"] }).joinedChannels = () => {
+    calls.push("joined");
+    return ["team.>"];
+  };
+  (agent as unknown as { send: MeshAgentType["send"] }).send = async (_t, channel) => {
+    calls.push(`send ${channel}`);
+    return { id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel, parts: [] } as never;
+  };
+  (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async (c) => {
+    calls.push(`describe ${c}`);
+    return "existing channel";
+  };
+  const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
+  for (const pattern of ["team.>", "team.*.ci", ">", "*"]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: pattern });
+    check(
+      `cotal_send refuses the pattern ${pattern} before reading or sending`,
+      refused.isError === true && calls.length === 0 && refused.text.includes("Nothing was sent."),
+      { refused, calls },
+    );
+    check(
+      `the refusal for ${pattern} says one post to a channel it matches reaches its connected followers`,
+      refused.text.includes(`To reach the agents connected and following ${pattern} now, post once to one channel it matches.`),
+      refused.text,
+    );
+    check(
+      `the refusal for ${pattern} says a pattern follow has no durable backstop`,
+      refused.text.includes("A pattern follow has no durable backstop, so a follower that is offline then may miss it."),
+      refused.text,
+    );
+    check(
+      `the refusal for ${pattern} says to post to each channel by name and where to list them`,
+      refused.text.includes("To reach several channels, post to each by name; cotal_channels lists the existing ones."),
+      refused.text,
+    );
+  }
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.>" });
+    check(
+      "the whole refusal for team.> reads as written",
+      refused.text ===
+        `Couldn't send: "team.>" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following team.> now, post once to one channel it matches. A pattern follow has no durable backstop, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`,
+      refused.text,
+    );
+  }
+  // A name that is not a channel name is refused too, with the send's own rule. The endpoint would
+  // otherwise rewrite its characters onto a different subject than the receipt names (team.** goes
+  // out as team.__), and the policy grammar's message would offer * and > as valid segments.
+  for (const bad of ["team.>.x", "team. >", "team.**", "team.a*", "team.>>", "#*", "#team", "team..announce", "team/announce", "team.announce ", " team.announce", ""]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: bad });
+    check(
+      `${JSON.stringify(bad)} is refused as no channel name before reading or sending`,
+      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(bad)} is not a channel name.`) &&
+        refused.text.includes("Nothing was sent.") && !refused.text.includes("is a pattern") && !/'[*>]'/.test(refused.text),
+      { refused, calls },
+    );
+  }
+  // The refusal says what a channel name is, with core's own length limit, and cuts a long name to
+  // its first 64 characters.
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.**" });
+    check(
+      "the no-channel-name refusal states the channel grammar",
+      refused.text.includes("A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce,"),
+      refused.text,
+    );
+    check(
+      `the no-channel-name refusal states core's limit of ${MAX_CHANNEL_LENGTH} characters`,
+      refused.text.includes(`at most ${MAX_CHANNEL_LENGTH} characters. Nothing was sent.`),
+      refused.text,
+    );
+  }
+  // 64 different characters, taken in turn by index, so a cut in the wrong place shows.
+  const symbols = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-";
+  const counted = (start: number, length: number): string =>
+    Array.from({ length }, (_, i) => symbols[(start + i) % symbols.length]).join("");
+  // `team.**.` and then counted characters: a name that is no channel name, of the given length (over 8).
+  const badName = (length: number): string => `team.**.${counted(8, length - 8)}`;
+  {
+    const whole = badName(64);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: whole });
+    check(
+      "a 64-character name that is no channel name is shown whole",
+      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(whole)} is not a channel name.`),
+      refused.text,
+    );
+  }
+  {
+    const long = badName(65);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: long });
+    check(
+      "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      refused.isError === true && calls.length === 0 &&
+        refused.text.includes(`${JSON.stringify(`${long.slice(0, 64)}…`)} is not a channel name.`) && !refused.text.includes(long),
+      refused.text,
+    );
+  }
+  {
+    const over = counted(0, MAX_CHANNEL_LENGTH + 1);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: over });
+    check(
+      `a name one character over the ${MAX_CHANNEL_LENGTH}-character limit is refused as no channel name`,
+      refused.isError === true && calls.length === 0 &&
+        refused.text.includes(`${JSON.stringify(`${over.slice(0, 64)}…`)} is not a channel name.`) && !refused.text.includes(over),
+      refused.text,
+    );
+  }
+  const sent = await send.run(agent, cfg, { text: "hi", channel: "team.announce" });
+  check("a channel the pattern matches still sends", !sent.isError && calls.includes("send team.announce"), { sent, calls });
+  {
+    const max = `team.${counted(5, MAX_CHANNEL_LENGTH - 5)}`;
+    const at = await send.run(agent, cfg, { text: "hi", channel: max });
+    check(`a name of ${MAX_CHANNEL_LENGTH} characters is sent`, !at.isError && calls.includes(`send ${max}`), at.text.slice(0, 200));
+  }
+  const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
+  check(
+    "the advertised channel text names both ways to reach a family",
+    described.includes(
+      "A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists the existing ones).",
+    ),
+    described,
+  );
+  check("the cotal_send description says one channel", send.description === "Broadcast a message to everyone on one channel in your space.", send.description);
 }
 
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);

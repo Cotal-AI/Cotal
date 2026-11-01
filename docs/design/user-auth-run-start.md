@@ -405,7 +405,7 @@ before anything is forwarded. The boot reconcile calls `launch` with no `served`
 export async function issuedUserCaller(nc: NatsConnection, space: string, connId: string, expected: EpCaller): Promise<IssuedCaller>;
 ```
 
-`askManagerEp` (`implementations/cli/src/lib/control.ts:92`) calls it on a user-mode `manager-caller`
+`askManagerEp` (`packages/workspace/src/control/manager.ts:126`) calls it on a user-mode `manager-caller`
 connection (the target carries `managerInstanceId`) after it dials and before it builds a request
 subject. A missing row is refused with the reason, never retried
 on the legacy rail.

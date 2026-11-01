@@ -62,7 +62,9 @@ const invokedFrom = process.cwd();
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 process.chdir(root);
-const { askManager, resolveControlTarget } = await import("../src/lib/control.js");
+const { askManager } = await import("@cotal-ai/workspace/control");
+const { resolveControlTarget } = await import("@cotal-ai/workspace");
+const { cliControl } = await import("../src/lib/control.js");
 const { askManagerFolder, managerSelection } = await import("../src/lib/manager-choice.js");
 const { launchServedHere } = await import("../src/commands/spawn.js");
 
@@ -102,7 +104,7 @@ try {
   // ── A. the grant the typed-folder arm rides, over the real broker ──
   const resolveCwd = async (cwd: string) => {
     const t = await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
-    const reply = await askManager(t.space, t.server, "resolveCwd", { cwd }, t.auth, "owner", 10_000, { instanceId: on });
+    const reply = await askManager(cliControl, t.space, t.server, "resolveCwd", { cwd }, t.auth, "owner", 10_000, { instanceId: on });
     return reply;
   };
   const resolved = await resolveCwd(inner);

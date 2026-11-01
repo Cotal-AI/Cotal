@@ -1,5 +1,15 @@
 # @cotal-ai/linear
 
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+
 ## 0.133.11
 
 No changes in this release.

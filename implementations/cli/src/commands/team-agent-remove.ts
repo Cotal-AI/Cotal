@@ -1,14 +1,15 @@
 import { setTimeout as delay } from "node:timers/promises";
 import * as prompts from "../lib/prompts.js";
 import { DEV_OWNER, contractDigest } from "@cotal-ai/core";
-import { ConfirmationRequired, acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
-import { askManager, managerFailure, resolveControlTarget } from "../lib/control.js";
+import { ConfirmationRequired, acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { listAdditiveTeamAttempts, removalOriginal, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { writeAgentRemovalAttempt, writeAgentRemovalReceipt, writeAgentRemovalStep, type AgentOriginal, type AgentRemovalAttempt, type AgentRemovalStep, type AgentRetirementObservation } from "../lib/team-agent-removal.js";
 import { classifyAgent, type AgentSettlement, type SlotRow } from "../lib/team-removal-reconcile.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
+import { askManager, managerFailure } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
 type Agent = AgentOriginal["createdAgents"][number];
 interface Slot {
@@ -38,7 +39,7 @@ export async function prepareAgentRetirement(input: { root: string; space: strin
     if (current.refused.length || !now || contractDigest(now) !== digest || JSON.stringify(current.valid.find((row) => row.deploymentId === deploymentId)) !== JSON.stringify(original)) throw new CommandFailure("refused", "CONFLICT", "the original intent, returned receipt or removal records changed; no later stop was submitted", { target });
   };
   const readSlots = async (agents: readonly Agent[]) => {
-    const answer = await askManager(space, control.server, "slots", { names: agents.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
+    const answer = await askManager(cliControl, space, control.server, "slots", { names: agents.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
     if (!answer.ok) throw managerFailure(answer, "native retirement inspection", target);
     const rows = answer.data as Slot[];
     if (answer.managerInstanceId !== manager || !Number.isSafeInteger(answer.managerEpoch) || !Array.isArray(rows) || rows.length > agents.length || new Set(rows.map((row) => row.name)).size !== rows.length || rows.some((row) => !agents.some((agent) => agent.name === row.name))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the original manager did not return a bounded attributed slot query", { target });
@@ -71,7 +72,7 @@ export async function prepareAgentRetirement(input: { root: string; space: strin
         let requestId: string | undefined;
         if (!state.retired) {
           if (state.slot.slotPhase !== "active" || !state.slot.live) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original incarnation changed before stop submission; no replacement was stopped", { target: { ...target, agent: agent.name } });
-          const stopped = await askManager(space, control.server, "stop", { name: agent.name }, control.auth, "any", 10_000, { instanceId: manager, expectedTarget: { id: agent.id, lifecycleUid: agent.lifecycleUid }, journal: {
+          const stopped = await askManager(cliControl, space, control.server, "stop", { name: agent.name }, control.auth, "any", 10_000, { instanceId: manager, expectedTarget: { id: agent.id, lifecycleUid: agent.lifecycleUid }, journal: {
             beforeSubmit(request) {
               unchanged();
               if (signal.aborted) throw new Error("removal interrupted before stop");
@@ -150,7 +151,7 @@ export async function prepareAgentReconcile(input: { root: string; space: string
     const submittedOpen = receipt.createdAgents.filter((_, ordinal) => steps.some((row) => row.ordinal === ordinal && row.phase === "submitted") && !steps.some((row) => row.ordinal === ordinal && row.phase === "retired"));
     let rows: SlotRow[] = [], epoch = 0;
     if (submittedOpen.length) {
-      const answer = await askManager(space, control.server, "slots", { names: submittedOpen.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
+      const answer = await askManager(cliControl, space, control.server, "slots", { names: submittedOpen.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
       if (!answer.ok) throw managerFailure(answer, "retirement reconciliation read", target);
       const data = answer.data as SlotRow[];
       if (answer.managerInstanceId !== manager || !Number.isSafeInteger(answer.managerEpoch) || !Array.isArray(data) || data.length > submittedOpen.length || new Set(data.map((row) => row.name)).size !== data.length || data.some((row) => !submittedOpen.some((agent) => agent.name === row.name))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the original manager did not return a bounded attributed slot read; nothing was reconciled", { target });

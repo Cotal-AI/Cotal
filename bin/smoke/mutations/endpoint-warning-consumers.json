@@ -159,13 +159,13 @@
     },
     {
       "name": "MeshView stops consuming endpoint warnings",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "    this.ep.on(\"warning\", this.onWarning);",
       "replace": "    void this.onWarning;",
       "cell": "MeshView consumes endpoint warnings into its shared operator model",
       "expectRed": "MeshView consumes endpoint warnings into its shared operator model",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "plain console stops subscribing to MeshView warnings",

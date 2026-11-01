@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import type { MeshSnapshot } from "../../view/mesh-view.js";
+import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { COMMANDS, meshWord } from "../commands.js";
 import { Modal } from "./Modal.js";
-import type { PsReply } from "../control.js";
 import { useListCursor } from "./useListCursor.js";
+import type { PsReply } from "@cotal-ai/workspace/control";
 
 const CAP = 6; // suggestion rows; the palette is a fixed CAP+1 rows tall so the layout doesn't jump
 

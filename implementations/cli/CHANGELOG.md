@@ -1,5 +1,32 @@
 # @cotal-ai/cli
 
+## 0.133.13
+
+### Patch Changes
+
+- c21c940: `MeshView` now reports disconnected while the broker is down. It used to follow only the endpoint's `connection` event, which stays true while the NATS client reconnects on its own, so `cotal console` showed a green dot and `cotal watch` read "live" through the outage. It now also follows the endpoint's `transport` edge, and `cotal watch` reads "Reconnecting" during an outage. Feed entries also carry the wire's `replyTo`, `mentions` and `contextId` when the sender set them, so `cotal watch --json` rows include those fields. A unicast burst coalesces only when those fields match.
+- 6fcac9f: Move the managed launch request from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/launch`. `requestManagedLaunch` sends a `ManagedLaunchRequest` as the manager's `start` command, and `readManagedLaunch` reads the joined agent from its reply as a `ManagedLaunchResult`. `cotal spawn --detach` sends the same request and prints the same output as before. `@cotal-ai/cli` never exported these from its package entry, so no public export is removed.
+- ddd3253: Move the manager control calls from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/control`: the requests to a space's manager and their typed replies (`askManager`, `scatterManager` and the registry reads beside them), the seat lookup that pins a targeted verb to the manager hosting the seat (`locateSeat`), and the console's control helpers (`control`, `controlPs`, `deleteChannel` and the managed-row poller). A caller passes a `ControlClient` that supplies its own version wording and roster read, so the library never imports CLI code. `staleStoreHint` and `nativeEndpointRefusal` move to the `@cotal-ai/workspace` root with it. Every command that calls the manager behaves as before.
+- 331f050: Move `MeshView`, the live model of a space, from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/view`. The same entry adds `openObserver`, which builds the read-only observer endpoint that `cotal console` and `cotal watch` each used to construct inline. Console and watch behave as before. `@cotal-ai/cli` never exported `MeshView` from its package entry, so no public export is removed.
+- Updated dependencies [c21c940]
+- Updated dependencies [6fcac9f]
+- Updated dependencies [ddd3253]
+- Updated dependencies [331f050]
+  - @cotal-ai/workspace@0.133.13
+  - @cotal-ai/core@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Split mesh operation documentation into focused guides. Keep existing documentation links and offline page calls available, and point the supervision warning at the stable published guide.
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- 13499c0: Rewrite the Fundamentals concepts as direct MDX and separate Architecture's detailed contracts into their reference pages. Include complete Markdown and schema inspection content in offline documentation. Update documentation pointers and offline checks for the renamed sources.
+- 13499c0: Rewrite the MeshView, cotal-lang card, and glossary references as direct MDX with source-backed definitions and examples. Update the language example check and terminal model source references for the renamed pages. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- Updated dependencies [13499c0]
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
 ## 0.133.11
 
 ### Patch Changes

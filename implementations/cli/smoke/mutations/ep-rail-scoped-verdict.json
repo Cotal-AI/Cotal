@@ -1,5 +1,7 @@
 {
-  "suite": ["implementations/cli/smoke/ep-rail-failure.smoke.ts"],
+  "suite": [
+    "implementations/cli/smoke/ep-rail-failure.smoke.ts"
+  ],
   "guard": "an unanswered describe is rendered against the rail it rode, so silence on the versioned rail is never printed as a verdict about the mesh",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-rail-failure",
   "completionMarker": "EP-RAIL-FAILURE POLARITY SMOKE",
@@ -17,16 +19,20 @@
     "its pre-fix form puts the false verdict back, which is what these mutations check the suite",
     "still notices.",
     "",
-    "The core mutation carries a build because this suite loads `@cotal-ai/core` through a package",
-    "specifier that resolves to `dist`; without it the mutated source is not the code that runs."
+    "The core and renderer mutations carry a build because this suite loads `@cotal-ai/core` and",
+    "`@cotal-ai/workspace/control` through package specifiers that resolve to `dist`; without it the",
+    "mutated source is not the code that runs."
   ],
   "mutations": [
     {
       "name": "the renderer stops reading the rail and returns to the unscoped verdict",
-      "file": "implementations/cli/src/lib/control.ts",
+      "file": "packages/workspace/src/control/manager.ts",
       "find": "    return instanceId !== undefined\n      ? `manager instance ${instanceId} did not answer${versioned === undefined ? \"\" : ` on the ${versioned} rail`} (${detail})${skew}`\n      : versioned === undefined\n        ? `no manager reachable on the ep rails (${detail})`\n        : `no manager answered on the ${versioned} rail (${detail})${skew}`;\n",
       "replace": "    return instanceId !== undefined\n      ? `manager instance ${instanceId} did not answer (${detail})`\n      : `no manager reachable on the ep rails (${detail})`;\n",
-      "expectRed": "versioned rail unpinned: the verdict names ep.v1 and never pronounces the mesh managerless"
+      "expectRed": "versioned rail unpinned: the verdict names ep.v1 and never pronounces the mesh managerless",
+      "cell": "versioned rail unpinned: the verdict names ep.v1 and never pronounces the mesh managerless",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:ep-rail-failure",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "the describe deadline goes back to the rail-blind text and marker",
@@ -34,6 +40,7 @@
       "find": "`no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : \"\"} within ${ms}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\", rail }]",
       "replace": "`no describe reply from ${endpoint} within ${ms}ms`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\" }]",
       "expectRed": "live: the CLI renders the ep.v1 skew as a named refusal, not as 'no manager reachable'",
+      "cell": "live: the CLI renders the ep.v1 skew as a named refusal, not as 'no manager reachable'",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

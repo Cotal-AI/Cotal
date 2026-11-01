@@ -1,5 +1,5 @@
 import { oneLine, type Report } from "@cotal-ai/workspace";
-import type { FeedEntry, MeshSnapshot } from "./view/mesh-view.js";
+import type { FeedEntry, MeshSnapshot } from "@cotal-ai/workspace/view";
 
 export const watchViews = ["activity", "events", "messages", "roster", "channels", "waiting", "dms", "topology"] as const;
 export type WatchFilter = typeof watchViews[number];
