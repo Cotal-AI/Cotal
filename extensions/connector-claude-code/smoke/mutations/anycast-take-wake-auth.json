@@ -1,0 +1,46 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/anycast-take-wake-auth.smoke.ts"
+  ],
+  "guard": "Claude Code's batch notices count a role request held for its take, on activation and on the retry after a failed push, and a hook that takes and shows held requests pushes no notice for them",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-anycast-take-wake:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=5",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/anycast-take-wake-auth.json",
+  "why": [
+    "A held role request wakes the session but is not in peekInbox until its take is recorded. A batch",
+    "notice that lists peekInbox counts none of them and tells the agent 0 messages are waiting.",
+    "",
+    "The suite imports MeshAgent through the connector-core package export, so the command builds it",
+    "before each run and the agent.ts mutation rebuilds it after restore."
+  ],
+  "mutations": [
+    {
+      "name": "the batch notice lists only what a read can see",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    const covered = item ? [item] : batch ?? agent.inboxPending(\"automatic\");",
+      "replace": "    const covered = item ? [item] : batch ?? agent.peekInbox(\"automatic\");",
+      "expectRed": "1b activation announces the held request as one message waiting",
+      "cell": "1b activation announces the held request as one message waiting",
+      "note": "Activation counts none of the held requests and announces 0 messages waiting."
+    },
+    {
+      "name": "the retry after a failed push lists only what a read can see",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      else if (owed() > 0) nudge(undefined, undefined, false, agent.inboxPending(\"automatic\").filter((it) => !announced.has(it)));",
+      "replace": "      else if (owed() > 0) nudge(undefined, undefined, false, agent.peekInbox(\"automatic\").filter((it) => !announced.has(it)));",
+      "expectRed": "2a the retry announces the held request the failed push missed",
+      "cell": "2a the retry announces the held request the failed push missed",
+      "note": "The retry still fires, since owed counts the held request, but its notice lists nothing."
+    },
+    {
+      "name": "a take the hook waits on is announced as a new arrival",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
+      "replace": "      this.emit(\"incoming\", p.item);",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "expectRed": "3b and its takes push no notice on top of it",
+      "cell": "3b and its takes push no notice on top of it",
+      "note": "Each take the hook waits on reaches the wake policy as an arrival it has not announced, so it pushes a notice for a request the same hook frame is showing."
+    }
+  ]
+}

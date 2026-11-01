@@ -293,6 +293,7 @@
     "smoke:claude-wake": "tsx extensions/connector-claude-code/smoke/wake-path.smoke.ts",
     "smoke:claude-boot-wake": "tsx extensions/connector-claude-code/smoke/boot-wake-race.smoke.ts",
     "smoke:claude-activation-wake": "tsx extensions/connector-claude-code/smoke/activation-wake.smoke.ts",
+    "smoke:claude-anycast-take-wake:auth": "tsx extensions/connector-claude-code/smoke/anycast-take-wake-auth.smoke.ts",
     "smoke:claude-one-path": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/one-path.smoke.ts",
     "smoke:claude-connection-owner": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/connection-owner.smoke.ts",
     "smoke:claude-launch-model": "tsx extensions/connector-claude-code/smoke/launch-model.smoke.ts",

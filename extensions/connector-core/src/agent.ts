@@ -204,6 +204,9 @@ interface Pending {
   /** A take was recorded for it once, so a host may have shown it. Only such an entry is acked from
    *  the held set by an exact drain. */
   takenOnce?: boolean;
+  /** How many reads are waiting on its take in {@link MeshAgent.takeChosen}. Such a read shows the
+   *  request itself, so its admission is announced as an arrival only when no read waits. */
+  awaited?: number;
 }
 
 /** #662: the copies of one id-less channel message (by content) a focus episode has settled
@@ -1575,15 +1578,17 @@ export class MeshAgent extends EventEmitter {
   ): Promise<InboxItem[]> {
     const chosen = choose(this.inboxPreview(scope));
     const keys = new Set(chosen.map((i) => i.recvKey));
-    const runs = scope === "pull-only" ? [] : this.gated
-      .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()))
-      .map((p) => p.taking ?? this.startTake(p));
+    const asked = scope === "pull-only" ? [] : this.gated
+      .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()));
+    for (const p of asked) p.awaited = (p.awaited ?? 0) + 1;
+    const runs = asked.map((p) => p.taking ?? this.startTake(p));
     if (runs.length) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waited = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); timer.unref?.(); });
       await Promise.race([Promise.allSettled(runs), waited]);
       clearTimeout(timer);
     }
+    for (const p of asked) p.awaited = (p.awaited ?? 1) - 1;
     const showable = new Map(this.peekInbox(scope).map((i) => [i.recvKey, i]));
     return chosen.flatMap((i) => showable.get(i.recvKey) ?? []);
   }
@@ -1630,7 +1635,9 @@ export class MeshAgent extends EventEmitter {
       this.gated.splice(this.gated.indexOf(p), 1);
       this.noteDirected(p.item);
       this.admit(p);
-      this.emit("incoming", p.item);
+      // Its arrival was announced already. A read waiting on this take shows it next; one that
+      // stopped waiting is told it may be shown now, as of a new arrival.
+      if (!p.awaited) this.emit("incoming", p.item);
       return;
     }
     if (outcome.drop) {
@@ -1866,6 +1873,13 @@ export class MeshAgent extends EventEmitter {
   inboxKeys(scope: InboxScope = "all"): string[] {
     const held = scope === "pull-only" ? [] : this.gated;
     return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item.recvKey);
+  }
+
+  /** The pending messages in scope, role requests held for their take included, for a notice that
+   *  counts them and shows no body. A held request is shown only through {@link takeChosen}. */
+  inboxPending(scope: InboxScope = "all"): InboxItem[] {
+    const held = scope === "pull-only" ? [] : this.gated;
+    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item);
   }
 
   /** Pending messages in scope, counting role requests still held for their take. */

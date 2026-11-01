@@ -4,7 +4,9 @@
  * drops one its sender cancelled first without ever showing it, holds one nobody can record, and a
  * sending MeshAgent shows the daemon's notice as a notice. A read takes only the requests it shows,
  * a request taken and not yet shown is taken again after a reconnect, and an exact drain acks no
- * request that was never shown. `cotal_anycast` is driven through its spec for the send, status and
+ * request that was never shown. A request's arrival is announced once: a read that waits on its take
+ * announces nothing more, so a gateway reader is woken once per request and again by the next DM,
+ * and only a take that lands after its read stopped waiting is announced again. `cotal_anycast` is driven through its spec for the send, status and
  * cancel results and for the calls it must refuse, including a seq that names two of this session's
  * requests after the role queue was recreated.
  *
@@ -17,6 +19,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   ANYCAST_NOTICE_KEY,
   CotalEndpoint,
@@ -35,6 +40,7 @@ import { MeshAgent, type InboxItem } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { cotalToolSpecs, type CotalToolSpec } from "../src/tool-specs.js";
 import { fmtItem } from "../src/framing.js";
+import { registerCotalGatewayTools, type GatewayConnection } from "../src/gateway.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -127,7 +133,7 @@ try {
   await takeAll(holder.agent);
   const shown = holder.agent.peekInbox().find((i) => i.recvKey === key);
   check("1g after its take it is shown", shown !== undefined && shown.kind === "anycast" && shown.text === "review the gate please");
-  check("1h it was re-announced on incoming once taken", holder.incoming.filter((i) => i.recvKey === key).length >= 2);
+  check("1h it was announced once: the take its read waited on is not announced again", holder.incoming.filter((i) => i.recvKey === key).length === 1);
   holder.agent.drainInboxDeliveries([key!]);
 
   const notice = await until(() => sender.agent.peekInbox().find((i) => i.notice === "anycast"));
@@ -294,9 +300,66 @@ try {
   await run({ seq: seq9, cancel: true });
   await run({ seq: seqNobody, cancel: true });
 
-  // ── 10. one seq naming two of this session's requests ─────────────────────────────────────
+  // ── 10. a take a read waits on is not announced again ─────────────────────────────────────
+  // Its own role, so no earlier holder competes for these requests. The gateway wakes its reader
+  // once per arrival and rearms on a read, so a second announcement during the read would leave
+  // the reader signalled over an empty inbox and the next DM would wake nobody.
+  console.log("[10] a take a read waits on is not announced again; one that lands after the read is");
+  const gw = await mkAgent("gw_holder", "gwrole");
+  await until(() => sender.agent.ep.getRoster().some((p) => p.card.id === gw.id), 8000);
+  const signals: number[] = [];
+  const gwConn: GatewayConnection = { id: "conn-gw", agent: gw.agent, config: gw.config };
+  const gwServer = new McpServer({ name: "gw", version: "0" });
+  registerCotalGatewayTools(gwServer, {
+    account: () => "acc",
+    open: async () => gwConn,
+    find: async (_account, id) => (id === gwConn.id ? gwConn : undefined),
+    close: async () => true,
+  }, "gateway", { wake: { listening: () => "Notifications enabled.", signal: (_c, preview) => { signals.push(preview.unread); return true; } } });
+  const [gwClientSide, gwServerSide] = InMemoryTransport.createLinkedPair();
+  const gwClient = new Client({ name: "smoke", version: "0" });
+  await gwServer.connect(gwServerSide);
+  await gwClient.connect(gwClientSide);
+  stops.push(() => gwClient.close());
+  await gwClient.callTool({ name: "cotal_connect", arguments: { name: "gw_holder" } });
+  const gwRead = async () => {
+    const r = await gwClient.callTool({ name: "cotal_inbox", arguments: { connection_id: gwConn.id } });
+    return (r.content as { text?: string }[])[0]?.text ?? "";
+  };
+  await run({ role: "gwrole", text: "gateway request" });
+  await until(() => signals.length === 1, 8000);
+  check("10a a role request's arrival is announced once and wakes its gateway reader once", gw.incoming.length === 1 && signals.length === 1, { arrivals: gw.incoming.length, signals });
+  const gwShown = await gwRead();
+  check(
+    "10b a read that waits on the take shows the request and announces it no more",
+    gwShown.includes("gateway request") && gw.incoming.length === 1 && signals.length === 1,
+    { gwShown, arrivals: gw.incoming.length, signals },
+  );
+  const beforeDm = signals.length;
+  await sender.agent.ep.unicastAttributed(gw.id, "gateway dm after the read");
+  await until(() => signals.length > beforeDm, 4000);
+  check("10c a DM after that read wakes its reader again", signals.length === beforeDm + 1, { beforeDm, signals });
+  await gwRead();
+  await run({ role: "gwrole", text: "late take" });
+  await until(() => gw.agent.inboxWake() > 0, 8000);
+  const lateArrivals = gw.incoming.length;
+  check(
+    "10d the pending list a notice counts names a held request that a read cannot see yet",
+    gw.agent.inboxPending("automatic").some((i) => i.text.includes("late take")) && !gw.agent.peekInbox("automatic").some((i) => i.text.includes("late take")),
+    { pending: gw.agent.inboxPending("automatic").map((i) => i.text) },
+  );
+  const notWaited = await gw.agent.takeChosen("all", (preview) => preview, 0);
+  await until(() => gw.agent.peekInbox().some((i) => i.text.includes("late take")), 8000);
+  check(
+    "10e a take that lands after its read stopped waiting is announced as an arrival",
+    notWaited.length === 0 && gw.incoming.length === lateArrivals + 1,
+    { notWaited: notWaited.length, arrivals: gw.incoming.length, lateArrivals },
+  );
+  await gwRead();
+
+  // ── 11. one seq naming two of this session's requests ─────────────────────────────────────
   // Last, because it deletes and recreates the TASK stream.
-  console.log("[10] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
+  console.log("[11] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
   const sent6 = await run({ role: "reviewer", text: "before the queue is recreated" });
   const seq6 = Number(/seq (\d+)/.exec(sent6.text)?.[1]);
   const teardownIdent = newIdentity();
@@ -310,15 +373,15 @@ try {
     const again = await run({ role: "reviewer", text: `after the recreation ${i}` });
     reused = Number(/seq (\d+)/.exec(again.text)?.[1]) === seq6;
   }
-  check("10a the recreated queue reused the seq", reused, { seq6 });
+  check("11a the recreated queue reused the seq", reused, { seq6 });
   const ambiguous = await run({ seq: seq6 });
   check(
-    "10b a status by that seq is refused as ambiguous",
+    "11b a status by that seq is refused as ambiguous",
     ambiguous.isError === true && ambiguous.text.includes(`seq ${seq6} names 2 requests this session sent`) && ambiguous.text.includes("ambiguous"),
     ambiguous.text,
   );
   const ambiguousCancel = await run({ seq: seq6, cancel: true });
-  check("10c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
+  check("11c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {

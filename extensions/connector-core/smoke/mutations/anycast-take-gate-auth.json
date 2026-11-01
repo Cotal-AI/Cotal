@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=50",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=55",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -88,6 +88,30 @@
       "expectRed": "9c a failed roster read reads unknown, not empty",
       "cell": "9c a failed roster read reads unknown, not empty",
       "note": "A roster read that failed renders as no holder online, a claim the read never made."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
+      "replace": "      this.emit(\"incoming\", p.item);",
+      "expectRed": "10c a DM after that read wakes its reader again",
+      "cell": "10c a DM after that read wakes its reader again",
+      "note": "A take the read waits on is announced as a new arrival. The gateway signals its reader again in the middle of that read, so the reader stays signalled over the inbox the read empties and the next DM wakes nobody."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
+      "replace": "      if (false) this.emit(\"incoming\", p.item);",
+      "expectRed": "10e a take that lands after its read stopped waiting is announced as an arrival",
+      "cell": "10e a take that lands after its read stopped waiting is announced as an arrival",
+      "note": "A take that answers after its read gave up is admitted silently, so no host hears that the request may be shown now."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const held = scope === \"pull-only\" ? [] : this.gated;\n    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item);",
+      "replace": "    return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);",
+      "expectRed": "10d the pending list a notice counts names a held request that a read cannot see yet",
+      "cell": "10d the pending list a notice counts names a held request that a read cannot see yet",
+      "note": "The pending list leaves out held role requests, so a notice that counts it reads none of them."
     }
   ]
 }

@@ -615,15 +615,16 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
       // mention retry indefinitely, since the batch nudge kept succeeding and rescheduling itself.
       // The retry stands in for lost notices, so its batch counts only what no live notice announces.
       if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint, true);
-      else if (owed() > 0) nudge(undefined, undefined, false, agent.peekInbox("automatic").filter((it) => !announced.has(it)));
+      else if (owed() > 0) nudge(undefined, undefined, false, agent.inboxPending("automatic").filter((it) => !announced.has(it)));
     }, delay);
     retryTimer.unref?.(); // a pending retry must never hold the process open
   };
 
   const nudge = (item?: InboxItem, pullHint?: string, isMentionWake = false, batch?: readonly InboxItem[]): void => {
     if (!channelActive) return;
-    // A batch notice announces every automatic item it counts.
-    const covered = item ? [item] : batch ?? agent.peekInbox("automatic");
+    // A batch notice announces every automatic item it counts, role requests held for their take
+    // included: `owed` counts those as well, and the notice shows no body.
+    const covered = item ? [item] : batch ?? agent.inboxPending("automatic");
     const n = covered.length;
     for (const it of covered) announced.set(it, covered);
     const content = pullHint
