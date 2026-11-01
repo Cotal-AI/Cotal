@@ -420,7 +420,8 @@ and closes any resources created by that late completion.
 injected identity, and its data account must be the assigned account. The IdP pin and ledger live
 under the explicit `stateDir`. The auth plane's instance identity holds its private serve seed, so it
 lives in the store under `authInstanceKey(space)`. A record an earlier release kept under `stateDir`
-moves into the store on the first start.
+moves into the store on the first start. If the store and file disagree on the instance id,
+public serve key or serve seed, startup refuses and leaves both identity records intact.
 The context never resolves a workspace root from the working directory and has no local manager, so
 only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A start that

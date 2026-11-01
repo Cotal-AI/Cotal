@@ -14,13 +14,16 @@
  */
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { connzRequestSubject, epAuthBucket, MEMBERSHIP_INBOX_PREFIX, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverKickSubject, setupSpaceStreams } from "@cotal-ai/core";
+import { connzRequestSubject, epAuthBucket, MEMBERSHIP_INBOX_PREFIX, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, serverKickSubject, setupSpaceStreams } from "@cotal-ai/core";
 import { startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { parsePlaneClaimRow, PLANE_CLAIM_KEY, scannerDeathCopy } from "../src/plane-claim.js";
-import { authIssuerKey } from "../src/store.js";
+import { authInstanceKey, authIssuerKey } from "../src/store.js";
 import { MemoryStore, startHostedAuthFixture, type HostedAuthAccount } from "./_hosted-auth-fixture.js";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
@@ -90,6 +93,39 @@ try {
   await new Promise<void>((r) => blocker.close(() => r()));
   ok((await claimState(a)) === "released", "the failed start released A's plane claim");
   ok((await second.readiness()).state === "ready" && (await health(second)) === issB, "B stays ready and serving after A's failed start");
+
+  const identityKey = authInstanceKey(a.space);
+  const identityBytes = await a.store.get(identityKey);
+  assert.ok(identityBytes, "A's hosted start recorded its instance identity");
+  count++;
+  const stored = JSON.parse(identityBytes) as AuthInstanceIdentity;
+  const identity = { instanceId: stored.instanceId, serveIdentity: stored.serveIdentity };
+  const identityFile = join(a.stateDir, ".cotal", spaceSegment(a.space), "auth-instance.json");
+  createAuthInstanceIdentity(a.stateDir, a.space, identity);
+  const agreeing = await startAuthService(inputs[0]);
+  handles.push(agreeing);
+  ok((await agreeing.readiness()).state === "ready" && (await health(agreeing)) !== undefined, "agreeing file and store identities start ready");
+  await agreeing.close();
+  ok(!existsSync(identityFile), "agreeing identities remove the migrated file");
+  ok(await a.store.get(identityKey) === identityBytes, "agreeing identities keep the stored identity bytes");
+  for (const [label, candidate] of [
+    ["instance id", { ...identity, instanceId: mintLifecycleUid() }],
+    ["public serve key", { ...identity, serveIdentity: { ...identity.serveIdentity, id: newIdentity().id } }],
+  ] as const) {
+    createAuthInstanceIdentity(a.stateDir, a.space, candidate);
+    const before = readFileSync(identityFile);
+    await assert.rejects(startAuthService(inputs[0]).then((handle) => {
+      handles.push(handle);
+      return handle;
+    }), (error: unknown) => error instanceof Error && /different auth instance identities/.test(error.message) &&
+      error.message.includes(identityKey) && error.message.includes(a.stateDir),
+    `a conflicting ${label} refuses and names both records`);
+    count++;
+    ok(existsSync(identityFile) && readFileSync(identityFile).equals(before), `a conflicting ${label} leaves the file bytes intact`);
+    ok(await a.store.get(identityKey) === identityBytes, `a conflicting ${label} leaves the stored identity bytes intact`);
+    removeAuthInstanceIdentity(a.stateDir, a.space);
+  }
+  ok((await second.readiness()).state === "ready" && (await health(second)) === issB, "B stays ready after A's identity conflicts");
 
   // ---- 2. mid-life fence by native KICK of A's sealed scanner ----
   // Each first start, A's refused one included, put its plane's instance identity into its store;
