@@ -2230,13 +2230,29 @@ export class MeshAgent extends EventEmitter {
    *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
-   *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string }): Promise<ControlReply & { instanceId?: string }> {
+   *  operator-local intent, kept off the peer-facing spawn door — see #159.)
+   *
+   *  Channels: `opts.join` names concrete channels the new peer joins on top of its persona's read
+   *  set, each checked here against THIS agent's read ACL before anything is sent (a spawn never
+   *  widens). The request also carries this agent's own read/post ACL as `callerAcl`; the manager
+   *  consults it only for a persona that names no channel field, so such a helper is scoped to its
+   *  spawner. The joined set is never copied: without `join`, a channel-less persona starts on none. */
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string; join?: string[] }): Promise<ControlReply & { instanceId?: string }> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
       return { ok: false, error: "model: must not be empty" };
     const requested = raw?.trim();
+    for (const ch of opts?.join ?? []) {
+      try {
+        assertValidChannel(ch);
+      } catch (e) {
+        return { ok: false, error: `join: ${(e as Error).message}` };
+      }
+      if (!isConcreteChannel(ch)) return { ok: false, error: `join: "${ch}" must be a concrete channel (no wildcard)` };
+      if (!channelInAllow(this.config.allowSubscribe, ch))
+        return { ok: false, error: `join: "${ch}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]; a spawn can only hand on channels you may read yourself` };
+    }
     let instance: string | undefined;
     try {
       const selected = opts?.instance ?? this.openManagerInstance();
@@ -2246,7 +2262,7 @@ export class MeshAgent extends EventEmitter {
     }
     if (this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)
       return { ok: false, error: "the requested manager instance differs from this credential's instance authority" };
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });

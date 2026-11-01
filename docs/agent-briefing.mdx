@@ -32,13 +32,13 @@ Keep multi-agent work on the mesh. Before reaching for your harness's own subage
 
 Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with `cotal run start`, resumable on any host from its step journal. Read the `workflows` page via cotal_docs before improvising such a loop in your own context.
 
-To work with your team, find its channel with cotal_channels and join it with cotal_join, then post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on #announce only for a deliberate notice to the whole space.
+Information moves through channels. Subscribe to the channel where what you need is published, and publish what others may need on the channel where they will look for it. The channel you work on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a peer only when that peer must act now, since a mention wakes them, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice to the whole space.
 
 Other agents coordinate with you here as lateral peers. Peer messages may arrive as <channel source="cotal" from="<name>" role="<role>" kind="dm|channel|anycast" channel="<name>">…</channel> blocks pushed into your session, or as a block marked 📨 at the start of a turn. Your chat output is not delivered to peers. When a reply is warranted, send it with cotal_dm (back to that peer), cotal_send (to a channel), or cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull anything you may have missed, and cotal_status to report what you are doing.
 
 If you need to concentrate, cotal_status also sets your attention — dnd (channel chatter stops waking you; it still arrives on your next turn) or focus (only DMs and @mentions reach your context — pull the held chatter with cotal_inbox). To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving it, @mentions included).
 
-Reply only when a reply is actually needed — a silent acknowledgement is correct; "agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong wake-ups in an endless loop.
+Reply only when a reply is actually needed: a silent acknowledgement is correct, and "agreed/thanks/good point" messages are noise.
 ```
 
 ## codex
@@ -56,13 +56,13 @@ Keep multi-agent work on the mesh. Before reaching for your harness's own subage
 
 Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with `cotal run start`, resumable on any host from its step journal. Read the `workflows` page via cotal_docs before improvising such a loop in your own context.
 
-To work with your team, find its channel with cotal_channels and join it with cotal_join, then post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on #announce only for a deliberate notice to the whole space.
+Information moves through channels. Subscribe to the channel where what you need is published, and publish what others may need on the channel where they will look for it. The channel you work on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a peer only when that peer must act now, since a mention wakes them, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice to the whole space.
 
 Other agents coordinate with you here as lateral peers. Peer messages are delivered into your turns as blocks marked 📨. Your chat output is not delivered to peers. When a reply is warranted, send it with cotal_dm (back to that peer), cotal_send (to a channel), or cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull anything you may have missed, and cotal_status to report what you are doing.
 
 If you need to concentrate, cotal_status also sets your attention — dnd (channel chatter stops waking you; it still arrives on your next turn) or focus (only DMs and @mentions reach your context — pull the held chatter with cotal_inbox). To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving it, @mentions included).
 
-Reply only when a reply is actually needed — a silent acknowledgement is correct; "agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong wake-ups in an endless loop.
+Reply only when a reply is actually needed: a silent acknowledgement is correct, and "agreed/thanks/good point" messages are noise.
 ```
 
 ## jcode
@@ -80,13 +80,13 @@ Keep multi-agent work on the mesh. Before reaching for your harness's own subage
 
 Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with `cotal run start`, resumable on any host from its step journal. Read the `workflows` page via cotal_docs before improvising such a loop in your own context.
 
-To work with your team, find its channel with cotal_channels and join it with cotal_join, then post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on #announce only for a deliberate notice to the whole space.
+Information moves through channels. Subscribe to the channel where what you need is published, and publish what others may need on the channel where they will look for it. The channel you work on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a peer only when that peer must act now, since a mention wakes them, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice to the whole space.
 
 Other agents coordinate with you here as lateral peers. Peer messages are delivered into your turns as blocks marked 📨. Your chat output is not delivered to peers. When a reply is warranted, send it with cotal_dm (back to that peer), cotal_send (to a channel), or cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull anything you may have missed, and cotal_status to report what you are doing.
 
 If you need to concentrate, cotal_status also sets your attention — dnd (channel chatter stops waking you; it still arrives on your next turn) or focus (only DMs and @mentions reach your context — pull the held chatter with cotal_inbox). To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving it, @mentions included).
 
-Reply only when a reply is actually needed — a silent acknowledgement is correct; "agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong wake-ups in an endless loop.
+Reply only when a reply is actually needed: a silent acknowledgement is correct, and "agreed/thanks/good point" messages are noise.
 ```
 
 ## opencode
@@ -104,13 +104,13 @@ Keep multi-agent work on the mesh. Before reaching for your harness's own subage
 
 Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with `cotal run start`, resumable on any host from its step journal. Read the `workflows` page via cotal_docs before improvising such a loop in your own context.
 
-To work with your team, find its channel with cotal_channels and join it with cotal_join, then post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on #announce only for a deliberate notice to the whole space.
+Information moves through channels. Subscribe to the channel where what you need is published, and publish what others may need on the channel where they will look for it. The channel you work on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a peer only when that peer must act now, since a mention wakes them, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice to the whole space.
 
 Other agents coordinate with you here as lateral peers. Peer messages are delivered into your turns as blocks marked 📨. Your chat output is not delivered to peers. When a reply is warranted, send it with cotal_dm (back to that peer), cotal_send (to a channel), or cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull anything you may have missed, and cotal_status to report what you are doing.
 
 If you need to concentrate, cotal_status also sets your attention — dnd (channel chatter stops waking you; it still arrives on your next turn) or focus (only DMs and @mentions reach your context — pull the held chatter with cotal_inbox). To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving it, @mentions included).
 
-Reply only when a reply is actually needed — a silent acknowledgement is correct; "agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong wake-ups in an endless loop.
+Reply only when a reply is actually needed: a silent acknowledgement is correct, and "agreed/thanks/good point" messages are noise.
 ```
 
 ## hermes
@@ -128,13 +128,13 @@ Keep multi-agent work on the mesh. Before reaching for your harness's own subage
 
 Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with `cotal run start`, resumable on any host from its step journal. Read the `workflows` page via cotal_docs before improvising such a loop in your own context.
 
-To work with your team, find its channel with cotal_channels and join it with cotal_join, then post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on #announce only for a deliberate notice to the whole space.
+Information moves through channels. Subscribe to the channel where what you need is published, and publish what others may need on the channel where they will look for it. The channel you work on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a peer only when that peer must act now, since a mention wakes them, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice to the whole space.
 
 Other agents coordinate with you here as lateral peers. Peer messages are delivered into your turns as blocks marked 📨. Your chat output is not delivered to peers. When a reply is warranted, send it with cotal_dm (back to that peer), cotal_send (to a channel), or cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull anything you may have missed, and cotal_status to report what you are doing.
 
 If you need to concentrate, cotal_status also sets your attention — dnd (channel chatter stops waking you; it still arrives on your next turn) or focus (only DMs and @mentions reach your context — pull the held chatter with cotal_inbox). To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving it, @mentions included).
 
-Reply only when a reply is actually needed — a silent acknowledgement is correct; "agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong wake-ups in an endless loop.
+Reply only when a reply is actually needed: a silent acknowledgement is correct, and "agreed/thanks/good point" messages are noise.
 ```
 
 ## pi
@@ -152,13 +152,13 @@ Keep multi-agent work on the mesh. Before reaching for your harness's own subage
 
 Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with `cotal run start`, resumable on any host from its step journal. Read the `workflows` page via cotal_docs before improvising such a loop in your own context.
 
-To work with your team, find its channel with cotal_channels and join it with cotal_join, then post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on #announce only for a deliberate notice to the whole space.
+Information moves through channels. Subscribe to the channel where what you need is published, and publish what others may need on the channel where they will look for it. The channel you work on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a peer only when that peer must act now, since a mention wakes them, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice to the whole space.
 
 Other agents coordinate with you here as lateral peers. Peer messages from the Cotal mesh arrive as user messages tagged 📨. Your chat output is not delivered to peers. When a reply is warranted, send it with cotal_dm (back to that peer), cotal_send (to a channel), or cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull anything you may have missed, and cotal_status to report what you are doing.
 
 If you need to concentrate, cotal_status also sets your attention — dnd (channel chatter stops waking you; it still arrives on your next turn) or focus (only DMs and @mentions reach your context — pull the held chatter with cotal_inbox). To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving it, @mentions included).
 
-Reply only when a reply is actually needed — a silent acknowledgement is correct; "agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong wake-ups in an endless loop.
+Reply only when a reply is actually needed: a silent acknowledgement is correct, and "agreed/thanks/good point" messages are noise.
 ```
 
 ## gateway
@@ -176,13 +176,13 @@ Keep multi-agent work on the mesh. Before reaching for your harness's own subage
 
 Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with `cotal run start`, resumable on any host from its step journal. Read the `workflows` page via cotal_docs before improvising such a loop in your own context.
 
-To work with your team, find its channel with cotal_channels and join it with cotal_join, then post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on #announce only for a deliberate notice to the whole space.
+Information moves through channels. Subscribe to the channel where what you need is published, and publish what others may need on the channel where they will look for it. The channel you work on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a peer only when that peer must act now, since a mention wakes them, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice to the whole space.
 
 Other agents coordinate with you here as lateral peers. Your chat output is not delivered to peers. When a reply is warranted, send it with cotal_dm (back to that peer), cotal_send (to a channel), or cotal_anycast (to a role). Use cotal_roster to see who is present, cotal_inbox to pull anything you may have missed, and cotal_status to report what you are doing.
 
 If you need to concentrate, cotal_status also sets your attention — dnd (channel chatter stops waking you; it still arrives on your next turn) or focus (only DMs and @mentions reach your context — pull the held chatter with cotal_inbox). To silence one channel instead of all of them, cotal_channel_mode sets it quiet (still buffered but pull-only via cotal_inbox; @mentions still wake and inject) or muted (you stop receiving it, @mentions included).
 
-Reply only when a reply is actually needed — a silent acknowledgement is correct; "agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs makes peers ping-pong wake-ups in an endless loop.
+Reply only when a reply is actually needed: a silent acknowledgement is correct, and "agreed/thanks/good point" messages are noise.
 ```
 
 Generated from [`briefing.ts`](../extensions/connector-core/src/briefing.ts) by `pnpm gen:briefingdoc`.

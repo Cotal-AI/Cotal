@@ -9,7 +9,7 @@
  * The typed {@link Orientation} object is the source of truth; {@link renderOrientation} is one view of
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
-import { parsePrincipalKey, peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, parsePrincipalKey, peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
 import { presenceReadCondition, type MeshAgent, type RosterRead } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
@@ -40,13 +40,23 @@ export const WORKFLOW_STEER =
   "`cotal run start`, resumable on any host from its step journal. Read the `workflows` page via " +
   "cotal_docs before improvising such a loop in your own context.";
 
-/** Where to talk, folded in beside {@link ORIENTATION_BOOTSTRAP} for every connector. A fresh seat
- *  may start on no channel, so it is told how to find its team's channel and which surface fits
- *  which kind of message. Guidance only: it grants nothing and changes no subscription. */
+/** Where to talk, folded in beside {@link ORIENTATION_BOOTSTRAP} for every connector. Leads with
+ *  the model (information moves through channels), then the rule (channel for work, a mention to
+ *  make one peer act, a DM for what one peer alone needs), then the mechanics. A fresh seat may
+ *  start on no channel, so it is told how to find and join one, and how a helper it spawns gets
+ *  one. Guidance only: it grants nothing and changes no subscription. */
 export const CHANNEL_GUIDANCE =
-  "To work with your team, find its channel with cotal_channels and join it with cotal_join, then " +
-  "post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask " +
-  "whoever holds a role. Post on #announce only for a deliberate notice to the whole space.";
+  "Information moves through channels. Subscribe to the channel where what you need is published, " +
+  "and publish what others may need on the channel where they will look for it. The channel you work " +
+  "on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, " +
+  "and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a " +
+  "peer only when that peer must act now, since a mention wakes them, and a mention in an " +
+  "acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone " +
+  "needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. " +
+  "A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and " +
+  "cotal_join adds one within your read allowance. A helper you spawn starts on no channel unless you " +
+  "pass join, so pass the channel you are working on. Post on #announce only for a deliberate notice " +
+  "to the whole space.";
 
 /** A tool the agent can actually call (already gated), as it appears in the card. */
 export interface OrientationTool {
@@ -91,6 +101,9 @@ export interface Orientation {
     readAcl: string[];
     /** Post ACL — channels you may broadcast to. Empty ⇒ read-only (default-deny). */
     post: string[];
+    /** Concrete channels in the read ACL you are NOT on yet, each with its registry note when the
+     *  registry has one: where to look before the first send, without a second call. */
+    joinable: { channel: string; note?: string }[];
   };
   /** Control-plane capabilities (e.g. `spawn`). Empty ⇒ none beyond the defaults granted to all. */
   capabilities: string[];
@@ -193,6 +206,12 @@ export function buildOrientation(
       read: config.subscribe,
       readAcl: config.allowSubscribe,
       post: config.allowPublish,
+      joinable: config.allowSubscribe
+        .filter((c) => isConcreteChannel(c) && !config.subscribe.includes(c))
+        .map((channel) => {
+          const note = agent.channelInfo(channel).description?.trim();
+          return note ? { channel, note } : { channel };
+        }),
     },
     capabilities: config.capabilities ?? [],
     tools: { core, more },
@@ -235,6 +254,8 @@ export function renderOrientation(o: Orientation): string {
     `  • read: ${fmt(o.access.read)}`,
   ];
   if (aclDiffers) lines.push(`  • may join (read ACL): ${fmt(o.access.readAcl)}`);
+  if (o.access.joinable.length)
+    lines.push(`  • not on yet: ${o.access.joinable.map((j) => `#${j.channel}${j.note ? ` (${j.note})` : ""}`).join(", ")} · join one with cotal_join`);
   lines.push(
     `  • post: ${o.access.post.length ? fmt(o.access.post) : "— (read-only; no post channels)"}`,
     `  • capabilities: ${o.capabilities.length ? o.capabilities.join(", ") : "none beyond defaults"}`,

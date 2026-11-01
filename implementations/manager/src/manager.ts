@@ -936,6 +936,16 @@ export interface StartAgentOpts {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** Channels the seat joins on top of its resolved read set (the peer door's `join`). Each must
+   *  fall within the read ACL that resolves below, or the spawn is refused; nothing is widened.
+   *  Imperative-only, rejected with `resolved`. */
+  join?: string[];
+  /** The spawner's own read/post ACL. Consulted only when the persona file names no channel field
+   *  at all (`subscribe`, `allowSubscribe`, `allowPublish` all absent): the seat is then scoped to
+   *  its spawner, never wider. A persona that names any channel field is the authority and this is
+   *  ignored. The spawner's event channel is never inherited (the seat mints its own below).
+   *  Imperative-only, rejected with `resolved`. */
+  callerAcl?: { allowSubscribe: string[]; allowPublish: string[] };
   /** Names of the operator's configured MCP servers this agent gets (absent → all declared for the
    *  connector — the pre-merge manager behavior; `[]` → none). */
   shareTools?: readonly string[];
@@ -5924,11 +5934,21 @@ export class Manager {
       return v as string[];
     };
     let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, shareTools: string[] | undefined;
+    let join: string[] | undefined, callerAcl: StartAgentOpts["callerAcl"];
     try {
       subscribe = strList(args.subscribe, "subscribe");
       allowSubscribe = strList(args.allowSubscribe, "allowSubscribe");
       allowPublish = strList(args.allowPublish, "allowPublish");
       shareTools = strList(args.shareTools, "shareTools");
+      join = strList(args.join, "join");
+      if (args.callerAcl !== undefined) {
+        const rec = args.callerAcl as Record<string, unknown> | null;
+        if (rec === null || typeof rec !== "object" || Array.isArray(rec)) throw new Error("callerAcl: expected an object");
+        const sub = strList(rec.allowSubscribe, "callerAcl.allowSubscribe");
+        const pub = strList(rec.allowPublish, "callerAcl.allowPublish");
+        if (!sub || !pub) throw new Error("callerAcl: allowSubscribe and allowPublish are both required");
+        callerAcl = { allowSubscribe: sub, allowPublish: pub };
+      }
     } catch (e) {
       return Promise.resolve({ ok: false, error: rejectionText(e) });
     }
@@ -5985,6 +6005,8 @@ export class Manager {
         subscribe,
         allowSubscribe,
         allowPublish,
+        join,
+        callerAcl,
         shareTools,
         ...(supervise !== undefined ? { supervise } : {}),
         ...(typeof args.runtime === "string" ? { runtime: args.runtime.trim() } : {}),
@@ -6567,8 +6589,8 @@ export class Manager {
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
-      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || opts.shareTools || opts.identity)
-        return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/prompt/shareTools)" };
+      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.join || opts.callerAcl || opts.prompt || opts.shareTools || opts.identity)
+        return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/join/callerAcl/prompt/shareTools)" };
       const r = opts.resolved;
       identityName = r.name;
       role = opts.role ?? r.role;
@@ -6593,9 +6615,20 @@ export class Manager {
       // Flags > persona file — the same precedence as foreground `cotal spawn`, so the two launch
       // paths of the merged grammar can't diverge. One source feeds BOTH the minted creds and the
       // connector env below.
-      subscribe = opts.subscribe ?? def.subscribe;
-      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? [];
-      allowPublish = opts.allowPublish ?? def.allowPublish;
+      // A persona that names no channel field at all is scoped to its spawner's ACL (`callerAcl`,
+      // when the door sent one). The spawner's own event channel is dropped from it: that plane is
+      // foreign to the child, and the guard below refuses any spawn that asks for one. The joined
+      // set is never copied from the spawner: a helper starts on what its persona lists plus what
+      // the caller passes in `join`, and nothing else.
+      const personaNamesChannels = def.subscribe !== undefined || def.allowSubscribe !== undefined || def.allowPublish !== undefined;
+      const scoped = !personaNamesChannels && opts.callerAcl ? {
+        allowSubscribe: opts.callerAcl.allowSubscribe.filter((ch) => eventChannelPrincipal(ch) === null),
+        allowPublish: opts.callerAcl.allowPublish.filter((ch) => eventChannelPrincipal(ch) === null),
+      } : undefined;
+      const base = opts.subscribe ?? def.subscribe;
+      subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;
+      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
+      allowPublish = opts.allowPublish ?? def.allowPublish ?? scoped?.allowPublish;
       capabilities = def.capabilities;
       // #651: fold the persona's model into the launch record, mirroring the variant line below
       // and the manifest branch above. Without this, a persona-file model (the common pin source)
