@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WEB_READINESS_HEADER } from "@cotal-ai/workspace";
 import { appendedLogTail, detachedArgs, terminateDetachedWeb, waitForDetachedWeb } from "../src/web.js";
 
 const root = mkdtempSync(join(tmpdir(), "cotal-web-detach-"));
@@ -130,6 +131,65 @@ try {
     assert.ok(Buffer.byteLength(lastProbe) <= 300, `last-probe text stays within its 300-byte cap (got ${Buffer.byteLength(lastProbe)} bytes)`);
   } finally {
     await new Promise<void>((resolve) => squatter.close(() => resolve()));
+  }
+
+  // #3678: the probe does not follow a redirect. Whatever owns the port answers `/api/meta` with a
+  // redirect to a path or origin it controls, where it answers with this dashboard's space and pid.
+  // That is not ready, and the readiness nonce reaches no path but `/api/meta`. The same server
+  // answering `/api/meta` itself is ready, so the refusal comes from the redirect, not the fixture.
+  const nonce = "fixture-readiness-nonce";
+  const nonceAt: string[] = [];
+  let stealRequests = 0;
+  const answerMeta = (res: ServerResponse) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ space: "fixture", pid: child.pid }));
+  };
+  const listen = async (handler: (req: IncomingMessage, res: ServerResponse) => void) => {
+    const server = createServer(handler);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return { server, port: (server.address() as { port: number }).port };
+  };
+  const other = await listen((req, res) => {
+    if (req.headers[WEB_READINESS_HEADER] === nonce) nonceAt.push(`other:${req.url}`);
+    if (req.url === "/steal") { stealRequests++; return answerMeta(res); }
+    res.writeHead(404).end();
+  });
+  let answer: { code: number; location: string } | "meta" = "meta";
+  const bound = await listen((req, res) => {
+    if (req.headers[WEB_READINESS_HEADER] === nonce) nonceAt.push(req.url ?? "");
+    if (req.url === "/steal") { stealRequests++; return answerMeta(res); }
+    if (req.url !== "/api/meta") return res.writeHead(404).end();
+    if (answer === "meta") return answerMeta(res);
+    res.writeHead(answer.code, { location: answer.location }).end();
+  });
+  writeFileSync(sessionPath, JSON.stringify({ launchUrl: `http://127.0.0.1:${bound.port}/`, readiness: nonce, host: "127.0.0.1", port: bound.port }));
+  try {
+    const redirects = [
+      ...[301, 302, 307, 308].map((code) => ({ code, location: "/steal" })),
+      { code: 302, location: `http://127.0.0.1:${other.port}/steal` },
+    ];
+    for (const redirect of redirects) {
+      answer = redirect;
+      nonceAt.length = 0;
+      stealRequests = 0;
+      await assert.rejects(
+        waitForDetachedWeb(child, { pidPath, sessionPath, url: `http://127.0.0.1:${bound.port}/`, space: "fixture", timeoutMs: 600 }),
+        new RegExp(`did not become HTTP-ready within 600ms \\(pid \\d+\\); last probe http://127\\.0\\.0\\.1:${bound.port}/api/meta: HTTP ${redirect.code}$`),
+        `a ${redirect.code} to ${redirect.location} is not ready`,
+      );
+      assert.ok(nonceAt.length > 0, `the probe presented the nonce on /api/meta (${redirect.code} to ${redirect.location})`);
+      assert.deepEqual([...new Set(nonceAt)], ["/api/meta"], `the nonce reaches only /api/meta (${redirect.code} to ${redirect.location})`);
+      assert.equal(stealRequests, 0, `the redirect target is never requested (${redirect.code} to ${redirect.location})`);
+    }
+    answer = "meta";
+    nonceAt.length = 0;
+    const session = await waitForDetachedWeb(child, { pidPath, sessionPath, url: `http://127.0.0.1:${bound.port}/`, space: "fixture", timeoutMs: 2000 });
+    assert.equal(session.readiness, nonce, "the same server answering /api/meta itself is ready");
+    assert.deepEqual([...new Set(nonceAt)], ["/api/meta"], "the ready probe presented the nonce on /api/meta only");
+    console.log(`web detach smoke: ${redirects.length} redirects refused, nonce kept on /api/meta, direct answer ready`);
+  } finally {
+    await new Promise<void>((resolve) => bound.server.close(() => resolve()));
+    await new Promise<void>((resolve) => other.server.close(() => resolve()));
   }
 
   await terminateDetachedWeb(child, pidPath);

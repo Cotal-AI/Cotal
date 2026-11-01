@@ -1,0 +1,45 @@
+/** @type {Record<string, Record<string, string>>} */
+export const httpSidebarTitles = {
+  dashboard: {
+    'list-roster': 'Roster',
+    'read-membership': 'Membership',
+    'list-channels': 'Channels',
+    'read-activity': 'Activity',
+    'read-dms': 'Direct messages',
+    'read-channel-history': 'Channel history',
+    'watch-feed': 'Live events',
+    'read-dashboard-meta': 'Metadata',
+    'delete-dashboard-channel': 'Delete legacy channel',
+  },
+  auth: {
+    'auth-health': 'Health',
+    'auth-jwks': 'Verification keys',
+    'auth-exchange': 'Exchange token',
+    'auth-manager-service-authority': 'Manager authority',
+    'auth-manager-instances': 'Manager instances',
+    'auth-service-endpoint-authority-info': 'Authority metadata',
+    'auth-service-endpoint-authority': 'Service authority',
+    'auth-service-endpoint-host': 'Host operation',
+    'auth-chat-session-open': 'Open chat session',
+    'auth-chat-session-bearer': 'Chat bearer',
+    'auth-chat-session-retire': 'Retire chat session',
+    'auth-mesh-discovery': 'Mesh registration',
+  },
+  'auth-host': {
+    'auth-host-retire-interactive': 'Retire interactive',
+    'auth-host-activate-managed': 'Activate managed',
+    'auth-host-retire-managed': 'Retire managed',
+    'auth-host-verify-enrollment': 'Verify host decision',
+    'auth-host-verify-human-proof': 'Verify human proof',
+    'auth-host-issue-consent': 'Issue consent',
+  },
+  'manager-console': {
+    'list-console-agents': 'Agents',
+    'watch-console-feed': 'Console feed',
+    'establish-console-session': 'Establish session',
+  },
+  'feedback-intake': {
+    'read-feedback-health': 'Health',
+    'submit-feedback': 'Submit feedback',
+  },
+};

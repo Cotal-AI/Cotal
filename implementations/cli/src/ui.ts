@@ -48,3 +48,11 @@ export function activityAge(p: PresenceStamps, now = Date.now()): string {
   const age = presenceAges(p, now).activitySince;
   return age === undefined ? "" : ` (set ${formatAge(age)} ago)`;
 }
+
+/** The dimmed ` - <activity> (set <age> ago)` an ANSI presence line ends with after
+ *  {@link presenceDetail}, or nothing when the seat reports no activity. `cotal endpoints`, `cotal who`
+ *  and the console's Ink rows lay the activity out on their own, over the same text and age. */
+export function activityDetail(p: PresenceStamps, now = Date.now()): string {
+  return p.activity ? c.dim(" - " + presenceText(p.activity) + activityAge(p, now)) : "";
+}
+

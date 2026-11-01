@@ -720,7 +720,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   // and in USER MODE (bearer present) the borrowed manager view pins one authorized instance and
   // keeps the actor's existing command scopes. That view has no registry freeze rows and never
   // scatters; the manager answers from its in-memory roster with an owner filter, which is not a
-  // complete multi-manager inventory (see docs/cli.md), and the target says so.
+  // complete multi-manager inventory (see docs/cli.mdx), and the target says so.
   //
   // Mode chosen UP FRONT from the connection shape. Never try-scatter-catch-degrade: a silent
   // downgrade is the bug this branch fixes, and reintroducing it in the fix would be the whole

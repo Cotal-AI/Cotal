@@ -252,7 +252,7 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
     stock = checked.value;
     if (stock.userAuth.idp.url !== idp.url || stock.userAuth.idp.issuer !== idp.issuer || stock.userAuth.idp.audience !== idp.audience)
       throw new Error("the enrollment bundle's stock userAuth IdP pins do not match its top-level idp pins");
-    if (stock.userAuth.endpoints?.url !== o.authServiceUrl)
+    if (stock.userAuth.endpoints.url !== o.authServiceUrl)
       throw new Error("the enrollment bundle's stock userAuth exchange URL does not match authServiceUrl");
     const access = o.brokerAccess as Record<string, unknown>;
     if (access.kind === "direct" && (typeof access.url !== "string" || !access.url))
@@ -312,7 +312,7 @@ async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?
   await step("server", () => checkServer(stock.server, "the enrollment bundle's server"));
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
   const dial = await step("server", () => checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false }));
-  await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space)));
+  await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints.url, userExchangeIssuer(stock.space)));
   await step("enforcement", async () => checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root));
   await step("registration", () => ({ ok: true, value: persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.residual)) }));
 }

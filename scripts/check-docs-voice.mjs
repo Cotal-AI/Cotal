@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readDocument } from "@cotal-ai/docs-content";
 
 const docsDir = fileURLToPath(new URL("../docs/", import.meta.url));
 
@@ -17,7 +18,7 @@ const walk = (dir) => {
     if (statSync(path).isDirectory()) {
       if (exemptDirs.has(rel)) continue;
       walk(path);
-    } else if (name.endsWith(".md")) {
+    } else if (/\.mdx?$/.test(name)) {
       files.push(rel);
     }
   }
@@ -29,7 +30,11 @@ const listHeading = /(?:&|,| \/ | \+ |\band\b|\bor\b|:)/i;
 const failures = [];
 
 for (const name of files) {
-  const lines = readFileSync(join(docsDir, name), "utf8").split("\n");
+  const text = name.endsWith(".mdx")
+    ? (await readDocument(join(docsDir, name))).markdown
+    : readFileSync(join(docsDir, name), "utf8");
+  const label = name.endsWith(".mdx") ? `${name} (Markdown export)` : name;
+  const lines = text.split("\n");
   let fenced = false;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
@@ -39,13 +44,13 @@ for (const name of files) {
     }
     if (fenced) continue;
 
-    if (line.includes("—")) failures.push(`${name}:${index + 1}: em dash`);
+    if (line.includes("—")) failures.push(`${label}:${index + 1}: em dash`);
     const word = bannedWord.exec(line);
-    if (word) failures.push(`${name}:${index + 1}: banned filler word ${JSON.stringify(word[0])}`);
+    if (word) failures.push(`${label}:${index + 1}: banned filler word ${JSON.stringify(word[0])}`);
 
     const heading = /^(#{1,4})\s+(.+)$/.exec(line);
     if (heading && listHeading.test(heading[2]))
-      failures.push(`${name}:${index + 1}: heading reads as a list: ${heading[2]}`);
+      failures.push(`${label}:${index + 1}: heading reads as a list: ${heading[2]}`);
   }
 }
 

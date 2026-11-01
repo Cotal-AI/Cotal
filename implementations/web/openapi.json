@@ -3,7 +3,7 @@
   "info": {
     "title": "Dashboard HTTP API",
     "version": "1",
-    "description": "HTTP interface of the @cotal-ai/web reference implementation. This description covers seven read operations; it does not establish a separate stable product or Cloud management API. Start the dashboard using the web service preset described in the operator guide. The server defaults to 127.0.0.1:7799; use the host and port configured for your dashboard.\n\nOpen the owner-private launch URL once to exchange its k query token for the cotal_web_session cookie. Keep the session on the same host. With the default bind, the permitted browser origins are http://127.0.0.1:<port>, http://localhost:<port> and http://cotal.localhost:<port>. A custom host uses its own HTTP origin. A cross-origin request is refused before session checks. The readiness nonce only opens /api/meta.\n\nAll documented operations use GET and take no request body. Some read handlers also accept other bodyless methods; this description does not promise a 405 response for them. Internal readiness and channel deletion are outside this read reference. The native web service is read-only. Description version 1 identifies this document, not the wire or npm package version.",
+    "description": "HTTP interface of the @cotal-ai/web reference implementation. This description covers read operations, readiness metadata and the legacy channel deletion route; it does not establish a separate stable product or Cloud management API. Start the dashboard using the web service preset described in the operator guide. The server defaults to 127.0.0.1:7799; use the host and port configured for your dashboard.\n\nOpen the owner-private launch URL once to exchange its k query token for the cotal_web_session cookie. Keep the session on the same host. With the default bind, the permitted browser origins are http://127.0.0.1:<port>, http://localhost:<port> and http://cotal.localhost:<port>. A custom host uses its own HTTP origin. A cross-origin request is refused before session checks. The readiness nonce only opens /api/meta.\n\nRead operations use GET and take no request body. Some read handlers also accept other bodyless methods; this description does not promise a 405 response for them. The native web service is read-only and always refuses channel deletion with 403. Legacy direct dashboard instances can enable deletion; /api/meta reports channelDeleteSupported. Description version 1 identifies this document, not the wire or npm package version.",
     "license": {
       "name": "Apache-2.0"
     }
@@ -399,6 +399,138 @@
           }
         }
       }
+    },
+    "/api/meta": {
+      "get": {
+        "operationId": "read-dashboard-meta",
+        "summary": "Read dashboard metadata",
+        "description": "Return the space, process ID and whether channel deletion is supported. An authenticated browser session, one-use launch token or the private readiness nonce can access this route. The readiness nonce is accepted only here and does not mint a session. Query strings are accepted. Other bodyless methods also reach this read handler; no 405 behavior is promised.",
+        "security": [
+          {
+            "DashboardSession": []
+          },
+          {
+            "LaunchToken": []
+          },
+          {
+            "ReadinessNonce": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardMeta"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/channel/delete": {
+      "post": {
+        "operationId": "delete-dashboard-channel",
+        "summary": "Delete a legacy dashboard channel",
+        "description": "Legacy direct dashboard operation. The native lifecycle web service always returns 403 before reading the body because it has no channel-purger authority. Check channelDeleteSupported in /api/meta. A legacy instance deletes one concrete canonical channel and its content using its configured purger authority. Wildcards, aliases and missing channels are refused. The body limit is 8192 bytes. JSON is parsed without a Content-Type check. Other methods fall through to 404.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "channel"
+                ]
+              },
+              "example": {
+                "channel": "general"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel content was purged and its configuration removed as reported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or non-canonical channel, malformed JSON, or deletion refusal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "A browser origin was refused, or the native service is configured read-only. A read-only refusal includes code PERMISSION_DENIED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "PERMISSION_DENIED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -414,6 +546,12 @@
         "in": "query",
         "name": "k",
         "description": "One-use bootstrap token from the owner-private launch URL. It returns HTTP 302 with a session cookie rather than the requested data."
+      },
+      "ReadinessNonce": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-cotal-readiness",
+        "description": "Private startup readiness nonce, accepted only by /api/meta. It does not create a browser session."
       }
     },
     "schemas": {
@@ -748,6 +886,51 @@
           "mode",
           "msg"
         ]
+      },
+      "DashboardMeta": {
+        "type": "object",
+        "properties": {
+          "space": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "channelDeleteSupported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "space",
+          "pid",
+          "channelDeleteSupported"
+        ],
+        "additionalProperties": false
+      },
+      "ChannelDeleted": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "channel": {
+            "type": "string"
+          },
+          "purged": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "channel",
+          "purged",
+          "removed"
+        ],
+        "additionalProperties": false
       }
     },
     "responses": {

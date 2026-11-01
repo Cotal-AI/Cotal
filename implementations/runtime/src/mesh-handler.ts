@@ -132,7 +132,7 @@ import { PauseOverdue, type RunPauseHost } from "./run-pause-host.js";
 import type { RunWaitHost } from "./run-wait-host.js";
 import { loopLag, servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import type { RunScopeAuthority } from "./run-scope-authority.js";
-import { askAttemptToken, observeToken, pauseTokens, waitTimeoutToken } from "./pause-tokens.js";
+import { askAttemptToken, observeToken, pauseTokens, waitTimeoutToken, waitTimers } from "./pause-tokens.js";
 import { delay } from "./delay.js";
 
 export interface RunMeshServices {
@@ -1042,13 +1042,11 @@ export class MeshHandler {
     if (channel !== undefined && !isConcreteChannel(channel)) {
       throw new Error(`wait() cannot await a wildcard channel ("${channel}"); an await names one channel`);
     }
+    const timers = waitTimers(req, ctx.requestId);
     const waitBinding = {
       ...ctx.resume,
       ...(channel !== undefined ? { waitChannel: channel } : {}),
-      waitTimers: [
-        ...(ev.event === "idle" || req.timeout !== undefined ? [ctx.requestId] : []),
-        ...(ev.event === "idle" && req.timeout !== undefined ? [waitTimeoutToken(ctx.requestId)] : []),
-      ],
+      waitTimers: [timers.primary, timers.outer].filter((token) => token !== undefined),
     };
     if (this.services) {
       if (ctx.resume?.waitChannel !== undefined && ctx.resume.waitChannel !== channel)
@@ -1075,15 +1073,10 @@ export class MeshHandler {
     const matcher = ev.event === "message" && ev.matches !== undefined ? compileMatch(ev.matches) : undefined;
     const from = ev.event === "message" ? ev.from : undefined;
 
-    // ONE token per deadline, both derived, so a resume re-derives them instead of remembering.
-    // The step's own id is the deadline that DEFINES the wait — the idle window where there is one,
-    // the timeout otherwise — and a second, derived id carries an idle wait's outer timeout.
-    const primary = idleFor !== undefined || timeoutAt !== undefined
-      ? { endpoint: this.binding.endpoint, token: ctx.requestId }
-      : undefined;
-    const outer = idleFor !== undefined && timeoutAt !== undefined
-      ? { endpoint: this.binding.endpoint, token: waitTimeoutToken(ctx.requestId) }
-      : undefined;
+    // ONE token per deadline, both derived, so a resume re-derives them instead of remembering. The
+    // arm takes the tokens the binding recorded above, so it can never mint one the binding did not.
+    const primary = timers.primary === undefined ? undefined : { endpoint: this.binding.endpoint, token: timers.primary };
+    const outer = timers.outer === undefined ? undefined : { endpoint: this.binding.endpoint, token: timers.outer };
     // A deadline that passed before its pause was minted has nothing to settle. It ends the wait in
     // the loop, once the channel is open under the run's read admission and after cancellation.
     const primaryDue = primary !== undefined && await this.armUnlessDue(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!, ctx.signal);
@@ -1221,9 +1214,8 @@ export class MeshHandler {
     // agent nobody monitored would be a registration this run never recorded.
     if (!this.monitored.has(`${name}#${uid}`))
       throw new Error(`wait(down(${name}#${uid})) observes a monitored agent, and this run never performed monitor() on that handle; register interest first (cotal-lang 6.5)`);
-    const primary = req.timeout === undefined
-      ? undefined
-      : { endpoint: this.binding.endpoint, token: ctx.requestId };
+    const { primary: token } = waitTimers(req, ctx.requestId);
+    const primary = token === undefined ? undefined : { endpoint: this.binding.endpoint, token };
     if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
     const watch: DeathWatch = {};
     const decided = async (): Promise<boolean> => ctx.signal.cancelled || (await this.expired(primary)) !== undefined;
@@ -1274,9 +1266,8 @@ export class MeshHandler {
       if (entry === undefined || entry.uid !== uid)
         throw new Error(`wait(replied(${handle})) addresses an agent that is not in this run's roster; a reply is observed on a turn this run relayed`);
     }
-    const primary = req.timeout === undefined
-      ? undefined
-      : { endpoint: this.binding.endpoint, token: ctx.requestId };
+    const { primary: token } = waitTimers(req, ctx.requestId);
+    const primary = token === undefined ? undefined : { endpoint: this.binding.endpoint, token };
     if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
     const actx = await this.actionCtx();
     for (;;) {

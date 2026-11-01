@@ -1,6 +1,6 @@
 # Substrate stability
 
-> **Project** (informative) · **For:** anyone building on the published packages · **See also:** [Embedding Cotal](embedding.md), [Release](release.md), [wire versioning](../SPEC.md#11-versioning-and-extensibility)
+> **Project** (informative) · **For:** anyone building on the published packages · **See also:** [Embedding Cotal](embedding.mdx), [Release](release.md), [wire versioning](../SPEC.md#11-versioning-and-extensibility)
 
 Cotal's packages are pre-1.0 and publish in lockstep. Pin the versions you embed and read
 [Upgrading](UPGRADING.md) before changing them. A package version, a wire revision and a
@@ -10,17 +10,17 @@ service's discovered contract revision describe different compatibility boundari
 
 | Interface | Reference and boundary |
 |---|---|
-| Messaging, presence and channel access | [Spec](../SPEC.md) and [Build a client](build-a-client.md); sender identity and durable state include the documented lifecycle rules. |
-| Service discovery and invocation | [Control surface](control-surface.md); use discovered schemas and issued grants, not a cached command name alone. |
-| TypeScript embedding | [Embedding Cotal](embedding.md); use public exports and keep first-party package versions matched. |
-| CLI automation | [Structured output](cli.md#structured-output); each command declares its output formats and failure outcomes. |
-| Agent integrations | [Connectors](connectors.md); delivery, resume and event support vary by application. |
-| Durable workflows | [Cotal Lang](../spec/cotal-lang.md) and [Workflow runs](workflows.md); replay compatibility depends on the recorded language version and step journal. |
+| Messaging, presence and channel access | [Spec](../SPEC.md) and [Build a client](build-a-client.mdx); sender identity and durable state include the documented lifecycle rules. |
+| Service discovery and invocation | [Control surface](control-surface.mdx); use discovered schemas and issued grants, not a cached command name alone. |
+| TypeScript embedding | [Embedding Cotal](embedding.mdx); use public exports and keep first-party package versions matched. |
+| CLI automation | [Structured output](cli.mdx#structured-output); each command declares its output formats and failure outcomes. |
+| Agent integrations | [Connectors](connectors.mdx); delivery, resume and event support vary by application. |
+| Durable workflows | [Cotal Lang](../spec/cotal-lang.md) and [Workflow runs](workflows.mdx); replay compatibility depends on the recorded language version and step journal. |
 
 These interfaces are implemented, but a deployed host may not enable every one. In
 particular, user-auth service serving, personal-session approval and remote workflow
 hosting require authority supplied by that deployment. The
-[composition limits](embedding.md#hosted-composition-gaps) remain part of the embedding contract.
+[composition limits](embedding.mdx#hosted-composition-gaps) remain part of the embedding contract.
 
 ## Package versions
 
@@ -50,8 +50,6 @@ Use the [conformance rules](../SPEC.md#12-conformance) and the endpoint's verifi
 Additive wire changes and breaking changes follow the spec's change process. Workflow
 programs also carry a language version, which is independent of npm and wire versions.
 
-<a id="the-coming-v04-cut"></a>
-
 ## Endpoint migration
 
 The endpoint surface is already used by the manager and other services. The migration
@@ -61,14 +59,12 @@ has broader compatibility consequences than renaming control commands:
 - Lifecycle UIDs scope durable readers, membership and authority to an incarnation.
 - Manager spawn is an action; attach uses a mesh session rather than a public loopback socket.
 - The control surface requires NATS server 2.12 or newer; particular persisted stores can
-  require a newer server, as the [Quickstart](getting-started.md) explains.
+  require a newer server, as the [Quickstart](getting-started.mdx) explains.
 
 Keep the [spec's migration boundary](../SPEC.md#1311-the-hard-cut) separate from the package
 upgrade you are performing. The current [upgrade guide](UPGRADING.md) records package-specific
 contract changes and operator steps. A source merge alone is not proof that old clients,
 credentials or persisted state have been migrated.
-
-<a id="building-around-the-cut"></a>
 
 ## Building around changes
 
@@ -89,3 +85,23 @@ The substrate remains pre-1.0. There is no 1.0 compatibility promise yet.
   minor ships, a one-minor overlap.
 
 These package rules do not replace wire conformance or a hosted service's deployment policy.
+
+## Earlier section links
+
+These links lead to the current guidance for sections renamed in earlier versions.
+
+### What is stable today [#what-is-stable-today]
+
+See [What you can build on](#what-you-can-build-on).
+
+### The npm semver caveat [#the-npm-semver-caveat]
+
+See [Package versions](#package-versions).
+
+### The coming v0.4 cut [#the-coming-v04-cut]
+
+See [Endpoint migration](#endpoint-migration).
+
+### Building around the cut [#building-around-the-cut]
+
+See [Building around changes](#building-around-changes).

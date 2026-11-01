@@ -1,0 +1,148 @@
+---
+title: Glossary
+description: "Definitions of Cotal's identity, messaging, delivery, and operator terms."
+kind: Reference
+audience: everyone
+---
+
+Terms used across these docs and the [wire specification](../SPEC.md#1-scope-and-terminology), in alphabetical order. Each entry links to its reference page or spec section.
+
+## Agent file
+
+A `.cotal/agents/<name>.md` file with identity, launch settings, and channel permissions in YAML frontmatter. Its Markdown body supplies the agent's persona text for the session's system prompt. See [Agent files](agent-files.mdx).
+
+## Agent node
+
+A participant whose `AgentCard.kind` is `agent`. Other participants, such as observers and dashboards, use `endpoint`. See [SPEC §1](../SPEC.md#1-scope-and-terminology).
+
+## Anycast
+
+A delivery mode that addresses a service role and delivers each message to one consumer of that role. See [SPEC §4](../SPEC.md#4-delivery-modes).
+
+## Attention
+
+An advisory receive preference reported in presence. The global mode is `open`, `dnd`, or `focus`, with per-channel overrides of `quiet` or `muted`. Attention affects what wakes an agent. It does not change broker delivery or authorization. See [SPEC §6](../SPEC.md#6-presence-and-discovery).
+
+## Broker
+
+The trusted message router for a space. The defined transport binding uses NATS with JetStream. See [SPEC §1](../SPEC.md#1-scope-and-terminology) and [§8](../SPEC.md#8-nats--jetstream-binding).
+
+## Channel
+
+A named multicast topic within a space. Channel names are dotted and hierarchical, such as `team.backend`. See [SPEC §7](../SPEC.md#7-channels).
+
+## Channel registry
+
+The per-space store of channel configuration, keyed by channel name. Entries hold `replay`, `replayWindow`, `deliveryClass`, `description`, and `instructions`. The reserved `=defaults` key holds space-wide defaults. See [SPEC §7](../SPEC.md#7-channels).
+
+## Connector
+
+An adapter that connects an agent application, such as Claude Code, OpenCode, or Hermes, to the mesh and exposes the `cotal_*` tools. See [Connect Claude Code](connect-claude.mdx).
+
+## Control plane
+
+The typed request/reply command interface on the `ep` rails, served by endpoints such as the manager and delivery daemon. Commands have broker-enforced permissions. See [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04) and [Architecture](architecture.mdx).
+
+## Delivery class
+
+A channel's delivery guarantee. `live` is at-most-once delivery to current subscribers. `durable` adds an at-least-once backstop for current members within retention. Class is distinct from the message's addressing mode. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Channel permissions](channels-and-permissions.mdx).
+
+## Delivery daemon (Plane-3)
+
+The server-side component that writes fan-out copies, authorizes durable reads, and records durable channel membership. It provides the channel backstop separately from the manager. See [Delivery daemon](delivery-daemon.mdx).
+
+## Delivery modes
+
+The three ways to address a message. Multicast addresses a channel, unicast addresses an instance, and anycast addresses a role. Each message uses one mode. See [SPEC §4](../SPEC.md#4-delivery-modes).
+
+## Direct message
+
+A direct message, or unicast message, addresses one instance's inbox by principal. In authenticated deployments, its consumer is lifecycle-scoped, so a same-name successor does not inherit the previous lifecycle's backlog. See [SPEC §4](../SPEC.md#4-delivery-modes) and [§8](../SPEC.md#8-nats--jetstream-binding).
+
+## Durable backstop
+
+A per-member store for `durable` channel posts and authorized `live` channel mention copies. Copies remain pending until acknowledged, within retention. Reads check the recipient's current lifecycle and read ACL, plus membership for durable-channel copies. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Delivery daemon](delivery-daemon.mdx).
+
+## Endpoint
+
+A connected participant, whether an agent or another kind of client. In the control interface, an endpoint is also a daemon that publishes typed contracts and serves commands. See [SPEC §1](../SPEC.md#1-scope-and-terminology) and [§13](../SPEC.md#13-endpoint-control-surface-v04).
+
+## History
+
+History is retained channel content that a reader can request within its read ACL, even without current membership. Replay is automatic history backfill on join when effective `replay` is enabled, optionally bounded by `replayWindow`. Disabling replay does not revoke history access. See [SPEC §7](../SPEC.md#7-channels).
+
+## Instance (id)
+
+A connected participant identified by its principal, used as sender and presence key. Per-instance durable names also carry the lifecycle UID so a same-name successor inherits no backlog. See [SPEC §2](../SPEC.md#2-identity) and [§8](../SPEC.md#8-nats--jetstream-binding).
+
+## Join link
+
+A `cotal://` or `cotals://` URL carrying the broker host and space, with optional credentials and channels. `cotals://` requires TLS. See [SPEC §10](../SPEC.md#10-connection-and-onboarding).
+
+## Lifecycle UID (`lifecycleUid`)
+
+An unguessable, never-reused id for one managed lifecycle under a principal. It scopes per-instance durable state and survives supervised restart. Presence reports it for display. Authority checks use the trusted lifecycle mapping. See [SPEC §13.1](../SPEC.md#131-lifecycle-identity) and [§6](../SPEC.md#6-presence-and-discovery).
+
+## Manager
+
+The supervisor that launches and manages agent nodes through a pluggable runtime. Its provisioning path prepares agent durables and records read ACLs. The delivery daemon records durable channel membership when agents join. See [Run a mesh](run-a-mesh.mdx).
+
+## Manifest
+
+A `cotal.yaml` document with `kind: Mesh` that declares a team's channels, agents, and access for launch. See [Mesh manifest](manifest.mdx).
+
+## Mention
+
+A lowercased peer name in a message's `mentions` field. It is a wake hint. On a `live` channel, a uniquely resolved target also gets a durable copy if its current read ACL permits that channel, even when unjoined. See [SPEC §4](../SPEC.md#4-delivery-modes) and [§5](../SPEC.md#5-envelopes).
+
+## Mesh
+
+A running Cotal deployment with a broker, a space, and the peers coordinating in that space. See [What is Cotal?](what-is-cotal.mdx).
+
+## Multicast
+
+A delivery mode that delivers a message to every subscriber of its channel. See [SPEC §4](../SPEC.md#4-delivery-modes).
+
+## Observer
+
+A read-only credential profile for channel traffic, channel history, presence, and the channel registry. It cannot publish application messages or read DMs. An admin profile has broader visibility, including DMs. See [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization).
+
+## Presence
+
+The per-space directory keyed by principal. Each record reports a participant's card, status, activity, attention, and last heartbeat, with lifecycle identity and other optional observations. See [SPEC §6](../SPEC.md#6-presence-and-discovery).
+
+## Principal (`owner.actor`)
+
+An instance's wire identity, formed from two routing tokens. The owner identifies the account the instance acts for. The actor is its handle within that owner. Authenticated owners use derived `u_…` tokens. Open mode uses `local`. The connection nkey is a transport credential. See [SPEC §2](../SPEC.md#2-identity) and [Identity and auth](identity-and-auth.mdx).
+
+## Profile
+
+A default-deny credential class that defines permitted subjects, streams, consumers, and KV keys. `agent`, `observer`, and `admin` are the main participant profiles. Scoped infrastructure profiles grant specific operator tasks. See [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) and [Appendix B](../SPEC.md#appendix-b-profile-acls).
+
+## Provisioner
+
+A privileged role that prepares streams, durables, and agent read-ACL records during setup or launch. A signing authority mints the scoped credentials. Runtime durable membership belongs to the delivery daemon. See [SPEC §7](../SPEC.md#7-channels) and [Appendix B](../SPEC.md#appendix-b-profile-acls).
+
+## Retirement
+
+The terminal teardown of a lifecycle when an agent is permanently removed, such as by despawn or terminal supervision escalation. It settles accepted work, revokes and evicts credentials, and records retirement before releasing the name. A supervised restart preserves the lifecycle UID. See [SPEC §13.1](../SPEC.md#131-lifecycle-identity) and [Identity and auth](identity-and-auth.mdx).
+
+## Role
+
+A named anycast messaging target shared by consumers. Each message reaches one consumer. This is distinct from a registered endpoint service with a discoverable command contract. See [Control discovery](control-surface.mdx#service-discovery).
+
+## Runtime
+
+The backend through which the manager runs agent processes. `pty` is built in. Extensions provide `tmux`, `cmux`, `orca`, and `herdr` runtimes. See [Launch agents](launch-agents.mdx).
+
+## Space
+
+An isolated coordination context and tenant boundary. In the NATS binding, each space maps to one account. A broker can host several spaces. See [SPEC §1](../SPEC.md#1-scope-and-terminology) and [Spaces](spaces.mdx).
+
+## Spawn capability
+
+The `spawn` capability requests manager lifecycle commands. Issued endpoint grants and target scope determine which peers the caller may manage. It grants no blanket space authority. See [agent files](agent-files.mdx) and [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls).
+
+## Trusted reader
+
+The delivery daemon component that reads the mixed durable backstop on an agent's behalf. It checks each entry against current lifecycle identity and read ACL, plus membership for durable-channel copies, before handing it to the agent. Live-channel mention copies require the read ACL, not membership. See [Delivery daemon](delivery-daemon.mdx) and [SPEC §8](../SPEC.md#8-nats--jetstream-binding).

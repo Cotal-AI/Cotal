@@ -159,7 +159,7 @@ function fromEarlierBoot(rec: SeatRecord, boot: string): boolean {
  *
  * Signals the custodian and the child only while their current start identity matches the record. The
  * child's descendants are not in the record, so its process group is signalled by pgid and then swept by
- * membership alone, and the record's contents are trusted as written; docs/security.md lists both as
+ * membership alone, and the record's contents are trusted as written; docs/security-boundaries.mdx lists both as
  * accepted residuals. Verifies the custodian, the child and the child's whole process group gone, then
  * removes the custody record directory.
  */

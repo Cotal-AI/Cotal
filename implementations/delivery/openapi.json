@@ -1,0 +1,271 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Feedback intake HTTP API",
+    "version": "1",
+    "description": "HTTP interface of the reference feedback intake service. The default listener is 127.0.0.1:8787 and the operator can configure host and port. Health is unauthenticated. Feedback requires a provisioned tester key. The service persists an accepted record before publishing it to the feedback channel. A 202 with published false still means the record was stored. This implementation reference does not establish a hosted public feedback product.\n\nThe body limit defaults to 65536 bytes and is configurable with --max-bytes. The rate limit defaults to 30 authenticated admissions per tester per fixed minute, configurable with --rate-limit. Failed body validation still consumes an admission. Query strings are accepted because dispatch uses the URL pathname. Unknown paths and methods return JSON 404. The handler does not enforce Content-Type or Origin and sends no CORS promise.",
+    "license": {
+      "name": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://{host}:{port}",
+      "variables": {
+        "host": {
+          "default": "127.0.0.1"
+        },
+        "port": {
+          "default": "8787"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "FeedbackKey": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "read-feedback-health",
+        "summary": "Read feedback intake health",
+        "description": "Return readiness of the running feedback HTTP listener. No tester key is required.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The listener is running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/feedback": {
+      "post": {
+        "operationId": "submit-feedback",
+        "summary": "Submit tester feedback",
+        "description": "Authenticate the tester key, reserve one rate-limit admission, validate and persist the record, then attempt mesh publication. Tester identity comes from the provisioned key record, not the request body. Raw diagnostics are not echoed in the response.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Feedback"
+              },
+              "example": {
+                "origin": "human",
+                "type": "friction",
+                "summary": "The setup command did not explain the missing broker.",
+                "severity": "low"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Stored feedback. published reports whether mesh publication was confirmed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "published": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "id",
+                    "published"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON or invalid fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid tester key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Feedback body exceeds the configured byte limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Tester exceeded the configured fixed-minute admission limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected intake failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "FeedbackKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Provisioned tester key. The bearer scheme is case-insensitive; the key is trimmed."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "Feedback": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string",
+            "enum": [
+              "human",
+              "agent"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "bug",
+              "idea",
+              "friction",
+              "praise",
+              "other"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "client": {},
+          "diagnostics": {},
+          "details": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 10000
+          },
+          "area": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "repro": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 10000
+          },
+          "expected": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 5000
+          },
+          "actual": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 5000
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40
+          }
+        },
+        "required": [
+          "origin",
+          "type",
+          "summary"
+        ],
+        "description": "Strings are trimmed before length checks. Empty or null optional strings are omitted. Unknown properties are discarded. client and diagnostics accept arbitrary JSON."
+      }
+    }
+  },
+  "x-source": "implementations/delivery/src/feedback-intake.ts"
+}

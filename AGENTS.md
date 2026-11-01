@@ -29,9 +29,9 @@ concepts leak into `@cotal-ai/core` or the shared layers.
 
 - [README.md](README.md): what Cotal is, for a general audience.
 - [docs/README.md](docs/README.md): the docs index and reading path.
-- [docs/what-is-cotal.md](docs/what-is-cotal.md) (*what* it does) →
-[docs/architecture.md](docs/architecture.md) (*how*) →
-[docs/connect-claude.md](docs/connect-claude.md) (the connector).
+- [docs/what-is-cotal.mdx](docs/what-is-cotal.mdx) (*what* it does) →
+[docs/architecture.mdx](docs/architecture.mdx) (*how*) →
+[docs/connect-claude.mdx](docs/connect-claude.mdx) (the connector).
 - [SPEC.md](SPEC.md): the **normative** wire contract. Where a client disagrees with the spec,
 the spec wins. [spec/cotal-lang.md](spec/cotal-lang.md) is the normative reference for the
 workflow language (SPEC §14); every `js` block in it is validated by `pnpm smoke:lang-surface`.
@@ -52,7 +52,7 @@ pnpm check         # every local check, :live suites included; runs every step a
 
 ESM only (`"type": "module"`); `tsx` runs TS directly, but packages import each other from their
 built `dist/`, so run `pnpm build` after `pnpm install` and after editing a package
-([docs/cli.md](docs/cli.md#running-it)). Node &gt;= 22.10.
+([CLI usage](https://docs.cotal.ai/api-reference/cli-usage/#running-it)). Node &gt;= 22.10.
 
 ## Repository map
 
@@ -130,7 +130,7 @@ peer driven through Jcode's Harness API bridge.
 - `**@cotal-ai/pi**` (`extensions/pi`): the pi adapter — a pi extension (loaded into the
 user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's process and
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
-See [docs/connect-pi.md](docs/connect-pi.md).
+See [docs/connect-pi.mdx](docs/connect-pi.mdx).
 - `**@cotal-ai/cmux**` (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
 plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 - `**@cotal-ai/tmux**` (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
@@ -201,7 +201,7 @@ A published page's relative link to `SPEC.md` or a top-level `docs/*.md` page mu
 the group map in `website/scripts/sync-docs.mjs` publishes. Any other relative link, a design note
 under `docs/design/` included, must name a file that exists and goes to GitHub. A `#anchor` on a
 link to a published page, the same page included, must name a heading there or an explicit
-`<a id>`. The docs index links the same `docs/*.md` pages and `SPEC.md` that the group map publishes.
+`<a id>`. The docs index links the same Markdown and MDX pages and `SPEC.md` that the group map publishes.
 `pnpm check:docs-site` runs that sync and fails otherwise.
 `docs/` describes the **protocol** only; each example documents itself in its own
 `examples/*/README.md`.

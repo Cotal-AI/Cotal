@@ -1,12 +1,3 @@
-// Sync the repo's canonical Markdown (/docs/*.md + /SPEC.md) into Starlight's
-// content collection. The repo files stay the single source of truth; this only
-// derives a frontmatter title from the H1 each page opens with and a description
-// from the first paragraph, and rewrites cross-links to Starlight routes. Generated
-// files are git-ignored (see .gitignore).
-//
-// The group map below IS the site's information architecture. It publishes the same
-// pages docs/README.md (the docs index) links, and the sync refuses when the two
-// differ. Missing source files fail the sync loudly — no silent drift.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
@@ -18,12 +9,15 @@ import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
-import { PROMPT_FENCE } from '../src/prompt.js';
-import { httpReferences, referenceMarkdown, loadReferenceSpec } from './http-api.mjs';
+import { readDocument } from '@cotal-ai/docs-content';
+import { connectorIcons } from '../src/lib/connector-icons.mjs';
+import { httpReferences } from '../src/http-references.js';
+import { publishHttpReferences } from './publish-http.mjs';
+import { assertReferenceCurrent } from './http-api.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
-const outDir = join(here, '..', 'src', 'content', 'docs');
+const outDir = join(here, '..', 'content');
 const genDir = join(here, '..', 'src', 'generated');
 const pubDir = join(here, '..', 'public');
 
@@ -31,111 +25,110 @@ const pubDir = join(here, '..', 'public');
 const GITHUB_BLOB = 'https://github.com/Cotal-AI/Cotal/blob/main';
 const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 
-// The Quickstart's paste-into-your-agent fence renders as the interactive
-// AgentPrompt card on the site (the page is emitted as MDX; the .md twin
-// endpoint restores the plain fence). The prompt's source of truth is
-// src/prompt.js; the fence in docs/getting-started.md must match it exactly.
-const QUICKSTART_SRC = 'docs/getting-started.md';
-
-// Map a source basename (no extension) to its Starlight slug. README is the docs
+// Map a source basename (no extension) to its Fumadocs slug. README is the docs
 // index (its front-door content lives on the generated landing page), so it is
 // excluded from the sync and links to it go to the site root.
 const slugFor = (name) => name.toLowerCase();
 
-// Source files in intended reading order → sidebar groups (the six-section IA).
-const groups = [
-  {
-    label: 'Start here',
-    files: ['docs/what-is-cotal.md', 'docs/getting-started.md', 'docs/using-cotal.md'],
-  },
-  {
-    // Three lanes, in order: operators → connector users → protocol implementers
-    // (mirrors docs/README.md's Guides lanes).
-    label: 'Guides',
-    files: [
-      'docs/run-a-mesh.md',
-      'docs/define-a-team.md',
-      'docs/watch-a-mesh.md',
-      'docs/deploy.md',
-      'docs/UPGRADING.md',
-      'docs/examples.md',
-      'docs/connectors.md',
-      'docs/connect-claude.md',
-      'docs/connect-opencode.md',
-      'docs/connect-codex.md',
-      'docs/connect-hermes.md',
-      'docs/connect-jcode.md',
-      'docs/connect-pi.md',
-      'docs/authoring-a-connector.md',
-      'docs/build-a-client.md',
-      'docs/embedding.md',
-    ],
-  },
-  {
-    label: 'Concepts',
-    files: [
-      'docs/architecture.md',
-      'docs/control-surface.md',
-      'docs/workflows.md',
-      'docs/spaces.md',
-      'docs/transport.md',
-      'docs/presence-and-delivery.md',
-      'docs/identity-and-auth.md',
-      'docs/delivery-daemon.md',
-      'docs/security.md',
-    ],
-  },
-  {
-    label: 'Reference',
-    files: [
-      'docs/api-reference.md',
-      'docs/dashboard-api.md',
-      'docs/auth-api.md',
-      'docs/cli.md',
-      'docs/mcp-tools.md',
-      'docs/agent-files.md',
-      'docs/manifest.md',
-      'docs/channels-and-permissions.md',
-      'docs/config.md',
-      'docs/telemetry.md',
-      'docs/mesh-view.md',
-      'docs/lang-card.md',
-      'docs/glossary.md',
-    ],
-  },
-  {
-    label: 'Specification',
-    files: ['SPEC.md'],
-  },
-  {
-    label: 'Project',
-    files: ['docs/roadmap.md', 'docs/release.md', 'docs/stability.md', 'docs/setup-internals.md'],
-  },
+const page = (source) => ({ kind: 'page', source });
+const group = (title, children) => ({ kind: 'group', title, children });
+const navigation = [
+  { section: 'docs', title: 'Docs', children: [
+    group('Start here', ['what-is-cotal', 'installation', 'getting-started', 'using-cotal', 'examples'].map(name => page(`docs/${name}.mdx`))),
+    group('Guides', [
+      group('Operate a mesh', [
+        page('docs/setup.mdx'),
+        page('docs/run-a-mesh.mdx'),
+        page('docs/launch-agents.mdx'),
+        page('docs/define-a-team.mdx'),
+        page('docs/register-a-mesh.mdx'),
+        page('docs/watch-a-mesh.mdx'),
+        page('docs/telemetry.mdx'),
+        page('docs/console.mdx'),
+        page('docs/web-dashboard.mdx'),
+        page('docs/remote-supervision.mdx'),
+        page('docs/supervise-processes.mdx'),
+        page('docs/deploy.mdx'),
+        page('docs/backup-a-mesh.mdx'),
+        page('docs/recover-a-mesh.mdx'),
+        page('docs/upgrade-cotal.mdx'),
+      ]),
+      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.mdx`))),
+      group('Build integrations', [
+        ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.mdx`)),
+        group('Embedding reference', ['exports', 'endpoints', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'service-custody', 'service-host', 'service-access', 'service-callers', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),
+        group('Connector reference', [
+          page('docs/connector-runtime-reference.mdx'),
+          ...['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi'].map(name => page(`docs/${name}-connector-reference.mdx`)),
+        ]),
+      ]),
+    ]),
+    group('Concepts', [
+      group('Fundamentals', ['architecture', 'spaces', 'transport'].map(name => page(`docs/${name}.mdx`))),
+      group('Messaging', [
+        ...['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.mdx`)),
+        group('Reference', [page('docs/delivery-service-reference.mdx')]),
+      ]),
+      group('Security', [
+        ...['identity-and-auth', 'security'].map(name => page(`docs/${name}.mdx`)),
+        group('Reference', ['identity-authority', 'identity-user-auth', 'identity-service-auth', 'security-boundaries'].map(name => page(`docs/${name}.mdx`))),
+      ]),
+      group('Agent coordination', [
+        ...['control-surface', 'workflows'].map(name => page(`docs/${name}.mdx`)),
+        group('Reference', ['control-discovery', 'control-lifecycle', 'workflow-operations', 'workflow-runtime', 'workflow-effects'].map(name => page(`docs/${name}.mdx`))),
+      ]),
+    ]),
+    group('Specification', [page('SPEC.md')]),
+    group('Project', ['roadmap', 'release', 'stability', 'setup-internals', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
+  ] },
+  { section: 'api-reference', title: 'API Reference', children: [
+    page('docs/overview.mdx'),
+    page('docs/api-reference.mdx'),
+    group('CLI', [
+      page('docs/cli.mdx'),
+      group('Workstation', ['cli-usage', 'cli-installation', 'cli-selection'].map(name => page(`docs/${name}.mdx`))),
+      group('Mesh lifecycle', ['cli-startup', 'cli-shutdown', 'cli-backups'].map(name => page(`docs/${name}.mdx`))),
+      group('Agents', ['cli-agents', 'cli-agent-control', 'cli-agent-views'].map(name => page(`docs/${name}.mdx`))),
+      group('Services', ['cli-services', 'cli-processes', 'cli-maintenance', 'cli-integrations'].map(name => page(`docs/${name}.mdx`))),
+      group('Communication', ['cli-endpoints', 'cli-messaging', 'cli-observation'].map(name => page(`docs/${name}.mdx`))),
+      page('docs/cli-auth.mdx'),
+      page('docs/cli-runs.mdx'),
+    ]),
+    group('Agent tools', [page('docs/mcp-tools.mdx')]),
+    group('Configuration', ['agent-files', 'manifest', 'channels-and-permissions', 'config'].map(name => page(`docs/${name}.mdx`))),
+    group('Models', ['mesh-view', 'lang-card', 'glossary'].map(name => page(`docs/${name}.mdx`))),
+  ] },
 ];
-
-const referenceSpecs = httpReferences.map((reference) => ({ reference, spec: loadReferenceSpec(reference) }));
-const referenceSources = new Set(httpReferences.map((reference) => reference.docSource));
-for (const { reference, spec } of referenceSpecs) {
-  if (readFileSync(join(repoRoot, reference.docSource), 'utf8') !== referenceMarkdown(reference, spec))
-    throw new Error(`${reference.label} reference is stale; run npm --prefix website run gen:api`);
-}
-
-const sources = groups.flatMap((g) => g.files);
-
-// Slugs we publish, keyed by source path so a design note cannot take the route of a
-// published page that shares its name.
-const knownSlugs = new Map(sources.map((rel) => [rel, slugFor(basename(rel).replace(/\.md$/, ''))]));
-// This source feeds Markdown and agent bundles; the plugin owns its HTML reference.
+const publications = [];
+const collectPages = (children, section) => {
+  for (const node of children) {
+    if (node.kind === 'group') collectPages(node.children, section);
+    else publications.push({ source: node.source, section });
+  }
+};
+for (const section of navigation) collectPages(section.children, section.section);
+const referenceSources = new Set(httpReferences.map(reference => reference.docSource));
+const sources = [...publications.map(page => page.source), ...referenceSources];
+const sectionBySource = new Map(publications.map(page => [page.source, page.section]));
+if (sectionBySource.size !== publications.length) throw new Error('page appears more than once in navigation');
+const sectionFor = rel => {
+  const section = sectionBySource.get(rel);
+  if (!section) throw new Error(`page is absent from navigation: ${rel}`);
+  return section;
+};
+const knownSlugs = new Map(publications.map(({ source: rel }) => [rel, `${sectionFor(rel)}/${slugFor(basename(rel).replace(/\.mdx?$/, ''))}`]));
 for (const reference of httpReferences) knownSlugs.set(reference.docSource, reference.base);
+if (new Set(knownSlugs.values()).size !== sources.length) throw new Error('duplicate published page URL');
+const fragmentLinks = [];
 
 // The site publishes only SPEC.md and top-level docs pages, so one of these the group map
 // leaves out is drift, and every other repo file stays on GitHub.
-const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel);
+const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.mdx?$/.test(rel);
 
 // Rewrite repo-relative links to site routes. Every link is first resolved as a URL
 // against its source file's GitHub address (sources live at different depths:
 // docs/*.md vs the root SPEC.md), then its path, percent-decoded, is mapped:
-//   a group-map source        → the published Starlight slug (docs/README.md → /)
+//   a group-map source        → the published Fumadocs slug (docs/README.md → /)
 //   spec/cotal.schema.json    → the published /cotal.schema.json
 //   assets/*                  → /assets/* (copied into public/ below)
 //   anything else in the repo → GitHub
@@ -143,7 +136,7 @@ const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel);
 // to an unpublished site page or to a missing repo path throws — no silent drift.
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
-const assetRefs = new Set(['assets/cotal-demo.webp']);
+const assetRefs = new Set(['assets/cotal-demo.webp', ...[...connectorIcons.values()].map(src => src.slice(1))]);
 
 function rewriteTarget(target, rel) {
   const url = new URL(target, `${GITHUB_BLOB}/${rel}`);
@@ -184,6 +177,7 @@ const urlInput = (value) => value.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').re
 function rewriteAttr(name, value, rel) {
   const rewrite = (url) => {
     const target = urlInput(url);
+    if (name === 'href' && target.startsWith('#')) fragmentLinks.push([rel, rel, target]);
     return isRepoRelative(target) ? rewriteTarget(target, rel) : url;
   };
   if (name !== 'srcset') return rewrite(value);
@@ -256,72 +250,6 @@ function rewriteLinks(md, rel, extensions) {
   return out + md.slice(at);
 }
 
-// The title comes from the lexed first block, so a `#` comment in a code fence is never read as the
-// H1. Starlight renders the title itself, so the H1 is dropped from the body. The lexer measures its
-// spans in the text after turning CR and CRLF into LF, so the body is cut from that same text.
-function splitH1(md, rel) {
-  const lf = md.replace(/\r\n?/g, '\n');
-  const [h1] = marked.lexer(lf);
-  if (h1?.type !== 'heading' || h1.depth !== 1) throw new Error(`page does not open with an H1: ${rel}`);
-  return { title: h1.text, body: lf.slice(h1.raw.length).replace(/^\n+/, '') };
-}
-
-// A hard line break renders as a br with no text, but it separates the words on either side.
-const textOf = (node) =>
-  node.nodeName === '#text' ? node.value : node.nodeName === 'br' ? ' ' : (node.childNodes ?? []).map(textOf).join('');
-
-// Every `#fragment` a published page links to, as [source, target page, fragment], and the ids
-// each published page has. A link to a section that does not exist fails the sync.
-const fragmentLinks = [];
-const anchors = new Map();
-
-// A page's ids: each heading's, as GitHub and the site both make it (the rendered text in lower
-// case, punctuation dropped, each space a `-`, and a repeat numbered `-1`, `-2`), and each
-// explicit `<a id>`.
-function anchorsOf(md) {
-  const ids = new Set();
-  const seen = new Map();
-  const walk = (tokens) => {
-    for (const token of tokens ?? []) {
-      if (token.type === 'heading') {
-        const base = textOf(parseFragment(marked.parseInline(token.text))).toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu, '').replace(/ /g, '-');
-        const n = seen.get(base) ?? 0;
-        seen.set(base, n + 1);
-        ids.add(n ? `${base}-${n}` : base);
-      }
-      walk(token.tokens);
-      walk(token.items);
-    }
-  };
-  walk(marked.lexer(md));
-  for (const [, id] of md.matchAll(/<a\s+(?:id|name)="([^"]+)"/g)) ids.add(id);
-  return ids;
-}
-
-const graphemes = new Intl.Segmenter();
-
-// Every page opens with a banner blockquote and some with headings, so the description is the
-// first top-level paragraph after them that has text; an image alone has none. It is rendered and
-// read back as text, so a link keeps its label and loses its target. A long one is cut where the
-// character that crosses the limit begins, so the cut never splits an emoji or an accented letter.
-// When the first character crosses it alone, the cut would keep nothing.
-function firstParagraph(md, rel) {
-  for (const token of marked.lexer(md)) {
-    if (token.type !== 'paragraph') continue;
-    const text = textOf(parseFragment(marked.parser([token]))).replace(/\s+/g, ' ').trim();
-    if (!text) continue;
-    if (text.length <= 160) return text;
-    const cut = graphemes.segment(text).containing(159).index;
-    if (cut === 0) throw new Error(`first character of the description is too long to cut to 160 units: ${rel}`);
-    return `${text.slice(0, cut).replace(/\s+\S*$/, '')}…`;
-  }
-  throw new Error(`no paragraph with text to describe the page: ${rel}`);
-}
-
-function yamlEscape(s) {
-  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
 // The index also links design notes (docs/design/) and spec/ references, which stay on
 // GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
 // Readers follow the links of the rendered index on GitHub, and a hand-written reading of
@@ -346,21 +274,18 @@ visit(parseHtml(marked.parse(readFileSync(join(repoRoot, 'docs', 'README.md'), '
 for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
 for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group map but not indexed: ${rel}`);
 
-// Clean generated markdown (keep hand-authored .mdx like index.mdx; the
-// generated getting-started.mdx is ours to remove).
+for (const reference of httpReferences) assertReferenceCurrent(reference);
+
+const documents = new Map(await Promise.all(sources.map(async rel =>
+  [rel, await readDocument(join(repoRoot, rel))],
+)));
+
 mkdirSync(outDir, { recursive: true });
-for (const f of readdirSync(outDir)) {
-  if (f.endsWith('.md') || f === 'getting-started.mdx') rmSync(join(outDir, f));
-}
+for (const section of ['docs', 'api-reference', 'api']) rmSync(join(outDir, section), { recursive: true, force: true });
 mkdirSync(genDir, { recursive: true });
 
 // Publish the machine-readable schema at its canonical URL (/cotal.schema.json).
 mkdirSync(pubDir, { recursive: true });
-for (const { reference, spec } of referenceSpecs) {
-  const json = JSON.stringify(spec, null, 2) + '\n';
-  writeFileSync(join(pubDir, reference.specFile), json);
-  writeFileSync(join(genDir, reference.specFile), json);
-}
 copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.schema.json'));
 
 // Publish the installer at /install.sh, which is what get.cotal.ai serves. The repo root
@@ -368,39 +293,19 @@ copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.sc
 // never drift from the one people audit on GitHub.
 copyFileSync(join(repoRoot, 'install.sh'), join(pubDir, 'install.sh'));
 
-const sidebar = [];
-for (const group of groups) {
-  const items = [];
-  for (const rel of group.files) {
-    const src = join(repoRoot, rel);
-    const name = basename(rel).replace(/\.md$/, '');
-    const slug = slugFor(name);
-    const { title, body } = splitH1(readFileSync(src, 'utf8'), rel);
-    anchors.set(rel, anchorsOf(body));
-    const description = firstParagraph(body, rel);
-    // The Quickstart is emitted as MDX, which has no indented code and reads braces and tags as JavaScript.
-    let md = rewriteLinks(body, rel, rel === QUICKSTART_SRC ? [mdxjs(), gfm()] : [gfm()]);
-    const fm = ['---', `title: ${yamlEscape(title)}`, `description: ${yamlEscape(description)}`, '---', ''].join('\n');
-    let ext = 'md';
-    let imports = '';
-    if (rel === QUICKSTART_SRC) {
-      if (!md.includes(PROMPT_FENCE))
-        throw new Error(`quickstart prompt fence not found: ${rel} drifted from src/prompt.js`);
-      md = md.replace(PROMPT_FENCE, '<AgentPrompt />');
-      imports = "import AgentPrompt from '../../components/AgentPrompt.astro';\n\n";
-      ext = 'mdx';
-    }
-    writeFileSync(join(outDir, `${slug}.${ext}`), fm + imports + md);
-    if (!referenceSources.has(rel)) items.push({ label: title, slug });
-  }
-  sidebar.push({ label: group.label, items });
+for (const [rel, document] of documents) {
+  if (referenceSources.has(rel)) continue;
+  const slug = slugFor(basename(rel).replace(/\.mdx?$/, ''));
+  const extensions = document.format === 'mdx' ? [mdxjs(), gfm()] : [gfm()];
+  const body = rewriteLinks(document.content, rel, extensions);
+  const metadata = { ...document.metadata, ...(connectorIcons.has(slug) ? { icon: slug } : {}) };
+  const frontmatter = ['---', ...Object.entries(metadata)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`), '---', ''].join('\n');
+  const section = sectionFor(rel);
+  mkdirSync(join(outDir, section), { recursive: true });
+  writeFileSync(join(outDir, section, `${slug}.${document.format}`), frontmatter + body);
 }
-
-writeFileSync(join(genDir, 'sidebar.json'), JSON.stringify(sidebar, null, 2) + '\n');
-
-const deadAnchors = fragmentLinks.filter(([, page, hash]) => !anchors.get(page)?.has(decodeURIComponent(hash.slice(1))));
-if (deadAnchors.length)
-  throw new Error(`link to a missing anchor:\n${deadAnchors.map(([from, page, hash]) => `  ${from}: ${page === from ? '' : page}${hash}`).join('\n')}`);
 
 // Copy every image the pages reference into public/. copyFileSync throws on a
 // missing source, so a dead image link fails the sync instead of 404ing live.
@@ -466,5 +371,129 @@ writeFileSync(
 );
 
 console.log(
-  `sync-docs: wrote ${sources.length} pages + sidebar.json + cotal.schema.json + ${assetRefs.size} images + ${skills.length} skills`,
+  `sync-docs: wrote ${sources.length} pages + cotal.schema.json + ${assetRefs.size} images + ${skills.length} skills`,
 );
+
+
+const textOf = node => node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join('');
+function anchorsOf(document) {
+  const label = text => textOf(parseFragment(marked.parseInline(text))).replace(/\s+/g, ' ').trim();
+  const explicit = new Map();
+  let fence;
+  for (const line of document.content.split('\n')) {
+    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (marker) {
+      if (!fence) fence = { char: marker[1][0], length: marker[1].length };
+      else if (marker[1][0] === fence.char && marker[1].length >= fence.length) fence = undefined;
+      continue;
+    }
+    if (fence) continue;
+    const heading = /^#{2,6}\s+(.+?)\s+\[#([^\]]+)\]\s*$/.exec(line);
+    if (!heading) continue;
+    const key = label(heading[1]);
+    const ids = explicit.get(key) ?? [];
+    ids.push(heading[2]);
+    explicit.set(key, ids);
+  }
+  const ids = new Set();
+  const seen = new Map();
+  const walk = tokens => {
+    for (const token of tokens ?? []) {
+      if (token.type === 'heading' && token.depth !== 1) {
+        const text = label(token.text.replace(/\s+\[#[^\]]+\]\s*$/, ""));
+        const native = explicit.get(text)?.shift();
+        if (native) ids.add(native);
+        else {
+          const base = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu, '').replace(/ /g, '-');
+          const n = seen.get(base) ?? 0;
+          seen.set(base, n + 1);
+          ids.add(n ? `${base}-${n}` : base);
+        }
+      }
+      walk(token.tokens);
+      walk(token.items);
+    }
+  };
+  walk(marked.lexer(document.markdown));
+  for (const [, id] of document.content.matchAll(/<a\s+(?:id|name)="([^"]+)"/g)) ids.add(id);
+  return ids;
+}
+const anchors = new Map([...documents].map(([rel, document]) => [rel, anchorsOf(document)]));
+
+// The manifest drives static exports, navigation and legacy redirects.
+for (const section of ['docs', 'api-reference', 'api']) {
+  rmSync(join(pubDir, section), { recursive: true, force: true });
+}
+const http = publishHttpReferences({
+  outDir, pubDir, genDir, documents,
+  rewriteMarkdown: (markdown, rel) => rewriteLinks(markdown, rel, [gfm()]),
+});
+const pages = [...documents].filter(([rel]) => !referenceSources.has(rel)).map(([rel, document]) => {
+  const slug = slugFor(basename(rel).replace(/\.mdx?$/, ''));
+  return { slug, title: document.metadata.title, section: sectionFor(rel), url: `/${sectionFor(rel)}/${slug}/`,
+    markdown: rewriteLinks(document.markdown, rel, [gfm()]) };
+});
+pages.push(...http.pages);
+const agents = await readDocument(join(here, '../src/content/docs/docs-for-agents.mdx'));
+const routeAgentLinks = text => text.replace(/\/([a-z-]+)(\/|\.md)/g, (match, slug, end) => {
+  const page = pages.find(p => p.slug === slug);
+  return page ? page.url.slice(0, -1) + end : match;
+});
+const agentsFrontmatter = ['---', ...Object.entries(agents.metadata)
+  .map(([key, value]) => `${key}: ${JSON.stringify(value)}`), '---', ''].join('\n');
+writeFileSync(join(outDir, 'docs/docs-for-agents.mdx'), agentsFrontmatter + routeAgentLinks(agents.content));
+pages.push({ slug: 'docs-for-agents', title: agents.metadata.title, section: 'docs', url: '/docs/docs-for-agents/', markdown: routeAgentLinks(agents.markdown) });
+const publishedNavigation = navigation.map(section => {
+  const convert = node => node.kind === 'page'
+    ? { kind: 'page', url: `/${knownSlugs.get(node.source)}/` }
+    : { kind: 'group', title: node.title, children: node.children.map(convert) };
+  const children = section.children.map(convert);
+  if (section.section === 'api-reference') children.push(...http.navigation);
+  if (section.section === 'docs') children.push({ kind: 'group', title: 'For agents', children: [{ kind: 'page', url: '/docs/docs-for-agents/' }] });
+  const order = pages.filter(page => page.section === section.section).map(page => page.slug);
+  writeFileSync(join(outDir, section.section, 'meta.json'), JSON.stringify({ title: section.title, root: true, pages: order }, null, 2));
+  return { section: section.section, title: section.title, children };
+});
+writeFileSync(join(genDir, 'navigation.mjs'), `// @ts-check\n/** @type {import('../lib/navigation').NavigationSection[]} */\nexport const navigation = ${JSON.stringify(publishedNavigation, null, 2)};\n`);
+writeFileSync(join(genDir, 'pages.json'), JSON.stringify(pages, null, 2));
+writeFileSync(join(genDir, 'routes.json'), JSON.stringify(pages.map(({slug,url}) => ({slug,url}))));
+const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/api-reference/ 301', '/api-reference/ /api-reference/api-reference/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
+for (const page of pages.filter(page => page.section !== 'api' && page.slug !== 'api-reference')) redirects.push(`/${page.slug} ${page.url} 301`, `/${page.slug}/ ${page.url} 301`, `/${page.slug}.md ${page.url.slice(0, -1)}.md 301`);
+redirects.push('/api-reference.md /api-reference/api-reference.md 301');
+for (const reference of httpReferences) redirects.push(`/${reference.docSlug} /${reference.base}/ 301`, `/${reference.docSlug}/ /${reference.base}/ 301`);
+writeFileSync(join(pubDir, '_redirects'), redirects.join('\n') + '\n');
+for (const page of pages) {
+  const file = join(pubDir, page.url.slice(1, -1) + '.md');
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, page.markdown);
+}
+const origin = 'https://docs.cotal.ai';
+const taskRoutes = [
+  ['getting-started', 'Install Cotal, start a local mesh, and launch your first agent.'],
+  ['using-cotal', 'Choose between personal sessions, hosted spaces, teams, and service integrations.'],
+  ['mcp-tools', 'Message peers, inspect the mesh, and manage teammates from an agent session.'],
+  ['define-a-team', 'Declare agents and channels in a team manifest.'],
+  ['channels-and-permissions', 'Grant or audit channel subscriptions and publishing permissions.'],
+  ['agent-files', 'Define a persona and its launch configuration.'],
+  ['watch-a-mesh', 'Observe activity through the console, event stream, or browser dashboard.'],
+  ['identity-and-auth', 'Understand credentials, authentication, and issued authority.'],
+  ['workflows', 'Coordinate durable work, human checkpoints, and recovery.'],
+  ['build-a-client', 'Implement a client for the wire contract.'],
+  ['spec', 'Check the normative protocol requirements.'],
+].map(([slug, description]) => {
+  const page = pages.find(page => page.slug === slug);
+  if (!page) throw new Error(`task route names an unpublished page: ${slug}`);
+  return `- [${page.title}](${origin}${page.url.slice(0, -1)}.md): ${description}`;
+});
+const taskRouting = '## Route by task\n\n' +
+  '- [Agent setup prompt](https://docs.cotal.ai/prompt.md): Run the setup instructions with your coding agent.\n' +
+  taskRoutes.join('\n') + '\n\n## All pages\n\n';
+writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n\n' + taskRouting + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
+for (const [name, subset] of [['full', pages], ['small', pages.filter(p => !['release', 'setup-internals', 'roadmap'].includes(p.slug))]]) {
+  writeFileSync(join(pubDir, `llms-${name}.txt`), subset.map(p => `Source: ${origin}${p.url}\n\n${p.markdown}`).join('\n\n'));
+}
+writeFileSync(join(pubDir, 'sitemap.xml'), '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + pages.map(p => `<url><loc>${origin}${p.url}</loc></url>`).join('') + '</urlset>');
+writeFileSync(join(pubDir, 'sitemap-index.xml'), '<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://docs.cotal.ai/sitemap.xml</loc></sitemap></sitemapindex>');
+
+const missingFragments = fragmentLinks.filter(([, target, hash]) => !anchors.get(target)?.has(decodeURIComponent(hash.slice(1))));
+if (missingFragments.length) throw new Error(`link to a missing anchor:\n${missingFragments.map(([from, target, hash]) => `  ${from}: ${target === from ? '' : target}${hash}`).join('\n')}`);
