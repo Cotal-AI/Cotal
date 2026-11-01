@@ -31,6 +31,7 @@ import {
 } from "../../auth/src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
+import { approveDevice } from "../../auth/smoke/_device-approval.js";
 
 // LABELLED SCRIPTED SDK FIXTURE CHILD (stands in for a model worker; not a production provider):
 // joins the mesh with the stock endpoint using ONLY the enrolled bearer command + sentinel path.
@@ -250,11 +251,8 @@ try {
   process.env.COTAL_HOME = partHome;
   const signup = await idp.api.signUpEmail({ body: { email: "p@example.test", password: "correct-horse-battery", name: "P" }, returnHeaders: true });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
-  const approve = async (userCode: string) => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin: idpOrigin } });
-    await fetch(`${idpUrl}/device/approve`, { method: "POST", headers: { "content-type": "application/json", cookie, origin: idpOrigin }, body: JSON.stringify({ userCode }) });
-  };
-  await establishIdpSession({ dir: partHome, idpUrl, clientId, onPrompt: (p: { userCode: string }) => void approve(p.userCode) });
+  const approve = (userCode: string) => approveDevice({ base: idpUrl, cookie, origin: idpOrigin }, userCode);
+  await establishIdpSession({ dir: partHome, idpUrl, clientId, onPrompt: (p: { userCode: string }) => approve(p.userCode) });
   const owner = deriveOwnerForIdpSubject(ownerSecret!, idpOrigin, (await idp.api.getSession({ headers: new Headers({ cookie }) }))!.user.id);
   // FIXTURE operator grant: events-required mesh arms the event plane on spawn, which is admin tier.
   grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });

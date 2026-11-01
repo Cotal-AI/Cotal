@@ -24,7 +24,7 @@ export interface TelemetryResult {
   readonly level: TelemetryLevel;
   readonly source: TelemetrySource;
   readonly installId: string | null;
-  /** The account hash sent at `regular` (see docs/telemetry.md); `null` otherwise. */
+  /** The account hash sent at `regular` (see docs/telemetry.mdx); `null` otherwise. */
   readonly account: string | null;
   readonly url: string;
   readonly file: string;

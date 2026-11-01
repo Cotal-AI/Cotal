@@ -794,6 +794,13 @@ async function runStartedDelivery(
    *  remove. Every exit path from the acquire onward goes through one of the three closures that
    *  call it, which is what keeps the record's lifetime equal to this daemon's. */
   let unrecordPid: (() => void) | undefined;
+  /** Gives the shard back when the broker's row is provably this instance's, at the row's own
+   *  revision, and leaves any other row alone. Every exit path releases through this (why it
+   *  re-reads rather than trusting `revision` is argued at `shutdown`). */
+  const releaseOwnLease = async (): Promise<void> => {
+    const own = await ep.readDeliveryLeaseEntry(shard);
+    if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
+  };
   const earlyStop = (code: number): void => {
     if (stopping) return;
     stopping = true;
@@ -801,10 +808,7 @@ async function runStartedDelivery(
     setTimeout(() => process.exit(code), 2000);
     unrecordPid?.();
     void (async () => {
-      try {
-        const own = await ep.readDeliveryLeaseEntry(shard);
-        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-      } catch { /* broker may be gone, the bucket TTL is the crash-safe release authority */ }
+      try { await releaseOwnLease(); } catch { /* broker may be gone, the bucket TTL is the crash-safe release authority */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);
     })();
@@ -871,8 +875,7 @@ async function runStartedDelivery(
       // A release that did not commit rejects. Otherwise the row the broker holds afterwards is the
       // verdict: while one is there, a successor is refused.
       const release = async () => {
-        const own = await ep.readDeliveryLeaseEntry(shard);
-        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
+        await releaseOwnLease();
         return ep.readDeliveryLeaseEntry(shard);
       };
       let left: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
@@ -1105,9 +1108,10 @@ async function runStartedDelivery(
 
   const shutdown = (code: number, cause?: string): void => {
     if (held) {
-      unavailable = cause ? `delivery context stopped (code ${code}): ${cause}` : `delivery context stopped (code ${code})`;
-      lost ??= cause ?? `its context (code ${code})`;
-      close().catch(() => {}); // as in stopHeld, the holder's own close() reports it
+      // A held context reaches here only from a lost lease, as `shutdown(1, cause)`: the signal and
+      // local-stop handlers are never armed for it, and its transport stop calls stopHeld itself.
+      const what = cause ?? `its context (code ${code})`;
+      stopHeld!(what, what);
       return;
     }
     if (stopping) return;
@@ -1166,10 +1170,7 @@ async function runStartedDelivery(
       // the CAS was protecting in the first place, now argued from evidence rather than from a
       // token that may be out of date. No row, or not ours: nothing to release, and the TTL remains
       // the crash-safe authority for anything this path cannot reach.
-      try {
-        const own = await ep.readDeliveryLeaseEntry(shard);
-        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-      } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
+      try { await releaseOwnLease(); } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }

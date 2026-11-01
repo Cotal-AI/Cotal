@@ -66,6 +66,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
+import { approveDevice } from "./_device-approval.js";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-ua-home-"));
@@ -163,16 +164,7 @@ const signup = await ba.api.signUpEmail({
 });
 const cookie = signup.headers.get("set-cookie")!.split(";")[0];
 const userId = signup.response.user.id;
-async function approve(userCode: string): Promise<void> {
-  const claim = await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-  if (!claim.ok) throw new Error(`device claim failed: HTTP ${claim.status}`);
-  const res = await fetch(`${base}/device/approve`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie, origin },
-    body: JSON.stringify({ userCode }),
-  });
-  if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-}
+const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 /** Revoke one cached sign-in from the account's session list, as the account page does. */
 async function revokeSignIn(token: string): Promise<void> {
   const res = await fetch(`${base}/revoke-session`, {
@@ -282,7 +274,7 @@ try {
   console.log("C) device login + actor grant + user-mode `cotal send`");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   check("device login established (sub = the signed-up user)", sub === userId, { sub, userId });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--label", "smoke human"]);
@@ -500,7 +492,7 @@ try {
   console.log("E) auth-service crash → `cotal up` refresh heals it; cross-mode re-up refused");
   // D left the machine logged out — sign back in so the daemon-liveness failure (not the login
   // gate) is what the dead-service send exercises.
-  await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+  await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
   const openUp = await cotal(["up", "--open", "--server", SERVER, "--space", SPACE]);
   check("up --open on the running user mesh is refused (names cotal down)", openUp.status !== 0 && openUp.out.includes("cotal down"), openUp.out);
   // THE FLIP: user-facing static creds are retired on user-auth spaces — `cotal auth mint` must
@@ -764,7 +756,7 @@ try {
     check("…before anything was saved or launched",
       !refusedText.includes("saved manager") && !refusedText.includes("forgot manager") && shown.status === 2 && field(shown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: refusedStart.out, show: shown.out });
     // A manager started while signed in keeps running after a sign-out, as one the old start left.
-    const { sub: sub2 } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const { sub: sub2 } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const grant2 = await cotal(["actor", "grant", "cli", "--sub", sub2, "--full"], { cwd: root2, env });
     check("the second root grants its signed-in CLI", grant2.status === 0, grant2.out);
     // A cached sign-in the IdP revoked is refused as no sign-in is, before anything is saved or launched.
@@ -809,7 +801,7 @@ try {
     const restarted = await cotal(["up"], { cwd: root2, env });
     check("a bare up of the stopped stack starts the other members and refuses the manager the same way",
       restarted.status === 4 && field(restarted.out, "Native detail", revokedRejection) && plain(restarted.out).includes(`cotal login --idp ${base}, then run bare \`cotal up\` again`) && !existsSync(managerPid), restarted.out);
-    await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const started = await cotal(["manager", "start"], { cwd: root2, env });
     check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
     const pid2 = Number(readFileSync(managerPid, "utf8").trim());
@@ -869,7 +861,7 @@ try {
     check("a team boot of a root with no granted login is refused AUTH_REQUIRED, and Next grants the CLI with --full",
       unprepared.status === 2 && field(unprepared.out, "Code", "AUTH_REQUIRED") && plain(unprepared.out).includes("then `cotal login`, then `cotal auth grant cli --sub <subject> --full`, then `cotal down`") && !existsSync(join(rootTb, ".cotal", "stack-controller.json")), unprepared.out);
     const tbUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", serverTb], { cwd: rootTb, env });
-    const { sub: tbSub } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const { sub: tbSub } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const tbGrant = await cotal(["auth", "grant", "cli", "--sub", tbSub, "--full"], { cwd: rootTb, env });
     const tbDown = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
     check("following it, up prepares the space, the grant it names succeeds, and down stops the stack",
@@ -922,11 +914,11 @@ try {
     writeFileSync(bundleFile, await (await fetch(`http://127.0.0.1:${exchangePort}/.well-known/cotal-mesh`)).text());
     const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
     check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
-    const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
     check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
     const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
-    check("with NODE_EXTRA_CA_CERTS set, as docs/cli.md says, the participant's manager start comes up",
+    check("with NODE_EXTRA_CA_CERTS set, as docs/cli.mdx says, the participant's manager start comes up",
       trusted.status === 0 && plain(trusted.out).includes("Owned process running"), trusted.out);
     const childPid = /^\s*PID:\s+(\d+)$/m.exec(plain(trusted.out))?.[1];
     const childEnvironment = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0") : [];
@@ -963,7 +955,7 @@ try {
     check("…and neither start left a manager running", !joinManagerRuns(), { pidFile: existsSync(joinManagerPid) ? readFileSync(joinManagerPid, "utf8") : "absent" });
     // Signed in again, its manager runs; a restart over it with that sign-in revoked is refused the same
     // way and leaves it running.
-    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const joinRunning = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
     check("signed in again, the participant's manager start starts it", joinRunning.status === 0 && joinManagerRuns(), joinRunning.out);
     const joinRunningPid = readFileSync(joinManagerPid, "utf8").trim();
@@ -974,7 +966,7 @@ try {
       revokedJoinRestart.status === 2 && field(revokedJoinRestart.out, "Code", "AUTH_REQUIRED") && revokedJoinRestartText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running") &&
         revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedJoinRestart.out);
     check("…and leaves the running manager as it was", joinManagerRuns() && readFileSync(joinManagerPid, "utf8").trim() === joinRunningPid, revokedJoinRestart.out);
-    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
+    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const joinStopped = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
     check("signed in again, the participant stops it", joinStopped.status === 0 && await until(() => !joinManagerRuns()), joinStopped.out);
     const hostDown = await cotal(["down", "--yes"], { cwd: hostRoot, env: hostEnv, sandbox: hostSandbox });

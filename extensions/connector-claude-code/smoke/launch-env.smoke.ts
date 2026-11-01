@@ -2,7 +2,7 @@
  * Claude seat env: the documented auth vars must reach the child; host-session markers must not.
  *
  * THE BLOCKER THIS GRADES. After launchEnv stopped inheriting, CLAUDE_CODE_OAUTH_TOKEN (the name
- * docs/deploy.md and deploy/ tell operators a container Claude authenticates with) was silently
+ * docs/deploy.mdx and deploy/ tell operators a container Claude authenticates with) was silently
  * absent: this connector called launchEnv with no providerKeys. A container has no Keychain, so
  * the seat boots and then cannot reach Anthropic. That is the fallback failure mode an allowlist
  * must not have: dropping a credential the docs promise.

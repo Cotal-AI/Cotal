@@ -18,13 +18,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
-import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { cotalToolSpecs, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import type { MeshAgent, NativeTurnParticipationLease } from "./agent.js";
 import type { AgentConfig } from "./config.js";
 import { renderInboxPreview, type RenderedInboxPreview } from "./framing.js";
@@ -275,8 +274,8 @@ const ADVERTISED: AgentConfig = {
  *  default channel. Connections can read different channels, so the advertised text names none. */
 const SEND_CHANNEL =
   "Channel to send on. Omit it to use this connection's default, the first concrete channel it reads and " +
-  "may post to (cotal_orientation lists both); with none, an omitted channel is refused. Concrete only, not " +
-  "a wildcard like team.>; reply on the channel you received a message on.";
+  "may post to (cotal_orientation lists both); with none, an omitted channel is refused. " +
+  `${PATTERN_SEND_HELP} Reply on the channel you received a message on.`;
 
 const CONNECTION_ID = z
   .string()
@@ -728,6 +727,9 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
       .end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null }));
     return;
   }
+  // Loaded on the first request: the transport's HTTP layer (@hono/node-server) reads `global.Request` when it is
+  // imported, which makes Node load its internal undici, and a process that serves only stdio never needs either.
+  const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

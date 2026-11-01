@@ -1,0 +1,633 @@
+---
+title: "Local service reference"
+description: "Saved local services, native adapters, daemon compatibility entries, and service readiness limits."
+kind: Reference
+audience: operators
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`service` saves local definitions and controls their recorded instances. Compatibility daemon entries are listed below.
+
+
+## service [#service]
+
+```bash
+cotal service [--space <s>] [--json|--plain]
+cotal service show <name>
+cotal service add <name> --exec "<command>" [--cwd <dir>]
+cotal service add <name> --preset <preset> <preset-options>
+cotal service add <name> --file <definition.json>
+cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground|--dry-run]
+cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
+cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
+cotal service status <name> [--instance <id>]
+cotal service logs <name> [--instance <id>] [--tail <n>] [--follow]
+cotal service install <name> [--instance <id>] [--dry-run]
+cotal service uninstall <name> [--instance <id>] [--yes|--dry-run]
+cotal service remove <name> [--instance <id>] [--yes]
+```
+
+`svc` and `services` are aliases. Every form takes `--space`, `--json` and `--plain`.
+
+| Flag | Meaning |
+|---|---|
+| `-s, --space <s>` | The space whose services to use, resolved as in [Selecting a space](cli-selection.mdx#selecting-a-space). A space that is prepared but not started can be named |
+| `--exec <command>` | add: your own program and its arguments, quoted as in a shell but run without one |
+| `-C, --cwd <dir>` | add `--exec`: the folder it runs in (default: this folder) |
+| `--preset <name>` | add: save a declared preset. Its options become flags of `add` |
+| `-f, --file <definition.json>` | add: import a version-1 definition file |
+| `--instance <full-id>` | Select one instance by its full ID, not a prefix |
+| `--new-instance` | start: allocate another instance of a process definition |
+| `--foreground` | start: keep the process in this terminal |
+| `--with-agents` | stop, restart: request the manager's native agent-stop policy |
+| `--dry-run` | start, stop, restart: preview the effect. install, uninstall: inspect the unit |
+| `-y, --yes` | stop, restart, remove, uninstall: confirm in a script |
+| `--tail <1..1000>` | logs: how many records to read (default 100) |
+| `--follow` | logs: keep reading |
+
+A service is a saved definition in one space plus the instances started from it. Bare `service`
+lists every service you can name here with its state and the one command that moves it on: the
+built-in services (the presets), whether started or not, and the ones you added. Nothing starts a
+dependency for you: starting the manager does not start its broker.
+
+A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
+from the preset's defaults and starts it; stderr says what it saved. A preset that needs something
+only you can give, such as the `web` dashboard's credential file or the intake's keys, refuses with
+those flags named, and takes them on the start line: `cotal service start web --creds <file>`. A
+start refused before anything launched forgets the definition it saved. A preset name acts on the
+space's one service built on that preset, so after `cotal up` the name `delivery` reaches
+`stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands. `--json` writes one envelope for every form,
+and `logs --follow --json` writes one record per line. Without `--json`, a follow's last line says
+in a sentence why it ended. `logs` refuses a log file this account
+cannot read with `PERMISSION_DENIED` (exit 2), naming the file and `chmod u+rw`, quoted when a
+shell would split the path. The failed read changes no permissions or service state. With `--follow`
+the refusal is the stream's `error` record, which carries that step as `remedy`, and the stream ends.
+
+
+## Adding a service [#adding-a-service]
+
+Your own program is one line:
+
+```bash
+cotal service add reviews --exec "node /srv/reviews/server.mjs --port 8080"
+cotal service start reviews
+```
+
+`--exec` splits its text into the program and its arguments as a shell quotes words, but runs no
+shell. Single and double quotes and backslashes work as in a terminal. A pipe, a redirection, a
+`;` or `&`, a variable, a glob or a `~` outside quotes refuses `USAGE_INVALID` (exit 1), because it
+would not mean here what it means in a terminal; for those, run a shell yourself with
+`--exec "sh -c '<command line>'"`. A bare program name is looked up on `PATH` as `add` saves it, and
+a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
+run `add` in. The service is ready once its process runs. `--file` keeps the full definition shape
+below, for readiness over HTTP, environment references or a credential file.
+
+The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-endpoint`,
+`feedback-intake` and `manager`. The `linear` and `web` presets come with the `@cotal-ai/linear`
+and `@cotal-ai/web` extensions, which `cotal ext add <package>` installs. Bare `service` lists the
+presets this machine has, and a name it does not have is refused as `DEPENDENCY_UNAVAILABLE`.
+
+`cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
+fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
+manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
+takes a path shows `<dir>`, `<file>` or `<path>`, and the broker's `--server` shows `<url>`. A `<dir>` or `<file>` option takes the absolute path
+of one that exists, and a relative one is refused. An option the service names in camelCase takes a
+dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`
+takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`
+runs in, and the file need not exist yet. A missing required option is refused with each one named,
+and the refusal prints the command line with them. That line also names each option whose default
+the space cannot fill yet, such as the broker's `--server <url>` in a space with no registered
+broker, so it works as printed.
+
+A preset's options describe the service and never choose its space. `add` saves into the space
+`--space` names, or else the selected space or the folder's, as other commands resolve it.
+
+`add` checks the options against the preset's schema, and checks that each declared path exists
+with its required protection. It does not check that a root or credential suits the preset, such
+as a root's auth mode or which credential a file holds. Those are checked when the service starts.
+A refusal names the option or field at fault, by its flag on a preset add, such as `--log-file`. A
+value the preset's schema refuses gives the preset's help as its Next:
+`cotal service add <name> --preset <preset> --help`. Option values are not printed, except the
+`broker` preset's `server`: `add` checks it against the address rules a start applies, and its
+refusal quotes the address unless it holds an `@`, which may be a credential.
+
+`--file` imports a version-1 definition. This one runs a program and treats it as ready once its
+loopback health URL answers 200:
+
+```json
+{
+  "schemaVersion": 1,
+  "space": "main",
+  "launch": { "type": "process", "executable": "/usr/bin/node", "args": ["/srv/reviews/server.mjs"], "cwd": "/srv/reviews" },
+  "readiness": { "type": "http", "url": "http://127.0.0.1:8080/health", "expectedStatus": 200, "timeoutMs": 10000 },
+  "envRefs": { "REVIEWS_TOKEN": "REVIEWS_TOKEN" },
+  "credentialRef": { "kind": "file", "path": "/srv/reviews/reviews.creds" }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `1` |
+| `space` | The selected space's name. Another name is refused |
+| `launch` | `{type: "process", executable, args, cwd}`: an executable by absolute path, by a path relative to `cwd`, or by a bare name that `add` finds on `PATH`, at most 256 arguments of at most 8192 characters each, and an absolute working directory. Or `{type: "adapter", adapter, options}` for an installed adapter, which a preset writes for you |
+| `readiness` | `{type: "process", timeoutMs}`: ready once the process runs. `{type: "http", url, expectedStatus, timeoutMs}`: ready when a loopback `http://127.0.0.1` or `http://[::1]` URL answers that status. An adapter definition uses `{type: "adapter", timeoutMs}`. `timeoutMs` is 1 to 120000 |
+| `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
+| `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
+
+A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `add` checks whether
+the selected space already has a service of that name. No other field is accepted. `add` saves the
+definition with the space's root, which `show` lists as `Added in`; a file that sets `root` itself
+is refused `SCHEMA_INVALID`, exit 1, and nothing is saved. The file is at
+most 256 KiB. A `readiness` value that breaks these rules refuses `SCHEMA_INVALID`, exit 1, naming
+the field and its rule, such as a `timeoutMs` outside 1 to 120000, a field the chosen type does not
+take, or a `url` that is not on loopback. A launch argument over 8192 characters refuses
+`SCHEMA_INVALID`, exit 1, naming its position and that limit.
+
+A process launch runs its executable as you, so the executable follows the
+[`space create`](cli-selection.mdx#selecting-a-space) rule for other local writers. The file it names, where a link
+points, every folder above that, and the folder a link is in must be writable only by you or root.
+`add` checks this before it saves, and `start`, `restart` and an installed unit check it again
+before anything launches or stops. An unsafe path refuses `PERMISSION_DENIED` (exit 2), and the
+refusal names each unsafe path and one remedy such as `chmod g-w <paths>`.
+
+`add` looks a bare executable name up on its own `PATH` once and saves the absolute path it finds,
+which its receipt shows as `Executable` and `--json` as `result.executable`. Every later `start`
+runs that file, whatever its own `PATH` is. A `PATH` with a relative or empty entry refuses that
+lookup `UNSUPPORTED` (exit 2), as a unit install does, because the entry would resolve against
+whichever folder `add` runs in. A name not on `PATH` refuses `DEPENDENCY_UNAVAILABLE` (exit 2). A
+definition an earlier release saved with a bare name refuses to start `SCHEMA_INVALID` (exit 1);
+remove it and add it again.
+
+
+## Running a service [#running-a-service]
+
+`start` records the instance before it launches anything and prints its full ID. A start that fails
+before its process exists records the instance as failed. Its refusal names the cause, such as a
+space that is prepared but not started. `start` can then try again on the same instance, and
+`stop`, `remove` and `cotal down` find nothing to stop.
+
+A definition starts only in the root it was added in. One a forgotten space of the same name left in
+another folder refuses `start`, `restart` and `install` `CONFLICT` (exit 2) before anything launches.
+The refusal names the root it was added in and `cotal service remove <name> --space <space> --yes`,
+which forgets it so you can add it again for this project. Bare `service` marks it `inherited from
+<root>` in its `State` column and names that `remove` as its Next, and `--json` gives each
+definition its `root` and a `rootMatch` of `this-root`, `inherited` or `not-recorded`. A definition an earlier release saved has no recorded
+root: it starts as before and is listed as `root not recorded`, as are a controller stack's own
+member definitions.
+
+A `start` or `restart` whose environment does not set a variable that `envRefs` reads refuses
+`DEPENDENCY_UNAVAILABLE` (exit 2) before anything launches or stops. It names each missing variable
+and the child variable it feeds, never a value. `show` lists the references by name.
+
+A `start`, `restart` or `install`, or an installed unit, whose executable or working directory was
+moved, removed or changed mode since `add` refuses `DEPENDENCY_UNAVAILABLE` (exit 2) before anything
+launches or stops. The refusal names the path and what is wrong with it, with its mode when the
+mode is the cause. The Next names the fix, such as `chmod u+x <path>`, quoting paths that need it
+for executable and working-directory permission repairs. No permissions change automatically.
+For a path that is gone, it
+also names `cotal service remove <name> --space <space> --yes`, after which you can add the service
+again with another path. `add` refuses a path that does not exist the same way and names the field
+to correct.
+
+`stop` and `restart` ask before they act in a terminal and need `--yes` in a script. Enter, Ctrl-C,
+Ctrl-D or closed input at that question leaves the service unchanged and exits 0. Without an
+installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
+start or stop that finds nothing to do says so and reports `no-op`.
+
+`status` names the file a running instance's process executes, as the kernel reports it, so the
+`stack-broker` row shows which `nats-server` serves the stack. `--json` carries it as `executable`.
+A stopped instance shows no running process, and a host with no `/proc` shows it as not readable.
+For a background instance with no recorded supervisor, when its recorded state is running but its
+process is gone, `status` keeps its historical readiness and records no exit code or signal.
+Its Next names `cotal service logs <name> --space <space> --instance <id>`, where the process's own
+output is kept.
+
+`remove` forgets a definition once every instance is stopped and no unit is installed. It deletes
+those instances' logs and lists each file it deleted.
+With `--instance <id>` it forgets only that stopped instance record, and keeps the definition,
+its other instances and its logs. A command that names no instance while several records exist refuses
+`TARGET_AMBIGUOUS`; its Next lists each instance with its state and the `remove --instance` command
+for each stopped one, so a finished record stops blocking the bare form. A `start` that selects a
+record of an earlier revision of its definition, as a definition moved aside and added again leaves,
+refuses `CONFLICT` (exit 2) and launches nothing. Its Next names
+`cotal service remove <name> --instance <id> --space <space> --yes` and then `start` again, after a
+`cotal service stop` of that instance when it still runs. A controller stack's
+member definitions and records are not removed this way, since its `up` and `down` read them:
+`remove` refuses `UNSUPPORTED`, exit 2, and names `cotal down --yes`, then `cotal space forget <space>`,
+which removes them with the space.
+
+`install` writes an owned systemd user unit for a saved direct-process definition with no
+`envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
+removes that unit. A preset is not installed as a unit in this release, the manager included:
+`install` of one refuses `UNSUPPORTED`, allocates nothing, and for a preset that runs in the
+foreground names the `ExecStart=` line, `cotal service start <name> --foreground`, for a unit of
+your own.
+
+The sections [Local service definitions](#local-service-definitions),
+[Service presets](#service-presets) and
+[Owned process services](cli-processes.mdx#owned-process-services)
+describe each preset and the process driver in detail.
+
+
+## Local service definitions [#local-service-definitions]
+
+`service` (`svc`, `services`) reads the selected space's local definitions and existing component
+PID observations. Saved definitions, process presence, ownership and serving readiness are separate
+facts. The definition table counts its already-read instance records and labels any sole instance's
+recorded supervisor and historical readiness. The separate instance table gives full IDs,
+process observations and each recorded supervisor; a record count is not a count of live services.
+Retained native install, uninstall and unit-action attempts appear with their full instance ID,
+step, position and whether an instance record still exists. They mark the inventory partial:
+a submitted or unknown step may have changed the original unit even if its instance record
+is absent. A legacy PID record is not adopted into the new instance controller. Unreadable
+component records make the inventory partial. Reads do not start, repair or install a service.
+
+`service add [name] --file <definition.json>` imports the version-1 service object described under
+[Adding a service](#adding-a-service). A declared preset uses
+`service add <name> --preset <preset> <declared-options>`. Guided input offers installed presets
+and file import. Input is capped at 256 KiB, checked against the selected native space and its
+schema before a private record is saved. Whether a root or credential suits the preset is checked
+at start. A process definition needs an existing executable and
+absolute working directory. Credential file protection is checked without reading its contents.
+Adapter definitions use an installed local-process provider's versioned, closed option schema.
+Adding or previewing a definition validates cached metadata without importing provider code. The
+cache records SHA-256 fingerprints of the declaration and installed package metadata. Missing,
+changed or version-skewed metadata refuses with an update or re-add remedy. These fingerprints
+are not publisher signatures or a proof of every executable file. No remote schema is fetched.
+
+`service show <name>` reads declared policy, not live state. Public reports omit argument bodies,
+adapter option values and credential contents. Missing launch paths do not prevent reading the
+saved declaration. Records live under the workstation store's case-safe per-space service path.
+
+`service remove <name> --yes` forgets only the unchanged definition. Interactive removal defaults
+to keeping it. Unknown or foreign instance custody makes removal refuse. The process driver verifies that every
+owned direct incarnation is gone and that no OS supervisor is installed before removing its
+unchanged instance records and definition. Logs are retained. No process or OS unit is removed
+by this operation. The presets are described below. A preset is not installed under an OS
+supervisor.
+On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
+and the setup seed record a service receipt for an extension that declares service adapters or
+presets, and its process services run under a custodian as
+[Owned process services](cli-processes.mdx#owned-process-services) describes.
+
+
+## Service presets [#service-presets]
+
+Bare `service` lists declarative presets separately from definitions and process observations.
+Use `service add <name> --preset <preset> --help` for that preset's option flags. Parsing, scoped
+help and completion derive those flags from the adapter's closed schema. Boolean options have
+positive and negative forms; a pair refuses. A boolean whose schema admits only true, such as an
+explicit intent, has only the positive form. Numeric and complex options use JSON syntax.
+A preset no registered or installed provider declares refuses by name; for `web` the refusal
+names `cotal ext add @cotal-ai/web`.
+Options that collide with service/global flags require the file form. No preset is installed or
+provider code imported by help, completion, a guided question or definition creation.
+
+A provider registers a `service-preset` alongside its `local-process` adapter. Preset metadata
+contains its name, adapter, summary, readiness deadline and option defaults. It does not duplicate
+option schemas, contain executable factories or supply credentials. A default is a literal value or
+a fact of the selected space: its registered root, its registered broker, or a private file of the
+space under the root's `.cotal`, such as the delivery credential `cotal up` keeps there. A file
+default that does not exist refuses, naming the flag that replaces it; no other file is chosen. Cached preset and adapter declarations share
+one package-metadata fingerprint receipt. A changed selected declaration refuses during dispatch.
+Path annotations require absolute physical files/directories, or owned private files, without
+reading their contents during definition validation.
+
+The CLI's own presets are `auth-service`, `broker`, `delivery`, `exec-endpoint`, `feedback-intake`
+and `manager`. The `linear` and `web` presets come with their extensions. The intake preset is
+`feedback-intake`. Supply its `--root`, protected `--keys` and scoped
+broker `--creds` paths in the selected registered space. The keys file is JSON with one entry per
+key, `{"keys":[{"key":"<token>","tester":"<tester-id>","name":"<display-name>"}]}`, where `name`
+is optional. A tester's `--key-file` holds their `key`. The intake serves `POST /v1/feedback` on its
+`--host` and `--port`. Optional options include `--server`,
+`--host`, `--port`, `--channel`, `--store`, `--max-bytes` and `--rate-limit`. A supplied store must
+already be private. Without one, the intake appends to a private instance-keyed store beside its
+service records. Feedback records and logs remain private local data and are retained on removal.
+
+
+### Broker preset
+
+The `broker` preset uses `nats-broker`. It requires a prepared local `root`, a protected existing
+`config` inside that root's `.cotal`, an absolute `binary` and one explicit `server` address. An
+optional `logFile` names the log file its configuration's `log_file` writes. `add` makes a relative
+one absolute, the file need not exist, and `start` creates it owner-private. It prepares no trust,
+generates no configuration and starts no other service. Legacy broker custody, known shared
+registrations, maintenance and mismatched transport refuse. Its creation-pinned direct child writes
+a native ports report in a fresh private launch directory, and the readiness check sets that report
+to `0600` before it reads it. Its listener must
+match the declared IP, port and transport. `add` refuses a `server` that is not one `nats://` or
+`tls://` URL naming an IP literal, and DNS, wildcard and mapped-IPv6 targets, so none is saved. A
+definition saved before that check refuses on start, before launch, naming its `server` option and
+how to add it again. This reports the child's client listener, not JetStream readiness, endpoint serving
+or a fresh trust check.
+
+Broker stop has a separate kernel-exit policy, with no invented endpoint principal or epoch.
+Known live or unresolved dependants refuse. After confirmation the controller rechecks the scope
+and process, sends one SIGTERM and waits for that incarnation to exit. Its receipt distinguishes
+process exit and removal of the ports file from a native shutdown acknowledgement or cleanup.
+An unconfirmed stop keeps its original request; no force kill, replay or restart follows. A typed
+adapter refusal before child launch keeps its boundary code, safe cause and remedy. Its local
+instance receipt remains diagnostic history, recorded as failed with no process, so a later start,
+stop, removal or `down` is not blocked by it. Named multi-service stops do not use this policy. Local registry absence does not prove that
+no remote client or tenant uses this broker, and whole-stack sharing is not checked.
+
+
+### Feedback intake preset
+
+Creating the intake definition launches nothing. Starting it does not start a broker, manager, delivery
+daemon or installer, mint a credential, or substitute an operator caller. The native child
+reuses the existing HTTP/mesh intake implementation and preserves the target's TLS requirement.
+It publishes a create-only, full-instance/full-request startup receipt only after the HTTP listener
+and native signal handlers exist. Adapter readiness matches that receipt to the creation-pinned
+child. It reports an owned running intake, not native endpoint serving, developer action or a
+promise that a future request will succeed. An old receipt is never a replacement launch.
+The top-level `feedback-intake` entry is deprecated: it keeps its flags for existing callers and
+warns on every run.
+
+
+### Delivery preset
+
+`delivery` uses the selected registered broker root and an existing protected delivery credential
+from that root's native store. `--root` defaults to the space's root and `--creds` to the delivery
+credential `cotal up` keeps for the space; `--server` may repeat the recorded broker but cannot
+replace it. Open targets refuse. The native daemon still checks its store,
+account scan and singleton shard lease. No manager, broker or installer is started implicitly.
+A live, foreign or unresolved delivery record refuses rather than being adopted. When a member of
+the space's controller stack runs it, as `stack-delivery` does while the stack runs, the refusal
+names that member with its pid and instance, and its Next is that member's stop with `down`. The
+adapter publishes its request-specific startup receipt after the native runner reports Ready
+and its shutdown handlers exist. That is not a fresh liveness response or proof of endpoint
+serving. The existing `deliver` machine-facing entry stays for the stack callers that still use it.
+
+
+### Service child environment
+
+Native service children retain only the explicit base/path/terminal environment allow-list and
+selected references. `COTAL_HOME` and XDG paths retain the invoking workstation registry. Arbitrary
+ambient credentials and agent identity markers are not inherited by generic process services.
+A component needing the invoking caller must supply its supported native handoff, not infer a new
+operator identity. In particular, the web service does not receive the invoking caller's
+authority.
+
+
+## Native auth service [#native-auth-service]
+
+The `auth-service` preset requires a registered hosting `root` with its existing prepared
+user-auth projection. It loads the native callout account, issuer, owner secret and service key
+projection. Saving or starting this preset does not generate those keys, create an account or
+start its broker, delivery daemon or manager.
+
+The preset options derive from the native daemon flags. Ports are bounded integers; public
+exchange options keep the native validation and reverse-proxy requirement. Advertised URLs
+cannot put credentials, query parameters or fragments on the child argv. No environment-export
+onboarding or generic caller-credential substitution is used.
+
+The preset supports a prepared local user-auth root and its registered plain loopback NATS
+broker only. The native authority path does not yet carry a required TLS policy through every
+connection. TLS-required and remote broker targets refuse before authority startup rather than
+weakening that requirement. The preset declares foreground control through the shared
+terminal-bound lifetime; OS-service installation remains unsupported.
+
+The real child exclusively claims the existing native per-space PID slot and publishes its
+creation pin privately before opening authority planes. Any existing slot, including a dead or
+malformed legacy record, refuses without adoption or reclaim. The startup phase is written only
+after native discovery, flushed callout/listener initialization and shutdown handlers. Discovery's
+loopback capability stays in its native private store; no capability or bootstrap URL appears in
+the startup phase. This is process/startup evidence, not a fresh authenticated endpoint response.
+A confirmed native close releases only this child's matching PID custody. An unconfirmed close
+keeps that evidence. Service reports still do not claim lease, registration or family cleanup.
+
+
+## Server daemons [#server-daemons]
+
+Three long-lived infrastructure roles ship with the CLI: the delivery daemon, the auth service and
+the feedback intake. They are not part of everyday operation. The delivery daemon comes up
+automatically with `cotal up --detach` in auth mode.
+
+`deliver`, `auth-service` and `feedback-intake` are deprecated entries kept for existing units and
+scripts; help and completion omit them. Each entry's own help
+marks it deprecated, with its removal release and the preset that replaces it. Each accepts its existing flags and
+prints a warning on every run naming its service preset and the release that removes it. The
+delivery daemon and auth service that `cotal up` starts run the same code through hidden entries
+and print no warning. New setups use `cotal service start <preset>`; see
+[deprecated daemon entries](UPGRADING.md#deprecated-daemon-entries). [`supervise`](cli-processes.mdx#supervise), the
+manager's entry, is deprecated the same way and names `cotal manager start`.
+
+```bash
+cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
+cotal deliver --spaces <manifest> --server <url> [--root <dir>]
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
+cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
+cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
+cotal auth-service --server <url> --spaces <manifest> [--auth-timeout <seconds>]
+cotal service add intake --preset feedback-intake --space <s> --root <absolute-root> --keys <private-keys.json> --creds <private-creds>
+cotal service start intake --space <s>
+```
+
+`auth-service` runs a user-auth space's identity plane: the NATS auth callout, the
+capability-gated local exchange and JWKS, and, when `--exchange-public-port` is set, the closed public
+exchange/discovery face forwarded by an HTTPS reverse proxy. `--exchange-public-url` is the proxy URL
+advertised to clients; `--exchange-trusted-proxy` opts into last-hop `X-Forwarded-For` attribution.
+`--advertised-server` and `--agent-provisioning-url` set the broker address and agent-provisioning
+endpoint the public bundle advertises, as on [`up`](cli-startup.mdx#up). `--auth-timeout` is the broker's
+`authorization { timeout }` in whole seconds, which the callout answers inside; give it the value the
+broker config renders, which `cotal up` passes from `--auth-timeout`.
+`cotal up --user-auth` starts and supervises the service for you, so you run it directly only to
+recover one by hand.
+`--callout-only` runs a callout replica beside the full service: it answers connects alongside it
+and serves no HTTP, so it refuses `--port`, the public-face flags and `--service-endpoints`. It
+refuses to start in a space that admits service endpoints: one whose full service has ever run with
+them. It never writes `auth-service.json`, and
+it exits non-zero when it loses a store connection or the broker. Give it the same `--auth-timeout`
+as the full service, the value the broker config renders.
+See [callout replicas](identity-and-auth.mdx#per-user-authentication).
+
+`--callout-only --spaces` serves several spaces from one callout process, one lane each, and stands
+in for `--space`. The two are alternatives: naming both refuses. The manifest is a JSON file holding
+the spaces this process serves:
+
+```json
+{ "version": 1, "spaces": ["<s>", "<s>"] }
+```
+
+An empty list, a repeated space, an unknown field, a version other than 1 and an entry that is not
+a space name all refuse. Every lane dials the one `--server`, so a deployment whose spaces live on
+different brokers runs one host process per broker rather than naming a server per space.
+
+Each lane applies the per-space refusals a single-space replica applies, so a space with missing
+material, a mismatched issuer pin, an unreachable broker or open service-endpoint admission refuses.
+At startup the host answers for every space it can, names each one it cannot with the reason, and
+retries those every 5 seconds; its ready line counts the spaces answering against the spaces named
+and lists the ones it answers and the ones it retries, in manifest order:
+
+```
+✓ auth callout host up (2 of 3 space(s) answering: <s>, <s>; retrying <s>) - answering the callout on <server>; no HTTP listener, no auth-service.json
+```
+
+A refused space gets no lane in this process, so its connects are answered by its other members
+only. Open service-endpoint admission does not close, so keep such a space off this host's manifest:
+`admitsServiceEndpoints` from `@cotal-ai/auth` answers the check the lane makes
+([embedding](embedding.mdx#native-service-custody-guards)).
+
+The host rereads the manifest when it changes on disk, on `SIGHUP`, and on a slow backstop interval,
+and opens or closes the difference. Write a replacement and rename it into place: a manifest that
+does not read or parse whole is reported and the lanes already open are kept. A lane that loses its
+store connection or the broker closes on its own and the other lanes keep answering; the host
+reopens it, retrying every 5 seconds while it fails.
+
+Multi-space hosts admit at most four lane opens at once. The ready line distinguishes `queued`
+spaces from failed spaces being retried and opens still running past their deadline. A queued
+space's 30-second opening deadline starts only when its open begins. An overdue open keeps its
+slot until it settles; if all four are stuck, queued spaces wait. Each batch rereads the manifest,
+so a queued removal never opens and a changed entry uses its current settings. Failed attempts
+return behind spaces still waiting for a first turn, after the existing 5-second retry wait.
+Authentication and connection budgets are unchanged.
+
+Every multi-space host, this one, the full auth service host below and `deliver --spaces`, writes
+`<manifest>.applied` beside its manifest once a reread has closed the lane of every space the
+manifest does not name. The file holds `{"version": 1, "sha256": "<hex>"}`, the SHA-256 of the
+manifest bytes it applied, and is replaced through a rename. To stop serving one space, remove it
+from every manifest that names it and wait until each host's `<manifest>.applied` names the manifest
+you wrote; from then on no lane for that space is left in those processes. A lane that does not
+confirm its close holds the acknowledgment back, and the host retries that close every 5 seconds
+without opening the space again until it does. So does a space the manifest no longer names whose
+open is still running past its deadline: that open would come up as a lane after you were told
+there was none, so the host names the space and acknowledges nothing until the open has settled and
+any lane it brought up is closed. Other spaces keep serving, and queued spaces open as slots become
+available. A host writes
+the file before it opens any lane at startup, and refuses to start when it cannot. A host whose last
+space you remove is stopped instead, since a manifest names at least one space.
+
+`--spaces` without `--callout-only` serves several spaces from one process as their full auth
+service, one lane each: the callout, the authority plane, the loopback exchange and JWKS, and the
+public face. A lane is the service `auth-service --space` runs, with the same refusals and its own
+plane claim, connections, connect limits and capability. Each lane writes its space's own
+`auth-service.json`, naming the host's pid, on a loopback port of its own. The manifest is version 2,
+one object per space, carrying that space's public face and service endpoints under the names of
+the flags it replaces:
+
+```json
+{ "version": 2, "spaces": [
+  { "space": "<s>", "exchangePublicPort": 7451, "exchangeTrustedProxy": true },
+  { "space": "<s>", "serviceEndpoints": true }
+] }
+```
+
+An entry takes `exchangePublicPort`, `exchangePublicUrl`, `exchangeTrustedProxy`, `advertisedServer`
+and `agentProvisioningUrl`, with the rules of the flags: the last four need `exchangePublicPort`.
+An entry without `exchangePublicPort` has no public face. `serviceEndpoints`, `true` or `false`, is
+the space's `--service-endpoints`: a lane whose entry sets it opens the service endpoint host and
+serves `/service-endpoint-authority` and `/service-endpoint-host`, and a lane without it opens none of
+that and answers both routes 404. Two spaces naming one port, a version other than 2 and any refusal
+of the version 1 grammar refuse the whole manifest. `--port`, the public-face flags and
+`--service-endpoints` refuse with `--spaces`; `--server` and `--auth-timeout` apply to every lane. A
+changed entry closes that space's lane and opens it again on its new settings, and the other lanes
+keep serving. An embedder that writes the manifest checks it with `parseAuthHostManifest(text)` from
+`@cotal-ai/auth` before renaming it into place: it applies the rules the host applies and throws the
+message the host would log.
+
+At startup this host serves every space it can, names each one it cannot with the reason, and retries
+those every 5 seconds; its ready line counts the spaces serving against the spaces named and lists
+them in manifest order. A space
+whose plane another process still holds opens once that process stops, so you can move spaces off
+one process each by starting the host on all of them and then stopping the old processes. A fence or
+a lost broker connection closes that space's lane alone, and the host reopens it. The lines of a lane
+carry a `[<space>]` prefix. A lane writes no `.cotal/auth-service.<key>.pid`; the host is stopped by
+its supervisor, and on SIGTERM or SIGINT it closes every lane and exits 0. An embedder passes its
+secret store to `runAuthService(args, store)` with `spaces` in `args` as it does for one space. The
+`auth-service` service preset runs one space, so `auth-service --spaces` still prints the deprecation
+warning saying to keep the entry for `--spaces`.
+
+`deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
+authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
+`--dev-mint` mints a scoped cred for standalone dev, signed by the local account of the space the
+daemon serves. `--creds` can start a daemon that already looks healthy, but production renewal is
+not that file alone: the manager and the daemon must address one credential store. On a stock split host with two project roots, a
+direct `deliver` is not an independent repair; keep the daemon under `cotal up` on the broker
+host, or inject the same store into both processes ([embedding](embedding.mdx#supervisor-signing-authority)).
+Typed by hand on the workstation, `deliver` dials the broker recorded for `--space` in the mesh
+registry (a mismatching `--server` is refused before any dial, and a record for a different
+workspace root is refused outright); with no record for the space it falls back to the local mesh.
+The daemon serves the workspace root that `--root <dir>` names, which must hold `.cotal/`, or else
+the nearest `.cotal/` above its working directory. With neither, it refuses at start and names the
+directory it searched from, before it reads a credential or dials a broker.
+See the [delivery daemon](delivery-daemon.mdx).
+
+`deliver --spaces` serves several spaces from one delivery process, one lane each, and stands in for
+`--space`. It reads the same manifest file `auth-service --callout-only --spaces` reads, with the
+same refusals. Naming both `--space` and `--spaces` refuses, and so does `--spaces` without
+`--server`, because every lane dials that one broker. `--creds`, `--dev-mint`, `--shard`, `--shards`
+and `deliver pending` refuse with `--spaces`: each lane reads its own space's credential from the
+root, at the location `cotal up` writes it, and runs one shard. The root is `--root <dir>`, or the
+nearest `.cotal/` above the working directory, chosen once at start for every lane.
+
+A lane is the daemon `deliver --space` runs, with the same refusals, credential renewal, lease,
+broker watchdog, timer writer and membership feed, on its own connections. Its lines carry a
+`[<space>]` prefix. A lane writes no `.cotal/delivery.<key>.pid`, because that record is what
+`cotal down` signals for one space, and signalling the host would stop every space it serves. The
+host is stopped by its supervisor: on SIGTERM or SIGINT it closes every lane, releasing each lease,
+and exits 0, or exits after 10 seconds when a lane cannot finish.
+
+At startup the host serves every space it can, names each one it cannot with the reason, and
+retries those every 5 seconds; its ready line names the spaces it serves and the spaces it retries,
+in manifest order. A space whose lease a
+single-space daemon still holds opens once that daemon stops, so you can move spaces from one process
+each onto a host by starting the host on all of them and then stopping the old daemons. A manifest
+that does not read or parse whole still refuses startup. The host rereads the manifest when it
+changes on disk, on `SIGHUP`, and on a slow backstop interval, and opens or closes the difference. A lane that loses the broker, its credential or its lease closes
+on its own and the other lanes keep serving; the host reopens it, retrying every 5 seconds while it
+fails. `deliver --spaces` still prints the deprecation warning, which says to keep `cotal deliver`
+for `--spaces` because the `delivery` service preset has no form for it.
+
+`feedback-intake` runs a self-hosted feedback server
+at `POST /v1/feedback` (requires `--keys`, in the format the `feedback-intake` service preset
+describes, and a scoped `--creds`), announcing submissions into a space channel; flags
+include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
+Without `--server` it dials the broker its `--space` is registered at, and refuses an unregistered
+space before dialing.
+`--port` takes a decimal port from 1 to 65535 and is checked before the intake dials the broker.
+`--max-bytes` and `--rate-limit` are checked at the same point. Each must be a positive integer no
+greater than 9007199254740991, and a refusal names the value it rejected.
+
+
+## deliver [#deliver]
+
+```bash
+cotal deliver [--space <s>] [--server <url>] [--tls] [--creds <file>] [--root <dir>] [--shard <n>] [--shards <n>] [--dev-mint]
+cotal deliver --spaces <manifest> --server <url> [--tls] [--root <dir>]
+cotal deliver pending <name> [--limit <n>] [--durable <name>] [--json]
+```
+
+With no positional, `cotal deliver` runs the delivery daemon (see
+[the delivery daemon](delivery-daemon.mdx)). With `--spaces` it runs one delivery lane per space a
+manifest names, in one process; see [server daemons](#server-daemons). `deliver pending <name>` never starts the daemon: it
+is an operator-only read over one recipient's DM durable, for the moment after a send when the
+question is "what does the broker actually hold for them." It resolves `<name>` against a short
+presence watch (an `offline` card still counts, since the recipient may be dead, that is what
+the verb exists to inspect); when neither a card nor the durable can be found, it prints
+`✗ not-found: no agent "<name>" and no DM durable for it in space <s>` and exits non-zero, never
+`pending 0`. On a match it prints the durable name and one fact per line: `pending`,
+`ack-pending`, `delivered`, `ack-floor`, `created`, `frontier`, and the stream's `max_age` /
+`max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
+by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
+heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
+there, not proof that nothing was lost. Each plain candidate line prints `from=` with the sender
+principal parsed from the stored message subject, which the broker binds to the sender's
+credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
+The label is the sender's claim and can name another agent; control characters and brackets in it
+print as spaces. `--json` keeps its earlier candidate lines.
+
+The verb needs the `admin` credential profile: it runs through the same static-mesh route as
+`cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,
+because there is no user-mode inspection authority yet. Pass `--creds <file>` for an off-registry
+admin credential. A same-name respawn never inherits a predecessor's held DMs (the durable is
+lifecycle-keyed); an old lifecycle's durable is reachable only by the name a live read printed
+(the `<durable>` line on the first line of this verb's output). Pass that name with `--durable
+<name>` to read it directly once the lifecycle's card is gone from the roster. This skips the
+presence watch on `<name>` entirely, so `<name>` is required but only echoed in error text.
+
+
+### Delivery process records [#delivery-process-records]
+
+See the [current command contract](cli-services.mdx#server-daemons) for this behavior.

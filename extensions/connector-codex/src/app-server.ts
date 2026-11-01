@@ -24,7 +24,7 @@
  * they share a uid, so a sibling that can read this agent's home (or the environment of the
  * attached TUI, which holds the token for the listener's lifetime) can present it. Cotal does not
  * claim mutually-hostile same-uid agent isolation here; that needs OS-level isolation, not a
- * file mode. See docs/connect-codex.md#limits.
+ * file mode. See docs/connect-codex.mdx#limits.
  *
  * Protocol: app-server **v2** (the API the Codex TUI itself runs on — feature
  * `tui_app_server` is permanently on), verified live against codex-cli 0.145.0.
@@ -179,6 +179,7 @@ export interface DriverOpts {
  *    a turn it started itself may finalize its own delivery accounting.
  *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/presence)
  *  - `"waiting"` (detail)                              — an approval was requested (auto-answered)
+ *  - `"answered"` (detail)                             — that request's reply is written (→ working)
  *  - `"closed"` (code)                                 — the child exited
  */
 export class AppServerDriver extends EventEmitter {
@@ -741,11 +742,14 @@ export class AppServerDriver extends EventEmitter {
       || method === "item/fileChange/requestApproval";
     this.emit("waiting", method, approval ? ({ code: "approval", source: method, since: Date.now() } satisfies PresenceCondition) : undefined);
     if (method === "execCommandApproval" || method === "applyPatchApproval")
-      return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision
-    if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")
-      return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "decline" } }); // v2 decision enums
+      this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision
+    else if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")
+      this.writeLine({ jsonrpc: "2.0", id, result: { decision: "decline" } }); // v2 decision enums
     // Anything else (permissions requests, elicitations, attestation, user-input): decline cleanly.
-    this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
+    else this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
+    // The wait ended with the reply. Without this the turn could end waiting→idle, which is not the
+    // working→idle turn boundary, and the condition would outlive the turn (#3840).
+    this.emit("answered", method);
   }
 
   /** Tombstone a turn whose terminal has been seen, keeping only a short recent tail — a late

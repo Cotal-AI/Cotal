@@ -1,13 +1,7 @@
-// MeshView — the shared, render-agnostic model behind every "protocol view" surface
-// (the terminal console, the plain stream, the web dashboard). It consumes ONE read-only
-// observer endpoint and turns the raw wire into a normalized model: a status-sorted roster,
-// a classified + burst-coalesced + windowed feed, channel counts, a msgs/s rate, and the
-// derived operator signals (status counts, who's waiting, a per-peer DM roll-up). No ANSI,
-// no React, no HTML, no color — a surface only lays this out, it never re-derives it.
-// See docs/mesh-view.md.
+// See docs/mesh-view.mdx.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
+import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
 import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -34,8 +28,16 @@ export interface FeedEntry {
    *  re-spell the convention locally, and three copies of a classifier is three chances to disagree
    *  about one channel. Absent on unicast and anycast rows, which carry no channel at all. */
   events?: boolean;
+  /** Id of the message this one answers, as the wire's `replyTo` carries it. */
+  replyTo?: string;
+  /** Lowercased peer names the sender called out, as the wire's `mentions` carries them. */
+  mentions?: string[];
+  /** The sender's thread or conversation correlation id, as the wire's `contextId` carries it. */
+  contextId?: string;
   text: string;
 }
+
+type ThreadFields = Pick<FeedEntry, "replyTo" | "mentions" | "contextId">;
 
 export interface StatusCounts {
   working: number;
@@ -73,8 +75,9 @@ export interface DmPeer {
 /** Derived operator signals — golden-signal counts, who needs attention, the DM roll-up. */
 export interface MeshSignals {
   counts: StatusCounts;
-  /** Agents blocked / needing input, name-ordered. NOT age-ordered: presence carries no
-   *  status-transition time, so how long a peer has been blocked is not knowable from the wire. */
+  /** Agents blocked / needing input, name-ordered. NOT age-ordered: `statusSince` dates the latest
+   *  status or activity report, not the block, so how long a peer has been blocked is not knowable
+   *  from the wire. */
   waiting: Presence[];
   /** Oldest heartbeat among LIVE agents — a liveness signal ("is anyone going quiet?"), NOT a
    *  blocked-duration. {@link Presence.ts} is republished every heartbeat, so it can never say how
@@ -138,6 +141,15 @@ function bodyText(msg: CotalMessage): string {
   return partsToText(msg.parts);
 }
 
+/** The wire's reply link, mentions and context id, each present only when the message carries it. */
+function threadFields(msg: CotalMessage): ThreadFields {
+  return {
+    ...(msg.replyTo !== undefined ? { replyTo: msg.replyTo } : {}),
+    ...(msg.mentions?.length ? { mentions: [...msg.mentions] } : {}),
+    ...(msg.contextId !== undefined ? { contextId: msg.contextId } : {}),
+  };
+}
+
 /** Does this error say the membership feed's bucket does not exist (no delivery daemon ever
  *  provisioned it)? The JetStream "stream not found" answer, by API code and by message; anything
  *  else (a permission refusal, a timeout, a closed connection) is a failed read, not an absent feed. */
@@ -160,6 +172,7 @@ function sortRoster(r: Presence[]): Presence[] {
 interface Burst {
   from: EndpointRef;
   body: string;
+  thread: ThreadFields;
   id: string;
   ts: number;
   ids: string[];
@@ -193,8 +206,14 @@ export class MeshView extends EventEmitter {
   private msgsPerSec = 0;
   private bucketCounts: number[] = new Array(BUCKET_COUNT).fill(0); // 60s volume series, oldest→newest
   private bucketEpoch = 0; // floor(now/BUCKET_MS) of the newest (last) bucket; 0 = uninitialized
-  private connected = false;
+  /** The endpoint's full Cotal bind (`connection`) and its raw NATS socket edge (`transport`). A
+   *  broker outage that nats.js rides out by reconnecting moves only the second, so the view is
+   *  connected only while both hold. */
+  private bound = false;
+  private transport = false;
   private error?: string;
+  private presenceCurrent = true;
+  private errorWhilePresenceStale = false;
   private warning?: string;
   private dirty = true;
   private membership: MembershipView = {};
@@ -210,13 +229,28 @@ export class MeshView extends EventEmitter {
   private readonly onPresence = (ev: unknown) => this.emit("presence", ev);
   private readonly onError = (e: Error) => {
     this.error = e.message;
+    this.errorWhilePresenceStale = !this.presenceCurrent;
+    this.dirty = true;
+  };
+  /** A broker restart reconnects the transport without a new `connection`, and its errors (the
+   *  presence stream missing until the space is provisioned again) arrive while the presence view
+   *  is stale. When that view is current again the outage is over, so its error clears with it
+   *  (AGENT-2889). An error raised while the view was current stays until the next connection. */
+  private readonly onPresenceView = (v: { state: string }) => {
+    const current = v.state === "current";
+    if (current && !this.presenceCurrent && this.errorWhilePresenceStale) this.error = undefined;
+    this.presenceCurrent = current;
     this.dirty = true;
   };
   /** A rebuilt connection clears the fault that dropped the old one, so the view reports itself
    *  connected again instead of keeping that error for good. */
   private readonly onConnection = (s: { connected: boolean }) => {
-    this.connected = s.connected;
+    this.bound = s.connected;
     if (s.connected) this.error = undefined;
+    this.dirty = true;
+  };
+  private readonly onTransport = (s: TransportState) => {
+    this.transport = s.connected;
     this.dirty = true;
   };
   private readonly onWarning = (e: Error) => {
@@ -241,10 +275,12 @@ export class MeshView extends EventEmitter {
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
     this.ep.on("connection", this.onConnection);
+    this.ep.on("transport", this.onTransport);
     this.ep.on("roster", this.onRoster);
     this.ep.on("presence", this.onPresence);
+    this.ep.on("presence-view", this.onPresenceView);
     await this.ep.start();
-    this.connected = true;
+    this.bound = true;
     this.setRoster(this.ep.getRoster());
     this.ep.tap(
       (subject, msg) => {
@@ -268,8 +304,10 @@ export class MeshView extends EventEmitter {
     this.ep.off("error", this.onError);
     this.ep.off("warning", this.onWarning);
     this.ep.off("connection", this.onConnection);
+    this.ep.off("transport", this.onTransport);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
+    this.ep.off("presence-view", this.onPresenceView);
     clearTimeout(this.membershipTimer);
     // The endpoint's stop deletes the watch's consumer over a live connection, and it is what settles
     // the watch's own stop once the connection is closed for good, so it must not wait behind it.
@@ -341,7 +379,7 @@ export class MeshView extends EventEmitter {
       membership: { ...this.membership },
       rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
-        connected: this.connected,
+        connected: this.bound && this.transport,
         space: this.ep.space,
         dmVisible: !this.chatOnly,
         error: this.error,
@@ -388,21 +426,24 @@ export class MeshView extends EventEmitter {
       // silently, which is the failure mode this whole lane exists to remove. A surface that wants
       // a chat-only feed can filter on this flag and say so in its own UI.
       events: kind === "anycast" ? undefined : isEventChannel(msg.channel) || undefined,
+      ...threadFields(msg),
       text: bodyText(msg),
     });
   }
 
-  /** Group a same-sender/same-text unicast burst into one feed entry over BURST_MS, and retain
-   *  each raw message for the DM roll-up. */
+  /** Group a unicast burst with one sender, text and thread fields into one feed entry over
+   *  BURST_MS, and retain each raw message for the DM roll-up. */
   private coalesce(msg: CotalMessage): void {
     const body = bodyText(msg);
+    const thread = threadFields(msg);
     if (msg.to) this.recordDm({ ts: msg.ts, from: msg.from, toId: msg.to, text: body });
-    const key = msg.from.id + " " + body;
+    const key = JSON.stringify([msg.from.id, body, thread]);
     let b = this.pending.get(key);
     if (!b) {
       b = {
         from: msg.from,
         body,
+        thread,
         id: msg.id,
         ts: msg.ts,
         ids: [],
@@ -426,6 +467,7 @@ export class MeshView extends EventEmitter {
       toIds: [...b.ids],
       toNames: b.ids.map((id) => this.nameOf(id)),
       count: b.ids.length,
+      ...b.thread,
       text: b.body,
     });
   }
@@ -494,6 +536,7 @@ export class MeshView extends EventEmitter {
           from: msg.from,
           delivery: "multicast",
           channel: msg.channel,
+          ...threadFields(msg),
           text: bodyText(msg),
         });
       }

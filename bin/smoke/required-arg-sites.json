@@ -84,6 +84,7 @@
   "implementations/manager/smoke/manager-reconcile-redrive.smoke.ts": 4,
   "implementations/manager/smoke/manager-reconcile-startup.smoke.ts": 3,
   "implementations/manager/smoke/manager-scatter.smoke.ts": 1,
+  "implementations/manager/smoke/manager-seat-load.smoke.ts": 1,
   "implementations/manager/smoke/manager-selection-refusals.smoke.ts": 3,
   "implementations/manager/smoke/manager-service-invoke.smoke.ts": 4,
   "implementations/manager/smoke/manager-service-ops.smoke.ts": 4,

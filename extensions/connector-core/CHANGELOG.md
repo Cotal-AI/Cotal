@@ -1,5 +1,93 @@
 # @cotal-ai/connector-core
 
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Split the CLI reference into focused MDX pages and generate the MCP catalog as MDX. Include complete Markdown in the installed release's offline documentation while preserving existing page calls and section links.
+- 13499c0: Rewrite the client, connector authoring, and embedding guides as direct MDX. Split embedding contracts into focused references and include their complete Markdown in the installed release's offline `cotal_docs` bundle.
+- 13499c0: Complete the operator documentation with focused MDX procedures, current CLI instructions, separate console and dashboard guides, and a concise upgrade guide linked to the preserved migration history.
+- 13499c0: Rewrite configuration, agent file, manifest, and channel permission references as direct MDX. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- 13499c0: Rewrite the connector guides as direct MDX and separate launch instructions from implementation reference. Include complete Markdown for the guides and new reference pages in the installed release's offline `cotal_docs` bundle.
+- 13499c0: Split mesh operation documentation into focused guides. Keep existing documentation links and offline page calls available, and point the supervision warning at the stable published guide.
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- 13499c0: Rewrite the Fundamentals concepts as direct MDX and separate Architecture's detailed contracts into their reference pages. Include complete Markdown and schema inspection content in offline documentation. Update documentation pointers and offline checks for the renamed sources.
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+- 13499c0: Rewrite the MeshView, cotal-lang card, and glossary references as direct MDX with source-backed definitions and examples. Update the language example check and terminal model source references for the renamed pages. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- e7f6b09: `cotal_send` refuses a channel pattern such as `team.>` before it reads or sends anything. The refusal and the advertised `channel` text say how to reach those agents: one post to a channel the pattern matches reaches the followers connected at the time, or post to each channel by name. A name that breaks the channel grammar, such as `team.**`, is refused too. It used to be rewritten onto another channel while the receipt named what was typed. In pi, `cotal_send` now returns the shared refusal instead of its own line.
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+
+## 0.133.11
+
+### Patch Changes
+
+- 9182cfc: Restore the tool specs' and gateway's zod namespace import. The by-name imports released in 0.133.9 made the bundled claude, codex, hermes, jcode and opencode connectors throw `Class2 is not a constructor` when imported, so a fresh `cotal setup` failed its first connector seed.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+### Patch Changes
+
+- 2e16657: Import the zod members the tool specs and gateway use by name, so bundles of those two modules no longer reach zod's locale tables through their own `z` namespace import. Tool schemas, tool names and descriptions, argument validation, and error messages are unchanged. Carriers that import zod elsewhere keep their own references.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+### Patch Changes
+
+- Decode and cache bundled documentation one source at a time for page reads and search results. Preserve corpus/index integrity checks, search scores, returned-page behavior and the full-bundle build helper without changing the two-asset package layout.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+### Patch Changes
+
+- Load the MCP SDK's HTTP transport when the HTTP gateway is used, keeping its initialization out of stdio-only startup. Preserve HTTP gateway and fetch-on-use behavior.
+
+## 0.133.2
+
+### Patch Changes
+
+- cb0da93: Exports `MAX_INBOX`, the per-session inbox bound, so the overflow smokes read it instead of restating it.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+### Patch Changes
+
+- 85fdb96: Keep weighted term frequencies instead of repeated token strings in the lazy documentation search index. Search results and BM25 scores are unchanged. This reduces retained memory after documentation searches in the tested stock connector workload, with extra first-search work to build the frequency maps.
+
 ## 0.132.5
 
 No changes in this release.
