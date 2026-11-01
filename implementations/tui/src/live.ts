@@ -62,17 +62,12 @@ export function openSpace(space?: string): Session {
       view = v
       await v.start()
       if (closed) return void (await v.stop())
-      let transport = true
       const show = (raw: Mesh) => {
         if (closed) return
         const mesh = safe(raw)
         const at = { space: c.space, server: c.server, mesh }
-        setConn(transport && raw.status.connected ? { phase: "live", ...at } : { phase: "reconnecting", ...at, ...(mesh.status.error ? { reason: mesh.status.error } : {}) })
+        setConn(raw.status.connected ? { phase: "live", ...at } : { phase: "reconnecting", ...at, ...(mesh.status.error ? { reason: mesh.status.error } : {}) })
       }
-      ep.on("transport", (t: { connected: boolean }) => {
-        transport = t.connected
-        show(v.snapshot())
-      })
       v.on("change", show)
       show(v.snapshot())
     } catch (e) {
