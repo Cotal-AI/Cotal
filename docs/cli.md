@@ -3494,8 +3494,10 @@ started or a catalog lists, is refused with `CONFLICT` (exit 2), with or without
 `space add` refuses it: `cotal down` finds a running stack through that record.
 
 A hostname or public address is registrable only when the connection will **require TLS**. Pass
-`--tls`, or use a `tls://` URL. Without either, the refusal's next step is the `tls://` form of the
-same address, or `wss://` for a `ws://` one. The scheme is recorded as enforced intent, so every later dial
+`--tls` for TCP, or use a `tls://` or `wss://` URL. A `ws://` address cannot satisfy a TLS requirement,
+even on loopback or with `--force`; use `wss://` instead. Existing TLS-required `ws://` records also
+refuse when dialed. Without required TLS, the refusal's next step is the secure URL form.
+The scheme is recorded as enforced intent, so every later dial
 through the record demands the handshake (and `meshes add tls://…` against a plaintext broker is
 refused at registration). Without required TLS the fence admits loopback literals, and
 private-overlay literals only with `--allow-unencrypted-overlay`, which records your acceptance that
