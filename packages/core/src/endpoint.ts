@@ -161,7 +161,10 @@ import {
   chatWildcard,
   assertValidChannel,
   channelInAllow,
+  membershipInAllow,
   isConcreteChannel,
+  isChannelFamily,
+  familiesCovering,
   normalizeMentions,
   parseSubject,
   isPrincipalOwnerToken,
@@ -5341,27 +5344,32 @@ export class CotalEndpoint extends EventEmitter {
     return matches.length === 1 ? matches[0].card.id : undefined;
   }
 
-  /** Plane-3 publish-dedupe key for a fan-out/transfer entry (#673, SPEC §4: two `id: ""` posts
-   *  MUST NOT collapse to one delivery). An empty `msg.id` contributes NO msgID — a plain publish,
-   *  never an empty or salted one — so an id-less message is at-least-once on the durable plane (a
-   *  redelivery may reach the member twice; the receiver already treats each as its own delivery). */
-  private plane3MsgId(entry: Plane3Entry, keyPrefix: string): Partial<JetStreamPublishOptions> {
-    return entry.msg.id === "" ? {} : { msgID: `${entry.msg.id}:${keyPrefix}` };
+  /** Plane-3 publish-dedupe key for a fan-out/transfer entry: the message id plus the member
+   *  lifecycle (`keySuffix`). One message reaches one lifecycle once, whichever membership row and
+   *  whichever writer (fan-out or any row's catch-up) produced the copy (#5404), within the stream's
+   *  duplicate window. An empty `msg.id` contributes NO msgID (#673, SPEC §4: two `id: ""` posts MUST
+   *  NOT collapse to one delivery) — a plain publish, never an empty or salted one — so an id-less
+   *  message is at-least-once on the durable plane (a redelivery may reach the member twice; the
+   *  receiver already treats each as its own delivery). */
+  private plane3MsgId(entry: Plane3Entry, keySuffix: string): Partial<JetStreamPublishOptions> {
+    return entry.msg.id === "" ? {} : { msgID: `${entry.msg.id}:${keySuffix}` };
   }
 
   /** Publish one fan-out entry into a member LIFECYCLE's mixed inbox (`dinbox.<o>.<a>.<uid>`, SPEC
    *  §13.1: fan-out addresses the member row's RECORDED lifecycle, never the alias's current
-   *  occupant), idempotent via `Nats-Msg-Id` (`<msgId>:<principal>:<generation>`) so a catch-up copy
-   *  and a racing fan-out copy collapse. The `principal` is the member's owner+actor dot-form. */
+   *  occupant), idempotent via `Nats-Msg-Id` (`<msgId>:<principal>:<lifecycleUid>`) so a catch-up copy
+   *  and a racing fan-out copy collapse, from the same row or from two rows that both cover the post.
+   *  The `principal` is the member's owner+actor dot-form. */
   private async publishDinbox(principal: string, lifecycleUid: string, entry: Plane3Entry): Promise<void> {
     if (!this.js) return;
     const p = parsePrincipalKey(principal);
     if (!p) throw new Error(`publishDinbox: "${principal}" is not a valid member principal <owner>.<actor>`);
     await this.js.publish(dinboxSubject(this.space, p.owner, p.actor, lifecycleUid), JSON.stringify(entry), {
       // JetStream dedupe is STREAM-WIDE, so the id must carry the LIFECYCLE too: with an alias-keyed
-      // id, lifecycle A's copy would suppress a same-alias successor B's copy of the same message
-      // (both start at generation 1) — cross-lifecycle suppression, not dedup.
-      ...this.plane3MsgId(entry, `${principal}:${lifecycleUid}:${entry.generation}`),
+      // id, lifecycle A's copy would suppress a same-alias successor B's copy of the same message —
+      // cross-lifecycle suppression, not dedup. It carries no row generation: two rows of one
+      // lifecycle covering the post must collapse to one copy.
+      ...this.plane3MsgId(entry, `${principal}:${lifecycleUid}`),
     });
   }
 
@@ -6348,7 +6356,9 @@ export class CotalEndpoint extends EventEmitter {
     // and again return without acking so the entry redelivers rather than being consumed here.
     if (!this.plane3MayAct()) return;
     if ((await this.deliveryClassFresh(channel)) === "durable") {
-      for (const rec of await listMembers(await this.membersRegistry(), { channel })) {
+      // The channel's own rows and every family row above it (`review.>`). A lifecycle holding two of
+      // them gets two publishes and keeps one copy: the dedupe id is per message and lifecycle (#5404).
+      for (const rec of await listMembers(await this.membersRegistry(), { covering: channel })) {
         if (rec.owner === msg.from.id) continue;      // never backstop the sender's own post
         if (!durableEligible(rec, seq)) continue;     // routing fast-filter (reader re-checks)
         // Address the member row's RECORDED lifecycle: a retired row (tombstone pending) routes to the
@@ -6360,7 +6370,10 @@ export class CotalEndpoint extends EventEmitter {
         // stopping late is not - the entry is never acked here, so the successor redelivers it and
         // re-sends the whole set; publishDinbox is idempotent per (owner, lifecycle, msgID).
         if (!this.plane3MayAct()) return;
-        await this.publishDinbox(rec.owner, rec.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation });
+        await this.publishDinbox(rec.owner, rec.lifecycleUid, {
+          msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation,
+          ...(rec.channel !== channel ? { row: rec.channel } : {}),
+        });
       }
     } else {
       for (const name of msg.mentions ?? []) {
@@ -6398,6 +6411,17 @@ export class CotalEndpoint extends EventEmitter {
         catch (e) { if (!this.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+  }
+
+  /** Whether one of the lifecycle's rows covering concrete `channel`, the channel's own or a family
+   *  above it, is eligible for the post at `seq`. One exact read per row, the channel's own first. */
+  private async lifecycleCoversPost(owner: string, lifecycleUid: string, channel: string, seq: number): Promise<boolean> {
+    const kv = await this.membersRegistry();
+    for (const row of [channel, ...familiesCovering(channel).reverse()]) {
+      const rec = await readMember(kv, row, owner, lifecycleUid);
+      if (rec && durableEligible(rec.record, seq)) return true;
+    }
+    return false;
   }
 
   /** Remove a retired lifecycle's member row for `channel`, when one exists. Best effort: the row
@@ -6463,7 +6487,7 @@ export class CotalEndpoint extends EventEmitter {
         // every later message on the channel into this inbox until it goes, and this reader then
         // removes each copy. Remove the row where that cost is paid, by its exact key, only when it
         // exists: a purge of an absent key would write a marker per dropped entry.
-        if (entry.reason === "durable-channel") await this.removeRetiredMemberRow(entry.channel, owner, pr.lifecycleUid);
+        if (entry.reason === "durable-channel") await this.removeRetiredMemberRow(entry.row ?? entry.channel, owner, pr.lifecycleUid);
         if (!this.plane3MayAct()) return;
         m.ack();
         return;
@@ -6485,12 +6509,10 @@ export class CotalEndpoint extends EventEmitter {
     // KNOWN owner whose CURRENT ACL no longer covers the channel — a revocation/narrowing. Drop: the
     // entry is no longer authorized (SPEC §7 current-ACL gate before surfacing).
     if (!channelInAllow(acl, entry.channel)) { m.ack(); return; }
-    if (entry.reason === "durable-channel") {
-      const rec = await readMember(await this.membersRegistry(), entry.channel, owner, pr.lifecycleUid);
-      // INTERVAL re-auth (not a current-member boolean): a pre-leave entry (seq ≤ leaveCursor) stays
-      // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut.
-      if (!rec || !durableEligible(rec.record, entry.seq)) { m.ack(); return; }
-    }
+    // INTERVAL re-auth (not a current-member boolean): a pre-leave entry (seq ≤ leaveCursor) stays
+    // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut. Any of the
+    // lifecycle's rows that cover the channel may hold the post, whichever row addressed the copy.
+    if (entry.reason === "durable-channel" && !(await this.lifecycleCoversPost(owner, pr.lifecycleUid, entry.channel, entry.seq))) { m.ack(); return; }
     // COMMIT-POINT FENCE. Everything above this line is broker I/O - the ACL read and the member
     // re-read - so the entry check at the top of the handler is stale by now if this unit was
     // descheduled inside either. The transfer below is the effect that must not happen on behalf of
@@ -6510,7 +6532,7 @@ export class CotalEndpoint extends EventEmitter {
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
       await this.js!.publish(dlvSubject(this.space, pr.owner, pr.actor, pr.lifecycleUid), JSON.stringify(frame), {
-        ...this.plane3MsgId(entry, `${owner}:${pr.lifecycleUid}:${entry.generation}`),
+        ...this.plane3MsgId(entry, `${owner}:${pr.lifecycleUid}`),
         headers: frameHeaders,
       });
     } catch {

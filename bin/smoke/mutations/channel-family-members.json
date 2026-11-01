@@ -1,0 +1,63 @@
+{
+  "suite": [
+    "packages/core/smoke/members.smoke.ts"
+  ],
+  "guard": "a family membership row (#5404) is keyed with its > stored as =, so no grant or purge built from the key is a wildcard; only a whole last = segment decodes back; memberKey refuses every other pattern; the family grammar refuses the root > and any *; and listMembers(covering) returns a channel's own rows plus the families above it and nothing else",
+  "command": "pnpm smoke:members",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/channel-family-members.json",
+  "why": [
+    "The suite imports the registry helpers from ../src/index.js and starts a plain JetStream broker, so a mutation of subjects.ts or members.ts is what the run sees; no build is needed.",
+    "members.smoke.ts stops at the first failed assertion, and each mutation below breaks one family cell that runs before any later cell could fail for another reason.",
+    "No completionMarker: the suite stops at its first failed assertion by design, so a killed mutant never prints the closing banner. The named red is the cell's own assertion message."
+  ],
+  "mutations": [
+    {
+      "name": "a family key keeps its raw > (a wildcard in every grant and purge built from it)",
+      "file": "packages/core/src/subjects.ts",
+      "find": "return `${family ? `${channel.slice(0, -1)}=` : channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;",
+      "replace": "return `${channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;",
+      "expectRed": "a family key stores > as =",
+      "cell": "a family key stores > as ="
+    },
+    {
+      "name": "memberKey accepts any pattern, not only a family",
+      "file": "packages/core/src/subjects.ts",
+      "find": "  if (!family && !isConcreteChannel(assertValidChannel(channel)))",
+      "replace": "  if (false)",
+      "expectRed": "memberKey refuses a pattern that is not a family and a channel spelled with =",
+      "cell": "memberKey refuses a pattern that is not a family and a channel spelled with ="
+    },
+    {
+      "name": "parseMemberKey decodes an = anywhere in the channel",
+      "file": "packages/core/src/subjects.ts",
+      "find": "    if (eq !== channel.length - 1 || !channel.endsWith(\".=\")) return null;\n    channel = `${channel.slice(0, -1)}>`;",
+      "replace": "    channel = channel.replace(\"=\", \">\");",
+      "expectRed": "parseMemberKey refuses an = that is not a whole last channel segment",
+      "cell": "parseMemberKey refuses an = that is not a whole last channel segment"
+    },
+    {
+      "name": "the family grammar admits a * segment",
+      "file": "packages/core/src/subjects.ts",
+      "find": "    segs.slice(0, -1).every((s) => /^[A-Za-z0-9_-]+$/.test(s));",
+      "replace": "    segs.slice(0, -1).every((s) => /^[A-Za-z0-9_*-]+$/.test(s));",
+      "expectRed": "the root >, any *, a bare channel, team.** and a mid > are not families",
+      "cell": "the root >, any *, a bare channel, team.** and a mid > are not families"
+    },
+    {
+      "name": "familiesCovering also lists a family under the channel itself",
+      "file": "packages/core/src/subjects.ts",
+      "find": "  return segs.slice(1).map((_, i) => `${segs.slice(0, i + 1).join(\".\")}.>`);",
+      "replace": "  return segs.map((_, i) => `${segs.slice(0, i + 1).join(\".\")}.>`);",
+      "expectRed": "familiesCovering(a.b.c) = a.>, a.b.>",
+      "cell": "familiesCovering(a.b.c) = a.>, a.b.>"
+    },
+    {
+      "name": "covering admits every family row, not only those above the channel",
+      "file": "packages/core/src/members.ts",
+      "find": "      !(isChannelFamily(parsed.channel) && subjectMatches(parsed.channel, filter.covering))) continue;",
+      "replace": "      !isChannelFamily(parsed.channel)) continue;",
+      "expectRed": "listMembers(covering=team.backend) = its own row and team.>, not team.backend.> or teams.>",
+      "cell": "listMembers(covering=team.backend) = its own row and team.>, not team.backend.> or teams.>"
+    }
+  ]
+}

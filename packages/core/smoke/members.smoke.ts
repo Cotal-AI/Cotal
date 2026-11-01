@@ -25,6 +25,8 @@ import {
   membersBucket,
   memberKey,
   parseMemberKey,
+  isChannelFamily,
+  familiesCovering,
   openMembersRegistry,
   commitMember,
   readMember,
@@ -50,6 +52,7 @@ const lid = (principal: string): string => createHash("sha256").update(principal
 const OA = "local.ownera", OB = "local.ownerb";
 const A = "local.alice", B = "local.bob", CA = "local.carol", D = "local.dave", E = "local.eve";
 const Z = "local.zeta", AL = "local.al", BO = "local.bo", CY = "local.cy";
+const FA = "local.fama", FB = "local.famb", FC = "local.famc";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
@@ -90,6 +93,20 @@ async function main() {
   check("memberKey/parseMemberKey round-trip (flat)", JSON.stringify(parseMemberKey(memberKey("review", OA, lid(OA)))) === JSON.stringify({ channel: "review", principal: OA, lifecycleUid: lid(OA) }));
   check("memberKey/parseMemberKey round-trip (dotted channel)", JSON.stringify(parseMemberKey(memberKey("team.backend", OB, lid(OB)))) === JSON.stringify({ channel: "team.backend", principal: OB, lifecycleUid: lid(OB) }));
   check("parseMemberKey rejects a non-key", parseMemberKey("=defaults") === null);
+
+  // ---- a family row (#5404): its `>` is stored as `=`, so no grant or purge built from the key is a
+  //      wildcard, and only a whole last `=` segment decodes back ----
+  check("review.> and team.backend.> are families", isChannelFamily("review.>") && isChannelFamily("team.backend.>"));
+  check("the root >, any *, a bare channel, team.** and a mid > are not families",
+    ![">", "team.*.>", "team.*", "*.>", "review", "team.**", "team.>.x", ".>", "te am.>"].some(isChannelFamily));
+  check("familiesCovering(a.b.c) = a.>, a.b.>", JSON.stringify(familiesCovering("a.b.c")) === JSON.stringify(["a.>", "a.b.>"]));
+  check("a family key stores > as =", memberKey("review.>", OA, lid(OA)) === `review.=/${OA}.${lid(OA)}`);
+  check("memberKey/parseMemberKey round-trip (family)", JSON.stringify(parseMemberKey(memberKey("team.backend.>", OB, lid(OB)))) === JSON.stringify({ channel: "team.backend.>", principal: OB, lifecycleUid: lid(OB) }));
+  const keyRefused = (ch: string): boolean => { try { memberKey(ch, OA, lid(OA)); return false; } catch { return true; } };
+  check("memberKey refuses a pattern that is not a family and a channel spelled with =",
+    [">", "team.*.>", "team.*", "*.>", "a.>.b", "review.=", "review.a="].every(keyRefused));
+  check("parseMemberKey refuses an = that is not a whole last channel segment",
+    [`review=/${OA}.${lid(OA)}`, `a.=.b/${OA}.${lid(OA)}`, `=/${OA}.${lid(OA)}`, `a.b=/${OA}.${lid(OA)}`].every((k) => parseMemberKey(k) === null));
   check("bucket name", membersBucket(space) === "cotal_members_memreg");
 
   // ---- create + read ----
@@ -215,6 +232,14 @@ async function main() {
   const daveMemberships = (await listMembers(kv, { owner: D })).map((m) => m.channel).sort();
   check("listMembers(owner=dave) = review,team.backend", JSON.stringify(daveMemberships) === JSON.stringify(["review", "team.backend"]));
   check("channel scan does NOT bleed across the dotted prefix (review != team.backend)", !reviewMembers.includes("team.backend"));
+  // ---- covering: a concrete channel's own rows plus every family row above it, nothing else ----
+  await commitMember(kv, rec({ channel: "team.>", owner: FA }));
+  await commitMember(kv, rec({ channel: "team.backend.>", owner: FB }));
+  await commitMember(kv, rec({ channel: "teams.>", owner: FC }));
+  const covering = (await listMembers(kv, { covering: "team.backend" })).map((m) => `${m.channel} ${m.owner}`).sort();
+  check("listMembers(covering=team.backend) = its own row and team.>, not team.backend.> or teams.>",
+    JSON.stringify(covering) === JSON.stringify([`team.> ${FA}`, `team.backend ${D}`]), covering);
+  check("listMembers(channel=team.>) reads the family row exactly", JSON.stringify((await listMembers(kv, { channel: "team.>" })).map((m) => m.owner)) === JSON.stringify([FA]));
 
   // ---- delete (GC) removes the footprint ----
   await deleteMember(kv, "review", D, lid(D));

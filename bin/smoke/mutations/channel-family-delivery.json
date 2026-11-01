@@ -1,0 +1,60 @@
+{
+  "suite": [
+    "packages/core/smoke/channel-family-auth.smoke.ts"
+  ],
+  "guard": "a family follower's stored copies (#5404): fan-out routes the family rows above a channel, the reader accepts a copy that any covering row holds, two covering rows store one copy because the dedupe id is per message and lifecycle, each channel's own delivery class decides, and the reader still re-checks the read ACL per concrete channel",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:channel-family:auth",
+  "completionMarker": "CHANNEL-FAMILY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/channel-family-delivery.json",
+  "why": [
+    "The suite imports CotalEndpoint from ../src/index.js, but @cotal-ai/smoke-kit resolves @cotal-ai/core through dist/, so the command builds core first and afterRestore rebuilds it, leaving no dist/ compiled from a mutant.",
+    "Every 'stores nothing' cell is closed by a later post on a channel that does store, so a mutation that stops delivery entirely reddens the marker half rather than passing the negative half."
+  ],
+  "mutations": [
+    {
+      "name": "the reader re-checks only the channel's own row",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    for (const row of [channel, ...familiesCovering(channel).reverse()]) {",
+      "replace": "    for (const row of [channel]) {",
+      "expectRed": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "cell": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "fan-out reads only the channel's own rows",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      for (const rec of await listMembers(await this.membersRegistry(), { covering: channel })) {",
+      "replace": "      for (const rec of await listMembers(await this.membersRegistry(), { channel })) {",
+      "expectRed": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "cell": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the dedupe id carries the addressing row's generation again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    return entry.msg.id === \"\" ? {} : { msgID: `${entry.msg.id}:${keySuffix}` };",
+      "replace": "    return entry.msg.id === \"\" ? {} : { msgID: `${entry.msg.id}:${keySuffix}:${entry.generation}` };",
+      "expectRed": "review.a's own row (generation 2) and review.> (generation 1) together store ONE copy",
+      "cell": "review.a's own row (generation 2) and review.> (generation 1) together store ONE copy",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "fan-out stores every channel, whatever its delivery class",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if ((await this.deliveryClassFresh(channel)) === \"durable\") {",
+      "replace": "    if ((await this.deliveryClassFresh(channel)) === \"durable\" || isConcreteChannel(channel)) {",
+      "expectRed": "the live-class review.quiet stores nothing for a review.> follower, while durable review.c does",
+      "cell": "the live-class review.quiet stores nothing for a review.> follower, while durable review.c does",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the reader stops re-checking the read ACL per concrete channel",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!channelInAllow(acl, entry.channel)) { m.ack(); return; }",
+      "replace": "    if (false) { m.ack(); return; }",
+      "expectRed": "a read ACL narrowed to review.b and review.c drops review.d's copy and keeps review.c's",
+      "cell": "a read ACL narrowed to review.b and review.c drops review.d's copy and keeps review.c's",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

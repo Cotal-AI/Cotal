@@ -301,8 +301,12 @@ export interface Plane3Entry {
   /** Why this owner was fanned to: a `durable` channel's member (interval-gated) vs a `live` channel
    *  `@mention` to an authorized target (ACL-only, no membership). */
   reason: "durable-channel" | "live-mention";
-  /** The owner's membership generation at fan-out (idempotency-key component + diagnostics). */
+  /** The addressing row's membership generation (provenance and diagnostics; not part of the
+   *  dedupe id, which is per message and lifecycle). */
   generation: number;
+  /** The membership row that addressed a `durable-channel` copy when it is not `channel` itself: the
+   *  family above it (`review.>`). Absent for the channel's own row. */
+  row?: string;
 }
 
 /**
