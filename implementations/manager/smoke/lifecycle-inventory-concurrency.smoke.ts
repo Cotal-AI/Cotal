@@ -179,7 +179,7 @@ try {
   const rowsOf = async (s: Seat) => (await listMembers(kv, { owner: s.principal })).filter((r) => r.lifecycleUid === s.uid);
   const outcome = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
   // Hold the daemon's next durable join at its start, after the ACL authorized it.
-  const dj = daemon.ep as unknown as { durableJoinFor(...args: unknown[]): Promise<unknown>; deliveryServeSub: { getPending(): number }; retiringLifecycles: Map<string, Set<string>> };
+  const dj = daemon.ep as unknown as { durableJoinFor(...args: unknown[]): Promise<unknown>; deliveryServeSub: { getReceived(): number }; retiringLifecycles: Map<string, Set<string>> };
   const joinFor = dj.durableJoinFor.bind(dj);
   let joinHeld: { entered: () => void; release: Promise<void> } | undefined;
   dj.durableJoinFor = async (...args) => {
@@ -219,9 +219,12 @@ try {
   const blocking = holdJoin();
   const bJoin = outcome(b.ep.durableJoinChannel("lane.a"));
   await blocking.entered;
+  // The daemon reads each request as it arrives and holds an in-order one on its own chain, so the
+  // subscription buffers nothing: count what the rail received while the held join runs.
+  const received = dj.deliveryServeSub.getReceived();
   const cJoin = outcome(c.ep.durableJoinChannel("lane.a"));
-  for (let i = 0; i < 100 && dj.deliveryServeSub.getPending() < 1; i++) await wait(50);
-  const queued = dj.deliveryServeSub.getPending();
+  for (let i = 0; i < 100 && dj.deliveryServeSub.getReceived() - received < 1; i++) await wait(50);
+  const queued = dj.deliveryServeSub.getReceived() - received;
   const cListing = await inventory({ principal: c.principal, uid: c.uid });
   blocking.release();
   const [bOutcome, cOutcome] = await Promise.all([bJoin, cJoin]);
