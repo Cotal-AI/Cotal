@@ -36,6 +36,7 @@ const renderRoots = [
   join(root, "extensions/connector-core/src"),
   join(root, "implementations/cli/src"),
   join(root, "packages/workspace/src/view"),
+  join(root, "packages/workspace/src/control"),
   join(root, "implementations/web/src"),
 ];
 const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_modules"]);

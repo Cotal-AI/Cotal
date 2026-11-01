@@ -59,7 +59,23 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  parseCommaList, CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, recordOperationWarning, renderReport, terminalWidth, wrapWords, writeResult, type OutputWarning, type RefusalCode, type Report,
+  parseCommaList,
+  CommandFailure,
+  loadLaunchPersonaFile,
+  personaFileReference,
+  PersonaSourceError,
+  inputDisabledByFlag,
+  jsonFlag,
+  plainFlag,
+  presentationOf,
+  recordOperationWarning,
+  renderReport,
+  terminalWidth,
+  wrapWords,
+  writeResult,
+  type OutputWarning,
+  type RefusalCode,
+  type Report,
   agentActorTokenKey,
   agentLifecycleSecretFilePaths,
   agentSecretFilePaths,
@@ -104,6 +120,7 @@ import {
   type SpaceMaterialComposition,
   recordOperationSpace,
   resolveMeshTarget,
+  resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
@@ -112,7 +129,7 @@ import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
-import { askManager, describeUnanswered, failIfNotOk, liveManagerIds, managerRailGone, onInstance, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
+import { cliControl, failIfNotOk, onInstance } from "../lib/control.js";
 import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
@@ -137,6 +154,7 @@ import {
   verifyUserExchange,
   type UserBundle,
 } from "./meshes-add.js";
+import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "@cotal-ai/workspace/control";
 
 const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
 const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
@@ -706,7 +724,7 @@ export async function launchManagedPersona(
   const toStdout = !observer && presentationOf(values) !== "json";
   (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", toStdout ? process.stdout : process.stderr));
   for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
-  const start = () => askManager(t.space, t.server, "start", {
+  const start = () => askManager(cliControl, t.space, t.server, "start", {
     name: ref,
     identity: values.name,
     role: values.role,
@@ -937,7 +955,7 @@ async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { deta
  *  folder with the launch and asks nothing. */
 async function checkFolder(flags: ConnectFlags, on: string, path: string): Promise<FolderCheck> {
   const t = await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
-  const reply = await askManager(t.space, t.server, "resolveCwd", { cwd: path }, t.auth, "owner", undefined, { instanceId: on });
+  const reply = await askManager(cliControl, t.space, t.server, "resolveCwd", { cwd: path }, t.auth, "owner", undefined, { instanceId: on });
   const cwd = reply.ok ? (reply.data as { cwd?: unknown } | undefined)?.cwd : undefined;
   if (typeof cwd === "string") return { cwd };
   if (!reply.ok && reply.code === "failed-precondition" && reply.error) return { refusal: oneLine(reply.error) };
@@ -989,7 +1007,7 @@ async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise
     const settled = new AbortController();
     const status = await Promise.race([
       managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, settled.signal).then((isGone) => isGone ? undefined : new Promise<never>(() => {})),
-      askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId, signal: settled.signal }),
+      askManager(cliControl, pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId, signal: settled.signal }),
     ]).finally(() => settled.abort());
     if (status === undefined) {
       gone.push(instanceId);
@@ -1010,7 +1028,7 @@ const managerAt = (instanceId: string, host: unknown): string => typeof host ===
 async function managerNamed(flags: ConnectFlags | undefined, t: ControlTarget, instanceId: string): Promise<string> {
   try {
     const pinned = flags ? await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" }) : t;
-    const status = await askManager(pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId });
+    const status = await askManager(cliControl, pinned.space, pinned.server, "managerStatus", undefined, pinned.auth, "owner", 5_000, { instanceId });
     return managerAt(instanceId, status.ok ? (status.data as { host?: unknown } | undefined)?.host : undefined);
   } catch {
     return managerAt(instanceId, undefined);
@@ -1022,7 +1040,7 @@ const extAddFor = (name: string): string => OFFICIAL_CONNECTORS[name] ? `\`cotal
 
 /** The harness the manager's `spawn` resolves for this persona, read with the same fields `start` sends. */
 async function launchAgentOrExit(t: ControlTarget, on: string | undefined, fields: { name: string; config?: string; defaultAgent?: string }): Promise<string> {
-  const reply = await askManager(t.space, t.server, "resolveAgent", fields, t.auth, "owner", undefined, { instanceId: on });
+  const reply = await askManager(cliControl, t.space, t.server, "resolveAgent", fields, t.auth, "owner", undefined, { instanceId: on });
   failIfNotOk(reply);
   return (reply.data as { agent: string }).agent;
 }
@@ -1057,7 +1075,7 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
   let sent = 0;
   let chunks = 0;
   for (;;) {
-    const reply = await askManager(t.space, t.server, "transcriptReceive", {
+    const reply = await askManager(cliControl, t.space, t.server, "transcriptReceive", {
       sha256, size: bytes.length, source: id, sourceHost: hostname(), ...(found.title ? { title: found.title } : {}),
     }, t.auth, "owner", undefined, { instanceId: on });
     failIfNotOk(reply);

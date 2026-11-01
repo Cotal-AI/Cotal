@@ -1,7 +1,8 @@
 import { DEV_OWNER } from "@cotal-ai/core";
 import { CommandFailure, type ControlAuth } from "@cotal-ai/workspace";
-import { askManager, managerFailure } from "./control.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveAgentReceipt, type AdditiveTeamAttempt } from "./team-additive-attempt.js";
+import { askManager, managerFailure } from "@cotal-ai/workspace/control";
+import { cliControl } from "./control.js";
 
 type Agent = AdditiveAgentReceipt["createdAgents"][number];
 export interface OriginalIncarnation { requested: string; name: string; id: string; lifecycleUid: string; evidence: "static-slot-active-live" | "manager-ps-exact-identity"; slotRevision: number | null }
@@ -24,7 +25,7 @@ export async function verifyOriginalIncarnations(input: { space: string; server:
   const { space, server, auth, managerInstanceId: manager, agents, target } = input;
   const refuse = (agent: Agent, message: string) => new CommandFailure("refused", "LIFECYCLE_BLOCKED", message, { target: { ...target, agent: agent.name, expectedId: agent.id, expectedLifecycleUid: agent.lifecycleUid }, remedy: "inspect team show <deployment-id>; a missing or replaced incarnation is not relaunched or adopted by a re-apply" });
   if (input.mode === "auth") {
-    const answer = await askManager(space, server, "slots", { names: agents.map((row) => row.name), includeRetired: true }, auth, "any", 2_000, { instanceId: manager });
+    const answer = await askManager(cliControl, space, server, "slots", { names: agents.map((row) => row.name), includeRetired: true }, auth, "any", 2_000, { instanceId: manager });
     if (!answer.ok) throw managerFailure(answer, "retained incarnation inspection", target);
     const rows = answer.data as Array<{ name?: unknown; owner?: unknown; actor?: unknown; slotLifecycleUid?: unknown; slotPhase?: unknown; slotRevision?: unknown; headLifecycleUid?: unknown; live?: unknown; managerInstanceId?: unknown }>;
     if (answer.managerInstanceId !== manager || !Number.isSafeInteger(answer.managerEpoch) || !Array.isArray(rows) || rows.length > agents.length || new Set(rows.map((row) => row?.name)).size !== rows.length || rows.some((row) => !agents.some((agent) => agent.name === row?.name)))
@@ -38,7 +39,7 @@ export async function verifyOriginalIncarnations(input: { space: string; server:
       return { requested: agent.requested, name: agent.name, id: agent.id, lifecycleUid: agent.lifecycleUid, evidence: "static-slot-active-live" as const, slotRevision: row.slotRevision as number };
     }) };
   }
-  const answer = await askManager(space, server, "ps", undefined, auth, "any", 2_000, { instanceId: manager });
+  const answer = await askManager(cliControl, space, server, "ps", undefined, auth, "any", 2_000, { instanceId: manager });
   if (!answer.ok) throw managerFailure(answer, "retained incarnation inspection", target);
   const live = answer.data as Array<{ name?: unknown; id?: unknown; lifecycleUid?: unknown }>;
   if (answer.managerInstanceId !== manager || !Array.isArray(live) || live.length > 10_000 || live.some((row) => !row || typeof row.name !== "string" || typeof row.id !== "string" || typeof row.lifecycleUid !== "string"))

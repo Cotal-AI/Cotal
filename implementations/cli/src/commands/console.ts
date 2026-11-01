@@ -6,7 +6,7 @@ import { colorEnabled } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { runLog } from "../render.js";
 import { openObserver, type ObserverAuth } from "@cotal-ai/workspace/view";
-import type { ControlCtx } from "../console/control.js";
+import type { ControlCtx } from "@cotal-ai/workspace/control";
 
 /** The TUI and Ink. Ink colors through chalk, which settles its color level once, when it is first
  *  imported, from `FORCE_COLOR` before anything else, and does not read `NO_COLOR`. So they load

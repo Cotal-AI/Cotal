@@ -1,8 +1,7 @@
 import { epScatterService, type ResolvedService } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { CommandFailure, writeResult, type Presentation, type RefusalCode, type Report } from "@cotal-ai/workspace";
-import { nativeEndpointRefusal } from "./endpoint-errors.js";
+import { CommandFailure, writeResult, type Presentation, type RefusalCode, type Report, nativeEndpointRefusal } from "@cotal-ai/workspace";
 
 /** One native frozen-set gather, without instance probes, a bind, repair or a second publication. */
 export async function invokeEndpointScatter(nc: NatsConnection, space: string, service: ResolvedService, command: string, args: Record<string, unknown> | undefined, requestId: string, deadlineMs: number) {

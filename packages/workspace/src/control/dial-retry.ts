@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { TimeoutError } from "@nats-io/transport-node";
 import { isAuthRejection } from "@cotal-ai/core";
-import { ConnectRefusal } from "@cotal-ai/workspace";
+import { ConnectRefusal } from "../connect.js";
 
 /** Attempts a refused or timed-out connect gets, the first included. Nothing is published on a
  *  connection that never opened, so trying it again repeats nothing. */
