@@ -16,7 +16,7 @@
       "name": "R1 every run spawn is exempt",
       "file": "implementations/manager/src/manager.ts",
       "find": "      if (admission.spawnExempt) return { kind: \"exempt\" };\n      if (!isIssuedCaller(admission.caller))",
-      "replace": "      return { kind: \"exempt\" };\n      if (!isIssuedCaller(admission.caller))",
+      "replace": "      if (admission.spawnExempt || admission.runId.length > 0) return { kind: \"exempt\" };\n      if (!isIssuedCaller(admission.caller))",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel",
       "cell": "a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel"

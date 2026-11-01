@@ -498,7 +498,14 @@ const SEAMS: Seam[] = [
   // 353/273 -> 354/274: shared-broker account cohorts (112ef8d5a) add one membership-observer
   // connection in manager/smoke/manager-seat-load that reads each cohort account's connz. It dials
   // the plaintext loopback broker its suite starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 354, untypecheckedSites: 274 },
+  // 354/274 -> 363/282: the inline persona and hosted helper bound add nine. The core issuer
+  // session's lifecycle-executor connection passes the caller's resolved tls. The eight smoke calls
+  // dial the plaintext loopback broker their suite starts and state `tls: false`: in
+  // bin/smoke/run-host-live a caller pinned to the run's host, an admin caller and an admission
+  // reader; in auth/smoke/managed-run-issuance an admission reader; in
+  // cli/smoke/foreground-issuance-live the foreground seat; and in manager/smoke/spawn-grant-door
+  // the spawner, a rival and a definer.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 363, untypecheckedSites: 282 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

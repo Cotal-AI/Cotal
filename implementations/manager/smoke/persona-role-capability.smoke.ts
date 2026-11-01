@@ -183,7 +183,8 @@ try {
   const definerId = newIdentity();
   const definerUid = mintLifecycleUid();
   // The definer spawns a persona that names `spawn`, so its credential is an issuance (SPEC 13.15):
-  // a spawner with no issued evidence hands on no grant.
+  // a spawner with no issued evidence hands on no grant. It holds `role:manager` too, so the
+  // manager-role personas below pass the role bound and reach the capability check under test.
   const definerExp = Math.floor(Date.now() / 1000) + 600;
   const definerIssued = { generation: mintGeneration(definerExp), acceptedToken: mintAcceptedToken() };
   const prov = provisioner;
@@ -192,7 +193,7 @@ try {
       ...chACL,
       role: "worker",
       lifecycleUid: definerUid,
-      capabilities: ["spawn"],
+      capabilities: ["spawn", "role:manager"],
       endpointCapabilities: [{ endpoint: "manager", command: "define-persona" }, { endpoint: "manager", command: "spawn" }],
       expiresAt: definerExp,
       issued: definerIssued,
@@ -209,7 +210,7 @@ try {
     kind: "agent",
     tls: false,
     id: definerId.id,
-    capabilities: ["spawn"],
+    capabilities: ["spawn", "role:manager"],
     lifecycleUid: definerUid,
     acceptedToken: definerIssued.acceptedToken,
   };

@@ -282,10 +282,11 @@ async function main() {
     const delayedCon: Connector = { kind: "connector", name: "delayed-join", requires: [], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: ["-e", DELAYED_CHILD], env: envDelayed(o) }) };
     registry.register(delayedCon);
 
-    writeFileSync(join(WS_ROOT, ".cotal", "agents", "pos-user.md"), "---\nname: pos-user\nrole: worker\n---\n");
-    writeFileSync(join(WS_ROOT, ".cotal", "agents", "neg-user.md"), "---\nname: neg-user\nrole: worker\n---\n");
-    writeFileSync(join(WS_ROOT, ".cotal", "agents", "gap-user.md"), "---\nname: gap-user\nrole: worker\n---\n");
-    writeFileSync(join(WS_ROOT, ".cotal", "agents", "stop-user.md"), "---\nname: stop-user\nrole: worker\n---\n");
+    // No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+    writeFileSync(join(WS_ROOT, ".cotal", "agents", "pos-user.md"), "---\nname: pos-user\n---\n");
+    writeFileSync(join(WS_ROOT, ".cotal", "agents", "neg-user.md"), "---\nname: neg-user\n---\n");
+    writeFileSync(join(WS_ROOT, ".cotal", "agents", "gap-user.md"), "---\nname: gap-user\n---\n");
+    writeFileSync(join(WS_ROOT, ".cotal", "agents", "stop-user.md"), "---\nname: stop-user\n---\n");
 
     mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: WS_ROOT });
     const readinessBudgetMs = 10_000;
