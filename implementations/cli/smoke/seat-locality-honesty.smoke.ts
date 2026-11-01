@@ -22,9 +22,8 @@
  *
  * Run: pnpm smoke:seat-locality-honesty   (no broker)
  */
-import { locateSeatIn, seatMissRefusal, type SeatLocation } from "../src/commands/agents.js";
-import type { ScatterInstanceReply } from "../src/lib/control.js";
-import { AgentManagerUnsettled, managerChoiceFailure, managersByInstance } from "../src/lib/manager-choice.js";
+import { AgentManagerUnsettled, managerChoiceFailure } from "../src/lib/manager-choice.js";
+import { locateSeatIn, seatMissRefusal, type SeatLocation, type ScatterInstanceReply, managersByInstance } from "@cotal-ai/workspace/control";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
