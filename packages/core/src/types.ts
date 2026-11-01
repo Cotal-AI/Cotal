@@ -323,8 +323,10 @@ export interface ChannelMembership {
    *  (e.g. `team.>`) — expanded to concrete channels only by the consumer at read time, so a channel
    *  *creation* never rewrites a wildcard-subscriber's record. Empty when the agent has no live connection. */
   live: string[];
-  /** Concrete durable channels from the privileged members registry (authoritative for the durable arm,
-   *  incl. reconnect-grace) — a member here whose presence is offline is "member, currently offline". */
+  /** Durable channels from the privileged members registry (authoritative for the durable arm, incl.
+   *  reconnect-grace) — a member here whose presence is offline is "member, currently offline". A family
+   *  row is kept as recorded (`team.>`), as `live` keeps wildcards; it stores copies only for the
+   *  durable-class channels under it (#5404). */
   durable: string[];
   /** Epoch ms this record was last (re)written — a per-agent "last changed" caption. Feed-wide freshness
    *  is the separate {@link MEMBERSHIP_FEED_KEY} heartbeat (refreshed every poll); ordering is the native

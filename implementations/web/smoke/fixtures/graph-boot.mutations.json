@@ -50,6 +50,20 @@
       "find": "    if (stale.some((s) => s.name === \"membership\")) supersededByFeed(\"membership\", membershipUnreadable)();",
       "replace": "    if (stale.some((s) => s.name === \"membership\")) membershipUnreadable();",
       "expectRed": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read"
+    },
+    {
+      "name": "G-F1 a durable family row becomes a hub of its own instead of expanding",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "      if (!isWild(ch)) { if (!out.has(ch)) out.set(ch, \"durable\"); }\n      else for",
+      "replace": "      if (true) { if (!out.has(ch)) out.set(ch, \"durable\"); }\n      else for",
+      "expectRed": "6.1 an offline team.> follower gets a durable spoke to team.build only, and no hub named team.>"
+    },
+    {
+      "name": "G-F2 a durable family row expands over live-class hubs too",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "hubs.get(k)?.deliveryClass === \"durable\" && ",
+      "replace": "",
+      "expectRed": "6.1 an offline team.> follower gets a durable spoke to team.build only, and no hub named team.>"
     }
   ],
   "suite": [

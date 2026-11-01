@@ -1,0 +1,34 @@
+{
+  "suite": [
+    "implementations/cli/smoke/channel-members-live.smoke.ts"
+  ],
+  "guard": "cotal channel members shows a family follower (#5404) as a durable member of the durable-class channels under the family only",
+  "command": "pnpm smoke:channel-members:live",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/channel-family-members-live.json",
+  "why": [
+    "The suite's script builds cotal-ai and its dependencies before it runs, so each mutation rebuilds after the restore.",
+    "",
+    "L1 never counts the family row, so fern is no durable member of #team.build.",
+    "",
+    "L2 counts the family row whatever the class, so fern reads as a durable member of the live #team.chat."
+  ],
+  "mutations": [
+    {
+      "name": "L1 the family row never counts",
+      "file": "implementations/cli/src/commands/channel-members.ts",
+      "find": "durableCovers(member.durable, channel, stored)",
+      "replace": "durableCovers(member.durable, channel, false)",
+      "expectRed": "while connected, fern is a live and durable member of #team.build",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "L2 the family row counts on a live-class channel",
+      "file": "implementations/cli/src/commands/channel-members.ts",
+      "find": "durableCovers(member.durable, channel, stored)",
+      "replace": "durableCovers(member.durable, channel, true)",
+      "expectRed": "while connected, fern is a live member of #team.chat with no stored copies",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

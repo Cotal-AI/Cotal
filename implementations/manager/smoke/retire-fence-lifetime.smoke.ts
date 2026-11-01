@@ -21,7 +21,9 @@
  *   - SKEW: a retirement that does not narrow (an older manager) against this daemon, with a late join
  *     on the same daemon process, which the in-memory mark refuses;
  *   - READFAIL: a predecessor's post-write ACL read fails, so it takes back only its own write, and a
- *     successor's retry that activated the still-authorized row keeps it until the lifecycle retires.
+ *     successor's retry that activated the still-authorized row keeps it until the lifecycle retires;
+ *   - FAMILY: a lifecycle that follows the family lane.> (#5404) has its family row listed and purged
+ *     by its exact key, like a channel's row.
  * Every witness must end with 0 rows of the retired lifecycle.
  *
  * Run: pnpm smoke:retire-fence-lifetime (needs nats-server on PATH)
@@ -168,6 +170,21 @@ try {
       markRemoved && /no longer within the read ACL/.test(lateOutcome), { markRemoved, lateOutcome });
     check("PRUNE: 0 rows of the retired lifecycle remain", left.length === 0, left);
     console.log(`PRUNE_WITNESS inventoryListed=${listings.get(a.uid)?.channels.length} oldMarkRemoved=${markRemoved} lateJoinAccepted=${lateOutcome === "accepted"} retainedOldRows=${left.length} ms=${Date.now() - t0}`);
+  }
+
+  // FAMILY: the inventory lists the family row as lane.>, and the deprovisioner purges it by its key.
+  {
+    const f = await seat("family-f");
+    await f.ep.durableJoinChannel("lane.>");
+    await f.ep.durableJoinChannel("lane.a");
+    // An inventory the manager cannot accept throws once the deletes ran; the cell reads its accounting.
+    let refused = "";
+    const accounting = await retire(f).catch((e: Error & { accounting?: DeprovisionResourceAccounting }) => { refused = e.message; return e.accounting; });
+    const left = await rows(f);
+    retained += left.length;
+    check("FAMILY: the retirement listed the family row and the channel row, and the deprovisioner purged both",
+      refused === "" && listedOnly(f, ["lane.>", "lane.a"]) && accounting?.members.deleted === 2, { refused, listing: listings.get(f.uid), members: accounting?.members });
+    check("FAMILY: 0 rows of the retired lifecycle remain", left.length === 0, left);
   }
 
   // RESTART: a new daemon boots between the inventory and the deprovisioner; the seat stays connected.

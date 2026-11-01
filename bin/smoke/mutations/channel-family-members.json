@@ -58,6 +58,22 @@
       "replace": "      !isChannelFamily(parsed.channel)) continue;",
       "expectRed": "listMembers(covering=team.backend) = its own row and team.>, not team.backend.> or teams.>",
       "cell": "listMembers(covering=team.backend) = its own row and team.>, not team.backend.> or teams.>"
+    },
+    {
+      "name": "durableCovers drops the family row, so a follower of team.> is no member of team.build",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "row === channel || (familyStores && isChannelFamily(row) && subjectMatches(row, channel))",
+      "replace": "row === channel",
+      "expectRed": "durableCovers: a channel's own row, and a family row above it, cover the channel",
+      "note": "A removal safeguard would let an operator remove a channel an offline family follower still covers."
+    },
+    {
+      "name": "durableCovers ignores familyStores, so a family counts on a live-class channel",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "(familyStores && isChannelFamily(row) && subjectMatches(row, channel))",
+      "replace": "(isChannelFamily(row) && subjectMatches(row, channel))",
+      "expectRed": "durableCovers: with familyStores false, only the channel's own row covers it",
+      "note": "A display would call a family follower a durable member of a live-class channel, where it stores nothing."
     }
   ]
 }

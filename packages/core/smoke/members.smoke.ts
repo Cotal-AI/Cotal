@@ -27,6 +27,7 @@ import {
   parseMemberKey,
   isChannelFamily,
   familiesCovering,
+  durableCovers,
   openMembersRegistry,
   commitMember,
   readMember,
@@ -100,6 +101,12 @@ async function main() {
   check("the root >, any *, a bare channel, team.** and a mid > are not families",
     ![">", "team.*.>", "team.*", "*.>", "review", "team.**", "team.>.x", ".>", "te am.>"].some(isChannelFamily));
   check("familiesCovering(a.b.c) = a.>, a.b.>", JSON.stringify(familiesCovering("a.b.c")) === JSON.stringify(["a.>", "a.b.>"]));
+  check("durableCovers: a channel's own row, and a family row above it, cover the channel",
+    durableCovers(["team.build"], "team.build") && durableCovers(["team.>"], "team.build") && durableCovers(["team.>"], "team.a.b"));
+  check("durableCovers: a family row does not cover its prefix, another family's channel or a sibling row",
+    !durableCovers(["team.>"], "team") && !durableCovers(["team.>"], "ops.build") && !durableCovers(["team.build"], "team.chat"));
+  check("durableCovers: with familyStores false, only the channel's own row covers it",
+    !durableCovers(["team.>"], "team.chat", false) && durableCovers(["team.chat", "team.>"], "team.chat", false));
   check("a family key stores > as =", memberKey("review.>", OA, lid(OA)) === `review.=/${OA}.${lid(OA)}`);
   check("memberKey/parseMemberKey round-trip (family)", JSON.stringify(parseMemberKey(memberKey("team.backend.>", OB, lid(OB)))) === JSON.stringify({ channel: "team.backend.>", principal: OB, lifecycleUid: lid(OB) }));
   const keyRefused = (ch: string): boolean => { try { memberKey(ch, OA, lid(OA)); return false; } catch { return true; } };

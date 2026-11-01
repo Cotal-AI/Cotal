@@ -154,6 +154,24 @@
       "expectRed": "joining team.* says a * pattern stays live only",
       "cell": "joining team.* says a * pattern stays live only",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "channelMembers lists a principal once per covering row",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      const ids = new Set(\n        members\n",
+      "replace": "      const ids = new Array<string>().concat(\n        members\n",
+      "expectRed": "channelMembers lists alice once on review.b, which her own row and review.> both cover",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "A principal with its own row and a family row above the channel was listed twice."
+    },
+    {
+      "name": "channelMembers counts a family row on a live-class channel",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "(stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel))",
+      "replace": "(isChannelFamily(r.channel) && subjectMatches(r.channel, channel))",
+      "expectRed": "channelMembers leaves alice off the live-class review.quiet, where review.> stores nothing",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The family stores no copies on a live-class channel, so its follower is no durable member there."
     }
   ]
 }

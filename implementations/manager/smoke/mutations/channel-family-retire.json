@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "implementations/manager/smoke/retire-fence-lifetime.smoke.ts"
+  ],
+  "guard": "the manager's retirement accepts a lifecycle inventory that lists a family row (#5404) and purges it by its exact key",
+  "command": "pnpm smoke:retire-fence-lifetime",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/channel-family-retire.json",
+  "why": [
+    "R1 restores the concrete-only reply check: an inventory listing lane.> reads as malformed, the retirement is incomplete and the family row stays.",
+    "",
+    "The suite imports the manager source and the built core, and this mutation changes only the manager source, so it needs no build."
+  ],
+  "mutations": [
+    {
+      "name": "R1 the inventory reply check takes concrete channels only",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "(isConcreteChannel(c) || isChannelFamily(c))",
+      "replace": "isConcreteChannel(c)",
+      "expectRed": "FAMILY: the retirement listed the family row and the channel row, and the deprovisioner purged both",
+      "note": "A retired family follower's row would stay until a post reached the reader."
+    }
+  ]
+}

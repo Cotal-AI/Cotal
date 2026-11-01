@@ -229,6 +229,13 @@ try {
   check("the live-class review.quiet stores nothing for a review.> follower, while durable review.c does",
     !got.includes("quiet-post") && got.includes("quiet-marker"), got);
 
+  // ───────────── (4b) channelMembers counts a family row on durable channels, once per principal ─────────────
+  // alice now holds review.> and review.b's own row.
+  const membersOf = async (channel: string) => (await dlv.channelMembers(channel)).filter((m) => m.id === aPrincipal || m.id === alice.id.id).length;
+  check("channelMembers lists alice once on review.b, which her own row and review.> both cover", (await membersOf("review.b")) === 1, await dlv.channelMembers("review.b"));
+  check("channelMembers lists alice on the durable review.c through review.> alone", (await membersOf("review.c")) === 1, await dlv.channelMembers("review.c"));
+  check("channelMembers leaves alice off the live-class review.quiet, where review.> stores nothing", (await membersOf("review.quiet")) === 0, await dlv.channelMembers("review.quiet"));
+
   // ───────────── (5) a read ACL narrowed below the family ─────────────
   acls.set(aPrincipal, ["review.b", "review.c"]);
   await post("narrowed-out", "review.d");

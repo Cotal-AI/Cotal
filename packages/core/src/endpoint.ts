@@ -3546,10 +3546,10 @@ export class CotalEndpoint extends EventEmitter {
    * joined with presence for liveness (a member whose peer is gone but lingering shows `live:false`,
    * not a phantom). Only CURRENT, ACTIVATED members (non-tombstoned, and past activation catch-up — a
    * join still completing or that failed catch-up reported durable:false and stays hidden here until
-   * confirmed, so this surface never overstates membership). A wildcard registry channel would count for
-   * the concrete channels it subsumes, but durable membership is per-concrete-channel, so records are
-   * concrete. `live`-class channels carry no durable record — membership there is the live core-sub,
-   * not tracked here. Privileged read (the members KV is manager-write/read; agents hold no grant), so
+   * confirmed, so this surface never overstates membership). A row is a concrete channel or a family
+   * (`review.>`, #5404); a family row counts for each durable-class channel under it, and a principal
+   * with several rows is listed once. `live`-class channels carry no durable record — membership there
+   * is the live core-sub, not tracked here. Privileged read (the members KV is manager-write/read; agents hold no grant), so
    * it is served by the manager, not an agent capability.
    */
   async channelMembers(channel: string): Promise<ChannelMember[]>;
@@ -3570,11 +3570,15 @@ export class CotalEndpoint extends EventEmitter {
     };
     const byName = (a: ChannelMember, b: ChannelMember) => a.name.localeCompare(b.name);
 
-    if (channel !== undefined)
-      return members
-        .filter((r) => subjectMatches(r.channel, channel))
-        .map((r) => memberForId(r.owner))
-        .sort(byName);
+    if (channel !== undefined) {
+      const stored = (await this.deliveryClassFresh(channel)) === "durable";
+      const ids = new Set(
+        members
+          .filter((r) => r.channel === channel || (stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel)))
+          .map((r) => r.owner),
+      );
+      return [...ids].map(memberForId).sort(byName);
+    }
 
     const map = new Map<string, ChannelMember[]>();
     for (const r of members) {
@@ -5332,8 +5336,9 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Effective delivery class read AUTHORITATIVELY from the registry KV (not the watch cache) — so a
-   *  `live`→`durable` flip is seen by fan-out without a cache-propagation gap (red-team MED-3). */
-  private async deliveryClassFresh(channel: string): Promise<DeliveryClass> {
+   *  `live`→`durable` flip is seen by fan-out without a cache-propagation gap (red-team MED-3), and a
+   *  reader just started need not wait for the cache to fill. */
+  async deliveryClassFresh(channel: string): Promise<DeliveryClass> {
     if (!this.channelKv) return effectiveDeliveryClass(undefined, undefined);
     const [cfg, defaults] = await Promise.all([
       isConcreteChannel(channel) ? readChannelConfig(this.channelKv, channel) : Promise.resolve(undefined),

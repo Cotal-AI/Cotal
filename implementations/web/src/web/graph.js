@@ -92,7 +92,8 @@
   }
   /** Expand an agent's {live patterns, durable channels} → { channels: channel→kind, wide }. Bounded
    *  wildcards (`team.>`) expand against the KNOWN channel set (registry hubs); concrete patterns stand
-   *  alone; `live` wins over `durable`. A WHOLE-BREADTH pattern (`>` or `*` — e.g. the default persona's
+   *  alone; `live` wins over `durable`. A durable family row (`team.>`) expands only over the known hubs
+   *  whose class is durable, the channels it stores copies for. A WHOLE-BREADTH pattern (`>` or `*` — e.g. the default persona's
    *  read-everything grant) is NOT expanded to a spoke per hub (that's a dandelion); it sets `wide`, and
    *  the agent renders as a "reads-all" node badge instead — truthful without per-channel noise. */
   function memberChannels(live, durable, known) {
@@ -103,7 +104,10 @@
       if (isWild(pat)) { for (const ch of known) if (patternMatches(pat, ch)) out.set(ch, "live"); }
       else out.set(pat, "live");
     }
-    for (const ch of durable || []) if (!out.has(ch)) out.set(ch, "durable");
+    for (const ch of durable || []) {
+      if (!isWild(ch)) { if (!out.has(ch)) out.set(ch, "durable"); }
+      else for (const k of known) if (!out.has(k) && hubs.get(k)?.deliveryClass === "durable" && patternMatches(ch, k)) out.set(k, "durable");
+    }
     return { channels: out, wide };
   }
 

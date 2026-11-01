@@ -974,7 +974,8 @@ export async function deprovisionAgent(opts: {
   space: string;
   targetId: string;
   lifecycleUid: string;
-  /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
+  /** Concrete channels or families (`team.>`) whose membership rows to purge; must equal the cred's
+   *  `memberChannels`. */
   memberChannels?: readonly string[];
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {

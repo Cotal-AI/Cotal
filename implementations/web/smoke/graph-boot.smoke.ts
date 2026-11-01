@@ -345,5 +345,34 @@ async function main() {
 }
 
 await main();
+
+// ── 6. A DURABLE FAMILY ROW EXPANDS OVER THE DURABLE HUBS UNDER IT (#5404) ─────────────────────
+// The feed keeps a family row as recorded (`team.>`). It stores copies only on durable-class channels,
+// so an offline follower gets a durable spoke to each durable hub it covers and none to a live one.
+// The shipped `memberChannels` and the two matchers it uses run as graph.js has them, over a stub hub map.
+{
+  console.log("6. a durable family row expands over the durable hubs under it");
+  const src = readFileSync(join(web, "graph.js"), "utf8");
+  const fn = (name: string): string => {
+    const start = src.indexOf(`function ${name}(`);
+    let depth = 0;
+    for (let i = src.indexOf("{", start); i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1);
+    }
+    throw new Error(`graph.js has no function ${name}`);
+  };
+  const isWild = /const isWild = [^\n]*\n/.exec(src)?.[0] ?? "";
+  const hubs = new Map([["team.build", { deliveryClass: "durable" }], ["team.chat", { deliveryClass: "live" }], ["ops", { deliveryClass: "durable" }]]);
+  const c = vm.createContext({ hubs, known: [...hubs.keys()] });
+  vm.runInContext(`${isWild}${fn("patternMatches")}\n${fn("memberChannels")}\nthis.memberChannels = memberChannels;`, c);
+  const run = (live: string[], durable: string[]) =>
+    [...(c.memberChannels as (l: string[], d: string[], k: string[]) => { channels: Map<string, string> })(live, durable, c.known as string[]).channels].map(([ch, kind]) => `${ch}:${kind}`).sort();
+  ok("6.1 an offline team.> follower gets a durable spoke to team.build only, and no hub named team.>",
+    JSON.stringify(run([], ["team.>"])) === JSON.stringify(["team.build:durable"]), run([], ["team.>"]));
+  ok("6.2 a live read of team.chat sits beside the family's durable spoke to team.build",
+    JSON.stringify(run(["team.chat"], ["team.>"])) === JSON.stringify(["team.build:durable", "team.chat:live"]), run(["team.chat"], ["team.>"]));
+}
+
 console.log(failed === 0 ? `web graph boot: ${cells} cells OK` : `web graph boot: ${failed}/${cells} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
