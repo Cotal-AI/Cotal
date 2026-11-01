@@ -1,48 +1,9 @@
 import { useMemo, useState } from "react";
-import { CotalEndpoint, chatWildcard, mintLifecycleUid } from "@cotal-ai/core";
+import { CotalEndpoint, chatWildcard } from "@cotal-ai/core";
+import { openObserver, type ObserverAuth } from "@cotal-ai/workspace/view";
 import { App } from "./app.js";
-import type { ControlCtx } from "./control.js";
 import { SpacePicker } from "./ui/SpacePicker.js";
-
-/** How the observer authenticates: a static/open creds file, OR the user-mode admin-view material
- *  (a bearer SOURCE so the standing tap survives the ≤5-min token life, plus the pinned principal a
- *  source-mode endpoint requires). Never both. */
-export interface ObserverAuth {
-  creds?: string;
-  user?: { source: () => Promise<string>; sentinelCreds: string; owner: string; actor: string };
-}
-
-/** The read-only observer the console watches a space through — invisible to peers. Built once
- *  per selected space (the picker can switch spaces at runtime). */
-export function makeObserver(
-  space: string,
-  server: string,
-  auth: ObserverAuth = {},
-  name = "console",
-): CotalEndpoint {
-  const ep = new CotalEndpoint({
-    space,
-    servers: server,
-    // A synthesized incarnation uid so the palette's `ps`/`stop` can invoke the manager service
-    // over the ep rails (1d: the console's ctl door is gone). On an open mesh the broker enforces
-    // nothing; on an authed mesh the console's read-only cred simply gets a clean publish denial
-    // (its ps/stop never functioned there - the reclassified-out surface).
-    lifecycleUid: mintLifecycleUid(),
-    ...(auth.user
-      ? {
-          bearer: auth.user.source,
-          sentinelCreds: auth.user.sentinelCreds,
-          card: { owner: auth.user.owner, actor: auth.user.actor, name, role: "operator", kind: "endpoint" as const },
-        }
-      : { creds: auth.creds, card: { name, role: "operator", kind: "endpoint" as const } }),
-    channels: [],
-    consume: false, // observer: reads via tap + history + presence-watch, binds no durables
-    registerPresence: false, // invisible on the roster until the operator speaks (App's participant upgrade); sent messages carry `name` + role "operator" as `from`
-    watchPresence: true,
-  });
-  ep.on("error", () => {});
-  return ep;
-}
+import type { ControlCtx } from "@cotal-ai/workspace/control";
 
 /** The operator's presence peer: a second endpoint carrying the observer's own card (the same id,
  *  name, and role, so it IS the `from` of everything the observer sends) that does nothing but
@@ -78,7 +39,7 @@ export function Root({
   canWrite,
   canControl,
   controlCtx,
-  name,
+  name = "console",
 }: {
   server: string;
   auth: ObserverAuth;
@@ -91,9 +52,10 @@ export function Root({
 }) {
   const [selected, setSelected] = useState<string | undefined>(space);
 
-  // Build the observer lazily, once per selected space (App's useMesh owns start/stop).
+  // Build the observer lazily, once per selected space (App's useMesh owns start/stop). It stays
+  // off the roster until the operator speaks (App's participant upgrade).
   const ep = useMemo(
-    () => (selected === undefined ? null : makeObserver(selected, server, auth, name)),
+    () => (selected === undefined ? null : openObserver({ space: selected, server, auth, name, operator: true })),
     [selected, server, auth, name],
   );
 

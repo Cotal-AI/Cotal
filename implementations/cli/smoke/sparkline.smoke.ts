@@ -9,7 +9,8 @@
  */
 import { EventEmitter } from "node:events";
 import { chatSubject, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
-import { MeshView } from "../src/view/mesh-view.js";
+// By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
+import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { sparkline } from "../src/console/ui/Sparkline.js";
 
 let pass = 0, fail = 0;

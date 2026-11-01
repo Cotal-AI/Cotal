@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DEV_OWNER, assertLifecycleToken, mintCreds, newIdentity, validateChannelConfig, type MeshLaunchSpec } from "@cotal-ai/core";
-import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
-import { askManager, managerFailure, resolveControlTarget } from "../lib/control.js";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
@@ -16,6 +15,8 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { retainedTeamMatches } from "../lib/team-retained.js";
 import { applyRetainedTeam } from "./team-deploy-apply.js";
 import type { TeamValues } from "./team.js";
+import { askManager, managerFailure } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
 type CreatedAgent = AdditiveAgentReceipt["createdAgents"][number];
 
@@ -67,12 +68,12 @@ export async function applyAgentTeam(file: string, values: TeamValues): Promise<
     // Select once by an attributed read, then obtain a caller instrument for that exact instance.
     const probe = await resolveControlTarget({ space }, "control-caller-admin", undefined, { onRefusal: "throw" });
     if (probe.root === undefined || canonicalRoot(probe.root) !== root || probe.server !== selected.server || probe.mode !== selected.mode || (probe.auth.tls === true) !== (selected.tlsRequired === true)) throw new CommandFailure("refused", "CONFLICT", "manager discovery resolved another root, broker, transport or authentication mode", { target });
-    const status = await askManager(space, probe.server, "managerStatus", undefined, probe.auth, "any");
+    const status = await askManager(cliControl, space, probe.server, "managerStatus", undefined, probe.auth, "any");
     if (!status.ok) throw managerFailure(status, "team manager inspection", target);
     const instanceId = assertLifecycleToken(status.managerInstanceId ?? "", "instanceId");
     const control = await resolveControlTarget({ space }, "control-caller-admin", instanceId, { onRefusal: "throw" });
     if (control.root === undefined || canonicalRoot(control.root) !== root || control.server !== selected.server || control.mode !== selected.mode || (control.auth.tls === true) !== (selected.tlsRequired === true)) throw new CommandFailure("refused", "CONFLICT", "the pinned manager caller resolved another target; no launch was submitted", { target });
-    const pinnedStatus = await askManager(space, control.server, "managerStatus", undefined, control.auth, "any", undefined, { instanceId });
+    const pinnedStatus = await askManager(cliControl, space, control.server, "managerStatus", undefined, control.auth, "any", undefined, { instanceId });
     if (!pinnedStatus.ok) throw managerFailure(pinnedStatus, "pinned team manager inspection", { ...target, managerInstanceId: instanceId });
     const info = pinnedStatus.data as { execution?: unknown; runtime?: unknown; connectors?: Array<{ agent?: unknown; state?: unknown }> } | undefined;
     if (pinnedStatus.managerInstanceId !== instanceId || info?.execution !== "runtime" || info.runtime !== runtime) throw new CommandFailure("refused", "UNSUPPORTED", "the selected manager does not report the requested executable runtime; no replacement manager or runtime was started", { target: { ...target, managerInstanceId: instanceId, requestedRuntime: runtime } });
@@ -106,7 +107,7 @@ export async function applyAgentTeam(file: string, values: TeamValues): Promise<
       unchanged();
       const observation: { request?: ReturnType<typeof additiveAgentRequestReceipt> } = {};
       const original = attempt;
-      const reply = await askManager(space, control.server, "launch", { runId: deploymentId, name: agent.name, spec }, control.auth, "any", undefined, { instanceId, journal: {
+      const reply = await askManager(cliControl, space, control.server, "launch", { runId: deploymentId, name: agent.name, spec }, control.auth, "any", undefined, { instanceId, journal: {
         beforeSubmit(intent) {
           if (intent.requestedGoalId !== intent.requestId) throw new Error("native launch did not retain its original requested goal id");
           writeAdditiveAgentStep(root, original, ordinal, { phase: "submitted", managerInstanceId: instanceId, requestId: intent.requestId });

@@ -1,5 +1,15 @@
 # @cotal-ai/connector-jcode
 
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- 2a518d6: Name a provider's HTTP 403 and HTTP 429 refusals of the Jcode readiness turn as `provider_forbidden` and `provider_rate_limited` instead of an unknown startup failure, without exposing provider output.
+
 ## 0.133.11
 
 ### Patch Changes

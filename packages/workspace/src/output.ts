@@ -39,6 +39,12 @@ export const BOUNDARY_CODES = [
 /** The codes a `refused` outcome carries: a usage refusal or a boundary refusal. */
 export type RefusalCode = (typeof USAGE_CODES)[number] | (typeof BOUNDARY_CODES)[number];
 
+/** Native boundary codes only. A code without a not-executed outcome is not proof of refusal. */
+export function nativeEndpointRefusal(code: string | undefined): RefusalCode | undefined {
+  const codes: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "unimplemented": "UNSUPPORTED", "already-exists": "CONFLICT", "expired": "LIFECYCLE_BLOCKED" };
+  return code === undefined ? undefined : codes[code];
+}
+
 export type ErrorCode =
   | RefusalCode
   | "OPERATION_UNKNOWN"

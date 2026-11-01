@@ -1,9 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mintCreds, newIdentity, validateChannelConfig } from "@cotal-ai/core";
-import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
-import { resolveControlTarget } from "../lib/control.js";
 import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
