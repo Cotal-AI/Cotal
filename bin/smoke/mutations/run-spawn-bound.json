@@ -2,14 +2,14 @@
   "suite": [
     "bin/smoke/run-host-live.smoke.ts"
   ],
-  "guard": "On a static mesh a hosted run's spawns are bounded by its admission (SPEC 14.8): a helper gets no channel or capability its starter's issued credential did not carry when the run was admitted, a starter that was an operator instrument or held the admin set is exempt and its admission records that, and the record carries the verdict through the store, and a run revoked mid-step starts no helper.",
+  "guard": "On a static mesh a hosted run's spawns are bounded by its admission (SPEC 14.8): a helper gets no channel or capability its starter's issued credential did not carry when the run was admitted, a starter that was an operator instrument or held the admin set is exempt and its admission records that, and the record carries the verdict through the store, and a run revoked mid-step starts no helper, on the run's host and on another static manager the run places a spawn on, which reads the run's admission and refuses a caller that is not the run's driver.",
   "command": "pnpm smoke:run-host-live",
   "completionMarker": "run-host-live.smoke:",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/run-spawn-bound.json",
   "why": [
     "A workflow run's spawns were exempt from the static spawn bound, so a caller holding run could start a run and spawn a helper the direct door refuses.",
     "The suite runs the manager and core from their built packages, so each mutant is seen through that build and afterRestore rebuilds so the restored source is the artifact again.",
-    "R1 exempts every run spawn, R2 writes the exemption for every starter, R3 ignores the recorded exemption, and R4 drops the field when the store's record is read back, and R5 skips the revocation marker read before a run's spawn."
+    "R1 exempts every run spawn, R2 writes the exemption for every starter, R3 ignores the recorded exemption, and R4 drops the field when the store's record is read back, and R5 skips the revocation marker read before a run's spawn. R6 reads no admission for a spawn a run placed, R7 skips the driver check, R8 ignores the placed run's revocation marker, R9 drops the run id the runtime sends, R10 treats an unreadable admission as no run, and R11 lets the run's host take another run's id."
   ],
   "mutations": [
     {
@@ -56,6 +56,60 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a spawn after its run was revoked is refused naming the revocation, and no helper starts",
       "cell": "a spawn after its run was revoked is refused naming the revocation, and no helper starts"
+    },
+    {
+      "name": "R6 a spawn a run placed here reads no admission",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (runId === undefined) return undefined;\n    let driver: EpCaller | undefined;\n",
+      "replace": "    return undefined;\n    let driver: EpCaller | undefined;\n",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host",
+      "cell": "a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host"
+    },
+    {
+      "name": "R7 the placed manager skips the driver check",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (driver === undefined || driver.actor !== caller!.actor || driver.uid !== caller!.uid)\n",
+      "replace": "    if (driver === undefined)\n",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a spawn naming a run its caller does not drive is refused, and no helper starts",
+      "cell": "a spawn naming a run its caller does not drive is refused, and no helper starts"
+    },
+    {
+      "name": "R8 the placed manager ignores the revocation marker",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (view.revoked !== undefined) return { refused: revokedRunRefusal(runId, view.revoked) };\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the placed manager reads the run's revocation marker and refuses a revoked run's spawn, and no helper starts",
+      "cell": "the placed manager reads the run's revocation marker and refuses a revoked run's spawn, and no helper starts"
+    },
+    {
+      "name": "R9 the runtime sends no run id",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": ", runId: this.binding.runId }, {",
+      "replace": " }, {",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host",
+      "cell": "a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host"
+    },
+    {
+      "name": "R10 an unreadable admission counts as no run",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      return { refused: `run ${runId}'s admission and revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)` };\n",
+      "replace": "      return undefined;\n",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a spawn naming a run with no admission is refused, and no helper starts",
+      "cell": "a spawn naming a run with no admission is refused, and no helper starts"
+    },
+    {
+      "name": "R11 the run's host takes another run's id",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (runId !== undefined && runId !== hosted.runId) return { refused: `it names run ${runId}, but its caller drives run ${hosted.runId}` };\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the run's host refuses a spawn whose driver names another run, and no helper starts",
+      "cell": "the run's host refuses a spawn whose driver names another run, and no helper starts"
     }
   ]
 }

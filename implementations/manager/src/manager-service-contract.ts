@@ -517,6 +517,9 @@ const SPAWN_INPUT_SCHEMA = {
         save: { type: "boolean" },
       },
     },
+    // The workflow run whose driver sends this spawn, so a manager that does not host the run can
+    // read the run's admission and bound the helper by it (SPEC 14.8).
+    runId: nonBlank(),
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
@@ -1450,8 +1453,8 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  43 = `turn-participate` authorizes an exact personal native lifecycle for a finite self-only
  *  workflow turn lease without creating a managed seat or granting terminal custody.
  *
- *  44 = `spawn` takes an inline `persona` record, and `define-persona` takes `capabilities`. Both
- *  input schemas are closed, so a revision-43 contract rejects either. */
+ *  44 = `spawn` takes an inline `persona` record and a run's `runId`, and `define-persona` takes
+ *  `capabilities`. Both input schemas are closed, so a revision-43 contract rejects either. */
 export function managerClusterDocument(): ClusterDocument {
   return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);
 }

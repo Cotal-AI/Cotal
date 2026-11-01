@@ -327,6 +327,56 @@ try {
       const seats = (mgr as unknown as { agents: Map<string, unknown> }).agents;
       c("a spawn after its run was revoked is refused naming the revocation, and no helper starts",
         revokedSpawn.ok === false && String(revokedSpawn.error).includes("was revoked by operator (withdrawn mid-run)") && !seats.has("inl-revoked"), revokedSpawn);
+      // A spawn the run places on another manager carries the run's id there, and that manager bounds
+      // the helper by the run's admission, as the hosting manager does (SPEC 14.8). The placed manager
+      // has its own workspace, so its own instance id.
+      const wsP = mkdtempSync(join(tmpdir(), "cotal-runhost-wsP-"));
+      scratch.push(wsP);
+      mkdirSync(join(wsP, ".cotal", "agents"), { recursive: true });
+      saveSpaceAuth(authDir(wsP), auth);
+      const mgrP = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsP });
+      await mgrP.start();
+      try {
+        const placedOn = (mgrP as unknown as { managerInstanceId: string }).managerInstanceId;
+        const placement = `{ placement: { endpoint: "manager", instanceId: "${placedOn}" } }`;
+        const seatsP = (mgrP as unknown as { agents: Map<string, unknown> }).agents;
+        // The run parks after the spawn, so the seat can be seen on the manager it was placed on.
+        const placedRun = await call("run-start", {
+          source: `const h = await spawn({ name: "pl-ok", prompt: "You answer.", capabilities: ["spawn"] }, ${placement});\nawait checkpoint("placed", "Placed?");\nlog("seat", h.agent);\n`,
+          file: "placed-ok.cotal.js",
+        });
+        const placedId = (placedRun.data as { runId?: string } | undefined)?.runId ?? "";
+        const parkedPlaced = await until(async () => { const s = await status(placedId); return pending(s, "Placed?") ?? (stateOf(s) === "failed" ? s : undefined); }, 30_000);
+        c("a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host",
+          seatsP.has("pl-ok") && !seats.has("pl-ok"), { placed: [...seatsP.keys()], host: [...seats.keys()], parked: parkedPlaced });
+        await call("run-answer", { runId: placedId, stepKey: "/checkpoint:placed#0", value: "yes" });
+        const placedDone = await until(async () => { const s = await status(placedId); return stateOf(s) === "completed" || stateOf(s) === "failed" ? s : undefined; }, 30_000);
+        c("and the run completes", stateOf(placedDone) === "completed", placedDone?.status);
+        const placedWide = await settledRun(`await spawn({ name: "pl-wide", prompt: "You answer.", capabilities: ["admin"] }, ${placement});\n`, "placed-wide.cotal.js");
+        c("the placed manager refuses a grant the starter did not hold when the run was admitted, naming the run",
+          stateOf(placedWide.v) === "failed" && placedWide.v?.status?.failure?.message.includes(`more than run ${placedWide.runId}'s starter held when the run was admitted`) === true
+            && placedWide.v?.status?.failure?.message.includes("capabilities admin") === true, placedWide.v?.status);
+        const placedRevoked = await mgrP.startAgent({ name: "pl-revoked", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: parkedId },
+          principalKey(driver.owner, driver.actor).key, undefined, driver);
+        c("the placed manager reads the run's revocation marker and refuses a revoked run's spawn, and no helper starts",
+          placedRevoked.ok === false && String(placedRevoked.error).includes("was revoked by operator (withdrawn mid-run)") && !seatsP.has("pl-revoked"), placedRevoked);
+        const forged = await mgrP.startAgent({ name: "pl-forged", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: placedId },
+          principalKey(caller.owner, caller.actor).key, undefined, caller);
+        c("a spawn naming a run its caller does not drive is refused, and no helper starts",
+          forged.ok === false && String(forged.error).includes(`names run ${placedId}, but its caller is not that run's driver`) && !seatsP.has("pl-forged"), forged);
+        const ghostId = "run-0123456789abcdef0123456789abcdef";
+        const ghost = runDriverCaller(ghostId);
+        const unknown = await mgrP.startAgent({ name: "pl-ghost", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: ghostId },
+          principalKey(ghost.owner, ghost.actor).key, undefined, ghost);
+        c("a spawn naming a run with no admission is refused, and no helper starts",
+          unknown.ok === false && String(unknown.error).includes(`run ${ghostId}'s admission and revocation marker could not be read`) && !seatsP.has("pl-ghost"), unknown);
+        const mismatched = await mgr!.startAgent({ name: "inl-mismatch", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: placedId },
+          principalKey(driver.owner, driver.actor).key, undefined, driver);
+        c("the run's host refuses a spawn whose driver names another run, and no helper starts",
+          mismatched.ok === false && String(mismatched.error).includes(`names run ${placedId}, but its caller drives run ${parkedId}`) && !seats.has("inl-mismatch"), mismatched);
+      } finally {
+        await mgrP.stop({ withAgents: true });
+      }
     } finally {
       delete process.env.COTAL_DEFAULT_AGENT;
     }
@@ -858,7 +908,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 84;
+const EXPECTED_CELLS = 91;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

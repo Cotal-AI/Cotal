@@ -73,6 +73,7 @@ import {
   resolveAuthProvider,
   resolveReadAcl,
   runAgentBearer,
+  runDriverCaller,
   saveAgentFile,
   subjectMatches,
   AUTH_ENDPOINT,
@@ -92,7 +93,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedCaller, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedCaller, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -906,6 +907,9 @@ export interface StartAgentOpts {
   /** An inline persona in place of a catalog file. It takes no `config` or `identity`. Validated
    *  where it is read, so a direct call meets the same refusals as the served door. */
   persona?: InlinePersona;
+  /** The workflow run whose driver sends this spawn (SPEC 14.8). A manager that does not host the
+   *  run reads the run's admission and bounds the helper by it, as the hosting manager does. */
+  runId?: string;
   /** Connector / agent type — resolved from the registry. Outranks the persona pin and every default (see `resolveAgentType`). */
   agent?: string;
   /** Detached caller's default connector, kept separate from an explicit flag so the persona file
@@ -1052,6 +1056,16 @@ type StaticSpawnBound =
   | { kind: "none"; reason: string }
   | { kind: "refused"; reason: string }
   | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions; run?: string };
+
+/** The workflow run a spawn acts for (SPEC 14.8): the run this manager drives under the spawn's
+ *  caller, or a run hosted elsewhere that placed the spawn here, read from its admission. A placed
+ *  run's revocation marker is read with that admission; a hosted run's is read at the bound. */
+type SpawnRun = { admission: RunAdmission; hosted: boolean } | { refused: string };
+
+/** Why a revoked run starts no helper, the same words wherever the marker is read. */
+function revokedRunRefusal(runId: string, revoked: RunRevocation): string {
+  return `run ${runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
+}
 
 const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "save"];
 
@@ -6149,6 +6163,7 @@ export class Manager {
         identity: args.identity as string | undefined,
         // Passed as sent: spawnPersona validates the record, the one place every door reads it.
         persona: args.persona as InlinePersona | undefined,
+        ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
         model: args.model as string | undefined,
         variant: args.variant as string | undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
@@ -6629,31 +6644,65 @@ export class Manager {
     return real === realDir || real.startsWith(realDir + sep);
   }
 
+  /** The run a spawn acts for (SPEC 14.8). The run this manager drives under `caller` answers from
+   *  memory. A spawn a run placed here names its run, and its caller must be that run's driver, whose
+   *  triple derives from the run id; the run's admission and revocation marker are then read
+   *  leader-served, so the helper is bounded as the hosting manager bounds it. `undefined` for a
+   *  spawn that acts for no run. */
+  private async spawnRun(caller: EpCaller | undefined, runId: string | undefined): Promise<SpawnRun | undefined> {
+    const hosted = caller !== undefined ? this.runHosting?.runAdmission(caller) : undefined;
+    if (hosted !== undefined) {
+      if (runId !== undefined && runId !== hosted.runId) return { refused: `it names run ${runId}, but its caller drives run ${hosted.runId}` };
+      return { admission: hosted, hosted: true };
+    }
+    if (runId === undefined) return undefined;
+    let driver: EpCaller | undefined;
+    try {
+      driver = caller !== undefined ? runDriverCaller(runId, caller.owner) : undefined;
+    } catch (e) {
+      return { refused: `runId ${JSON.stringify(runId)} is not a run id (${rejectionText(e)})` };
+    }
+    if (driver === undefined || driver.actor !== caller!.actor || driver.uid !== caller!.uid)
+      return { refused: `it names run ${runId}, but its caller is not that run's driver` };
+    if (this.runHosting === undefined) return { refused: `run ${runId} placed a spawn here, but this manager hosts no runs, so it cannot read the run's admission` };
+    let view: { admission: RunAdmission; revoked: RunRevocation | undefined };
+    try {
+      view = await this.runHosting.admission(runId);
+    } catch (e) {
+      return { refused: `run ${runId}'s admission and revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)` };
+    }
+    if (view.revoked !== undefined) return { refused: revokedRunRefusal(runId, view.revoked) };
+    return { admission: view.admission, hosted: false };
+  }
+
   /**
    * Resolve what bounds a spawn's grant on a STATIC mesh: the caller's issued evidence, read the way
    * keyed runs read it. A user-auth mesh bounds the mint on its ledger instead, and an open mesh
    * mints no grant, so both return `exempt`. So does a call with no authenticated caller, which is
    * the manager's own composition root (roster boot, a manifest `launch`, which a static mesh mints
-   * only into operator instruments). A workflow run's own caller is bounded by its admission
-   * (SPEC 14.8): the starter's ceiling as resolved when the run was admitted, at the starter's
-   * coordinate, unless the starter was exempt then. A caller with no issued generation, or whose
+   * only into operator instruments). A workflow run's spawn, whether this manager hosts the run or
+   * the run placed the spawn here ({@link spawnRun}), is bounded by the run's admission (SPEC 14.8):
+   * the starter's ceiling as resolved when the run was admitted, at the starter's coordinate, unless
+   * the starter was exempt then. A caller with no issued generation, or whose
    * evidence does not resolve, hands on no grant. The evidence's own standing decides the rest.
    */
-  private async staticSpawnBound(caller: EpCaller | undefined): Promise<StaticSpawnBound> {
+  private async staticSpawnBound(caller: EpCaller | undefined, run: Extract<SpawnRun, { admission: RunAdmission }> | undefined): Promise<StaticSpawnBound> {
     if (this.meshMode !== "static" || caller === undefined) return { kind: "exempt" };
     // The driver's own credential is not the run's authority, and the starter's evidence may have
     // expired or changed since: the admission recorded both the ceiling and the verdict.
-    const admission = this.runHosting?.runAdmission(caller);
-    if (admission !== undefined) {
+    if (run !== undefined) {
+      const admission = run.admission;
       // Read leader-served before each of the run's spawns, so a run revoked mid-step starts no
-      // helper, and a marker this manager cannot read refuses the spawn too.
+      // helper, and a marker this manager cannot read refuses the spawn too. A placed run's marker
+      // was read with its admission.
       let refusal: string | undefined;
-      try {
-        const revoked = await this.runHosting!.revocation(admission.runId);
-        if (revoked !== undefined) refusal = `run ${admission.runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
-      } catch (e) {
-        refusal = `run ${admission.runId}'s revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)`;
-      }
+      if (run.hosted)
+        try {
+          const revoked = (await this.runHosting!.admission(admission.runId)).revoked;
+          if (revoked !== undefined) refusal = revokedRunRefusal(admission.runId, revoked);
+        } catch (e) {
+          refusal = `run ${admission.runId}'s revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)`;
+        }
       if (refusal !== undefined) return { kind: "refused", reason: refusal };
       if (admission.spawnExempt) return { kind: "exempt" };
       if (!isIssuedCaller(admission.caller))
@@ -6764,7 +6813,9 @@ export class Manager {
       return { ok: false, error };
     }
     // Read here, beside the connector, so the capacity check and the reserve below take no new await.
-    const bound = await this.staticSpawnBound(authenticatedCaller);
+    const run = await this.spawnRun(authenticatedCaller, opts.runId);
+    if (run !== undefined && "refused" in run) return { ok: false, error: `spawn: ${run.refused}` };
+    const bound = await this.staticSpawnBound(authenticatedCaller, run);
 
     const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
     if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
@@ -11929,7 +11980,8 @@ export class Manager {
   private async definerCapabilityRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(capabilities: string[]) => string | undefined> {
     if (this.meshMode === "open") return () => undefined;
     if (this.meshMode === "static") {
-      const bound = await this.staticSpawnBound(authenticated);
+      const run = await this.spawnRun(authenticated, undefined);
+      const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
       return (capabilities) => this.spawnBoundRefusal(bound, { capabilities }, false, "define-persona");
     }
     if (this.remoteAuthority)

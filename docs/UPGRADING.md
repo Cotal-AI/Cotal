@@ -97,6 +97,8 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   capabilities. The refusal names the token.
 - A workflow run's spawns are bounded by what the agent that started the run held when the run was
   admitted. A run started by an operator command or by an admin agent stays exempt.
+- A run that places a spawn on another manager is bounded there too. That manager must run this
+  release, because an older one refuses the spawn's new `runId` field.
 - A user-auth mesh keeps its ledger rule, except that a spawner whose scope holds `run` may now hand
   on `spawn`. On a participant manager the issuing host now makes the agent that asked for a helper
   its parent, so the helper is bounded by that agent's grant instead of the manager's. A run's

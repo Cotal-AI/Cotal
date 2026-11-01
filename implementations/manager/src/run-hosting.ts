@@ -493,10 +493,11 @@ export class RunHosting {
     return await this.withOperator({ runId }, (planes) => readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId));
   }
 
-  /** A run's revocation marker, read leader-served as {@link admitted} reads it; `undefined` while
-   *  the run is not revoked. The manager reads it before each of the run's spawns (SPEC 14.8). */
-  async revocation(runId: string): Promise<RunRevocation | undefined> {
-    return (await this.admitted(runId)).revoked;
+  /** A run's admission and revocation marker, read leader-served as {@link admitted} reads them,
+   *  whether or not this manager hosts the run. The manager reads them before each of the run's
+   *  spawns, a spawn the run placed on this manager included (SPEC 14.8). */
+  async admission(runId: string): Promise<RunAdmissionView> {
+    return await this.admitted(runId);
   }
 
   /** Input precedes serving/reconciliation for cancellation, unlike the keyed commands. */
