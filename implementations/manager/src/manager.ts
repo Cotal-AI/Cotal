@@ -112,8 +112,8 @@ import { rejectionText } from "./rejection-text.js";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, supervisePolicy, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
-// Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
-// manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
+// The static §13.1 lifecycle executor: the shared grammar/stores from core plus the
+// manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -353,7 +353,7 @@ interface StaticReconcileAttempt {
   deprovision?: DeprovisionResourceAccounting;
 }
 
-/** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
+/** The STABLE retirement opId for one lifecycle: deterministic from the uid, so a
  *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
  *  operation (the rail's idempotence table needs exactly one op per retiring incarnation). 26 hex
  *  chars = in the lifecycle-token grammar `[a-z0-9]{26,32}`, collision-resistant. */
@@ -1126,7 +1126,7 @@ interface ManagedAgent {
   };
   /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
   suppressCleanup?: boolean;
-  /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
+  /** The TERMINALIZING latch: flipped SYNCHRONOUSLY before the first await on every
    *  stop/despawn path (stopHandle + freeSlot are the chokepoints). Once set, this principal's
    *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
    *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
@@ -1435,7 +1435,7 @@ export class Manager {
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
-  /** Names RESERVED PENDING RETIREMENT (#29 piece 3): a despawned agent's name stays held until
+  /** Names RESERVED PENDING RETIREMENT: a despawned agent's name stays held until
    *  the auth plane confirms its lifecycle's retirement TERMINAL over the auth-admin rail — the
    *  alias-reuse gate that closes the same-name despawn→respawn race at its root. An UNCERTAIN
    *  outcome (rail down, timeout) keeps the hold with the last attempt's copy; a same-name spawn
@@ -1456,7 +1456,7 @@ export class Manager {
    *  same-name SUCCESSOR (which can spawn after the hold clears but before this flight's `nc.close`
    *  yield settles) never joins the predecessor's rail request and skips its own retirement. */
   private retiringFlight = new Map<string, Promise<void>>();
-  /** Wire principals of RETIRED static incarnations (Unit B, F5(a)): populated at every completed
+  /** Wire principals of RETIRED static incarnations: populated at every completed
    *  static terminal and from the boot sweep's retired slot rows, so a copied credential of a
    *  retired incarnation is refused at the control surface even across a manager restart. The
    *  durable truth is the slot row + principal-keyed head; this set is the in-memory index of it
@@ -1674,7 +1674,7 @@ export class Manager {
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
    *  lifecycle fence ({@link beginLifecycle}), so no spawn can launch a seat the stop never sees. */
   private leaseStopping = false;
-  /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
+  /** The class-2 renewal owner's half-TTL schedule; armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
   /** #2073: the `endpoint-serve` credential's OWN renewal, armed from its `[renewAt, exp)` window
    *  (`credsRenewalDelayMs`) rather than left to `credRenewTimer`'s boot-phased TTL/4 tick, which can
@@ -2186,7 +2186,7 @@ export class Manager {
       // EPHEMERAL provisioner connection per spawn (withProvisioner); destructive purge mints a PURGER per
       // call. So the always-on daemon holds no DM/DLV read, no consumer-create, no stream-admin tamper.
       //
-      // STANDING RENEWAL (D5 slice 5, class 1): the manager holds the DATA signing seed, so it is its
+      // STANDING RENEWAL (class 1): the manager holds the DATA signing seed, so it is its
       // own renewal owner — the cred rides the endpoint's SOURCE seam and self-remints (same identity,
       // pinned by the endpoint) ahead of each bounded supervisor JWT's expiry. A copied supervisor
       // cred is broker-dead within the matrix TTL.
@@ -2201,7 +2201,7 @@ export class Manager {
       // lifecycle-keyed (SPEC 13.1, fail-before-presence). The manager process is the top of its
       // own launch chain (the operator command IS its launcher): its incarnation uid is the
       // per-process `managerLifecycleUid` field (also the `managerInstance` audit coordinate on
-      // every static activation, Unit B).
+      // every static activation).
       lifecycleUid: this.remoteAuthority?.lifecycleUid ?? this.managerLifecycleUid,
       // The supervisor serves control + watches presence; it never consumes chat/dm/task
       // (no message handler). consume:false avoids binding consumers it doesn't use — and
@@ -2270,7 +2270,7 @@ export class Manager {
       const s = this.serviceServe;
       return s?.handle && !s.nc.isClosed() && !this.transportDown.has(s.nc) ? "bound" : "unbound";
     });
-    // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
+    // Static §13.1: after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
     // comes up below, then the sweep overlaps the remaining registration work. Two-window
     // heal-then-register is slower than one executor, but the overlap is still the no-outage
@@ -2283,7 +2283,7 @@ export class Manager {
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
     // plane) are separate services and keep their rails.
-    // D5 slice 5 class 2: the manager is the CLASS-2 RENEWAL OWNER — the one control-plane process
+    // Class 2: the manager is the CLASS-2 RENEWAL OWNER — the one control-plane process
     // that is resident in EVERY mesh mode (foreground `up`, `up --detach`, same-root refresh) and
     // holds the signer. Ordered initial pass NOW (ensureControlPlane starts delivery BEFORE the
     // manager, so the daemon's launch-time creds write always precedes this — no write race), then
@@ -2638,7 +2638,7 @@ export class Manager {
     return false;
   }
 
-  /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
+  /** One class-2 renewal pass: re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
    *  delivery-admin rail and persist the audit record (`.cotal/renewal.<spaceKey>.json`) that `cotal doctor auth`
    *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
@@ -2695,7 +2695,7 @@ export class Manager {
       if (this.daemonRenewalOwner)
         writeRenewalRecord(this.workspaceRoot, this.space, { ts: new Date().toISOString(), owner: "manager", results, adoption });
       this.warnOnSystemCredExpiry();
-      // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
+      // The MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
       // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
       // Same class-2 mechanics as the daemon creds: re-sign the file for the SAME nkey; the
@@ -2901,7 +2901,7 @@ export class Manager {
     for (const file of SYSTEM_CREDS_FILES) {
       let health: CredHealth;
       try {
-        // The pair is PER-SPACE as of P7, so the location comes from the resolver and never from a
+        // The pair is PER-SPACE, so the location comes from the resolver and never from a
         // path built here (§2 rule 1). Building `.cotal/<kind>` instead would not warn on a wrong
         // file — it would silently warn on NOTHING, for every provisioned root, forever, which is
         // exactly the signal #338 added this for. The resolver may also refuse (§2 rules 3, 4); that
@@ -3817,13 +3817,13 @@ export class Manager {
         const managed = this.agents.get(entry.name);
         if (managed) managed.suppressCleanup = false;
       }
-      // Unit B (F3, distsys/security CONDITIONAL @ 9e13648): the boot sweep DEFERRED every active
+      // distsys/security CONDITIONAL @ 9e13648: the boot sweep DEFERRED every active
       // slot while a resume was pending (it could not know which would be adopted). Now adoption
       // is complete and `this.agents` is EXACTLY the adopted set, so re-sweep to terminalize any
       // active slot the resume did NOT claim — a durable ACTIVE ORPHAN (crashed after slot->active
       // before agents.set, then not in the resumed inventory). This runs while `resumeRequired` is
       // still true, so no ordinary spawn can race it (beginLifecycle refuses non-resume ops), and
-      // it closes both the alias wedge AND the F5(a) gap (the orphan's principal enters
+      // it closes both the alias wedge AND the membership-gate gap (the orphan's principal enters
       // retiredPrincipals, so a copied JWT is refused). Best-effort + loud: a sweep failure must
       // not fail the finalize (the next non-resume boot re-drives it), but it is never swallowed.
       if (this.auth && !this.userMode)
@@ -3928,7 +3928,7 @@ export class Manager {
   /** The ONE shared control-admission chokepoint BOTH dispatch doors
    *  run — the v0.3 `ctl` door ({@link handle}) and the v0.4 `ep` service handlers
    *  ({@link serveGated}): the maintenance/resume fence (`beginLifecycle`: a resume-pending or
-   *  non-active manager accepts no ordinary control work) and then the F5(a) membership gate
+   *  non-active manager accepts no ordinary control work) and then the membership gate
    *  ({@link lifecycleMembershipRefusal}: a retiring/terminalizing/retired managed incarnation's
    *  AUTHENTICATED principal holds no control authority even with a valid JWT). Refusal carries
    *  WHICH fence refused so the ep door can map onto the §13.3 catalog; admission returns the
@@ -3948,7 +3948,7 @@ export class Manager {
 
   /** Run one v0.4 service-command handler through the SHARED admission chokepoint
    *  ({@link admitControl}) on the broker-authenticated caller principal, mapping the two fences
-   *  onto the §13.3 catalog: maintenance/resume → `unavailable`, F5(a) membership →
+   *  onto the §13.3 catalog: maintenance/resume → `unavailable`, membership →
    *  `permission-denied`. The serve boundary publishes the structured error reply. */
   private async serveGated<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
     const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -4610,7 +4610,7 @@ export class Manager {
    *  returned: a caller that must prove exit (shutdown, a failed resume) reports it as the cause at
    *  once instead of waiting out a stop the runtime already refused. */
   private stopHandle(a: ManagedAgent, graceful: boolean): string | undefined {
-    // The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY, before any await anywhere on
+    // The TERMINALIZING latch: flipped SYNCHRONOUSLY, before any await anywhere on
     // this stop path — later renewals refuse, while an already-admitted renewal drains before the
     // durable terminal begins.
     a.terminalizing = true;
@@ -5035,7 +5035,7 @@ export class Manager {
    *  emergency-kill stays unthrottled) and NEVER the reserved-rollback path (no cold-start paid). */
   private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
-    // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle.
+    // The terminalizing latch also covers exit/reap paths that never rode stopHandle.
     this.logSeatReaped(a, cause);
     a.terminalizing = true;
     this.agents.delete(a.name);
@@ -5056,7 +5056,7 @@ export class Manager {
     // is usually the seat ending, but a stop that could not prove the process gone leaves one the
     // terminal must still address before it frees the alias.
     const target: TeardownTarget = { ...this.teardownTarget(a), runtime: a.handle?.reference };
-    // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
+    // On a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
     // and the alias frees only when all of it completes (not the retirement alone). The detached
     // deprovision below drives it; a failed revoke or an unreachable rail keeps the name held,
@@ -5068,10 +5068,10 @@ export class Manager {
       const p = parsePrincipalKey(a.id);
       if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
     } else if (this.auth) {
-      // Unit B: a STATIC lifecycle now also holds its name pending its own terminal (the F1
+      // A STATIC lifecycle now also holds its name pending its own terminal (the
       // static retirement the detached deprovision below drives) — the alias frees only when the
       // gate+head terminal completes, exactly the user-mode discipline. The wire principal is the
-      // incarnation-unique nkey (F5-bind); owner is the dev owner.
+      // incarnation-unique nkey; owner is the dev owner.
       this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), owner: DEV_OWNER, actor: a.id, target, startedAt: Date.now() });
     }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
@@ -5163,7 +5163,7 @@ export class Manager {
     }
     if (!this.auth) return; // guaranteed by deprovision; re-checked for the deprovisionBroker narrowing
     if (!this.userMode && !a.userOwner) {
-      // Unit B: a STATIC lifecycle retires through the F1 terminal barrier — freeze → head
+      // A STATIC lifecycle retires through the terminal barrier — freeze → head
       // retiring → B1 ledger revoke → footprint cleanup (creds file + broker durables/ACL, INSIDE
       // the barrier) → gate retired → head retired → alias free. The eviction step is the process
       // kill the stop path already performed (static's best-effort eviction).
@@ -5237,7 +5237,7 @@ export class Manager {
       throw e;
     }
     if (shredFailure) throw new Error(shredFailure);
-    // #29 piece 3: after the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
+    // After the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
     // the auth endpoint rail. The rail re-checks the SERVE-ISSUANCE GATE at serve time (not the
     // space-manager lease - that check was replaced in 02794b2f) and refuses unless the registration
     // this request names belongs to our own principal; the terminal (or an already-retired answer)
@@ -5246,7 +5246,7 @@ export class Manager {
     await this.requestRetirement(a);
   }
 
-  /** Request the auth-side retirement of a departed agent's lifecycle (#29 piece 3): an ephemeral
+  /** Request the auth-side retirement of a departed agent's lifecycle: an ephemeral
    *  `retirement-requester` credential (request + reply only), the generic `retireLifecycle` op,
    *  a STABLE opId (derived from the lifecycleUid, so every retry re-drives the SAME operation),
    *  and the four-outcome handling in operator vocabulary. */
@@ -6616,7 +6616,7 @@ export class Manager {
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
     // is what other agents ROUTE on (role is the anycast address). The gap is silent today because
     // the mismatch is only discovered minutes in, when the seat first reaches for a worker. The
-    // persona write path takes content only (role/capabilities are POLICY, P6), so a peer-defined
+    // persona write path takes content only (role/capabilities are POLICY), so a peer-defined
     // persona can never fix this by declaring the capability — the only honest outcomes are "the
     // persona grants spawn" or "say so now". Refuse at accept, before any reserve/mint, naming the
     // exact remediation for each author: an operator edits the file to add the grant; a peer that
@@ -6651,7 +6651,7 @@ export class Manager {
       launchOptions,
     });
     if (policyRefusal) return { ok: false, error: policyRefusal };
-    // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
+    // The alias-reuse gate: a name whose previous agent is still retiring REFUSES
     // legibly (never a silent suffix), and the refusal re-drives the FULL durable teardown so
     // "retry the spawn" is also the nudge. It routes through `deprovision` (not `requestRetirement`
     // alone) so a retry re-drives the standing-authority revoke (INT-2) AND the broker cleanup before
@@ -6892,11 +6892,11 @@ export class Manager {
           }
         }
       } else if (this.auth) {
-        // Unit B (§13.1): reserve + activate this incarnation's DURABLE identity BEFORE any
-        // broker footprint — the F3 outer spawn intent first (slot row, phase `provisioning`),
+        // §13.1: reserve + activate this incarnation's DURABLE identity BEFORE any
+        // broker footprint — the outer spawn intent first (slot row, phase `provisioning`),
         // then the SHARED core activation saga (reserve uid -> gate frozen -> head CAS -> reopen
         // LAST) over the key-pinned executor. The wire AUTHORITY principal is the incarnation-
-        // unique nkey (F5-bind); the alias is protected by the name-keyed slot + freeSlot hold.
+        // unique nkey; the alias is protected by the name-keyed slot + freeSlot hold.
         await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias: name }, (t) =>
           activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid, ownerInstanceId: this.managerInstanceId, runtime: custody }),
         );
@@ -6908,7 +6908,7 @@ export class Manager {
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
         // (NOT the supervisor's long-lived endpoint), so the DM/DLV consumer-create surface exists only
         // for the provisioning window, never as a standing grant on the always-on daemon (residual 2).
-        // F5(b): the credential is BOUNDED (`expiresAt`) — the manager push-renews it ahead of expiry.
+        // The credential is BOUNDED (`expiresAt`) — the manager push-renews it ahead of expiry.
         const now = Math.floor(Date.now() / 1000);
         const exp = now + MANAGED_STATIC_TTL_SEC;
         // The credential is an ISSUANCE (SPEC 13.15): its caller rails carry a fresh generation
@@ -7086,7 +7086,7 @@ export class Manager {
             }
           : {}),
       };
-      // Unit B: the DURABLE slot takes the `active` phase before the in-memory row takes the
+      // The DURABLE slot takes the `active` phase before the in-memory row takes the
       // name — a crash between the two leaves an active-but-unadopted slot the boot sweep
       // terminalizes (never an untracked orphan). Static auth only; a failed CAS fails the spawn
       // (the finally's rollback then drives the exact-op terminal).
@@ -7729,7 +7729,7 @@ export class Manager {
   ): Promise<ControlReply> {
     if (!batchReserved) this.reserved.set(entry.name, resumeOwner(entry));
     try {
-      // Unit B F5(b): recover the STATIC identity's nkey seed from the adopted credential (the
+      // Recover the STATIC identity's nkey seed from the adopted credential (the
       // creds file embeds it) so the manager stays this incarnation's RENEWAL OWNER across a
       // preserve/resume — without it the adopted cred would die loud at its TTL with no remint.
       let adoptedSeed: string | undefined;
@@ -8303,7 +8303,7 @@ export class Manager {
   }
 
   /** Run one static §13.1 lifecycle OPERATION over an ephemeral, key-pinned `lifecycle-executor`
-   *  connection (Unit B): the credential's grants name exactly ONE incarnation's head/uid/gate/
+   *  connection: the credential's grants name exactly ONE incarnation's head/uid/gate/
    *  cred-family/slot keys, so the write authority exists only for this operation's window and
    *  can move nothing else. The transport is the direct-KV binding the shared core saga drives. */
   private async withLifecycleExecutor<T>(
@@ -10555,11 +10555,11 @@ export class Manager {
     console.error(`static retirement ${a.name}: orphan seat process ${evidence.detail}`);
   }
 
-  /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
+  /** The static terminal for one departed incarnation: delegates the gate/head CAS
    *  sequence to the shared core saga over the executor transport; the footprint teardown (creds
    *  file + broker durables/ACL) runs INSIDE the barrier as its cleanup step. On completion the
-   *  wire principal joins {@link retiredPrincipals} (the F5 refusal index) and the name hold
-   *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
+   *  wire principal joins {@link retiredPrincipals} (the retired-principal refusal index) and the name hold
+   *  clears (ABA-guarded by uid). A lifecycle with no slot row (spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
    *  and the hold clears, the honest upgrade path. `onDeprovision` receives the accounting of the
    *  broker teardown this call ran, on success or on a {@link DeprovisionError}. */
@@ -10615,7 +10615,7 @@ export class Manager {
       await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
         const slot = await readStaticSlot(t, DEV_OWNER, a.name);
         if (slot === undefined || slot.row.lifecycleUid !== a.lifecycleUid) {
-          // No durable registration for THIS incarnation: a pre-Unit-B spawn (or a slot already
+          // No durable registration for THIS incarnation: a spawn from before the registry (or a slot already
           // replaced by a successor — then this stale teardown must not touch the registry at all).
           await reapThenCleanup();
           return;
@@ -10866,7 +10866,7 @@ export class Manager {
       console.error(`! chat session ${session.alias} (uid ${session.lifecycleUid}) was not retired because ${why}; the next start of this manager instance retires it`);
   }
 
-  /** F5(b) push renewal of ONE live managed-static credential (Unit B): re-mint the SAME nkey
+  /** Push renewal of ONE live managed-static credential: re-mint the SAME nkey
    *  identity with the SAME scope (recorded on the managed row at spawn) and a fresh bounded
    *  exp, ledger the new credentialId (slot record first, then the row, then the file — a
    *  credential is never materialized before its ledger row exists), and re-sign the SAME
@@ -10924,11 +10924,11 @@ export class Manager {
     console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${exp - now}s); the agent endpoint's source re-read adopts it`);
   }
 
-  /** The Unit B reconciliation (F3 "no active orphan"): ensure the authority stores, then sweep
+  /** The static-slot reconciliation ("no active orphan"): ensure the authority stores, then sweep
    *  every durable slot row and act by the TOTAL resume table — `provisioning`/`terminalizing`
    *  re-drive the exact-op terminal; an `active` row survives ONLY when a LIVE managed agent this
    *  manager process owns backs it at the same uid (`adopted`), else no managed owner claimed it and
-   *  its broker authority is contained and terminalized; `retired` rows seed the F5 refusal index. Two call sites: the BOOT sweep
+   *  its broker authority is contained and terminalized; `retired` rows seed the retired-principal refusal index. Two call sites: the BOOT sweep
    *  (`postAdoption=false`, under the lease before control serving) DEFERS active-non-adopted
    *  slots while a resume is still pending (adoption runs after it); the POST-ADOPTION sweep
    *  (`postAdoption=true`, inside finalizeResume while `resumeRequired` still fences ordinary
@@ -11192,7 +11192,7 @@ export class Manager {
       const restartRows: Array<{ row: StaticManagedSlotRow; record: SeatRecord }> = [];
       for (const row of slotRows) {
         if (row.phase === "retired") {
-          // A retirement is a GLOBAL refusal fact — seed the F5 index for EVERY retired incarnation
+          // A retirement is a GLOBAL refusal fact — seed the retired-principal index for EVERY retired incarnation
           // regardless of which instance owned it, so a sibling-retired incarnation's copied credential
           // is refused at this control surface too. Ownership gates only the DESTRUCTIVE sweep below.
           this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
@@ -11220,7 +11220,7 @@ export class Manager {
         }
         // ADOPTION is genuine membership: a slot backed by a live managed agent THIS process owns
         // at the SAME uid is never an orphan (empty at boot; exactly the adopted set at the
-        // post-adoption sweep — the fix for the F3 resume hole).
+        // post-adoption sweep — the fix for the resume hole).
         const live = this.agents.get(row.alias);
         const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
         if (adopted) {
@@ -11337,7 +11337,7 @@ export class Manager {
     }
   }
 
-  /** The F5(a) membership gate (Unit B, the F5-bind design): decide a control caller by its
+  /** The membership gate: decide a control caller by its
    *  AUTHENTICATED wire principal. A LIVE managed slot passes (unless terminalizing); a RETIRING
    *  hold or a RETIRED static incarnation refuses even with a tier-valid JWT (the
    *  copied-credential vector — its subject can never collide with a successor's, so this match
@@ -11347,16 +11347,16 @@ export class Manager {
     for (const a of this.agents.values()) {
       if (this.managedPrincipal(a) === caller)
         return a.terminalizing
-          ? `the caller's lifecycle ${a.lifecycleUid} is terminalizing; control is refused from the first terminal step (F5)`
+          ? `the caller's lifecycle ${a.lifecycleUid} is terminalizing; control is refused from the first terminal step`
           : undefined;
     }
     for (const [name, hold] of this.retiring) {
       const held = hold.target.userOwner ? hold.target.id : principalKey(DEV_OWNER, hold.target.id).key;
       if (held === caller)
-        return `the caller's lifecycle ${hold.target.lifecycleUid} (name "${name}") is retiring; a retiring incarnation's credential holds no control authority (F5)`;
+        return `the caller's lifecycle ${hold.target.lifecycleUid} (name "${name}") is retiring; a retiring incarnation's credential holds no control authority`;
     }
     if (this.retiredPrincipals.has(caller))
-      return "the caller's lifecycle is retired; a retired incarnation's credential holds no control authority (F5)";
+      return "the caller's lifecycle is retired; a retired incarnation's credential holds no control authority";
     return undefined;
   }
 
@@ -11416,7 +11416,7 @@ export class Manager {
   /** Persist a peer-defined persona as config. After this, `start name` auto-discovers
    *  .cotal/agents/<name>.md and the connector applies its persona/model at spawn.
    *
-   *  CONTENT vs POLICY (P6): `capabilities` and `owner` still have no slot, so a peer cannot
+   *  CONTENT vs POLICY: `capabilities` and `owner` still have no slot, so a peer cannot
    *  self-grant spawn or claim ownership. Channel grants, role, and agent are content: they may
    *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
    *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
