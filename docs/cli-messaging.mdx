@@ -552,6 +552,27 @@ still holds), and each sender at the count on the channels read. The report prin
 their older posts may be gone. It describes the stream, not a partial read. `result.replay` gives each channel's replay policy for new members, read from the
 channel registry. DM gaps are not reported.
 
+`history limit` sets how long the space keeps channel posts. `--max-age` deletes a post once it is
+older than the age, and `--per-sender` keeps that many of each sender's newest posts on each channel.
+One limit holds for every channel in the space. Give either flag or both, and the other part keeps
+its current value. An age is a whole number of `s`, `m`, `h` or `d` from `2m`, the chat stream's
+duplicate window, to `3650d`. A stream with no age limit, from before the limit was configurable,
+needs `--max-age` as well. A bad value is a `USAGE_INVALID` refusal before connecting.
+Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
+root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
+space with no chat stream is refused with `TARGET_NOT_FOUND`; `cotal up` creates the stream.
+
+A lower limit deletes the posts it no longer keeps as soon as the broker applies it. In a terminal,
+lowering either part asks first, and the question comes with what the stream held when it was read:
+each sender on each channel with more posts than the new count and how many of them go, and every
+post older than the new age, with the time of the oldest retained post. Raising asks nothing, and
+posts deleted under an earlier limit do not come back. Scripts and `--json` need `--yes`, checked
+before any credential is minted. The update carries the limit that was read, and a stream that holds
+another one by then is refused with `CONFLICT` and left as it is. The read and the update are two
+steps, so two operators changing the limit at the same moment can still overwrite each other. An
+update sent without a confirmed outcome is `OPERATION_UNKNOWN` and is not retried. The receipt names
+the old and new limit, and running it again with the same values changes nothing and asks nothing.
+
 
 ### Read failures
 
@@ -597,27 +618,6 @@ purger view over your login, which needs ledger scope `admin` ([Identity & auth]
 A purge the broker refuses for the credential's grant purged nothing, so it is refused with
 `PERMISSION_DENIED` (exit 2), naming the credential's profile; with `--creds`, the Next is to run it
 without `--creds`, on the operator credential this machine records.
-
-`history limit` sets how long the space keeps channel posts. `--max-age` deletes a post once it is
-older than the age, and `--per-sender` keeps that many of each sender's newest posts on each channel.
-One limit holds for every channel in the space. Give either flag or both, and the other part keeps
-its current value. An age is a whole number of `s`, `m`, `h` or `d` from `2m`, the chat stream's
-duplicate window, to `3650d`. A stream with no age limit, from before the limit was configurable,
-needs `--max-age` as well. A bad value is a `USAGE_INVALID` refusal before connecting.
-Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
-root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
-space with no chat stream is refused with `TARGET_NOT_FOUND`; `cotal up` creates the stream.
-
-A lower limit deletes the posts it no longer keeps as soon as the broker applies it. In a terminal,
-lowering either part asks first, and the question comes with what the stream held when it was read:
-each sender on each channel with more posts than the new count and how many of them go, and every
-post older than the new age, with the time of the oldest retained post. Raising asks nothing, and
-posts deleted under an earlier limit do not come back. Scripts and `--json` need `--yes`, checked
-before any credential is minted. The update carries the limit that was read, and a stream that holds
-another one by then is refused with `CONFLICT` and left as it is. The read and the update are two
-steps, so two operators changing the limit at the same moment can still overwrite each other. An
-update sent without a confirmed outcome is `OPERATION_UNKNOWN` and is not retried. The receipt names
-the old and new limit, and running it again with the same values changes nothing and asks nothing.
 
 
 ## pending [#pending]

@@ -729,7 +729,7 @@ The move runs after every other stream setup check, so a start that a check refu
 A start that fails after the move says so in its error, which for `setup --start` is the startup
 failure in its receipt, and its envelope lists the chat stream under `changed`. A refresh of a broker that is already running changes no limit, and neither does a resume
 after `down --preserve-state`, which runs no stream setup, so `history limit` can set one before the
-next start. [Upgrading](UPGRADING.md#channel-posts-expire-at-30-days-after-01311) has the steps.
+next start. [Upgrading](UPGRADING.md#channel-posts-expire-at-30-days-after-013313) has the steps.
 
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
