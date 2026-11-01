@@ -225,9 +225,8 @@ export function servedRunRequestSubjects(space: string): string[] {
  *  (SPEC 13.6), on both rails and both routes. The issuing host reads them and never replies:
  *  observing one is its own evidence of which caller asked for the helper. */
 export function servedSpawnRequestSubjects(space: string): string[] {
-  const p = spacePrefix(space);
-  const m = endpointToken("manager");
-  return ["ep.v1", "ep"].flatMap((rail) => [`${p}.${rail}.inst.${m}.*.spawn.>`, `${p}.${rail}.one.${m}.spawn.>`]);
+  return [true, false].flatMap((issued) => (["inst", "one"] as const)
+    .map((route) => epRequestObservationFilter(space, { route, endpoint: "manager", command: "spawn", issued })));
 }
 
 /** Cancellation observes only the issued untargeted exact-instance rail. */
