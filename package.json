@@ -183,6 +183,7 @@
     "smoke:plane3-gate:auth": "tsx packages/core/smoke/plane3-gate-auth.smoke.ts",
     "smoke:plane3-activation:auth": "tsx packages/core/smoke/plane3-activation-auth.smoke.ts",
     "smoke:channel-family:auth": "tsx packages/core/smoke/channel-family-auth.smoke.ts",
+    "smoke:channel-family:join": "tsx extensions/connector-core/smoke/channel-family-join.smoke.ts",
     "smoke:membership": "tsx packages/core/smoke/membership.smoke.ts",
     "smoke:membership:auth": "tsx packages/core/smoke/membership-auth.smoke.ts",
     "smoke:membership-feed:auth": "tsx packages/core/smoke/membership-feed.smoke.ts",

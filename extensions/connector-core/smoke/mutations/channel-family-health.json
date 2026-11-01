@@ -1,0 +1,61 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/per-channel-attention-auth.smoke.ts"
+  ],
+  "guard": "cotal_channels shows a family follow as its own row, and a channel under it takes its stored-copy health from the family's membership",
+  "command": "pnpm smoke:channel-attention:auth",
+  "progressPattern": "  ✓ ",
+  "completionMarker": "SUITE COMPLETE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/channel-family-health.json",
+  "why": [
+    "The suite stages a real auth broker and an in-process delivery daemon, and the agent follows fx51fam.> from boot.",
+    "",
+    "H1 reads a channel's health from its own row only, so a durable channel under the family reads degraded while the family's membership serves it.",
+    "",
+    "H2 drops the pattern rows, so the family follow disappears from the list.",
+    "",
+    "H3 gives the family row no health.",
+    "",
+    "H4 renders the family row as an ordinary channel.",
+    "",
+    "The suite prints SUITE COMPLETE on pass and fail alike and refuses a run short of its EXPECTED_CELLS. It imports connector-core source relatively, so it needs no build."
+  ],
+  "mutations": [
+    {
+      "name": "H1 a channel's health ignores a family row above it",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": " || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel))",
+      "replace": "",
+      "expectRed": "a durable channel under the family reads active through the family's membership",
+      "cell": "a durable channel under the family reads active through the family's membership",
+      "note": "The daemon stores the follower's copies under the family row; the channel itself has none."
+    },
+    {
+      "name": "H2 the pattern rows are dropped",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (isConcreteChannel(pattern)) continue;\n",
+      "replace": "      continue;\n",
+      "expectRed": "the family follow is a row of its own, joined, with its membership's health active",
+      "cell": "the family follow is a row of its own, joined, with its membership's health active",
+      "note": "An agent could not see from cotal_channels that it follows the family."
+    },
+    {
+      "name": "H3 the family row carries no health",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        deliveryHealth: family ? held(pattern) : undefined,",
+      "replace": "        deliveryHealth: undefined,",
+      "expectRed": "the family follow is a row of its own, joined, with its membership's health active",
+      "cell": "the family follow is a row of its own, joined, with its membership's health active",
+      "note": "A failed family membership would look like a working one."
+    },
+    {
+      "name": "H4 cotal_channels renders the family row as an ordinary channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (c.follow === \"family\") {",
+      "replace": "          if (false) {",
+      "expectRed": "cotal_channels shows the family follow and its stored copies",
+      "cell": "cotal_channels shows the family follow and its stored copies",
+      "note": "The row would read as a channel named fx51fam.> with no word of what it covers."
+    }
+  ]
+}

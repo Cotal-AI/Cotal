@@ -6,6 +6,7 @@ import {
   RUN_LAUNCH_DEADLINE_MS,
   subjectMatches,
   isConcreteChannel,
+  isChannelFamily,
   assertValidChannel,
   channelInAllow,
   eventChannelPrincipal,
@@ -3152,7 +3153,9 @@ export class MeshAgent extends EventEmitter {
 
   /** Discoverable channel list: every channel with traffic or a registry entry, tagged with
    *  its one-line description, replay policy, and whether WE are subscribed (self only — never
-   *  other peers' membership). The companion to cotal_join. */
+   *  other peers' membership). The companion to cotal_join. Each pattern WE follow is a row too,
+   *  marked `follow`: a family (`team.>`) with the health of its own stored copies, any other pattern
+   *  as live only. */
   async listChannels(): Promise<
     {
       channel: string;
@@ -3164,6 +3167,7 @@ export class MeshAgent extends EventEmitter {
       messages: number;
       mode: ChannelMode | "normal";
       event?: "own" | "agent";
+      follow?: "family" | "live";
     }[]
   > {
     const mine = this.ep.joinedChannels();
@@ -3204,21 +3208,20 @@ export class MeshAgent extends EventEmitter {
     // be established (the reader lacks the grant, or the responder errored) renders "unknown",
     // distinct from the degraded of a daemon that answered but holds no membership for this owner —
     // and from the undefined of a channel where health does not apply (not durable-class, not
-    // joined, open mode).
+    // joined, open mode). A channel's membership is its own row or a family row above it (#5404); a
+    // family's own health is its own row's.
+    const held = (channel: string): "active" | "degraded" | "unknown" =>
+      !leaseReadable
+        ? "unknown"
+        : daemonMemberships !== undefined && leaseLive && daemonMemberships.some((m) => m.channel === channel || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel)))
+          ? "active"
+          : "degraded";
     const health = (channel: string, joined: boolean): "active" | "degraded" | "unknown" | undefined =>
-      joined && this.ep.channelDeliveryClass(channel) === "durable"
-        ? !leaseReadable
-          ? "unknown"
-          : daemonMemberships === undefined
-            ? "degraded"
-            : daemonMemberships.some((m) => m.channel === channel) && leaseLive
-              ? "active"
-              : "degraded"
-        : undefined;
+      joined && this.ep.channelDeliveryClass(channel) === "durable" ? held(channel) : undefined;
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
       durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
-      event?: "own" | "agent";
+      event?: "own" | "agent"; follow?: "family" | "live";
     }[] = (await this.ep.listChannels()).map((c) => {
       const joined = mine.some((p) => subjectMatches(p, c.channel));
       return {
@@ -3235,6 +3238,20 @@ export class MeshAgent extends EventEmitter {
         event: this.eventChannelOf(c.channel),
       };
     });
+    for (const pattern of mine) {
+      if (isConcreteChannel(pattern)) continue;
+      const family = isChannelFamily(pattern);
+      rows.push({
+        channel: pattern,
+        replay: this.ep.channelReplay(pattern),
+        joined: true,
+        durableUnclosed: unclosed.has(pattern),
+        deliveryHealth: family ? held(pattern) : undefined,
+        messages: 0,
+        mode: "normal",
+        follow: family ? "family" : "live",
+      });
+    }
     // A channel in refused-sub durable cleanup can have NO traffic AND no registry entry, so listChannels()
     // omits it — UNION it in so the durable-unclosed state can never disappear by omission (ux/security).
     const present = new Set(rows.map((r) => r.channel));

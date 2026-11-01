@@ -45,8 +45,10 @@ export const WORKFLOW_STEER =
  *  which kind of message. Guidance only: it grants nothing and changes no subscription. */
 export const CHANNEL_GUIDANCE =
   "To work with your team, find its channel with cotal_channels and join it with cotal_join, then " +
-  "post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask " +
-  "whoever holds a role. Post on #announce only for a deliberate notice to the whole space.";
+  "post team work there with cotal_send. To follow every channel under a prefix, join a family such " +
+  "as team.>: posts on its durable channels are kept for you while you are away, from the join on. " +
+  "Use cotal_dm for one specific peer and cotal_anycast to ask whoever holds a role. Post on " +
+  "#announce only for a deliberate notice to the whole space.";
 
 /** A tool the agent can actually call (already gated), as it appears in the card. */
 export interface OrientationTool {
