@@ -62,7 +62,7 @@ c("the lang catalog still carries L5016 with its meaning", count(catalog, 'L5016
 console.log("\n── the docs promise exactly what the code does ──");
 const docs = readFileSync(join(ROOT, "docs", "workflow-runtime.mdx"), "utf8").replace(/\s+/g, " ");
 c("workflow-runtime.mdx states that nothing is refused as not-yet-durable any more",
-  docs.includes("Every effect the language defines performs on the mesh handler. No effect is refused solely because it is not yet durable."));
+  docs.includes("Every effect the language defines performs on the mesh handler; nothing is refused as not-yet-durable any more."));
 
 console.log(`\nmesh-seam.smoke: ${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
