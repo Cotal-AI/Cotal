@@ -492,6 +492,14 @@ try {
     presenceLog.find((e) => e.condition?.source === "item/commandExecution/requestApproval")?.condition,
   );
   check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
+  // #3840: the request is declined in the same call that announces it, so the wait is over at
+  // once. The seat must go back to `working` (clearing the condition) before the turn ends, or
+  // the turn ends waiting→idle and the working→idle boundary never fires.
+  const afterWait = await waitFor("presence after the approval wait", () => {
+    const i = presenceLog.findIndex((e) => e.condition?.source === "item/commandExecution/requestApproval");
+    return i < 0 ? undefined : presenceLog.slice(i + 1).find((e) => e.status !== "waiting");
+  });
+  check("an auto-declined request returns the seat to working before the turn ends", afterWait.status === "working", afterWait);
 
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
   // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A
