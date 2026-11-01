@@ -517,8 +517,8 @@ const SPAWN_INPUT_SCHEMA = {
         save: { type: "boolean" },
       },
     },
-    // The workflow run whose driver sends this spawn, so a manager that does not host the run can
-    // read the run's admission and bound the helper by it (SPEC 14.8).
+    // The workflow run whose driver sends this spawn, so a static manager that does not host the
+    // run can read the run's admission and bound the helper by it (SPEC 14.8).
     runId: nonBlank(),
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },

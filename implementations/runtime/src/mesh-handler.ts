@@ -1498,8 +1498,8 @@ export class MeshHandler {
           }
           const spawnService = service.commands.has("spawn") ? service : await this.manager("spawn", req.placement?.instanceId);
           reply = await this.invokeManager(spawnService, "spawn",
-            // The run id lets a manager that does not host this run, one the spawn is placed on, read
-            // the run's admission and bound the helper by it (SPEC 14.8).
+            // The run id lets a static manager that does not host this run, placed or reached through
+            // the class queue, read the run's admission and bound the helper by it (SPEC 14.8).
             { ...spawnArgs({ ...req, ...(inline !== undefined ? { inline: inline.definition } : {}), ...(resolution !== undefined ? { cwd: resolution.cwd } : {}) }), runId: this.binding.runId }, {
               id: goalId,
               deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,

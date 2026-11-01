@@ -1058,8 +1058,9 @@ type StaticSpawnBound =
   | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions; run?: string };
 
 /** The workflow run a spawn acts for (SPEC 14.8): the run this manager drives under the spawn's
- *  caller, or a run hosted elsewhere that placed the spawn here, read from its admission. A placed
- *  run's revocation marker is read with that admission; a hosted run's is read at the bound. */
+ *  caller, or, on a static mesh, a run hosted elsewhere whose spawn reached this manager, read from
+ *  its admission. That run's revocation marker is read with the admission; a hosted run's is read at
+ *  the bound. */
 type SpawnRun = { admission: RunAdmission; hosted: boolean } | { refused: string };
 
 /** Why a revoked run starts no helper, the same words wherever the marker is read. */
@@ -6645,17 +6646,19 @@ export class Manager {
   }
 
   /** The run a spawn acts for (SPEC 14.8). The run this manager drives under `caller` answers from
-   *  memory. A spawn a run placed here names its run, and its caller must be that run's driver, whose
+   *  memory. On a static mesh, a spawn from a run hosted elsewhere names its run, whether the program
+   *  placed it here or the class queue delivered it, and its caller must be that run's driver, whose
    *  triple derives from the run id; the run's admission and revocation marker are then read
-   *  leader-served, so the helper is bounded as the hosting manager bounds it. `undefined` for a
-   *  spawn that acts for no run. */
+   *  leader-served, so the helper is bounded as the hosting manager bounds it. Elsewhere the run id
+   *  is not read: a user-auth run's issuing host bounds the helper, and an open mesh bounds none.
+   *  `undefined` for a spawn that acts for no run. */
   private async spawnRun(caller: EpCaller | undefined, runId: string | undefined): Promise<SpawnRun | undefined> {
     const hosted = caller !== undefined ? this.runHosting?.runAdmission(caller) : undefined;
     if (hosted !== undefined) {
       if (runId !== undefined && runId !== hosted.runId) return { refused: `it names run ${runId}, but its caller drives run ${hosted.runId}` };
       return { admission: hosted, hosted: true };
     }
-    if (runId === undefined) return undefined;
+    if (runId === undefined || this.meshMode !== "static") return undefined;
     let driver: EpCaller | undefined;
     try {
       driver = caller !== undefined ? runDriverCaller(runId, caller.owner) : undefined;
@@ -6664,7 +6667,7 @@ export class Manager {
     }
     if (driver === undefined || driver.actor !== caller!.actor || driver.uid !== caller!.uid)
       return { refused: `it names run ${runId}, but its caller is not that run's driver` };
-    if (this.runHosting === undefined) return { refused: `run ${runId} placed a spawn here, but this manager hosts no runs, so it cannot read the run's admission` };
+    if (this.runHosting === undefined) return { refused: `run ${runId} asked this manager for a helper, but this manager hosts no runs, so it cannot read the run's admission` };
     let view: { admission: RunAdmission; revoked: RunRevocation | undefined };
     try {
       view = await this.runHosting.admission(runId);
@@ -6681,7 +6684,7 @@ export class Manager {
    * mints no grant, so both return `exempt`. So does a call with no authenticated caller, which is
    * the manager's own composition root (roster boot, a manifest `launch`, which a static mesh mints
    * only into operator instruments). A workflow run's spawn, whether this manager hosts the run or
-   * the run placed the spawn here ({@link spawnRun}), is bounded by the run's admission (SPEC 14.8):
+   * its spawn reached this manager from another host ({@link spawnRun}), is bounded by the run's admission (SPEC 14.8):
    * the starter's ceiling as resolved when the run was admitted, at the starter's coordinate, unless
    * the starter was exempt then. A caller with no issued generation, or whose
    * evidence does not resolve, hands on no grant. The evidence's own standing decides the rest.
@@ -6693,8 +6696,8 @@ export class Manager {
     if (run !== undefined) {
       const admission = run.admission;
       // Read leader-served before each of the run's spawns, so a run revoked mid-step starts no
-      // helper, and a marker this manager cannot read refuses the spawn too. A placed run's marker
-      // was read with its admission.
+      // helper, and a marker this manager cannot read refuses the spawn too. The marker of a run
+      // hosted elsewhere was read with its admission.
       let refusal: string | undefined;
       if (run.hosted)
         try {

@@ -3791,8 +3791,8 @@ the one `define-persona` would record for the spawner, and for a run's spawn the
 catalog reads then find it. A name the catalog already holds is refused before anything starts, and a
 refused grant leaves neither file. A copy that loses a create race after that check fails the spawn,
 and its grant is rolled back. The `spawn` input also takes `runId`, which a workflow run's driver
-sends on each spawn so that a manager that does not host the run can bound the helper by the run's
-admission (§14.8).
+sends on each spawn so that a static manager that does not host the run can bound the helper by the
+run's admission (§14.8).
 `define-persona` also takes `capabilities`. The manager MUST refuse, before it writes, a capability
 the persona would carry that the definer does not hold under the same delegation bound (§13.15). That
 includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
@@ -6283,13 +6283,14 @@ expires minutes after issue and a run's spawns may come hours later. An admissio
 is bounded. A reader that predates the field refuses an admission carrying it as an unsupported
 field.
 
-A run's spawn names its run in `runId` (§13.7), so a spawn the run places on a static manager that
-does not host it is bounded the same way. That manager MUST refuse the spawn unless its caller is the
-run's driver, whose actor and uid derive from the run id. It then reads the run's admission and
-revocation marker leader-served and bounds the helper by the admission as the hosting manager does.
-A spawn that names a run its caller does not drive, or a run whose admission the manager cannot
-read, is refused before anything is minted. A signerless host places no spawn on another instance,
-so a user-auth run never reaches another manager.
+A run's spawn names its run in `runId` (§13.7), so a static manager that does not host the run bounds
+the helper the same way, whether the program placed the spawn there or the class queue delivered it.
+That manager MUST refuse the spawn unless its caller is the run's driver, whose actor and uid derive
+from the run id. It then reads the run's admission and revocation marker leader-served and bounds the
+helper by the admission as the hosting manager does. A spawn that names a run its caller does not
+drive, or a run whose admission the manager cannot read, is refused before anything is minted. A
+manager on a user-auth or open mesh does not read `runId`; on a user-auth mesh the issuing host
+bounds the helper, as the next paragraph says.
 
 On a user-auth mesh the issuing host bounds a hosted run's spawns through the ledger. When it admits
 a run for a participant manager it writes `delegation: { scope, allowSubscribe, allowPublish }`, the
@@ -6305,7 +6306,7 @@ idempotent, written under the same `run-admitter` profile, never removed. A revo
 no further channel effect, its open waits refuse at their next fetch (the linearization point is
 the leader-served read the host makes before returning any channel bytes), and no resume,
 takeover or boot reconcile continues it. A spawn it makes after the marker MUST be refused before
-anything is minted: a static manager, the run's host or one the run placed the spawn on, reads the
+anything is minted: a static manager, the run's host or another one the run's spawn reaches, reads the
 marker leader-served before it bounds the spawn and refuses one it cannot read, and on a user-auth mesh the issuing host refuses the enrollment (§13.6).
 An answer to one of its open checkpoints or asks MUST be
 refused before anything is filed: the host reads the marker leader-served before it files the
@@ -6883,7 +6884,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | 2026-10-30 | **A static spawn bounds the helper's role, and a static agent mint maps `role:<r>` (§13.15), breaking.** A static spawner could hand its helper any role, because the role was outside the bound. The bound now measures the role as the rows that bind its task-queue durable, and the agent mint grants those rows for each `role:<r>` token in the agent's capabilities as well as for its own role, so a spawner hands on a role it was given either way. A spawn that hands on a role its spawner was not given is refused, naming the `role:<r>` token. A user-auth mint is unchanged. No wire change. |
 | 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn. It refuses a subject it did not observe, or one another enrollment took for another helper or token digest, and answers a retry of the same enrollment again. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. The loopback `verify-enrollment` door decides the same parent and bound and answers `parent`, which a host platform that writes its own grants must record, filling an omitted list from no more than the parent's grant. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
 | 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A spawn after the run's revocation marker, or with a marker the manager cannot read, is refused. A reader that predates the field refuses an admission carrying it. |
-| 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name, owned as `define-persona` would own it for the spawner, or by the run's starter for a run's spawn. `define-persona` takes `capabilities`, bounded against the definer before the write. A run's spawn names its run (`runId`), so a static manager the run places a spawn on bounds it by the run's admission. The manager cluster advances to revision 44. Additive. |
+| 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name, owned as `define-persona` would own it for the spawner, or by the run's starter for a run's spawn. `define-persona` takes `capabilities`, bounded against the definer before the write. A run's spawn names its run (`runId`), so a static manager that does not host the run bounds it by the run's admission. The manager cluster advances to revision 44. Additive. |
 | 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The helper's role and a workflow run's spawns are outside the bound in this revision. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |

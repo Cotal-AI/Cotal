@@ -60,8 +60,8 @@
     {
       "name": "R6 a spawn a run placed here reads no admission",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (runId === undefined) return undefined;\n    let driver: EpCaller | undefined;\n",
-      "replace": "    return undefined;\n    let driver: EpCaller | undefined;\n",
+      "find": "    if (runId === undefined || this.meshMode !== \"static\") return undefined;\n    let driver: EpCaller | undefined;\n",
+      "replace": "    if (runId === undefined || this.meshMode !== \"static\" || runId.length > 0) return undefined;\n    let driver: EpCaller | undefined;\n",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host",
       "cell": "a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host"
