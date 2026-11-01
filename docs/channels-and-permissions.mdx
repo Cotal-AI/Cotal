@@ -128,7 +128,7 @@ A family follow holds a durable membership of its own, so an agent that is away 
 - On a `durable` channel under the family, each post is stored for the agent and delivered when it returns.
 - On a `live` channel under it, a post reaches the agent only while it is connected.
 - Stored copies start at the join. Earlier posts are history.
-- An agent that also joined a channel under the family by name still gets one copy of each post.
+- An agent that also joined a channel under the family by name still gets one copy of each post. The copies collapse within the two-hour duplicate window, so a copy written again after it can be stored twice.
 - Leaving the family ends its stored copies. Muting a channel under it stays a per-channel choice.
 
 A family needs one `allowSubscribe` entry that contains it, such as `team.>` or `>`.

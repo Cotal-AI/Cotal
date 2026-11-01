@@ -222,7 +222,8 @@ export type MembershipState = "live-confirmed" | "durable-active";
  * deterministically); a rejoin bumps {@link generation} and takes a fresh {@link joinCursor}.
  */
 export interface MembershipRecord {
-  /** Concrete channel (never a wildcard — wildcard ACLs grant live breadth, durable is per-channel). */
+  /** A concrete channel, or a channel family such as `team.>` covering the durable-class channels under
+   *  it (#5404). Never the root `>` or a pattern with `*`, which grant live breadth only. */
   channel: string;
   /** The subscribing **principal** in dot-form `<owner>.<actor>` (= `principalKey().key`) under the
    *  owner+actor grammar. NB: the field NAME is legacy — it holds the full principal (both tokens), not
