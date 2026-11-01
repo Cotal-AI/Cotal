@@ -1,5 +1,16 @@
 # @cotal-ai/manager
 
+## 0.133.5
+
+### Patch Changes
+
+- f1f4add: Control refusals no longer end in internal plan labels such as `(F5)`, `(F5(b))`, `(F3)` or "the #29 auth-trigger slice"; each ends after its reason. The same labels are gone from the manager's comments and the service-ops smoke's check names.
+- 18c204c: A manager shutting down after a failed preservation cut no longer waits out the exit timeout for a seat whose hard stop threw, and reports that seat's refused stop once instead of adding a second "did not exit" entry.
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+  - @cotal-ai/seat@0.133.5
+
 ## 0.133.4
 
 ### Patch Changes
