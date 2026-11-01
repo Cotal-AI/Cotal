@@ -2579,7 +2579,13 @@ feed, leases, native ephemeral/history consumers, credentials, keys, tokens, own
 ledger files are excluded. The other endpoint stores are nonportable control state: endpoint
 submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
 auth, session and issued-authority stores. Restore recreates those streams empty with their
-canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup. A
+canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup.
+The delivery daemon's anycast request records are control state too and come back empty. A full
+restore puts the TASK queue and its durables back as they were at the cut, so a role request a
+holder had taken and not yet acked at the cut is on its role's queue again, even if that holder
+finished and acked it after the cut. The broker delivers it again at delivery count 1, as it
+redelivers any unacked request, and any holder of the role may take it and do the work again. Until
+then its sender reads it as waiting ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). A
 workflow run that waited at a checkpoint or a timer at the cut is back after a full restore, and the
 manager takes it over as after a restart. The records store also holds the endpoint authority rows,
 such as lifecycle heads, obligations and policy versions, and a full restore rolls them back to the
