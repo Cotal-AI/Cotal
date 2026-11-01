@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/channel-members-live.smoke.ts"
   ],
-  "guard": "cotal channel members shows a family follower (#5404) as a durable member of the durable-class channels under the family only",
+  "guard": "cotal channel members shows a family follower (#5404) as a durable member of the durable-class channels under the family only, and a follow sees the class move",
   "command": "pnpm smoke:channel-members:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/channel-family-members-live.json",
@@ -11,7 +11,9 @@
     "",
     "L1 never counts the family row, so fern is no durable member of #team.build.",
     "",
-    "L2 counts the family row whatever the class, so fern reads as a durable member of the live #team.chat."
+    "L2 counts the family row whatever the class, so fern reads as a durable member of the live #team.chat.",
+    "",
+    "L3 copies every heartbeat into the last census, so a follow never sees #team.build turn live."
   ],
   "mutations": [
     {
@@ -28,6 +30,14 @@
       "find": "durableCovers(member.durable, channel, stored)",
       "replace": "durableCovers(member.durable, channel, true)",
       "expectRed": "while connected, fern is a live member of #team.chat with no stored copies",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "L3 a heartbeat ignores a class change",
+      "file": "implementations/cli/src/commands/channel-members.ts",
+      "find": " && !reading && ep.channelDeliveryClass(channel) === readClass) {",
+      "replace": " && !reading) {",
+      "expectRed": "the follow drops fern once #team.build turns live, with no membership change",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

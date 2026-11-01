@@ -1,4 +1,4 @@
-import { CotalEndpoint, durableCovers, subjectMatches, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
+import { CotalEndpoint, durableCovers, subjectMatches, type DeliveryClass, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
@@ -37,8 +37,11 @@ export async function channelMembers(values: Values, channel: string, presentati
       }).sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)),
     };
   };
+  // The class the last census was read under, which no membership change reports.
+  let readClass: DeliveryClass | undefined;
   const read = async (): Promise<Members> => {
     const [snapshot, cls] = await Promise.all([ep.readMembership(), ep.deliveryClassFresh(channel)]);
+    readClass = cls;
     return resultOf(snapshot, cls === "durable");
   };
   let streaming = false;
@@ -127,9 +130,10 @@ export async function channelMembers(values: Values, channel: string, presentati
   // A heartbeat changes no census, only the feed's `asOf` (reported in a later gap record), so it is
   // copied into the last census instead of costing a bucket re-read (#4904). After an interruption
   // the next change of any kind is read back in full, so the gap is reported against a fresh census.
+  // So is a heartbeat that finds the channel's class moved: whether a family row counts turns on it.
   const onMembership = (change: MembershipChange) => {
     if (change.type === "replayed") return;
-    if (change.type === "heartbeat" && change.update && last && !interruption && !reading) {
+    if (change.type === "heartbeat" && change.update && last && !interruption && !reading && ep.channelDeliveryClass(channel) === readClass) {
       last = { ...last, asOf: change.asOf ?? null };
       return;
     }

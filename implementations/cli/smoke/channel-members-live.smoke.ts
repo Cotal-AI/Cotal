@@ -14,7 +14,7 @@
  *  C. an agent that follows the family team.> on a provisioned credential (a bare join holds no
  *     durable membership) is a durable member of the durable #team.build and a live-only one of the
  *     live #team.chat. Once it stops, it stays on #team.build as a member with stored copies and
- *     leaves #team.chat.
+ *     leaves #team.chat. A follow of #team.build drops it once only the channel's class turns live.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
@@ -156,6 +156,19 @@ try {
   const away = await until(() => member("team.build")?.live === false && member("team.chat") === undefined, 90_000);
   check("once fern stops, #team.build still lists fern as a durable member", away && member("team.build")?.durable === true, census("team.build"));
   check("once fern stops, #team.chat no longer lists fern", member("team.chat") === undefined, census("team.chat"));
+  // Whether the family row counts turns on the channel's class, and no membership change says the
+  // class moved: the follow notices it at a feed heartbeat.
+  const fernId = build?.id;
+  const holds = (data: Census | undefined) => data?.members.some((m) => m.id === fernId && m.durable) ?? false;
+  const follow = started("channel", "members", "team.build", "--follow", "--json");
+  const following = await until(() => records(follow.out).some((r) => r.type === "snapshot"), 60_000);
+  check("a follow of #team.build opens listing the offline fern",
+    following && fernId !== undefined && holds(records(follow.out).find((r) => r.type === "snapshot")?.data), follow.out.slice(-600));
+  check("#team.build turns live", cotal("channel", "set", "team.build", "--delivery", "live").status === 0);
+  const dropped = await until(() => records(follow.out).some((r) => r.type === "event" && !holds(r.data)), 60_000);
+  check("the follow drops fern once #team.build turns live, with no membership change", dropped, records(follow.out).map((r) => r.type));
+  follow.child.kill("SIGINT");
+  await follow.exited;
 } finally {
   for (const { child } of running) if (child.exitCode === null && child.signalCode === null) child.kill("SIGINT");
   await Promise.all(running.map((run) => run.exited));
