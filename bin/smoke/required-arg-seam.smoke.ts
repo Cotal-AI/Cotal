@@ -250,6 +250,9 @@
  * Run: pnpm smoke:required-arg-seam
  */
 import ts from "typescript";
+import { parse as parseMarkdown, postprocess, preprocess } from "micromark";
+import { gfm } from "micromark-extension-gfm";
+import { mdxjs } from "micromark-extension-mdxjs";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -498,7 +501,11 @@ const SEAMS: Seam[] = [
   // 353/273 -> 354/274: shared-broker account cohorts (112ef8d5a) add one membership-observer
   // connection in manager/smoke/manager-seat-load that reads each cohort account's connz. It dials
   // the plaintext loopback broker its suite starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 354, untypecheckedSites: 274 },
+  // 354/274 -> 358/277: the endpoints listing (#5499) adds a second manager-call connection that
+  // passes `tls: config.tls` like the first, plus three registry smoke dials (the shared fixture,
+  // the e2e executor and the user-auth reader). The smoke dials reach a plaintext loopback broker
+  // and state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 358, untypecheckedSites: 277 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -542,7 +549,10 @@ const EXTS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
  *    frontmatter is YAML, and its body mixes markdown with ESM, so any extraction here would be a
  *    guess. The file is therefore not parsed at all; instead the seam's NAME appearing anywhere in
  *    it is itself a failure that says so. Crude, exact, and fail-closed: a tripwire cannot bless a
- *    call, only refuse to answer for one.
+ *    call, only refuse to answer for one. The one thing taken out first is MDX's literal code: the
+ *    site's own tokenizer (the extensions `website/scripts/sync-docs.mjs` renders with) marks code
+ *    fences and code spans, which a page renders as text and never runs. ESM, expressions, JSX and
+ *    prose all stay in, and a page the tokenizer refuses is tripwired whole.
  */
 const CONTAINERS: Record<string, "frontmatter" | "script" | "tripwire"> = {
   ".astro": "frontmatter",
@@ -1777,18 +1787,34 @@ function extensionsPresent(dir: string, acc: Set<string> = new Set()): Set<strin
   return acc;
 }
 
+/**
+ * An MDX page with its code fences and code spans blanked, line breaks kept so a reported line is
+ * still the page's own. The page is tokenized as the site renders it; one the tokenizer refuses comes
+ * back unchanged, so its code is tripwired along with everything else.
+ */
+function withoutMdxCode(text: string): string {
+  let events: ReturnType<typeof postprocess>;
+  try { events = postprocess(parseMarkdown({ extensions: [mdxjs(), gfm()] }).document().write(preprocess()(text, undefined, true))); }
+  catch { return text; }
+  const chars = text.split("");
+  for (const [kind, { type, start, end }] of events)
+    if (kind === "enter" && (type === "codeFenced" || type === "codeText"))
+      for (let i = start.offset; i < end.offset; i++) if (chars[i] !== "\n" && chars[i] !== "\r") chars[i] = " ";
+  return chars.join("");
+}
+
 function sitesIn(file: string, text: string, seam: Seam): Site[] {
   // A tripwire container is never parsed, so it can only ever REFUSE. Naming the seam in a file this
   // reader cannot read is the one thing it can detect, and it is enough to force the question.
-  const tripwire = (from: number, why: string): Site[] => {
-    const at = text.indexOf(seam.fn, from);
+  const tripwire = (from: number, why: string, src = text): Site[] => {
+    const at = src.indexOf(seam.fn, from);
     return at < 0 ? [] : [{
       file, line: text.slice(0, at).split("\n").length, verdict: "unverifiable",
       detail: `\`${seam.fn}\` is named ${why}, which this reader cannot isolate without that language's own compiler; move the call into a source it can read, or teach this check to extract it`,
     }];
   };
   if (CONTAINERS[extOf(file)] === "tripwire")
-    return tripwire(0, `in a ${extOf(file)} file, whose executable part is mixed into its prose`);
+    return tripwire(0, `in a ${extOf(file)} file, whose executable part is mixed into its prose`, extOf(file) === ".mdx" ? withoutMdxCode(text) : text);
   const programs = parseAll(file, text);
   // A file that does not PARSE is refused rather than scanned, because the recovery tree the parser
   // hands back is not the program: it invents nodes that no valid source can produce, and a rule
@@ -2074,6 +2100,16 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     mdx(`import { standaloneConnectOpts } from "x";`)[0]?.verdict === "unverifiable");
   check("...and is silent when it does not name the seam, so it is a tripwire and not a ban",
     mdx(`# just documentation`).length === 0);
+  check("...and silent when the seam is named only in a code fence or code span, which the page renders and never runs",
+    mdx("Use `standaloneConnectOpts` here.\n\n```ts\nstandaloneConnectOpts({ creds: c });\n```\n").length === 0);
+  check("...while naming it in prose, an expression or JSX outside code still refuses",
+    mdx(`Call standaloneConnectOpts here.`)[0]?.verdict === "unverifiable"
+    && mdx(`{standaloneConnectOpts({ creds: c })}`)[0]?.verdict === "unverifiable"
+    && mdx(`<Box opts={standaloneConnectOpts({ creds: c })} />`)[0]?.verdict === "unverifiable");
+  check("...at the real line of the real page, past a fence that also names it",
+    mdx("```ts\nstandaloneConnectOpts({ creds: c });\n```\n\n{standaloneConnectOpts({ creds: c })}")[0]?.line === 5);
+  check("...and a page the tokenizer refuses is tripwired whole, its code included",
+    mdx("```ts\nstandaloneConnectOpts({ creds: c });\n```\n\n{")[0]?.line === 2);
   // Inline `<script>` in HTML/SVG, which five pages here already carry. An earlier cut EXCLUDED
   // these on the reasoning that a browser cannot reach a NATS seam; that reasoning was wrong as
   // stated (browsers run NATS over WebSocket) and the true reason lived in another file, which is
