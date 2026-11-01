@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.133.6
+
+### Patch Changes
+
+- Decode and cache bundled documentation one source at a time for page reads and search results. Preserve corpus/index integrity checks, search scores, returned-page behavior and the full-bundle build helper without changing the two-asset package layout.
+
 ## 0.133.5
 
 No changes in this release.
