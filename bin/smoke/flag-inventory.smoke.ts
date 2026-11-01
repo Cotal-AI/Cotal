@@ -164,7 +164,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string:C", "detach:boolean:d", "dry-run:boolean",
       "enrollment-file:string", "events:boolean", "expect-lifecycle-uid:string", "expect-owner:string",
-      "file:string:f", "foreground:boolean", "harness:string:H", "json:boolean:j", "live-only:boolean",
+      "expires-at:string", "expires-in:string", "file:string:f", "foreground:boolean", "harness:string:H", "json:boolean:j", "live-only:boolean",
       "model:string:m", "name:string:n", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
       "prompt:string:p", "restart-window:string", "restarts:string", "resume:string", "role:string",
       "runtime:string", "server:string", "share-tools:string", "space:string:s", "subscribe:string",
@@ -479,7 +479,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "json:boolean", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   join: {
     flags: [
-      ...TARGET, "channel:string", "kind:string", "lifecycle-uid:string", "link:string",
+      ...TARGET, "channel:string", "expires-at:string", "expires-in:string", "kind:string", "lifecycle-uid:string", "link:string",
       "name:string", "role:string", "tls:boolean", "token:string",
     ],
     positionals: false,
