@@ -68,7 +68,14 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
-native stack in this terminal. A contradictory mode pair refuses before setup or seed work. `up`
+native stack in this terminal.
+
+Ordinary startup and refresh start delivery before user-auth, then start the manager. Auth uses
+delivery to check whether a crashed predecessor has disconnected. Live or unknown holders remain
+refused, and the refusal names its code and reason, such as
+`[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+
+A contradictory mode pair refuses before setup or seed work. `up`
 seeds the [built-in connectors](cli-installation.mdx#built-in-connectors-are-seeded-extensions) only when it first starts
 a process, or when `up -f` checks the connectors its manifest's agents use, so a refusal before then
 leaves the operator-global seed store as it was. When a start fails after that seed moved the store to this version, the failure

@@ -326,7 +326,7 @@ function unconfirmedStart(cause: unknown, message = "the native manager child di
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
  *
  *  The operator CLIENTS of this daemon — detached launch (`cotal spawn --detach`), `stop`, `ps`,
- *  `attach` — live in `@cotal-ai/cli` since stage 2a of the CLI rework: they are thin control-plane
+ *  `attach` — live in `@cotal-ai/cli`: they are thin control-plane
  *  request/reply commands, not daemon code. This package registers only the daemon runner. */
 // `--runtime` forces the manager runtime; honored only on the `supervise` path (default
 // pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is

@@ -6,10 +6,11 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { discoverDocuments } from "@cotal-ai/docs-content";
 import { runDocs, searchDocs, renderDocsIndex, DOCS_VERSION } from "@cotal-ai/connector-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -159,6 +160,13 @@ console.log("✓ 4 — an unknown page fails loud and lists what is available");
   for (const h of searchDocs("cotal")) perPage.set(h.slug, (perPage.get(h.slug) ?? 0) + 1);
   assert.ok([...perPage.values()].every((n) => n <= 2), "no page contributes more than two sections");
 
+  // Cached term frequencies are corpus data, independent of each query's terms.
+  const cached = searchDocs("cotal_send");
+  assert.ok(cached.length > 0, "the cache control query has real hits");
+  searchDocs("owner actor");
+  assert.deepEqual(searchDocs("cotal_send"), cached, "an intervening query preserves cached frequencies and scores");
+  assert.deepEqual(searchDocs("cotal_send cotal_send"), cached, "repeated query terms do not change corpus frequencies or scores");
+
   const none = await runDocs({ query: "zzzznotawordzzzz" });
   assert.match(none.text, /No matches/);
 }
@@ -177,9 +185,8 @@ console.log("✓ 5 — BM25 section search");
 {
   const docsDir = join(repoRoot, "docs");
   // README.md is the human index; cotal_docs renders its own, so the generator excludes it.
-  const expected = readdirSync(docsDir)
-    .filter((f) => /\.mdx?$/.test(f) && f !== "README.md")
-    .map((f) => f.replace(/\.mdx?$/, "").toLowerCase())
+  const expected = (await discoverDocuments(docsDir))
+    .map(path => basename(path, extname(path)).toLowerCase())
     .sort();
   assert.ok(expected.length > 0, "the docs directory has pages to serve");
 
@@ -202,9 +209,8 @@ console.log("✓ 5 — BM25 section search");
 console.log("✓ 6 — the built docs module serves every page in docs/ at the shipped version");
 
 {
-  const sources = new Map(readdirSync(join(repoRoot, "docs"))
-    .filter(name => /\.mdx?$/.test(name) && name !== "README.md")
-    .map(name => [join(repoRoot, "docs", name), name.replace(/\.mdx?$/, "").toLowerCase()]));
+  const sources = new Map((await discoverDocuments(join(repoRoot, "docs")))
+    .map(path => [path, basename(path, extname(path)).toLowerCase()]));
   sources.set(join(repoRoot, "SPEC.md"), "spec");
   sources.set(join(repoRoot, "spec", "cotal-lang.md"), "lang");
   sources.set(join(repoRoot, "spec", "cotal.schema.json"), "schema");
@@ -268,6 +274,8 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
     cpSync(join(repoRoot, "bin", "package.json"), join(tree, "bin", "package.json"));
     cpSync(gen, join(tree, "scripts", "generate-docs-bundle.mjs"));
     symlinkSync(join(repoRoot, "node_modules"), join(tree, "node_modules"), "dir");
+    mkdirSync(join(tree, "extensions", "connector-core", "src"), { recursive: true });
+    cpSync(join(repoRoot, "extensions", "connector-core", "src", "docs-index-core.js"), join(tree, "extensions", "connector-core", "src", "docs-index-core.js"));
     const copied = join(tree, "scripts", "generate-docs-bundle.mjs");
 
     // ACCEPT CONTROL FOR THE COPY. The refuse legs below are only evidence if the copy itself is

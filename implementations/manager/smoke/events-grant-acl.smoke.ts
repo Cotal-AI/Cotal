@@ -576,33 +576,35 @@ try {
     // actually refused.
     const named = /cotal mint <reader> --profile (\S+) --allow-subscribe (\S+)/.exec(remedyRefusal);
     check("the refusal prints a mint command, naming a profile and a channel", named !== null, remedyRefusal.slice(0, 400));
-    const profile = named?.[1] ?? "";
-    const printedChannel = named?.[2] ?? "";
-    check("the channel it prints is the channel it refused", printedChannel === remedyChannel, { printedChannel, refused: remedyChannel });
-    const foreign = printedChannel;
-    const credsPath = join(workspaceRoot, "remedy.creds");
-    writeFileSync(
-      credsPath,
-      await mintCreds(auth, newIdentity(), profile as Parameters<typeof mintCreds>[2], {
-        allowSubscribe: [foreign],
-        lifecycleUid: mintLifecycleUid(),
-      }),
-    );
-    const granted = subAcl(credsPath);
-    check(
-      "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
-      granted.length === 1 && channelOf(granted[0]!) === remedyChannel,
-      { profile, granted, refused: remedyChannel },
-    );
-    // ANY wildcard tail, not the one literal shape the observer arm happens to emit. `subAcl` has
-    // already filtered to chat subjects, so a trailing `>` here is a wildcard over some part of the
-    // plane whatever its prefix: `<space>.chat.>` and `<space>.chat.*.*.>` both fail this, and only
-    // the first would fail an `endsWith(".chat.>")` written against today's observer arm.
-    check(
-      "and hands out no wildcard over the chat plane",
-      granted.every((s) => !s.endsWith(">")),
-      { profile, granted },
-    );
+    // The mint cells run only on a parsed command. Without one, the cell above is already red, and
+    // minting on a stand-in would throw, skip section 10 and leave the count guard to report it.
+    if (named !== null) {
+      const [, profile, printedChannel] = named;
+      check("the channel it prints is the channel it refused", printedChannel === remedyChannel, { printedChannel, refused: remedyChannel });
+      const credsPath = join(workspaceRoot, "remedy.creds");
+      writeFileSync(
+        credsPath,
+        await mintCreds(auth, newIdentity(), profile as Parameters<typeof mintCreds>[2], {
+          allowSubscribe: [printedChannel],
+          lifecycleUid: mintLifecycleUid(),
+        }),
+      );
+      const granted = subAcl(credsPath);
+      check(
+        "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
+        granted.length === 1 && channelOf(granted[0]!) === remedyChannel,
+        { profile, granted, refused: remedyChannel },
+      );
+      // ANY wildcard tail, not the one literal shape the observer arm happens to emit. `subAcl` has
+      // already filtered to chat subjects, so a trailing `>` here is a wildcard over some part of the
+      // plane whatever its prefix: `<space>.chat.>` and `<space>.chat.*.*.>` both fail this, and only
+      // the first would fail an `endsWith(".chat.>")` written against today's observer arm.
+      check(
+        "and hands out no wildcard over the chat plane",
+        granted.every((s) => !s.endsWith(">")),
+        { profile, granted },
+      );
+    }
   }
 
   // ===== 10. THE THIRD ARM: an OPEN mesh is not handed the static route (#567) =====

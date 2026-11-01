@@ -1,18 +1,18 @@
 /**
- * A MANAGER STOP DURING A BROKER OUTAGE DOES NOT WAIT OUT THE OUTAGE RETIRING ITS SERVE CONNECTION (#3972).
+ * A MANAGER STOP DURING A BROKER OUTAGE DOES NOT WAIT OUT THE OUTAGE RETIRING ITS DEDICATED
+ * CONNECTIONS: SERVE (#3972), GOAL-WRITER AND SESSION-LEDGER (#4013).
  *
- * `stopServiceServe()` drained the serve subscriptions and then the serve connection, each inside its
- * own try/catch. That made the step best-effort for FAILURES, not for WAITS: a drain on a connection
- * that is reconnecting does not fail, it waits for the reconnect, so the step lasted as long as the
- * outage. An outage longer than the `cotal down` grace killed the manager before its endpoint and
- * attach listener had stopped. With the serve transport down there is nothing left to flush, so the
- * retired connection is closed instead.
+ * Each stop drained its connection inside a try/catch. That made the step best-effort for FAILURES,
+ * not for WAITS: a drain on a connection that is reconnecting does not fail, it waits for the
+ * reconnect, so the step lasted as long as the outage. An outage longer than the `cotal down` grace
+ * killed the manager before its endpoint and attach listener had stopped. With a transport down there
+ * is nothing left to flush, so `retireConnection` closes the connection instead.
  *
  * THE OUTAGE is a loopback relay in front of a real broker that drops every connection and holds
- * every redial (accepted, never answered), the shape the issue measured. The instrument is wall-clock
- * time around the shipped `stopServiceServe` while the outage lasts, against an outage sized so a
- * regression reads as seconds. The SETUP cell proves the manager had observed the transport down
- * before the stop ran, and the control retires a serve connection whose transport is UP, which was
+ * every redial (accepted, never answered), the shape the issues measured. The instrument is
+ * wall-clock time around each shipped stop step while the outage lasts, against an outage sized so a
+ * regression reads as seconds. The SETUP cell proves the manager had observed all three transports
+ * down before the stops ran, and the control retires connections whose transport is UP, which was
  * fast before and must stay fast and still drain.
  *
  * Needs nats-server on PATH.
@@ -68,9 +68,21 @@ function relay(targetPort: number, listenPort: number) {
 
 type Inside = {
   serviceServe?: { nc: NatsConnection };
-  serveTransportDown: WeakSet<NatsConnection>;
+  goalWriter?: { nc: NatsConnection };
+  sessionLedgerConn?: { nc: NatsConnection };
+  transportDown: WeakSet<NatsConnection>;
   stopServiceServe: () => Promise<void>;
+  stopGoalWriter: () => Promise<void>;
+  stopSessionPlane: () => Promise<void>;
 };
+type Step = { label: string; nc: NatsConnection; stop: () => Promise<void> };
+/** The three dedicated connections in the order `stop()` retires them, captured before any stop
+ *  clears its holder. */
+const stepsOf = (inside: Inside): Step[] => [
+  { label: "serve", nc: inside.serviceServe!.nc, stop: () => inside.stopServiceServe() },
+  { label: "goal-writer", nc: inside.goalWriter!.nc, stop: () => inside.stopGoalWriter() },
+  { label: "session-ledger", nc: inside.sessionLedgerConn!.nc, stop: () => inside.stopSessionPlane() },
+];
 
 const OUTAGE_MS = 8_000;
 const space = `serve-stop-${randomUUID().slice(0, 8)}`;
@@ -87,8 +99,9 @@ const bootManager = async (): Promise<Manager> => {
   const mgr = new Manager({ space, servers: `nats://127.0.0.1:${relayPort}`, runtime: "pty", workspaceRoot: root, consolePort: 0 });
   await mgr.start();
   const inside = mgr as unknown as Inside;
-  const bound = await until(() => inside.serviceServe !== undefined && !inside.serveTransportDown.has(inside.serviceServe.nc), 10_000);
-  if (!bound) throw new Error("the manager never bound its serve connection through the relay");
+  const bound = await until(() => [inside.serviceServe, inside.goalWriter, inside.sessionLedgerConn]
+    .every((held) => held !== undefined && !inside.transportDown.has(held.nc)), 10_000);
+  if (!bound) throw new Error("the manager never stood up its serve, goal-writer and session-ledger connections through the relay");
   return mgr;
 };
 
@@ -98,29 +111,35 @@ try {
   console.log("\n1. stop during an outage");
   const mgr = await bootManager();
   const inside = mgr as unknown as Inside;
-  const nc = inside.serviceServe!.nc;
+  const steps = stepsOf(inside);
   proxy.cut();
-  const observedDown = await until(() => inside.serveTransportDown.has(nc), 5_000);
-  check("1.1 SETUP: the manager observed its serve transport down after the relay dropped it", observedDown);
+  const observedDown = await until(() => steps.every((s) => inside.transportDown.has(s.nc)), 5_000);
+  check("1.1 SETUP: the manager observed all three transports down after the relay dropped them", observedDown,
+    Object.fromEntries(steps.map((s) => [s.label, inside.transportDown.has(s.nc)])));
   const restoreAt = setTimeout(() => proxy.restore(), OUTAGE_MS);
-  const t0 = Date.now();
-  await inside.stopServiceServe();
-  const retiredMs = Date.now() - t0;
-  check(`1.2 retiring the serve connection during a ${OUTAGE_MS}ms outage returns without waiting for the reconnect`, retiredMs < OUTAGE_MS / 2, { retiredMs, OUTAGE_MS });
-  check("1.3 and the retired serve connection is closed, not left reconnecting", nc.isClosed(), { closed: nc.isClosed() });
+  const outageStart = Date.now();
+  for (const [i, s] of steps.entries()) {
+    const t0 = Date.now();
+    await s.stop();
+    const retiredMs = Date.now() - t0;
+    check(`1.${i + 2} retiring the ${s.label} connection during a ${OUTAGE_MS}ms outage returns without waiting for the reconnect, and closes it`,
+      retiredMs < OUTAGE_MS / 2 && s.nc.isClosed(), { retiredMs, closed: s.nc.isClosed(), OUTAGE_MS });
+  }
+  const allMs = Date.now() - outageStart;
+  check("1.5 all three retire inside one outage, so none waited it out", allMs < OUTAGE_MS / 2, { allMs, OUTAGE_MS });
   clearTimeout(restoreAt);
   proxy.restore();
   const stopped = await Promise.race([mgr.stop({ withAgents: true }).then(() => true), wait(60_000).then(() => false)]);
-  check("1.4 the rest of the stop completes once the link is back", stopped);
+  check("1.6 the rest of the stop completes once the link is back", stopped);
 
   console.log("\n2. CONTROL: stop with the transport up");
   const ctl = await bootManager();
-  const ctlInside = ctl as unknown as Inside;
-  const ctlNc = ctlInside.serviceServe!.nc;
-  const t1 = Date.now();
-  await ctlInside.stopServiceServe();
-  const ctlMs = Date.now() - t1;
-  check("2.1 retiring a serve connection whose transport is up is fast and drains it", ctlMs < OUTAGE_MS / 2 && ctlNc.isClosed(), { ctlMs, closed: ctlNc.isClosed() });
+  for (const [i, s] of stepsOf(ctl as unknown as Inside).entries()) {
+    const t1 = Date.now();
+    await s.stop();
+    const ctlMs = Date.now() - t1;
+    check(`2.${i + 1} retiring a ${s.label} connection whose transport is up is fast and drains it`, ctlMs < OUTAGE_MS / 2 && s.nc.isClosed(), { ctlMs, closed: s.nc.isClosed() });
+  }
   await ctl.stop({ withAgents: true });
 } finally {
   proxy.close();

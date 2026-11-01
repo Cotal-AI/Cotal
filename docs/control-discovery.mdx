@@ -237,7 +237,8 @@ store read fails the resolve with `deadline-exceeded` when that deadline expires
 resolve settles a store read in flight instead of waiting for it to return. When one store read
 fails, the resolve fails with it and fetches no further command contracts; fetches already under
 way finish on their own. A call for one command fetches only that command's cluster and schema
-closures. `describe` still fetches the complete visible surface because its result lists every
+closures. `cotal invoke --name` also fetches `inspect`'s, because it resolves the target through
+`inspect`. `describe` still fetches the complete visible surface because its result lists every
 command.
 
 

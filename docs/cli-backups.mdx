@@ -231,7 +231,9 @@ or `.cotal/maintenance`, such as `.` in this folder, refuses `USAGE_INVALID` (ex
 that store or folder. The restore checks the path again once it holds the maintenance lock, because a
 link in it may name another folder by then, and refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
-its remedy gives the next step for that state. `up --restore`
+its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
+`tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the
+endpoint value, including when it came from a preserved launch. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
 gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
 workflow runs out. Unlike the other
@@ -506,7 +508,9 @@ dead, recovery retires that exact proof under the maintenance lock and binds a f
 same attempt, endpoint, and target with a new nonce and server name. A live foreign/mismatched listener
 or ambiguous owner is preserved and refused, never adopted by reachability alone. Before the
 daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
-because the interrupted `up` may have stopped before it made them. A reconstructed
+because the interrupted `up` may have stopped before it made them. The mesh record it then writes
+keeps the recorded attach host and session ceiling and the store cap the adopted broker started with.
+A restore journals its `--max-file-store` for this. A reconstructed
 commit/degraded attempt without either the exact bound proof or a durable dead-listener replacement
 record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
 restore only when its details prove manager commit and its exact recorded listener is dead.

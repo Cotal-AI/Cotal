@@ -14,10 +14,15 @@
  * That reddened every smoke shard on main at `7f3a8a03` (#1244) from a change that touched no
  * smoke file at all: the tree was byte-identical to the green run before it.
  *
- * The robust form, already used by the majority of suites, resolves the workspace binary by path:
+ * The robust form runs the CLI under Node itself with the workspace's tsx loader:
  *
- *     const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
- *     spawn(TSX, [BIN, ...args], opts)
+ *     const TSX_LOADER = import.meta.resolve("tsx");
+ *     spawn(process.execPath, ["--import", TSX_LOADER, BIN, ...args], opts)
+ *
+ * Spawning `node_modules/.bin/tsx` by path also avoids npx, but that binary is a wrapper. It runs the
+ * script in a second `node` process and relays only SIGINT and SIGTERM, so the ChildProcess a suite
+ * holds is the wrapper. A `child.kill("SIGKILL")` then ends the wrapper and leaves the real CLI
+ * running, still holding the suite's pipes.
  *
  * This guard reddens on any `spawn("npx", ["tsx"` (plain or `pty.spawn`) under a `smoke/` directory.
  * It carries a planted positive control so the search is shown able to find the banned form, and a
@@ -125,7 +130,8 @@ const positives: Array<[string, string]> = [
 ]; 
 for (const [name, src] of positives) check(`banned form IS matched: ${name}`, BANNED.test(src), src);
 const negatives: Array<[string, string]> = [
-  ["robust form", 'const child = spawn(TSX, [BIN, ...args], options);'],
+  ["robust form", 'const child = spawn(process.execPath, ["--import", TSX_LOADER, BIN, ...args], options);'],
+  ["workspace tsx binary by path", 'const child = spawn(TSX, [BIN, ...args], options);'],
   ["robust pty", 'pty.spawn(TSX, args, {'],
   ["version.ts kind field", 'return { kind: "npx", root: packageRoot };'],
   ["prose mention", '// Run: npx tsx implementations/auth/smoke/x.smoke.ts'],

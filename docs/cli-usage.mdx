@@ -185,7 +185,10 @@ optional manager runtimes ship this way. A `@cotal-ai/*` package named without a
 this cotal's version, as `setup` and `update` do; a version or tag you name is installed as given.
 A new third-party extension is installed and validated in a temporary prefix before it is added
 to the live installation. A refused new add leaves installed package links and the three prefix
-manifests unchanged, and removes its temporary prefix.
+manifests unchanged, and removes its temporary prefix. An add over an installed extension that
+fails or is interrupted puts the previous installation back. An interrupted add exits 130 and never
+reports the version it rolled back. Once an add has committed, failing to remove its copy of the
+previous installation is a warning that names the copy, not a failed add.
 
 
 ## Structured output [#structured-output]

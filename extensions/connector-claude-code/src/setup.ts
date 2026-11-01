@@ -28,7 +28,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 type PluginEntry = Record<string, unknown>;
 
 /** What the `cotal` plugin carries from this package. */
-const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"] as const;
+const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"] as const;
 
 /** The version the materialized `cotal` plugin carries: this release, then a digest of every file it
  *  holds, so `cotal status` can tell a copy an earlier release wrote. */
