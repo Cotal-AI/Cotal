@@ -1,0 +1,31 @@
+{
+  "suite": [
+    "implementations/manager/smoke/lifecycle-inventory-concurrency.smoke.ts"
+  ],
+  "guard": "a durable join queued on the delivery daemon's ctl.delivery rail behind a running one waits its turn, so a lifecycle's inventory sent before it runs does not list it; only the anycast request ops are answered in their own time",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:lifecycle-inventory-concurrency",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=20",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/lifecycle-inventory-concurrency.json",
+  "why": [
+    "The daemon serves ctl.delivery with a concurrent predicate so an anycast request's status, cancel",
+    "and takes do not wait behind a channel join. Every other op stays on the in-order chain. If a join",
+    "ran in its own time too, a join sent behind a held one would be authorized and written before the",
+    "lifecycle's inventory, and the inventory would list a row the deprovisioner then leaves behind.",
+    "",
+    "The suite imports core through its package export, so the command builds core before each run",
+    "and the mutation rebuilds it after restore. Without that, the run would grade a stale dist and",
+    "leave compiled mutant output behind."
+  ],
+  "mutations": [
+    {
+      "name": "every ctl.delivery request is answered in its own time",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      concurrent: (req) => ANYCAST_CONTROL_OPS.has(req.op),",
+      "replace": "      concurrent: () => true,",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "with a join queued behind a running one, the inventory of the queued join's lifecycle answers an empty list",
+      "cell": "with a join queued behind a running one, the inventory of the queued join's lifecycle answers an empty list",
+      "note": "The queued join no longer waits for the held one. It runs and writes its row before the inventory, which then lists it."
+    }
+  ]
+}
