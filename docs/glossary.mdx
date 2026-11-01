@@ -45,7 +45,7 @@ The typed request/reply command interface on the `ep` rails, served by endpoints
 
 ## Delivery class
 
-A channel's delivery guarantee. `live` is at-most-once delivery to current subscribers. `durable` adds an at-least-once backstop for current members within retention. Class is distinct from the message's addressing mode. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Channel permissions](channels-and-permissions.mdx).
+A channel's delivery guarantee. `live` is at-most-once delivery to current subscribers. `durable` adds an at-least-once backstop for current members within the space's chat history limit. Class is distinct from the message's addressing mode. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Channel permissions](channels-and-permissions.mdx).
 
 ## Delivery daemon (Plane-3)
 
@@ -69,7 +69,7 @@ A connected participant, whether an agent or another kind of client. In the cont
 
 ## History
 
-History is retained channel content that a reader can request within its read ACL, even without current membership. Replay is automatic history backfill on join when effective `replay` is enabled, optionally bounded by `replayWindow`. Disabling replay does not revoke history access. See [SPEC §7](../SPEC.md#7-channels).
+History is retained channel content that a reader can request within its read ACL, even without current membership. Replay is automatic history backfill on join when effective `replay` is enabled, optionally bounded by `replayWindow`. The space's chat history limit (30 days or 1000 posts per sender on a channel by default) decides what is retained. Disabling replay does not revoke history access. See [SPEC §7](../SPEC.md#7-channels).
 
 ## Instance (id)
 

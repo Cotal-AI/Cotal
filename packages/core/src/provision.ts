@@ -2454,13 +2454,14 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
  *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
- *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY nine streams and no others:
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY ten streams and no others:
  *  the three TTL'd KV buckets (presence + the two leases, #286: an existing bucket's `max_age` cannot be
  *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it), the four hardened
  *  authority stores (records, issued, accepted, admission), each updated once at creation, and the
  *  membership KV and artifact Object Store, whose legacy `max_bytes` values setup reconciles to -1 (the
  *  reservation a positive cap holds against the broker's `max_file_store` is what stopped a tenth space
- *  from being provisioned; `Objm.create` cannot fix an existing bucket's cap either).
+ *  from being provisioned; `Objm.create` cannot fix an existing bucket's cap either), and the chat
+ *  stream, whose history limit `cotal up` and `cotal history limit` write (`setChatHistoryLimit`).
  *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
  *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
  *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
@@ -2506,8 +2507,9 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // never updates an existing bucket's config, so a bucket created by a cotal that predates the `max_age`
   // TTL keeps NO expiry forever — dead presence records (and stale leases) never age out. `setupSpaceStreams`
   // reconciles their `max_age` via STREAM.UPDATE at every `cotal up`, which needs this grant. Scoped to these
-  // three streams only — the durable streams (chat/dm/task/inbox/dlv and channel/members/acl registries)
-  // are never updated — and still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
+  // three streams here. The durable dm/task/inbox/dlv streams and the channel/members/acl registries
+  // are never updated (the chat stream's history limit is the one exception, below), and there is
+  // still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
   // denial; this widening is provisioning-only.
   // Derived from the SAME inventory that creates and reconciles them, not a third hand-kept copy.
   // Review found this list was the last independent one: a fourth TTL'd bucket added to `ttlBuckets`
@@ -2523,7 +2525,11 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // Still CREATE/INFO/UPDATE only:
   // no publish, no CONSUMER.CREATE (a push consumer's caller-chosen `deliver_subject` would export
   // every artifact in the space), no DELETE/PURGE.
-  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ]
+  // ...plus the chat stream, the one durable message stream this credential updates: `cotal up`
+  // moves a chat stream still on the legacy history limit to the default, and `cotal history limit`
+  // sets it (SPEC §8). Both write only `max_age` and `max_msgs_per_subject` (`setChatHistoryLimit`).
+  // DM, TASK, INBOX and DLV stay create-only.
+  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]
     .map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // #404: one EXACT reserved key on each TTL bucket is the post-update enforcement canary. The
   // provisioner still cannot write presence identities or lease keys; it can only write this fixed

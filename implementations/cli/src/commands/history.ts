@@ -1,4 +1,4 @@
-import { CotalEndpoint, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
 import {
   brokerAddressForDisplay,
   CommandFailure,
@@ -26,6 +26,7 @@ import { credentialEnded } from "../lib/connect.js";
 import { shownTime } from "../lib/shown-time.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
+import { historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
@@ -36,20 +37,23 @@ import { scriptLine } from "../watch-data.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
-const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear: confirm the space-wide purge without prompting" } as const;
+const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear and limit: confirm without prompting" } as const;
 const dryRunFlag = { name: "dry-run", type: "boolean", description: "clear: show the selected target and streams without connecting; purge nothing. A space that is prepared but not started is refused" } as const;
 const sinceFlag = { name: "since", type: "string", value: "<time|seq>", description: "only messages after a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence" } as const;
 const limitFlag = { name: "limit", type: "string", value: "<n>", description: "how many of the newest retained messages to read, 1 to 1000 (default 50)" } as const;
 const fromFlag = { name: "from", type: "string", value: "<name>", description: "keep messages from this sender name or id (filters the window)" } as const;
 const grepFlag = { name: "grep", type: "string", value: "<text>", description: "keep messages whose text contains this, case-insensitive (filters the window)" } as const;
 const followFlag = { name: "follow", type: "boolean", description: "keep listening and print each new message (NDJSON with --json)" } as const;
-export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+const maxAgeFlag = { name: "max-age", type: "string", value: "<age>", description: "limit: delete a channel post once it is older than this, such as 30d or 12h (at least 2m)" } as const;
+const perSenderFlag = { name: "per-sender", type: "string", value: "<n>", description: "limit: keep this many of each sender's newest posts on each channel" } as const;
+export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, maxAgeFlag, perSenderFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
   { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", examples: [{ command: "cotal history clear --dry-run", note: "show what clearing history would delete" }, { command: "cotal history clear --yes", note: "delete the retained channel history" }], usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "limit", flagNames: ["space", "max-age", "per-sender", "yes", "json", "plain"], summary: "set how long the space keeps channel posts, by age and per sender; run it from the space root on the broker host", examples: [{ command: "cotal history limit --max-age 7d", note: "delete channel posts once they are a week old" }, { command: "cotal history limit --per-sender 500 --yes", note: "keep each sender's newest 500 posts on each channel, without a prompt" }], usage: "cotal history limit [--max-age <age>] [--per-sender <n>] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
-/** Complete `clear` and the channels the target space's personas declare, as `send -c` offers, then
+/** Complete the subcommands and the channels the target space's personas declare, as `send -c` offers, then
  *  the flags. */
 export function historyComplete(argv: string[]): CompletionResult {
   if (completingFlagValue(argv, historyFlags)) return { items: [], directive: "nofiles" };
@@ -112,6 +116,7 @@ export interface HistoryResult {
   readonly retention: {
     readonly perSender: number | null;
     readonly maxAgeMs: number | null;
+    readonly oldestAt: string | null;
     readonly gaps: { readonly channel: string; readonly sender: string; readonly name: string | null; readonly retained: number }[];
   } | null;
   readonly replay: { readonly channel: string; readonly replay: boolean | null; readonly window: string | null }[];
@@ -232,9 +237,17 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (args.positionals[0] === "clear") {
     if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");
+    if (values["max-age"] !== undefined || values["per-sender"] !== undefined) throw usage("--max-age and --per-sender belong to history limit");
     return;
   }
-  if (values.yes !== undefined || values["dry-run"] !== undefined) throw usage("--yes and --dry-run belong to history clear");
+  if (args.positionals[0] === "limit") {
+    if (args.positionals.length !== 1) throw usage("history limit takes no channel; one limit holds for every channel in the space");
+    if ((["server", "creds", "dms", "dry-run", "since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history limit takes only --max-age, --per-sender, --yes, --space and an output flag; it reaches the broker from the space root");
+    historyLimitRequest(values);
+    return;
+  }
+  if (values["max-age"] !== undefined || values["per-sender"] !== undefined) throw usage("--max-age and --per-sender belong to history limit");
+  if (values.yes !== undefined || values["dry-run"] !== undefined) throw usage("--yes belongs to history clear and history limit, and --dry-run to history clear");
   if (args.positionals.length > 1) throw usage("history reads one channel at a time");
   if (args.positionals[0] !== undefined && values.dms) throw usage("name a channel or request --dms, not both");
   const problem = args.positionals[0] === undefined ? undefined : concreteChannelProblem(channelOf(args.positionals[0]));
@@ -245,12 +258,13 @@ export function validateHistoryArguments(args: ParsedArgs): void {
 }
 
 /** `cotal history [channel]`: the newest retained messages in the selected space within the caller's
- *  read grant, or `history clear`. */
+ *  read grant, or `history clear` or `history limit`. */
 export async function history(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof historyFlags>;
   const [first, ...rest] = args.positionals;
   validateHistoryArguments(args);
   if (first === "clear") return historyClear(v);
+  if (first === "limit") return historyLimit(v);
   const presentation = presentationOf(v);
   if (rest.length) throw usage(`history reads one channel at a time; got ${args.positionals.length} names`);
   if (v.force) throw usage("--force applies to `history clear` only");
@@ -425,6 +439,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     retention = {
       perSender: held.perSender,
       maxAgeMs: held.maxAgeMs,
+      oldestAt: held.oldestAt,
       gaps: held.perSender === null
         ? []
         : held.senders
@@ -619,10 +634,12 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
   if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
   if (r.retention) {
-    const limits = [r.retention.perSender !== null ? `${r.retention.perSender} per sender on each channel` : null, r.retention.maxAgeMs !== null ? `${Math.round(r.retention.maxAgeMs / 3_600_000)}h` : null].filter(Boolean);
+    const limits = [r.retention.perSender !== null ? `${r.retention.perSender} per sender on each channel` : null, r.retention.maxAgeMs !== null ? `posts older than ${formatChatAge(r.retention.maxAgeMs)} expire` : null].filter(Boolean);
     notes.push({ text: `retention: ${limits.length ? limits.join(", ") : "no limit set"}; history is what remains, not every message sent`, tone: "hint" });
+    if (r.retention.oldestAt !== null) notes.push({ text: `the oldest post the chat stream still holds is from ${shownTime(r.retention.oldestAt)}; posts sent before it are gone`, tone: "hint" });
+    // A sender at the limit may have posted exactly that many, so the gap is possible, not proven.
     for (const gap of r.retention.gaps)
-      notes.push({ text: `gap: #${gap.channel} holds ${gap.retained} from ${gap.name ?? gap.sender}, the per-sender limit, so their older messages there are gone`, tone: "waiting" });
+      notes.push({ text: `gap: #${gap.channel} holds ${gap.retained} from ${gap.name ?? gap.sender}, the per-sender limit, so their older messages there may be gone`, tone: "waiting" });
   }
   if (r.dms) notes.push({ text: "DM retention gaps are not reported", tone: "hint" });
   for (const row of r.replay) notes.push({ text: `#${row.channel} replay to new members: ${row.replay === null ? "unknown" : row.replay ? `on${row.window ? ` (${row.window})` : ""}` : "off"}`, tone: "hint" });

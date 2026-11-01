@@ -138,7 +138,7 @@ A peer receives the live copy while subscribed. Disconnection or a missed receiv
 Joining and leaving that subscription are self-service operations within the peer's read ACL.
 
 `durable` adds a per-member backstop to the live path.
-The [delivery daemon](delivery-daemon.mdx) retains a copy for each current member until acknowledgement, within the channel's retention window.
+The [delivery daemon](delivery-daemon.mdx) retains a copy for each current member until acknowledgement, within the space's chat history limit ([channels](channels-and-permissions.mdx#how-long-posts-are-kept)).
 A busy or offline member can receive that copy later.
 Receiving both paths still represents one logical message, so the receiver deduplicates by message ID.
 [SPEC §4](../SPEC.md#4-delivery-modes) defines deduplication, including empty IDs and malformed envelopes.

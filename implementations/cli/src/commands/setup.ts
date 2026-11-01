@@ -677,6 +677,11 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
         startup.stackAttempted = true;
         const { startSetupLocalStack } = await import("./setup-start.js");
         startup.stack = await startSetupLocalStack(inputs.project, inputs.space);
+        const moved = startup.stack.chatHistory;
+        if (moved) {
+          const { chatHistoryMigratedNotice } = await import("./stack-up.js");
+          warnings.push({ code: "CHAT_HISTORY_MIGRATED", target: { root: inputs.project, space: inputs.space, stream: moved.stream }, message: chatHistoryMigratedNotice(inputs.space, moved) });
+        }
       }
       const { launchManagedPersona } = await import("./spawn.js");
       await launchManagedPersona({ space: inputs.space, agent: inputs.harness, detach: opts.detach, ...(startup.stack ? { on: startup.stack.managerInstanceId, cwd: inputs.project } : opts.managerInstanceId ? { on: opts.managerInstanceId } : {}), ...(opts.presentation === "json" ? { json: true } : opts.presentation === "plain" ? { plain: true } : {}) }, ["default"], undefined, undefined, {
@@ -696,7 +701,9 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       const failureTarget = setupFailureCoordinates(known?.target, inputs.space);
       const diagnostic = known && startup.stackAttempted && !startup.stack ? known.message : undefined;
       startup.failure = { code: known?.code ?? "OPERATION_UNKNOWN", outcome: known?.outcome ?? "unknown", target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) };
-      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
+      // A start that moved the chat history limit changed the space, whichever step failed.
+      const moved = known && startup.stackAttempted && !startup.stack ? known.changed ?? [] : startup.stack?.chatHistory ? [(await import("./stack-up.js")).chatHistoryChanged(startup.stack.chatHistory)] : [];
+      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...moved, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
       writeResult(opts.presentation, { command: "setup", target, result, warnings, failure }, setupView);
       return;
     }

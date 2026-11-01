@@ -11,7 +11,7 @@ keeps a copy for each eligible member and delivers it when the member can receiv
 The reference implementation calls this durable channel path Plane-3.
 
 The daemon provides the [at-least-once guarantee](../SPEC.md#4-delivery-modes) for current members
-within retention. Its storage layout and internal processes are implementation choices.
+within the space's chat history limit. Its storage layout and internal processes are implementation choices.
 Other deployments can provide the same guarantee with a different backstop, subject to the
 [delivery and authorization contract](../SPEC.md#8-nats--jetstream-binding).
 

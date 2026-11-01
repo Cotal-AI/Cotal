@@ -578,7 +578,7 @@ function droppedNote(channels: readonly string[]): string {
   if (!channels.length) return "";
   const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${attributionSafe(c).slice(0, 40)}`).join(", ");
   const rest = channels.length - Math.min(NAMED_DROPPED, channels.length);
-  return `⚠ Some earlier chatter could not be recalled completely on ${named}${rest ? `, and ${rest} more channel${rest === 1 ? "" : "s"}` : ""} (retention or local safety bounds were reached).`;
+  return `⚠ Some earlier chatter could not be recalled completely on ${named}${rest ? `, and ${rest} more channel${rest === 1 ? "" : "s"}` : ""} (retention or local safety bounds were reached, or recall could not read the channel).`;
 }
 
 /** How many channels the recall warning names before it starts counting them instead. */

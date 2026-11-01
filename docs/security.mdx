@@ -63,7 +63,7 @@ The ephemeral endpoint receiver drops requests carrying `Nats-Stream`, `Nats-Sub
 
 DMs are plaintext to the broker and to `admin`. v0 has no end-to-end encryption or portable sender signatures. Sender authenticity does not survive an untrusted relay. Signed envelopes remain reserved by [SPEC §11](../SPEC.md#11-versioning-and-extensibility).
 
-An authenticated peer can flood destinations it may write to. Cotal relies on coarse NATS account limits for connections, subscriptions, payloads, and storage. It adds no per-agent application rate limit. A peer can also resend its own earlier messages. v0 delivery messages define no protocol-level replay nonce or idempotency key, though subject binding prevents replay as another sender.
+An authenticated peer can flood destinations it may write to. Cotal relies on coarse NATS account limits for connections, subscriptions, payloads, and storage. It adds no per-agent application rate limit. The chat history limit counts posts per sender on each channel, so a flood removes the flooder's own older posts there and leaves other senders' posts in place until they reach the space's age. A peer can also resend its own earlier messages. v0 delivery messages define no protocol-level replay nonce or idempotency key, though subject binding prevents replay as another sender.
 
 The deployment also has these limits.
 

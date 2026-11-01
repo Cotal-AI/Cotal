@@ -4,7 +4,8 @@ import { assertIssuedStoreConfig, WRITE_ONCE_PER_KEY } from "./issued-authority.
 import { assertAdmissionStoreConfig } from "./run-admission.js";
 import { authorityStreamShapeIssue } from "./authority-store-config.js";
 import { assertArtifactStoreConfig, LEGACY_ARTIFACT_STORE_MAX_BYTES } from "./streams.js";
-import { streamReadPolicyBaseline, validateCanonicalBackupStreamConfig } from "./backup-config.js";
+import { chatHistoryLimitOf, isLegacyChatHistory, streamReadPolicyBaseline, validateCanonicalBackupStreamConfig } from "./backup-config.js";
+import { chatStream } from "./subjects.js";
 import { canonicalJson } from "./canonical.js";
 import { DiscardPolicy, type StreamConfig } from "@nats-io/jetstream";
 import type { SpaceSchemaObservation } from "./space-schema-observation.js";
@@ -12,7 +13,7 @@ import { diffDeclaredStreamConfigs, type StreamSchemaObservation, type StreamSch
 
 export interface SpaceSchemaDiffRow extends Omit<StreamSchemaRow, "state" | "uninspectedFields"> {
   kind: SpaceResourceDefinition["kind"];
-  state: StreamSchemaRow["state"] | "native-store-verification-required" | "native-store-invariants-match" | "native-store-verification-unconfirmed" | "unclassified-stream-settings" | "creation-options-policy-required";
+  state: StreamSchemaRow["state"] | "native-store-verification-required" | "native-store-invariants-match" | "native-store-verification-unconfirmed" | "unclassified-stream-settings" | "creation-options-policy-required" | "operator-set-history-limit";
   /** Outside the declarative field comparison; a separate native check can inspect more fields. */
   uncomparedFields: string[];
   /** A match covers that native check, not complete effective schema or connection authority. */
@@ -21,7 +22,7 @@ export interface SpaceSchemaDiffRow extends Omit<StreamSchemaRow, "state" | "uni
   unexpandedCreationOptions: readonly string[];
   reconciliation: {
     state: "not-evaluated" | "no-declared-change" | "native-guard-required" | "migration-required";
-    nativeGuard: "ttl-enforcement" | "artifact-legacy-cap" | "contract-shadow" | null;
+    nativeGuard: "ttl-enforcement" | "artifact-legacy-cap" | "contract-shadow" | "chat-legacy-history" | null;
     fields: readonly string[];
     nonAllowlistedFields: readonly string[];
   };
@@ -100,6 +101,21 @@ function nativeVerification(resource: SpaceResourceDefinition, config: StreamCon
   }
 }
 
+/** The chat stream's history limit, which an operator sets (`cotal history limit`) and `cotal up`
+ *  migrates only from the legacy pair. */
+const CHAT_HISTORY_FIELDS: ReadonlySet<string> = new Set(["max_age", "max_msgs_per_subject"]);
+
+/** How a chat row whose only differences are its history limit stands, or undefined when the row is
+ *  not one. The whole observed config must pass the canonical check; the observed limit is never
+ *  copied into the desired config. */
+function chatHistoryLimitStanding(resource: SpaceResourceDefinition, observation: SpaceSchemaObservation | undefined, fields: readonly string[], space: string): "legacy" | "operator-set" | undefined {
+  if (resource.stream !== chatStream(space) || observation?.state !== "present" || fields.length === 0 || !fields.every((field) => CHAT_HISTORY_FIELDS.has(field))) return undefined;
+  const config = observation.config as unknown as Record<string, unknown>;
+  try { validateCanonicalBackupStreamConfig(space, resource.stream, config); }
+  catch { return undefined; }
+  return isLegacyChatHistory(chatHistoryLimitOf(config)) ? "legacy" : "operator-set";
+}
+
 /** This allowlist names existing native guard families, never accepted actions. It does not
  *  call creators/migrations, prove a shadow-free stream or inspect a leftover TTL canary. */
 function reconciliationPolicy(resource: SpaceResourceDefinition, observation: SpaceSchemaObservation | undefined, row: StreamSchemaRow, extras: SpaceSchemaDiffRow["observedExtraFields"], unexpanded: readonly string[], space: string): SpaceSchemaDiffRow["reconciliation"] {
@@ -113,6 +129,10 @@ function reconciliationPolicy(resource: SpaceResourceDefinition, observation: Sp
     return { state: "native-guard-required", nativeGuard: "ttl-enforcement", fields, nonAllowlistedFields: [] };
   }
   if (fields.length === 0) return { state: "no-declared-change", nativeGuard: null, fields, nonAllowlistedFields: [] };
+  const chat = chatHistoryLimitStanding(resource, observation, fields, space);
+  if (chat === "legacy") return { state: "native-guard-required", nativeGuard: "chat-legacy-history", fields, nonAllowlistedFields: [] };
+  // `cotal up` leaves an operator's limit as it is.
+  if (chat === "operator-set") return { state: "no-declared-change", nativeGuard: null, fields: [], nonAllowlistedFields: [] };
   if (resource.kind === "object-store" && fields.length === 1 && fields[0] === "max_bytes" && observation.config.max_bytes === LEGACY_ARTIFACT_STORE_MAX_BYTES) {
     try { assertArtifactStoreConfig({ ...observation.config, max_bytes: -1 }, space); }
     catch { return blocked; }
@@ -162,7 +182,9 @@ export function diffSpaceResources(space: string, observations: readonly SpaceSc
           : verification === "not-confirmed" ? "native-store-verification-unconfirmed"
         : resource.kind !== "stream" ? verification === "invariants-match" ? "native-store-invariants-match" : "native-store-verification-required"
           : row.state
-      : row.state;
+      : row.state === "incompatible-or-drifted" && !fields.unexpanded.length && extras.status === "checked" && !extras.nondefaultUndeclared.length && !extras.unmodeled.length
+          && chatHistoryLimitStanding(resource, observation, row.differences.map((difference) => difference.field), space) === "operator-set" ? "operator-set-history-limit"
+        : row.state;
     const reconciliation = reconciliationPolicy(resource, observation, row, extras, fields.unexpanded, space);
     const { uninspectedFields, ...comparison } = row;
     return { ...comparison, kind: resource.kind, state, uncomparedFields: uninspectedFields, nativeVerification: verification, nativeInvariantFields: checked.fields, unexpandedCreationOptions: fields.unexpanded, observedExtraFields: extras, reconciliation };

@@ -505,7 +505,12 @@ const SEAMS: Seam[] = [
   // passes `tls: config.tls` like the first, plus three registry smoke dials (the shared fixture,
   // the e2e executor and the user-auth reader). The smoke dials reach a plaintext loopback broker
   // and state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 358, untypecheckedSites: 277 },
+  // 358/277 -> 364/282: the chat history limit adds the provisioner
+  // dial of `cotal history limit` in cli/src/commands/history-limit, which states the mesh's recorded
+  // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
+  // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
+  // starts and states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 364, untypecheckedSites: 282 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

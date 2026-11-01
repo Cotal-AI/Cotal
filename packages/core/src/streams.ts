@@ -3,6 +3,7 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
+  JetStreamApiError,
   StorageType,
   type ConsumerConfig,
   type JetStreamClient,
@@ -11,7 +12,7 @@ import {
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
 import { tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
-import { dialerFor } from "./endpoint.js";
+import { dialerFor, isPublishPermissionDenied } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
@@ -57,9 +58,14 @@ import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
 import {
-  BACKUP_MAX_MSGS_PER_SUBJECT,
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
+  CHAT_HISTORY_DEFAULT,
   canonicalBackupStreamConfig,
+  chatHistoryLimitOf,
+  chatHistoryLimitProblem,
+  isLegacyChatHistory,
+  validateCanonicalBackupStreamConfig,
+  type ChatHistoryLimit,
 } from "./backup-config.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
@@ -71,11 +77,6 @@ const PRESENCE_TTL_MS = 6_000;
  *  registering bind) until the broker restarts. Storage class is fixed at stream creation, so a bucket
  *  created file-backed by an older cotal stays file-backed until it is recreated. */
 export const PRESENCE_STORAGE = StorageType.Memory;
-
-/** Per-(sender,channel)-subject retention cap on the chat stream — the bound past which the
- *  oldest message on a subject is discarded (`DiscardPolicy.Old`). Also the horizon of focus
- *  recall: only the last {@link MAX_MSGS_PER_SUBJECT} per sender-subject are recallable. */
-export const MAX_MSGS_PER_SUBJECT = BACKUP_MAX_MSGS_PER_SUBJECT;
 
 /** JetStream message-dedup window on the Plane-3 streams: a `Nats-Msg-Id`
  *  (`<msgId>:<owner>:<generation>`) repeated within this window is collapsed. Sized generous (2h) so
@@ -302,7 +303,125 @@ export async function createSpaceStreams(
   jsm: JetStreamManager,
   space: string,
 ): Promise<void> {
-  for (const definition of spaceMessageStreamConfigs(space)) await jsm.streams.add(definition);
+  for (const definition of spaceMessageStreamConfigs(space)) {
+    // The chat stream's history limit is the operator's (`cotal history limit`), so an existing
+    // stream is left as it is: an add over a different limit would refuse, and this also runs on
+    // every open-mode connect. Only `cotal up` reconciles it ({@link reconcileChatHistory}).
+    if (definition.name === chatStream(space)) {
+      try {
+        await jsm.streams.info(definition.name);
+        continue;
+      } catch (e) {
+        if (!isStreamNotFound(e)) throw e;
+      }
+    }
+    await jsm.streams.add(definition);
+  }
+}
+
+/** A chat history limit change the broker acknowledged and reported back. */
+export interface ChatHistoryChange {
+  stream: string;
+  from: ChatHistoryLimit;
+  to: ChatHistoryLimit;
+}
+
+/** The STREAM.UPDATE was submitted and neither its reply nor the read back confirmed the requested
+ *  limit, so it may or may not have changed. Not retried. */
+export class ChatHistoryUpdateUnknown extends Error {
+  constructor(readonly stream: string, readonly requested: ChatHistoryLimit, cause: unknown) {
+    super(`the history limit update of ${stream} was submitted without a confirmed outcome, so it may or may not have taken effect`, { cause });
+  }
+}
+
+/** The chat stream's limit moved between the caller's read and this write. */
+export class ChatHistoryChanged extends Error {
+  constructor(readonly stream: string, readonly expected: ChatHistoryLimit, readonly found: ChatHistoryLimit) {
+    super(`the history limit of ${stream} changed since it was read: expected ${describeChatHistory(expected)}, found ${describeChatHistory(found)}`);
+  }
+}
+
+/** `30d, 1000 per sender`, or `no age limit, 1000 per sender`. */
+export function describeChatHistory(limit: ChatHistoryLimit): string {
+  return `${limit.maxAgeMs === 0 ? "no age limit" : formatChatAge(limit.maxAgeMs)}, ${limit.perSender} per sender`;
+}
+
+/** An age in the largest whole unit of `d`, `h`, `m` or `s`, the form `--max-age` takes. */
+export function formatChatAge(ms: number): string {
+  for (const [unit, size] of [["d", 86_400_000], ["h", 3_600_000], ["m", 60_000]] as const)
+    if (ms % size === 0) return `${ms / size}${unit}`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+/** The chat stream's config, refused unless every field but the history limit is canonical and the
+ *  limit is one a stream may hold. */
+async function readChatStreamConfig(jsm: JetStreamManager, space: string): Promise<StreamConfig> {
+  const { config } = await jsm.streams.info(chatStream(space));
+  validateCanonicalBackupStreamConfig(space, chatStream(space), config as unknown as Record<string, unknown>);
+  return config;
+}
+
+/**
+ * Set the chat stream's history limit to `limit`. Only `max_age` and `max_msgs_per_subject` change,
+ * over the config read for this write, after the whole of that config was checked. Both are read
+ * back. `expected` is the limit the caller showed the operator: a stream found holding another one
+ * is refused with {@link ChatHistoryChanged}. That read and the update are not one atomic step, so
+ * two writers racing past the read can still overwrite each other.
+ *
+ * A lower limit takes effect at once: the broker expires every post older than the age and each
+ * sender's posts past the count. Returns undefined when the stream already holds `limit`.
+ */
+export async function setChatHistoryLimit(
+  jsm: JetStreamManager,
+  space: string,
+  limit: ChatHistoryLimit,
+  expected?: ChatHistoryLimit,
+): Promise<ChatHistoryChange | undefined> {
+  const problem = chatHistoryLimitProblem(limit);
+  if (problem) throw new Error(`invalid chat history limit: ${problem}`);
+  return applyChatHistoryLimit(jsm, space, limit, expected);
+}
+
+async function applyChatHistoryLimit(
+  jsm: JetStreamManager,
+  space: string,
+  limit: ChatHistoryLimit,
+  expected?: ChatHistoryLimit,
+): Promise<ChatHistoryChange | undefined> {
+  const stream = chatStream(space);
+  const config = await readChatStreamConfig(jsm, space);
+  const from = chatHistoryLimitOf(config as unknown as Record<string, unknown>);
+  if (expected && (from.maxAgeMs !== expected.maxAgeMs || from.perSender !== expected.perSender))
+    throw new ChatHistoryChanged(stream, expected, from);
+  if (from.maxAgeMs === limit.maxAgeMs && from.perSender === limit.perSender) return undefined;
+  try {
+    await jsm.streams.update(stream, { ...config, max_age: nanos(limit.maxAgeMs), max_msgs_per_subject: limit.perSender });
+  } catch (e) {
+    // A refusal the broker answered, or a publish it denied, changed nothing; anything else may have.
+    if (e instanceof JetStreamApiError || isPublishPermissionDenied(e)) throw e;
+    throw new ChatHistoryUpdateUnknown(stream, limit, e);
+  }
+  let after: ChatHistoryLimit;
+  try {
+    after = chatHistoryLimitOf((await readChatStreamConfig(jsm, space)) as unknown as Record<string, unknown>);
+  } catch (e) {
+    throw new ChatHistoryUpdateUnknown(stream, limit, e);
+  }
+  if (after.maxAgeMs !== limit.maxAgeMs || after.perSender !== limit.perSender)
+    throw new ChatHistoryUpdateUnknown(stream, limit, new Error(`${stream} read back ${describeChatHistory(after)}`));
+  return { stream, from, to: limit };
+}
+
+/**
+ * `cotal up`'s chat history step: a chat stream still on {@link LEGACY_CHAT_HISTORY}, the limit
+ * every stream had before it was configurable, moves to {@link CHAT_HISTORY_DEFAULT}, and the
+ * broker then expires its posts older than the default age. Any other limit a stream may hold is
+ * the operator's and is left alone. A stream that is not canonical apart from its limit refuses.
+ */
+export async function reconcileChatHistory(jsm: JetStreamManager, space: string): Promise<ChatHistoryChange | undefined> {
+  const config = await readChatStreamConfig(jsm, space);
+  if (!isLegacyChatHistory(chatHistoryLimitOf(config as unknown as Record<string, unknown>))) return undefined;
+  return applyChatHistoryLimit(jsm, space, CHAT_HISTORY_DEFAULT, chatHistoryLimitOf(config as unknown as Record<string, unknown>));
 }
 
 /**
@@ -739,7 +858,7 @@ export async function setupSpaceStreams(opts: {
   space: string;
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
-}): Promise<void> {
+}): Promise<{ chatHistory?: ChatHistoryChange }> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
@@ -779,6 +898,11 @@ export async function setupSpaceStreams(opts: {
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
     await ensureArtifactStore(nc, opts.space);
+    // A chat stream from before the history limit was configurable moves to the default, and the
+    // broker then expires its posts older than the default age (SPEC §8). It runs last because it
+    // deletes posts, so a setup that a check above refuses deletes nothing.
+    const chatHistory = await reconcileChatHistory(jsm, opts.space);
+    return chatHistory ? { chatHistory } : {};
   } finally {
     await nc.drain();
   }
