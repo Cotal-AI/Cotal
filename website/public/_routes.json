@@ -2,9 +2,8 @@
   "version": 1,
   "include": ["/*"],
   "exclude": [
-    "/_astro/*",
+    "/_next/*",
     "/pagefind/*",
-    "/*.md",
     "/*.txt",
     "/*.xml",
     "/*.svg",

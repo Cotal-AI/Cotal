@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-hermes",
   "description": "Cotal connector for the Hermes (Nous Research) agent.",
-  "version": "0.132.5",
+  "version": "0.133.11",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -24,7 +24,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "test": "tsx smoke/tool-parity.smoke.ts && tsx smoke/bridge-quiet.smoke.ts && tsx smoke/launch-env.smoke.ts && tsx smoke/adapter-contract.smoke.ts && tsx smoke/reconnect-effect.smoke.ts && tsx smoke/bundle-import.smoke.ts",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/launch.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/launch.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/standalone.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=plugin/cotal/_sidecar/standalone.cjs",
+    "bundle": "esbuild src/index.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/launch.ts --bundle --minify-whitespace --platform=node --format=esm --target=node20 --outfile=dist/launch.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/standalone.ts --bundle --minify-whitespace --platform=node --format=cjs --target=node20 --outfile=plugin/cotal/_sidecar/standalone.cjs --define:import.meta.dirname=__dirname && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','dist/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','dist/docs-bundle.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-index.bin','plugin/cotal/_sidecar/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('../connector-core/src/docs-bundle.bin','plugin/cotal/_sidecar/docs-bundle.bin')\"",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {

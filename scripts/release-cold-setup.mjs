@@ -106,7 +106,7 @@ try {
     await new Promise((done) => setTimeout(done, 3000));
     const stable = JSON.parse(run(`stable-${round}`, [inspect, installed, root, "running"]));
     check(`round ${round} Manager, delivery and broker survive startup`, first.length >= 3 && JSON.stringify(first) === JSON.stringify(stable));
-    // The human report is not a parsing target (docs/cli.md); it must still run and name its mesh.
+    // The human report is not a parsing target (docs/cli.mdx); it must still run and name its mesh.
     const ps = run(`ps-${round}`, [cli, "ps", "--space", space]);
     check(`round ${round} human ps names its mesh`, ps.split("\n")[0] === `Mesh: ${space}`);
     const json = JSON.parse(run(`ps-json-${round}`, [cli, "ps", "--space", space, "--json"]));

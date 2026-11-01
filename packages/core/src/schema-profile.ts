@@ -60,6 +60,11 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
   ownProperties: true,
   validateFormats: false,
   loadSchema: undefined,
+  // PINNED TRUE, never inherited (#4012): ajv meta-validates every closure document against the
+  // 2020-12 meta-schema before it compiles, which is what refuses a malformed keyword value such
+  // as `{"type": 5}` or `{"minLength": -1}` as `contract-invalid` at registration.
+  validateSchema: true,
+  meta: true,
   // PINNED, never inherited from Ajv's default: the safe-pattern analyzer models `/u`
   // semantics exactly (astral atoms, surrogate refusals), so the engine MUST compile
   // `pattern` with the `u` flag. If this ever flipped, patterns would be proven under one

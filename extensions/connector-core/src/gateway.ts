@@ -18,7 +18,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -732,6 +731,9 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
       .end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null }));
     return;
   }
+  // Loaded on the first request: the transport's HTTP layer (@hono/node-server) reads `global.Request` when it is
+  // imported, which makes Node load its internal undici, and a process that serves only stdio never needs either.
+  const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

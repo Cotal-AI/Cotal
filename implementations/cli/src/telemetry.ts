@@ -23,7 +23,7 @@ import { cliVersion } from "./seed/paths.js";
 
 /**
  * Anonymous usage telemetry for the CLI: one small event per command, sent as the process exits, and
- * at `regular` one install event per UTC day. docs/telemetry.md lists every field. Nothing here
+ * at `regular` one install event per UTC day. docs/telemetry.mdx lists every field. Nothing here
  * reads an argument value, a path or a name; the error text a failure carries at `regular` goes
  * through {@link scrubErrorText} first. Nothing here can change a command's outcome: every failure
  * is swallowed, and the send is bounded by {@link SEND_TIMEOUT_MS}.

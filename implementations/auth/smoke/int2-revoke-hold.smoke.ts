@@ -114,7 +114,6 @@ type AddressInfo = import("node:net").AddressInfo;
 const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   principalKey, registry, dmStream, dlvStream, openAclRegistry,
-  CotalEndpoint, mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
   createEndpointStreams,
 } = await import("@cotal-ai/core");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
@@ -127,6 +126,8 @@ const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
 } = await import("@cotal-ai/auth");
+const { approveDevice } = await import("./_device-approval.js");
+const { bootDeliveryDaemon } = await import("../../manager/smoke/_boot-delivery.js");
 // @cotal-ai/manager is not a dep of @cotal-ai/auth — drive the REAL Manager from its built dist by
 // relative path (shares the one @cotal-ai/core dist registry with the in-process connector).
 const { Manager } = await import("../../manager/dist/index.js");
@@ -249,7 +250,7 @@ const managedRowPath = (owner: string) => join(managedActorLedgerDir(dir), ledge
 let manager: InstanceType<typeof Manager> | undefined;
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
-let delivery: InstanceType<typeof CotalEndpoint> | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let jsDir: string | undefined;
 try {
   // ---------- A. setup: user-auth broker + streams + auth service + login + grant ----------
@@ -280,16 +281,7 @@ try {
     returnHeaders: true,
   });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0];
-  const approve = async (userCode: string): Promise<void> => {
-    const claim = await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-    if (!claim.ok) throw new Error(`device claim failed: HTTP ${claim.status}`);
-    const res = await fetch(`${base}/device/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie, origin },
-      body: JSON.stringify({ userCode }),
-    });
-    if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-  };
+  const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
   const prepared = await cotalAuthProvider.prepareServer({
     store,
@@ -326,30 +318,12 @@ try {
 
   // The DELIVERY DAEMON (the eviction rail the retirement barrier needs): production `cotal up`
   // runs auth AND delivery, and a terminal retirement's VERIFIED eviction rides the delivery-admin
-  // rail. This harness hosts Plane-3 inline with a REAL evictPrincipal (the $SYS observer + KICK
-  // evictor minted here, the only window their in-memory seed exists), so despawn -> retirement can
+  // rail. This harness boots the shared fixture daemon, which serves both eviction verbs through core's
+  // real executors (its $SYS observer + KICK evictor minted from the space auth here, the only window
+  // their in-memory seed exists) and holds and renews the delivery lease, so despawn -> retirement can
   // reach its terminal exactly as it does under a full stack. Without it the barrier fail-closes at
   // eviction and the alias stays reserved (the pre-delivery composition, proven earlier).
-  const dlvObserverCreds = await mintMembershipObserverCreds(auth, newIdentity());
-  const dlvEvictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
-  const dlvId = newIdentity();
-  delivery = new CotalEndpoint({
-    space: SPACE, servers: SERVER, creds: await mintCreds(auth, dlvId, "delivery"),
-    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
-    channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
-  });
-  delivery.on("error", () => {});
-  await delivery.start();
-  await delivery.startPlane3((owner: string, lifecycleUid: string) => delivery!.aclForOwner(owner, lifecycleUid), {
-    evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
-      servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
-    }),
-    reloadStoreIdentity: () => store.identity,
-  });
-  // The manager's #1694 binding requires the answer to name a real holder of the delivery
-  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
-  // `holdsDeliveryLease` below is truthful.
-  await delivery.acquireDeliveryLease(0).catch(() => {});
+  delivery = await bootDeliveryDaemon({ space: SPACE, servers: SERVER, auth, reloadStoreIdentity: store.identity });
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", `${AGENT}.md`), `---\nname: ${AGENT}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${AGENT} persona.\n`);
@@ -358,7 +332,7 @@ try {
   await waitAuthReady();
   await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });

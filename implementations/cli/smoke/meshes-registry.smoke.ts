@@ -126,7 +126,8 @@ function trustingChildEnv(ca: string): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: ca };
   for (const [k, v] of Object.entries(process.env)) {
     // The `startsWith("COTAL_")` test is written out rather than folded into DENIED_KNOBS because
-    // the census matches that exact spelling (`suite-ambient-env.smoke.ts:52`). Folding it into one
+    // the census matches that exact spelling (its `startsWith("COTAL_")` patterns in
+    // `suite-ambient-env.smoke.ts`). Folding it into one
     // regex is a STRICTER filter that the census reads as NO filter at all — measured: the combined
     // form failed the census naming this file. One more way that instrument grades a spelling
     // rather than the property, noted here because the next person to tidy this loop will hit it.
@@ -147,8 +148,8 @@ function trustingChildEnv(ca: string): NodeJS.ProcessEnv {
 // construction while the gate is red. Run `pnpm smoke:ci` before pushing anything that spawns.
 //
 // BUT A GREEN CENSUS IS NOT EVIDENCE A SPAWN IS CLEAN, and this is the more important half.
-// `bin/smoke/suite-ambient-env.smoke.ts` matches the literal text `...process.env` (:49) and SKIPS
-// any file that does not contain it (:150). So it covers EXPLICIT spreads only. A spawn that omits
+// `bin/smoke/suite-ambient-env.smoke.ts` matches the literal text `...process.env` (its `SPREAD`
+// pattern) and SKIPS any file that does not contain it. So it covers EXPLICIT spreads only. A spawn that omits
 // `env:` entirely inherits the parent environment in full — measured: with no `env:` the child reads
 // a COTAL_ value, with an explicit env it does not — and passes the census by construction. The
 // census therefore detects a SPELLING where the hazard is a PROPERTY: what the child inherited.
@@ -856,7 +857,7 @@ try {
   check("add refuses a --server with a path", pathy.code === 1 && findMesh("pathy") === undefined, pathy.out);
 
   // ── THE INVARIANT: a sweep keeps a dead `up` record the same way it keeps a manual one ─────────
-  // REVERSAL of the previous origin split (meshes-registry.smoke.ts:631-632): a dead `up` record
+  // REVERSAL of the previous origin split (before e3f2d21af): a dead `up` record
   // and a dead pre-origin record used to be deleted. Their redness is expected and intended.
   rmSync(join(home, "meshes"), { recursive: true, force: true });
   const localRoot = projectRoot("local");

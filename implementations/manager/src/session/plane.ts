@@ -12,7 +12,7 @@
  * (3) redeem enforcement is still core's `redeemSession` — the one-use
  * `issuing` create-CAS plus presenter-equality on the signed grant, unchanged. The WIRE
  * offer/redeem SEPARATION (a second CLI presentation that mints the caller's per-session
- * credential) is the USER-MODE #29 shape; that path refuses loud here.
+ * credential) is the USER-MODE shape; that path refuses loud here.
  *
  * The manager cannot import implementations/auth (implementations never import each other), so the
  * durable ledger is a manager-local {@link kvManagerSessionLedger} over the SAME core row/key
@@ -201,7 +201,7 @@ export class ManagerSessionPlane {
   ): Promise<{ grant: SessionGrant }> {
     const holderId = principalKey(caller.owner, caller.actor).key;
     // Collapsed static path: the offer is redeemed at mint, so there is no un-redeemed window for a
-    // caller restart to invalidate — the holder process-epoch fence is a no-op here (user-mode #29
+    // caller restart to invalidate — the holder process-epoch fence is a no-op here (user mode
     // wires the real lifecycle-registry read). serving epoch IS enforced (a successor loses).
     const holder = { id: holderId, lifecycleUid: caller.uid, processEpoch: 0 };
     const offer = mintAttachOffer({
@@ -226,7 +226,7 @@ export class ManagerSessionPlane {
       servingEpoch: () => serving.epoch,
       // The HOLDER gate is a placeholder in the static path: the holder is an operator CLI, which
       // has no §13.1 lifecycle gate to observe. It fences nothing, and is not described as if it
-      // does — user mode (#29) supplies the real lifecycle-registry read.
+      // does — user mode supplies the real lifecycle-registry read.
       observeHolderGate: (h) => ({ key: `holder.${h.lifecycleUid}`, revision: 1 }),
       // The SERVING gate is REAL: the credential seam observes this instance's own
       // `epgate.manager.<instanceId>` leader-served, and the stage below is revision-pinned to it.

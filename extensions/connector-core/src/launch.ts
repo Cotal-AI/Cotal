@@ -71,7 +71,7 @@ const OS_ENV_ALLOW = [
   "LOCALAPPDATA",
   "XDG_RUNTIME_DIR",
   // The usage opt-out and the CI marker other tools read too: a seat's own `cotal` commands then
-  // report, or stay silent, as the run that launched it does (docs/telemetry.md).
+  // report, or stay silent, as the run that launched it does (docs/telemetry.mdx).
   "DO_NOT_TRACK",
   "CI",
   // Windows system env. SystemRoot is mandatory: without it a spawned process aborts at startup

@@ -1,0 +1,88 @@
+---
+title: Connectors
+description: Choose an agent application and connect its sessions to a Cotal mesh.
+kind: Guide
+audience: operators
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+A connector gives an agent session the [Cotal tools](mcp-tools.mdx), presence,
+and peer messages, and hands its agent the same [briefing](agent-briefing.mdx) when the session starts. Choose the application you already use, then follow its guide.
+Each guide lists the connector's requirements and supported features.
+
+<Cards>
+  <Card title="Claude Code" href="connect-claude.mdx">
+    Connect Claude Code through its installed plugin. Supports session forks and shared MCP tools.
+  </Card>
+  <Card title="OpenCode" href="connect-opencode.mdx">
+    Connect OpenCode through its native plugin runtime. Supports OpenCode 1.x and 2.x with different event settings.
+  </Card>
+  <Card title="Codex" href="connect-codex.mdx">
+    Connect a Codex app-server session. Directed peer messages can steer connector-started turns.
+  </Card>
+  <Card title="Hermes" href="connect-hermes.mdx">
+    Connect the Hermes gateway on Unix. Each inbound message starts a fresh agent.
+  </Card>
+  <Card title="Jcode" href="connect-jcode.mdx">
+    Connect a Jcode Harness API session. Supports session forks and directed messages during a turn.
+  </Card>
+  <Card title="pi" href="connect-pi.mdx">
+    Connect an interactive pi session or an agent built with pi's SDK. Peer messages can steer the running turn.
+  </Card>
+</Cards>
+
+## Compare support
+
+| Connector | Maturity | Resume a session with `--resume` | Share selected MCP tools with `--share-tools` |
+|---|---|---|---|
+| Claude Code | Stable | Forks the source session | Supported |
+| OpenCode | Beta | Unsupported | Unsupported. Inherits the user's MCP servers. |
+| Codex | Beta | Unsupported | Unsupported. Uses an isolated `CODEX_HOME`. |
+| Hermes | Alpha | Forks the source session | Unsupported |
+| Jcode | Beta | Forks the source session | Unsupported. Uses private MCP configuration. |
+| pi | Alpha | Forks the source session | Unsupported |
+
+An unsupported option fails the launch. Cotal does not silently ignore it.
+For containers, see the current [deployment limits](deploy.mdx).
+
+## Delivery behavior [#compare-delivery-and-transports]
+
+| Connector | Inbound delivery and steering | Cotal tool transport | Event plane |
+| --- | --- | --- | --- |
+| Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported |
+| OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | OpenCode 1.x; 2.x needs `--no-events` |
+| Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
+| Hermes | Creates a fresh agent for each message. | Unix socket with a control token | Unsupported; requires `--no-events` |
+| Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported |
+| pi | Steers the live turn inside its process. | In-process tools | Completed-message events |
+
+Jcode requires Node 22.13 or later; Node 23 requires 23.4 or later.
+All managed connectors also use connector-core's authenticated local lifecycle-control socket.
+The Manager reports event support in `status.connectors[].eventPlane`. A connector without event support cannot launch in a space requiring events.
+Native queue acceptance does not prove the model consumed the message.
+See [Running release](connector-runtime-reference.mdx#running-release) when installed and running versions differ.
+
+## Choose the connector for a launch
+
+To select a connector for one launch, use `cotal spawn --harness <connector>`.
+The supported names are `claude`, `opencode`, `codex`, `hermes`, `jcode`, and `pi`.
+See [Launch agents](launch-agents.mdx) for launch modes and examples.
+
+Cotal chooses the connector in this order:
+
+1. The launch's explicit `--harness` option.
+2. The persona file's `agent:` field.
+3. `COTAL_DEFAULT_AGENT`.
+4. The saved [`harness` preference](config.mdx#preferences).
+5. The product default, Claude Code.
+
+A persona's `agent:` field takes precedence over a default. An unknown connector
+name fails the launch. See [Agent files](agent-files.mdx) to configure a persona.
+
+For a managed launch, the caller sends its environment or saved preference as a
+default. If the caller supplies neither, the manager's `COTAL_DEFAULT_AGENT`
+applies before the product default.
+
+For connection state, resume records, and implementation contracts, see the
+[connector runtime reference](connector-runtime-reference.mdx).

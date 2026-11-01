@@ -240,8 +240,8 @@ export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
 }
 
 /** How many pending messages one session buffers before the overflow valve in
- *  {@link MeshAgent.buffer} evicts. */
-const MAX_INBOX = 200;
+ *  {@link MeshAgent.buffer} evicts. Exported so the overflow smokes read the bound they exercise. */
+export const MAX_INBOX = 200;
 /** How many receive keys {@link MeshAgent.holdInFlight} protects at once. The overflow valve never
  *  evicts a held entry, so this ceiling also bounds the inbox while holds are open, which is why it
  *  is derived from {@link MAX_INBOX}. It sits above the inbox because a frame keeps its holds until
@@ -2062,7 +2062,7 @@ export class MeshAgent extends EventEmitter {
    *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
    *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has read
    *  — an offline peer lingers in the roster, but one no read has seen throws. See
-   *  docs/architecture.md.
+   *  docs/architecture.mdx.
    *
    *  #1229: only a read that succeeded supports an ABSENCE verdict. A name already in the roster
    *  is accepted whatever the read did; an absent name under a failed read refuses with the read's
