@@ -25,6 +25,8 @@ import {
   controlReplyFromThrown,
   runAgentBearer,
   type EpAttributedReply,
+  type RegistryEndpointsInput,
+  type RegistryEndpointsOutput,
   type EpCaller,
   type EpVerbTarget,
   type ControlReply,
@@ -45,7 +47,7 @@ import {
 import type { AgentConfig } from "./config.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { attributionSafe } from "./framing.js";
-import { invokeUserManager } from "./manager-call.js";
+import { invokeUserManager, withUserManagerListing } from "./manager-call.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
@@ -2326,6 +2328,27 @@ export class MeshAgent extends EventEmitter {
     if (model === undefined) return { ok: true };
     if (typeof model !== "string") return { ok: false, error: `inspect returned a non-string model for "${name}"` };
     return { ok: true, model };
+  }
+
+  /** The registry listing as this session's manager-call credential sees it (SPEC 13.20), asked
+   *  over a connection opened on that credential and described on this session's own. On a static
+   *  mesh manager calls ride this session's credential, and a host-issued bearer has no manager-call
+   *  credential: `none` says which. `unbound`: that credential carries no listing binding. */
+  async listManagerEndpoints(input: RegistryEndpointsInput, instance?: string): Promise<
+    | { none: string }
+    | { unbound: true }
+    | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }
+  > {
+    const user = this.config.userAuth;
+    if (!user) return { none: "manager calls ride this session's own credential on this mesh, so the session view covers them" };
+    if (!user.bearerCmd) return { none: "this session's bearer comes from its host, which issues no manager-call bearer, so the manager view has no credential" };
+    const managerInstanceId = instance ?? this.config.managerInstanceId;
+    const token = await this.managerCallBearer([...user.bearerCmd, "--manager-call", ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : [])]).catch((e: unknown) => {
+      throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
+    });
+    const exp = bearerExpiryMs(token);
+    return withUserManagerListing({ ...this.config, managerInstanceId }, token, exp === undefined ? undefined : exp / 1000, async (nc, listing) =>
+      listing === undefined ? { unbound: true as const } : this.ep.listEndpointsOver(nc, listing, input));
   }
 
   /** Manager-call bearers this session holds, by the exact bearer argv (so by selected manager;

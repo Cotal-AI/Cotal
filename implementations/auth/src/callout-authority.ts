@@ -8,7 +8,7 @@ import type { JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
   acceptedReadGrant, actorLedgerSource, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, connectionAcceptedToken, EpEnvelopeError,
-  importNativeSubjectPermissions, mintGeneration, parseServiceSpec, parseServiceStatus, readSvcRecordLeader, recordSpecKey, recordStatusKey,
+  importNativeSubjectPermissions, mintGeneration, parseServiceSpec, prepareListing, parseServiceStatus, readSvcRecordLeader, recordSpecKey, recordStatusKey,
   RECORD_KINDS, remoteManagerServePrincipal, serveIssuanceGateKv, SERVICE_ACCESS_TTL_SECONDS, writeAcceptedRow,
   type EpGateState, type HeldIssuerSession, type IssuedAuthorityRef,
 } from "@cotal-ai/core";
@@ -22,7 +22,7 @@ import { ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
 import type { LifecycleRegistry } from "./lifecycle-registry.js";
 import { makeNativeIssuanceRecorder, type NativeIssuanceRecorder } from "./native-issuance.js";
 import type { NativeServiceCalloutAuthority } from "./native-service-callout.js";
-import { calloutPermissions, type EndpointCallerResolver, type UserCallerIssuer } from "./permissions.js";
+import { calloutPermissions, type EndpointCallerResolver, type ListingIssuer, type UserCallerIssuer } from "./permissions.js";
 import { effectiveEndpointCaller } from "./service-caller-effective.js";
 import { verifySessionRedemption } from "./session-redemption.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
@@ -88,6 +88,11 @@ export interface CalloutAuthority {
    *  process's held issuer session, it stages and releases evidence bound to the actor-ledger row
    *  and writes the connection's accepted row, or renews the generation that row already names. */
   issueUserCaller: UserCallerIssuer;
+  /** The callout's listing issuance (SPEC 13.15, "Listing issuance") for an agent connection or an
+   *  unissued manager-caller view, on the same held issuer session: a fresh listing generation
+   *  bound to the actor-ledger row, or the one the connection's listing token already names when
+   *  the ceiling is identical. Any other row leaves the connection without the listing rows. */
+  issueListing: ListingIssuer;
   /** Fresh generic endpoint caller rights for the authenticated exact actor lifecycle. */
   resolveEndpointCaller: EndpointCallerResolver;
   /** #2312: may this principal hold this one session? Leader-reads the redeemed `session.<id>` row
@@ -185,7 +190,7 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
         if (missing) {
           // The generation ends with this bearer, which is already its resolution bound.
           const generation = mintGeneration(t.exp);
-          const perms = mint({ generation, acceptedToken });
+          const perms = mint({ generation, acceptedToken, listing: true });
           const ref = { space, owner, actor, uid, generation };
           const prepared = await session.store.stage({
             version: 1, ref, sources: [actorLedgerSource(space, owner, actor, uid)], permissions: importNativeSubjectPermissions(perms), expiresAt: t.exp,
@@ -198,9 +203,31 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
         const ref = row.ref;
         if (row.version !== 1 || ref === undefined || ref.space !== space || ref.owner !== owner || ref.actor !== actor || ref.uid !== uid)
           throw new Error("callout permissions: this connection's accepted row names another issued reference; reconnect under a new nonce");
+        // A generation issued before the listing row existed renews its recorded ceiling, without it.
+        const listed = mint({ generation: ref.generation, acceptedToken, listing: true });
+        try {
+          await session.store.confirm(ref, importNativeSubjectPermissions(listed));
+          return listed;
+        } catch (e) {
+          if (!(e instanceof EpEnvelopeError && e.code === "failed-precondition")) throw e;
+        }
         const perms = mint({ generation: ref.generation, acceptedToken });
         await session.store.confirm(ref, importNativeSubjectPermissions(perms));
         return perms;
+      });
+    },
+    issueListing: async ({ t, connId, mint }) => {
+      refuse();
+      const owner = assertDerivedOwnerToken(t.owner);
+      const actor = t.act.actor;
+      const uid = assertLifecycleToken(t.act.lifecycleUid ?? "", "lifecycleUid");
+      return issuer.run(async (session) => {
+        // The horizon is the bearer's expiry, which bounds every connection minted on it.
+        const prepared = await prepareListing(session, {
+          space, owner, actor, uid, connId, horizon: t.exp, sources: [actorLedgerSource(space, owner, actor, uid)], expiresAt: t.exp,
+        }, mint);
+        await prepared.commit();
+        return prepared.permissions;
       });
     },
     verifySession: async (principal, claim) => {
@@ -246,7 +273,7 @@ export function serveCallout(nc: CalloutConnection, args: {
     recordIssuance: hooks.recordIssuance,
     // A chat principal resolves from its closed row (the agent leaf, no role); every other
     // principal from the grant ledger.
-    permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller),
+    permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller, hooks.issueListing),
     log: (l) => console.error(l),
     ...(args.limits !== undefined ? { limits: args.limits } : {}),
     ...(args.connectLimiter !== undefined ? { connectLimiter: args.connectLimiter } : {}),

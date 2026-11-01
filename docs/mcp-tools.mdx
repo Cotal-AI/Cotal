@@ -34,6 +34,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_run`](#cotal_run)                             | run a workflow program                 | starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only    |
 | [`cotal_persona`](#cotal_persona)                     | define a persona                       | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
 | [`cotal_personas`](#cotal_personas)                   | list or show personas                  | read-only                                                                                                |
+| [`cotal_endpoints`](#cotal_endpoints)                 | list the endpoints you can call        | none; asks the space's registry which endpoints and commands your recorded grants cover                  |
 | [`cotal_describe`](#cotal_describe)                   | describe an endpoint                   | none; reads an endpoint's registered command surface                                                     |
 | [`cotal_invoke`](#cotal_invoke)                       | invoke an endpoint command             | whatever the named command does                                                                          |
 | [`cotal_reconnect`](#cotal_reconnect)                 | reconnect to the mesh                  | tears down and rebuilds your own mesh connection                                                         |
@@ -401,6 +402,23 @@ Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name`
 | ---------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `name`     | string | no       | Persona to show. Omit to list the catalog.                                                                                                                                                                                                                                                                                                             |
 | `instance` | string | no       | Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager. |
+
+## `cotal_endpoints`
+
+*list the endpoints you can call*
+
+List the endpoints registered in this space that this session can call, and for each one the commands its grants cover and the request forms they allow. The space's registry answers from the grants recorded when this session's credential was issued, so the broker or the endpoint can still refuse a listed command. Endpoints where this session holds no command are left out, and so are endpoints whose command declarations cannot be read. A command whose grants are too many to list form by form is named under `unprojected`. On a user-auth mesh manager commands ride a separate manager-call credential; pass view="manager" to list what that credential can call. Call cotal_describe for a command's input schema. A page holds up to 100 endpoints; pass the previous page's `next` as `after` for the next one.
+
+* **Side-effect:** none; asks the space's registry which endpoints and commands your recorded grants cover.
+* **Available:** always; a credential with no listing binding is told so, and where no registry answers the tool says so and lists nothing.
+* The answer's `source` says where its rows came from: `recorded-ceiling` (the grants recorded at issuance, source liveness not checked) or `no-permission-system` (an open mesh, every registered endpoint).
+
+| Argument   | Type                   | Required | Meaning                                                                                     |
+| ---------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `after`    | string                 | no       | The `next` value from the previous page.                                                    |
+| `limit`    | number                 | no       | Endpoints per page (default 100).                                                           |
+| `view`     | `session` \| `manager` | no       | `session` (default): this session's own credential. `manager`: its manager-call credential. |
+| `instance` | string                 | no       | Manager view only: the manager instance whose call credential to use.                       |
 
 ## `cotal_describe`
 
