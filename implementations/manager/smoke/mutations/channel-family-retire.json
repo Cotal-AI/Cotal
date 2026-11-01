@@ -2,14 +2,16 @@
   "suite": [
     "implementations/manager/smoke/retire-fence-lifetime.smoke.ts"
   ],
-  "guard": "the manager's retirement accepts a lifecycle inventory that lists a family row (#5404) and purges it by its exact key",
-  "command": "pnpm smoke:retire-fence-lifetime",
+  "guard": "the manager's retirement accepts a lifecycle inventory that lists a family row (#5404) and purges it by its exact key, and a family row a retirement leaves is removed by the reader that drops the next post under it",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:retire-fence-lifetime",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/channel-family-retire.json",
   "why": [
     "R1 restores the concrete-only reply check: an inventory listing lane.> reads as malformed, the retirement is incomplete and the family row stays.",
     "",
-    "The suite imports the manager source and the built core, and this mutation changes only the manager source, so it needs no build."
+    "R2 drops the family row from the fan-out copy, so the reader that drops the copy removes the absent lane.left.x key and the family row stays.",
+    "",
+    "The suite imports the manager source and the built core. R1 changes only the manager source and needs no build. R2 changes core, so the command builds core first and R2's afterRestore rebuilds it, leaving no dist/ compiled from the mutant."
   ],
   "mutations": [
     {
@@ -19,6 +21,15 @@
       "replace": "isConcreteChannel(c)",
       "expectRed": "FAMILY: the retirement listed the family row and the channel row, and the deprovisioner purged both",
       "note": "A retired family follower's row would stay until a post reached the reader."
+    },
+    {
+      "name": "R2 the fan-out copy does not name the family row",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          ...(rec.channel !== channel ? { row: rec.channel } : {}),\n",
+      "replace": "",
+      "expectRed": "FAMILY-LEFT: the post fanned out against the family row, and the reader that dropped its entry removed it: 0 rows remain",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "A family row a concrete-only retirement leaves would keep taking a copy of every post under it."
     }
   ]
 }
