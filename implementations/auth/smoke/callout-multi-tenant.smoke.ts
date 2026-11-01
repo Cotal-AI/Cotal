@@ -190,7 +190,7 @@ if (process.argv[2] === "__daemon-auth-service") {
         if (!line) return reject(new Error(`load child exited ${code} with no result`));
         resolve(JSON.parse(line.slice("RESULT ".length)) as LoadResult);
       });
-      child.stdin!.end(JSON.stringify({ mode: "churn", servers, sentinelCreds: space.sentinelCreds, bearers: space.bearers, connectTimeoutMs: 10_000, ratePerSec, seconds }));
+      child.stdin!.end(JSON.stringify({ mode: "churn", servers, sentinelCreds: space.sentinelCreds, bearers: space.bearers, connectTimeoutMs: 10_000, ratePerSec, seconds, clientSigning: "nats" }));
     });
   const loadAll = async (spaces: Space[], seconds: number, ratePerSec: number): Promise<LoadResult> => {
     const rs = await Promise.all(spaces.map((s) => load(s, seconds, ratePerSec)));
