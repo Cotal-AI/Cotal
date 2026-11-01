@@ -801,6 +801,7 @@
     "smoke:who-roster": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/who-roster.smoke.ts",
     "smoke:history-read": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/history-read.smoke.ts",
     "smoke:docs-ext-read": "pnpm --filter cotal-ai... build && tsx bin/smoke/docs-ext-read.smoke.ts",
+    "smoke:docs-links": "pnpm --filter cotal-ai... build && tsx bin/smoke/docs-links.smoke.ts",
     "smoke:config-preferences": "pnpm --filter cotal-ai... build && tsx bin/smoke/config-preferences.smoke.ts",
     "smoke:completion-status": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/completion-status.smoke.ts",
     "smoke:space-reads": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-reads.smoke.ts",
