@@ -12,6 +12,20 @@
  *  (4) A live-class channel under the family stores nothing (each channel's own class decides).
  *  (5) A read ACL narrowed below the family drops copies on the channels it no longer covers.
  *
+ * Then the join path, through the daemon's `ctl.delivery` and the agent's own join, leave and boot:
+ *
+ *  (6) A family join gets its row and stores later posts; `>`, `*` patterns, `team.**` and a family
+ *      outside the read ACL are refused.
+ *  (7) Two rows pending when a post lands (the post was routed by neither) both copy it on activation,
+ *      at the same generation, and the agent keeps ONE copy.
+ *  (8) A family's catch-up copies only durable-class channels, names each copy by its own channel, and
+ *      keeps one copy beside a concrete row of another generation.
+ *  (9) Catch-up on the daemon judges eviction per sender subject: a quiet old post cannot hide an
+ *      evicted busy channel, a live-class channel at its cap does not count, and a concrete row's
+ *      evicted window is reported too.
+ * (10) With a live space default, a family is still joined durable, left with its row closed, and
+ *      joined at boot; a `*` pattern says it stays live only.
+ *
  * Every "not stored" cell is closed by a later post that IS stored: the pipeline is in order, so the
  * marker arriving while the refused post never did is the proof.
  *
@@ -37,7 +51,9 @@ import {
   openMembersRegistry,
   openChannelRegistry,
   writeChannelConfig,
+  writeChannelDefaults,
   commitMember,
+  readMember,
   tombstoneMember,
   chatStream,
   DEV_OWNER,
@@ -97,7 +113,7 @@ try {
   poster.on("error", (e: Error) => console.error("  ! poster", e.message));
   await poster.start();
 
-  // `review.quiet` is live-class; every other channel takes the space default, durable.
+  // The `*.quiet` channels are live-class; every other channel takes the space default, durable.
   const writerId = newIdentity();
   const writerNc = await connect({
     servers: SERVERS,
@@ -105,14 +121,24 @@ try {
     inboxPrefix: `_INBOX_${writerId.id}`,
     maxReconnectAttempts: 0,
   });
-  await writeChannelConfig(await openChannelRegistry(writerNc, space), "review.quiet", { deliveryClass: "live" });
-  await writerNc.close();
+  const channelKv = await openChannelRegistry(writerNc, space);
+  for (const quiet of ["review.quiet", "dev.quiet", "bulk2.quiet"]) await writeChannelConfig(channelKv, quiet, { deliveryClass: "live" });
 
-  const aId = newIdentity();
-  const uidA = mintLifecycleUid();
-  const aPrincipal = `${DEV_OWNER}.${aId.id}`;
-  let aliceAcl = ["review.>"];
-  const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: [], allowSubscribe: ["review.>"], lifecycleUid: uidA });
+  // The reader's read ACL per principal; a cell narrows alice's.
+  const acls = new Map<string, string[]>();
+  const enrol = async (name: string, allowSubscribe: string[], subscribe: string[] = []) => {
+    const id = newIdentity();
+    const uid = mintLifecycleUid();
+    const principal = `${DEV_OWNER}.${id.id}`;
+    acls.set(principal, allowSubscribe);
+    const creds = await provisionAgent(mgr, auth, id, { subscribe, allowSubscribe, lifecycleUid: uid });
+    return { id, uid, principal, creds, name, subscribe };
+  };
+  const alice = await enrol("alice", ["review.>"]);
+  const carol = await enrol("carol", ["team.>", "ops.>", "dev.>", "perm.*"]);
+  const dave = await enrol("dave", ["bulk.>", "bulk2.>", "bulk3.>"]);
+  const erin = await enrol("erin", ["team.>"], ["team.>"]);
+  const uidA = alice.uid, aPrincipal = alice.principal;
   const dlvId = newIdentity();
   const dlv = new CotalEndpoint({
     space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
@@ -121,17 +147,22 @@ try {
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
-  await dlv.startPlane3((owner) => (owner === aPrincipal ? aliceAcl : undefined));
+  await dlv.startPlane3((owner) => acls.get(owner));
 
-  const a = new CotalEndpoint({
-    space, servers: SERVERS, creds: aCreds,
-    card: { id: aId.id, name: "alice", kind: "agent" },
-    channels: [], lifecycleUid: uidA, heartbeatMs: 500, ttlMs: 2000,
-  });
-  const got: string[] = [];
-  a.on("error", () => {});
-  a.on("message", (m: CotalMessage, d: Delivery) => { got.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
-  await a.start();
+  const launch = async (who: typeof alice) => {
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS, creds: who.creds,
+      card: { id: who.id.id, name: who.name, kind: "agent" },
+      channels: who.subscribe, lifecycleUid: who.uid, heartbeatMs: 500, ttlMs: 2000,
+    });
+    const texts: string[] = [];
+    ep.on("error", () => {});
+    ep.on("message", (m: CotalMessage, d: Delivery) => { texts.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
+    await ep.start();
+    return { ep, texts };
+  };
+  const { ep: a, texts: got } = await launch(alice);
+  const { ep: c, texts: gotC } = await launch(carol);
   await wait(400);
 
   // The members registry is the delivery daemon's to write; rows are planted with a `delivery` cred.
@@ -149,7 +180,15 @@ try {
     channel, owner: aPrincipal, lifecycleUid: uidA, state: "durable-active", joinCursor: 0,
     generation, activated: true, writerIdentity: seedId.id, updatedAt: Date.now(),
   });
+  const pendingRow = (who: typeof alice, channel: string, generation: number, joinCursor: number): MembershipRecord => ({
+    channel, owner: who.principal, lifecycleUid: who.uid, state: "durable-active", joinCursor,
+    generation, activated: false, writerIdentity: seedId.id, updatedAt: Date.now(),
+  });
   const count = (text: string): number => got.filter((t) => t === text).length;
+  const countC = (text: string): number => gotC.filter((t) => t === text).length;
+  const refusal = async (p: Promise<unknown>): Promise<string> => { try { await p; return ""; } catch (e) { return (e as Error).message; } };
+  // A refused join fails its own cell rather than ending the run.
+  const join = (p: Promise<{ durable: boolean; reason?: string }>) => p.catch((e: Error) => ({ durable: false, reason: `refused: ${e.message}` }));
   const post = (text: string, channel: string) => poster.multicast(text, { channel });
 
   // ───────────── (1) a family row alone ─────────────
@@ -191,7 +230,7 @@ try {
     !got.includes("quiet-post") && got.includes("quiet-marker"), got);
 
   // ───────────── (5) a read ACL narrowed below the family ─────────────
-  aliceAcl = ["review.b", "review.c"];
+  acls.set(aPrincipal, ["review.b", "review.c"]);
   await post("narrowed-out", "review.d");
   await post("narrowed-marker", "review.c");
   await until(() => got.includes("narrowed-marker"));
@@ -199,7 +238,102 @@ try {
   check("a read ACL narrowed to review.b and review.c drops review.d's copy and keeps review.c's",
     !got.includes("narrowed-out") && got.includes("narrowed-marker"), got);
 
+  // ───────────── (6) a family join through the daemon, and its refusals ─────────────
+  const joinedTeam = await join(c.durableJoinChannel("team.>"));
+  check("carol's durable join of team.> is accepted and active", joinedTeam.durable === true, joinedTeam);
+  await post("team-after-join", "team.a");
+  check("a post on team.a after the join is stored for carol (she holds no live subscription)",
+    await until(() => gotC.includes("team-after-join")), gotC);
+  const refusals = await Promise.all([">", "team.*.>", "team.*"].map((ch) => refusal(c.durableJoinChannel(ch))));
+  check("the daemon refuses >, team.*.> and team.* as durable memberships, saying they stay live only",
+    refusals.every((r) => r.includes("stays live only")), refusals);
+  check("the daemon refuses team.** as no valid channel", (await refusal(c.durableJoinChannel("team.**"))).includes("NATS-safe token"));
+  check("the daemon refuses a family outside the read ACL (secret.>)",
+    (await refusal(c.durableJoinChannel("secret.>"))).includes("not within your read ACL"));
+  check("the daemon refuses perm.> under a perm.* grant, which cannot read perm.a.b",
+    (await refusal(c.durableJoinChannel("perm.>"))).includes("not within your read ACL"));
+
+  // ───────────── (7) two rows pending when a post lands, activated at once ─────────────
+  // The post lands before either row exists, so fan-out routes it to nobody; both rows are then
+  // written pending with a join cursor before it, as two joins in flight would leave them.
+  await post("pending-same", "ops.b");
+  const sameSeq = await frontier();
+  await post("pending-same-marker", "team.a");
+  await until(() => gotC.includes("pending-same-marker"));
+  await commitMember(kv, pendingRow(carol, "ops.b", 1, sameSeq - 1));
+  await commitMember(kv, pendingRow(carol, "ops.>", 1, sameSeq - 1));
+  const [own, fam] = await Promise.all([join(c.durableJoinChannel("ops.b")), join(c.durableJoinChannel("ops.>"))]);
+  check("ops.b and ops.> pending at generation 1 both activate when re-joined together",
+    own.durable === true && fam.durable === true, { own, fam });
+  await post("pending-same-after", "team.a");
+  await until(() => gotC.includes("pending-same-after"));
+  await wait(300);
+  check("the post both pending rows covered is stored once", countC("pending-same") === 1, gotC);
+
+  // ───────────── (8) family catch-up: by class, named per post, one copy across generations ─────────────
+  const devFrom = await frontier();
+  await post("dev-own", "dev.c");
+  await post("dev-family-only", "dev.d");
+  await post("dev-quiet", "dev.quiet");
+  await post("dev-marker", "team.a");
+  await until(() => gotC.includes("dev-marker"));
+  await commitMember(kv, pendingRow(carol, "dev.>", 1, devFrom));
+  await commitMember(kv, pendingRow(carol, "dev.c", 2, devFrom));
+  const devFam = await join(c.durableJoinChannel("dev.>"));
+  const devOwn = await join(c.durableJoinChannel("dev.c"));
+  await post("dev-after", "team.a");
+  await until(() => gotC.includes("dev-after"));
+  await wait(300);
+  check("dev.> and dev.c activate", devFam.durable === true && devOwn.durable === true, { devFam, devOwn });
+  check("dev.> catch-up stores dev.d's post, which only the family covers (each copy names its own channel)",
+    countC("dev-family-only") === 1, gotC);
+  check("dev.c's post, covered by dev.> (generation 1) and dev.c (generation 2), is stored once",
+    countC("dev-own") === 1, gotC);
+  check("dev.> catch-up leaves out the live-class dev.quiet", !gotC.includes("dev-quiet"), gotC);
+
+  // ───────────── (9) family catch-up eviction, per sender subject ─────────────
+  // Dave never connects; the daemon runs his joins directly.
+  await post("bulk-old", "bulk.old");
+  const bulkFrom = await frontier();
+  for (let i = 0; i <= 1000; i++) await post(`busy-${i}`, "bulk.busy");
+  await commitMember(kv, pendingRow(dave, "bulk.>", 1, bulkFrom));
+  const evicted = await join(dlv.durableJoinFor(dave.principal, "bulk.>", dave.uid));
+  check("bulk.> reports its window evicted: bulk.busy lost posts past its cap, and bulk.old's older post does not hide it",
+    evicted.durable === false && /evicted/.test(evicted.reason ?? ""), evicted);
+  const quietFrom = await frontier();
+  for (let i = 0; i <= 1000; i++) await post(`quiet-${i}`, "bulk2.quiet");
+  await commitMember(kv, pendingRow(dave, "bulk2.>", 1, quietFrom));
+  const liveOnly = await join(dlv.durableJoinFor(dave.principal, "bulk2.>", dave.uid));
+  check("bulk2.> stays complete: the live-class bulk2.quiet at its cap does not count", liveOnly.durable === true, liveOnly);
+  // A concrete channel's catch-up on the daemon is judged the same way.
+  const soloFrom = await frontier();
+  for (let i = 0; i <= 1000; i++) await post(`solo-${i}`, "bulk3.solo");
+  await commitMember(kv, pendingRow(dave, "bulk3.solo", 1, soloFrom));
+  const soloEvicted = await join(dlv.durableJoinFor(dave.principal, "bulk3.solo", dave.uid));
+  check("bulk3.solo reports its window evicted after one sender's 1001 posts (a concrete row's catch-up on the daemon)",
+    soloEvicted.durable === false && /evicted/.test(soloEvicted.reason ?? ""), soloEvicted);
+
+  // ───────────── (10) a live space default ─────────────
+  await writeChannelDefaults(channelKv, { deliveryClass: "live" });
+  await wait(500); // the agents' channel registry watch picks up the new default
+  const joinedLive = await join(c.joinChannel("team.x.>"));
+  const teamX = await readMember(kv, "team.x.>", carol.principal, carol.uid);
+  check("with a live default, joining team.x.> still asks for and gets its family row",
+    joinedLive.durable === true && teamX?.record.activated === true && teamX.record.leaveCursor === undefined, { joinedLive, teamX });
+  await c.leaveChannel("team.x.>").catch(() => undefined);
+  check("leaving team.x.> with a live default closes its family row",
+    (await readMember(kv, "team.x.>", carol.principal, carol.uid))?.record.leaveCursor !== undefined);
+  const starJoin = await join(c.joinChannel("team.*"));
+  check("joining team.* says a * pattern stays live only", starJoin.durable === false && /pattern with \*/.test(starJoin.reason ?? ""), starJoin);
+  const { ep: e } = await launch(erin);
+  let erinRow: Awaited<ReturnType<typeof readMember>> = undefined;
+  for (let i = 0; i < 40 && (erinRow = await readMember(kv, "team.>", erin.principal, erin.uid))?.record.activated !== true; i++) await wait(200);
+  check("an agent booted on team.> with a live default holds its family row", erinRow?.record.activated === true, erinRow);
+
+  await writerNc.close();
   await kvNc.close();
+  await e.stop();
+  await c.stop();
   await a.stop();
   await dlv.stop();
   await poster.stop();

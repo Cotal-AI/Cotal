@@ -2,7 +2,7 @@
   "suite": [
     "packages/core/smoke/channel-family-auth.smoke.ts"
   ],
-  "guard": "a family follower's stored copies (#5404): fan-out routes the family rows above a channel, the reader accepts a copy that any covering row holds, two covering rows store one copy because the dedupe id is per message and lifecycle, each channel's own delivery class decides, and the reader still re-checks the read ACL per concrete channel",
+  "guard": "a family follower's stored copies (#5404): fan-out routes the family rows above a channel, the reader accepts a copy that any covering row holds, covering rows store one copy because the dedupe id is per message and lifecycle, each channel's own delivery class decides, the reader re-checks the read ACL per concrete channel; the daemon admits a family join only inside one read-ACL entry; family catch-up copies durable-class channels under their own names; catch-up eviction is judged per sender subject on the daemon; and the agent joins, leaves and boots a family whatever the space default",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:channel-family:auth",
   "completionMarker": "CHANNEL-FAMILY SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/channel-family-delivery.json",
@@ -54,6 +54,105 @@
       "replace": "    if (false) { m.ack(); return; }",
       "expectRed": "a read ACL narrowed to review.b and review.c drops review.d's copy and keeps review.c's",
       "cell": "a read ACL narrowed to review.b and review.c drops review.d's copy and keeps review.c's",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the daemon admits no family at join or leave",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (opts.family && isChannelFamily(channel)) return channel;",
+      "replace": "    if (false) return channel;",
+      "expectRed": "carol's durable join of team.> is accepted and active",
+      "cell": "carol's durable join of team.> is accepted and active",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a family join is authorized as if it were one concrete channel",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!membershipInAllow(acl.allowSubscribe, channel))",
+      "replace": "    if (!channelInAllow(acl.allowSubscribe, channel))",
+      "expectRed": "the daemon refuses perm.> under a perm.* grant, which cannot read perm.a.b",
+      "cell": "the daemon refuses perm.> under a perm.* grant, which cannot read perm.a.b",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a family's catch-up names each copy by the family",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "            msg, channel: parsed.rest, seq: m.seq, reason: \"durable-channel\", generation, ...(family ? { row: channel } : {}),",
+      "replace": "            msg, channel, seq: m.seq, reason: \"durable-channel\", generation, ...(family ? { row: channel } : {}),",
+      "expectRed": "dev.> catch-up stores dev.d's post, which only the family covers (each copy names its own channel)",
+      "cell": "dev.> catch-up stores dev.d's post, which only the family covers (each copy names its own channel)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a family's catch-up copies every channel, whatever its class",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (!(await stored(parsed.rest))) continue;",
+      "replace": "",
+      "expectRed": "dev.> catch-up leaves out the live-class dev.quiet",
+      "cell": "dev.> catch-up leaves out the live-class dev.quiet",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "catch-up eviction reads the oldest post through the history reader the daemon lacks",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      const oldest = await this.subjectOldestSeq(senderSubject);",
+      "replace": "      const oldest = await this.channelOldestSeq(senderSubject);",
+      "expectRed": "bulk.> reports its window evicted: bulk.busy lost posts past its cap, and bulk.old's older post does not hide it",
+      "cell": "bulk.> reports its window evicted: bulk.busy lost posts past its cap, and bulk.old's older post does not hide it",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "catch-up eviction counts a live-class channel the family does not copy",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!parsed || parsed.kind !== \"chat\" || !(await counts(parsed.rest))) continue;",
+      "replace": "      if (!parsed || parsed.kind !== \"chat\") continue;",
+      "expectRed": "bulk2.> stays complete: the live-class bulk2.quiet at its cap does not count",
+      "cell": "bulk2.> stays complete: the live-class bulk2.quiet at its cap does not count",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "catch-up eviction combines the busiest subject's count with the channel's oldest post",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const evicted = await this.windowEvicted(subject, fromSeqExcl, stored);",
+      "replace": "    const evicted = await this.channelDropped(subject, fromSeqExcl);",
+      "expectRed": "bulk3.solo reports its window evicted after one sender's 1001 posts (a concrete row's catch-up on the daemon)",
+      "cell": "bulk3.solo reports its window evicted after one sender's 1001 posts (a concrete row's catch-up on the daemon)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "an agent's join asks for a family row only when the space default is durable",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "replace": "    else if (effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "expectRed": "with a live default, joining team.x.> still asks for and gets its family row",
+      "cell": "with a live default, joining team.x.> still asks for and gets its family row",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "an agent's leave closes a family row only when the space default is durable",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\")) {",
+      "replace": "    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "expectRed": "leaving team.x.> with a live default closes its family row",
+      "cell": "leaving team.x.> with a live default closes its family row",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "boot joins a family only when the space default is durable",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!isChannelFamily(channel)) {\n        if (!isConcreteChannel(channel)) continue;",
+      "replace": "      if (true) {\n        if (!isConcreteChannel(channel)) continue;",
+      "expectRed": "an agent booted on team.> with a live default holds its family row",
+      "cell": "an agent booted on team.> with a live default holds its family row",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a * pattern join gives no reason it stays live only",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!family && !isConcreteChannel(channel))\n      reason = \"a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>\";\n    else if",
+      "replace": "    if (false)\n      reason = \"\";\n    else if",
+      "expectRed": "joining team.* says a * pattern stays live only",
+      "cell": "joining team.* says a * pattern stays live only",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

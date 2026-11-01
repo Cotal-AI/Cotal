@@ -3371,8 +3371,9 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Join a channel mid-session: open a native core subscription (manager-free live read, broker-
    * confirmed against `sub.allow`), capture the stream frontier as the join watermark, backfill its
-   * history if replay is on, and — for a `durable`-class channel when a delivery daemon is present —
-   * request a Plane-3 durable backstop (via `ctl.delivery`). Idempotent: re-joining is a no-op (no
+   * history if replay is on, and — for a `durable`-class channel or a family such as `review.>` when a
+   * delivery daemon is present — request a Plane-3 durable backstop (via `ctl.delivery`). Any other
+   * pattern stays live only, with a `reason`. Idempotent: re-joining is a no-op (no
    * re-backfill). Returns the backfill count + whether the durable backstop is active (+ a `reason`
    * when a durable channel couldn't get one).
    */
@@ -3409,10 +3410,15 @@ export class CotalEndpoint extends EventEmitter {
     // channel, request a Plane-3 per-member backstop from the server-side delivery daemon (durableJoin via ctl.delivery) so a post reaches a
     // busy/offline turn — the core-sub stays as the live wake-hint, dedup-coalesced with the Plane-3
     // copy by id-dedup. No manager (open dev / manager-less) ⇒ joined LIVE only, surfaced via `reason`
-    // (never silent). A `live`-class channel takes no backstop (joined live is the contract).
+    // (never silent). A `live`-class channel takes no backstop (joined live is the contract). A family
+    // (`review.>`) always asks for its row: each channel under it decides its own class at fan-out
+    // (#5404). Any other pattern has no backstop, and says so.
     let durable = false;
     let reason: string | undefined;
-    if (effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
+    const family = isChannelFamily(channel);
+    if (!family && !isConcreteChannel(channel))
+      reason = "a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>";
+    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
       try {
         const r = await this.durableJoinChannel(channel);
         if (r.durable) {
@@ -3447,7 +3453,7 @@ export class CotalEndpoint extends EventEmitter {
     // tombstone can't be confirmed propagates (live sub stays up, mirror intact) for the caller to retry
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
-    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
+    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable")) {
       let generation = this.plane3Channels.get(channel);
       if (generation === undefined)
         generation = (await this.fetchMemberships())?.find((m) => m.channel === channel)?.generation;
@@ -5457,11 +5463,12 @@ export class CotalEndpoint extends EventEmitter {
     return { durable: true, generation };
   }
 
-  /** Whether one lifecycle's exact ACL row allows `channel` now. A leader-served read: the handle is
-   *  opened without direct reads, so a row narrowed before this read began is the row it returns. */
+  /** Whether one lifecycle's exact ACL row allows a membership on `channel` now (a family must lie
+   *  inside one entry, {@link membershipInAllow}). A leader-served read: the handle is opened without
+   *  direct reads, so a row narrowed before this read began is the row it returns. */
   private async aclAllows(owner: string, lifecycleUid: string, channel: string): Promise<boolean> {
     const row = await readAcl(await this.aclRegistry(), owner, lifecycleUid);
-    return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
+    return row !== undefined && membershipInAllow(row.record.allowSubscribe, channel);
   }
 
   /** The post-write half of {@link durableJoinFor}'s `aclFence`: keep the row just written (at
@@ -5506,18 +5513,32 @@ export class CotalEndpoint extends EventEmitter {
   /** Idempotently copy the eligible chat messages in `(fromSeqExcl, toSeqIncl]` for `channel` into the
    *  owner inbox, via a DEDICATED per-(owner,join) ephemeral consumer (NOT the agent-scoped
    *  `chathist_<id>`/`histLock` — red-team HIGH-8). `evicted` ⇒ the oldest eligible seq aged out under
-   *  `discard=Old` (the start seq could not be served), a durable shortfall the caller surfaces. */
+   *  `discard=Old` (the start seq could not be served), a durable shortfall the caller surfaces.
+   *
+   *  A FAMILY row (`review.>`, #5404) reads the window on every channel under it and copies a post only
+   *  when that post's own channel is durable-class. Each copy names the post's own channel, never the
+   *  family, and it skips nothing another row of the lifecycle covers: two joins can both be pending
+   *  when a post lands, so neither proves the other copied it. The per-message, per-lifecycle dedupe id
+   *  keeps one copy. */
   private async catchupCopy(
     owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
   ): Promise<{ copied: number; evicted: boolean }> {
     if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return { copied: 0, evicted: false };
     const subject = chatSubject(this.space, "*", "*", channel);
-    // Eviction = a message in `(joinCursor, …]` on THIS channel's subject aged out under discard=Old.
-    // Judged PER-SUBJECT (reuse channelDropped: oldest-retained-for-subject vs the watermark, only at
-    // the per-subject cap), NOT against the stream-global joinCursor+1 — other channels' traffic
-    // inflates the global seq, so a naive "first delivered seq > joinCursor+1" false-positives on any
-    // busy multi-channel space (impl-review HIGH-2). A true eviction → durableJoin reports durable:false.
-    const evicted = await this.channelDropped(subject, fromSeqExcl);
+    const family = isChannelFamily(channel);
+    const durableClass = new Map<string, Promise<boolean>>();
+    const stored = (ch: string): Promise<boolean> => {
+      if (!family) return Promise.resolve(true);
+      let cls = durableClass.get(ch);
+      if (cls === undefined) durableClass.set(ch, (cls = this.deliveryClassFresh(ch).then((c) => c === "durable")));
+      return cls;
+    };
+    // Eviction = a message in `(joinCursor, …]` on THIS row's subjects aged out under discard=Old.
+    // Judged PER SENDER SUBJECT (oldest-retained-for-subject vs the watermark, only at the per-subject
+    // cap), NOT against the stream-global joinCursor+1 — other channels' traffic inflates the global
+    // seq, so a naive "first delivered seq > joinCursor+1" false-positives on any busy multi-channel
+    // space (impl-review HIGH-2). A true eviction → durableJoin reports durable:false.
+    const evicted = await this.windowEvicted(subject, fromSeqExcl, stored);
     // Consumer NAME must be JetStream-safe (no `.`) AND collision-free: use the principal DASH-form
     // (`<owner>-<actor>`, `-` reserved as the sole separator), NOT `token(owner)` — `token()` maps the
     // dot-form `.`→`_`, which is NOT collision-free (`_` is legal inside a token, so `a.b_c` and `a_b.c`
@@ -5546,7 +5567,10 @@ export class CotalEndpoint extends EventEmitter {
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
           if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === owner) continue;
-          await this.publishDinbox(owner, lifecycleUid, { msg, channel, seq: m.seq, reason: "durable-channel", generation });
+          if (!(await stored(parsed.rest))) continue;
+          await this.publishDinbox(owner, lifecycleUid, {
+            msg, channel: parsed.rest, seq: m.seq, reason: "durable-channel", generation, ...(family ? { row: channel } : {}),
+          });
           copied++;
         }
         if (got < want) break;
@@ -5623,20 +5647,28 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Validate the channel ARG shape only: non-blank, valid, concrete (NO ACL check, that is op-specific).
+   *  `family` also admits a channel family such as `review.>` (a membership join or leave, #5404).
    *  Returns the channel on success or a ControlReply error to short-circuit. */
-  private checkDurableChannelArg(args: Record<string, unknown>, op: string): string | ControlReply {
+  private checkDurableChannelArg(args: Record<string, unknown>, op: string, opts: { family?: boolean } = {}): string | ControlReply {
     const channel = typeof args.channel === "string" ? args.channel.trim() : "";
     if (!channel) return { ok: false, error: `${op}: channel must be a non-blank string` };
     try { assertValidChannel(channel); } catch (e) { return { ok: false, error: (e as Error).message }; }
+    if (opts.family && isChannelFamily(channel)) return channel;
     if (!isConcreteChannel(channel))
-      return { ok: false, error: `${op}: "${channel}" must be a concrete channel (durable membership is per-concrete-channel, not wildcard)` };
+      return {
+        ok: false,
+        error: opts.family
+          ? `${op}: "${channel}" stays live only: a durable membership takes a concrete channel or a family such as review.>, never the root > or a pattern with *`
+          : `${op}: "${channel}" must be a concrete channel (durable membership is per-concrete-channel, not wildcard)`,
+      };
     return channel;
   }
 
   /** JOIN requires the channel be within the caller's CURRENT read ACL (you can't durable-subscribe a
-   *  channel you may not read). */
+   *  channel you may not read). A family must lie inside one ACL entry, so every channel under it is
+   *  readable. */
   private async deliveryJoin(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
-    const channel = this.checkDurableChannelArg(args, "durableJoin");
+    const channel = this.checkDurableChannelArg(args, "durableJoin", { family: true });
     if (typeof channel !== "string") return channel; // a ControlReply error
     // The caller arrives as an ALIAS (the control subject carries owner+actor, never a uid): resolve
     // its single live lifecycle-keyed ACL row SERVER-SIDE — the trusted registry, never a caller
@@ -5647,7 +5679,7 @@ export class CotalEndpoint extends EventEmitter {
     catch (e) { return { ok: false, error: (e as Error).message }; }
     if (acl === undefined)
       return { ok: false, error: `durableJoin: no read ACL on record for ${caller} (not provisioned for durable delivery)` };
-    if (!channelInAllow(acl.allowSubscribe, channel))
+    if (!membershipInAllow(acl.allowSubscribe, channel))
       return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
     const uid = acl.lifecycleUid;
     // The lookup above may be stale by the time the row is written (a retirement can fence and purge
@@ -5695,7 +5727,7 @@ export class CotalEndpoint extends EventEmitter {
    *  (the join epoch — without it a stale/replayed leave could tombstone a newer rejoin), and an EXISTING
    *  own membership; `durableLeaveFor` → `tombstoneMember` then enforces the generation match. */
   private async deliveryLeave(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
-    const channel = this.checkDurableChannelArg(args, "durableLeave");
+    const channel = this.checkDurableChannelArg(args, "durableLeave", { family: true });
     if (typeof channel !== "string") return channel; // a ControlReply error
     if (typeof args.generation !== "number" || !Number.isFinite(args.generation))
       return { ok: false, error: "durableLeave: a finite generation is required (fail-closed stale-leave guard)" };
@@ -6676,7 +6708,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Agent-side, first connect (auth): SELF-JOIN this session's durable boot channels via the
    *  server-side delivery daemon — replacing the old manager-written boot membership. Each concrete
-   *  `durable`-class boot channel gets a `durableJoin` whose returned generation seeds the leave mirror
+   *  `durable`-class boot channel, and each family such as `review.>`, gets a `durableJoin` whose
+   *  returned generation seeds the leave mirror
    *  + durable-state surface; an already-active membership (a relaunch) is idempotent (no re-catch-up).
    *  If the daemon is down/absent at first connect (or reports a transient `durable:false`), the channel
    *  is handed to {@link reconcileBootJoin} for capped-backoff retry — so the backstop is RESTORED once
@@ -6684,11 +6717,16 @@ export class CotalEndpoint extends EventEmitter {
    *  degraded in `cotal_channels` ({@link hasDurableMembership}). */
   private async armBootDurableMemberships(): Promise<void> {
     for (const channel of this.channels) {
-      if (!isConcreteChannel(channel) || this.plane3Channels.has(channel)) continue;
-      // A missing channel row legitimately resolves through the defaults. A failed/denied registry
-      // read does not prove the channel is live-only, so let it fail startup loudly.
-      const cls = await this.deliveryClassFresh(channel);
-      if (cls !== "durable") continue;
+      if (this.plane3Channels.has(channel)) continue;
+      // A family (`review.>`) asks for its row whatever the default class: each channel under it decides
+      // its own at fan-out (#5404). Any other pattern has no durable membership.
+      if (!isChannelFamily(channel)) {
+        if (!isConcreteChannel(channel)) continue;
+        // A missing channel row legitimately resolves through the defaults. A failed/denied registry
+        // read does not prove the channel is live-only, so let it fail startup loudly.
+        const cls = await this.deliveryClassFresh(channel);
+        if (cls !== "durable") continue;
+      }
       try {
         const r = await this.durableJoinChannel(channel);
         if (r.durable) this.plane3Channels.set(channel, r.generation ?? 0);
@@ -7321,6 +7359,47 @@ export class CotalEndpoint extends EventEmitter {
     if (maxPerSubject < MAX_MSGS_PER_SUBJECT) return false; // never hit the cap ⇒ never evicted
     const oldest = await this.channelOldestSeq(subject);
     return oldest !== undefined && oldest > sinceSeq + 1;
+  }
+
+  /** Did a catch-up window `(sinceSeq, …]` on `subject` lose posts to the per-sender cap? Judged per
+   *  SENDER SUBJECT: one below {@link MAX_MSGS_PER_SUBJECT} lost nothing, and one at the cap lost part
+   *  of the window when its own oldest retained post is newer than the window's first. So a quiet old
+   *  post on one channel or from one sender cannot hide an evicted window on another, and `counts`
+   *  leaves out the channels the window does not copy (a family's live-class ones). Runs on the
+   *  delivery daemon, which has no history reader, so each oldest post is read through a short-lived
+   *  consumer like the catch-up's own. */
+  private async windowEvicted(subject: string, sinceSeq: number, counts: (channel: string) => Promise<boolean>): Promise<boolean> {
+    if (!this.jsm) return false;
+    let subjects: Record<string, number>;
+    try {
+      subjects = (await this.jsm.streams.info(chatStream(this.space), { subjects_filter: subject })).state.subjects ?? {};
+    } catch (e) {
+      if ((e as { code?: number }).code !== 404) this.emit("error", e as Error);
+      return false; // stream/subject missing — nothing retained, nothing dropped
+    }
+    for (const [senderSubject, count] of Object.entries(subjects)) {
+      if (count < MAX_MSGS_PER_SUBJECT) continue;
+      const parsed = parseSubject(senderSubject);
+      if (!parsed || parsed.kind !== "chat" || !(await counts(parsed.rest))) continue;
+      const oldest = await this.subjectOldestSeq(senderSubject);
+      if (oldest !== undefined && oldest > sinceSeq + 1) return true;
+    }
+    return false;
+  }
+
+  /** Sequence of the oldest post still retained on one CHAT subject, or undefined if none is. */
+  private async subjectOldestSeq(subject: string): Promise<number | undefined> {
+    const info = await this.jsm!.consumers.add(chatStream(this.space), {
+      filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
+      inactive_threshold: nanos(30_000), deliver_policy: DeliverPolicy.All,
+    });
+    try {
+      const consumer = await this.js!.consumers.get(chatStream(this.space), info.name);
+      for await (const m of await consumer.fetch({ max_messages: 1, expires: 2_000 })) return m.seq;
+      return undefined;
+    } finally {
+      await this.deleteConsumerIfPresent(chatStream(this.space), info.name);
+    }
   }
 
   /** Sequence of the earliest message still retained on a channel subject (any sender), or
