@@ -145,7 +145,10 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     // A contract read that was answered and then ran out of time spent this deadline. An unanswered
     // read stays the TARGET_UNAVAILABLE refusal; under a `--timeout` the user set it names the flag,
     // which may be what ran out. `endpointFailure` adds the target to all three.
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands: [command], ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
+    // `--name` on the manager resolves its target through `inspect` on this same handle, so that
+    // contract is fetched with the command's.
+    const commands = values.name !== undefined && endpoint === BASELINE_LIFECYCLE_ENDPOINT ? [...new Set([command, "inspect"])] : [command];
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
       if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
       if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,

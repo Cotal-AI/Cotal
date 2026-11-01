@@ -22,8 +22,10 @@ const conforms = (schema: object, value: unknown) => {
   assert(valid(JSON.parse(JSON.stringify(value))), JSON.stringify(valid.errors));
   checks++;
 };
-const responseSchema = (path: string, status: number) => {
-  const entry = spec.paths[path].get.responses[status];
+const responseSchema = (path: string, status: number, method = 'get') => {
+  const operation = spec.paths[path]?.[method];
+  assert(operation, `Undocumented operation: ${method.toUpperCase()} ${path}`);
+  const entry = operation.responses[status];
   assert(entry, `Undocumented response: ${path} ${status}`);
   const response = entry.$ref ? spec.components.responses[entry.$ref.split('/').at(-1)] : entry;
   return response.content['application/json'].schema;
@@ -84,7 +86,20 @@ try {
   assert.equal(spent.status, 401);
   conforms(responseSchema('/api/roster', 401), await spent.json());
   const headers = { cookie };
-  for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed')) {
+  const metadata = await fetch(base + '/api/meta', { headers });
+  assert.equal(metadata.status, 200);
+  const meta = await metadata.json();
+  assert(meta !== null && typeof meta === 'object');
+  assert('space' in meta && meta.space === space);
+  assert('channelDeleteSupported' in meta && meta.channelDeleteSupported === false, 'Native dashboard service is read-only');
+  conforms(responseSchema('/api/meta', 200), meta);
+  const deletion = await fetch(base + '/api/channel/delete', {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ channel: 'general' }),
+  });
+  assert.equal(deletion.status, 403, 'Native dashboard cannot acquire channel purge authority');
+  conforms(responseSchema('/api/channel/delete', 403, 'post'), await deletion.json());
+  for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed' && path !== '/api/meta' && spec.paths[path].get)) {
     const response = await fetch(base + path.replace('{channel}', 'general'), { headers });
     assert.equal(response.status, 200, `${path}: ${response.status}`);
     const body = await response.json();

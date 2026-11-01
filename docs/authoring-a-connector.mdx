@@ -1,0 +1,218 @@
+---
+title: Authoring a connector
+description: Add support for an agent application through Cotal's connector interface and extension loader.
+kind: Guide
+audience: integrators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A connector launches an agent application and connects its session to a Cotal mesh.
+Build one when you want to support another application, such as a coding agent with its own plugin API.
+
+This guide covers the TypeScript reference implementation.
+The [wire specification](../SPEC.md) defines the protocol that the session must speak.
+Read [Architecture](architecture.mdx) first, and use an existing [connector reference](connector-runtime-reference.mdx#connector-contracts) to compare integration choices.
+
+## Implement the interface [#the-contract]
+
+Implement `Connector` from `@cotal-ai/core` and register it when your package is imported:
+
+```ts
+import { registry, type Connector } from "@cotal-ai/core";
+
+const myConnector: Connector = {
+	kind: "connector",
+	name: "myagent",
+	requires: ["myagent"],
+	buildLaunch(_opts) {
+		throw new Error("Implement the myagent launch adapter");
+	},
+};
+
+registry.register(myConnector);
+```
+
+This scaffold registers the connector but refuses every launch until you implement `buildLaunch`.
+For a complete implementation, read the [OpenCode connector](../extensions/connector-opencode/src/extension.ts).
+
+In `buildLaunch(opts)`, return a `LaunchSpec` containing the child command, arguments, and extra environment variables.
+The resulting process must connect to the broker with the supplied identity and expose the mesh integration inside the agent application.
+Starting an ordinary application process alone does not join it to the mesh.
+
+Use `LaunchOpts` as the resolved launch input.
+It carries the space, identity, credentials, channel access, persona path, model, and other supported options.
+Forward the required identity and access fields without widening them.
+Read the complete field contracts in [`connector.ts`](../packages/core/src/connector.ts).
+
+Render `model` and `variant` as supplied.
+The launcher has already applied explicit flags over the persona's fields and refused whitespace-only values.
+Do not read those values again from the persona file, which may have changed.
+Read that file only for the persona text.
+
+Throw when the application cannot honor a launch option.
+The caller reports the thrown value's `message`, or its text representation when no message exists.
+
+### Declare supported features
+
+Declare only the features your connector implements:
+
+- Set `supportsPrompt`, `supportsModelVariant`, or `supportsResume` only when the application can honor that request.
+  Unsupported requests are refused before provisioning.
+  Resume creates a new session from the source transcript and leaves the source unchanged.
+- Use `supportsSessionContinuation` for recovery of the same meshed session after a process restart.
+  Use `supportsSessionReopen` only when an existing named session can be reopened without creating a replacement.
+  Set `supportsFreshStart` when a launch without a session handle creates a new session.
+- Set `supportsToolListAnnounce` only when the application can receive changes to its advertised `cotal_*` tool list.
+  Connection changes are refused when the connector cannot announce the resulting list.
+- Implement `resumeTranscript` if the CLI can locate and carry a source transcript from another host.
+- List external executables in `requires` so preflight can report a missing command before launch.
+- Implement `listModels` if the application provides a model catalog.
+  If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
+- Use `setup` and `pluginRoot` for connector-owned installation support when needed.
+  Use `launchHint` to describe what an operator sees after a direct foreground launch.
+- Set a positive safe-integer `readinessTimeoutMs` if bootstrap needs a different bound from the manager's default.
+  Reaching presence proves that the session joined the mesh, rather than that the application is healthy.
+
+If the session publishes structured events, implement `eventChannel(principal)`.
+Use that same function to choose the publication channel and the manager's grant.
+Events default to enabled when this method exists.
+
+A connector without an event channel requires an explicit `--no-events` or `events: false`.
+A registration that requires events refuses that opt-out.
+See the [connector interface](../packages/core/src/connector.ts) for every optional field.
+
+Implement `waitsForOperator(launchOptions)` when a launch option opens an operator screen before the session can join.
+Return its screen name. The manager then reports readiness once the process runs, so the operator can attach and answer.
+
+## Keep launch files private [#private-launch-files]
+
+Put persona text and MCP configuration in private files when the child should not receive their contents through command arguments.
+Use `writeLaunchArtifact` from `@cotal-ai/core`:
+
+1. Complete validation and any conversions that can throw before the first file write.
+2. Create one `artifacts: string[]` array for the launch.
+3. Pass that array to every `writeLaunchArtifact` call.
+4. Pass only the resulting file paths to the child.
+5. Return the array as `LaunchSpec.artifacts`.
+
+Use a directory prefix beginning with `cotal-`.
+The helper creates a random directory for each launch, so an old path cannot identify a later launch's files.
+Files have mode `0600` inside directories with mode `0700` on POSIX systems.
+The helper also applies private filesystem permissions on Windows.
+
+The launcher owns these files after `buildLaunch` returns.
+Keep them available for the child's entire lifetime because the child may read them again.
+The manager and direct foreground launcher remove them only after proving that the child has exited.
+A refusal before any process starts permits immediate removal.
+
+On POSIX systems, managed runtimes and direct foreground launches use `reclaimWithChild`.
+It starts a watcher and replaces the shell with the child process.
+The watcher removes the files after the child exits, even if the launcher was killed.
+It retries failed removal every five seconds.
+
+The in-process PTY runtime reports exit to the manager.
+For runtimes without streamed exit events, including tmux, cmux, Orca, and Herdr, the manager also polls for exit proof.
+Failed removal remains owned and is retried.
+
+If a runtime fails before handing the command to a backend that could start it, throw `SpawnRefused` from `@cotal-ai/core`.
+The manager can then remove the files immediately.
+Another thrown error does not prove the child never started.
+Those files remain for the child's watcher or the OS temporary-file cleanup.
+On Windows, there is no POSIX watcher, so a killed launcher's files remain for OS cleanup.
+
+Legacy seats created with `launchSeat` from `@cotal-ai/seat` give file ownership to their custodian.
+The custodian removes files after observing exit, or the reap that proves the seat gone removes them from the recorded temporary directory.
+New manager launches do not use this custodian path.
+
+<Callout type="warn" title="Private files share the OS user's permissions">
+
+Another process running as the same OS user can read these files while they exist.
+Use separate OS identities or stronger host isolation for agents that must not share credentials.
+
+</Callout>
+
+## Authenticate local listeners [#local-listeners]
+
+If your connector exposes tools over loopback TCP or a Unix socket, authenticate every connection.
+Give the child a secret through private launch material or an environment variable.
+Keep the secret out of command arguments.
+
+Compare the presented secret in constant time.
+Bound both the request body and any frame received before authentication.
+Reject unauthenticated connections before they can reach a tool.
+A local bind address does not isolate applications that share a workstation or OS user.
+
+Reuse a shipped design:
+
+- The [Codex loopback MCP endpoint](../extensions/connector-codex/src/mcp.ts).
+- The [connector-core control server](../extensions/connector-core/src/control.ts), which exports helpers for another listener in the same process.
+
+## Package the extension [#packaging-rules-enforced-at-ext-add]
+
+Publish your connector as an ESM npm package.
+`cotal ext add` imports the package and verifies its contributions in the CLI's registry.
+Use the following rules to share the host's registry:
+
+1. Declare `@cotal-ai/core` and every other `@cotal-ai/*` package you use as a `peerDependency`.
+   A regular dependency can create a second registry or a mismatched package copy, so installation refuses it.
+2. If you bundle your entry point, mark those host peers as external.
+3. Register the connector as an import side effect of your `main` or `exports` entry.
+4. Choose a connector `name` that is unique among installed connectors and is not the reserved name `cotal`.
+   Operators select it with `--harness`.
+5. Include a package `version`.
+   Installation pins that version, and each load checks the pin.
+
+A package manifest can have this shape:
+
+```json
+{
+	"name": "@you/cotal-connector-myagent",
+	"version": "0.1.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"files": ["dist"],
+	"peerDependencies": {
+		"@cotal-ai/core": "<compatible-core-range>"
+	}
+}
+```
+
+Replace `<compatible-core-range>` with the version range your connector supports.
+Ship every file needed to import and run it.
+
+The installer links `@cotal-ai/*` peers to the binary's copies.
+Lazy materialization verifies and rebinds those links for the entry's initial import.
+Import each host peer through that initial graph.
+Child programs and launch artifacts that resolve dependencies later must bundle their dependencies rather than rely on a host-peer link that another process can rebind.
+
+## Exercise the connector [#connector-lifecycle]
+
+After publishing the package, install and launch it on a prepared mesh:
+
+```bash
+cotal ext add @you/cotal-connector-myagent
+cotal spawn --harness myagent --no-events
+```
+
+This launch assumes the connector does not publish events.
+For an event-capable connector, omit `--no-events` to enable them.
+A manifest selects the connector with `agent: myagent`.
+
+Check that the session joins with its intended identity and channel access.
+Verify every feature your connector declares, including refusal of unsupported options.
+For recovery and message handling, use the [shared runtime reference](connector-runtime-reference.mdx) and the relevant [wire requirements](../SPEC.md#12-conformance).
+
+To remove the installed connector, run:
+
+```bash
+cotal ext remove @you/cotal-connector-myagent
+```
+
+To choose it by default, set `COTAL_DEFAULT_AGENT=myagent`.
+An explicit launch option or persona pin still takes precedence.
+See [connector selection](connectors.mdx#choose-the-connector-for-a-launch) for caller and manager defaults.
+Custom connectors use the same lazy materialization path as first-party connectors in CLI and manager launches.
+
+For a runtime that hosts processes, such as tmux, implement the separate `Runtime` contract.
+See [Define a team](define-a-team.mdx) and the [CLI reference](cli.mdx).

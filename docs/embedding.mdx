@@ -1,0 +1,227 @@
+---
+title: Embedding Cotal
+description: Choose the published packages and authority boundaries for a service built on Cotal.
+kind: Concept
+audience: integrators
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Build your service from the published `@cotal-ai/*` packages.
+Your application's entry point imports the packages it needs and owns their configuration and lifecycle.
+The `cotal` CLI uses the same composition pattern in [`bin/cotal.ts`](../bin/cotal.ts).
+
+For CLI automation, agent tools, and wire clients, see the [API reference](api-reference.mdx).
+
+Read [Architecture](architecture.mdx), [Identity and auth](identity-and-auth.mdx), and the [Delivery daemon](delivery-daemon.mdx) before composing server processes.
+
+## Choose what to embed [#what-you-embed]
+
+For a service that operates a mesh, the supported reference composition has one broker operator, one space, and three processes:
+
+| Process | Package | Responsibility |
+|---|---|---|
+| Auth service | `@cotal-ai/auth` | NATS auth callout, IdP exchange, and JWKS. |
+| Delivery service | `@cotal-ai/delivery` | Durable message delivery for the space. |
+| Manager | `@cotal-ai/manager` | Agent launch, stop, and terminal attachment on one machine. |
+
+The broker operator owns the system account, a dedicated space data account, and a separate auth-callout account.
+The trust APIs can add several space accounts to one broker.
+The CLI does not provide per-space teardown, backup, or restore for that shared broker.
+
+If your service only sends and receives Cotal messages, start with `CotalEndpoint`.
+It does not need to host these daemons.
+For a client in another language, use [Build a client](build-a-client.mdx).
+
+<Callout type="warn" title="Keep signing authority away from agent processes">
+
+The auth service and a signer-backed Manager read signing keys into process memory.
+A `SecretStore` supplies those keys; it does not isolate them from a process that can read them.
+Use separate OS users or a stronger isolation boundary for untrusted agents.
+Review the [provisioning limits](embedding-provisioning.mdx#hazardous-provisioning-primitives) before creating credentials.
+
+</Callout>
+
+## Plan the composition
+
+1. Select the packages and [public exports](embedding-exports.mdx) your host needs.
+2. Assign signing authority and durable storage using the [provisioning reference](embedding-provisioning.mdx).
+3. Choose [process runners or hosted daemon handles](embedding-daemons.mdx).
+4. Configure the [Manager's authority and execution mode](embedding-manager.mdx).
+5. Add [remote clients](embedding-remote-clients.mdx) or [delegated seats](embedding-delegated-seats.mdx) only when the host can enforce their authorization contracts.
+
+`runAuthService` and `runDelivery` are public process runners.
+`startAuthService` and `startDeliveryService` return hosted lifecycle handles.
+The complete CLI `up` orchestration and the `supervise` runner are not public library runners.
+Use the `Manager` class for an in-process supervisor.
+
+<Cards>
+  <Card title="Package exports" href="embedding-exports.mdx">
+    Find endpoint, daemon, provisioning, authentication, and extension APIs.
+  </Card>
+  <Card title="Daemon lifecycle" href="embedding-daemons.mdx">
+    Compare process runners with account-scoped hosted services and credential renewal.
+  </Card>
+  <Card title="Provisioning and storage" href="embedding-provisioning.mdx">
+    Identify signing authority, durable state, and remaining hosting gaps.
+  </Card>
+  <Card title="Remote clients" href="embedding-remote-clients.mdx">
+    Compose MCP gateways, browser callers, and remote Manager clients.
+  </Card>
+  <Card title="Service authority" href="embedding-service-authority.mdx">
+    Look up service registration, platform supervisors, revocation, and custody contracts.
+  </Card>
+  <Card title="Manager authority" href="embedding-manager.mdx">
+    Configure local selection, signing policy, and supervised execution.
+  </Card>
+  <Card title="Delegated seats" href="embedding-delegated-seats.mdx">
+    Look up remote execution, lifecycle fencing, and recovery requirements.
+  </Card>
+</Cards>
+
+## Find a reference topic
+
+The topic links below preserve section links from the earlier combined guide.
+
+### Workspace registry liveness [#workspace-registry-liveness]
+
+A liveness sweep keeps registrations and reports offline names. Mismatch pruning is a separate operation. See [registry liveness](embedding-exports.mdx#workspace-registry-liveness).
+
+### Node connection signing [#node-connection-signing]
+
+Node connections sign each authentication challenge with fresh credential material. See [connection signing](embedding-exports.mdx#node-connection-signing).
+
+### User credential authority [#user-credential-authority]
+
+A provider may return its authoritative grant alongside a bearer. An absent grant answer remains unknown. See [user credential authority](embedding-exports.mdx#user-credential-authority).
+
+### Login confirmation [#login-confirmation]
+
+Manager startup confirms a cached login before saving or launching. See [login confirmation](embedding-exports.mdx#login-confirmation).
+
+### Older issued-authority stores [#issued-authority-stores-from-before-01110]
+
+Pre-0.111.0 stores require explicit handling before current issuance. See [issued-authority stores](embedding-provisioning.mdx#issued-authority-stores-from-before-01110).
+
+### Interactive Manager selection [#interactive-manager-primary]
+
+A trusted host can select the local Manager for an unpinned interactive exchange.
+See [Interactive Manager primary](embedding-manager.mdx#interactive-manager-primary) for the opt-in and its limits.
+
+### Account connection census [#account-connection-census]
+
+A bounded account census is an observation, not authority to evict or retire a lifecycle.
+See [Account connection census](embedding-service-authority.mdx#account-connection-census).
+
+### Service authority [#service-authority-contracts]
+
+Service-access proof, registration, and renewal have separate contracts. Opt-in hosted service authority now performs owner approval, name binding, registration, activation, and native caller issuance. See [host operations](embedding-service-host.mdx), [verified serving access](embedding-service-access.mdx), and [caller policy](embedding-service-callers.mdx).
+See [Service authority contracts](embedding-service-authority.mdx#service-authority-contracts).
+
+### Owner-bound platform supervisors [#owner-bound-platform-supervisors]
+
+A platform supervisor needs an assignment that binds its owner and instance.
+See [Owner-bound platform supervisors](embedding-service-authority.mdx#owner-bound-platform-supervisors).
+
+### Public package exports [#the-export-surface]
+
+Import supported symbols from the published package entry points.
+See the [export reference](embedding-exports.mdx#the-export-surface).
+
+### Remote MCP gateway [#remote-mcp-gateway]
+
+Each hosted conversation carries its own `connection_id` on tool calls.
+See [Remote MCP gateway](embedding-remote-clients.mdx#remote-mcp-gateway).
+
+### Private tool results [#private-tool-results]
+
+Private tool-result contracts and consent prerequisites do not enable a serving path.
+See [Private tool results](embedding-remote-clients.mdx#private-tool-results).
+
+### Browser control [#browser-control]
+
+A browser caller uses generated validators and an explicitly selected Manager instance.
+See [Browser control](embedding-remote-clients.mdx#browser-control).
+
+### Remote Manager clients [#remote-manager-client-composition]
+
+The public request builders preserve the stock registration and authority checks.
+See [Remote Manager client composition](embedding-remote-clients.mdx#remote-manager-client-composition).
+
+### Long-lived endpoint credentials [#long-lived-endpoints-take-a-bearer-function]
+
+A bearer function supplies fresh credentials before expiry and reconnect.
+See [Long-lived endpoint credentials](embedding-exports.mdx#long-lived-endpoints-take-a-bearer-function).
+
+### Daemon entry points [#booting-the-daemons]
+
+Process runners and hosted handles have different configuration and lifecycle ownership.
+See [Daemon entry points](embedding-daemons.mdx#booting-the-daemons).
+
+### Auth service [#auth-service]
+
+The process runner reads signing material from its store and local state from the resolved workspace.
+See [Auth process runner](embedding-daemons.mdx#auth-service).
+
+### Delivery service [#delivery]
+
+Delivery uses a scoped credential that another process must renew.
+See [Delivery process runner](embedding-daemons.mdx#delivery).
+
+### Supervisor signing authority [#supervisor-signing-authority]
+
+The Manager's credential source determines which signing and renewal operations it can perform.
+See [Supervisor signing authority](embedding-manager.mdx#supervisor-signing-authority).
+
+### Delegated seats [#delegated-seats-outside-the-managers-filesystem]
+
+Delegated execution keeps worker custody separate from the Manager's local filesystem.
+See [Delegated seats](embedding-delegated-seats.mdx#delegated-seats-outside-the-managers-filesystem).
+
+### Delegated recovery [#delegated-recovery-contracts]
+
+Recovery requires current authority and lifecycle evidence.
+See [Delegated recovery contracts](embedding-delegated-seats.mdx#delegated-recovery-contracts).
+
+### Space provisioning [#provisioning-a-space-one-space-reference-shape]
+
+The one-space provisioning example creates trust, streams, a delivery class, and a scoped delivery credential.
+See [Space provisioning](embedding-provisioning.mdx#provisioning-a-space-one-space-reference-shape).
+
+### Provisioning authority [#hazardous-provisioning-primitives]
+
+A `SpaceAuth` bundle carries account signing authority even after `stripSpaceAuth`.
+See [Provisioning authority](embedding-provisioning.mdx#hazardous-provisioning-primitives).
+
+### Hosting gaps [#hosted-composition-gaps]
+
+Public exports alone do not provide a complete hosted control plane.
+See [Hosted composition gaps](embedding-provisioning.mdx#hosted-composition-gaps).
+
+### Durable host state [#hosted-durability]
+
+JetStream coordination state and host-held trust state need different storage plans.
+See [Hosted durability](embedding-provisioning.mdx#hosted-durability).
+
+### Hosted run revocation [#hosted-run-revocation]
+
+Run revocation is a host-authorized operation with lifecycle checks.
+See [Hosted run revocation](embedding-service-authority.mdx#hosted-run-revocation).
+
+### Private result prerequisites [#private-tool-result-prerequisites-not-serving]
+
+Revocation snapshots and a clock-skew bound are prerequisites for serving private results.
+See [Private tool-result prerequisites](embedding-service-authority.mdx#private-tool-result-prerequisites-not-serving).
+
+### Native service custody [#native-service-custody-guards]
+
+Native custody guards do not establish the remote host's authority.
+See [Native service custody guards](embedding-service-authority.mdx#native-service-custody-guards).
+
+## Continue [#see-also]
+
+- [Substrate stability](stability.md) describes package and protocol guarantees.
+- [Identity and auth](identity-and-auth.mdx) describes profiles and the IdP callout contract.
+- [Delivery daemon](delivery-daemon.mdx) describes the durable message backstop.
+- [Deploy](deploy.mdx) describes the reference container composition.

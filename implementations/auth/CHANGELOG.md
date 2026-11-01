@@ -1,5 +1,134 @@
 # @cotal-ai/auth
 
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+  - @cotal-ai/lang@0.133.11
+  - @cotal-ai/workspace@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+  - @cotal-ai/lang@0.133.10
+  - @cotal-ai/workspace@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+  - @cotal-ai/workspace@0.133.9
+  - @cotal-ai/lang@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+  - @cotal-ai/lang@0.133.8
+  - @cotal-ai/workspace@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+  - @cotal-ai/workspace@0.133.7
+  - @cotal-ai/lang@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+  - @cotal-ai/lang@0.133.6
+  - @cotal-ai/workspace@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- cb6c6c4: Every refused exchange that spends a face's refusal budget answers through one helper. The helper records the failure, writes the audit line, and answers 429 with the mask when the peer is already throttled, or else the route's own status. The routes covered are the exchange body and view refusals, the agent and human exchange catches, chat sessions, the manager instance list, the service endpoint host and manager-service authority. Before, each route spelled the sequence itself. Behavior is unchanged.
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+  - @cotal-ai/lang@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [5629f59]
+- Updated dependencies [4b483de]
+- Updated dependencies [60b5c33]
+  - @cotal-ai/lang@0.133.4
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- Updated dependencies [22bf7bf]
+  - @cotal-ai/workspace@0.133.3
+  - @cotal-ai/core@0.133.3
+  - @cotal-ai/lang@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- Updated dependencies [3f005b8]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+  - @cotal-ai/lang@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [28b245f]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/lang@0.133.1
+  - @cotal-ai/workspace@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+  - @cotal-ai/lang@0.133.0
+  - @cotal-ai/workspace@0.133.0
+
+## 0.132.7
+
+### Patch Changes
+
+- Updated dependencies [ad4a37e]
+  - @cotal-ai/core@0.132.7
+  - @cotal-ai/workspace@0.132.7
+  - @cotal-ai/lang@0.132.7
+
+## 0.132.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.132.6
+  - @cotal-ai/lang@0.132.6
+  - @cotal-ai/workspace@0.132.6
+
 ## 0.132.5
 
 ### Patch Changes

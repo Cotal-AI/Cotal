@@ -684,6 +684,10 @@ accepts("one branch spawning the same worktree twice runs alone in it",
      a: async () => { await spawn("dev", { name: "a", worktree: "wt-1" }); await spawn("dev", { name: "b", worktree: "wt-1" }); },
      b: async () => { await sleep("1s", { name: "nap" }); },
    }, { name: "build" });`);
+accepts("a conclave runs its function once, so a literal worktree in it is not shared",
+  `const a = await spawn("dev", { name: "a" });
+   const b = await spawn("dev", { name: "b" });
+   await conclave([a, b], async (ch) => { await spawn("dev", { name: "s", worktree: "wt-1" }); }, { name: "triage" });`);
 accepts("a computed worktree is the runtime guard's to decide",
   `const wt = "wt-" + "1";
    await parallel({

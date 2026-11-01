@@ -1,0 +1,140 @@
+---
+title: "Recover a mesh"
+description: "Use status and logs to diagnose service failures, stuck presence, or a frozen registration gate."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Start with the status report, then follow the procedure for the failed component.
+For normal startup and shutdown, use [Run a mesh](run-a-mesh.mdx).
+
+## Find the failure [#when-something-looks-absent]
+
+Run `cotal status` to see which local components are running.
+Inspect these files under the mesh's project folder:
+
+| Log | Component |
+| --- | --- |
+| `.cotal/manager.<key>.log` | Manager. |
+| `.cotal/delivery.<key>.log` | Delivery daemon. |
+| `.cotal/nats.log` | Broker. |
+
+There is one manager and delivery log pair per space.
+[Project files](config.mdx#project-files) explains the space key.
+Manager lines begin with their UTC write time.
+
+These logs are under the project's `.cotal/`, not `~/.cotal`, unless the home directory is the mesh root.
+`cotal up --detach` redirects child output to those files.
+A systemd unit wrapping that launcher does not put the children's output into its journal, so `journalctl -u <unit>` can be empty while the project log contains the failure.
+
+Permission denials are reported explicitly.
+A refused endpoint call does not become an empty successful result, and refused subscriptions appear as logged denials.
+Check [channel permissions](channels-and-permissions.mdx) when a component runs but cannot read or subscribe.
+
+## Recover stuck presence [#presence-write-stuck]
+
+A legacy file-backed presence bucket can remain readable while refusing every write.
+After one full presence TTL of consecutive failures, a bound endpoint reports `presence-write-stuck`.
+Treat the roster as last-known while that condition remains active.
+
+1. Review the [shutdown effects](run-a-mesh.mdx#stop-the-stack) for running agents.
+2. Stop and restart the broker through the deployment's normal ownership path.
+3. Check that presence writes and heartbeats resume.
+
+Restarting clears nats-server's in-memory file-store write latch and preserves the JetStream root.
+Do not delete the presence stream as a partial repair.
+The provisioner can create that stream but cannot delete it; teardown authority can delete it but cannot recreate it.
+Cotal reports the fault rather than attempting an unsafe delete-and-recreate sequence.
+
+Current Cotal creates presence in memory storage.
+Every endpoint rewrites its liveness record on each heartbeat, so losing those records on a broker restart loses no durable information.
+A broker stop removes the memory stream itself. Every `cotal up`, including a preserved-state resume, recreates it before starting daemons.
+JetStream fixes storage type at stream creation, so an older file-backed bucket stays file-backed until it is recreated.
+
+nats-server fixed the file-store latch in 2.14.5.
+Cotal warns when a broker below that version has a file-backed presence bucket; a memory-backed bucket receives no warning.
+A broker below the wire specification's 2.12 minimum is refused at connection.
+
+## Check startup reconciliation [#static-reconciliation]
+
+On an authenticated manager start, unfinished static lifecycle operations reconcile after the control endpoint begins serving.
+Run `cotal status --components` to see the reconciliation state and failed aliases.
+The manager status response also includes `staticReconciliation` with its last sweep counts.
+Each failed alias reports its durable phase and disposition.
+
+| Report | Next action |
+| --- | --- |
+| `failed` with `static sweep error=<reason>` | Investigate the sweep's `error`, then restart the manager to collect its rows again. A DEL or PURGE slot marker can refuse planning before any alias is processed. |
+| An alias retry in progress | Leave the manager running. Its retries occur after 1, 5, and 30 seconds. |
+| `retry-exhausted` | Follow the reported remedy to restart the manager after addressing the failure. The new process derives a new retry budget from the durable row. |
+| `recovered` | The completed row remains visible until the next reconciliation sweep clears it. |
+
+The initial attempt plus three retries gives four attempts per manager process.
+Each attempt re-reads the durable slot and resumes the same deterministic terminal operation.
+The delays schedule work; they do not release its lifecycle fence.
+
+Cleanup removes credential files, broker durables, and the read-ACL row as separate steps.
+An unremovable credential file does not leave the broker footprint behind, but its failure keeps the alias held for another attempt.
+On shutdown, the manager prevents new reconciliation, lets an already-started exact terminal finish, and stops the serial sweep before the next alias.
+After the manager has stopped, startup cannot publish its service.
+
+Reconciliation reports terminal outcomes. It does not independently prove that every footprint cleanup finished.
+
+## Recover a frozen gate [#gate-recovery]
+
+A manager that dies during registration can leave its issuance gate frozen.
+That gate prevents two incarnations from serving at once.
+A spawn refusal identifies the holding `opId`, `blockedOp=registration`, and `remedy=cotal reconcile-gate` instead of timing out without a remedy.
+
+<Callout type="warn" title="Keep one recovery attempt in control">
+
+Suspend systemd restart policies, watchdogs, health checks, and other automation that starts or kills the manager.
+Do not restart it while boot healing or `cotal reconcile-gate` is running.
+An interrupted attempt can resume durable progress, but repeated interruptions delay recovery.
+
+</Callout>
+
+Let the successor manager's normal startup heal the dead registration operation.
+If that boot cannot run, use [`cotal reconcile-gate`](cli-maintenance.mdx#reconcile-gate).
+That command also covers a non-manager endpoint or recovery without starting a manager.
+
+Recovery requires a complete CONNZ sweep proving that the freeze-holder is gone: `gone` and `sweepComplete=true`.
+A live holder, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
+Silence is not proof of death, and waiting out a TTL does not reopen the gate.
+
+The recovery result depends on the registration's durable state:
+
+- If the specification write committed, recovery promotes and reopens the same freeze at that revision.
+- Otherwise, it abort-reopens the gate with `generation+1`, keeps `processEpoch` unchanged, and continues takeover.
+
+Boot healing and re-registration use separate one-shot executor windows.
+Healing a large predecessor family cannot consume the takeover's credential lifetime.
+If re-registration outlasts a connection's credential lifetime, it retries the same frozen operation with fresh authority and retains verified-holder progress.
+An interrupted holder check resumes only after another liveness check.
+Its progress is bound to that operation, gate revision, and holder set, so a later freeze cannot reuse it.
+
+## Replace the store as a last resort [#last-resort-jetstream-store-replacement]
+
+<Callout type="warn" title="Destructive recovery">
+
+Store replacement is never automatic and is not normal gate recovery.
+It removes JetStream message and control history and durable consumer state.
+Use it only after the retained store cannot be reconciled and you have accepted that loss.
+Agent session files outside JetStream remain, but their referenced mesh history does not.
+
+</Callout>
+
+1. Stop the supervisor, watchdog, manager, delivery daemon, broker, and every other actor touching the space.
+   Confirm that no Cotal or NATS process has the store open.
+2. Preserve the stopped store. Move `.cotal/nats` to a dated backup and archive both `nats` and `auth`.
+   Keep the original copy.
+3. Start the broker against a new empty store, then start one manager.
+   Wait until that manager reports that it is serving.
+4. Repopulate the mesh only after the manager is healthy.
+   Re-enable supervisors, watchdogs, and restart automation last.
+
+Keep the old store until the incident review and any forensic or manual recovery are complete.
+Restoring that store also restores its old durable state, including the original fault.
+Never swap it back into a live mesh casually.

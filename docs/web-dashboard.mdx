@@ -1,0 +1,154 @@
+---
+title: "Use the web dashboard"
+description: "Configure the read-only dashboard and inspect a space through a protected browser session."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Open a read-only browser view of a [running mesh](run-a-mesh.mdx).
+For a terminal display or authorized operator controls, use the [console](console.mdx).
+
+## Configure the service [#web-dashboard]
+
+The supported dashboard is the `@cotal-ai/web` service preset.
+It needs a registered static-auth root, an existing protected credential file, and explicit read-only intent.
+It is separate from stack startup.
+
+It cannot substitute a cached operator login, an account signer, or an open connection.
+User-auth targets need a supported caller handoff and remain unavailable through this service route.
+See the [dashboard service instructions](cli-observation.mdx#web-dashboard) for the full requirements.
+
+![The browser dashboard shows the roster, activity, and agents needing attention](../assets/dashboard.png)
+
+```bash
+cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
+cotal service start web --space main
+cotal service logs web --space main
+cotal service stop web --space main --yes
+```
+
+Before taking PID custody, the child validates the file's signature, matching user key, and current validity against the registered root's full static trust chain and current signing key.
+An alternate signer or cached credential does not replace a mismatch.
+A user-auth root or a root containing only a stripped signer is unsupported. Broker admission is checked separately.
+
+The service preserves the broker's registered TLS requirement.
+Its browser listener is HTTP, so broker TLS does not protect remote browser traffic.
+The `host` and `port` definition options default to `127.0.0.1` and 7799. Wildcard hosts and port 0 are refused.
+It opens no browser and starts no dependency automatically.
+Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.
+A page file that cannot be read returns `500` with the failed read identified.
+
+### Open the private session
+
+Read the owner-private session file named in the service log, then open its single-use link in the browser profile you intend to use.
+The file is create-only and bound to the full service instance and launch request.
+Logs contain only its reference path.
+
+<Callout type="warn" title="Keep the session file private">
+
+Do not upload the session file or paste its contents into logs.
+Opening its link exchanges the bootstrap token for an HttpOnly, same-site session cookie.
+A spent token cannot open another session.
+
+</Callout>
+
+The session belongs to its origin. A localhost name and a literal loopback address do not share it.
+Confirmed native shutdown removes only the unchanged original private record.
+
+This service hides delete controls and refuses channel-delete requests before acquiring mutation authority or trying another transport.
+Use a separately authorized CLI channel-removal action when you need to change the mesh.
+An old cached web command needs the matching extension update, rather than an implicit reinstall.
+
+### Choose a dashboard view
+
+Each view keeps navigation on the left, content in the center, and the NEEDS-YOU view on the right.
+
+| View | What it shows |
+| --- | --- |
+| Monitor | Activity with delivery-mode filters and pause, the roster, and working, waiting, idle, offline, and stalest-live-heartbeat signal tiles. |
+| Channel | One channel's messages and members. |
+| Direct messages | One summary per peer, expandable into threads. |
+| Agent detail | The peer's name, role, harness, model, capabilities, activity, and blocked state. |
+| Graph at `/graph` | Agents and channels connected by channel membership, with links that glow as messages flow. |
+
+The roster shows status by shape and color, role, activity, and harness.
+It groups peers by the host they report, with counts. Peers without a host appear under `host not reported`.
+Seats do not report their owning manager, so the roster does not group them by manager.
+DM threads use authenticated ids, and names, roles, and statuses come from the roster rather than message payloads.
+
+Graph membership comes from the delivery daemon's broker connection view combined with the durable-members registry.
+Silent subscribers therefore appear too. The feed starts as the page loads.
+Live updates take precedence over older startup reads, including older reads that later fail.
+Use **hide-offline** to hide durable members that are away.
+
+| Feed state | Meaning |
+| --- | --- |
+| `live` | Current broker-reported membership is available. |
+| `stale` | The view retains older membership. |
+| `traffic-only` | Membership is inferred from traffic, for example without a delivery daemon in open mode. |
+| `unreadable` | The membership read did not answer. This describes the viewer, not the mesh. |
+
+Broker-reported membership requires the delivery daemon and is provisioned by a fresh authenticated `cotal up`.
+
+### Interpret incomplete data
+
+A failed poll keeps the last successful values and marks the affected sources stale.
+For example, `stale: peers, activity` names the sources; hover for the server's reason.
+The next successful read replaces those values and clears the mark.
+
+If the entire presence watch is silent for longer than the presence TTL, the header shows `stale: roster` and the reason `observer presence watch silent since T`.
+The last-known online roster remains visible until the watch resumes.
+One peer whose heartbeat expires while the watch is live still leaves the online list.
+The browser connection pill describes its local SSE connection, not the observer's upstream freshness.
+A short upstream stall may not reconnect, so the watch's freshness check detects it separately.
+
+All-activity reads have an 8000 ms deadline.
+`partial: activity` means only some sources answered. The response counts answered and requested sources, names missing ones, and records their reasons.
+A deadline reports `the read did not finish within <deadline>ms`; a refusal reports `the read failed:` with its error.
+Unfinished history pulls are canceled and their ephemeral consumers removed when the deadline wins.
+If no source answers, the page keeps the last good data with the partial marker.
+
+A single channel read uses the same deadline but either returns messages or reports a refusal naming the channel and bound.
+The view keeps its previous messages on refusal.
+Sparse history scans use that channel's first and last matching sequence numbers, rather than scanning back to sequence 1.
+
+Messages from chat and DM streams are combined by sender-written `ts`.
+Clock differences can make this order differ from broker arrival order.
+Equal timestamps retain the broker's order within each stream, with chat before direct messages.
+
+### Interpret request refusals
+
+History routes require a whole-number `limit`. Invalid values and undecodable channel-name escapes return a bad request.
+A refusal preserves the received value. Invisible, direction-changing, and annotation characters are escaped in the response and terminal log.
+Ordinary Unicode text remains readable as entered.
+
+Channel names accept dotted segments of letters, digits, `_`, and `-`, with `*` or `>` where a subtree is allowed.
+Invalid names are refused rather than rewritten into a different channel.
+
+Read routes accept no body. An announced body receives `413`, and the connection closes before reading it.
+The older embedded web handler has a separate delete route limited to 8 KiB with no wildcard targets.
+That route is not an action in the current service. Use the console or authorized CLI `channel remove` instead. A session-gate refusal also closes a request with an announced body.
+Ordinary bodyless requests keep their connection. The configured read-only service refuses deletion before reaching its mutation handler.
+
+### Read message content
+
+Monitor, channel, and DM messages render sanitized Markdown, including headings, lists, emphasis, code, blockquotes, and links.
+Raw HTML is removed. Links permit only HTTP, HTTPS, and mailto targets.
+Peer names, roles, and activities remain plain text, including attribute values such as hover titles.
+Use **show more** for a long message or **expand / collapse all** for a whole channel.
+
+The `?demo` URL, such as `http://127.0.0.1:7799/?demo`, opens a static design reference without a mesh.
+Its intent badges, approval requests, and task-failed alerts are demo content, not live dashboard interactions.
+The wire already supports reported `approval` and `failed` presence conditions.
+Live mode shows only data the observer can read.
+
+## Check visibility limits
+
+The service uses the supplied protected credential file and its grants.
+It does not mint a replacement admin credential. A chat-only file hides DM views.
+A restricted read is not an empty mesh and does not prove that a hidden DM is absent.
+
+See [Identity](identity-and-auth.mdx) for credential scopes and [MeshView](mesh-view.mdx) for the terminal observer API.
+The [wire specification](../SPEC.md) defines delivery and visibility guarantees.

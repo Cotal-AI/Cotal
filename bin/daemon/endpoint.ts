@@ -5,7 +5,7 @@
  * runtime directory is owned by the daemon's uid with mode 0700, the socket is 0600, and both ends
  * read `SO_PEERCRED` through the stock `@cotal-ai/seat` helper and require the peer to be that same
  * uid. Any process running as that uid can still reach the daemon and read its files; that user is
- * the trust principal (see docs/connect-jcode.md, "Security limits").
+ * the trust principal (see docs/connect-jcode.mdx, "Security limits").
  *
  * Nothing here repairs a path into shape. A pre-existing directory that is a symlink, not owned by
  * this uid, or not exactly 0700 is refused, never chmod-ed. A pre-existing entry at the socket path

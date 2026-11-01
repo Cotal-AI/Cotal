@@ -1,0 +1,1805 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Auth host HTTP API",
+    "version": "1",
+    "description": "Host-only HTTP operations of the stock auth service. These six routes exist only on the loopback listener and return 404 on the public listener. The owner-private auth-service discovery record supplies its port and exchange capability. Every operation requires the exact Authorization bearer capability, application/json and no Origin header. Requests match the exact target, so query strings and trailing slashes return 404. Bodies default to 65536 bytes. More than 30 invalid capability attempts in a rolling minute receive 429.\n\nThe loopback listener also serves /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /service-endpoint-authority, /service-endpoint-host and /chat-session/open, /chat-session/bearer, /chat-session/retire. Their public request and response shapes are in the [Auth HTTP API](https://docs.cotal.ai/api/auth/). Proof operations additionally require the loopback capability. The loopback /health handler also accepts other methods. Elevated exchange views and operator host operations are loopback-only. Mesh discovery is public-listener-only. This implementation reference does not establish a stable cloud API.",
+    "license": {
+      "name": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "description": "The owner-private auth-service discovery record supplies the actual loopback port.",
+      "variables": {
+        "port": {
+          "default": "12345",
+          "description": "Example only. Replace with the port announced by the running service or its owner-private discovery record."
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "HostCapability": []
+    }
+  ],
+  "paths": {
+    "/interactive-lifecycle/retire": {
+      "post": {
+        "operationId": "auth-host-retire-interactive",
+        "summary": "Retire an interactive lifecycle",
+        "description": "Retire one exact interactive actor lifecycle before rotating or deleting its grant. Unknown actors return 404 and a mismatched current lifecycle returns 409. Refusals before the retirement barrier begins carry outcome not-executed. A later failure without an outcome must be treated as unknown.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LifecycleTarget"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Malformed JSON or invalid request fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid loopback capability.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An Origin header or failed authority/proof check is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request exceeds the 65536-byte body limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Invalid-capability attempts exceeded the rolling-minute limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The host decision completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Retirement"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The actor is not granted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The requested lifecycle is not current.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A native refusal uses its HTTP status and may include code and outcome. Unexpected failures use the handler error classification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/managed-lifecycle/activate": {
+      "post": {
+        "operationId": "auth-host-activate-managed",
+        "summary": "Activate a managed lifecycle",
+        "description": "Activate the exact host-issued lifecycle UID. accountPublicKey must name this authority or the request returns 403 before mutation. Native already-exists is 409. Native refusals preserve code, outcome and optional details. An unexpected failure returns 500 with outcome unknown.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Activation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Malformed JSON or invalid request fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid loopback capability.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An Origin header or failed authority/proof check is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request exceeds the 65536-byte body limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Invalid-capability attempts exceeded the rolling-minute limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The host decision completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Activated"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The lifecycle already exists or a native conflict was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected activation failure; outcome is unknown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Native authority refusal classified by its error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/managed-lifecycle/retire": {
+      "post": {
+        "operationId": "auth-host-retire-managed",
+        "summary": "Retire a managed lifecycle",
+        "description": "Complete terminal retirement of an exact managed lifecycle after its grant was revoked. This host recovery door is used when the responsible remote manager is gone.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LifecycleTarget"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Malformed JSON or invalid request fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid loopback capability.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An Origin header or failed authority/proof check is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request exceeds the 65536-byte body limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Invalid-capability attempts exceeded the rolling-minute limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The host decision completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Retirement"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Native retirement conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected retirement failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/manager-service-authority/verify-enrollment": {
+      "post": {
+        "operationId": "auth-host-verify-enrollment",
+        "summary": "Verify a managed agent host decision",
+        "description": "Verify enrollment, retirement preparation, runtime creation or runtime status. Forward the participant request verbatim. The host derives the interactive actor scope from its own ledger; the caller cannot supply scope.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "owner": {
+                    "type": "string",
+                    "pattern": "^u_[a-z2-7]{26}$"
+                  },
+                  "request": {
+                    "$ref": "#/components/schemas/ManagedDecisionRequest"
+                  }
+                },
+                "required": [
+                  "owner",
+                  "request"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Malformed JSON or invalid request fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid loopback capability.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An Origin header or failed authority/proof check is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request exceeds the 65536-byte body limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Invalid-capability attempts exceeded the rolling-minute limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The host decision completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "authorized": {
+                          "const": true
+                        },
+                        "owner": {
+                          "type": "string",
+                          "pattern": "^u_[a-z2-7]{26}$"
+                        },
+                        "actor": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_]+$",
+                          "minLength": 1
+                        },
+                        "instanceId": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9]{26,32}$"
+                        },
+                        "serveEpoch": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "authorized",
+                        "owner",
+                        "actor",
+                        "instanceId",
+                        "serveEpoch"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "authorized": {
+                          "const": true
+                        },
+                        "v": {
+                          "const": 1
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "manager-managed-agent-runtime-create",
+                            "manager-managed-agent-runtime-status"
+                          ]
+                        },
+                        "space": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string",
+                          "pattern": "^u_[a-z2-7]{26}$"
+                        },
+                        "actor": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_]+$",
+                          "minLength": 1
+                        },
+                        "instanceId": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9]{26,32}$"
+                        },
+                        "managerLifecycleUid": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9]{26,32}$"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "$ref": "#/components/schemas/LifecycleTarget"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "reserved",
+                            "creating",
+                            "bound",
+                            "create-unknown",
+                            "closing",
+                            "closed"
+                          ]
+                        },
+                        "readiness": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "bound-not-ready",
+                            "none"
+                          ]
+                        },
+                        "retirementPhase": {
+                          "type": "string",
+                          "enum": [
+                            "intent",
+                            "released",
+                            "retired",
+                            "deprovisioned",
+                            "terminal"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "authorized",
+                        "v",
+                        "kind",
+                        "space",
+                        "owner",
+                        "actor",
+                        "instanceId",
+                        "managerLifecycleUid",
+                        "requestId",
+                        "target",
+                        "state",
+                        "readiness"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Native conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Native failed precondition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tool-result-human-proof/verify": {
+      "post": {
+        "operationId": "auth-host-verify-human-proof",
+        "summary": "Verify a fresh human proof",
+        "description": "Verify a signed password proof no older than five minutes against the authenticated session subject. The verified subject must equal subject. The owner is derived from the verified IdP proof; it is not accepted from the body.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idpToken": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "subject": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "idpToken",
+                  "subject"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Malformed JSON or invalid request fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid loopback capability.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An Origin header or failed authority/proof check is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request exceeds the 65536-byte body limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Invalid-capability attempts exceeded the rolling-minute limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The host decision completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "authorized": {
+                      "const": true
+                    },
+                    "owner": {
+                      "type": "string",
+                      "pattern": "^u_[a-z2-7]{26}$"
+                    },
+                    "sub": {
+                      "type": "string"
+                    },
+                    "exp": {
+                      "type": "integer"
+                    },
+                    "authTime": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "authorized",
+                    "owner",
+                    "sub",
+                    "exp",
+                    "authTime"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tool-result-consent/issue": {
+      "post": {
+        "operationId": "auth-host-issue-consent",
+        "summary": "Issue tool result consent",
+        "description": "Issue signed consent for the exact holder and target after verifying a fresh human proof. This route never returns private result content. ttlMs is bounded to 24 hours. Source parser and contract are packages/core/src/private-tool-results.ts and implementations/auth/src/tool-result-consent.ts.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Malformed input or any request-body read failure, including a body over 65536 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid loopback capability.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An Origin header or failed authority/proof check is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Invalid-capability attempts exceeded the rolling-minute limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The host decision completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "consent": {
+                      "$ref": "#/components/schemas/Consent"
+                    }
+                  },
+                  "required": [
+                    "consent"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Consent responses are not cached."
+              }
+            }
+          },
+          "409": {
+            "description": "The consent ID is already recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Consent signer is unavailable or issuance outcome is unknown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "HostCapability": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Exact exchange capability from the owner-private auth-service discovery record. This is not an IdP JWT or actor bearer."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not-executed",
+              "executed",
+              "unknown"
+            ]
+          },
+          "details": {}
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "LifecycleTarget": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "pattern": "^u_[a-z2-7]{26}$"
+          },
+          "actor": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_]+$",
+            "minLength": 1
+          },
+          "lifecycleUid": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{26,32}$"
+          }
+        },
+        "required": [
+          "owner",
+          "actor",
+          "lifecycleUid"
+        ],
+        "additionalProperties": false
+      },
+      "Retirement": {
+        "type": "object",
+        "properties": {
+          "retired": {
+            "type": "boolean"
+          },
+          "lifecycleUid": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{26,32}$"
+          },
+          "notStarted": {
+            "type": "boolean"
+          },
+          "alreadyRetired": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "retired",
+          "lifecycleUid"
+        ]
+      },
+      "Activation": {
+        "type": "object",
+        "properties": {
+          "accountPublicKey": {
+            "type": "string",
+            "description": "Assigned account authority public key."
+          },
+          "owner": {
+            "type": "string",
+            "pattern": "^u_[a-z2-7]{26}$"
+          },
+          "actor": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_]+$",
+            "minLength": 1
+          },
+          "lifecycleUid": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{26,32}$"
+          }
+        },
+        "required": [
+          "accountPublicKey",
+          "owner",
+          "actor",
+          "lifecycleUid"
+        ],
+        "additionalProperties": false
+      },
+      "Activated": {
+        "type": "object",
+        "properties": {
+          "accountPublicKey": {
+            "type": "string",
+            "description": "Assigned account authority public key."
+          },
+          "owner": {
+            "type": "string",
+            "pattern": "^u_[a-z2-7]{26}$"
+          },
+          "actor": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_]+$",
+            "minLength": 1
+          },
+          "lifecycleUid": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{26,32}$"
+          },
+          "activated": {
+            "const": true
+          }
+        },
+        "required": [
+          "accountPublicKey",
+          "owner",
+          "actor",
+          "lifecycleUid",
+          "activated"
+        ],
+        "additionalProperties": false
+      },
+      "ManagedDecisionRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "v": {
+                "const": 1
+              },
+              "kind": {
+                "const": "manager-managed-agent-enrollment"
+              },
+              "space": {
+                "type": "string"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "minLength": 1
+              },
+              "instanceId": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "managerLifecycleUid": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{22,64}$"
+              },
+              "registrationProof": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "serveEpoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "target": {
+                "type": "object",
+                "properties": {
+                  "actor": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_]+$",
+                    "minLength": 1
+                  },
+                  "tokenHash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "role": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "capabilities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "maxItems": 64
+                  },
+                  "subscribe": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "maxItems": 64
+                  },
+                  "allowSubscribe": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "maxItems": 64
+                  },
+                  "allowPublish": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "maxItems": 64
+                  }
+                },
+                "required": [
+                  "actor",
+                  "tokenHash"
+                ],
+                "additionalProperties": false
+              },
+              "identities": {
+                "type": "object",
+                "properties": {
+                  "supervisor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "executor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "serve": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "goalWriter": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "sessionLedger": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "supervisor",
+                  "executor",
+                  "serve",
+                  "goalWriter",
+                  "sessionLedger"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "v",
+              "kind",
+              "space",
+              "actor",
+              "instanceId",
+              "managerLifecycleUid",
+              "requestId",
+              "registrationProof",
+              "serveEpoch",
+              "target",
+              "identities"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "v": {
+                "const": 1
+              },
+              "kind": {
+                "const": "manager-managed-agent-prepare-retirement"
+              },
+              "space": {
+                "type": "string"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "minLength": 1
+              },
+              "instanceId": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "managerLifecycleUid": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{22,64}$"
+              },
+              "registrationProof": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "serveEpoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "target": {
+                "$ref": "#/components/schemas/LifecycleTarget"
+              },
+              "identities": {
+                "type": "object",
+                "properties": {
+                  "supervisor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "executor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "serve": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "goalWriter": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "sessionLedger": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "supervisor",
+                  "executor",
+                  "serve",
+                  "goalWriter",
+                  "sessionLedger"
+                ],
+                "additionalProperties": false
+              },
+              "opId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "v",
+              "kind",
+              "space",
+              "actor",
+              "instanceId",
+              "managerLifecycleUid",
+              "requestId",
+              "registrationProof",
+              "serveEpoch",
+              "target",
+              "identities",
+              "opId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "v": {
+                "const": 1
+              },
+              "kind": {
+                "const": "manager-managed-agent-runtime-create"
+              },
+              "space": {
+                "type": "string"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "minLength": 1
+              },
+              "instanceId": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "managerLifecycleUid": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{22,64}$"
+              },
+              "registrationProof": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "serveEpoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "target": {
+                "$ref": "#/components/schemas/LifecycleTarget"
+              },
+              "identities": {
+                "type": "object",
+                "properties": {
+                  "supervisor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "executor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "serve": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "goalWriter": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "sessionLedger": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "supervisor",
+                  "executor",
+                  "serve",
+                  "goalWriter",
+                  "sessionLedger"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "v",
+              "kind",
+              "space",
+              "actor",
+              "instanceId",
+              "managerLifecycleUid",
+              "requestId",
+              "registrationProof",
+              "serveEpoch",
+              "target",
+              "identities"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "v": {
+                "const": 1
+              },
+              "kind": {
+                "const": "manager-managed-agent-runtime-status"
+              },
+              "space": {
+                "type": "string"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "minLength": 1
+              },
+              "instanceId": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "managerLifecycleUid": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{22,64}$"
+              },
+              "registrationProof": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "serveEpoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "target": {
+                "$ref": "#/components/schemas/LifecycleTarget"
+              },
+              "identities": {
+                "type": "object",
+                "properties": {
+                  "supervisor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "executor": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "serve": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "goalWriter": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "sessionLedger": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^U[A-Z2-7]{55}$"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "supervisor",
+                  "executor",
+                  "serve",
+                  "goalWriter",
+                  "sessionLedger"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "v",
+              "kind",
+              "space",
+              "actor",
+              "instanceId",
+              "managerLifecycleUid",
+              "requestId",
+              "registrationProof",
+              "serveEpoch",
+              "target",
+              "identities"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Native requests from packages/core/src/remote-manager-authority.ts. Forward verbatim; the host derives caller scope from its ledger."
+      },
+      "ConsentRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,200}$"
+          },
+          "idpToken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "accountPublicKey": {
+            "type": "string"
+          },
+          "holder": {
+            "type": "object",
+            "properties": {
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "minLength": 1
+              },
+              "lifecycleUid": {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26,32}$"
+              }
+            },
+            "required": [
+              "actor",
+              "lifecycleUid"
+            ],
+            "additionalProperties": false
+          },
+          "target": {
+            "$ref": "#/components/schemas/LifecycleTarget"
+          },
+          "ttlMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400000
+          }
+        },
+        "required": [
+          "id",
+          "idpToken",
+          "subject",
+          "accountPublicKey",
+          "holder",
+          "target",
+          "ttlMs"
+        ],
+        "additionalProperties": false
+      },
+      "Consent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "kind": {
+            "const": "tool-result-consent"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,200}$"
+          },
+          "space": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/LifecycleTarget"
+          },
+          "holder": {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "type": "string",
+                "pattern": "^u_[a-z2-7]{26}$"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "owner",
+              "actor"
+            ],
+            "additionalProperties": false
+          },
+          "iat": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "exp": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issuer": {
+            "type": "object",
+            "properties": {
+              "keyId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "keyId"
+            ],
+            "additionalProperties": false
+          },
+          "sig": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{86}$"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "id",
+          "space",
+          "target",
+          "holder",
+          "iat",
+          "exp",
+          "issuer",
+          "sig"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "x-source": "implementations/auth/src/service.ts ROUTES and loopback handlers"
+}

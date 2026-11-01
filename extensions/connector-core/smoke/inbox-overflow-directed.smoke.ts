@@ -14,7 +14,7 @@
  * MAX_INBOX of 200, so it never reached the overflow path it was meant to cover.
  */
 import assert from "node:assert/strict";
-import { MeshAgent } from "../src/agent.js";
+import { MAX_INBOX, MeshAgent } from "../src/agent.js";
 import type { InboxItem } from "../src/agent.js";
 
 let pass = 0;
@@ -29,8 +29,6 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   failures.push(detail);
   console.log(`  ✗ ${detail}`);
 };
-
-const MAX_INBOX = 200;
 
 interface Harness {
   agent: MeshAgent;
@@ -137,7 +135,7 @@ console.log("\n6. an all-directed inbox still bounds memory (no attacker advanta
 
 console.log("\n7. the in-flight ceiling refuses all-or-nothing, and a refused DM is still not lost");
 {
-  // holdInFlight caps at MAX_INBOX * 2. A flood can exhaust that ceiling, at which point the guard
+  // holdInFlight caps at MAX_IN_FLIGHT. A flood can exhaust that ceiling, at which point the guard
   // refuses a whole batch and the caller must not surface it. The contract is a DEFERRAL, so the
   // messages must still be buffered and un-acked; a refusal that also dropped them would turn a
   // protection into the very loss it exists to prevent (audit finding 2 on #776).

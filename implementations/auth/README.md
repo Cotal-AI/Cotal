@@ -6,12 +6,12 @@ callout, and the auth service. Importing it registers the `auth`, `actor`, `agen
 `auth-provider` extension. The `auth-service` command is still accepted as a deprecated entry.
 
 The public HTTP listener is described in [`openapi.json`](openapi.json), rendered as
-[docs/auth-api.md](../../docs/auth-api.md).
+[docs/auth-api.mdx](../../docs/auth-api.mdx).
 
 **Tier:** `implementations/` (a self-contained surface over core). Depends on core, lang, and
 workspace. Implementations never import each other; they meet at runtime over NATS.
 
-See [docs/identity-and-auth.md](../../docs/identity-and-auth.md) and the
+See [docs/identity-and-auth.mdx](../../docs/identity-and-auth.mdx) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 ## Connection load

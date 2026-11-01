@@ -1,0 +1,632 @@
+---
+title: CLI endpoints
+description: Presence, local endpoint references, contract authoring, native invocation, and guarded removal.
+kind: Reference
+audience: operators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The CLI separates participant presence, local endpoint references, native registrations, and verified command contracts. Each read reports its own authority and completeness.
+
+
+## endpoints [#endpoints]
+
+```bash
+cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
+```
+
+Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
+endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
+it is not limited to child processes owned by the manager. The Participant column holds the name
+that `endpoint describe` takes, and the role has its own column.
+
+
+## who [#who]
+
+```bash
+cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] [--creds <path>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--waiting` | off | Only rows that are waiting or report a condition |
+| `--all` | off | Also list infrastructure endpoints such as the manager |
+| `--json` / `-j` | off | One JSON document: `result.items` holds one row per participant |
+| `--plain` | off | The same report without color or marks |
+
+Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
+activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
+endpoints are hidden unless `--all` asks for them; the report says how many it hid. A `cotal chat`
+session is a participant a person drives, so it is listed with the agents and never counted as
+infrastructure. The report adds a Kind column that names it `chat session`, and its JSON row carries
+`sessionKind: "chat"`. In a user-auth
+space, `--all` shows each of your managers as a row whose id ends in `manager_<instanceId>`, the id
+`--on` takes, with its host and its runtime in the activity, such as `supervisor (tmux)`. A manager
+row reads `manager <name>`, with the name the manager was started with, or `manager <host>/<runtime>`
+for one started without a name.
+
+
+### Manager census
+
+`managed` says whether a manager runs the seat. With no manager on the roster it is `false` for
+every row and no manager is asked. Otherwise every registered manager is asked for its seats, and a
+seat is matched on its lifecycle UID. In a user-auth space each of your live managers is asked, and
+each answers only for the caller's own seats, so other seats show `managed: null` with a
+`MANAGED_SCOPE` warning. An
+identity the broker does not let ask the managers, such as a user whose grant has no `admin`, sees
+every seat `null` with a `MANAGERS_DENIED` warning. So does a credential passed with `--creds`: it
+carries no caller the managers accept from this command, so they are not asked. These two warnings
+say how far the identity's
+grant reaches; the roster itself was read in full, so they do not make the run partial. A manager
+that does not answer leaves every unmatched seat `null` with a warning. In a user-auth space the
+Next names those managers, as `ps` does.
+
+A part `who` could not read makes the run `partial` (exit 4): a roster snapshot that did not finish
+(`ROSTER_INCOMPLETE`), a roster that has gone stale (`ROSTER_STALE`), an error on the roster watch
+(`ROSTER_ERROR`), or a manager census it could not read in full (`MANAGERS_UNREAD`, and the warnings
+`ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
+never shown an empty roster.
+A mesh where nobody is present is a complete roster: `who` says so and exits 0.
+
+
+### Watch consumer lifetime
+
+`who` watches the roster and the channel registry on every mesh so it can report those states. On a
+static-auth or user-auth mesh the credential `who` connects with may not delete its watch consumers,
+so each one stays on the broker for five minutes after `who` exits. A script that runs `who` in a
+tight loop there can reach the broker's limit of 1000 consumers per stream.
+
+
+## whoami [#whoami]
+
+```bash
+cotal whoami [--json | --plain] [--space <s>] [--server <url>]
+cotal whoami --creds <file> [--json | --plain]
+```
+
+Reports the identity this CLI acts under in the selected space and what it may read, post and do.
+It reads the mesh registry and login cache. For a signed-in remote user-auth space it asks the
+pinned issuer to exchange a fresh IdP proof and reports the current grant returned beside the
+bearer. It does not refresh the remote space catalog or connect to the broker. A one-shot command
+has no mesh session, so there is no unread count or connection state to report.
+
+| Mesh | `identity.kind` | What it may do |
+|---|---|---|
+| Open | `open` | Everything; the broker authenticates nothing |
+| Static auth, signer on this machine | `space-signer` | Everything; each command mints its own short-lived credential for its task, so there is no standing principal |
+| Static auth, no signer here | `no-credential` | Nothing without `--creds <file>` |
+| User auth | `user` | The signed-in user's `cli` actor: `read`, `post` and `capabilities` are its ledger row |
+| A `--server` the space is not registered at, whether or not this folder holds its trust | `unknown` | Unknown: `mode` and the access fields are `null`, and the run is `partial` (exit 4) with `BROKER_NOT_PROBED` |
+| A space `space add --force` registered without checking its broker | the kind its recorded mode gives | What that mode allows, if the broker enforces it: `modeChecked` is `false`, and the run is `partial` (exit 4) with `MODE_NOT_CHECKED`, naming how to add it again with the check |
+
+
+### Identity limits
+
+A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
+"not-granted"`) may read and post nothing. On a remote user-auth space, `read`, `post`, `dms` and
+`capabilities` come from the stock issuer's current grant response. The command never infers them
+from a successful exchange, token presence, or decoded bearer claims. Each report exchanges again,
+so a grant change appears on the next report. When the issuer is unavailable, refuses the request,
+or does not return an authoritative grant, the access fields remain unknown, the run is `partial`
+(exit 4), and a warning names the state. A remote registration can hold a cached login while the
+issuer is unavailable. Until the issuer answers, the owner and principal stay `null`; the report
+calls the principal unknown on this machine rather than calling the user signed out. The cached
+expiry is advisory. `dms` says whether the identity may read its own DM history, every DM, or none.
+The report does not contact the broker to check its authentication requirements.
+So an address no registration names is reported as unknown, never as open; adding the space with
+`cotal space add` checks the broker. The same holds for the space's own folder: its signer does not
+say whether a broker at another address serves the space, and the remedy names `cotal whoami --space
+<space>` for the address it is registered at.
+A space that is prepared and not started has no broker yet. `whoami` reports the identity its folder's
+trust gives it: `space-signer` when the root holds the space's signer, as after `space forget` and
+`space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
+`target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
+when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
+In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
+assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
+`target` is `{"root": <folder>, "assumed": "main"}`.
+`--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
+its permissions name, the profile it was minted with, its principal, the agent lifecycle its
+delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
+issued and when it expires, the channels it may read and post to, and whether it may read every DM
+in the space, only its own, or none. `revokedAt` is when the space's account on this machine revoked
+the file's key with `auth revoke-credential`, and `null` when no revocation of it is recorded here. It reads the file as every `--creds` file is read and decodes
+the claims without checking the signature or contacting the broker, which enforces them. When the
+permissions name no single space, `space`, `read`, `post` and `dms` are `null`, and the run is
+`partial` (exit 4) with `CREDENTIAL_SPACE_UNKNOWN`. `--creds` takes no `--space` or `--server`.
+An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
+and connection refusals omit URL user information, query strings and fragments, and escape terminal
+controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
+WebSocket routes and bare host addresses remain supported. Invalid addresses make `whoami` refuse
+rather than print the raw value. Recovery instructions use a `<url>` placeholder rather than a
+secret-stripped connection address.
+
+
+### Local registry failures
+
+Both reads refuse an unusable local mesh registry with `SCHEMA_INVALID` (exit 1) before
+connecting. The diagnostic names the file without repeating its stored field values.
+
+`endpoint invoke <target> <command> --cast` uses the native one-way verb. Only an ephemeral
+command can be cast; journaled commands and `--wait` combinations refuse before publication.
+The receipt records the original request, resolved binding and broker flush, not a responder or
+confirmed execution. A class cast is not retried or repaired if another instance refuses its
+binding. A broker publish denial remains a refusal. A lost publication outcome remains unknown.
+
+
+## auth handle inspect [#handle-inspection]
+
+```bash
+cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]
+```
+
+This reads one protected native handle artifact or a bounded array of artifacts once. Without
+`--space`, it shows unverified public scope, holder and declared expiry claims. Signatures,
+issuer authority, parent links, holder currency and revocation remain not checked. No broker
+is contacted or credential issued. Signature bytes and original signed artifacts are never printed.
+A handle is a signed JSON grant, so a file that is not JSON, such as a NATS credential file, refuses
+`SCHEMA_INVALID` and says what it is. For a credential file, the Next names
+[`cotal whoami --creds <file>`](#whoami), which reports what it may do. A path that names nothing
+refuses `TARGET_NOT_FOUND` (exit 2) and names the path.
+The human report shows at most 50 scope rows and names omissions; JSON retains public metadata.
+
+
+### Online signature inspection
+
+An explicit `--space` selects online inspection on a registered static-auth space whose root
+holds matching native operator authority. One ephemeral provisioner reader is minted without
+persisting it. Its broker account and identity must match before leader-served signer and
+issuer-namespaced revocation reads. The inspector checks signatures, issuer scope, presented
+parent digests and containment. Every required sturdy-handle status must be explicitly unrevoked;
+missing, malformed, unreadable or stale spec/status pairs fail closed. Reads share one bounded
+chain budget. No records are created or repaired, and no alternate signer or broker is tried.
+
+These non-atomic observations are signature inspection, not a usable presentation context.
+Declared expiry, presenter identity, holder/process currency and contract-dependent use authority
+remain separate. No holder credential is conferred and no handle is redeemed. Open and user-auth
+spaces refuse this static reader rather than borrowing an operator identity. Reader-close
+uncertainty is reported separately.
+
+
+## Account signer export [#account-signer-export]
+
+```bash
+cotal auth signer --out <private-file> [--space <space>] [--force] [--json|--plain]
+```
+
+This exports the selected space's existing data-account signer through the native stripped-signer
+format. It does not create a caller, rotate a key, start a service or export the operator root.
+A cached login is not signing authority. The selected root must hold validated static trust;
+conflicting current-folder and selected-root account authorities refuse before publication. A space
+registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
+A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
+enrollment path, and nothing is written.
+
+
+### Protected output
+
+`--out` is required. Its parent must exist and pass the protected physical-directory checks. A
+parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is
+written.
+Managed `.cotal` and workstation state are not valid explicit export destinations. The file is private, and secret contents
+never appear on stdout, in the receipt or in diagnostics. Keep this account-wide signer out of
+logs and support bundles; it is not a least-privilege endpoint credential.
+
+An existing path refuses by default. `--force` first inspects an owned private regular file and
+accepts only the stripped format for the same space and account. It refuses full trust bundles,
+other accounts, symlinks and concurrent changes. An identical export is a no-op. New files use
+native create-only private publication; replacement uses the inspected snapshot under a writer
+lock. An unconfirmed publication remains unknown and is not retried. Platforms without the
+protected file policy refuse rather than substituting a weaker writer.
+
+
+## Endpoint authoring [#endpoint-authoring]
+
+```bash
+cotal endpoint init reviews [--dir <directory>] [--json|--plain]
+cotal endpoint check <contract-file> [--json|--plain]
+```
+
+`init` creates `contract.json` and an executable `handler.mjs` template. The default directory is
+the supplied name; `--dir` chooses another one. Its parent must exist. Files are created
+exclusively, without following a pre-planted symlink or replacing an existing file. A partial
+write retains the named created material for review rather than deleting it automatically.
+
+A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
+is kept. Choose a namespace you control before requesting serving authority. Scaffolding creates
+no service definition, reference, credential, registration or process. The handler accepts one
+JSON object with `command` and `args` on stdin and writes one JSON result on stdout.
+
+
+### Contract format
+
+The version-1 local contract file has `schemaVersion`, `endpoint` and `cluster`. The cluster has
+native `urn`, `revision`, `attributes`, `commands` and `events` fields. Each command carries its
+native declaration plus `input` and `output` schema bundles, each `{root, members?}`. The installed
+native compiler derives their closure digests; authors do not hand-maintain a second digest next
+to an edited schema. `members` maps native digest references to supplied JSON documents. Unknown
+wrapper or command fields are refused. This file is local authoring input, not a new wire kind.
+
+`check` reads at most 1 MiB, validates the native cluster declaration, compiles every input/output
+with the installed schema profile and reports the derived cluster closure. All schema references
+must resolve inside their bundle; no URL or adjacent file is fetched. Attribute and event
+semantics remain opaque to the native parser, so a file declaring them produces a partial result,
+exit 4, rather than a claim that those semantics were checked.
+
+Neither command contacts a broker, loads the handler, starts a service or proves serving
+permission. Authoring takes no space, broker, caller or invocation flags.
+
+Serve the edited contract through the independent service controller:
+
+```bash
+cotal service add reviews --preset exec-endpoint --space <s> --root <absolute-root> --contract <absolute-contract.json> --handler <absolute-node-executable> --handler-args '["<absolute-handler.mjs>"]'
+cotal service start reviews --space <s>
+cotal service status reviews --space <s>
+cotal service logs reviews --space <s>
+cotal service stop reviews --space <s>
+```
+
+This preset supports Linux and an existing registered static-auth root. The executable is an
+absolute protected regular file, with argv supplied separately. A symlink on the root, contract or
+executable path refuses, because a link could be repointed after the check, and the refusal names
+the physical path to use instead, such as `/usr/bin/python3.14` for `/usr/bin/python3`. There is no shell, PATH lookup,
+implicit installation, account switch or open/user-auth credential fallback. For a Node handler,
+select the Node executable and pass the script path in `--handler-args`. The runtime Node in
+Cotal's install root qualifies; if an earlier installer left its folders group-writable, the
+refusal names `cotal update`, which removes that write. That JSON array has at
+most 64 fixed nonsecret strings of at most 4096 characters each, and its serialized form has at
+most 8192 characters. A longer string refuses `USAGE_INVALID`, exit 1, naming its position and that
+limit. The handler
+runs in the contract directory with an empty environment. It is trusted local code with the
+operator's OS permissions, not a sandbox; it must not daemonize or leave independent children.
+
+Start recompiles one protected contract snapshot and pins its cluster closure and the executable
+file identity across the controller handoff. Changes before launch refuse; changes to the
+executable before a later call also refuse. Only ordinary untargeted ephemeral commands are
+supported. Targeted, journal, trait, attribute and event declarations refuse before registration.
+The host publishes the schema roots, members, closure manifests and cluster to the native
+contract store, registers one fresh native instance, and uses the native issuance gate and
+branded serve grant. The handler receives no signer, executor credential or broker environment.
+
+
+### Handler execution bounds
+
+The native serving boundary validates input before spawning and output before replying. Each
+call receives one `command`/`args` JSON object on stdin and must return one UTF-8 JSON value on
+stdout with exit code zero. Calls and casts need a native deadline; the handler budget never
+exceeds it or 120 seconds. At most 32 handlers run concurrently. Input is bounded to 64 KiB,
+stdout to 256 KiB and discarded stderr to 64 KiB. Deadline, pipe, process, JSON and schema failures
+do not replay effects. Handler payloads and stderr are not forwarded to service logs.
+
+
+### Registration custody
+
+Initialization is recorded only after the real serve subscriptions flush and the native ready
+status returns. Controller readiness remains a process-bound initialization observation, not an
+ongoing endpoint health probe. Logs and private launch records name the full native instance;
+use that instance for an attributed `endpoint describe` or `endpoint invoke`. Normal renewal
+uses the same issuer, identity and registration, with one immediate same-broker reconnect. An
+unconfirmed renewal withdraws the service rather than starting a replacement.
+
+Stop first prevents new handlers, requests termination of its owned handler groups, waits for
+process/pipe closure, drains serving and closes the connection. Native deregistration pins the
+original registration revision and preserves successor or in-flight governance state. Private
+create-only intent, registration and removal records retain the original coordinates. A later
+launch of the same local instance refuses an unsettled or malformed attempt instead of silently
+repeating it. Unconfirmed initialization or cleanup remains unknown; neither process disappearance
+nor an initialization receipt proves native cleanup. When the earlier host process is gone, as
+after a `kill -9`, the refusal names its native registration and gives the way out: remove it with
+`cotal endpoint deregister <endpoint> <instance> --yes`, then start a fresh instance with
+`cotal service start <name> --new-instance --space <s>`. A `service restart` of that instance
+gives the same commands. The separate `endpoint deregister` route retains its broker-gone and
+revision guards.
+
+
+## Endpoint control [#endpoint-control]
+
+```bash
+cotal describe <endpoint> [--on <instance>]                        [--space <s>] [--server <url>] [--creds <path>]
+cotal invoke <endpoint> <command> [--args '<json>'] [--timeout <ms>] [--space <s>] [--server <url>] [--creds <path>]
+cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
+```
+
+The generic v0.4 service surface. `describe` resolves a registered endpoint's command set off the
+wire - the reserved `describe` command answers the registered contract digests, the schemas are
+fetched from the space's content-addressed contract store, recompiled, and verified against those
+digests - and prints each command with its capability class and targeting shape. `--on <instance>`
+pins `describe` to one manager instance's rail (the whole id, as `ps` prints it under its
+`manager <id>` headers), so an operator can read what that instance serves in a multi-manager space;
+unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
+calls one command by name. When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
+once more to the instance that answered its describe; a caller whose grants name only that instance, such as a service
+caller grant, therefore needs no `--on`. It fetches only that command's cluster and schema closures,
+plus those of `inspect` when `--name` names a manager target. `--args` is a JSON object validated against the fetched input schema
+*before*
+publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
+`--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
+endpoint answers but the deadline runs out before the command is published, during the contract read or after it, the
+call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`.
+If the invocation may have been sent and its outcome cannot be confirmed before the deadline,
+including with a short `--timeout`, it reports `OPERATION_UNKNOWN` and exits 3. This does not prove
+that the command did not run. Inspect the original endpoint and request before another invocation;
+do not blindly retry with a longer timeout.
+
+`--server` overrides the registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
+`inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
+the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
+endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
+auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
+rides their bearer; each visible or invoked command still requires its existing grant, and cross-agent
+reach needs the `admin` scope). An open mesh has no service registry.
+
+
+### Static caller authority
+
+On a static-auth root the operator's own credential sends requests to the manager endpoint only, so
+the broker refuses its `invoke` of any other endpoint before the call runs. When the call and the
+endpoint's whole command surface are untargeted synchronous ephemeral commands, the refusal names
+`cotal auth mint <name> --endpoint <endpoint> --space <space> --out <private-file>`, with the space
+the call resolved and the `--server` it was given, if any, so the caller is issued for the space that
+refused even when another space is current. Run the same `invoke` again with `--creds <private-file>`. An `invoke --on <instance>` of another endpoint is refused the same
+way and names no remedy: with `--on` the operator's credential still carries manager rows only, and
+a paired caller file takes no instance pin.
+
+
+## endpoint deregister [#endpoint-deregister]
+
+```bash
+cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--server <url>] [--yes|--dry-run] [--json|--plain]
+```
+
+This removes a departed instance's registration, not a process or an agent. Both the native
+class and full instance ID are required; there is no default instance, prefix match or saved
+reference. The selected static space must have validated local signing authority. Open and
+user-auth targets refuse instead of borrowing a static credential path.
+
+The command resolves one root, account and broker policy, including its TLS requirement.
+A terminal reviews that full target and defaults to Cancel. Scripts need `--yes`.
+`--dry-run` reports the offline target and intended guard without contacting the broker,
+issuing an operation credential or deleting anything. It does not prove apply will be allowed.
+
+Apply delegates to the existing native guard. An answering instance refuses. An unanswered
+instance also refuses unless the broker affirmatively reports that instance rail empty.
+An unavailable probe or an in-flight registration refuses. After that evidence, the native
+helper checks governance and deletes status before spec, pinning both revisions. The issuance
+gate is not changed and no process is stopped; the same instance may register on a later start.
+
+The JSON/plain receipt retains the full coordinate and acknowledged removed revisions.
+A registration that moves during deletion is not success: its spec was not removed, but an
+older status may already have been removed. That uncertain outcome retains the target and is
+not retried. Raw probe diagnostics and credential material are not copied into the receipt.
+
+The old `deregister-instance` spelling is a hidden migration refusal. It starts no operation
+and names the literal replacement, and says that the replacement needs a static space's signing
+authority, since an open or user-auth space has no command that removes a registration. Its former
+default-to-this-folder instance is not retained.
+
+
+## Native endpoint reports [#native-endpoint-reports]
+
+`describe <class>` shows the authorized command table, capabilities, target modes and answering
+instance/epoch. JSON includes the native compiled schemas and verified closure digests. This is
+native discovery, not a saved-reference inventory or a grant of authority.
+
+`invoke <class> <command> --args '<json>'` validates public inputs before target preparation,
+then uses the native fetched contract before publication. `--on` pins one full instance ID; a
+credential-bound pin must agree. Request IDs and actual replying instance/epoch remain in the
+result. Refusals with a proved `not-executed` outcome stay distinct from unknown mutations.
+There is no blind retry of an unknown operation.
+
+Plain and rich reports show at most 60 whole result lines; `--json` preserves the full returned
+value. Endpoint-provided result content is not claimed to be secret-redacted. A successful action
+acceptance is not whole-task completion. This route does not use saved references or cover the
+complete endpoint namespace.
+
+
+## Saved endpoint references [#saved-endpoint-references]
+
+`endpoint` (`ep`) reads local references only and labels live state Not checked. `show <name>`
+shows the saved space, native class, full instance pin and storage revision. These commands do
+not connect to a broker or infer registrations from participant presence.
+
+`endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
+Guided add is available in an interactive terminal. Names use case-safe hexadecimal
+storage keys under the workstation endpoint directory. Imports are capped at 256 KiB. References
+reject unknown fields, raw inline credentials, target-space mismatches and malformed native pins.
+A credential reference is an owned private regular file; its contents are not read when saving.
+Existing names are not silently overwritten.
+
+`endpoint remove <name>` defaults to cancel, or takes `--yes` for scripted confirmation. It
+compares the held revision and content under the private writer lock before forgetting metadata.
+It never deregisters a native endpoint, stops a process, removes credential files or revokes grants.
+
+Protected no-follow/nonblocking file access supports POSIX hosts. Windows uses its access-list
+model for local records instead: a credential reference there must be a regular file, and its
+owner, mode and links are not checked. Saved references do not provide native live
+inventory, invocation resolution or the remaining endpoint verbs.
+
+
+Saved-reference reads validate record structure without opening or revalidating its credential
+file. A moved credential does not prevent inspecting or forgetting the local mapping. Protection
+is checked when importing/saving a credential reference and must be checked again before any
+future invocation uses it. Read receipts label credential validation Not checked.
+
+
+### Resolving endpoint targets [#resolving-endpoint-targets]
+
+`endpoint describe <target>` and `endpoint invoke <target> <command> [--args '<json>'] [--timeout <ms>]` use the
+existing native caller and digest-verified contracts. `ref:<name>` requires a saved reference.
+`ep:<class>` bypasses local references. An unprefixed name checks the selected space's saved
+references first, then uses the native class only when no reference exists. An unreadable or
+invalid reference refuses instead of selecting another target.
+
+A selected reference is disclosed on stderr and in `result.resolution`, with its revision and
+resolved native class, instance and epoch. The CLI holds its cooperative writer lock and checks
+the same bytes before invocation. `--on` must agree with a saved instance pin. A missing pinned
+instance does not fall back to the class queue. Unknown native effects are not blindly retried.
+
+Both read the endpoint's contract first, and so do `describe`, `invoke` and `auth mint --endpoint`.
+`endpoint invoke` and `invoke` give that read their `--timeout` (default 10000 ms), the one deadline
+for the whole call. `endpoint describe`, `describe` and `auth mint --endpoint` have no `--timeout`
+and give it 10 seconds. When no instance answers that read within its deadline, the command refuses
+with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
+Next says to start the service that serves the endpoint. When you set `--timeout`, the refusal
+names it, because a deadline that short can also end before a served endpoint answers, and its Next
+adds a rerun with a longer `--timeout`. Nothing was invoked or issued.
+
+A reference's file credential uses the [paired native caller adapter](cli-auth.mdx#endpoint-caller-credentials).
+It must match the selected registered static root, space, endpoint and signed native scope. A
+conflicting explicit `--creds` refuses. Arbitrary raw files do not supply a caller triple, and a
+reference's instance pin cannot be dropped to fit a class-only file. Neither case substitutes an
+operator identity. References without a file use the normal registered-space caller and its
+existing capability checks. No local reference grants remote authority.
+
+
+## Declared capabilities that remain gated [#declared-capabilities-that-remain-gated]
+
+The CLI grammar also names `endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]`,
+`endpoint session <target> <command>`, `endpoint work lease <target> <pool>` and
+`endpoint work commit <target> <pool> --lease <private-file> --result <JSON>`. They return a typed
+`UNSUPPORTED` result before any broker connection, subscription, cursor, session, lease or commit.
+The current resolver supplies command contracts, not a verified mapping of these application
+capabilities. This is a CLI integration limit, not a claim that the selected endpoint lacks them.
+No arbitrary subject, pool implementation or remote execution is guessed.
+
+`endpoint invoke --handle <private-file>` is also an explicit unsupported boundary, because no
+verified native auth-slot adapter is connected. It opens no file, redeems no handle and publishes no call.
+An opaque low-level auth string alone does not establish receiver-side attenuation. Offline
+`auth handle inspect` remains explicitly unverified metadata without `--space`; its online
+static-registry signature inspection also does not establish presenter binding or use authority,
+and is not a substitute for that gate.
+
+`endpoint describe --refresh` refuses as unsupported and sends nothing. This CLI keeps no resolved
+contract between calls: each describe makes a fresh describe request and fetches the contracts
+again, so there is no cache for the flag to bypass.
+
+A saved-reference or paired-file invocation uses the described instance and epoch without bind-repair
+to a different handle. A pre-effect bind refusal remains a refusal, not permission to choose another
+instance. Invocation receipts attribute resolution to the native responder that answered.
+
+
+### Native registration inventory
+
+`endpoint --live` adds authorized native service-registration metadata to the local reference
+inventory. It uses the existing scoped service-record read rows, without adding grants or reading
+message bodies. The SDK paginates the filtered metadata list; per-key spec/status reads come from
+the leader. The list can lag concurrent changes and is not an atomic whole-space snapshot.
+
+The snapshot reads at most 1000 registration keys. Omitted keys, unreadable records or unavailable
+registry access make the requested live portion partial and return exit 4, while preserving the
+local references. Status projection, reported state, process ownership and a serving response are
+separate. No active probe or process control is implied by a registration row.
+
+
+## Following an endpoint action [#following-an-endpoint-action]
+
+`endpoint invoke <target> <command> --wait` requires the command's digest-verified action marker
+and the native goal-result read surface. The CLI submits once, retains the accepted goal ID and
+fingerprint and follows through the native helper. Reconciliation reads the accepting instance,
+not an unrelated class winner. A reference keeps its described binding for submission.
+
+`--wait --json` emits goal NDJSON. It exports the original request, acceptance and observed terminal
+result. Intermediate native progress is not exported; a gap record states that limitation. No
+global sequence or task progress estimate is invented. An unknown observation keeps its accepted
+identifiers and is not retried. Ctrl-C or termination ends observation, not the underlying action.
+
+Goal-stream terminal values are capped at 16384 UTF-8 bytes. A larger value is omitted with an
+explicit gap and retained goal identity, not split into invalid JSON. Read that original goal's
+canonical result if needed; do not resubmit an action to recover its output.
+
+
+## Unconfirmed requests [#unconfirmed-requests]
+
+Classified failures use the same report layout as successful commands. The report names the
+outcome and stable code, then shows available request, goal and native responder attribution.
+Unknown and partial results use waiting treatment, not a healthy completion marker. Plain mode
+keeps the same state words without ANSI. The JSON envelope stays on stdout; diagnostics stay on
+stderr. Raw argument objects and arbitrary native detail payloads are not copied into the human
+report. Confirmed history purge acknowledgements remain visible when a later stream fails.
+
+
+## Endpoint class scatters [#endpoint-class-scatters]
+
+`endpoint invoke <target> <command> --all` submits one native ephemeral class scatter.
+It freezes the expected live instance set, gathers attributed replies and reconciles registration
+currency through the native SDK. It does not probe additional instance rails or retry a mutation.
+Instance pins, targeted commands, `--cast` and `--wait` cannot combine with a class scatter.
+The installed helper does not submit journaled commands through this route.
+
+Finite JSON retains the original request, each valid member result and the native missing, churn,
+unexpected, duplicate, late and invalid buckets. Invalid-reply diagnostic bodies are omitted.
+Coverage and command success are separate: complete coverage can still contain refusals or failures.
+All confirmed pre-execution refusals exit 2 (invalid input exits 1), all executed failures exit 5,
+unconfirmed execution exits 3 and mixed or partial outcomes exit 4. Reports keep full IDs, show
+bounded member/observation rows and state their omissions. A missing reply is not proof of death.
+Result values are endpoint-provided and are not guaranteed to be secret-redacted.
+
+
+## service-endpoint [#service-endpoint]
+
+```bash
+cotal service-endpoint approve <proposalId> [--caller-ceiling a,b | --request-id <hex32>] [--space <s>] [--json | --plain]
+cotal service-endpoint refuse <proposalId> [--request-id <hex32>] [--space <s>] [--json | --plain]
+cotal service-endpoint proposal <proposalId> | operation <operationId> | name <endpoint> [--space <s>]
+cotal service-endpoint name-bind <endpoint> (--owner <u_…> --claim <ref> | --request-id <hex32>) [--space <s>]
+cotal service-endpoint callers <proposalId> [--cursor <c>] [--space <s>]
+cotal service-endpoint grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> [--space <s>]
+cotal service-endpoint revoke <grantId> --to <owner.actor> --lifecycle <uid> [--space <s>]
+```
+
+Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
+with `--service-endpoints`. A static-credential or open space has no service endpoint host, so
+there every subcommand refuses `UNSUPPORTED` (exit 2), says so, sends nothing and records no
+request. A root that does not hold the space's user-auth service refuses the same way and names the
+root that started it. Every subcommand is one request to the service's
+`/service-endpoint-host` route as the signed-in user: the route verifies your IdP token and derives
+the granter itself, so no command names one. `approve` and `refuse` are the owner's: the command
+reads the proposal and its name first and decides at those revisions, so a proposal or name that
+moved in between is a conflict the host reports, never a decision on something else.
+`--caller-ceiling` names capabilities the proposed commands declare, such as `read`. Each one
+becomes a ceiling entry, pinned to the proposed instance, for every proposed command that declares
+it, and callers can later be granted only commands inside that ceiling. A name that no proposed
+command declares is refused with nothing decided, and so is one a targeted command declares,
+because a capability name does not choose a target mode. Without the flag the ceiling is empty. `proposal`,
+`operation` and `name` read as the owner: another owner's record reads absent. `name-bind` is the
+operator's: it needs the auth service on this machine and runs on its loopback face under the
+exchange capability, with your signed-in subject as the audit id. The host verifies no domain
+control, so `--claim` is your own reference for the namespace you checked. The answer is the host's
+own. A decision or a binding is recorded under its request id at
+`.cotal/auth/space.<key>/service-endpoint-requests/<id>.json` in this root before it is sent, and
+the command prints that id, or names the exact resend command in the failure when no answer came
+back. A run interrupted before any answer prints nothing: the record's file name is the id.
+Run the same subcommand and subject again with `--request-id <hex32>` to send the recorded request as it was,
+which the host replays with the same approval or binding; a fresh read would carry the revisions
+the first attempt moved, so the replay never rebuilds the request, and it takes no
+`--caller-ceiling`, `--owner` or `--claim`. An id this root never recorded, or one recorded for a
+different command or subject, is refused with nothing sent. A run without `--request-id` is a new
+request, and a proposal already being approved answers `approval-in-progress`.
+
+`callers`, `grant` and `revoke` manage who may invoke an approved service, as its owner. A caller
+grant names one exact lifecycle: `--to` is the caller's owner token and actor name, and
+`--lifecycle` is its lifecycle uid, so a respawned agent needs a grant of its own. `grant` reads the
+proposal (a decided proposal still names its endpoint, instance and approval) and the caller's
+policy, then grants the `--commands` you list on that instance; the host refuses any command
+outside the approval's caller ceiling. An agent spawned by another actor is admitted only under its
+actual parent chain, with every ancestor already holding a covering grant, so grant the chain from
+its root down. A caller that already holds an active grant covering those commands is reported with
+its grant id and nothing is sent. A grant or revoke goes under a request id derived from the space and
+the request, including the policy revision it was read at, so running it again after a lost answer
+sends the same request and the host replays its answer. `callers` lists the grantees of the
+proposal's instance, 50 per page; pass the page's `nextCursor` as `--cursor`. `revoke` answers
+`pending` with `denyNew: "landed"`: new issuance stops, and connections already issued keep their
+original expiry of at most 60 seconds.
+
+
+### Executable endpoint service [#executable-endpoint-service]
+
+See the [current command contract](cli-endpoints.mdx#endpoint-authoring) for this behavior.
+
+### One-way casts [#one-way-casts]
+
+See the [current command contract](cli-endpoints.mdx#native-endpoint-reports) for this behavior.

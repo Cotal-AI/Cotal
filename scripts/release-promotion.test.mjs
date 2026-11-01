@@ -19,6 +19,7 @@ test("real install-check entrypoint isolates two synthetic operator environments
   try {
     const bin = join(root, "bin"); mkdirSync(bin);
     const capture = join(root, "captured.json");
+    const cliCapture = join(root, "cli.json");
     writeFileSync(join(bin, "npm"), `#!${process.execPath}\n` + `
 const fs = require("node:fs"), path = require("node:path");
 const env = process.env;
@@ -30,11 +31,11 @@ fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({
 })+"\\n");
 const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
 fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
-fs.writeFileSync(path.join(prefix, "bin", "cotal"), ${JSON.stringify(`#!${process.execPath}\nprocess.stdout.write("cotal-ai 1.2.3\\n");\n`)}, { mode: 0o755 });
+fs.writeFileSync(path.join(prefix, "bin", "cotal"), ${JSON.stringify(`#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(cliCapture)}, JSON.stringify({ args: process.argv.slice(2), home: process.env.HOME, registry: process.env.npm_config_registry }) + "\\n");\nprocess.stdout.write("cotal-ai 1.2.3\\n");\n`)}, { mode: 0o755 });
 `, { mode: 0o755 });
     for (const session of ["first", "second", "late"]) {
       const flags = session === "late" ? [`--requested-at=${new Date(Date.now() - 3_600_000).toISOString()}`] : [];
-      writeFileSync(capture, "");
+      writeFileSync(capture, ""); writeFileSync(cliCapture, "");
       const output = execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=5000", "--closure", ...flags], {
         cwd: workspace, encoding: "utf8", timeout: 10_000,
         env: { ...coldOsEnvironment(), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(root, session), GITHUB_TOKEN: "synthetic-not-a-credential", COTAL_HOME: join(root, "synthetic-operator", session), ...(session === "late" ? { RELEASE_ATTEMPT_STARTED_AT: new Date().toISOString() } : {}) },
@@ -51,7 +52,30 @@ fs.writeFileSync(path.join(prefix, "bin", "cotal"), ${JSON.stringify(`#!${proces
       assert.equal(captured.privatePaths, true); assert.equal(captured.emptyConfigs, true);
       assert.equal(captured.cwd, captured.home);
       assert.equal(existsSync(captured.home), false, "successful install probe must clean its private scratch root");
+      const cli = readFileSync(cliCapture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.deepEqual(cli.map(call => call.args), [["--version"], ["ext", "seed"]], "the installed CLI must seed its connectors after reporting its version");
+      assert(cli.every(call => call.home === captured.home), "the seed must run in the private installation home");
+      assert.equal(cli[1].registry, "https://registry.npmjs.org/", "the seed must read the verified registry");
     }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a version whose connector seed fails is not installable", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "release-seed-refused-"));
+  try {
+    const bin = join(root, "bin"); mkdirSync(bin);
+    const cotal = `#!${process.execPath}\nif (process.argv[2] === "ext") { process.stderr.write("✗ failed to seed connector \\"claude\\": failed to import: Class2 is not a constructor\\n"); process.exit(1); }\nprocess.stdout.write("cotal-ai 1.2.3\\n");\n`;
+    writeFileSync(join(bin, "npm"), `#!${process.execPath}\nconst fs = require("node:fs"), path = require("node:path");\nconst prefix = process.argv[process.argv.indexOf("--prefix") + 1];\nfs.mkdirSync(path.join(prefix, "bin"), { recursive: true });\nfs.writeFileSync(path.join(prefix, "bin", "cotal"), ${JSON.stringify(cotal)}, { mode: 0o755 });\n`, { mode: 0o755 });
+    let failure;
+    try {
+      execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=1500", "--poll-interval-ms=100"], {
+        cwd: workspace, encoding: "utf8", timeout: 10_000, stdio: "pipe",
+        env: { ...coldOsEnvironment(), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root },
+      });
+    } catch (error) { failure = error; }
+    assert.equal(failure?.status, 1);
+    assert.match(failure.stdout, /attempt 1: cotal ext seed exited 1: ✗ failed to seed connector "claude": failed to import: Class2 is not a constructor/);
+    assert.match(failure.stdout, /VERDICT: NOT INSTALLABLE/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

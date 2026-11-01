@@ -1,0 +1,239 @@
+---
+title: "Define a team"
+description: "Describe agents and channels in a manifest, then boot or deploy that team."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Describe your team's agents, channels, and access rules in one `cotal.yaml` file.
+Then use a fresh mesh for that team or deploy it to a mesh that is already running.
+First install the required [connectors](connectors.mdx) and complete the [Quickstart](getting-started.mdx).
+
+## Describe the team [#what-a-manifest-is]
+
+A manifest has `kind: Mesh` and one `space:`.
+It describes the broker, channel cards, and agents to launch without adding a new wire concept.
+Each agent receives a credential limited to the channel access you declare.
+
+For each channel, choose these permissions:
+
+- `subscribe` names agents that listen at startup. Those agents also have read permission.
+- `allowSubscribe` grants read permission. It defaults to `subscribe` and must include every startup subscriber.
+- `allowPublish` grants post permission. An empty or omitted list grants it to nobody.
+
+A reader does not have to subscribe at startup.
+In the example below, `builder` may read `review`, but only `planner` starts subscribed.
+The [manifest reference](manifest.mdx) covers all fields, persona forms, channel cards, and resolution rules.
+
+## Start a fresh team [#quickstart]
+
+Save this file as `cotal.yaml`:
+
+```yaml
+apiVersion: cotal/v1
+kind: Mesh
+space: main
+agent: claude                          # the harness that runs each agent
+
+agents:                                # inline personas (no external files needed)
+  planner:
+    instructions: Break the work into steps and post the plan.
+  builder:
+    instructions: Implement the smallest change that works.
+
+channels:
+  general:
+    subscribe:    [planner, builder]   # auto-listen at boot
+    allowPublish: [planner, builder]   # may post: default-deny, so list everyone who posts
+  review:
+    subscribe:      [planner]          # only planner auto-listens
+    allowSubscribe: [planner, builder] # builder MAY read #review, but isn't auto-subscribed
+    allowPublish:   [planner, builder]
+```
+
+From that folder, check the file, prepare the root, and boot the team:
+
+```bash
+cotal team check cotal.yaml --graph
+cotal space create main --root .
+cotal team boot cotal.yaml
+cotal ps --space main
+cotal watch --space main
+```
+
+The check resolves personas and access rules without a broker.
+The boot command starts a fresh stack using the prepared root.
+Inspect `cotal ps` to confirm which requested agents joined; a started manager alone does not prove every agent is ready.
+Native `up -f` returns before those launches settle. If an agent is absent from `ps`, inspect the manager log under `.cotal/` for its launch failure.
+Use [Watch a mesh](watch-a-mesh.mdx) to inspect activity.
+
+Before the first managed Claude launch, run `claude` once as the same user, choose a text style, and log in.
+Managed Claude agents default to Bypass Permissions mode, whose one-time warning only you may accept.
+Run `claude --permission-mode bypassPermissions` yourself, or give each agent `launchOptions: {permission-mode: default}` and answer prompts at its terminal.
+See [Before the manager launches Claude Code](getting-started.mdx#before-the-manager-launches-claude-code).
+
+If `main` already belongs to another root, choose an unused name in both the manifest and `space create` command.
+Preparation does not take over an existing registration.
+Skip `space create` if this folder already holds the matching prepared space.
+Keep `.cotal/` in `.gitignore`; commit the manifest and persona files rather than credentials and runtime records.
+
+<Callout type="warn" title="Fresh boot needs a stopped target">
+
+A fresh boot refuses if the broker address is already serving a mesh, even if that mesh has a different space name.
+It does not reseed a live broker or stop a leftover manager.
+Review the existing stack before stopping it, or choose another broker address.
+`broker: { servers: nats://127.0.0.1:14999 }` selects a different address in the manifest.
+
+</Callout>
+
+`cotal up -f cotal.yaml` remains the native fresh-boot spelling.
+It accepts `--dry-run` and `--server`, `--host`, `--runtime`, or `--open` overrides for that run.
+An explicit `--space` that differs from the manifest's space is refused before any write.
+Its fresh run summary is historical. `cotal team show <id>` reads that summary, not a live roster or additive ownership ledger.
+
+## Choose a lifecycle command [#the-command-lifecycle]
+
+Use the command that matches the target's state:
+
+| Goal | Command |
+| --- | --- |
+| Resolve the file without a broker | `cotal team check <file> --graph` |
+| Render the declaration's access graph | `cotal topology view -f <file>` |
+| Preview a fresh boot | `cotal team boot <file> --dry-run` |
+| Boot a prepared local root | `cotal team boot <file>` |
+| Preview deployment against a running mesh | `cotal team deploy <file> --dry-run` |
+| Add a supported team to that mesh | `cotal team deploy <file>` |
+| Inspect a returned deployment or retained attempt | `cotal team show <id>` |
+| Preview removal of a recorded deployment | `cotal team remove <id> --dry-run` |
+| Confirm a supported removal | `cotal team remove <id> --yes` |
+
+Boot previews show the manager PID record even if the process is dead and make a bounded credential-free broker probe where an address is known.
+Neither result authorizes replacing a manager.
+Deploy previews inspect native presence and channel registry state.
+Remove previews inspect native manager and card state; membership observations are for display.
+A preview does not authorize an apply.
+
+Static and user-auth boot attempts retain their intent before preparing trust.
+Boot apply supports rich, JSON, and plain receipts. `--foreground` holds the stack in this terminal.
+Inspect an uncertain or partial outcome rather than repeating the operation.
+
+## Remove only owned resources [#manifest-ownership]
+
+A fresh boot owns its stack. From its recorded root, use `cotal down` to stop that stack.
+See [Run a mesh](run-a-mesh.mdx#stop-the-stack) for agent-lifetime limits and `--with-agents`.
+A launch summary does not authorize stopping resources and does not prove that whole-set impact was reviewed.
+
+A live `team deploy` records its own intent and returned native receipts.
+Removal names the full deployment ID, not a manifest file or whichever agent currently has the same name.
+Run it from the root and space that own those records.
+
+Current removal can retire a returned static-auth agent team, remove unchanged cards from a returned channel-only team, or retire a returned static mixed team before removing its cards.
+Agent retirement checks the original manager, identity, and lifecycle UID and requires native retirement and cleanup evidence.
+Card removal rechecks the original create revisions and the current space defaults.
+It does not purge retained history, change grants, or stop other readers.
+Open and user-auth agent retirement is unsupported.
+An uncertain removal keeps its evidence; inspect `team show` before any next action.
+
+### Inspect an older ledger
+
+Older `spawn -f` deployments recorded creation-only ownership in `.cotal/manifests/<runId>.json`.
+Those ledgers remain separate from current `team deploy` intents and receipts.
+The retained cleanup route is `cotal down -f <file> --run <id>`, from the checkout that created the ledger.
+Use the run ID if the manifest changed or a previous cleanup was retained.
+
+That route validates the ledger before deleting anything.
+It stops an agent only if the live name and ID match, and removes an owned channel only when no other members remain.
+An unreachable broker or uncertain outcome leaves the ledger for later inspection and cleanup.
+It never tears down a foreign actor merely because a manifest mentions one.
+A legacy ledger preview supplies no authority for a new `team remove`, and legacy `down -f` cannot remove resources recorded by current `team deploy`.
+
+## Deploy to a running mesh [#deploying-onto-a-shared-mesh-spawn--f]
+
+Register the mesh locally and run the deployment from the project root that owns that registration.
+For an agent or mixed deployment, use a static-auth or open mesh and set `deliveryClass: live` on every declared channel.
+A new deployment accepts one to 100 new agents and at most 100 new live channel cards.
+It refuses user-auth agent apply, default or bind changes, existing-card mutation, and a registered list of brokers.
+The requested runtime must match the selected manager.
+
+<Callout type="warn" title="Partial deployment is not rolled back">
+
+Completed effects remain if a later step fails.
+Unknown effects are not replayed, and an unfinished intent is not permission to retry it.
+Inspect the returned deployment ID with `cotal team show <id>`.
+`team remove <id>` removes resources the attempt journal records it created; a failed partial deploy names that command as its next action.
+
+</Callout>
+
+Preview the manifest, inspect the result, then apply it:
+
+```bash
+cotal team deploy cotal.yaml --dry-run
+cotal team deploy cotal.yaml
+```
+
+`spawn --file` now means a persona file on the execution host. It does not deploy a Mesh manifest.
+Use `team deploy` for the manifest, including when the selected manager runs on another machine.
+A channel-only apply uses a separate create-only writer on one non-reconnecting connection.
+A mixed apply creates the channel cards before it launches agents through one pinned native manager.
+Each returned revision, original request, allocation, and matched join is recorded before the next effect.
+A complete mixed receipt must match both its channel and agent results.
+
+Reapplying an identical retained agent or mixed manifest verifies its original manager incarnations and unchanged cards.
+It does not launch, restart, update, adopt, or record another deployment.
+Changed agent policy is refused unless `--allow-stale <names>` names those stale agents.
+That waiver leaves them on their old policy; it does not restart them.
+A new deployment refuses that stale waiver, and a retained channel-only deployment is not recreated through agent reapply.
+
+Older ledger engines classified existing channels as `exists-unmanaged`, unchanged agents as `already-owned`, and changed agents as `stale`.
+Those historical classifications do not authorize current `team deploy` to adopt an existing card or actor.
+Their shared-mesh access warning used presence and the broker membership feed, which provided only a lower bound on other access.
+For a remotely managed legacy run, resolved launch specifications were sent inline and validated on that manager, then saved under its `.cotal/run/`.
+The local ledger remained in the registered checkout.
+Legacy cleanup treats a locally absent credential file as absent, but credentials minted on the remote manager remain there until the mesh's cleanup.
+
+## Select the manifest mesh [#operating-a-manifest-mesh]
+
+Use `--space <name>` to target a registered manifest mesh without repeating its broker address:
+
+```bash
+cotal ps --space research-team
+```
+
+The registry resolves its recorded port for messaging, channel commands, console, web, team commands, and manager operations.
+`--server` remains an explicit override for an off-registry broker.
+
+## Start agents from a roster [#roster-files]
+
+Use a manager roster when you want the same personas started each time that manager starts:
+
+```bash
+cotal manager start --roster <file> --foreground
+```
+
+`--roster` takes an absolute path. The manager retains it for later `manager start` calls.
+Changing it while the manager runs refuses until `cotal manager stop`.
+Without `--foreground`, the manager runs in the background.
+The deprecated `cotal supervise --roster <file>` loads the same list.
+Each entry starts one agent through the manager. A roster creates no channels; access comes from the persona.
+
+```yaml
+agents:
+  - { name: planner, agent: claude,   role: planner }
+  - { name: builder, agent: opencode, cwd: services/api, share-tools: [tavily] }
+```
+
+Each entry requires `name`, the persona to load from `.cotal/agents/<name>.md`, and `agent`, its connector.
+The connector has no default. The agent joins under the persona file's `name:`.
+Optional keys are:
+
+- `role` overrides the persona's role.
+- `config` chooses an agent file by catalog name or path.
+- `cwd` selects an existing working directory, resolved against the manager's workspace root.
+- `share-tools` lists the MCP servers to share from [configuration](config.mdx#the-config-file).
+
+Unknown keys, including keys beside `agents:`, are refused before startup.
+This catches spelling errors such as `share_tools` or `cdw` before they silently change a launch.
+
+See [Agent files](agent-files.mdx) for persona fields and [Channels and permissions](channels-and-permissions.mdx) for access rules.
