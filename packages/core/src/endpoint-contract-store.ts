@@ -207,10 +207,15 @@ function verifyStored(data: Uint8Array, digestHex: string, subject: string): Uin
  *  because {@link ensureContractStore} fails loud unless the store is config-B immutable, so the
  *  manager never serves a store where an agent's `last_by_subj` could return a shadow — the fallback
  *  never triggers on the agent path. Widening the agent grant to the bare form is unnecessary (and
- *  would relax the D32 bound for no gain). */
+ *  would relax the D32 bound for no gain).
+ *
+ *  `lastOnly` reads the last message and nothing else, for a reader that holds only the
+ *  subject-scoped form. A store {@link ensureContractStore} made keeps one message per subject, so
+ *  bytes there that do not verify throw {@link ContractStoreCorruptError} without the fallback. */
 export async function fetchContractArtifact(
   ctx: ContractStoreContext,
   digestHex: string,
+  opts: { lastOnly?: boolean } = {},
 ): Promise<Uint8Array | undefined> {
   const { jsm } = resources(ctx);
   const stream = epcStreamName(ctx.space);
@@ -229,6 +234,7 @@ export async function fetchContractArtifact(
   if (last === "absent") return undefined;
   const okLast = verifyStored(last, digestHex, subject);
   if (okLast !== undefined) return okLast;
+  if (opts.lastOnly) throw new ContractStoreCorruptError(`the message at ${subject} does not recompute its digest as strict canonical JSON (SPEC 13.7)`);
   // Shadow suspected: fall back to the create-only WINNER (the first message at the subject) — a
   // valid artifact was published create-only, so it is first; anything after it is an append.
   const first = await read({ seq: 0, next_by_subj: subject });
@@ -237,7 +243,15 @@ export async function fetchContractArtifact(
   if (okFirst !== undefined) return okFirst;
   // Neither the last nor the create-only winner verifies: the store is genuinely corrupt for this
   // subject (no honest artifact was ever published, or the first message is itself garbage).
-  throw new EpEnvelopeError("internal", `no message at ${subject} recomputes its digest as strict canonical JSON (checked both the last and the create-only winner); verify-on-read is the tamper boundary and a store with no verifying artifact never serves (SPEC 13.7)`);
+  throw new ContractStoreCorruptError(`no message at ${subject} recomputes its digest as strict canonical JSON (checked both the last and the create-only winner); verify-on-read is the tamper boundary and a store with no verifying artifact never serves (SPEC 13.7)`);
+}
+
+/** The store holds messages at a digest's subject and none of them verifies: a corrupt artifact,
+ *  told apart from a failed read. Its code stays `internal`. */
+export class ContractStoreCorruptError extends EpEnvelopeError {
+  constructor(message: string) {
+    super("internal", message);
+  }
 }
 
 // ---- the closure manifest (§13.7 "Two digests, never conflated") ------------------------------

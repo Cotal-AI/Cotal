@@ -5,7 +5,7 @@
   "guard": "A real MeshAgent user spawn reaches the real Manager, records its requested model and follows the accepted goal.",
   "command": "pnpm exec tsx extensions/connector-core/smoke/user-manager-transport.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/user-manager-transport.json",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=52",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=54",
   "mutations": [
     {
       "name": "omit the recorded model from the real spawn result",

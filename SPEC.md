@@ -5281,7 +5281,30 @@ missing either eligibility predicate keeps the legacy manager-caller mint for or
 and `run-start` refuses with `permission-denied`. Without a signed `run` capability the broker
 refuses the publish. With signed `run` but no eligible parent, the manager returns
 `ai.cotal.ep.unbound-caller-authority`. Failed
-issuance never retries on the legacy rail. The `agent` profile and every other view keep that rail.
+issuance never retries on the legacy rail. The `agent` profile and every other view keep that rail,
+apart from a listing generation's rows (below).
+
+**Listing issuance.** A credential on the legacy rail MAY carry one **listing generation**. It lets
+the credential ask the registry's `endpoints` question (§13.20) and nothing else on the versioned
+rail. The issuer adds three rows: the request publish for `registry` `endpoints` on the `one` route
+of `ep.v1` under the listing generation, the reply subscribe on that caller's own `ep.v1` reply rail,
+and the per-key `DIRECT.GET` of the listing's accepted row. That row's token is the first 32
+lowercase hex characters of SHA-256 over `"cotal.listing.v1\0"`, the connection id, `"\0"`, and the
+horizon in decimal. The connection id is the credential's nkey on a static mint and the inbox nonce
+at a user-auth callout. The horizon is the credential's expiry on a static mint and the bearer's
+expiry at the callout, so a credential without an expiry carries no listing generation. The issuer
+writes the evidence, attempt row and accepted row as for any issuance, and the evidence records the
+credential's complete ceiling, its legacy rows included. When the accepted row already exists, the
+issuer reuses its generation only if the row names the same triple, the generation is still active
+and before its horizon, and the ceiling being minted is byte-identical to the recorded evidence.
+Otherwise it mints the credential without the listing rows.
+It never replaces a row, and it never refuses a credential for this reason. A client finds its
+listing generation by deriving the token from the credential its connection presented and reading
+the row; a credential that holds no grant for that read has no listing generation. An issued
+credential MAY instead carry the `endpoints` request row on its own generation. Whether it does is
+fixed at its first issuance, so a renewal of a credential issued without it stays byte-identical.
+An issued credential without that row has no listing generation either. A client reports any
+credential whose `endpoints` request publish the broker refuses as having no listing binding.
 
 **Platform-owned user supervisor.** A trusted host composition MAY issue the closed manager-service
 registration material for one ordinary derived owner without that owner's IdP proof. This is an
@@ -5319,7 +5342,9 @@ and `run-cancel`, §14.8, and `run-start-keyed` and `run-submission-status`, §1
 with `permission-denied` carrying the detail kind
 `ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the
 host's own authority. The signerless resume and answer restrictions in §14.8 also apply, including
-the managed-seat legacy answer exception. Commands without these restrictions serve both rails. Origin (that a request on
+the managed-seat legacy answer exception. On a space with a permission system the registry's
+`endpoints` command (§13.20) refuses a legacy-rail request the same way. Commands without these
+restrictions serve both rails. Origin (that a request on
 a generation-pinned subject was published by the grant holder) is a property of the grant set,
 not of this section: no peer-held profile pairs a write with a raw stream read on one stream, and
 mediated reads remain the remedy.
@@ -5813,6 +5838,76 @@ The `expired` answer state belongs to a successful `tool-result` reply. It is di
 Empty or falsy content such as `""`, `"0"`, `"false"` and `"null"` MUST be treated as a result.
 Content MUST be inert text bounded to 64 KiB of UTF-8. The journal MUST hold at most 256 entries,
 retain each for at most one hour and MUST NOT store arguments.
+
+### 13.20 Registry
+
+A space MAY run a **registry**: a registered endpoint named `registry`, cluster `ai.cotal.registry`,
+that answers discovery questions from the space's own records. Each question is one untargeted,
+ephemeral, read-only command with its own capability. Every answer is `{ rows, next?, source }`,
+paged by `{ limit?, after? }`. This revision defines one question. The registry's `describe` is
+public (§13.7).
+
+**`endpoints`** (capability `registry.endpoints`) lists the registered endpoints the caller holds at
+least one command on, and for each the request forms its recorded ceiling covers. `limit` is 1 to
+100 and defaults to 100; `after` is the previous page's `next`. Each row is
+`{ endpoint, instances, commands, unprojected? }`:
+
+- `instances` holds every registered instance of the endpoint (its `svc.<endpoint>.<instanceId>.spec`
+  row on `cotal_records_<space>`) with the `state` its status row records, or `null`, and
+  `artifacts`. `artifacts` is `verified` when the instance's cluster closures and root documents
+  were read from the contract store and verified by digest (§13.7), `missing` when one is absent,
+  and `invalid` when one does not verify or when two of its clusters declare one command name, an
+  ambiguous surface (§13.7). A `missing` or `invalid` instance declares no command. An instance
+  whose spec row is deleted is not listed.
+- `commands` holds each declared command whose request forms the ceiling covers, as
+  `{ name, class, forms, instances? }`. Instances that declare one name with a different class,
+  targeting or mode set give one entry per declaration, each projected over the instances that
+  declare it. `instances` is present only when some instances do not declare that entry's
+  declaration. A form is `{ rail, route?, mode?, literals, covered }`, where `rail` is
+  `ep`, `ep.v1` or `epj`. For each parameter position the form uses (`instanceId`, `targetOwner`,
+  `targetActor`, `targetUid`, `nonce`), `literals` lists the tokens named there by the ceiling
+  patterns that can match a subject of the form, plus the ids of the instances that declare it at
+  `instanceId`.
+  `covered` lists the combinations the ceiling permits: at each position a literal, `null` for any
+  value those patterns do not name, or `"*"` for every value.
+- `unprojected` names the commands that have a form with more than 4096 combinations and that the
+  ceiling permits at least one request subject of. Their forms are not listed, and `commands` holds
+  no entry for them, even for a declaration of the same name that is under the limit.
+
+The registry decides each combination by matching one representative subject against the ceiling
+with the native subject rules, allow and then deny. For a form past the limit it builds one subject
+per allow pattern that can match the form, from the pattern's literals and from values no pattern
+names, and matches each against the ceiling the same way. The form is covered only when one of them
+is permitted. It leaves out an endpoint with no covered and no unprojected command, including one
+whose declarations it cannot read, so an answer never names an endpoint, command or form the
+ceiling does not cover.
+
+**The ceiling.** On a space with a permission system the request rides `ep.v1` (§13.15). The
+registry reads the ceiling recorded for the generation the broker pinned on the subject, with a
+**disclosure read**: the generation is before its horizon, the evidence exists, the attempt row is
+`active`, the evidence is unexpired, a second read of the attempt row returns the same revision,
+and the generation is still before its horizon. The read does not check source liveness and never
+admits an effect. `source` is then `recorded-ceiling`, and the broker or the endpoint may still
+refuse a listed command. On a space without a permission system the registry lists every registered
+endpoint with every declared command and empty `forms`, and `source` is `no-permission-system`.
+
+**Refusals.** A failed read of the caller's ceiling refuses with `permission-denied` when the
+generation is not live and with `unavailable` otherwise. A failed read of the space's records
+refuses with `unavailable`. Each refusal carries a fixed message that names no generation, key or
+endpoint, and the detail goes to the registry's own log. An instance whose stored declaration does
+not verify is `invalid` and does not fail the answer.
+
+**Paging.** Rows are in endpoint-name order. A page holds at most `limit` rows and is cut short to
+fit one broker message; `next` is then its last endpoint, and a page without `next` is the last. A
+single row that does not fit in one message refuses with `resource-exhausted`.
+
+**No answer.** A client that gets no answer from the registry reports that and lists nothing. It
+never builds a listing from `describe`, presence or another endpoint.
+
+**Client.** A client drops its cached `describe` of every endpoint a page lists, so its next
+`describe` of one reads the surface afresh. It may describe the registry on one connection and ask
+over another connection of the same caller triple, such as a manager-call connection whose view
+holds no registry `describe`; the answer is that connection's view.
 
 ---
 
@@ -6395,6 +6490,7 @@ The participant manager refuses a program that places a spawn on any other insta
 | §10 Join link | `packages/core/src/link.ts` |
 | §13 Endpoint control surface | `packages/core/src/` (endpoint rails, envelope, contracts; lands with the control-surface campaign) |
 | §13.15 Issued authority | `packages/core/src/issued-authority.ts` (reference, evidence store, accepted row), `issuer-session.ts`, `endpoint-subjects.ts` / `endpoint-grants.ts` (the versioned rail) |
+| §13.20 Registry | `packages/core/src/registry-contract.ts`, `endpoint-coverage.ts`, `implementations/registry/src/` |
 | §14 Workflow runs, [`spec/cotal-lang.md`](spec/cotal-lang.md) | `packages/lang/src/` (the language, journal, keys, pins), `packages/core/src/run-record.ts`, `run-journal.ts`, `checkpoint-answer.ts`, `run-notice.ts`, `run-migration.ts`, `endpoint-binding.ts` (WFJ, grants), `run-admission.ts` (§14.8), `implementations/runtime/src/` (driver, migrate, fork), `implementations/manager/src/run-hosting.ts` (admission) |
 
 ## Appendix B: Profile ACLs
@@ -6424,6 +6520,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `inbox`
 - `P.live.<manager|delivery>.<owner>.<actor>.>` (replies to its own plane liveness probes, §6.1)
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity; the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
+- with a listing generation `<g>` (§13.15): `P.ep.v1.reply.*.*.*.<owner>.<actor>.<uid>.<g>.*`, its own versioned reply rail
 - `P.epe.…`; the exact fully-qualified event subtrees of every minted read capability
   (§13.9 event-read row), incl. the caller's own per-goal subtree
   `P.epe.*.*.*.goal.<owner>.<actor>.<uid>.>`; the live tail of watch, granted per
@@ -6436,6 +6533,9 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
 - `P.live.<manager|delivery>.<owner>.<actor>` (plane liveness probe, as me, §6.1; the agent holds no `live` serve filter)
+- with a listing generation `<g>` (§13.15): `P.ep.v1.one.registry.endpoints.<owner>.<actor>.<uid>.<g>.*`
+  and `$JS.API.DIRECT.GET.KV_cotal_accepted_<space>.$KV.cotal_accepted_<space>.accepted.v1.<token>`,
+  the listing's own accepted row and no other
 - endpoint request forms per minted capability (§13.9): every agent gets the baseline set
   (`describe` on all endpoints; the delivery endpoint's durable join/leave/list commands;
   self-targeted manager commands with authz-mode `self`, including `run-answer`, which the manager
@@ -6770,6 +6870,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-30 | **A registry lists the endpoints a caller can call (§13.15, §13.20), additive.** A space MAY run a registry, a registered endpoint named `registry` whose `endpoints` command lists the registered endpoints the caller holds a command on, with the request forms its recorded ceiling covers. It leaves out every endpoint the ceiling covers nothing of. On a space with a permission system the question rides `ep.v1`, and a credential on the legacy rail MAY carry a listing generation for it: three rows that reach only `registry` `endpoints` and the listing's own accepted row, with evidence recording the credential's complete ceiling. An issued credential MAY carry the same request row on its own generation, fixed at its first issuance. The registry reads that ceiling with a disclosure read that checks no source liveness and admits no effect. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |
