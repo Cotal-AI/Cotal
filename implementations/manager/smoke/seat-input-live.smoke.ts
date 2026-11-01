@@ -496,7 +496,7 @@ try {
 
     // `--no-enter` through the same real binary, carrying the HARDEST payload: text that is itself
     // a flag spelling. `--text=<value>` is the form node's `parseArgs` requires for a dash-leading
-    // value, and it is what docs/cli.md tells the operator to use.
+    // value, and it is what docs/cli.mdx tells the operator to use.
     const before = sinkBytes(cliseat.name).length;
     const run2 = await cotal(["input", "--name", cliseat.name, `--text=--not-a-flag`, "--no-enter", "--space", space]);
     mustHaveRun(run2, "`cotal input --no-enter`");

@@ -16,5 +16,5 @@ Besides the command and the host, the package exports the pieces a trusted embed
 planning (`planFork`, `commitFork`). Migration commit and fork have no CLI or MCP verb yet; only
 the check is reachable, as `cotal run check <run-id> <file>`.
 
-See [docs/workflows.md](../../docs/workflows.md) and the [root AGENTS.md](../../AGENTS.md) for the
+See [docs/workflows.mdx](../../docs/workflows.mdx) and the [root AGENTS.md](../../AGENTS.md) for the
 tier rules.

@@ -37,6 +37,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
+import { approveDevice } from "./_device-approval.js";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-downf-home-"));
@@ -101,15 +102,7 @@ const signup = await ba.api.signUpEmail({
   returnHeaders: true,
 });
 const cookie = signup.headers.get("set-cookie")!.split(";")[0];
-async function approve(userCode: string): Promise<void> {
-  await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-  const res = await fetch(`${base}/device/approve`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie, origin },
-    body: JSON.stringify({ userCode }),
-  });
-  if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-}
+const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
 let superviseChild: ReturnType<typeof spawn> | undefined;
 try {
@@ -120,7 +113,7 @@ try {
   console.log("2) device login + full cli grant");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "repro human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("Actor grant stored"), grant.out.slice(-400));

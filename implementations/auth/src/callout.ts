@@ -254,7 +254,7 @@ export interface StartAuthCalloutOpts {
    *  Absent: a limiter of this callout's own at the default limits. */
   connectLimiter?: ConnectLimiter;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. Each answered
-   *  request writes one `auth callout: level=…` line, whose fields docs/identity-and-auth.md names. */
+   *  request writes one `auth callout: level=…` line, whose fields docs/identity-and-auth.mdx names. */
   log?: (line: string) => void;
   /** Deadline, concurrency and slow-line limits. Absent: every default. */
   limits?: AuthCalloutLimits;

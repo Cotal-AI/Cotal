@@ -220,6 +220,7 @@ function cotalUntil(args: string[], ready: RegExp, timeoutMs: number): Promise<{
   });
 }
 const { pickFreePort } = await import("./_free-port.js");
+const { approveDevice } = await import("./_device-approval.js");
 const PORT = await pickFreePort();
 const publicPort = await pickFreePort();
 const proxyPort = await pickFreePort();
@@ -386,16 +387,7 @@ const signup = await ba.api.signUpEmail({
 });
 const cookie = signup.headers.get("set-cookie")!.split(";")[0];
 const userId = signup.response.user.id;
-async function approve(userCode: string): Promise<void> {
-  const claim = await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-  if (!claim.ok) throw new Error(`device claim failed: HTTP ${claim.status}`);
-  const res = await fetch(`${base}/device/approve`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie, origin },
-    body: JSON.stringify({ userCode }),
-  });
-  if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-}
+const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
 // ---------- helpers over the auth-service daemon (a killable subprocess) ----------
 function spawnAuthService(): ChildProcess {
@@ -509,7 +501,7 @@ try {
 
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   check("device login established (sub = the signed-up user)", sub === userId, { sub, userId });
   // The REAL spawn-path owner resolution — ownerForLogin reads `sub` back OUT OF THE CACHE FILE
@@ -894,7 +886,7 @@ try {
       const attached = await invokeCommand(grantNc, SPACE, svc, "attach", undefined, { target: { mode: "owner", owner: OWNER, actor: "alpha", lifecycleUid: row.lifecycleUid } });
       check("#2312 precondition: the manager's attach issues a real session grant to the operator", attached.reply.ok === true, attached.reply.error);
       const grant = (attached.reply.data as { grant: { sessionId: string; endpoint: string; sig: string; serving: { instanceId: string; epoch: number } } }).grant;
-      const idpToken = await fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => void approve(p.userCode) })).session.token);
+      const idpToken = await fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => approve(p.userCode) })).session.token);
 
       const good = await exchangeSession(idpToken, grant);
       check("#2312 control: the holder's own redeemed grant exchanges for a session-caller bearer (200)",
@@ -1024,7 +1016,7 @@ try {
 
   // ---------- C. exchange-mode confinement ----------
   console.log("C) a managed agent is NOT IdP-exchangeable, cannot be shadowed, and fails closed on tamper");
-  const idpJwt = await fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => void approve(p.userCode) })).session.token);
+  const idpJwt = await fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => approve(p.userCode) })).session.token);
   const info0 = loadAuthServiceInfo(dir)!;
   const humanEx = await fetch(`${info0.url}/exchange`, {
     method: "POST",
@@ -1231,7 +1223,12 @@ try {
     auth,
     reloadStoreIdentity: workspaceSecretStore(root).identity,
   });
-  // Re-drive the held retirement now that genuine delivery has returned:
+  // The refused spawn above re-drove delta's teardown before any daemon served, and that teardown can
+  // still be in flight here. A re-drive joins an in-flight teardown of the same lifecycle instead of
+  // starting another, so re-driving now would only rejoin the one whose inventory found no responder.
+  // Let it settle first; the re-drive below then reads the inventory from the daemon that now serves.
+  const teardowns = (manager as unknown as { deprovisioningFlight: Map<string, Promise<void>> }).deprovisioningFlight;
+  await teardowns.get(JSON.stringify(["delta", deltaUid]))?.catch(() => {});
   await manager.startAgent({ name: "delta", agent: "e2e", events: false }).catch(() => {});
 
   // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
@@ -1240,10 +1237,9 @@ try {
   // serveIdentity.id)` while the request used to carry the manager's ENDPOINT identity: two real
   // identities of the same manager that can never be equal. Every user-mesh retirement was refused.
   //
-  // WHY NOT ASSERT THE TERMINAL. `runAgentRetirementBarrier` cannot reach its terminal here: the
-  // final step needs `verifiedGone` from the delivery daemon's `evictPrincipal`, and this fixture
-  // runs no delivery daemon. Asserting "the name was released" would therefore be red for a reason
-  // that has nothing to do with authorization.
+  // WHY NOT REQUIRE THE TERMINAL. The barrier's terminal also depends on the delivery daemon's
+  // verified eviction, the drain and the cleaner. Asserting "the name was released" would therefore
+  // be red for reasons that have nothing to do with authorization.
   //
   // WHY NOT ASSERT THE REFUSAL IS GONE. That is the wrong experiment, and it is the one I would
   // most easily have run: a fix that only rewrote the refusal's wording would pass it. Measured on
@@ -1603,7 +1599,7 @@ try {
   console.log("V) elevated views: ledger-gated god view / purge / deploy over the real wire");
   const svc = loadAuthServiceInfo(dir)!;
   const freshIdpJwt = async () =>
-    fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => void approve(p.userCode) })).session.token);
+    fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => approve(p.userCode) })).session.token);
   const humanViewEx = async (view: string, ttlSec?: number) => {
     const res = await fetch(`${svc.url}/exchange`, {
       method: "POST",

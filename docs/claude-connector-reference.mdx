@@ -1,0 +1,1110 @@
+---
+title: "Claude connector reference"
+description: "Binding, delivery, presence, event recording, and hosting contracts for the Claude Code connector."
+kind: "Reference"
+audience: "integrators"
+---
+
+This page describes the Claude-specific adapter and its shared mesh runtime.
+For setup and launch procedures, see [Connect Claude](connect-claude.mdx).
+The [wire specification](../SPEC.md) defines the protocol.
+
+## Binding
+
+Claude Code exposes four integration surfaces, and three of them collapse into a single
+dual-purpose MCP server:
+
+| Surface | Mechanism |
+|---|---|
+| Outbound, ambient | command lifecycle hooks (`node dist/hook.cjs`) relayed to the connector over its authenticated local control socket (presence, activity) |
+| Outbound, deliberate | MCP tools `cotal_send` / `cotal_dm` / `cotal_anycast` (+ `cotal_feedback`) |
+| Inbound, pull | MCP tool `cotal_inbox` (same server) |
+| Inbound, push | Channel nudge + hook drain (below) |
+
+The manager launches the *real* `claude` (no wrapper):
+
+```
+claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
+       --dangerously-load-development-channels server:cotal \
+       --permission-mode bypassPermissions
+# env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_CHANNEL=1, plus claude's documented auth vars
+```
+
+- **Tool permissions.** A managed seat has no human at its terminal, so it launches with
+  `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
+  tool call until someone answered it, and nobody can. To get prompts back, pass
+  `--opt permission-mode=default` (or another mode); the connector adds the default only when the
+  launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. A foreground
+  `cotal spawn` runs in your terminal, so it keeps Claude's own permission mode and you answer its
+  prompts there. Claude refuses
+  the bypass mode as root and under a policy that disables it; such a host must pass a mode.
+  Claude also asks each user to accept the bypass mode once, in a warning only that user may answer.
+  Cotal never answers it. A managed seat that stops on it fails at the startup bound, and the error
+  names both ways forward: accept it yourself once with `claude --permission-mode bypassPermissions`
+  in a terminal, or launch with `--opt permission-mode=default`.
+
+- **Model auth.** Locally, `claude` still reads macOS Keychain / `~/.claude`. In a container or
+  CI there is no Keychain, so the connector forwards the documented credential set:
+  `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), `ANTHROPIC_API_KEY` /
+  `ANTHROPIC_AUTH_TOKEN`, and the cloud-provider flags plus their credential vars. Host-session
+  markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`) stay out so a nested seat still saves a
+  transcript. See [Deploy](deploy.mdx).
+- **Persona privacy.** The persona body is written to a private file and Claude receives only
+  `--append-system-prompt-file <path>`. The body never appears in the spawned process argv. The
+  carrier is a 0600 file inside a 0700 directory on POSIX, with equivalent owner-only ACL hardening
+  on Windows. That is OS-user isolation: any process running as your user can read it while it
+  exists. The manager or the foreground `cotal spawn` removes it, and the shared-server MCP config
+  file, once it has proved the `claude` process gone. If the launcher is killed first, a watcher
+  started beside `claude` removes them when `claude` exits.
+- **MCP servers.** A spawned agent loads Claude's native MCP sources alongside Cotal and declared
+  sharing overrides. Explicit `--share-tools` selections and carried private homes keep strict
+  isolation. Claude still applies its own server approvals, disabled settings and managed policy
+  (see below).
+- **Lean MCP server.** Every session runs its own cotal MCP server, so Node starts it with
+  `--optimize-for-size --max-semi-space-size=1` to shrink its memory footprint. Managed launches and
+  the plugin's `.mcp.json` (personal plugin sessions) both pass these flags. `--lite-mode` and
+  `--jitless` would save more, but they remove `WebAssembly`, which Node's built-in `fetch` needs,
+  so WebAssembly stays enabled.
+- **Light hook.** Claude Code starts the plugin's hook as a new process for every tool call, prompt
+  and stop. The hook imports `@cotal-ai/core` only through small subpaths such as
+  `@cotal-ai/core/peer-label`, never the package root, which would bundle YAML and NATS into it.
+  `pnpm smoke:claude-hook-weight` holds that.
+- **Installed plugin.** The plugin is installed once, at user scope (`claude plugin install
+  cotal@cotal-mesh --scope user`), because its hooks bind only to an *installed* plugin. Earlier
+  releases installed it per project, at local scope; the next `cotal setup` removes those installs and
+  keeps the user-scope one. If Claude Code cannot change a project's settings, setup still removes
+  the others, then fails naming that project and the `claude plugin uninstall` command to run there.
+  `cotal update` does the same for a machine that has only per-project installs: it installs the plugin
+  at user scope and removes the per-project installs that had it on, keeping one a project turned off
+  and any project-scope install. An account that turned the plugin off in its user settings keeps its
+  per-project installs as they are. A session Cotal launches loads the package's own copy with `--plugin-dir`,
+  which replaces the installed one for that session, so it still runs one cotal server.
+  The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
+  `claude-plugin/`, which each release regenerates with the built bundles, the skills and the
+  release version, so an install from the repo or from a pinned commit runs without a build
+  ([Release](release.md)). `cotal setup` (npx, no clone) materializes the same marketplace under
+  `~/.cotal/claude-plugin/` from the installed CLI (each plugin dir is rebuilt from scratch and
+  atomically replaced, never merged, so no stale file rides in). The
+  `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
+  cotal-skills@cotal-mesh --scope user`); its manifest and install behavior ship inside the Claude connector, and
+  its version tracks the CLI release so updates land.
+- **Identity-gated.** A launched session joins under the identity in `COTAL_NAME`, `COTAL_LINK`
+  or `COTAL_AGENT_FILE`. A plain `claude` with none of them joins only when its conversation calls
+  `cotal_connect`, so your own sessions do not appear as stray peers. Until then its MCP
+  server builds no mesh agent and opens no broker connection. See
+  [Sessions Cotal did not launch](#personal-sessions).
+- **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The runtime waits for the
+  dialog title in normalized terminal text and presses Enter once when it appears, so startup speed
+  does not affect a supervised launch. Claude skips that prompt when channels are off for the
+  session, for example under a Team or Enterprise organization whose managed settings do not set
+  `channelsEnabled: true`, and opens its input screen instead. The runtime then ends its watch
+  without a key once the input screen's footer shows `(shift+tab to cycle)` or `? for shortcuts` on
+  two screen reads in a row. That seat gets mesh messages through its hooks only, so a message does
+  not wake it while it is idle. The PTY runtimes read the child's screen, and the tmux, cmux, Orca
+  and Herdr runtimes read the pane's screen. If neither the prompt nor the input screen appears
+  within 15 seconds, the seat ends with a bounded error naming the unmatched prompt instead of
+  hanging silently or answering another dialog. Claude's first-run screens, the text style picker and
+  the login method choice, and its Bypass Permissions warning are screens Cotal never answers. When
+  the bound ends on one of them, the error names it and the step that clears it, such as running
+  `claude` once in a terminal as that user to finish setup and log in. The PTY runtime writes that error to the seat's output and
+  stops the child as a graceful stop does, so a child that ignores SIGTERM is killed 3 seconds
+  later. Confirmation ends before the stop begins, so later child output receives no startup
+  response. The other runtimes write the error to the manager's log.
+- **Trusted directory.** An authorized supervised spawn accepts the selected workspace through
+  Claude's native trust dialog, which Claude draws in one of two layouts. When a numbered list
+  shows Yes first and selected, the runtime confirms it with Enter. When No comes first and is
+  selected, the runtime moves to Yes and confirms only after seeing Yes selected. It never confirms
+  while No is selected, sends each response once, and stops watching after the
+  development-channel confirmation or on the input screen. A changed or unsupported dialog receives no guessed input
+  and still fails within the startup bound. Claude saves trust with its own repository and linked
+  worktree rules; Cotal does not rewrite the manager's configuration. Accepting trust enables the
+  workspace's hooks and settings, which can select a tool permission mode when no launch flag
+  overrides it. Cotal adds no tool-permission bypass flag. Review the checkout before authorizing
+  a spawn there. A foreground `cotal spawn` keeps the trust dialog in your terminal.
+
+Inbound mesh messages arrive in context as
+`<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag
+attribute the agent can read for routing.
+
+The consuming connector holds a crash-safe claim for its broker target, space, principal and
+lifecycle on this OS user account. A second patched session on the same host refuses before
+pulling that inbox, even when its launch files and control socket differ. Reconnect keeps the
+claim. Hooks and non-consuming helper connections do not claim it. The control listener binds
+before the broker connection. On Unix, a restart probes an occupied socket path and retries
+once after removing a leftover with no listener. A live listener, an inconclusive probe or
+a Windows named-pipe collision still refuses the bind.
+
+This is cooperative same-host containment. Other hosts, broker URL aliases and older clients
+are not fenced. Preserve the existing session before choosing a distinct actor for a new
+launch. An uncertain shutdown keeps custody until the consuming process exits.
+
+### The seat entry
+
+The launched entry is `dist/seat.cjs`. It enables Node's [module compile
+cache](https://nodejs.org/docs/latest-v22.x/api/module.html#modulenablecompilecachecachedir) and
+then loads `dist/mcp.cjs`, which holds the server. The cache stores V8's compiled form of that 5 MB
+bundle, so every launch after the first one skips parsing it, which keeps about 5.7 MiB per seat out
+of the process's malloc arena for as long as the seat runs.
+
+The cache lives in `~/.cotal/compile-cache` (`%LOCALAPPDATA%\Cotal\compile-cache` on Windows), the
+OS user's own Cotal directory, which `COTAL_HOME` never redirects. Node keys a subdirectory inside
+it, so a Node upgrade pays one compile and reads no stale entry. The directory grows to the size of one compiled bundle per Node version, under 1 MB each, and
+deleting it is safe at any time: the next seat writes it again.
+
+The directory is created with owner-only permissions, whatever the launching umask was, because a
+compiled bundle belongs to the user who ran the seat.
+
+Two things the cache never does. A cache it cannot open, such as a read-only home, prints one line
+to stderr with Node's reason and the seat serves without it. `NODE_DISABLE_COMPILE_CACHE=1` turns it
+off silently. Setting `NODE_COMPILE_CACHE` to a directory of your own takes precedence over both:
+Node enables the cache there at startup and the seat leaves it alone.
+
+This entry needs Node 22.10 or newer, which is where `module.flushCompileCache()` lands, and that is
+the floor `cotal-ai` declares. On anything older the entry prints one line naming the floor and the
+running version and exits without serving, rather than starting a seat that dies on its first
+flush.
+
+Nothing else moved. `node dist/mcp.cjs` is still a working seat launch for a config written before
+this entry existed, and it pays the compile on every start. It needs no compile cache, so it is also
+the way to serve from a Node older than the floor.
+
+## Personal sessions
+
+A Claude Code session you start yourself, where the `cotal` plugin is installed, gets the tools the
+hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and the routed mesh tools.
+Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
+`cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
+(`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
+own once a person approves it. To choose a registered mesh for this conversation, pass `space`:
+
+```json
+{"name":"my-session","space":"cotal_cloud"}
+```
+
+This is the native plugin's `cotal_connect` argument. It takes precedence over the saved selection
+and the project folder, without changing either. `cotal space` lists this machine's registered
+spaces. A blank or unknown space is refused; it is never replaced by another mesh. With no `space`,
+the plugin uses the mesh a bare `cotal spawn` from the session's directory would pick, following
+[the CLI's selection rules](cli.mdx#selecting-a-space). Do not rename `.cotal` directories or add
+`COTAL_SPACE` to choose a personal conversation's target.
+
+A connected conversation must call `cotal_disconnect` before choosing another name, space or grant.
+Before it connects, you can change a pending name or permissions by calling `cotal_connect` with the
+new values and no `approval_id`. You do not need to approve the unwanted request or start another
+conversation. The old watcher stops, the saved request is recovered and retired, and the replacement
+gets a fresh approval. Changing the space follows the same cleanup rule. If approval raced the
+change, its issued identity is retired before the replacement is requested; its grant is never
+reused. An unconfirmed retirement blocks the switch and keeps the old recovery record. A second
+host cannot replace a request while its original consumer is still alive.
+
+The hosted HTTPS connector chooses its space during browser authorization. Its OAuth grant is
+bound to that space; a native `space` argument cannot retarget a hosted grant.
+
+A static-auth or open mesh has no page where a person approves a connection, so the plugin
+opens no identity there. A plugin that `cotal setup` did not install has no record, and
+`cotal_connect` names that remedy.
+
+Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
+The plugin binds the real native session and transcript before requesting an identity. Each
+conversation gets a separate actor. A new identity is issued only after a person approves it in the
+authority's signed-in web page. A model's tool arguments, a client flag or a native tool approval
+never approve it. The request first comes back pending with the page's address and its expiry, and
+nothing is issued yet. Connecting again sends the same request and secret: while it is pending it
+answers the same page, and once approved it issues the identity. A denial or an expiry drops the
+request, and the next connection asks again. No login proof reaches the conversation or its tools.
+
+While a bound Code conversation's request is pending, the plugin's server replays that same request
+to the authority every ten seconds, serialized with the conversation's own `cotal_connect`, until
+the authority records a decision, the request passes its expiry, or the session ends. The server
+issues nothing by itself: an approved replay receives the identity the authority issued for that
+request, and the server holds it, unclaimed and unconnected, for the conversation's own
+`cotal_connect` with the same name and the `approval_id` from its pending result. The decision
+reaches only the native session that asked, through its wake reader, as one fixed line: approved
+(naming the `approval_id` to finish with), denied, or expired. Nothing else is written that way, and
+the native module admits no other shape. A session that ends before claiming an approved identity
+has it retired; a request still pending when the session ends stays saved, and the CLI
+finishes it before that conversation's next request. An `approval_id` that is not this
+conversation's own pending request is refused before any request is sent. Desktop chat has no
+native reader, so there the person asks Claude to retry.
+A remote mesh must advertise conversation identity v1 and connection approval v1 on its pinned HTTPS
+discovery endpoint. An absent capability, a different origin or a changed registration is refused
+before authenticated issuance, for a request without a selection too. There is no immediate-grant
+fallback. A signed-in mesh whose authority this machine holds has no approval page, so it issues no
+new identity either.
+
+Every identity sends and receives direct messages and publishes its own activity on its own event
+channel. These come with the identity and are not optional, so the approval page shows them before
+the person decides. Native activity sharing includes the messages the person types, assistant
+replies, and each tool call's name with its start and end, after activation. It is not only presence
+or status. Tool arguments and tool results are withheld from the event channel, as on every connector
+([Event plane](#event-plane)). While a tool waits for permission, presence shares only its tool name,
+never its command or arguments, with every roster reader. Reasoning is not shared by default,
+and earlier or pre-approval history is not shared. The space's activity read permissions determine
+who can read the event channel. Decline the connection if you do not want this sharing.
+A request without a selection proposes nothing beyond these rights: no role,
+capabilities or ordinary channel reads.
+
+`cotal_connect` in a native Code session also takes a selection: `channels` to read
+(`access: "read"`) or read and post to (`"read-post"`), a `role`, and `capabilities` (`spawn`,
+`run`). The selection is a proposal. The person may approve it, change it within their own current
+access, or approve nothing beyond the identity's own permissions. The issued grant must match what
+the person approved item for item, or the connection is refused. When the authority refuses an item
+outside your own grant before asking anyone, nothing is issued and the reply names every refused
+item. There is no fallback to the event-only identity. Its own event channel stays the first post
+entry. A remote mesh must also advertise `conversationIdentitySelection` version 1, or a selection
+is refused before any request.
+Endpoint calls are not selectable through this connection approval contract, which accepts only
+an empty endpoint selection. These conversations do not offer `cotal_endpoints`, `cotal_describe`
+or `cotal_invoke`.
+
+A connection is offered the tools its grant can use: `cotal_spawn`, `cotal_persona`,
+`cotal_personas` and `cotal_despawn` with `spawn`, and `cotal_run`,
+`cotal_turn_participate` and `cotal_yield` with `run`, plus `cotal_reconnect`.
+Its manager calls exchange the conversation's own secret for a manager-call view, so they carry only
+its grant and name the manager instance when more than one could answer. A conversation is not a
+managed seat. `cotal_despawn` without a name refuses rather than stopping your app, and
+`cotal_disconnect` retires only that connection.
+
+`cotal_turn_participate` opts the exact personal lifecycle into workflow turns for a short lease.
+Call it before starting a program that uses `participant()`, and renew it before expiry or after a
+reconnect. The manager verifies the current foreground grant still has `run`, the exact lifecycle is
+current and live, and the request came from that lifecycle. A hosted program can then bind only the
+conversation that admitted the run. Pending turns arrive through the native session reader. An
+explicit `cotal_yield` reports `done`, `blocked` or `handoff`; ending the native host turn reports
+`done` automatically. Participation never adds stop, attach, input or terminal custody. Persona text
+and model pins do not change the conversation's own instructions or model.
+
+The plugin's ordinary command hooks supply the session and transcript binding. Its native module
+uses that binding without intercepting `classic.*` events, which Claude's built-in security guard
+withholds from user plugins. The guard stays enabled. If an organization disables command hooks or
+native modules, its administrator must permit them before this connection path can work. Command
+hooks still report lifecycle status and activity; the native module owns incoming message delivery.
+
+A signed-in identity keeps its request and secret in private local recovery state. A lost create
+response retries the same request without rotating its secret or allocating another identity.
+Retiring a request that is still pending drops it, and no identity is issued for it. An identity
+issued before connection approval keeps working, and its recovery stays exact. Another plugin server reuses that identity only after the process that held it no longer exists.
+`cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
+conversations stay connected. When the mesh reports retirement pending or does not confirm it, the
+conversation stays disconnected and keeps its saved record. Every tool then reports the same
+unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
+once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
+retirement. A restarted plugin server recovers the same way. After each connection, the plugin
+retires the same mesh's saved identities whose plugin server process no longer exists, such as one
+killed before it could retire them. This runs in the background, so the connection does not wait
+for it. A server process that still exists keeps its identity, and a retirement that does not finish
+stays saved for a later run. A mesh requiring events refuses a connection without a native
+transcript source.
+
+The gateway's MCP annotations distinguish read-only queries from updates. Orientation, connection
+status, the roster, the docs and channel information are read-only. Sending messages, connecting and joining
+channels are additive. Inbox reads and waits consume messages; status, channel mode, leaving and
+disconnecting can replace or remove state. These hints do not grant access or override Claude's
+permission settings or an organization's approval policy.
+
+A message for a connected conversation starts a turn through the plugin's
+[native hooks module](https://code.claude.com/docs/en/plugins/mods/overview). This works in supported
+Claude Code hosts, including local sessions in the Desktop app's Code tab. The module runs a local
+wake reader as a child of the same host that runs the MCP server. Each server uses its own socket
+in a private directory. Short messages arrive in full with their sender, message ID and reply
+context. Claude can answer these without calling `cotal_inbox`. The module uses Claude's
+plugin-sender attribution, never the person's own identity. While Claude is busy, delivery happens
+at a main-conversation tool boundary before the next request. A request already being sent has a
+fixed message snapshot. A later arrival waits for another tool boundary or starts its own attributed
+turn when the current turn ends; storing a note alone does not count as delivery to that request.
+
+Each inline batch carries at most eight whole messages. Each rendered message must fit within
+1,024 Unicode code points, and the encoded socket frame must fit within 4,096 characters. Larger
+messages remain queued. A notification-only reader or an oversized message uses
+`Cotal: a new message for connection_id <id>. Read it with cotal_inbox.` and a bounded preview.
+A preview is incomplete; Claude reads its contents through the inbox. An inline batch also names
+how many other messages remain pending.
+
+The transcript shows a compact Cotal indicator. Expand it to inspect the delivery or preview.
+This changes only the display. Presentation observes only prompt rows; in-turn appends use their
+returned row ID, without observing protected notes or skill output.
+
+Socket writes and previews do not acknowledge messages. A complete inline batch is committed only
+after the native host confirms admission to the bound conversation. An idle prompt also needs its
+stored prompt row; a busy append needs its returned row ID and complete stored text. An offer waits
+for a busy conversation's next safe boundary while its reader remains connected. Admission after
+claim has its own deadline. This confirms host handoff, not that
+Claude understood or completed the work. Delivery remains at least once after an unknown result.
+Message IDs distinguish retries from new requests.
+
+A wake follows the rule `cotal_wait` follows and does not compete with an active wait. Confirmed
+inline delivery rearms the next wake without an inbox call. A replacement reader reoffers unread
+work. An offer from a closed connection cannot suppress its replacement connection's messages.
+Claude's Stop and organization controls still apply. Refused delivery stays pending without
+a retry loop; genuine person-origin input resumes it with a fresh offer. `cotal_connect` reports
+whether the incoming reader is attached; attachment alone does not prove native admission.
+When native modules are unavailable or blocked, the conversation can listen with `cotal_wait`.
+
+Claude Desktop chat does not run a plugin's local server. On macOS and Windows, where Claude Desktop
+is installed, `cotal setup` adds a `cotal` server to Desktop's own config,
+`claude_desktop_config.json` (Settings > Developer > Edit Config), and keeps every other entry there.
+It runs the same server with `--desktop`, by the absolute paths of the node that runs the CLI and of
+the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop to load it. A repeat
+`cotal setup` and `cotal update` keep the entry current, `cotal status` reports it, and a config
+file that is not valid JSON is refused and left as it was. Desktop reads that file when it starts
+and writes the copy it holds back while you use it, so an entry added while it runs is lost. On
+macOS, setup and update therefore leave the file alone while Claude Desktop is running, finish the
+rest of their work, and say so. Quit Claude Desktop, then run `cotal setup` again from a terminal
+outside it; a terminal in its Code tab keeps Desktop running. On Windows they still write while
+Desktop runs, because the loss was not reproduced there. Setup can use Desktop's bundled Code
+executable when there is no standalone `claude` CLI. Its installed MCP and command hooks use the
+recorded Node executable, so the app need not find Node on `PATH`. On Linux, setup writes nothing
+for Desktop Chat.
+
+Desktop Chat supplies no native Code transcript binding, so this local server cannot join a
+signed-in space, such as one on Cotal Cloud, and refuses before identity issuance. Desktop Chat joins
+a signed-in space only through the hosted connector that the space's discovery document advertises
+as `cloudCapabilities.hostedConnector`, version 1 with an HTTPS URL. Add that URL in Claude under
+Settings > Connectors > Add custom connector. Setup for a signed-in space writes no Desktop entry and
+prints the URL instead. `cotal status` prints it on the Claude Desktop row when the selected space is
+signed in, and the refusal names it. When the space advertises none, all three say so. The Desktop
+server's instructions tell the model to use the hosted connector for a signed-in space. The hosted
+connector is a separate connection path; it does not supply autonomous chat wake.
+
+Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
+one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
+and keeps calling `cotal_wait` when you ask it to keep listening. A chat with no turn running cannot
+be woken by any server: Claude's chat surfaces start a turn only from the person.
+
+## Message delivery
+
+Durable deliveries land in the connector's inbox from JetStream consumers
+([SPEC §8](../SPEC.md#8-nats--jetstream-binding)); live channel traffic can instead arrive
+through an at-most-once core subscription. A durable message sent while the agent is busy
+or offline waits on the stream. Two things move a message from inbox to model; one
+delivers, the other only wakes:
+
+- **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks read automatic inbox items and
+  inject them as `additionalContext`. This is the single authoritative path: deterministic and works
+  on any Claude Code build. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
+  Each hook context stays within 9,000 characters, below Claude Code's 10,000-character
+  inline limit. Complete messages that fit are handed off. The reply counts the messages
+  still waiting, which remain unacknowledged for another hook or `cotal_inbox`. A message
+  too large for one hook is left for the inbox, which can return it in parts. The budget
+  includes the session briefing, run turns, repeat labels and waiting notice.
+  If a channel notice accompanies a batch the hook already delivered, an empty `cotal_inbox`
+  reply identifies the most recent confirmed hook handoff by count and event. It does not return
+  those bodies again or describe the receipt as a new message. A confirmed handoff means the
+  hook output was written, not that Claude read or acted on it.
+  A message is **acked only once the hook reply carrying it has cleared both legs of its journey**:
+  the connector's control socket to the hook process (which gives up after 2s), and the hook
+  process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
+  sends a receipt back down the control socket from that stdout write's callback, and only on a
+  clean write (a runtime whose pipe has gone away fails it), and the connector treats that receipt,
+  not its own socket write, as delivery. So a large injection killed mid-flush, or one written to a
+  broken pipe, leaves the message un-acked and JetStream redelivers it. What this does *not* prove is
+  that Claude Code read or applied the reply: a payload small enough to fit the pipe buffer is
+  reported written the moment the kernel takes it. That residual is why the path errs toward
+  at-least-once rather than treating a confirmed write as a confirmed read. Acking when
+  the reply was merely *formatted* meant a lost reply was a lost message: it was already marked
+  handled, so its own redelivery was silently acked on arrival.
+  A hook whose handler throws still returns an empty reply so the session is never blocked, and
+  that reply carries nothing, so it commits nothing: the batch it had started to surface stays
+  un-acked and goes out on a later frame. A manager-launched seat pulls its run turns
+  (`turn-pending`) when its manager's turn notice arrives, when it connects, and after a reconnect
+  while it holds a turn. The manager repeats a notice until the seat pulls the new turn, so an idle
+  seat sends nothing. A pull that fails because the manager is down or unanswered is
+  retried once every 15 seconds until one succeeds; a refusal is logged and not retried. The seat
+  also drops any `turn-pending` row that breaks
+  the manager contract, such as one with no integer deadline, and says so once in its log. A reply
+  with no `turns` array changes nothing: the seat keeps the turns it already holds.
+  This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
+  surfaced again and flagged as a possible repeat. A duplicate injection is noise; a buried DM stops
+  the peer answering at all.
+- **Channel nudge (wake).** An arriving message fires a `notifications/claude/channel`
+  event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
+  the next prompt. The nudge never acks anything. A nudge that the host rejects is retried with a
+  bounded backoff while anything is still pending. For an idle session it is the only wake source,
+  so dropping it means silence until someone types. When the channel becomes active, the connector
+  first re-fires a focus mention remembered during startup, otherwise one buffered wake. A rejected
+  push keeps its bounded retry, and JetStream redelivery remains the durable backstop for unacked
+  inbox items. Neither a redelivery nor that retry repeats a nudge already pushed for that message,
+  whether the message had its own nudge or was counted in a batch one, so a session held in a long
+  tool call gets one nudge per message. Once a hook frame carries the message, or the push that
+  announced it fails, its next redelivery nudges again, so a reply that never reached Claude Code
+  still recovers. If the channel cannot run at all, delivery still waits for the next hook. Live-only
+  traffic has no durable retry.
+
+**Two priority tiers.** A *directed* message (DM, anycast, or a channel message that
+`@mentions` us) always nudges. *Ambient* channel chatter does not nudge mid-turn; it
+accumulates, and the `Stop` → idle transition fires one batch nudge so the backlog drains
+together.
+
+**Constraints (accepted).** Channels are a Claude Code research preview (≥ v2.1.80;
+permission relay ≥ v2.1.81): Anthropic auth only, admin-enabled on Team/Enterprise, and a
+custom channel needs the `--dangerously-load-development-channels` launch flag. The hook
+drain does not depend on any of that; the channel only adds "wake me when idle."
+
+The same channel also relays **tool-permission requests** onto the mesh, so a peer (a
+human at the CLI, a policy node) can approve or deny an agent's pending tool call through
+Cotal rather than a per-terminal prompt.
+
+### Attention
+
+An agent picks how aggressively peer traffic reaches it with
+`cotal_status({ attention })` (three modes, orthogonal to presence):
+
+| arrival | open (default) | dnd | focus |
+|---|---|---|---|
+| directed (dm / anycast) | wake + inject | wake + inject | wake + inject |
+| channel `@mention` | wake + inject | wake + inject | ack-drop; wake to *pull*; not injected |
+| ambient channel chatter | wake when idle; hold while working | never wakes; injects next turn | ack-drop; recall via `cotal_inbox` |
+
+Per-channel overrides refine this: **quiet** (delivered, never wakes; `@mention` still
+wakes) and **muted** (dropped on receive, mentions included; DMs/anycast unaffected), set
+with `cotal_channel_mode` or as agent-file defaults (`quiet:` / `muted:`,
+[agent files](agent-files.mdx)). A per-channel override is the final word for that channel.
+Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, or other
+connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
+`@mention` remains automatic and injects normally.
+
+A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
+receivable window (direct messages and role requests first, then channel traffic, replayed history
+last); whatever does not fit stays buffered, is named in the reply, and comes back on the next call.
+A message too large for one whole response is delivered in parts: once no smaller mail is waiting,
+each call carries its next part, and it is cleared only after its last part goes out, because clearing
+what was not handed over is the loss this bound exists to stop.
+That matters most on the path where it is easiest to lose mail: reconnecting brings a channel-history
+replay with it, so the largest payload and the least expendable message arrive in the same read.
+
+The local inbox is bounded. On pathological overflow it evicts pull-only items first, then other
+channel traffic, and a direct message or role request only when the whole buffer is directed mail.
+It never evicts a message the connector is handing to the session or a turn is still carrying.
+An evicted channel item is acknowledged. An evicted direct message or role request never is, and
+the broker redelivers it after the ack wait until a redelivery finds room. A direct message stays
+pending on the session's DM durable, where `cotal deliver pending <name>` counts it. A role request
+stays on its role's shared queue, which that command does not read. A full inbox therefore delays
+directed mail until the session drains it.
+If the bounded live/durable classification guard also fills, the connector fails closed:
+otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
+still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
+quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
+as incomplete rather than risk resurfacing excluded content. While focus recall is unsafe on a
+channel, a new non-historical mention on that unmuted channel still wakes the agent and its body
+stays in the bounded pull-only inbox, never automatic, including on quiet channels. Ambient traffic
+keeps its existing handling, and the incomplete-recall warning still names the unsafe channel.
+Recall cannot tell one message with an empty id from an identical one with another disposition, so
+in focus such a message is held in the local inbox as pull-only instead of being dropped, and a
+mention of it still wakes the agent. When
+the session settles an id-less copy, it reads the chat stream's last sequence. Identical copies
+arrive in stream order, and those reads can answer out of order, so the first read that can see the
+copies binds them in arrival order, latest first, each to the latest unbound stream copy at or below
+the lowest sequence read for it or any later identical copy.
+While the connection stays up, every stream copy at or below that sequence reached the session
+first, so a later identical copy sent during a reconnect gap is above it and stays unbound. A copy
+that arrives while a read runs may not be in that read, so it binds nothing there and recall reads
+the channel again, up to three times; if it still could be a stream copy in the last read, recall
+leaves that stream copy in the stream and reports the channel as incomplete. A settled copy a
+complete read cannot bind is behind the focus start or out of retention, and is forgotten. Recall
+hands back into the inbox only the stream copies nothing is bound to, such as one sent during a
+reconnect gap or one the inbox evicted on overflow, and `cotal_inbox` hands each over once. Overflow
+frees only the evicted copy, held or quiet, and a copy no read has bound yet keeps its place in
+arrival order, so an identical muted copy stays out of recall. When
+the inbox is full, recall leaves them in the stream for a later call and reports the channel as
+incomplete. A history read that fails, or a channel with replay off, settles nothing and is reported
+as incomplete, and recall calls run one at a time. If the sequence read for a settled copy fails,
+or answers only after the connection dropped, recall skips that channel for the rest of the focus
+period and reports it as incomplete. Recall cannot tell a late copy of a message it handed back from
+a new identical message, so every copy takes its own disposition: a new identical quiet mention is
+still delivered automatically, and a late copy can surface a second time.
+A recalled message that already went out in part is read to its last part, even if an exclusion
+lands after its first part. One session reads its inbox one call at a time: a `cotal_inbox` call
+that overlaps another waits for it to finish, so neither decides from a view the other has already
+moved past.
+If the separate hard-drop disposition guard fills, ambient channel traffic is suppressed for the
+rest of the session. Non-historical mentions on unmuted channels still wake the agent, with their bodies held
+in the bounded pull-only inbox instead of injected into a turn. Muted traffic and historical
+mentions remain suppressed, and known earlier hard drops stay excluded after a mode change.
+The inbox reports exhausted drop tracking and incomplete focus recall. `cotal_connection_status`
+reports `degraded` with `channelDeliveryIssue`, even when the transport is live. Restarting clears
+this session-local degradation. After exhaustion, a late redelivered copy of a mention first
+received while the channel was muted can surface once as a pull-only mention. DMs and anycast
+are unaffected.
+
+Attention is **advisory UX, not a boundary**: any peer can wake a dnd/focus agent by
+naming it, and `muted` means "I opted out of receiving", not "the channel is blocked";
+the broker still authorizes and delivers. Focus's real effect is shrinking the
+untrusted-ambient injection surface (only subject-authenticated dm/anycast auto-inject).
+It resets to **open** on `SessionStart`, so a restarted agent never stays silently deaf.
+Your attention is mirrored into presence so peers can see it.
+
+Whatever does reach a turn is framed so a peer cannot write the frame. A line that begins at column
+zero is written by the connector; one message is one line plus indented continuations, with the
+sender inside a single bracket pair. A message body, a sender name and role, and a service or
+channel label are all peer-controlled, so each passes through the same neutralization the
+`cotal_inbox` reply uses: no line break a splitter may honour and no bracket survives into a
+rendered attribution. This matters more for an injected block than for a reply, because the agent
+did not ask for it and so never had the chance to distrust it.
+
+## Presence mapping
+
+The connector wires a small subset of Claude Code hooks to presence states; presence is
+coarse, and "what it is doing" rides on activity updates. Presence is **advisory**: a presence
+publish that fails (the endpoint mid-reconnect, say) is swallowed and never prevents the same hook
+from delivering messages or flushing held ones.
+A `SessionStart` during an open turn, including compaction, preserves the current `working` or
+`waiting` status until `Stop`, `StopFailure`, or `SessionEnd` closes the turn.
+
+| Hook | → state |
+|---|---|
+| `SessionStart` | `idle` only when no turn is open (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
+| `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
+| `PreToolUse` | `working` on the first main-agent tool if no turn is open, including a mesh turn without `UserPromptSubmit`; records only the tool name for a permission wait. A subagent tool does not open the main turn. |
+| `PostToolBatch` | `working` when the main agent's batch resolves after a prompt left the seat `waiting`, which clears its condition so the turn's `Stop` yields; a subagent's batch (it carries `agent_id`) or one relayed after the turn's terminal changes nothing |
+| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity names only the pending tool, e.g. `Bash`, without command text or arguments) |
+| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
+| `SessionEnd` | `offline` (graceful leave) |
+
+The connector also leaves gracefully when its stdin closes. An MCP client closes it to end the
+session, and a killed `claude` closes it with no `SessionEnd`, so a dead session drops off the
+roster instead of staying on it as a live peer.
+
+`StopFailure` maps `rate_limit` and `overloaded` directly; auth and credential failures to
+`auth`; account and billing failures to `billing`; `invalid_request` to `request`;
+`model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
+`unknown` to `failed`. The native value remains in `condition.source`.
+
+Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
+socket + per-launch token, constant-time checked), so a local process that finds the path
+still can't drive presence or stop the agent. Claude Code's own
+[hooks reference](https://code.claude.com/docs/en/hooks) lists every hook event. The hooks the
+plugin registers, with their matchers, are listed in the
+[adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
+
+## Event plane
+
+A connected native session publishes a structured account of its activity: the messages a person
+typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
+results are withheld (below), and a turn a peer message started opens a run without republishing
+that message. Reasoning is off by default. Programs can read these events directly. The launcher
+sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
+space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
+private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
+A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
+publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. A personal
+native Code connection to a signed-in mesh uses the same recorder and captures its transcript
+boundary after approved issuance, before joining. Earlier history and time spent waiting for
+approval are not published.
+Its native lifecycle drives presence and recording for that session only; a subagent or another
+conversation cannot end its main run. The event channel keeps the space's normal read permissions.
+A personal connection makes manager calls only with its own selected grant.
+
+If the event plane stops, the seat keeps running and its mesh connection, on every connector and
+on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
+before it re-establishes the plane: at once after a failure, then every second while the plane
+stays down, a fixed wait that neither grows nor is capped, so the plane is back within a second
+of the fault clearing. The re-establish
+is a fresh start: it reopens the write-ahead log, settles any frame it left pending, builds the
+mapper from the run the log has open, and reads on from the stored cursor, which is the same
+recovery a connector restart runs. A failed publish or a failed log write is never retried on the
+emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
+turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
+open is closed with that terminal, a failure as a failure, rather than left open for the next
+prompt to close as a finish. That holds when the next prompt was already written before the plane
+came back: the failure is published after the failed turn's own records and before the next run
+opens, in a frame of the failed run, since a run error names no run and the frame is its only
+attribution. Every turn that ends while the plane is down keeps its own terminal. A terminal belongs
+to the last turn the transcript had begun when its hook fired: the connector reports a turn's
+terminal once that turn's records are written and before the next turn's are, so the position the
+transcript has reached at the hook names the turn, including a turn the connector opens no run for,
+such as a task notification, which takes its terminal and publishes nothing. A terminal repeated
+for a turn that has one replaces nothing and is kept for no later turn. A line the connector cannot
+read, written past that position while the plane was down, does not hold the terminal: the
+re-establish reports the gap and places the terminal after the records before it. A record no read
+answers, such as an OpenCode part still filling when its turn died, holds it no more: the terminal
+is placed after the records before it, and the turn end reads the session once rather than without end. The OpenCode source reads every record at or before the end it reported at a turn end as settled, so a part left filling by a failed turn does not stop the turns after it from publishing. A terminal reported while the first start is still waiting on the broker reaches the emitter before its first read, so a prompt written in that window does not close the failed turn as a finish. The same placement runs with
+the plane up: a terminal reported while the flush before it is still reading, with the next prompt
+written before that read, closes its own turn in the place of the finish that prompt synthesizes. The seat used to exit on a space that requires events; for Claude Code the
+connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code
+restarted it on the next tool call.
+
+A transcript line that is not a record does not stop the plane. Claude writes the transcript, and a
+write cut short by a full disk leaves part of one record glued to the next on a single line, which
+never becomes readable. The connector steps over that line, keeps the records after it, and writes
+`skipped an unreadable transcript record at offset <offset> (<bytes> bytes)` with the parser's
+reason to its stderr.
+
+A new session includes its first run even when Claude writes a positional startup prompt before the
+connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
+`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the transcript boundary
+captured at that adopt, before the mesh link connects, so nothing Claude appends while the connector
+is still starting up lands behind the cursor and is silently dropped. Crash recovery follows the
+cursor already stored in the event write-ahead log, regardless of the new process's startup label.
+
+Claude starts each hook in its own process, so a prompt or stop relay can reach Cotal before the
+`SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`
+supplies the source, then enqueues adopt, flush, and close in that order.
+
+`SessionStart` can also run before the connector process has bound its local control socket. The hook
+the `SessionStart` relay retries only transient pre-connect listener errors, with capped backoff
+inside its existing two-second budget. Later hooks and permanent local faults still fail open
+immediately. Once a socket has connected, a broken exchange is not retried: the connector may
+already have handled the frame, so replaying it could apply one lifecycle event twice.
+That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely
+new startup waits up to five seconds for that file with capped backoff, and the same deadline bounds
+one stalled file read; expiry fails loud instead of silently losing the first run. A forked session
+gets the same wait, because Claude copies the parent transcript into the fork's own file after the
+hook, and then adopts at the end of that copy. Resumed, cleared and compacted starts and recovered
+cursors still require their existing source at once.
+
+Tool arguments (`TOOL_CALL_ARGS`) and tool results (`TOOL_CALL_RESULT`) are not republished
+onto this channel. The durable emitter drops those events before they are written to the
+write-ahead log, because this channel's read ACL is not the ACL the tool ran under. Content is
+mandatory on both kinds, so the event is suppressed rather than emptied or replaced with a
+placeholder. Tool start and end still go out. A restart that finds a pending pre-fix frame
+still carrying those kinds HALTS rather than republishing it.
+
+The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
+half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh
+it is a key the manager allocated, never the display name, so two live agents sharing a display name
+do not share a stream; on a user-auth mesh it is the agent's own name, because that is what the
+ledger row is keyed on. Spelled out again with both halves below. The launch grants publish rights
+on that channel alone. A spawn
+that asks for a *different* agent's event channel is refused at the door rather than granted, since
+that channel is that session's event stream. The same rule runs on restart: a manager
+resume document that names another agent's event channel is refused rather than adopted, because the
+managed row is re-armed from that document and the credential is re-minted from the row.
+
+The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+`events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+authority: on a user mesh the delegation envelope, on a static mesh the spawning credential itself.
+That is deliberate, because the pattern is the form an operator writes on purpose for an observer,
+and it is worth knowing rather than assuming the fence is total.
+
+To let something else read a plane, grant it out of band. The refusal prints the command for the
+mesh it is running on, spelled out in full, and only that one.
+
+On a **user-auth** mesh:
+
+```bash
+cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe 'events.<owner>.<actor>' --allow-publish ''
+```
+
+Every field, deliberately. `actor grant` is an upsert of the whole row, so it refuses a grant that
+leaves off any of the three ACL flags. Only `--full` turns an omitted flag into the wide default
+(`>` read, `>` post, `spawn,role:default` scope), which is the opposite of what a scoped watcher is for.
+
+On a **static** mesh there is no actor ledger for `actor grant` to write to, and the refusal says
+so; mint the reader instead:
+
+```bash
+cotal auth mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>' --provision
+```
+
+The **agent** profile, not the observer one. `mint` reads `--allow-subscribe` only for that
+profile, and refuses it anywhere else: `--profile observer --allow-subscribe <channel>` exits
+non-zero and writes no creds file, because the observer profile carries a fixed read set over the
+whole chat plane, which is the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
+reader needs, since an authed consuming endpoint refuses to start without one.
+
+On an **open** mesh there is nothing to grant: the mesh has no credentials and no ACLs, so any peer
+that lists the channel reads it, and the refusal says so instead of naming a command. The
+own-channel rule still applies there, because a spawn is not the place to hand out a read on
+another agent's tool inputs and outputs.
+
+Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event
+channel in `channels`: an endpoint reads the channels it lists, so one constructed without
+the event channel joins nothing and the frames never arrive. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not
+`channelHistory(channel)`: a scoped credential is denied the ad-hoc consumer the direct read
+creates, by design. `cotal console` and the web console already do both.
+
+The `<owner>.<actor>` pair is the session's principal. On a user-auth mesh the actor half is the
+agent's own name, so the channel is `events.<your-owner>.<agent-name>`. On a
+static mesh the owner half is the literal `local` and the actor is a key the manager allocated, so
+the channel is `events.local.<key>`; the spawn reply carries that key as `id`. Note
+that `cotal console` and the web console keep event channels out of their channel lists on purpose,
+since a plane is a machine feed rather than a conversation; they draw the frames when you open the
+channel by name.
+
+The rule governs the manager's doors, which are the ones a caller other than you can reach. A
+foreground `cotal spawn` on your own machine mints from your own signing material, so it can still
+grant any channel you name: that is the out-of-band grant, not a way around the rule.
+
+**Failed turns publish run errors.** Claude Code decides for itself
+whether a turn finished or died and fires one of two hooks accordingly, so the connector relays that
+decision rather than making one of its own: a turn that ended on an API error ends its run with
+`RUN_ERROR` carrying the fixed message `run failed` and no code. Neither the detail Claude Code
+reported nor its error kind is published there: both are upstream values that can echo your prompt or
+tool output, and the events channel has a different read ACL. The error kind still reaches presence
+as the agent's condition (`rate_limit`, `auth`, `billing` and the rest). A turn that ended normally still
+ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
+succeeded.
+
+Events are written to a per-session write-ahead log before they are published, so a hook that fires
+after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
+open when the session stopped is closed rather than left dangling.
+
+A delayed initial connection or a broker reconnect pauses event publication without closing MCP.
+The recorder waits for both the mesh binding and its transport; unpublished records stay in the
+transcript until the connection recovers. Stopping the connector cancels that wait. A recording error,
+including a conflicting transcript or damaged event state, stops the publishing plane and not the
+session: it is reported with the delay before the next re-establish, on every space, and the seat keeps
+its mesh connection. A second transcript path offered to a bound recorder is refused the same way, and
+the first path stays bound.
+
+One channel carries **every session of one agent**, because it is named after the principal and not
+after the session. Alongside the per-session logs the connector keeps one small record per principal,
+holding the last sequence the broker assigned on that channel, so a new session continues the stream
+its predecessor left instead of starting again from nothing. Both live under the events state root
+(`COTAL_WORKSPACE_ROOT`), and neither is something you edit by hand.
+
+A **missing** record is not a fault: the connector rebuilds it from the session logs beside it,
+which is how an agent that was already running before this record existed keeps its stream. That
+rebuild stops if any one of those session logs is damaged. Unreadable, not valid JSON, and written
+for a different principal all count, and so does a session directory or a log that is a link rather
+than the real file the connector wrote, or a log that has more than one name. A tip taken from the
+rest would be too low, and it would stop publication later with nothing left to point at the cause.
+The connector names the file instead, and the only way past it is the directory removal described
+below, under the same condition. A record that **disagrees with the broker** is a fault, and the
+connector stops publishing and says why rather than guessing. A record that **moved while a session
+was writing to it** is refused the same way: it means something else wrote the principal's record,
+and the connector reports which value it held and which the file holds rather than writing over the
+later one. There is no command to clear it. The state is the principal's directory under the events
+root, and clearing it by hand means removing that directory whole: the sequence, the cursor and the
+per-session logs only mean anything together, so removing part of it leaves a state the next start
+refuses. Removing it is only half a remedy, and the half that comes first is the channel. The
+directory is where the agent's memory of the tip lives, not the tip itself, so on a channel that
+still holds frames the next session opens expecting an empty one and stops on the same
+disagreement, with the logs a tip could have been rebuilt from now gone. Purge the channel first,
+then remove the directory.
+
+Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
+part by design, so a surface that renders a message as flat text shows a marker instead of prose.
+
+**On a per-user-auth mesh, the default event plane needs the spawner's grant to cover the channel.** The event
+channel is added to the child's publish set, and delegation only narrows: an agent may hand down
+a subset of what it holds and no more. So a peer-initiated spawn is refused unless the
+spawning identity's own grant already covers the child's event channel. The refusal prints the
+exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
+admin-scoped or roster row, is unaffected. Passing `events: false` is the explicit opt-out.
+
+Arming the event plane through a typed spawn request (`manager.spawn` with `events`, including
+the CLI's `cotal spawn --detach --events`) is allowed on a user mesh when the child runs under
+the caller's owner. This also satisfies a registration policy that requires the plane. A spawn
+under another owner still needs the caller's admin tier. Without it, an explicit request or a
+required plane is refused before provisioning. A silent non-owner caller in a space without that
+policy has the plane disarmed with a notice in a successful reply. Later provisioning can still
+refuse the spawn. The child's own-channel rule and the ledger's delegation envelope still apply.
+
+## Carried session custody
+
+`--resume <session-id>` pulls an existing Claude session, its context and transcript,
+into the mesh. It **forks**: Claude mints a *new* session id from that transcript
+(`--resume <id> --fork-session`), so the meshed agent gets its own session and the
+original is untouched.
+
+- `cotal spawn --resume <id>` (foreground) is the primary surface: the transcript is on
+  *your* machine, and errors are Claude's own stderr, inline.
+- `--detach --resume <id> --on <instance>` carries a session held on *your* machine to that
+  manager instance, which may run on another host. The CLI finds the transcript under your
+  Claude config (`~/.claude`, or `$CLAUDE_CONFIG_DIR`), sends it through a JetStream Object
+  Store bucket only that instance reads, under a writer credential pinned to that one transcript,
+  and prints `carried session <id> to <instance>:
+  sha256:<hex>, <sent> of <size> bytes sent in <chunks> chunks`. Without `--agent`, the CLI first asks that
+  instance which harness the persona resolves to, so a persona with `agent: claude` is carried even
+  when your `COTAL_DEFAULT_AGENT` names another connector. A re-run of the same bytes
+  sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
+  private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
+  lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
+  records the SHA-256 of the transcript it read from its own project; the manager stops a seat
+  whose record names other bytes than the carried ones, or that records none within the join
+  timeout after it joins, an uncertain launch included, and otherwise shows that record as the
+  seat's provenance. `cotal attach` to such a seat names its source after the seat
+  name, as `(resumed from <host>:<id>)`. A remote manager receives a carry when its host issues it a
+  transfer reader. On a user-auth mesh the CLI exchanges the operator's login for a one-object
+  `transfer-writer` view, which needs scope `admin`.
+- A session name in place of an id is refused, listing each session on this host that carries
+  that name with its id, SHA-256 and modification time. An id this host does not hold resolves
+  against the **manager host's** `~/.claude`, as before.
+- A seat-private home holds no login. The manager host needs `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`), `ANTHROPIC_AUTH_TOKEN`, or a cloud provider selection in its
+  environment; `ANTHROPIC_API_KEY` alone is refused. The private home trusts the authorized
+  launch directory without changing the manager's home. Claude must be 2.1.234 or later.
+- The manager waits for a real outcome: `✓ started` means the agent *joined the mesh*,
+  `✗ exited on launch` carries Claude's last output and the seat's exit diagnostic, such as a
+  startup confirmation that never appeared, and an uncertain launch (~30 s) is reported without
+  tearing the agent down.
+- `--opt resume=` with no id passes a bare `--resume`, which opens Claude's session picker, and the
+  agent joins the mesh once you pick a session. A managed launch with it is ready once Claude runs:
+  the CLI says the agent is waiting for you at Claude's session picker, attaches you to it in a
+  terminal, `-d` included, or otherwise prints the attach command, and exits 0. `--opt resume=<id>`
+  passes `--resume <id>` and joins as any launch does.
+- Resume is an **operator surface only**, deliberately not exposed on MCP `cotal_spawn`
+  (a mesh peer naming host-local transcripts would widen `spawn` into transcript
+  disclosure). Claude, Hermes, Jcode and pi support it, each by forking; OpenCode and Codex fail
+  loud ([Connectors](connectors.mdx)).
+- Needs a `claude` new enough for `--resume … --fork-session` (verified on 2.1.197).
+
+## MCP configuration
+
+A spawned session loads the MCP servers your normal Claude Code configuration enables on the
+launch host: user, local, project, plugin and connected-account sources. Claude handles discovery,
+precedence, disabled servers, project approval and managed policy. Cotal adds its mesh server
+and any overrides declared in `connectors.claude.mcpServers` ([format](config.mdx)). It does not
+copy native server definitions or credentials into the launch file or onto another machine.
+The selected `CLAUDE_CONFIG_DIR` remains in effect for an ordinary local spawn.
+
+First-run setup still seeds eligible user-scope declarations into the Cotal config and preserves
+an existing list. That list is not the source of truth for native discovery. A same-named declared
+override takes precedence; changing the native definition does not rewrite an override you kept.
+An empty Cotal sharing map leaves native discovery enabled.
+
+Use `--share-tools tavily,figma` to load only those declared servers plus Cotal, or
+`--share-tools none` for Cotal alone. These explicit selections use `--strict-mcp-config`.
+Carried sessions also stay strict and keep their seat-private home; operator profiles and
+connected-account credentials are not copied into them. Native managed policy still applies.
+
+The child environment stays allowlisted. References in declared shared servers and the selected
+user-owned MCP configuration forward their named variables. Repository and plugin files cannot
+add ambient secret names merely by referencing them; supply such names through an explicit
+shared declaration or the existing `spawn.env` policy. Native files retain their own configured
+values. Documented native MCP switches, including the connected-account opt-out and tool-search
+choice, keep their explicit values. Cotal does not forward the entire parent environment or force
+tool definitions to load upfront.
+
+Sharing a credential grants it to the session, so enable only servers the session may use.
+Each enabled server may start a process per seat; an explicit sharing selection can reduce that
+cost. Native discovery does not change Cotal's mesh identity, hooks or channel wake path.
+
+### One Cotal path per session
+
+A spawned session is on its mesh through the local Cotal server. A connected-account source can
+also give it a hosted Cotal connector, which would join the same session a second time under
+another name. The plugin's `PreToolUse` hook refuses every `cotal_*` tool of any server other than
+the local one in a session Cotal launched, with the reason in the refusal. It decides in the hook
+process, so the refusal holds when the control socket is down. A Claude Code session that Cotal did
+not launch keeps the hosted connector. Where the plugin is installed, its local server's
+instructions tell the model to use the local path unless you ask for the hosted one.
+
+In such a session the plugin also keeps each hosted connection with the session that opened it. A
+`PostToolUse` hook on the hosted `cotal_connect` records the returned `connection_id` under the
+plugin's data directory (`CLAUDE_PLUGIN_DATA`), and `cotal_disconnect` releases it. A fork made with
+`--fork-session` inherits that id in its transcript but has a new session id, so its calls with the
+id are refused and it is told to call `cotal_connect`. A resumed session and its subagents keep the
+session id and pass. An id the plugin never saw opened goes to the hosted connector, which checks
+the account.
+The guard runs only where the `cotal` plugin is installed. A Claude Code session with only the
+hosted connector has no hook, so nothing records its connections and its forks are not refused.
+
+A hosted connector cannot start a turn, so a hosted conversation hears a message only when it calls a
+tool. `cotal_wait` holds until a message that would wake the agent arrives and returns it, or returns
+with none after the service's bound. The conversation calls it again to keep listening. Every other
+hosted tool adds a line to its result when messages are waiting. A conversation with no turn running
+is not woken.
+
+## Host sessions in one process
+
+A host serving many managed seats can run their MCP servers in one process with the subpath
+`@cotal-ai/connector-claude-code/mcp`, which loads with both `import` and `require`:
+
+```ts
+import { serveClaudeSession } from "@cotal-ai/connector-claude-code/mcp";
+
+const session = await serveClaudeSession({ env, input, output });
+await session.close();
+```
+
+Loading the module only exports it; it serves its own stdio only when run, as `node dist/mcp.cjs`.
+A host that loads it this way compiles the bundle in its own process and is outside the seat entry's
+compile cache ([above](#the-seat-entry)); `module.enableCompileCache()` before
+the first load brings the host the same saving.
+The subpath ships CommonJS declarations so TypeScript hosts can use either module format,
+including CommonJS consumers with Node16 or Node18 module settings.
+Claude Code pushes `claude/channel` only to a stdio server it launched, so each `claude` still
+launches a stdio command, such as a small relay that pipes its stdio to the host.
+
+- **Managed only.** `env` is a complete launch environment, copied when the call starts. It must
+  carry a mesh identity and the full control pair, or the call rejects before the session joins the
+  mesh. The presence environment label, bearer commands, carried-fork records and feedback contact
+  lookup use that copy. Feedback's Git fallback reads the session's global config, including its
+  includes, without reading the host repository config. Set `COTAL_FEEDBACK_EMAIL` or pass the
+  feedback tool's `email` argument to choose another contact. Include the `PATH`, `HOME` and other OS
+  variables subprocesses need; the host's environment is not merged into them. Subprocesses still
+  use the host process's working directory. A session's card does not: its `meta.cwd` is the `cwd`
+  its own `SessionStart` hook reports on startup, resume or fork, absent until then, and unchanged by
+  clear or compact. It is advisory display data that every reader of the space's roster can see. A plain `claude` with no identity is served by `mcp.cjs` run directly. Sharing a process
+  does not isolate untrusted tenants or their files.
+- **Streams.** `input` carries JSON-RPC from the client and `output` carries this session's replies
+  and `claude/channel` pushes. The caller owns both streams. Input that has emitted `end` or is
+  destroyed rejects startup. Buffered unread input remains eligible. When an active session's
+  `input` emits `end` or `close`, the session closes, including after a relay connection resets.
+  Teardown may pause `input` and removes the transport's error handler. A host that reuses the
+  stream must resume it as needed and keep its own stream error handlers.
+- **`fatalBind`.** Off by default: a control socket that cannot be bound rejects the call and the
+  host keeps its other sessions. Only a process that is the session turns it on, as `mcp.cjs` does.
+- **Teardown.** `close()` closes the control socket, the wake policy, the AG-UI emitter, the mesh
+  endpoint and the MCP server, and is idempotent. It removes its input listeners without closing
+  the caller's streams. The returned promise rejects if teardown fails. A startup failure closes
+  what was started before the call rejects. A manager shutdown frame or input EOF or closure closes the
+  session and then calls `onShutdown(code)` once. A teardown failure is logged and reported with
+  code 1, without becoming an unhandled rejection in the host. Close waits for a pending broker
+  dial to settle. A dial that fails after shutdown starts is not a teardown failure. The session
+  releases local inbox custody only after its connections are proved closed, so the same lifecycle
+  can reopen after a successful close. An active duplicate or an unproved close retains custody.
+
+## Feedback configuration
+
+`cotal_feedback` works out of the box: without a key it posts to the public intake at
+`https://cotal.ai/v1/feedback` (needs a contact email: `COTAL_FEEDBACK_EMAIL`, then
+`git config user.email`, else the agent asks). Set `COTAL_FEEDBACK_KEY=fbk_<key>` in a
+beta tester's environment to route to the keyed intake (`Authorization: Bearer`, identity
+derived from the key); `COTAL_FEEDBACK_URL` overrides either endpoint. The CLI can send
+too: `cotal feedback "<summary>" [--type bug]`. Each submission carries
+`origin: human | agent`, whether the tester asked, or the agent auto-reported a major
+issue.
+
+## Plugin refresh
+
+> **Team and Enterprise accounts:** [Enable Claude Code channels](connect-claude.mdx#enable-channels-for-your-organization)
+> before running unattended agents. Channels are blocked by default, so incoming messages cannot
+> wake an idle session until an organization Owner enables them.
+
+```bash
+cotal setup --configure-only  # install the plugin and seed one agent without startup
+cotal up         # brings up the mesh + delivery daemon + a detached manager
+```
+
+`cotal setup` installs the cotal plugin for your user account, so every Claude Code session on
+this machine gets the `cotal_*` tools, in any project. That covers the terminal, the IDE extensions
+and the Desktop app's local Code sessions. Setup can use Desktop's bundled Code executable when no
+terminal `claude` command is installed. Desktop-only users should open a local Code session once so
+Desktop downloads that executable. Setup checks it through the connector's own readiness probe;
+managed `spawn` still requires the terminal `claude` command. On a mesh you run with `cotal up`,
+sessions join through `cotal spawn`. A session you open yourself can join only a remote signed-in
+mesh whose authority offers connection approval: run setup once, reopen Claude and ask it to
+connect (see [personal sessions](#personal-sessions)). No MCP
+configuration edits or special launch flags are needed for this native plugin path. It also shares your own MCP servers with spawned sessions on its first run (see
+[Sharing your MCP servers](#mcp-configuration)), and seeds one `default` persona; `cotal up` brings up the local stack so
+`cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
+A repeat `cotal setup` and `cotal update` refresh the copy under `~/.cotal/claude-plugin` and update
+existing Claude plugin registrations, including older cached installations. After an npm upgrade,
+the first regular Cotal command also refreshes these copies before accepting the new generation. Setup,
+skills installation and refresh share a machine-local lock through the final plugin check, so simultaneous
+commands cannot overwrite a generation while another command verifies it. Disabled installations
+stay disabled during an update. Claude Code can apply an update run in a project folder to an
+enclosing project that has its own installation, so the folder's local or project installation stays
+old. That installation does not stop the refresh or later commands: Cotal prints a warning naming the
+folder and the `claude plugin uninstall` command to run there to remove it. A user-scope installation
+that does not update is still an error. `cotal status` checks the resolved payload's manifest version and
+file contents. A folder-backed plugin can retain older version metadata in Claude's installation
+records; that metadata does not override the files Claude loads. Running sessions keep the
+code they loaded; reload plugins or reopen Claude to load the update.
+The install mechanics and the invariants behind them are in
+[setup internals](setup-internals.md).
+
+`cotal setup` also installs Cotal's authored Agent Skills (`SKILL.md`, the agentskills.io format) for
+coordinating agent teams (today `team-topology`), from one canonical source, on two channels:
+
+- **Claude Code** gets a second, skills-only plugin, `cotal-skills`, from the same `cotal-mesh`
+  marketplace, at **user scope** (machine-wide). The Claude connector declares and implements this
+  setup provider, including the marketplace assets and native plugin commands; the base CLI only passes
+  the vendor-neutral Agent Skills directory. The plugin carries no code and no core dependency,
+  and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
+  is stamped from the running CLI release. `cotal update` refreshes an existing skills plugin without
+  enabling it or installing a removed one; `cotal setup --skills` also installs missing skills. `cotal setup` installs it on first run and on repeat
+  runs, so upgraders are not left behind. The same provider reports the plugin and skills plugin rows
+  in `cotal status`, which point a stale or missing skills plugin at `cotal setup --skills`.
+- **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
+  `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it
+  (and `cotal setup --skills` does only that):
+  it installs/updates each Cotal skill, backs up a copy you have edited to `SKILL.md.bak` before
+  replacing it, and removes a Cotal skill that is no longer shipped. Only skills Cotal owns are touched;
+  your own or third-party skills there are left alone. `cotal status` reports whether the drop is current,
+  stale, missing, or has a retired skill to reconcile, and names `cotal setup --skills` as the remedy. This is the working cross-vendor path.
+
+Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
+on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,
+not a channel to rely on today.
+
+### Launch permissions
+
+See [Binding](#binding) for the current connector contract.
+
+### Authentication
+
+See [Binding](#binding) for the current connector contract.
+
+### Private launch files
+
+See [Binding](#binding) for the current connector contract.
+
+### Process cost
+
+See [Binding](#binding) for the current connector contract.
+
+### Plugin installation
+
+See [Binding](#binding) for the current connector contract.
+
+### Startup confirmation [#startup-confirmation]
+
+See [Binding](#binding) for the current connector contract.
+
+### Inbox custody [#inbox-custody]
+
+See [Binding](#binding) for the current connector contract.
+
+### Native wake
+
+See [Binding](#binding) for the current connector contract.
+
+### Desktop chat
+
+See [Binding](#binding) for the current connector contract.
+
+### Connection guards [#connection-guards]
+
+See [Binding](#binding) for the current connector contract.
+
+### Hook acknowledgement
+
+See [Binding](#binding) for the current connector contract.
+
+### Channel wake
+
+See [Binding](#binding) for the current connector contract.
+
+### Inbox bounds
+
+See [Binding](#binding) for the current connector contract.
+
+### Focus recall
+
+See [Binding](#binding) for the current connector contract.
+
+### Event privacy
+
+See [Binding](#binding) for the current connector contract.
+
+### Channel identity
+
+See [Binding](#binding) for the current connector contract.
+
+### Reader grants
+
+See [Binding](#binding) for the current connector contract.
+
+### Transcript adoption
+
+See [Binding](#binding) for the current connector contract.
+
+### Event recovery
+
+See [Binding](#binding) for the current connector contract.
+
+### Event state
+
+See [Binding](#binding) for the current connector contract.
+
+### Session options
+
+See [Binding](#binding) for the current connector contract.
+
+### Teardown
+
+See [Binding](#binding) for the current connector contract.

@@ -54,11 +54,12 @@
     {
       "name": "I4 a throttled agent refusal returns its specific 401 reason instead of 429",
       "file": "implementations/auth/src/service.ts",
-      "find": "      if (peerThrottled)\n        return send(res, 429, { error: \"too many refused exchanges - wait a minute and retry\" });\n      return send(res, 401, { error: reason });",
-      "replace": "      return send(res, 401, { error: reason });",
+      "find": "      return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an agent exchange: ${reason}`, 401, { error: reason });",
+      "replace": "      policy.recordFailure(ctx, peer);\n      console.error(`auth-service: refused an agent exchange: ${reason}`);\n      return send(res, 401, { error: reason });",
       "expectRed": "a FAILED exchange from a throttled key is answered 429, not the refusal reason",
       "cell": "a FAILED exchange from a throttled key is answered 429, not the refusal reason",
-      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "note": "Re-anchored for #3622: the agent catch now answers through the shared refuseExchange helper, so the old anchor no longer matched. Same severing at this site only: the failure is still recorded and audited, but a throttled peer gets the specific 401 instead of the 429 mask. Not re-measured."
     },
     {
       "name": "I5 an unknown agent is refused with a different sentence than a wrong secret",

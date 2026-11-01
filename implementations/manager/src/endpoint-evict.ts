@@ -4,7 +4,7 @@
  * §13.1 requires the SUPERSEDED serve family to die BEFORE the new authority is visible — so the
  * registration barrier's PHASE 2 must VERIFY-EVICT the predecessor's serve principal. The `$SYS`
  * scan → KICK → verify capability lives with the DELIVERY DAEMON (co-located with the broker), never
- * in this process (the manager holds the DATA signing seed; the D5 rail-split keeps `$SYS` material
+ * in this process (the manager holds the DATA signing seed; the rail split keeps `$SYS` material
  * out of any seed-holder). This reaches the daemon over the privileged `ctl.delivery-admin` rail
  * with a per-call SCOPED `endpoint-evictor` credential (pub the delivery-admin subject + reply +
  * `$JS.API.INFO`, nothing else — narrower than the `supervisor` profile auth's barrier-evict reuses).

@@ -1,0 +1,654 @@
+---
+title: CLI messaging
+description: One-shot messages, live chat, channel policy, retained history, and pending direct messages.
+kind: Reference
+audience: operators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Message receipts distinguish broker storage from delivery and completion. Chat adds a live inbox; history and pending reads describe bounded broker observations.
+
+
+## send [#send]
+
+```bash
+cotal send -t <agent> "<text>"   [--space <s>] [--server <url>] [--creds <path>]
+cotal send -c <channel> "<text>"
+cotal send -r <role> "<text>"
+```
+
+Choose one destination: `--to/-t` for a direct message, `--channel/-c` for a channel,
+or `--role/-r` for the role's native work queue. Choose one body source: a quoted positional
+argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `--stdin` does. There
+are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
+preserved and never printed in the receipt. A file that cannot be used is refused with its path:
+`TARGET_NOT_FOUND` when it does not exist, `PERMISSION_DENIED` when this account may not read it,
+and `USAGE_INVALID` (exit 1, without the command's help) for a directory or text that is not UTF-8.
+The refusal names the mesh the send was aimed at when this machine's records name one, and its
+remedy keeps the destination with a quoted body. No destination, several destinations, several body sources or an empty message is refused. A lone
+`-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
+`--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
+The recipient grammar is checked before connector installation or target preparation. Channel
+and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
+`name one concrete channel, without wildcards`, and a channel or role name outside the grammar is
+refused with the rule it breaks.
+A direct target resolves by its full identity or an unambiguous name. Names match without regard
+to case, so `bob`, `Bob` and `BOB` are one name, and a participant whose name another shares in any
+case is reached by its full identity. A name that no participant
+can carry, such as one holding `\` or longer than 128 characters, is refused with the name rule
+before any presence lookup. A name collision refuses
+with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, each with its display
+name, its kind (`agent`, `endpoint` or `chat session`) and the local time its process started, and a target that is not
+present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
+agent for you.
+
+
+### Message addressing
+
+For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the
+destination. Each one resolves like a direct target and is sent as that agent's name, which is what
+a receiving session compares. An instance id is refused when its name also resolves to another
+participant, and a shared name refuses with the full identities to send to with `--to` instead.
+Direct and role sends have no native mention field and refuse that option as `USAGE_INVALID`
+(exit 1), before connecting.
+A direct send may use `--reply-to <message-id>` to identify the message it answers. The sender
+still has no inbox and does not promise thread continuity.
+
+A one-shot sender displays the OS login and host as `<login>@<host>`, not the launching
+seat's name. On a local static-auth mesh, the account signer binds that label to a stable
+`local.cli_<sha256>` principal. Each send still uses a fresh, short-lived connection credential
+with the existing operator permissions. An explicit `--creds` keeps that credential's principal,
+and a signed-in mesh keeps the user's `cli` actor. Open meshes do not authenticate a sender.
+A peer message is not proof of the person's authorization to perform an action.
+
+
+### Storage receipt
+
+The receipt names the destination and message identifier without repeating the body. Direct and
+role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
+or completion. A direct send to an agent the roster shows offline also warns on stderr:
+`<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
+`--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
+`--verbose/-v` to show the actual sending principal. A post to an unregistered channel warns
+`CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
+and lists the space's registered channels, so a mistyped name stands out. It reads that count as
+`cotal history` lists channels. Its native space policy still controls publication and no registry
+metadata is created. Metadata or a count it cannot read stays not checked. A role send is stored
+whether or not anyone holds the role. When no present participant holds it, the send warns
+`ROLE_NOT_HELD`: the message waits on that role's queue until one takes it, and the warning names the
+closest role a present participant holds, or lists the roles present when none is close. A roster
+that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
+`UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
+only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
+its refusal names the limit alone. A channel post the broker
+refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
+the space or this identity may not post to it. The remedy lists the channels this identity may post
+to, read from the grant ledger as `cotal whoami` reads it, or with `--creds` from an agent file's own
+claims. When the ledger is on another machine it says so and lists the space's registered channels
+instead. A broker whose JetStream store holds more
+than its cap refuses every write with JetStream error 10023 and stores nothing, so `send` refuses
+`DEPENDENCY_UNAVAILABLE` (exit 2), naming the store and the `--max-file-store` cap this machine
+recorded for it. Its Next is `cotal history clear --yes`, which purges the space's channel history;
+a larger cap applies after that through `cotal down` and `cotal up --max-file-store <bytes>`. Any other unconfirmed publish outcome is
+unknown and never retried automatically. A broker that cannot write its store sends no
+acknowledgement at all, so when such a publish times out and the space's broker log on this machine
+records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
+says the message was probably not stored. Its Next names the fix for that cause, write access to
+the store for a permission error or free space for a full disk, and restarts the broker before the
+message is sent again. When the broker disabled JetStream, it adds that `cotal down` names the
+manager's process to end first if the manager's stop cannot be recorded.
+The command sends once and exits. It does not wait for an answer, retain an inbox
+or transfer replies to a later chat session.
+
+
+### Sender connection
+
+The sending principal comes from the selected space's credentials or user login. Its display name
+is the OS login and host, not `COTAL_NAME`. A one-shot sender never registers as a participant.
+The broker and native channel policy still decide which publications are authorized.
+
+The transient endpoint never joins the roster and binds no inbox. With the static credential this
+machine records for the space, on an open mesh, or on a user-auth mesh on your user bearer, it reads
+the roster and the channel registry once when it connects and binds no watch consumer, so it leaves
+nothing on the broker when it exits. A `--creds` credential reads once when its own grant allows the
+batched read, as an agent credential from `cotal auth mint` does, and watches otherwise; each watch's
+consumer stays on the broker for five minutes after the send exits, and a sustained send rate on a
+watch can reach the broker's limit of 1000 consumers per stream, after which the broker refuses
+further sends until the old consumers expire. A channel send also reads that channel's policy, with
+one Direct Get where the credential allows it and with one more scan consumer otherwise. On a
+user-auth mesh whose auth service predates the batched registry read, the send refuses with
+`PERMISSION_DENIED` and names the release to update to. A `--creds` credential that may not
+read the roster and the channel registry at all refuses with `PERMISSION_DENIED` (exit 2) before
+anything is sent, and the remedy says to run without `--creds`.
+
+A recipient can still answer a `send --to` or `send --role` with `cotal_dm` or from a `chat`
+session. On a static or open mesh every send has its own principal under the same display name, so
+the sender's name works only while it names one principal among the senders the recipient has heard
+from and the present peers. Once the recipient has heard two sends from the same login and host, a
+reply by that name refuses with `TARGET_AMBIGUOUS` and lists the principals. When none of them is
+present on a current roster, the refusal says they are no longer present and names how to answer one
+message. Answer by the id on the message instead (`from.id` in `chat --stdio`, or `sender_id` in a Codex injected frame and in `cotal_inbox`, with `replyTo` set to
+the message id), or with `/reply` in `chat`. The reply is stored
+under the sender's id in the space's DM history, which an operator's DM view such as the
+dashboard's Direct messages lens shows. The `cotal send` that asked has already exited, so the reply
+never reaches that shell.
+
+
+## chat [#chat]
+
+```bash
+cotal chat [<channel>] [--name <n>] [--plain | --stdio]   [--space <s>] [--server <url>]
+```
+
+`chat` opens one live session in the selected space, under an identity of its own. Each opening is
+a new principal with its own inbox and presence, so two windows are two sessions, and leaving ends
+the session. `--name` sets its display label, 1 to 128 characters, not blank and without control
+characters; a longer label is refused as `USAGE_INVALID`. The default is your OS login and host with
+a short suffix. The label carries no authority. When another live participant already carries the label,
+the session still opens and warns on stderr, naming that participant, because a direct message by the
+name refuses as ambiguous while both are present.
+
+The mesh is resolved once, and its recorded auth mode picks the admission. No other mode is tried.
+
+| Mode | Admission | Lifetime |
+|---|---|---|
+| open | Routing identity only, with no credential | Until you leave |
+| static | The space's manager admits the session and mints its own credential ([Static chat sessions](control-surface.mdx#static-chat-sessions)) | 15 minutes, never renewed |
+| user | The auth service admits it under your own `cli` grant; sign in with `cotal login` first | Up to 8 hours, never extended |
+
+On a static mesh, `chat` reads the space's service registry before it asks the manager for a
+session. When the registry lists no live manager, as after `cotal service stop stack-manager`, it
+refuses `TARGET_UNAVAILABLE` (exit 2) at once and names bare `cotal up`, as the run verbs do. A
+manager that stays registered but does not answer, such as one that crashed, is refused
+`TARGET_UNAVAILABLE` too once its answer deadline passes, with `cotal status` as the next step,
+because no session was asked for.
+
+A static or user session shows its end time in the banner, and says when it ends a minute before.
+After a session ends, `--plain` answers every line with how to leave, and `/quit` or the end of
+input leaves.
+
+
+### Channel admission
+
+A named channel is the session's initial channel. On a static or user-auth mesh it is also the
+session's whole read and post list, so a session opened without one can send and receive direct
+messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
+before anything reaches the broker. `/leave` does not change that list, so `/join` returns the
+session to a channel it left. On a session opened without a channel, the refusal says to
+leave and run `cotal chat <channel>` with the flags this session was started with, such as
+`--stdio` and `--space`. Before the session is admitted, `chat` reads the channel registry on the resolved
+mesh the way `send` does, under the same one-shot identity, and says on stderr whether the channel
+is registered, unregistered, or could not be read. The space's native policy decides whether a send
+is allowed, and nothing creates registry metadata.
+
+When the channel's replay is on, the session holds its retained messages in the replay window in
+its inbox. The inbox keeps at most 500 unread messages, so a channel that holds more replays only
+its newest 500 and the oldest are dropped. One `inbox` gap reports how many were dropped.
+`cotal history <channel> --limit <n>` reads further back. `channel show` names the bound in its
+`Chat replay` row.
+
+
+### Session views
+
+The terminal view needs a terminal for input and output; without one, `chat` refuses and names
+`--plain` and `--stdio`. `--plain` is the line flow, with a separate confirmation for each send,
+and it writes its punctuation in ASCII as every plain report does.
+`--stdio` runs the NDJSON participant protocol for programs: requests on stdin, records on stdout,
+diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
+and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
+
+In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
+question that follows. Any other answer keeps the draft unsent. A slash command typed as the answer
+runs, and the question is asked again. A new draft that replaces a kept one says so, with the kept
+draft's length. At the end of input an unsent draft or an unfinished `:multi` message is reported
+by its length and never sent. `:to` lists the recipients by number, and `:to <target>` sets one directly:
+`#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
+name without `@`, is refused with that list of forms, and the numbered list opens. An `@<name>`
+that names no present peer and no sender the session heard from is refused there with the reason a
+send to it would get, and the numbered list opens. A `#<channel>`
+holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
+keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
+holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
+starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
+command that takes a channel reads it with or without its `#`.
+`/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
+daemon, it reads them the way `cotal history` does.
+
+A direct message to an agent the roster shows offline is stored, and the view adds a notice that
+the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
+status as `recipientStatusAtSend` in the stored result.
+
+Message times show in local time, with the date when it is not today, the same way `history`
+shows them.
+
+
+### Direct-message addressing
+
+`/reply` answers the latest direct message or role task the session received. It addresses the
+sender's principal and quotes the message id, with no name lookup. A sender shows by display name,
+and with its principal when another principal in the session carries the same name, ignoring case.
+`--plain` cannot relabel a line it already printed, so it prints one line naming those principals
+when a name becomes shared. A typed `@<name>` must name one principal among the present peers and
+the senders the session heard from. A name that more than one of them carries refuses and lists
+them, so type `@<owner>.<actor>` instead. A target that parses as `<owner>.<actor>` goes to that
+principal whether or not it is present or was heard from, and is never matched against display
+names. A peer whose display name parses as a principal therefore cannot be reached by that name;
+`/reply` and its full principal still reach it. Typing the session's own principal refuses with
+`USAGE_INVALID`, and so does its own name when no other participant carries it. A `--stdio` `dm` request resolves its `to` the same way.
+
+
+### Declared options
+
+Every admission presents the session as an endpoint, so `--kind endpoint` is accepted and changes
+nothing. `--kind agent` refuses with exit 1 because a chat session never presents as an agent, and
+so does any other kind.
+
+`--role`, `--link`, `--token`, `--creds` and `--lifecycle-uid` are declared but no admission
+supports them yet, so each refuses with exit 2. A role would put the session on that role's work
+queue, and the view has no way yet to answer the sender of a task. The static and user-auth
+admissions take no role.
+
+
+### Session close
+
+A session that ends by leaving, by end of input or at its lifetime exits 0 when its connection
+close was confirmed and it was retired, or was an open-mesh session with nothing to retire. It exits
+4 when its connection close was confirmed and its retirement was requested but not confirmed. It
+exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
+was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
+space restarted and retired it while the connection was down, ends by itself with that reason and
+exits 5 when its close is confirmed. On a static mesh, leaving waits up to 30 seconds for the
+manager to answer the retirement. When the delivery daemon does not answer, the manager waits 15
+seconds for it, then reports the retirement pending and names the daemon, and the session exits 4.
+In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
+signal that arrives before the view starts is held: no session is opened if admission has not
+begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
+When the reader of `--plain` or `--stdio` output closes it, as `| head` does, input ends the same
+way and the session closes, then exits with its close status: 0, 3 or 4.
+
+Before a session is admitted, an error prints on stderr only, since `chat` has no `--json`. An
+error that ends `chat` exits 1 for `USAGE_INVALID` or `SCHEMA_INVALID`, 2 for any other refusal, 3
+when the outcome is unknown and 5 when it failed.
+
+
+## chat --stdio protocol [#the---stdio-protocol]
+
+stdin carries requests and stdout carries records, one JSON object per line, in UTF-8 with LF line
+ends. A CR before the LF is dropped, a blank line is ignored, and a last line with no LF still
+counts when input ends. A line longer than 1048576 UTF-16 code units is discarded up to its next LF
+and reported once with an `error` record. Input is decoded as UTF-8 with replacement, so bytes
+that are not valid UTF-8 become U+FFFD. In ordinary string content the line can still parse: a
+`text` value is sent with U+FFFD in their place, and a field that accepts only some characters,
+such as `id`, refuses. In an escape sequence such as `\` or `\u` and its four digits, or outside a
+string, they make that line's JSON parse refuse. stdout carries records and
+nothing else. The session's diagnostics go to stderr, prefixed `cotal chat: `, and never repeat a
+message body.
+
+
+### Request grammar
+
+Every request and record carries `"schemaVersion":1`. A request names its `type` and an `id` you
+choose, 1 to 128 printable ASCII characters, and its `result` record repeats that id. A request that
+reuses the id of one still in flight is refused with `USAGE_INVALID`, in a result under that same
+id that follows the first request's result. Requests run one at a time in arrival order, and a
+refusal waits its turn too, so every `result` and `error` record comes back in the order its line
+arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
+by its id. A missing field, a field the type does not take or a malformed value refuses with
+`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and is refused with the sentence `cotal send -c` gives for that name. A role must be a
+valid role name. A `text` that is empty or only whitespace is refused with `the message is empty`,
+as `cotal send` refuses an empty message.
+
+| `type` | Fields | Result |
+|---|---|---|
+| `send` | `channel`, `text`, optional `mentions` (names of 1 to 128 characters) | `stored`: `messageId`, `channel`, `registered` |
+| `dm` | `to` (a display name or `<owner>.<actor>`, 1 to 512 characters), `text`, optional `replyTo` (a message id, 1 to 512 characters) | `stored`: `messageId`, `seq`, `duplicate`, `recipient` (`id`, `name`) |
+| `anycast` | `role`, `text` | `stored`: `messageId`, `seq`, `duplicate` |
+| `status` | `status` (`idle`, `working` or `waiting`), optional `activity` | `ok` |
+| `attention` | `mode` (`open`, `dnd` or `focus`) | `ok` |
+| `channelMode` | `channel`, `mode` (`normal`, `quiet` or `muted`) | `ok` |
+| `join` | `channel` | `ok`: `joined`, `backfilled`, `durable`, optional `reason` |
+| `leave` | `channel` | `ok`: `left` |
+| `inbox` | optional `peek` (default `false`) | `ok`: `peek`, `messages` |
+| `roster` | none | `ok`: `rows`, `view` |
+| `channelInfo` | `channel` | `ok`: `channel`, `registered`, `replay`, `readable`, `postable`, optional `description` and `instructions` |
+| `connection` | none | `ok`: `state`, `identity`, `bufferedInbox`, `joinedChannels`, `attention`, `channelModes` |
+| `invoke` | `endpoint` (1 to 200 characters), `command` (1 to 128), optional `args` (an object) and `timeoutMs` (an integer from 1 to 120000, default 30000) | `ok`: the endpoint's data, or `null` when it returned none |
+
+`identity` in the `connection` result names the session, and no other record names its space. It
+has `space`, `mode` (`open`, `static` or `user`), `principal` (`<owner>.<actor>`), `lifecycleUid`,
+`label`, the `allowSubscribe` and `allowPublish` ceilings, and `expiresAt` in epoch milliseconds
+when the session has a set end. A roster's `view` is `current`, `unpopulated` or `stale`, and its
+`rows` are complete only when it is `current`. A row has `id`, `name`, `kind` and `status`, and
+`role`, `activity` and `sessionKind` when they are set. A `status` request with an `activity` sets
+both in one presence write, so a peer gets one `updated` record carrying both.
+
+A `result` record has `type`, `id` and `outcome`. With `ok` or `stored` it carries `result`, which
+is `null` when the request returns nothing. With `refused`, `unknown` or `failed` it carries `error`
+with `code`, `message` and, when the native layer gave one, `cause` with its own `code` and
+`detail`. `refused` means nothing happened. `unknown` (`OPERATION_UNKNOWN`) means the effect may
+have happened. The session never retries it, and it reports an unexpected failure of its own the
+same way. `failed` (`OPERATION_FAILED`) is a step that did not complete and had no effect. `stored`
+means the broker's stream accepted the message. It does not say anyone read it.
+
+
+### Unsolicited records
+
+The session also writes these records on its own:
+
+| `type` | Fields | When |
+|---|---|---|
+| `message` | `message`: `id`, `ts` (epoch milliseconds), `kind` (`channel`, `dm` or `anycast`), `from` (`id`, `name`, optional `role`), `channel` or `service`, `text`, optional `replyTo`, `mentionsMe`, `historical`, optional `deliveryCount` | A message arrived |
+| `presence` | `change` (`joined`, `updated` or `left`), `row` (a roster row) | A roster row changed, this session's own row included. As the session opens, its own row and each member already online come as `joined` |
+| `gap` | `scope` (`live` or `inbox`), `reason` | Messages may have been missed |
+| `error` | `id` (`null`), `error` | A line was refused before an id could be read from it, or was too long |
+| `end` | `reason`, `close` | The session ended. Nothing follows it |
+
+A `presence` record's `joined` is a member coming online and `left` one going offline. `updated`
+means a field the row shows changed, such as `status` or `activity`. A presence change the row does
+not show, such as a member's attention or channel modes, writes no record. `cotal who --all --json`
+shows attention.
+
+A message's `text` is untrusted. JSON escapes its control characters, so a body can never start
+another record. `channel` is set on a channel message and `service` on an anycast. `mentionsMe`
+means the message's mention list holds this session's label, ignoring case. The sender writes that
+list, so treat it as a hint. `deliveryCount` appears only on a durable delivery and is 1 the first
+time. Above 1, an earlier copy went unacknowledged and may already have been shown.
+
+
+### Acknowledgement
+
+A message is acknowledged once its record is handed to stdout. A DM or anycast is written when it
+arrives. A channel message is held in the inbox instead when its channel is quiet, when attention is
+`focus`, or under `dnd` unless it mentions the session, and join backfill is held too. A muted
+channel's messages are dropped. `inbox` with `peek` lists the held messages and leaves them held.
+Without `peek` it returns them, and they are acknowledged once its result is handed to stdout. A
+message still unacknowledged when the session closes is left unacknowledged and does not come back
+to this session.
+
+`join`'s `backfilled` counts the messages the join read back from the channel's retained history:
+those sent before the join and within the channel's replay window, not counting this session's own.
+It is 0 when the session is already on the channel or replay is off for it. Each of them then follows
+the rules above. One the session already handed over, holds or dropped is not held again, and one on
+a muted channel is dropped, so the inbox can gain fewer messages than `backfilled` says. The session
+remembers at least the last 4096 messages it handled for this.
+
+A `live` gap means the connection dropped or is reconnecting, so live channel messages may be
+missed until it returns. Its reason defaults to
+`connection <state>: live channel messages may be missed until it returns`. An `inbox` gap means
+the held buffer was full: channel messages were dropped and direct messages were left for the broker
+to redeliver. Its reason counts each kind that happened. One gap covers the drops of up to a second,
+and a replay past the bound is one gap when the session starts. When a write waits for stdout to
+drain, or more than 4 MiB of records are waiting, the session stops reading stdin until stdout drains.
+
+
+### End record
+
+`end` is the last record. Its `reason` is `input closed` when stdin ended, `interrupted`,
+`terminated` or `hangup` when SIGINT, SIGTERM or SIGHUP ended input, and `session ended` when the
+session ended by itself, for example at a static session's expiry. A session that could not
+reconnect gives that reason instead, and its `close` carries it as `lost`.
+When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
+`requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
+`message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
+broker accepts its credential until then unless its eviction was verified. Once the session has
+ended by itself and before the `end` record, a request refuses with `LIFECYCLE_BLOCKED` and
+`the session is ending; no new requests are accepted`. When the reader closes stdout, stderr says
+`stdout closed by the reader; ending the session`, and no later record is written, `end` included.
+Any other failed write, such as to a full disk, says `stdout could not be written; ending the
+session` and the one line about lost output, and the session ends the same way with exit 3.
+
+
+## channel [#channel]
+
+```bash
+cotal channel
+cotal channel set <name> [--replay | --no-replay] [--window <duration>] [--delivery <live|durable>] [--desc <text>] [--instructions <text>]
+cotal channel defaults [--replay | --no-replay] [--window <duration>] [--delivery <live|durable>]
+cotal channel show <name>
+cotal channel members <name> [--follow] [--json | --plain]
+cotal channel remove <name> [--purge] [--yes]
+```
+
+`channel` has the shorthand `ch`; `remove` also accepts `rm`. The inventory shows configured
+metadata, not every channel with traffic. A saved entry whose value does not decode is listed
+under `Not decoded` with its key and the decode error, and the key is left in the registry. Its
+channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
+channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
+that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
+of that key removes the entry. `show` includes inherited replay and delivery settings.
+`members` reads the broker-derived membership feed. Its timestamp is the last successful feed
+poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
+records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
+census with no member for a name that has no saved entry and no retained messages is refused with
+`TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
+case differs. A channel with a saved entry or retained messages and no member reads as empty. A
+follow shows the census again only when it changes: a poll that observes the same members writes no
+record and prints nothing, and the `end` record's `lastAsOf` is the last poll the follow read. A follow's
+view offers no command to follow. A lost connection is
+one `TARGET_UNAVAILABLE` error record, or one line, while the follow re-establishes it, and a `gap`
+record and the current census follow once the feed answers again, so a follow outlives a broker
+restart. A credential that can no longer connect ends the follow with the refusal a one-shot
+command with that credential gets, as [`history --follow`](#history) does. The delivery service
+writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
+
+Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
+space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
+is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
+naming the registered spelling when only the case differs. Removing a channel that has retained
+messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`; `--purge`
+still deletes that channel's retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
+removal nor replay settings revoke grants or stop participants; future posts can create retained
+history again. A `set`, `defaults` or `remove` that the broker refuses for the credential's grant
+applied nothing, so it is refused with `PERMISSION_DENIED` (exit 2), naming the credential's profile,
+the write it lacks and the subject the broker refused. With `--creds`, the Next is to run it without
+`--creds`, on the operator credential this machine records. A remove whose credential may not read
+the registry skips the name check, and the broker's answer to the remove decides. A change that the
+root's default `.cotal/channels.json` would undo at the next start warns that it will, as the
+[channel seed file](cli-startup.mdx#channel-seed-file) section says.
+
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
+| `--replay` / `--no-replay` | none | `set`/`defaults`: replay history to new joiners, or not. They take no value: `--replay off` is refused with the flag to use |
+| `--window <duration>` | none | `set`/`defaults`: replay window, for example `24h` |
+| `--delivery <live\|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
+| `--desc <text>` | none | `set`: channel description |
+| `--instructions <text>` | none | `set`: instructions shown to joiners |
+| `--purge` | off | `remove`: also delete the channel's retained history |
+| `--yes` / `-y` | off | `remove`: confirm the stated channel and deletion scope without a question |
+| `--follow` | off | `members`: follow broker-observed membership changes |
+| `--json` / `-j` | off | One JSON document; `members --follow --json` emits NDJSON records |
+| `--plain` | off | The same report without color |
+
+
+### Channel policy
+
+Inspects and edits the channel registry: replay and delivery policy, description, and joiner instructions. `live` has no per-member backstop; it does not disable ACL-bounded retained history. Changing a channel's delivery class does not settle already pending durable copies. `--delivery durable` requires a registered static-auth or user-auth space; an open or unregistered target has no established delivery-service support. A recorded auth mode does not prove that daemon is currently healthy. ACL
+semantics (who may read or post) are set at mint / provision time, not here; see
+[Channels and permissions](channels-and-permissions.mdx). On a user-auth mesh, `list` rides your
+own login as is; `set` and `defaults` edit the registry over a short-lived
+channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.mdx)).
+On a remote user-auth mesh that view is served by the public exchange; space-history `purger`
+and the read-only admin view are not.
+
+`set` and `defaults` change only the fields you name. Each write lands on the registry entry as it
+was read, so writers changing different fields of one channel at once all keep their change: one
+that loses the race reads the entry again and merges again. A write that keeps losing to other
+writers refuses with `CONFLICT` (exit 2) and saves nothing. Two writers setting the same field leave
+the value of whichever wrote last. When the entry already holds every value you name, nothing is
+written: the receipt is `Channel unchanged` or `Channel defaults unchanged`, and the outcome is
+`no-op` (exit 0).
+
+With the static credential this machine records for the space, or on an open mesh, `list` reads the
+registry with one Direct Get and leaves no consumer on the broker. On a user-auth mesh your login has
+no Direct Get row on the registry, and neither has an agent credential passed with `--creds`, so
+`list` scans it with a consumer that stays on the broker for five minutes after the command exits.
+
+
+## history [#history]
+
+```bash
+cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
+cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
+| `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
+| `--since <time\|seq>` | none | Only messages after an ISO 8601 date and time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
+| `--limit <n>` | 50 | How many of the newest retained messages to read, 1 to 1000 |
+| `--from <name>` | none | Keep messages from this sender name or id |
+| `--grep <text>` | none | Keep messages whose text contains this, ignoring case |
+| `--follow` | off | Keep listening and print each new message |
+| `--json` / `-j` | off | One JSON document, or with `--follow` one JSON record per line |
+| `--plain` | off | The same report without color or marks |
+| `--yes` / `-y` | off | `clear`: confirm without prompting. Scripts and `--json` require it |
+| `--dry-run` | off | `clear`: show the selected target and streams without connecting, and purge nothing |
+
+Reads the newest retained messages in the selected space, newest last: one channel, or every
+channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
+`>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
+no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
+messages, and reports no replay policy for it. When the space's broker runs on this machine and logged
+damage in a stored file since it started, `history` warns `STORE_DAMAGE_LOGGED` with the broker's
+words, because it serves only what it can still read. The read stays complete, as it read the stream
+the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
+filter that window on this machine. They do not search the whole stream, and with older retained
+messages behind the window the report says that `--from` and `--grep` searched only the messages
+read. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and
+names no larger limit. `result.window` says how many messages were read, whether older retained
+messages exist that the window did not reach, and whether the window goes back to `--since`. The report names the local time and the ISO instant a
+time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit
+number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
+number past the chat stream's newest sequence names no message, so it is a `USAGE_INVALID` refusal
+that names that sequence and how to write a date. An age outside the supported date range, a date
+that is not on the calendar, or a sequence that cannot be represented without rounding is a
+`USAGE_INVALID` refusal before connecting. A time is an ISO 8601 date such as `2026-10-23`, or a date and time such
+as `2026-10-23T09:00:00Z`, so `-5` and `10/23/2026` are refused. A date alone, or a date and time
+with no offset, is local time, so `--since 2026-10-23` starts at local midnight.
+The report shows each message's local time, with its date when it is not today; `result.items[].ts`
+is the ISO time. A DM row shows its recipient's name when the roster carries that principal or a
+message in the window came from it, and the principal otherwise. `--dms` reads the roster for those
+names, waiting up to two seconds for it. `result.items[].to` is the principal.
+A line break or other control character in a message's text shows as its `\uXXXX` escape in the
+text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
+A row shows the first 500 characters of a longer message and marks the cut with the message's size.
+`--json` carries the text as it was sent, in `result.items[].text`.
+
+Retained history is not every message sent. The chat stream keeps a fixed number of messages per
+sender on each channel, so a busy sender's oldest messages are discarded while other senders'
+messages from the same time remain. `result.retention` names the limit and each sender at it on the
+channels read, and the report prints a `gap` line for each. A gap is a fact about the stream, not a
+partial read. `result.replay` gives each channel's replay policy for new members, read from the
+channel registry. DM gaps are not reported.
+
+
+### Read failures
+
+A channel the identity may not read is refused with `PERMISSION_DENIED` (exit 2), never shown as
+empty. On a user-auth mesh each channel read uses the connection's broker-enforced channel grant.
+Revocation follows the effective credential and connection retirement, as it does for live channel
+reads. Concurrent commands sharing one identity wait for the broker to release its transient history
+reader; no command deletes another reader. Each channel has a ten-second read budget, with a
+thirty-second budget for the whole channel walk. A busy or cut-short read fails with `OPERATION_FAILED` (exit 5) rather than showing
+an empty conversation. Reading every channel leaves out channels the grant does not cover and names
+them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are not available to a
+user-auth identity. An agent's `--creds` credential reads the same way, one channel at a time under
+the lifecycle its own history grant names, with the same limits. A channel that grant leaves out is
+refused with `PERMISSION_DENIED` before it is read, quoting the channels the grant does name, or
+"no channel" for a grant that names none, and its `CHANNELS_DENIED` warning names them too. An
+observer or admin credential reads across channels.
+A part that could not be read is a warning and a `partial` run (exit 4): the
+retention, a replay policy, the channel list when a channel is named, or one channel of several.
+
+`--follow` prints the window and then each new message until interrupted, each as one line in the
+form `watch --plain` uses: `[<space>] <time>  <sender>  <destination>  <text>`, with a 24-hour local
+time and `#<channel>` or `DM to <principal>` as the destination. A purge by `history clear` is not
+announced to a follow or to `watch`; messages sent after it keep arriving. A lost connection is
+reported in one line while the follow re-establishes it, so a follow outlives a broker restart. A
+credential that can no longer connect ends the follow. It may have expired, or the broker may now
+reject it, as after `reset space`. The follow then ends with the refusal a one-shot command with that
+credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `--creds` on a
+static-auth space the follow mints its own credential from the space's trust, so when the broker
+rejects it the Next says to run the follow again, which mints one from the current trust. With
+`--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
+The first record is a `snapshot` holding the window, then one `event` per message. An event has
+no `seq`, because the live feed carries no stream sequence; the snapshot's items keep theirs. To
+read on from a follow, give `--since` the last event's `ts`. An `error`
+record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
+`gap` record says the connection was re-established and messages sent while it was down are not
+shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
+when the credential ended the follow, or 130 or 143 when SIGINT or SIGTERM ended it.
+
+`history clear` purges retained history from every channel in the space it targets; `--dms` extends
+it to direct-message history. It refuses extra channel names, read filters and `--follow` before
+purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](cli-shutdown.mdx#clean). On a user-auth mesh the purge rides a short-lived
+purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.mdx)).
+A purge the broker refuses for the credential's grant purged nothing, so it is refused with
+`PERMISSION_DENIED` (exit 2), naming the credential's profile; with `--creds`, the Next is to run it
+without `--creds`, on the operator credential this machine records.
+
+
+## pending [#pending]
+
+```bash
+cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]
+```
+
+The finite read reports the selected DM durable's native pending count, ack
+floor, delivered sequence, frontier, retention limits and up to 20 candidate
+IDs by default. JSON and plain output use the common one-document result. A
+name must match one observed roster entry; an exact principal ID wins over a
+display-name match, and an ambiguous display name refuses. `--durable` reads a
+previous lifecycle by its complete durable name without substituting a
+same-named current agent. An absent or unreadable durable is not `pending 0`.
+The caller needs the native admin read authority; user-auth has no equivalent
+view here and refuses without a static or bare fallback. A failed read does
+not prune a locally saved mesh registration.
+
+Candidates are read without acknowledging DMs. The transient read consumer is
+deleted after the bounded pass; an unconfirmed cleanup or candidate read is
+reported as partial. Candidate IDs are not evidence of delivery, a missing
+message or complete history. Each candidate's `from` is the sender principal
+parsed from its stored message subject, which the broker binds to the sender's
+credential. The sender's own card is not printed, and a candidate that cannot
+be decoded is withheld and reported as partial. Recipient contents are not
+printed. The retained `deliver pending` spelling keeps its earlier output shape.
+
+
+## Clearing retained history [#clearing-retained-history]
+
+`history clear` purges all retained channel history in the space it targets: `--space`, else this
+folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
+history under the existing purger authority. In a terminal, confirmation names the space, broker
+and space-wide scope and defaults to cancellation. Scripts
+and `--json` require `--yes`. The old `--force` spelling refuses with the replacement.
+
+`history clear --dry-run` resolves the target and names the affected streams offline. It issues no
+caller credential, connects nowhere and does not check authorization or retained message counts.
+A space that is prepared but not started is refused with `TARGET_UNAVAILABLE` (exit 2), and the
+refusal says how to start it.
+The purge uses the existing purger instrument or one-action user purger view, not a broader caller.
+On a user-auth mesh whose grant lacks scope `admin`, the purger view is not issued and the refusal
+is `PERMISSION_DENIED` (exit 2). Its remedy is the identity provider's own sentence, which names
+the missing scope and the whole-row re-grant that adds it.
+
+JSON and plain receipts retain each native stream acknowledgement and message count. A later
+refusal after an acknowledged purge is partial. An unconfirmed submitted purge is unknown and is
+not retried. A confirmed clear interrupted by SIGINT, SIGTERM or SIGHUP exits 130, 143 or 129 and
+says which purges were acknowledged or submitted, or that none was submitted and no history was
+cleared. Clearing history does not stop agents, remove stream definitions or reset identity;
+new messages may arrive after the acknowledged purge.
+
+
+### History window [#history-window]
+
+See the [current command contract](cli-messaging.mdx#history) for this behavior.
+
+### Follow stream [#follow-stream]
+
+See the [current command contract](cli-messaging.mdx#history) for this behavior.

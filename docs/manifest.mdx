@@ -1,0 +1,209 @@
+---
+title: "Mesh manifest (cotal.yaml)"
+description: "Manifest fields, persona overrides, channel grants, and access resolution for one team."
+kind: "Reference"
+audience: "operators"
+---
+
+A `cotal.yaml` manifest with `kind: Mesh` describes one team's channels, agents, and access rules.
+Each channel names the agents that may read and post.
+Cotal converts those lists into credentials for each agent.
+The manifest adds no wire concepts and supports one `space` per file.
+
+[Define a team](define-a-team.mdx) covers checking, booting, deploying, and removing teams.
+Current lifecycle commands are `cotal team check`, `team boot`, `team deploy`, and `team remove`.
+`cotal topology view -f` renders the declaration's graph, and `cotal up -f` remains the native fresh-boot route.
+`cotal spawn --file` selects a persona file on the execution host; it does not deploy a manifest.
+Older `spawn -f` deployment ledgers retain a separate `down -f` cleanup route described in the guide.
+Authorization follows [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization).
+
+The manifest must be UTF-8. A UTF-16 file is refused with `SCHEMA_INVALID` and the instruction to save it as UTF-8.
+
+## Top level
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `apiVersion` | yes | Must be `cotal/v1`. |
+| `kind` | yes | Must be `Mesh`. |
+| `space` | yes | One space name of 1 to 200 letters, digits, underscores, or hyphens. `spaces` is not supported in v1. `space create` and `up --space` accept at most 64 characters, so keep the name within that limit to prepare it. Fresh team boot requires a prepared local root and refuses a root that retains another space's account or local registration. See [Define a team](define-a-team.mdx#quickstart). |
+| `broker` | no | Broker address, bind interface, and auth settings. See [Broker settings](#broker-settings). |
+| `runtime` | no | Registered manager runtime name. `pty` is built in. Optional providers such as `tmux`, `cmux`, `orca`, and `herdr` are installed with `cotal ext add`. |
+| `agent` | no | Default connector for agents without their own manifest `agent` setting. Each declared agent needs a per-agent or top-level choice; there is no implicit connector default. |
+| `personaPermissions` | no | `reject`, the default, uses manifest permissions only. `include` also inherits persona permissions under the rules in [How access is resolved](#how-access-is-resolved). |
+| `defaults` | no | Channel defaults for `replay`, `replayWindow`, and `deliveryClass`. A channel's value overrides its default. `deliveryClass` accepts `live` or `durable`. See [SPEC §7](../SPEC.md#7-channels). |
+| `agents` | no | Map of agent name to persona declaration. A manifest can declare channels before it adds agents. |
+| `channels` | yes | Map of concrete channel name to its card and grants. |
+
+Unknown keys are refused.
+The resolver reports schema and semantic errors with the manifest's file and line.
+
+### Broker settings
+
+| Key | Meaning |
+| --- | --- |
+| `servers` | Comma-separated broker URLs. Defaults to `nats://127.0.0.1:4222`. Sets the address and port; embedded credentials are refused. |
+| `host` | Bind interface without a URL scheme. Does not select the port. The port comes from `servers` or the CLI's `--server`, never `host` or `--host`. |
+| `auth` | Omitted, `true`, or `static` selects per-agent JWT credentials. `false` selects an open development mesh. `user` selects per-user auth through `cotal login` and the actor ledger. |
+| `idp` | IdP auth base URL, valid only with `auth: user`. Uses HTTPS, or HTTP on a loopback IP literal such as `127.0.0.1`. Embedded credentials, a query, and a fragment are refused. Pins the IdP when user auth is first enabled. |
+
+The schema and `topology view` accept a broker list, but `up -f` and `team boot` bind one broker URL. A list refuses `USAGE_INVALID` before writing.
+For `up -f`, a `tls://` URL requires `--tls-cert` and `--tls-key`; with those flags, a `nats://` URL is refused.
+Additive `team deploy` also requires one registered broker address.
+Fresh boot and additive deployment have different supported operations.
+[Define a team](define-a-team.mdx#deploying-onto-a-shared-mesh-spawn--f) lists the current deployment limits.
+
+## Agent forms
+
+```yaml
+agents:
+  planner: ./agents/planner.md          # 1) reuse a persona file
+  builder:                              # 2) persona file with overrides
+    persona: ./agents/builder.md
+    model: sonnet
+    cwd: repos/backend                  # relative to the manager workspace
+    role: implementer
+    instructions: Prefer the smallest change that works.
+  lead:                                 # 3) inline persona
+    model: opus
+    role: lead
+    capabilities: [spawn]               # may spawn helpers
+    instructions: Coordinate the team.
+    prompt: Introduce yourself in #general and assign the first task.
+```
+
+A relative `persona` path resolves against the manifest's directory. It names a file, not a catalog entry.
+For catalog persona `p20` at the project root, use `./.cotal/agents/p20.md`. A bare name without a matching file is refused with that rule.
+A manifest's agent map key names the deployed agent.
+Behavior fields come from the persona unless the manifest overrides them.
+Permissions follow `personaPermissions`; a bare persona path does not bypass that policy.
+The [agent file reference](agent-files.mdx) defines the persona format.
+
+| Per-agent key | Meaning |
+| --- | --- |
+| `persona` | Persona file path. Without it, an inline agent needs at least `model`, `variant`, or `instructions`. |
+| `agent` | Connector override for the top-level `agent`. Persona-file connector pins do not replace this required manifest choice. |
+| `cwd` | Working directory on the manager host. See [Working directory](#working-directory). |
+| `continuity` | `none`, the default, starts a new session. `exact` reopens the session last bound to this agent name. See [Session continuity](#session-continuity). |
+| `model` | Model string passed to the application. Claude accepts `opus`, `sonnet`, or a full ID. OpenCode uses `provider/model`. Whitespace-only values are refused. |
+| `variant` | Connector-defined model variant. `cotal models --harness opencode` lists OpenCode models and variants. Whitespace-only values are refused. |
+| `launchOptions` | Connector-specific options. Manifest keys override matching keys in the persona's mapping. |
+| `role` | Override for the persona's role. |
+| `description` | Override for the persona's description. |
+| `instructions` | Session persona text. Replaces the persona file's body when supplied. |
+| `prompt` | Nonempty kickoff message submitted after the session starts. See [Session prompts](#session-prompts). |
+| `events` | `false` opts out of event planes, as with `--no-events`. Supporting connectors enable them by default. |
+| `capabilities` | Control capabilities such as `spawn` and `run`. On a user-auth mesh, `role:<r>` permits delegation of role `r`. `admin` is never accepted from a manifest. See [Identity and auth](identity-and-auth.mdx). |
+| `personaPermissions` | Override for the top-level `reject` or `include` policy. |
+
+### Working directory
+
+An absolute `cwd` is used as supplied.
+A relative `cwd` resolves against the manager's workspace, matching `cotal spawn --cwd`.
+Omitting it uses that workspace.
+The directory is never resolved against the manifest or persona directory on the deploying machine.
+Empty paths and NUL bytes are refused.
+
+Changing `cwd` marks a deployed launch stale and requires a restart to take effect.
+The field selects a directory; `continuity` selects whether to reopen a session.
+Current `team deploy` reapplication does not restart stale agents.
+The [deployment guide](define-a-team.mdx#deploying-onto-a-shared-mesh-spawn--f) describes its stale-policy waiver.
+
+### Session continuity
+
+With `continuity: exact`, the manager records the session that the connector proves over its authenticated control endpoint.
+The record lives at `<manager workspace>/.cotal/continuity/<name>.json`.
+A connector without that proof fails the launch and produces no assignment.
+The manifest does not name a session ID.
+The imperative `cotal spawn --resume` fork remains separate.
+
+Later launches reopen the recorded session, including after `cotal down` and a fresh `cotal up -f` or `team boot`.
+Crash recovery updates the assignment when it rebinds a session.
+A stop or preservation cut records the session the agent last ran, including a session it selected itself.
+A preserved resume reopens the retained session under the same proof and fails if the connector reports another session.
+
+If a resume fails that proof, the manager stops the seat it started and frees it after proving exit.
+If stopping cannot be proved, the seat stays managed and the error reports that state.
+A reopen also fails if the application no longer has the transcript, or if the agent never answered and no session was stored.
+The manager does not replace the missing transcript with an empty session under the old ID.
+A failed launch names the assignment file to remove for a new session.
+
+A recorded session cannot reopen under a different space, connector, or resolved `cwd`.
+The refusal names the assignment file to remove for a new session.
+A connector that cannot reopen sessions refuses the manifest at preflight; currently only `pi` supports reopening.
+Changing `continuity` marks a deployed launch stale.
+A reopened session does not receive the kickoff `prompt` again.
+
+### Session prompts
+
+`instructions` supplies the persona text applied to the session's system prompt.
+`prompt` supplies the first user message, equivalent to `cotal spawn --prompt`.
+A fresh launch submits it once the session is up.
+The prompt is part of the launch form, so changing it marks a running agent stale.
+A restart submits it again unless `continuity: exact` reopens a recorded session.
+A manager reclaiming a still-live session does not resubmit it.
+
+A connector that cannot deliver a kickoff prompt refuses the manifest at preflight.
+Hermes currently refuses kickoff prompts.
+Unsupported variants are also refused at preflight.
+
+## Channel grants
+
+A channel has a registry card and three lists of agent names.
+These are the same verbs described in [Channels and permissions](channels-and-permissions.mdx).
+
+| Card key | Meaning |
+| --- | --- |
+| `description` | Channel summary. |
+| `instructions` | Shared instructions for the channel. |
+| `replay` | Whether joins replay retained history. |
+| `replayWindow` | Retained-history window for replay. |
+| `deliveryClass` | `live` or `durable`. |
+
+The `defaults` block supplies omitted `replay`, `replayWindow`, and `deliveryClass` values.
+[SPEC §7](../SPEC.md#7-channels) defines their semantics.
+`team deploy` adds only cards with `deliveryClass: live`. Fresh `up -f` and `team boot` can seed either class.
+An open mesh has no delivery daemon and refuses durable channels.
+
+| Grant | Meaning |
+| --- | --- |
+| `subscribe` | Auto-listen at boot. Also supplies the read list if `allowSubscribe` is omitted. |
+| `allowSubscribe` | May read the channel. Defaults to `subscribe` when omitted and must contain every subscriber when present. |
+| `allowPublish` | May post to the channel. Empty or omitted means no agent can post. |
+
+This channel gives `lead` read access without granting any agent permission to post:
+
+```yaml
+channels:
+  decisions:
+    description: The durable record of what we decided.
+    subscribe:    [lead]
+    allowPublish: []                    # read-only for agents
+```
+
+An operator can post with `cotal send` under the operator's own authority.
+The operator's CLI action does not use these agent grants.
+Every name in a grant list must appear in `agents`.
+Channel names must be concrete; wildcards are not supported in v1 manifests.
+
+## How access is resolved
+
+Cotal converts channel membership into each agent's credential:
+
+- Read permission comes from `allowSubscribe`, or `subscribe` when `allowSubscribe` is omitted.
+- Post permission comes from `allowPublish`. Reading a channel does not grant permission to post.
+- `subscribe` selects the boot-time active read set. An explicit `allowSubscribe` must cover it.
+
+With `personaPermissions: reject`, channel grants and capabilities come only from the manifest.
+Persona behavior defaults still apply.
+With `include`, persona channel grants are inherited only for channels absent from the manifest.
+The manifest controls every channel it declares, even when that channel omits a grant list.
+Inherited persona grants must be concrete; a wildcard grant is refused.
+
+A nonempty manifest `capabilities` list overrides the persona's capabilities.
+Otherwise, `include` inherits the persona's capabilities; `reject` grants none.
+An empty manifest list therefore does not suppress persona capabilities under `include`.
+`cotal topology view -f` displays the resolved graph and inherited grants, including capabilities outside channel scopes.
+
+The resolver is [`resolve.ts`](../implementations/cli/src/lib/manifest/resolve.ts), and persona merging is in [`prepare.ts`](../implementations/cli/src/lib/manifest/prepare.ts).
+Current deployment and reapplication use [`team-deploy-apply.ts`](../implementations/cli/src/commands/team-deploy-apply.ts).
+The older [`spawn-plan.ts`](../implementations/cli/src/lib/manifest/spawn-plan.ts) classification and [`down-manifest.ts`](../implementations/cli/src/commands/down-manifest.ts) cleanup apply to legacy ledgers.

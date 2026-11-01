@@ -1,7 +1,7 @@
 # Per-space lifecycle on a shared broker
 
 > **Design** (non-normative) · Closes [roadmap](../roadmap.md) "Multi-space brokers"
-> and [embedding](../embedding.md) known gap 3. Wire contract unchanged; this is operator tooling.
+> and [embedding](../embedding.mdx) known gap 3. Wire contract unchanged; this is operator tooling.
 >
 > **Status on 26 October 2026.** The `cotal space` tenant verbs of section 2 (`space add`, `space rm`,
 > `space backup`, `space restore` for a tenant on a shared broker) are not built. The shipped

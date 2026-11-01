@@ -1904,7 +1904,7 @@
   "console:force kill": "pending:stop --force",
   "console:drop space": "pending:space delete",
   "dashboard:channel purge": "pending:channel remove --purge",
-  "mesh-view:feature map (docs/mesh-view.md)": "pending:watch --view",
+  "mesh-view:feature map (docs/mesh-view.mdx)": "pending:watch --view",
   "delivery:ctl.delivery join": "pending:channel members",
   "delivery:ctl.delivery leave": "pending:channel members",
   "delivery:ctl.delivery list": "pending:channel members",

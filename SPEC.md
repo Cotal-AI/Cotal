@@ -136,7 +136,7 @@ the principal stays stable across reconnects.
   the security claims in §9 and is not a conformant authenticated deployment.
 
 Future binding, not v0: portable `did:key` identity plus signed envelopes so authenticity
-survives an untrusted relay. See the threat model in [docs/security.md](docs/security.md).
+survives an untrusted relay. See the threat model in [docs/security.mdx](docs/security.mdx).
 
 ---
 
@@ -746,9 +746,9 @@ must implement.
 
 **On by default.** A space is provisioned with decentralized JWT auth. Open unauthenticated
 dev mode is available but out of scope for the security claims here. *(Informative
-operator-facing views of this section: [docs/identity-and-auth.md](docs/identity-and-auth.md),
-[docs/channels-and-permissions.md](docs/channels-and-permissions.md); the threat model is
-[docs/security.md](docs/security.md).)*
+operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx),
+[docs/channels-and-permissions.mdx](docs/channels-and-permissions.mdx); the threat model is
+[docs/security.mdx](docs/security.mdx).)*
 
 - **Account = space, user = agent.** A space is one NATS account. The **broker's** operator signs
   the account; an account signing key mints per-agent user JWTs. A broker (one nats-server trust
@@ -776,7 +776,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models` and `resolve-cwd` on that instance, the reads a launch there needs; a view without `spawn` gains none of them, and no view gains `ps` or `slots` from `spawn`. |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info of their client-managed ordered consumers on those two streams only, and no `CONSUMER.DELETE` on either; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; no watch-consumer delete: the broker removes a watch's ordered consumer at its inactive threshold, and a client treats a refused delete of its own watch consumer as that outcome (Appendix B); durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models` and `resolve-cwd` on that instance, the reads a launch there needs; a view without `spawn` gains none of them, and no view gains `ps` or `slots` from `spawn`. |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
@@ -877,7 +877,7 @@ DLV, and EPC carry **no** agent `STREAM.INFO` grant: `subjects_filter` is a requ
 ACL can narrow to counts alone, so INFO there would enumerate who DMed whom, and no agent-side
 reader needs it (§13.1 reaches DM and DLV by durable name, EPC by subject-scoped `DIRECT.GET`).
 Hiding the remaining metadata is deferred strict-containment work.
-See [docs/security.md](docs/security.md).
+See [docs/security.mdx](docs/security.mdx).
 
 **Consumer-delivery confused deputy on the read grants.** A JetStream consumer delivers stored
 bytes to a **caller-chosen destination the broker does NOT confine to the requester's
@@ -897,7 +897,7 @@ original captured subject and how the receiver's subject-derived kind check (§1
 classifies it; the reference implementation determines this by test and pins the exact grants.
 On the v0.3 rails without this mediation, read containment holds only against a *conforming*
 client; the broker does not enforce it.
-See [docs/security.md](docs/security.md).
+See [docs/security.mdx](docs/security.mdx).
 
 ---
 
@@ -1154,7 +1154,7 @@ surface: v0.4 defines it normatively via the credential ledger and the lifecycle
 ## 12. Conformance
 
 *(An informative build-order walkthrough of this checklist is
-[docs/build-a-client.md](docs/build-a-client.md).)*
+[docs/build-a-client.mdx](docs/build-a-client.mdx).)*
 
 A conformant authenticated NATS client MUST:
 
@@ -6180,7 +6180,7 @@ characters**, which is an id token by construction. The reference implementation
   the pause settled under, with `supersedes` naming the `answerId` the settle accepted. It is filed
   through the same door and credential pinning as an answer, and nothing is presented, so the pause
   stays settled, the one-use settle is untouched, and the run never reads the record. Its
-  `answerId` is minted fresh for each filing (32 random bytes, base64url, the first 43 characters)
+  `answerId` is minted fresh for each filing (32 random bytes, base64url: 43 characters)
   and is never derived from its content: a participant who returns to an earlier position files
   what an earlier filing said, and a content id would make the create-only write take it for a
   retry of that filing and record nothing. A step that is still open, or that settled
@@ -6496,7 +6496,7 @@ The participant manager refuses a program that places a spawn on any other insta
 ## Appendix B: Profile ACLs
 
 This appendix is normative for the NATS binding. *(The operator-facing summary of these
-grants is [docs/identity-and-auth.md](docs/identity-and-auth.md).)* Names below use these
+grants is [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx).)* Names below use these
 placeholders:
 
 - `P = cotal.<space>`

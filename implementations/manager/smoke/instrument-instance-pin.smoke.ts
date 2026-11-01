@@ -824,8 +824,11 @@ try {
       // Each command needs SCHEMA-VALID arguments or the envelope refuses it before it is ever
       // published, which is precisely how the first version passed vacuously: `{}` fails
       // `required` on all seven, so none of them left the client. The values are deliberately
-      // nonsense (no such run, no such attempt) so every handler refuses on business grounds and
-      // nothing is launched, resumed, or preserved; refusing is a REPLY, which is all this needs.
+      // nonsense (no such run, no such attempt), so most handlers refuse on business grounds and
+      // nothing is launched or resumed. `prepare-preservation` is the exception: any non-empty
+      // attempt id is a valid first attempt, so the manager that answers it is FENCED (`preserving`)
+      // for the rest of the run, and a later command that lands there gets the fence refusal
+      // instead of its own answer (#4033). Either is an attributed REPLY, which is all this grades.
       // If a schema gains a required field, `notReached` goes red rather than the cell going quiet.
       const attempt = { attemptId: `no-such-attempt-${randomUUID().slice(0, 8)}` };
       const adminArgs: Record<string, Record<string, unknown>> = {

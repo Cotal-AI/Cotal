@@ -197,7 +197,7 @@ function prepareCodexHome(space: string, name: string): string {
   // the next launch heals it. Absent auth.json is not fatal HERE: OPENAI_API_KEY is still a valid
   // way in, and codex stays the auth authority — the account probe after thread/start is what
   // refuses an unauthenticated launch. (A keyring-stored credential does NOT survive into the
-  // isolated home; managed agents need the file store or the env key. See docs/connect-codex.md.)
+  // isolated home; managed agents need the file store or the env key. See docs/connect-codex.mdx.)
   const operatorHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
   const operatorAuth = join(operatorHome, "auth.json");
   // ALWAYS clear the managed auth entry first: a codex rename-over can have turned the link
@@ -901,6 +901,8 @@ export async function runCodexHost(): Promise<void> {
     if (condition) void safeCondition(condition);
     void safeStatus("waiting", detail, detail === "item/tool/requestUserInput");
   });
+  // The request was declined in the same call; resume `working`, which also clears its condition.
+  driver.on("answered", () => void safeStatus("working"));
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);

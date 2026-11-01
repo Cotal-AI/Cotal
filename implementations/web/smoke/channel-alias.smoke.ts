@@ -34,9 +34,9 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams, CotalEndpoint, newIdentity } from "@cotal-ai/core";
-import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { bootWeb } from "./boot-web.js";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -79,28 +79,13 @@ try {
   await seed.stop();
 
   let log = "";
-  let launchUrl: string | undefined;
-  const WEB_PORT = await onFreePort(async (port) => {
-    webChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-    const taken = `Port ${port} is in use`;
-    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(250);
-    }
-    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
-    return port;
+  const web = await bootWeb({
+    server: SERVER, space: SPACE,
+    onSpawn: (child) => { webChild = child; }, onOutput: (text) => { log += text; },
   });
-  const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
-  const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
-  const authed = { cookie: `cotal_web_session=${session}` };
-  const ready = session === undefined ? undefined
-    : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
-  const served = exchange?.status === 302 && session !== undefined && ready?.status === 200;
+  const WEB_PORT = web.port;
+  const authed = { cookie: web.cookie ?? "" };
+  const served = web.served;
 
   const get = async (p: string): Promise<{ status: number; body: Buffer }> => {
     const r = await fetch(`http://127.0.0.1:${WEB_PORT}${p}`, { headers: authed });
