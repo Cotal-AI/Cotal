@@ -24,7 +24,7 @@
  * they share a uid, so a sibling that can read this agent's home (or the environment of the
  * attached TUI, which holds the token for the listener's lifetime) can present it. Cotal does not
  * claim mutually-hostile same-uid agent isolation here; that needs OS-level isolation, not a
- * file mode. See docs/connect-codex.md#limits.
+ * file mode. See docs/connect-codex.mdx#limits.
  *
  * Protocol: app-server **v2** (the API the Codex TUI itself runs on — feature
  * `tui_app_server` is permanently on), verified live against codex-cli 0.145.0.

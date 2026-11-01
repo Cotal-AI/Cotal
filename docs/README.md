@@ -10,11 +10,11 @@ JetStream.
 
 | You are… | Start with |
 |---|---|
-| **Evaluating**: what is this? | [What is Cotal](what-is-cotal.md) |
-| **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.md) |
-| **Choosing a path**: personal sessions, hosted spaces, teams or services | [Choose a workflow](using-cotal.md) |
-| **Integrating**: scripts, services or agent tools | [API reference](api-reference.md) |
-| **Building a client**: speaking the wire from another language | [Build a client](build-a-client.md) |
+| **Evaluating**: what is this? | [What is Cotal](what-is-cotal.mdx) |
+| **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.mdx) |
+| **Choosing a path**: personal sessions, hosted spaces, teams or services | [Choose a workflow](using-cotal.mdx) |
+| **Integrating**: scripts, services or agent tools | [API reference](api-reference.mdx) |
+| **Building a client**: speaking the wire from another language | [Build a client](build-a-client.mdx) |
 | **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), the [workflow language](../spec/cotal-lang.md), and the [change log](../SPEC.md#appendix-d-change-log) |
 
 ## For agents
@@ -27,116 +27,278 @@ Task dispatch:
 
 | Task | Page | First command / tool |
 |---|---|---|
-| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --root . --space main --detach` |
-| Put an agent on the mesh | [Quickstart](getting-started.md) | `cotal spawn` |
-| Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
-| Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
-| Declare a team + channels in one file | [Define a team](define-a-team.md) | `cotal up -f cotal.yaml` |
-| Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
-| Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | configured `service` dashboard / `cotal console` |
-| Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal auth mint <name> --profile agent` |
-| Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
-| Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
-| Write or host a durable workflow | [Workflow runs](workflows.md) | `cotal_run` / `cotal run start --file <program>` |
+| Install + start a local mesh, non-interactive | [Quickstart](getting-started.mdx) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --root . --space main --detach` |
+| Put an agent on the mesh | [Quickstart](getting-started.mdx) | `cotal spawn` |
+| Message peers from inside a session | [MCP tool catalog](mcp-tools.mdx) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
+| Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.mdx) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
+| Declare a team + channels in one file | [Define a team](define-a-team.mdx) | `cotal up -f cotal.yaml` |
+| Grant or audit channel access | [Channels & permissions](channels-and-permissions.mdx) | agent-file `allowPublish:` / `allowSubscribe:` |
+| Watch a live mesh | [Watch a mesh](watch-a-mesh.mdx) | configured `service` dashboard / `cotal console` |
+| Mint credentials (static mesh) | [Identity & auth](identity-and-auth.mdx) | `cotal auth mint <name> --profile agent` |
+| Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.mdx) | `cotal login --idp <url>` · `cotal actor grant` |
+| Implement the wire in another language | [Build a client](build-a-client.mdx) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
+| Write or host a durable workflow | [Workflow runs](workflows.mdx) | `cotal_run` / `cotal run start --file <program>` |
 | Check a normative rule | [Spec](../SPEC.md), [Cotal Lang](../spec/cotal-lang.md) | `cotal_docs(page: "spec")` |
 
-## Start here
+## Docs
 
-| Doc | Answers |
+### Start here
+
+| Page | Covers |
 |---|---|
-| [What is Cotal](what-is-cotal.md) | What is it, and what can it do? |
-| [Quickstart](getting-started.md) | How do I install it and get a running mesh? |
-| [Choose a workflow](using-cotal.md) | How do I connect a session, join a hosted space, deploy a team or integrate a service? |
+| [What is Cotal](what-is-cotal.mdx) | How Cotal lets agents and other software find each other and exchange messages. |
+| [Install Cotal](installation.mdx) | Install the cotal command with the shell installer or npm. |
+| [Quickstart](getting-started.mdx) | Start a local Cotal mesh, launch an agent, and watch it join. |
+| [Choose a workflow](using-cotal.mdx) | Choose how to connect sessions, join spaces, launch teams, and run durable work. |
+| [Examples](examples.mdx) | Choose a working example of agents collaborating through Cotal. |
 
-## Guides
+### Guides
 
-For operators running and watching a mesh:
+#### Operate a mesh
 
-| Doc | Answers |
+| Page | Covers |
 |---|---|
-| [Run a mesh](run-a-mesh.md) | How do I operate the local stack (modes, status, multiple meshes, history)? |
-| [Define a team](define-a-team.md) | How do I declare a whole team in one `cotal.yaml` and launch it? |
-| [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what (browser dashboard, terminal console)? |
-| [Deploy](deploy.md) | How do I run agent teams against an external broker? |
-| [Upgrading](UPGRADING.md) | How do I upgrade a deployment that already exists, and in what order? |
-| [Examples](examples.md) | Which runnable examples exist? |
+| [Configure a space](setup.mdx) | Prepare a project, choose its agent application, and save its space settings. |
+| [Run a mesh](run-a-mesh.mdx) | Start, inspect, and stop the local stack in a prepared project. |
+| [Launch agents](launch-agents.mdx) | Launch an agent through a manager, attach to its terminal, and choose its persona and runtime. |
+| [Define a team](define-a-team.mdx) | Describe agents and channels in a manifest, then boot or deploy that team. |
+| [Register a mesh](register-a-mesh.mdx) | Choose the mesh a command targets and register remote brokers with verified trust. |
+| [Watch a mesh](watch-a-mesh.mdx) | Choose a terminal display, line stream, or read-only browser dashboard for a running mesh. |
+| [Telemetry](telemetry.mdx) | CLI usage telemetry fields, levels, storage, delivery, and opt-outs. |
+| [Use the console](console.mdx) | Inspect a mesh from the terminal and use authorized operator controls. |
+| [Use the web dashboard](web-dashboard.mdx) | Configure the read-only dashboard and inspect a space through a protected browser session. |
+| [Supervise a remote mesh](remote-supervision.mdx) | Separate broker and manager hosts, publish an exchange, and enroll remote agents. |
+| [Supervise the stack](supervise-processes.mdx) | Choose process ownership under systemd and monitor actual component health. |
+| [Deploy agent teams](deploy.mdx) | Review the container example, its current build limitation, and the credentials it needs. |
+| [Back up a mesh](backup-a-mesh.mdx) | Preserve a supported mesh, create an offline backup, and restore it within the original trust boundary. |
+| [Recover a mesh](recover-a-mesh.mdx) | Use status and logs to diagnose service failures, stuck presence, or a frozen registration gate. |
+| [Upgrade Cotal](upgrade-cotal.mdx) | Choose an exact release, prepare the deployment, and verify the upgraded installation. |
 
-For connector users putting an agent on the mesh:
+#### Connect agents
 
-| Doc | Answers |
+| Page | Covers |
 |---|---|
-| [Connectors](connectors.md) | Which harness should I use? One feature matrix across all of them. |
-| [Connect Claude](connect-claude.md) | How does a Claude Code session join the mesh? |
-| [Connect OpenCode (beta)](connect-opencode.md) | How does an OpenCode session join? |
-| [Connect Codex (beta)](connect-codex.md) | How does a Codex session join? |
-| [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
-| [Connect Jcode (beta)](connect-jcode.md) | How does a Jcode session join? |
-| [Connect pi (alpha)](connect-pi.md) | How do pi sessions and agents built on pi's SDK join? |
-| [Authoring a connector](authoring-a-connector.md) | How do I add my own agent harness as a `cotal ext` plugin? |
+| [Connectors](connectors.mdx) | Choose an agent application and connect its sessions to a Cotal mesh. |
+| [Connect Claude](connect-claude.mdx) | Connect Claude Code to a mesh, launch an agent, and choose how it receives messages and tools. |
+| [Connect OpenCode](connect-opencode.mdx) | Launch OpenCode on a Cotal mesh and choose the model and options for your installed version. |
+| [Connect Codex](connect-codex.mdx) | Launch Codex on a Cotal mesh, choose a model, and set its sandbox permissions. |
+| [Connect Hermes (alpha)](connect-hermes.mdx) | Run a Hermes gateway on a Cotal mesh with a managed profile or your own Hermes profile. |
+| [Connect Jcode (beta)](connect-jcode.mdx) | Launch a private Jcode session on a Cotal mesh, choose its model, and fork an existing transcript. |
+| [Connect pi (alpha)](connect-pi.mdx) | Launch pi on a Cotal mesh or load the Cotal extension into your own pi host. |
 
-For protocol implementers:
+#### Build integrations
 
-| Doc | Answers |
+| Page | Covers |
 |---|---|
-| [Build a client](build-a-client.md) | How do I implement a conformant client in another language? |
-| [Embedding Cotal](embedding.md) | How do I build a service on the published `@cotal-ai/*` packages? |
+| [Authoring a connector](authoring-a-connector.mdx) | Add support for an agent application through Cotal's connector interface and extension loader. |
+| [Build a Cotal client](build-a-client.mdx) | Implement a client in another language using the wire specification and a NATS client library. |
+| [Embedding Cotal](embedding.mdx) | Choose the published packages and authority boundaries for a service built on Cotal. |
 
-## Concepts
+##### Embedding reference
 
-| Doc | Answers |
+| Page | Covers |
 |---|---|
-| [Architecture](architecture.md) | How is it built (the thin waist, the pieces), and why? |
-| [Control surface](control-surface.md) | How are the manager and other daemons driven (endpoints, describe/invoke, actions, sessions)? |
-| [Workflow runs](workflows.md) | How does a durable multi-agent workflow run, resume, migrate and fork (Cotal Lang, the step journal)? |
-| [Spaces & channels](spaces.md) | What is a space, how does it differ from a channel? |
-| [Transport vs protocol](transport.md) | What is protocol vs transport, and what must a binding provide? |
-| [Presence & delivery](presence-and-delivery.md) | How do presence, the three delivery modes, and durable delivery work? |
-| [Identity & auth](identity-and-auth.md) | Who can do what, and how is it enforced? |
-| [Delivery daemon (Plane-3)](delivery-daemon.md) | What is the durable backstop, and why does it exist? |
-| [Security model](security.md) | What is the trust boundary (what v0 protects and does not)? |
+| [Embedding package exports](embedding-exports.mdx) | Public package entry points, endpoint credentials, and Manager execution contracts. |
+| [CotalEndpoint reference](embedding-endpoints.mdx) | Presence metadata, observer freshness, write diagnosis, liveness probes, and DM-only endpoint readers. |
+| [Embedded remote clients](embedding-remote-clients.mdx) | MCP conversation routing, browser callers, remote Manager clients, and private-result prerequisites. |
+| [Embedded daemon lifecycle](embedding-daemons.mdx) | Process runners, account-scoped hosted services, and delivery credential renewal. |
+| [Embedded space provisioning](embedding-provisioning.mdx) | Broker trust, space credentials, durable host state, and current hosting limitations. |
+| [Space schema inspection](embedding-schema-inspection.mdx) | Resource definitions, bounded read-only observations, and the limits of schema and initialization comparisons. |
+| [Service authority contracts](embedding-service-authority.mdx) | Service authority contracts, platform supervisors, revocation prerequisites, and native custody limits. |
+| [Native service custody](embedding-service-custody.mdx) | Immutable service reservations, bootstrap, cancellation, and bounded writer guarantees. |
+| [Service endpoint hosting](embedding-service-host.mdx) | Owner approvals, native host operations, registration, and lifecycle custody. |
+| [Service endpoint access](embedding-service-access.mdx) | Authority proofs, serving credentials, verified grants, and renewal. |
+| [Service endpoint callers](embedding-service-callers.mdx) | Caller policy grants, broker payload prerequisites, revocation, and recovery limits. |
+| [Manager embedding authority](embedding-manager.mdx) | Manager startup, signer custody, remote authority callbacks, and delegated user intent contracts. |
+| [Delegated seat contracts](embedding-delegated-seats.mdx) | Managed lifecycle handoff, provider closure guarantees, and the limits of delegated recovery contracts. |
 
-## Reference
+##### Connector reference
 
-| Doc | Answers |
+| Page | Covers |
 |---|---|
-| [API reference](api-reference.md) | Which interface should I use, and where is its contract? |
-| [Auth HTTP reference](auth-api.md) | Public-listener token exchange, authority and chat sessions. |
-| [Dashboard HTTP reference](dashboard-api.md) | Read operations, authentication, response schemas and live events. |
-| [CLI](cli.md) | Every `cotal` command and its flags. |
-| [MCP tool catalog](mcp-tools.md) | Every `cotal_*` tool an agent gets, with inputs and side-effects. |
-| [Agent files](agent-files.md) | Every field of `.cotal/agents/<name>.md`. |
-| [Mesh manifest](manifest.md) | Every field of `cotal.yaml`. |
-| [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |
-| [Config & env](config.md) | The config file, the operator-facing `COTAL_*` variables, the on-disk layout. |
-| [Telemetry](telemetry.md) | What CLI usage reporting sends, including identifiers, and how to turn it off. |
-| [MeshView](mesh-view.md) | The CLI observer model behind the terminal console and plain stream. |
-| [Glossary](glossary.md) | Definitions of every term. |
-| [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |
+| [Connector runtime reference](connector-runtime-reference.mdx) | Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, and resume records. |
+| [Claude connector reference](claude-connector-reference.mdx) | Binding, delivery, presence, event recording, and hosting contracts for the Claude Code connector. |
+| [OpenCode connector reference](opencode-connector-reference.mdx) | OpenCode version support, injected configuration, session delivery, and structured event limits. |
+| [Codex connector reference](codex-connector-reference.mdx) | Codex launch options, private credentials, delivery behavior, presence, and structured event limits. |
+| [Hermes connector reference](hermes-connector-reference.mdx) | Hermes gateway ownership, profile state, delivery rules, presence hooks, and session forks. |
+| [Jcode connector reference](jcode-connector-reference.mdx) | Private Jcode process ownership, session forks, readiness checks, model selection, and event delivery. |
+| [pi connector reference](pi-connector-reference.mdx) | pi host lifecycle, delivery confirmation, continuation attempts, managed recovery, and event persistence. |
 
-## Specification
+### Concepts
 
-| Doc | Answers |
+#### Fundamentals
+
+| Page | Covers |
 |---|---|
-| [SPEC.md](../SPEC.md) | The **normative** wire contract (RFC-2119). Where a client disagrees with the spec, the spec wins. |
-| [cotal-lang.md](../spec/cotal-lang.md) | The **normative** workflow-language reference (SPEC §14): syntax, values, effects, the step journal, resume/migrate/fork, every error code. |
-| [cotal.schema.json](../spec/cotal.schema.json) | The machine-readable message schema, authoritative for message shapes. |
+| [Architecture](architecture.mdx) | How the wire contract, broker, connectors, and manager fit together. |
+| [Spaces](spaces.mdx) | How spaces isolate collaboration, and how channels, permissions, membership, and conversation ids organize work within them. |
+| [Transport vs protocol](transport.mdx) | How Cotal's wire contract uses NATS and JetStream, and what another transport binding would have to preserve. |
 
-## Project
+#### Messaging
 
-For people changing how Cotal is built or shipped (not needed to use it). Each design page below
-says at its top which parts have shipped.
-
-| Doc | Answers |
+| Page | Covers |
 |---|---|
-| [Roadmap](roadmap.md) | What is deferred, and where each area is headed. |
-| [Release](release.md) | How we version and publish. |
-| [Substrate stability](stability.md) | Which interfaces can I build on, and how do package and wire compatibility differ? |
-| [Setup internals](setup-internals.md) | How the `cotal setup` flow works. |
+| [Message flow](presence-and-delivery.mdx) | How presence, routing, durable delivery, and attention determine what peers can observe and receive. |
+| [The delivery daemon](delivery-daemon.mdx) | Why durable channel delivery needs a trusted service, and what happens without it. |
+
+##### Reference
+
+| Page | Covers |
+|---|---|
+| [Delivery service contracts](delivery-service-reference.mdx) | Fan-out, trusted reads, leases, membership retirement, credential adoption, and daemon lifetime. |
+
+#### Security
+
+| Page | Covers |
+|---|---|
+| [Identity](identity-and-auth.mdx) | How Cotal identifies a peer and limits what that peer can do. |
+| [Security model](security.mdx) | Threats, guarantees, and limits for peers sharing a trusted NATS broker. |
+
+##### Reference
+
+| Page | Covers |
+|---|---|
+| [Credential authority](identity-authority.mdx) | Credential minting, profile grants, endpoint generations, and capability limits. |
+| [User-auth lifecycle](identity-user-auth.mdx) | Actor grants, delegation, catalogs, enrollment, sessions, views, and remote managers. |
+| [Auth service integration](identity-service-auth.mdx) | Auth-service listeners, pinned IdP proofs, bridge hooks, and owner derivation. |
+| [Host boundaries](security-boundaries.mdx) | Credential lifetimes, metadata exposure, launch authority, and local process risks. |
+
+#### Agent coordination
+
+| Page | Covers |
+|---|---|
+| [The control surface](control-surface.mdx) | How clients discover commands, address service instances, and follow durable actions. |
+| [Workflow runs](workflows.mdx) | How a program coordinates agents, records progress, and continues after interruption. |
+
+##### Reference
+
+| Page | Covers |
+|---|---|
+| [Endpoint discovery](control-discovery.mdx) | Command contracts, manager instance selection, request outcomes, and service registration. |
+| [Manager lifecycle contracts](control-lifecycle.mdx) | Managed identities, static slots, spawn goals, chat sessions, terminal access, and grants. |
+| [Workflow operation contracts](workflow-operations.mdx) | Hosted and local run commands, agent requests, admission, inventory, and keyed submission. |
+| [Workflow runtime contracts](workflow-runtime.mdx) | Language replay, recovery, wire authority, durable effects, and engine limits. |
+| [Workflow effect contracts](workflow-effects.mdx) | Seat ownership, budgets, supervision, decisions, presence, turns, cancellation, and placement. |
+
+### Specification
+
+| Page | Covers |
+|---|---|
+| [Cotal Wire Specification](../SPEC.md) | The key words MUST, MUST NOT, REQUIRED, SHALL, SHOULD, SHOULD NOT, MAY, and OPTIONAL in this document are to be interpreted as described in RFC 2119 and RFC 8174. |
+
+### Project
+
+| Page | Covers |
+|---|---|
+| [Roadmap](roadmap.md) | Cotal is pre-1.0. The wire contract (v0.x) may still change under the change process. This page tracks what is deliberately not built yet, and the direction each area is headed. |
+| [Publishing a release](release.md) | Cotal uses pnpm, Changesets and one GitHub Actions workflow. The fixed group in .changeset/config.json versions the public packages together. Examples are private. |
+| [Substrate stability](stability.md) | Cotal's packages are pre-1.0 and publish in lockstep. Pin the versions you embed and read Upgrading before changing them. A package version, a wire revision and a service's discovered contract revision describe different compatibility boundaries. |
+| [Setup internals (maintainer notes)](setup-internals.md) | cotal setup (implementations/cli/src/commands/setup.ts) saves configuration by default: it checks prerequisites, sets up the chosen application and runtimes, and seeds persona files. Start is a separate terminal choice or --start; a script must also pass --detach. The dashboard remains a separately configured web service preset. Every file it writes is announced (→ wrote … via provenance.wrote) on stderr, or on stdout with the error when a stderr write fails. Each announcement is one line: a control character or Unicode line separator in a path, such as a newline in HOME, is printed as a \uXXXX escape. Every run takes the same inputs: destination, application, runtimes, project and space. With a terminal, askInputs asks for each one no flag gave and shows the answers before anything is written; Change asks again with the answers kept and Cancel saves nothing. Without one, or with --yes, --no-input or --json, scriptedInputs takes them from the flags and refuses a missing one, and that refusal (MissingFlags) prints the scripted form without the command help. --destination cloud is refused before anything else with the route a Cloud space takes: cotal login registers it, then --destination self-hosted. runtimeChoices lists pty, the official runtimes with the host tools in OFFICIAL_RUNTIME_TOOLS, and each installed third-party runtime. A script's runtimes are the --runtime names, which runtimeFlags checks before any write: an unknown name or an official one whose tool is not on PATH is refused. |
+| [Upgrading a running deployment](UPGRADING.md) | Substrate stability tells you what the version numbers promise. This page is the other half: what to actually do when the deployment already exists, has credentials in it, and cannot simply be recreated. Every release that breaks a running deployment gets a section here, naming what migrates on its own, what does not, and the order to move the pieces in. |
+
+## API reference
+
+| Page | Covers |
+|---|---|
+| [API reference](overview.mdx) | Find Cotal CLI commands, agent tools, configuration fields, and data models. |
+| [Integration interfaces](api-reference.mdx) | Choose Cotal's CLI, endpoint commands, libraries, agent tools, wire protocol, or HTTP interfaces. |
+
+### CLI
+
+| Page | Covers |
+|---|---|
+| [CLI reference](cli.mdx) | Find command syntax, flags, receipts, and limits for the Cotal CLI. |
+
+#### Workstation
+
+| Page | Covers |
+|---|---|
+| [CLI usage](cli-usage.mdx) | Command discovery, global flags, structured receipts, and exit codes. |
+| [CLI installation](cli-installation.mdx) | Setup, software updates, installed extensions, preferences, completion, and feedback. |
+| [CLI spaces](cli-selection.mdx) | Space preparation, registration, target selection, discovery, and infrastructure diagnostics. |
+
+#### Mesh lifecycle
+
+| Page | Covers |
+|---|---|
+| [CLI startup](cli-startup.mdx) | Local stack startup, controller recovery, authentication modes, and manifest startup. |
+| [CLI shutdown](cli-shutdown.mdx) | Stack and service stops, process identity checks, preservation, cleanup, and reset. |
+| [CLI backups](cli-backups.mdx) | Offline artifacts, integrity checks, restore recovery, and retained seat checkpoints. |
+
+#### Agents
+
+| Page | Covers |
+|---|---|
+| [Agent launch reference](cli-agents.mdx) | Launch modes, persona definitions, model catalogs, runtimes, and retained PTY seats. |
+| [Agent terminal control](cli-agent-control.mdx) | Managed seat census, terminal attachment, input receipts, and native agent stops. |
+| [Agent view reference](cli-agent-views.mdx) | Launch previews, named agent status, and recorded team deployment and removal evidence. |
+
+#### Services
+
+| Page | Covers |
+|---|---|
+| [Local service reference](cli-services.mdx) | Saved local services, native adapters, daemon compatibility entries, and service readiness limits. |
+| [Process supervision](cli-processes.mdx) | Manager compatibility entry, owned direct processes, systemd user units, and service logs. |
+| [Manager maintenance](cli-maintenance.mdx) | Guarded issuance-gate repair, retained seat maintenance, and native manager stop impact. |
+| [Linear integration](cli-integrations.mdx) | Linear account configuration, native MCP operations, endpoint serving, and service lifecycle. |
+
+#### Communication
+
+| Page | Covers |
+|---|---|
+| [CLI endpoints](cli-endpoints.mdx) | Presence, local endpoint references, contract authoring, native invocation, and guarded removal. |
+| [CLI messaging](cli-messaging.mdx) | One-shot messages, live chat, channel policy, retained history, and pending direct messages. |
+| [CLI observation](cli-observation.mdx) | Read-only activity feeds, the operator console, and the dashboard service. |
+
+| Page | Covers |
+|---|---|
+| [CLI authentication](cli-auth.mdx) | Static credentials, endpoint callers, account sessions, actor grants, and credential diagnosis. |
+| [CLI workflow runs](cli-runs.mdx) | Hosted and local workflow runs, recorded state, pause answers, offline checks, and seat turns. |
+
+### Agent tools
+
+| Page | Covers |
+|---|---|
+| [MCP tool catalog](mcp-tools.mdx) | Arguments, availability, and effects of the Cotal tools exposed to agent sessions. |
+
+### Configuration
+
+| Page | Covers |
+|---|---|
+| [Agent files](agent-files.mdx) | Fields, lookup rules, and ownership for an agent's persisted identity and persona. |
+| [Mesh manifest (cotal.yaml)](manifest.mdx) | Manifest fields, persona overrides, channel grants, and access resolution for one team. |
+| [Channel permissions](channels-and-permissions.mdx) | Channel read and post permissions, active subscriptions, delivery classes, membership, and replay. |
+| [Configuration](config.mdx) | Config files, preferences, environment variables, and local storage for the Cotal CLI and connectors. |
+
+### Models
+
+| Page | Covers |
+|---|---|
+| [MeshView](mesh-view.mdx) | The TypeScript observer model used by the terminal console and line stream, with dashboard feature coverage. |
+| [The cotal-lang card](lang-card.mdx) | Effect signatures, result shapes, concurrency rules, and common refusals for cotal-lang programs. |
+| [Glossary](glossary.mdx) | Definitions of Cotal's identity, messaging, delivery, and operator terms. |
+
+### HTTP contract sources
+
+| Reference | Covers |
+|---|---|
+| [Auth HTTP](auth-api.mdx) | The complete authority HTTP contract and component schemas. |
+| [Auth host HTTP](auth-host-api.mdx) | Capability-gated host listener operations for lifecycle, enrollment and private-result proofs. |
+| [Dashboard HTTP](dashboard-api.mdx) | The complete dashboard HTTP contract and component schemas. |
+| [Manager console HTTP](manager-console-api.mdx) | The credentialed roster, event feed and browser-session bootstrap. |
+| [Feedback intake HTTP](feedback-intake-api.mdx) | Tester-authenticated feedback submission and intake health. |
+
+## Normative artifacts
+
+- [Workflow language](../spec/cotal-lang.md).
+- [Message schema](../spec/cotal.schema.json).
+
+## Design notes
+
 | [Signer isolation](design/signer-isolation.md) | How the account signing seed moves off the manager uid. |
 | [Tasks endpoint](design/tasks-endpoint.md) | How a tasks provider joins a space as an ordinary endpoint. |
 | [Platform control authority](design/platform-pooled-control-authority.md) | How a platform runs a pooled control manager per account without a human session. |
 | [User-auth run start](design/user-auth-run-start.md) | How a logged-in user's `cotal run start` gets admitted on a participant manager under issued authority. |
 | [Resume transfer](design/resume-transfer.md) | How a detached `--resume` carries a session to a manager on another host. |
 
-Each runnable example documents itself in its own `examples/*/README.md`. Working
-build-plans and research live in the private `.internal/` submodule, not here.
+Each runnable example documents itself in its own `examples/*/README.md`.

@@ -79,13 +79,22 @@ function sourceBody(source: number): string {
 
 const REMOTE_BASE = "https://docs.cotal.ai";
 
-/** Resolve a `page` argument to a bundle entry. "spec"/"lang"/"schema" are aliases for the three
- *  non-page docs; everything else matches a page slug (case-insensitive). */
+/** Resolve a slug or exported documentation reference, including its file extension and heading.
+ *  "spec"/"lang"/"schema" name the three non-page docs. Other repository files remain unsupported. */
 function resolvePage(page: string): DocsPage | undefined {
-  const key = page.trim().toLowerCase().replace(/\.md$/, "");
   const meta = metadata();
   // Page reads still fail closed on a missing or mismatched corpus, including unknown page names.
   loadDocsSourceLengths();
+  const reference = page.trim().toLowerCase().split(/[?#]/)[0].replace(/^\.\//, "");
+  let key: string;
+  if (/^(?:\.\.\/)?spec\/cotal-lang\.md$/.test(reference)) key = "lang";
+  else if (/^(?:\.\.\/)?spec\/cotal\.schema\.json$/.test(reference)) key = "schema";
+  else if (reference === "../spec.md") key = "spec";
+  else {
+    const match = /^(?:(?:\.\.\/)?docs\/)?([a-z0-9-]+)(?:\.mdx?)?$/.exec(reference);
+    if (!match) return undefined;
+    key = match[1];
+  }
   const count = meta.pages.length;
   if (key === "spec") return { slug: "spec", title: meta.spec.title, kind: "normative", category: "normative", summary: "", body: loadDocsSource(count) };
   if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: meta.lang.title, kind: "normative", category: "normative", summary: "", body: loadDocsSource(count + 1) };

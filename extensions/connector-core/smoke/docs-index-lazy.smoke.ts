@@ -3,7 +3,7 @@
  *  No network, mocks, forced GC, or timing/memory assertions. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readDocument } from "@cotal-ai/docs-content";
 import type { Profiler } from "node:inspector";
 import { Session } from "node:inspector/promises";
 import { fileURLToPath } from "node:url";
@@ -81,8 +81,9 @@ if (!mode) {
 
     async function page(): Promise<void> {
       const result = await docs.runDocs({ page: "architecture" });
-      check("page remains byte-for-byte source text", () => assert.deepEqual(result, {
-        text: `(bundled v${docs.DOCS_VERSION})\n\n${readFileSync(new URL("../../../docs/architecture.md", import.meta.url), "utf8")}`,
+      const source = await readDocument(fileURLToPath(new URL("../../../docs/architecture.mdx", import.meta.url)));
+      check("page remains byte-for-byte exported Markdown", () => assert.deepEqual(result, {
+        text: `(bundled v${docs.DOCS_VERSION})\n\n${source.markdown}`,
       }));
     }
     function search(): void {

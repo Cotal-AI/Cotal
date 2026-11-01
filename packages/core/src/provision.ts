@@ -2846,7 +2846,7 @@ function deprovisionerPermissions(space: string, pr: MintPrincipal, deprovisionT
  *  pull delivery / KV-watch / request replies land there) PLUS the `ctl.delivery` control subtree it
  *  serves; ALL stream/KV reads ride the JS API (publishes), so there is NO native `chat`/`dinbox`/`dlv`
  *  subscription — a leaked cred can't natively sniff the mixed pre-auth store. Honest blast radius
- *  (delivery-daemon.md): it can write any owner's `dlv` (the post-auth store agents trust); the future
+ *  (delivery-daemon.mdx): it can write any owner's `dlv` (the post-auth store agents trust); the future
  *  fan-out/reader cred split bounds that. */
 function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const p = spacePrefix(space);

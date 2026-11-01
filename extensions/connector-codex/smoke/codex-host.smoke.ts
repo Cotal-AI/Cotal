@@ -37,7 +37,7 @@ import { skipSuite, SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSi
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
-  // operator's auth.json — see docs/connect-codex.md), so there is no Windows Codex case in the
+  // operator's auth.json — see docs/connect-codex.mdx), so there is no Windows Codex case in the
   // suite at all. This skip records that limitation; it is not covered elsewhere.
   skipSuite("managed Codex agents are POSIX-only");
 }
@@ -753,7 +753,7 @@ try {
   // private stdio pipe. The listener is what makes the real Codex TUI attachable to this very
   // thread; the capability token is what keeps other OS users and off-box callers from driving
   // the agent through it (the listener has no auth of its own). It is NOT a boundary against a
-  // same-uid sibling — see docs/connect-codex.md#limits.
+  // same-uid sibling — see docs/connect-codex.mdx#limits.
   const argvText = argv.join(" ");
   check("child argv: the app-server listens on a loopback websocket", argvText.includes("--listen ws://127.0.0.1:0"), argv);
   check(

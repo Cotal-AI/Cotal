@@ -1,6 +1,6 @@
 # Membership / `$SYS` credential injection
 
-> **Design** (non-normative) · Closes [embedding](../embedding.md) known gap 1
+> **Design** (non-normative) · Closes [embedding](../embedding.mdx) known gap 1
 > ("Delivery immediate live eviction and a fully-hosted membership feed"). Wire contract unchanged:
 > no new subject, no new stream, no new message type. This is a composition-root seam.
 >

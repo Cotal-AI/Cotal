@@ -340,7 +340,7 @@ completed commit, in-review findings, implementing, or decision needed.
 ## 7. Integrate and clean up only on request
 
 When asked to land the work, inspect all feature commits and expected shared-file conflicts first.
-Parallel features commonly touch `docs/cli.md`, generated docs bundles, `package.json`, flag
+Parallel features commonly touch `docs/cli.mdx`, generated docs bundles, `package.json`, flag
 inventories, and changesets. Merge/cherry-pick deliberately, resolve by preserving both behaviors,
 then run the aggregate gate once on the integrated result and request a final cross-feature review
 when conflicts changed code.
