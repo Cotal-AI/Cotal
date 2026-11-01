@@ -45,7 +45,7 @@ spaces keep projects and their permissions apart.
 The open standard defines identity, messaging, presence and endpoint control. The
 TypeScript implementation runs on [NATS + JetStream](https://nats.io) and includes the
 CLI, application connectors, a process manager, durable workflows and observation tools.
-[Read the overview](docs/what-is-cotal.md).
+[Read the overview](docs/what-is-cotal.mdx).
 
 ## Quick start
 
@@ -76,23 +76,23 @@ In another terminal, `cotal console` shows the team and its messages. Press **Ct
 open its command palette and launch another agent. You can also launch one directly with
 `cotal spawn --detach`. Ask either agent to introduce itself to its peers.
 
-`cotal down` stops the local stack. The [Quickstart](docs/getting-started.md) covers
+`cotal down` stops the local stack. The [Quickstart](docs/getting-started.mdx) covers
 requirements, non-interactive setup and troubleshooting. Prefer your coding agent to do
 the setup? Give it <https://docs.cotal.ai/prompt.md>.
 
 The CLI sends usage telemetry by default. Disable it with `cotal telemetry off`.
-[See what is sent](docs/telemetry.md).
+[See what is sent](docs/telemetry.mdx).
 
 ## Choose how to work
 
 | You want to | Start here |
 |---|---|
-| Run agents locally or on another machine | [Launch modes and manager selection](docs/cli.md#spawn) |
-| Connect a personal Claude Code session | [Existing-session connection and approval](docs/connect-claude.md#sessions-cotal-did-not-launch) |
-| Join a hosted space | [Sign in and select a space](docs/using-cotal.md#join-a-hosted-space) |
-| Declare a team and its channel permissions | [Team manifests](docs/define-a-team.md) |
-| Coordinate work that waits, branches or resumes | [Cotal Lang workflows](docs/workflows.md) |
-| Connect a service or automate Cotal | [API reference](docs/api-reference.md) |
+| Run agents locally or on another machine | [Launch modes and manager selection](https://docs.cotal.ai/api-reference/cli-agents/#spawn) |
+| Connect a personal Claude Code session | [Existing-session connection and approval](https://docs.cotal.ai/docs/connect-claude/#sessions-cotal-did-not-launch) |
+| Join a hosted space | [Sign in and select a space](https://docs.cotal.ai/docs/using-cotal/#join-a-hosted-space) |
+| Declare a team and its channel permissions | [Team manifests](docs/define-a-team.mdx) |
+| Coordinate work that waits, branches or resumes | [Cotal Lang workflows](docs/workflows.mdx) |
+| Connect a service or automate Cotal | [API reference](docs/api-reference.mdx) |
 
 A personal-session connection needs a signed-in space with a supported approval flow.
 The approval explains its permissions and activity sharing. For a local static-auth or
@@ -115,13 +115,13 @@ The connectors expose mesh tools and deliver peer messages through each applicat
 own mechanisms. Codex, Jcode and pi support directed messages during a live turn;
 personal native Claude Code sessions receive messages at supported busy boundaries.
 Resume, events and tool-sharing support differ by application. The
-[connector matrix](docs/connectors.md) lists the details and maturity levels.
+[connector matrix](docs/connectors.mdx) lists the details and maturity levels.
 
 Managed agents can run in a PTY or a supported terminal runtime:
 [tmux](extensions/tmux), [cmux](extensions/cmux), [Orca](extensions/orca) or
-[Herdr](extensions/herdr). See [runtimes](docs/cli.md#runtimes) for installation and availability.
+[Herdr](extensions/herdr). See [runtimes](https://docs.cotal.ai/api-reference/cli-agents/#runtimes) for installation and availability.
 
-Bring another application by [writing a connector](docs/authoring-a-connector.md), or
+Bring another application by [writing a connector](docs/authoring-a-connector.mdx), or
 [vote for the next one](https://github.com/Cotal-AI/Cotal/discussions/80).
 
 ## How it works
@@ -147,8 +147,8 @@ The manager starts and stops processes. It does not sit between agents' messages
 choose their work. Agents can request teammates through `cotal_spawn` when their grants
 allow it. A manifest sets up a team in advance; Cotal Lang coordinates its execution.
 
-[Architecture](docs/architecture.md) · [Delivery](docs/presence-and-delivery.md) ·
-[Channel permissions](docs/channels-and-permissions.md)
+[Architecture](docs/architecture.mdx) · [Delivery](docs/presence-and-delivery.mdx) ·
+[Channel permissions](docs/channels-and-permissions.mdx)
 
 ## Workflow runs
 
@@ -180,7 +180,7 @@ cotal run answer <runId> <stepKey> --value '"yes"'
 
 The runtime also supports concurrent branches, keyed submissions and authenticated
 cooperative cancellation. A cancellation record does not prove every external process
-has stopped. See [Workflow runs](docs/workflows.md) for recovery and host limits, and the
+has stopped. See [Workflow runs](docs/workflows.mdx) for recovery and host limits, and the
 [language reference](spec/cotal-lang.md) for the full contract.
 
 ## Services and integrations
@@ -189,15 +189,15 @@ Services publish command contracts that authorized callers can discover and invo
 The same endpoint interface serves the manager and integrations such as
 [Linear](implementations/linear). Agents use `cotal_describe` and `cotal_invoke` where
 their connector and grants provide them; scripts can use the CLI's
-[endpoint commands](docs/cli.md#endpoint-control) and structured output.
+[endpoint commands](https://docs.cotal.ai/api-reference/cli-endpoints/#endpoint-control) and structured output.
 
 The Linear adapter serves an upstream account on static-auth meshes or through an
 approved user-auth service registration. A hosted deployment still needs to configure
 its authority, endpoint binding and caller grants. Installing an adapter does not grant
 access to an account or make a service available in every space.
 
-For your own integration, choose among the [TypeScript libraries](docs/embedding.md),
-[agent tools](docs/mcp-tools.md) and [HTTP references](docs/api-reference.md#http-interfaces).
+For your own integration, choose among the [TypeScript libraries](docs/embedding.mdx),
+[agent tools](docs/mcp-tools.mdx) and [HTTP references](docs/api-reference.mdx#http-interfaces).
 
 ## Watch the team
 
@@ -209,7 +209,7 @@ specific questions about peers, managed agents and the local machine.
 The browser dashboard is a separately configured read-only service. It uses an explicit
 protected credential for a registered static-auth space and shows only what that
 credential may read. It does not mint its own access. Follow the
-[dashboard setup](docs/watch-a-mesh.md#web-dashboard) before starting it.
+[dashboard setup](https://docs.cotal.ai/docs/web-dashboard/#web-dashboard) before starting it.
 
 <div align="center">
 <img src="assets/dashboard-graph.webp" width="820" alt="The dashboard graph showing agents, channels and membership links">
@@ -232,11 +232,11 @@ User-auth deployments let people sign in and issue access under their current gr
 The broker, operator and admin credentials are trusted. Direct messages are protected
 from unauthorized peers, but are not end-to-end encrypted against those trusted parties.
 `cotal up --open` is a loopback-only, live-only mode without authentication, for local
-experiments. [Read the security model](docs/security.md).
+experiments. [Read the security model](docs/security.mdx).
 
 Personal-session activity sharing, mesh permissions and CLI telemetry are separate
 settings. Review the connection approval before sharing a conversation's activity, and
-see [Telemetry](docs/telemetry.md) for CLI usage reporting.
+see [Telemetry](docs/telemetry.mdx) for CLI usage reporting.
 
 ## Examples
 
@@ -259,16 +259,16 @@ workflow that resumes on another machine.
 </tr>
 </table>
 
-[All examples](docs/examples.md), including their own setup instructions and limitations.
+[All examples](docs/examples.mdx), including their own setup instructions and limitations.
 
 ## Documentation
 
 The docs are at **[docs.cotal.ai](https://docs.cotal.ai)**. Pages also have Markdown
 versions for agents, and installed connectors expose a versioned `cotal_docs` bundle.
 
-- [Choose a workflow](docs/using-cotal.md): local teams, hosted spaces, personal sessions and integrations.
-- [CLI reference](docs/cli.md#find-a-command): commands grouped by task, with flags and output contracts.
-- [API reference](docs/api-reference.md): libraries, endpoint commands, agent tools and HTTP.
+- [Choose a workflow](docs/using-cotal.mdx): local teams, hosted spaces, personal sessions and integrations.
+- [CLI reference](docs/cli.mdx#find-a-command): commands grouped by task, with flags and output contracts.
+- [API reference](docs/api-reference.mdx): libraries, endpoint commands, agent tools and HTTP.
 - [Spec](SPEC.md): the normative wire contract.
 - [Upgrading](docs/UPGRADING.md): package-specific migration steps.
 
@@ -290,7 +290,7 @@ Reusing those shapes does not make Cotal an A2A transport bridge.
 
 TypeScript is the reference implementation. The standard is a wire contract, so another
 language can implement it with a NATS client and the required identity, delivery and
-presence behavior. [Build a client](docs/build-a-client.md) gives the implementation order.
+presence behavior. [Build a client](docs/build-a-client.mdx) gives the implementation order.
 
 </details>
 
@@ -300,7 +300,7 @@ presence behavior. [Build a client](docs/build-a-client.md) gives the implementa
 Yes. They connect to the same space through a reachable broker. A laptop, workstation
 and remote host can participate together. Remote launches need an authorized manager;
 the host controls which agents and services may run there. See
-[remote supervision](docs/run-a-mesh.md#remote-supervised-agents).
+[remote supervision](https://docs.cotal.ai/docs/remote-supervision/#remote-supervised-agents).
 
 </details>
 

@@ -86,7 +86,7 @@ export function detachedSystemdSupervisionWarning(
   if (!unit?.Id || !/^[-A-Za-z0-9_.@:]+[.]service$/.test(unit.Id) || !unit.MainPID || !/^[1-9][0-9]*$/.test(unit.MainPID) || Number(unit.MainPID) !== pid) return undefined;
 
   const shape = unit.Type === "oneshot" && unit.RemainAfterExit === "yes" ? " is Type=oneshot with RemainAfterExit=yes and" : "";
-  return `! systemd unit ${unit.Id}${shape} tracks this background launcher; its exit is not a stack-liveness receipt. Use \`cotal up --foreground\` when this unit must own the native stack lifetime. See "${DETACHED_SUPERVISION_DOC_SECTION}" in docs/run-a-mesh.md.`;
+  return `! systemd unit ${unit.Id}${shape} tracks this background launcher; its exit is not a stack-liveness receipt. Use \`cotal up --foreground\` when this unit must own the native stack lifetime. See "${DETACHED_SUPERVISION_DOC_SECTION}" at https://docs.cotal.ai/docs/run-a-mesh/#supervising-the-detached-stack.`;
 }
 
 /**

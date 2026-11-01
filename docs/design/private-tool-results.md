@@ -12,7 +12,7 @@ journal, `extensions/connector-core/src/tool-result-journal.ts` (#4838), and `qu
 `eligibleAt` in the emitter (#4839). These supply storage and consent-frontier placement,
 but no capture consumer connects them and no component serves private tool results. Acceptance does not enable it: every owner in section 9 must land
 and qualify their part, and section 11's activation gates remain binding.
-[Embedding](../embedding.md#private-tool-results) lists the shipped exports.
+[Embedding](../embedding.mdx#private-tool-results) lists the shipped exports.
 
 Source references are to `c28c9ab16532d72f5b53521b808e8a0a93dddb2e`. Line numbers have moved since.
 

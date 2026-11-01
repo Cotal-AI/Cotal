@@ -19,7 +19,7 @@
     {"name":"OS role/group projection + immutable release/edge routes","state":"proposed","source":"hosted Cloud operations","owner":"J","consumer":"G,H","rule":"system-level distinct uids and group views; source/ABI provenance, same-origin second-cell route, no target build"}
   ],
   "ownership": {
-    "E": ["implementations/auth/src/service.ts authority-plane cwd selection and outer service lifetime", "implementations/delivery/src/delivery.ts service lifetime", "packages/workspace/src/renewal.ts integration if required", "docs/embedding.md service API"],
+    "E": ["implementations/auth/src/service.ts authority-plane cwd selection and outer service lifetime", "implementations/delivery/src/delivery.ts service lifetime", "packages/workspace/src/renewal.ts integration if required", "docs/embedding.mdx service API"],
     "F": ["packages/core/src/remote-manager-authority.ts manager authority schema", "implementations/auth/src/manager-authority.ts closed authorization", "implementations/manager/src/manager.ts renewal/control and pooled refusal", "implementations/manager/src/run-hosting.ts remote run credential path", "implementations/manager/src/commands.ts CLI compatibility"],
     "G": ["Cloud backend runtime composition and units.ts activation", "authority/context worker slots", "Cloud peer-uid adapter and OS-isolation enforcement", "measured static caps and fair bounded queues"],
     "H": ["Cloud backend persisted assignment and cell mapping", "Cloud provisioning and same-origin routing", "atomic per-cell manifests", "interface patches offered to G for G-owned composition"],

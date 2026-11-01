@@ -119,10 +119,14 @@ try {
   const deleteViolations = (): string[] =>
     log.split("\n").filter((l) => /Violation/i.test(l) && l.includes(`CONSUMER.DELETE.${stream}`));
 
-  // The dashboard's observer shape: watches presence, registers none, consumes nothing.
+  // The dashboard's observer shape: watches presence, registers none, consumes nothing. Since #5183
+  // the default 10s transport ping disconnects a stalled link before two watch heartbeats are
+  // missed, and a disconnect rebuilds nothing (1.2). The explicit 120s ping keeps the link up
+  // through the stall so the watch's own rebuild path is the one measured.
   const ep = new CotalEndpoint({
     space, servers: SLOW, creds: webCreds, channels: [], consume: false,
     registerPresence: false, watchPresence: true, card: { name: "web", kind: "endpoint" },
+    transportPingIntervalMs: 120_000, transportMaxPingOut: 2,
   });
   const deleteErrors: string[] = [];
   ep.on("error", (e: Error) => {

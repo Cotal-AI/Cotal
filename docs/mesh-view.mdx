@@ -1,0 +1,247 @@
+---
+title: "MeshView"
+description: "The TypeScript observer model used by the terminal console and line stream, with dashboard feature coverage."
+kind: "Reference"
+audience: "integrators"
+---
+
+`MeshView` is the data model used by the terminal [console](watch-a-mesh.mdx) and plain line stream.
+The class ships in `@cotal-ai/workspace/view` and lives in [`packages/workspace/src/view/mesh-view.ts`](../packages/workspace/src/view/mesh-view.ts).
+The web dashboard has a separate observer and HTTP and server-sent event APIs. It does not import `MeshView`.
+
+This API belongs to the reference implementation. Its fields derive from the wire contract, but do not define it.
+The [SPEC](../SPEC.md) defines subjects, delivery modes, presence, and other wire requirements.
+Other clients can derive their own models.
+
+## The observer [#the-observer]
+
+The console and stream use `openObserver({ space, server, name, auth?, operator? })`
+from `@cotal-ai/workspace/view`. It returns an unstarted `CotalEndpoint` configured
+with `consume: false`, `registerPresence: false`, `watchPresence: true`, and no joined channels.
+`operator: true` adds the operator role and a lifecycle UID for endpoint service calls;
+broker grants still decide which calls it may make.
+The endpoint stays off the roster and creates no inbox, chat, or anycast durables.
+It reads through a live tap, history reads, and presence and membership watches.
+The web server creates its own endpoint with the same observer flags. Browsers read its HTTP APIs and event stream.
+
+History reads can create temporary consumers. Stopping or rebinding a watch first disarms local delivery. If the presented credentials exclude consumer deletion, cleanup sends no delete and leaves broker expiry to reclaim it after five minutes. Permitted deletes reclaim immediately. SDK-internal ordered-consumer recovery is unchanged.
+
+The console narrows its tap to `chatWildcard(space)` whenever it has credentials or a user bearer.
+That view exposes multicast traffic and hides DMs and anycast.
+An open-mesh console uses the whole-space tap.
+A space-wide subscription still requires broker permission. Authenticated admin grants cover the
+`chat`, `inst`, and `svc` planes individually, so the web server taps those three subjects separately.
+
+On an open mesh, the interactive console starts a second, presence-only endpoint before the operator's first send.
+It shares the observer's card, so peers can address replies to the operator.
+The observer's whole-space tap displays those replies. A session that only watches stays invisible.
+The console provides no participant endpoint under auth. An authorized send there is one-way, and the console reports that limitation.
+The default authenticated console and user-mode admin view cannot send. An explicit `--creds` file enables the send path, subject to its broker grants.
+See [Watch a mesh](watch-a-mesh.mdx) for operator behavior.
+
+## MeshView data [#meshview-data]
+
+`MeshView` takes a not-yet-started endpoint and owns its lifecycle.
+The model contains plain data, with no ANSI, React, HTML, or color values.
+The console's `useMesh` hook consumes snapshots. The stream consumes individual entries and presence events.
+
+```ts
+const view = new MeshView(ep, { window: 300 });
+view.on("entry", (entry: FeedEntry) => { /* one live feed row */ });
+view.on("presence", (event: PresenceEvent) => { /* join, update, or offline */ });
+view.on("warning", (error: Error) => { /* recoverable endpoint notice */ });
+view.on("change", (snapshot: MeshSnapshot) => { /* batched model */ });
+await view.start();
+const snapshot = view.snapshot();
+await view.stop();
+```
+
+`start()` starts the endpoint and tap, then launches history prefill, channel refresh, and membership reads without awaiting them.
+Its resolution does not mean that those reads have completed.
+A 75 ms timer emits `change` when the model is dirty. A one-second heartbeat marks the model dirty to refresh ages and rates.
+Channels refresh every two seconds. Membership watch notifications debounce for 150 ms before a new read.
+`stop()` clears timers, discards pending unicast bursts, stops the membership watch, and stops the endpoint.
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `window` | `number` | `300` | Maximum feed entries retained. |
+| `tapSubject` | `string` | Whole-space wildcard | Subject passed to `ep.tap()`. `chatWildcard(space)` selects a chat-only view. |
+
+`spaceWildcard(space)` and an omitted `tapSubject` select the whole space when the credential permits it.
+`status.dmVisible` is false only when `tapSubject` equals `chatWildcard(ep.space)`.
+It describes that selection, not a separate permission check. Other custom tap subjects do not change this flag.
+
+```ts
+interface FeedEntry {
+	id: string;
+	ts: number;
+	from: EndpointRef;
+	delivery: "multicast" | "unicast" | "anycast";
+	channel?: string;      // multicast target
+	toService?: string;    // anycast target
+	toIds?: string[];      // unicast target endpoint IDs
+	toNames?: string[];    // corresponding roster display names
+	count?: number;        // unicast burst target count, including repeats
+	events?: boolean;      // multicast row on an agent's structured-event channel
+	text: string;          // partsToText(msg.parts)
+}
+
+interface MeshSnapshot {
+	agents: Presence[];    // card.kind === "agent"
+	endpoints: Presence[]; // all other card kinds
+	channels: { channel: string; messages: number; arrivals: number }[];
+	feed: FeedEntry[];
+	membership: { snapshot?: MembershipSnapshot; unreadable?: string };
+	rates: { msgsPerSec: number; activity: number[] };
+	status: { connected: boolean; space: string; dmVisible: boolean; error?: string; warning?: string };
+	signals: MeshSignals;
+	nameOf: (id: string) => string;
+}
+```
+
+The model applies these rules:
+
+- `deliveryOf(subject)` classifies chat, unicast, and anycast. Chat becomes `multicast` in `FeedEntry`. Control, presence, and trace frames return `null` and do not enter the feed.
+- Live multicast rows on structured-event channels carry `events: true`. Those channels do not appear in channel tabs or history prefill. Their live rows remain in the feed.
+- Unicast messages with the same sender ID and plain text share a 400 ms window, measured from the first arrival. The row appears when that window closes. Its `id` comes from the first message, and its `ts` is the earliest timestamp. `toIds` and `toNames` preserve parallel target lists. Repeated targets contribute to `count`.
+- `entry` emits each live row after classification and coalescing. History prefill updates snapshots without emitting `entry`. The stream therefore does not print the initial backlog.
+- The roster sorts by status, in the order working, waiting, idle, and offline, then by name. `agents` and `endpoints` split that roster by card kind.
+- `nameOf(id)` reads the roster-derived name map. An unknown ID returns its first eight characters. Message payload names do not update that map.
+- Channel rows sort by name. `messages` is the broker's retained count, which can stop growing at the retention cap. `arrivals` counts live rows seen by this viewer, independently of retained history. A channel's arrival count disappears when the channel leaves the next successful poll.
+- Startup prefill reads up to 50 messages per non-event channel. It deduplicates against the current feed by `id`, merges by timestamp, and applies `window`. Channel-list failures skip prefill. Individual history failures contribute no rows.
+- When DMs are visible, prefill also requests up to 1,000 DM messages for the DM roll-up. Those messages do not enter `feed`. A refused DM history read leaves the roll-up with live traffic only.
+- The feed retains at most `window` entries. Live tap arrivals, before coalescing, drive the rolling one-second `msgsPerSec` rate.
+- `rates.activity` contains 15 four-second buckets, oldest first, with raw live-arrival counts over 60 seconds. The buckets decay even without new traffic. The console renders this series as a status-bar sparkline.
+
+`status.error` and `status.warning` retain the latest endpoint error and warning messages.
+`status.connected` becomes true after `ep.start()` resolves. This class does not update it from later connection events or reset it in `stop()`.
+It is not a reconnect health signal.
+
+### Derived operator signals [#derived-operator-signals]
+
+```ts
+interface MeshSignals {
+	counts: { working: number; waiting: number; idle: number; offline: number };
+	waiting: Presence[];
+	stalestLiveTs?: number;
+	dms: DmPeer[];
+}
+
+interface DmMessage {
+	ts: number;
+	from: string; // display name
+	to: string;   // display name
+	text: string;
+}
+
+interface DmThread {
+	with: string;
+	role?: string;
+	status: PresenceStatus;
+	lastTs: number;
+	messages: DmMessage[];
+}
+
+interface DmPeer {
+	name: string;
+	role?: string;
+	status: PresenceStatus;
+	lastTs: number;
+	conversations: DmThread[];
+}
+```
+
+`counts` includes agent cards only. `waiting` includes agents whose status is `waiting`, sorted by name and then ID.
+`Presence.ts` is the last heartbeat, republished every two seconds by default.
+`Presence.statusSince` dates the current combination of status and activity. An activity change moves it too.
+Neither field establishes how long an agent has been blocked.
+
+`stalestLiveTs` is the oldest heartbeat among agents whose status is not `offline`.
+It is absent when no agent is live. The fifth status tile displays its age as heartbeat freshness.
+Offline agents are excluded because their heartbeat ages continue to grow after departure.
+
+`dms` groups retained raw DMs by endpoint ID into conversations between peers that exchanged messages.
+Self-addressed messages do not form conversations. The model resolves names, roles, and statuses from the roster by ID.
+An absent peer has status `offline`. Message lists sort oldest first. Conversations and peers sort by their latest message, newest first.
+The log retains at most 1,000 raw DMs. Startup history merges with live DMs by sender ID, recipient ID, and timestamp.
+A chat-only observer leaves `dms` empty. The console topology also uses endpoint IDs as keys and roster `name/role` labels for display, so equal names do not merge nodes.
+
+### Membership feed [#membership-feed]
+
+`membership.snapshot` is the last successful membership read.
+`membership.unreadable` records the most recent read or watch failure, while retaining the last snapshot.
+A successful read clears the failure. A watch that closes after startup reports through the same field.
+A missing feed bucket produces an empty snapshot with no `asOf` heartbeat.
+Membership failures do not set `status.error`.
+
+The console topology checks the following states in order:
+
+| Pill | Meaning |
+|---|---|
+| `unreadable` | A read or watch failed. The reason is shown, and the membership overlay is withheld. This does not mean the mesh is empty. |
+| `traffic-only` | No snapshot yet, or an empty snapshot with no heartbeat. An absent or never-written feed uses this state. The graph derives links from traffic. |
+| `live` | The snapshot heartbeat, `asOf`, is less than 45 seconds old. |
+| `stale` | The heartbeat is at least 45 seconds old, or members exist without a heartbeat. |
+
+## Feature to surface map [#feature-to-surface-map]
+
+The console and stream use the model fields below. The web column describes equivalent browser features derived through its own APIs and client code.
+An empty cell means that the display has no corresponding feature.
+
+| Feature | Console model or other source | Console (Ink) | Stream | Web |
+|---|---|---|---|---|
+| Roster, status, activity, heartbeat age | `agents`, `endpoints` | Roster panel | Presence lines | Sidebar |
+| All-activity feed | `feed` | Feed panel | Live log | Monitor view |
+| Channels, retained counts, unread badges | `channels` and viewer state | Tabs, `1` to `9`, `+N` | | Sidebar and channel view |
+| Status counts and oldest live heartbeat | `signals.counts`, `signals.stalestLiveTs` | Tiles | | Tiles |
+| Waiting agents | `signals.waiting` | NEEDS-YOU rail, `n` | | NEEDS-YOU rail |
+| Direct messages | `signals.dms` | DM view, `d`, when visible | Live rows, when visible | DM view |
+| Topology and membership | `feed`, `agents`, `membership` | Three topology views, `t` | | Graph |
+| Message and agent details | `feed`, `agents`, manager launch records | Selection and detail | | Rows, threads, and agent detail |
+| Search or filter | Viewer state | `/` | External text filters | Delivery-mode chips |
+| Message rate and activity sparkline | `rates` | Status bar | | |
+| Connection display and DM visibility | `status`; web event-stream state | Status bar | | Connection pill |
+| Attention, `dnd` or `focus` | `agents[].attention` | | | Roster, detail, and graph |
+| Channel attention, `quiet` or `muted` | `agents[].channelModes` | | | Agent detail |
+| Harness, model, variant | `agents[].card.meta`; console manager launch records | Harness tag and model detail | | Badges and graph |
+| Host machine | `agents[].card.meta.host` | | | Roster groups and agent detail |
+| Channel policy, replay and delivery class | Web `/api/channels` | | | Sidebar and header chips |
+
+The topology view switches with `v` or `1` to `3` between a swimlane sequence, an adjacency heat matrix, and a ring map.
+It derives traffic links from the feed and overlays the broker-authoritative membership feed from `readMembership()` and `watchMembership()`.
+Silent subscribers appear as nodes. Live subscriptions use faint solid spokes, and durable offline subscriptions use dashed spokes.
+Wide readers, with `>` or `*` subscriptions, have a `≫` badge.
+The map draws the subscription structure, the matrix uses `∘` and `◌` markers, and the sequence remains a traffic timeline.
+
+Channel unread counts belong to the viewer. They count arrivals since the channel was last viewed.
+A deleted channel leaves the tab strip on the next successful channel poll, with its unread count removed.
+The console resolves harness tags from `card.meta.connector`, then from the manager launch record for a managed seat without that metadata.
+Examples include `cc` for Claude Code and `oc` for OpenCode.
+Agent detail computes its `runs` label from the connector and managed runtime mode.
+It also displays reported model metadata and card skills when available.
+The web dashboard does not use the console's manager-record enrichment.
+
+## Future work [#future-work]
+
+The web dashboard's `?demo` scene includes static examples that its live renderer does not implement.
+These examples are not live capabilities or a delivery schedule.
+
+| Demo feature | Current limit |
+|---|---|
+| Intent badge, "about to act" | Live activity rows render messages. No live intent-badge mapping exists. |
+| Approval card with approve and deny actions | Presence can report `condition.code: "approval"`. The demo's interactive approval response path is not implemented. |
+| Task-failed card with inspect and retry actions | Presence can report `condition.code: "failed"`. The live rail lists waiting agents and does not create the demo's failure card or retry action. |
+| Unclaimed-anycast alert and status-update roll-up | These are fixed demo rows. `MeshView` has no claim-state signal or status-update aggregation. Message traffic alone does not establish whether a request remains unclaimed. |
+
+## Principles [#principles]
+
+The implementation keeps these distinctions:
+
+- `MeshView` centralizes classification, coalescing, roster sorting, ID-to-name lookup, rates, feed limits, and operator signals for its console and stream consumers.
+- Each renderer owns layout, color, keybindings, input, search, and selection. The console derives topology from the model. The web dashboard derives its browser model separately.
+- Broker grants determine visibility. A model flag does not confer permission. Startup endpoint failures propagate, membership failures remain explicit, and history prefill is best effort as described above.
+- Status uses both shape and color. The glyphs are `●` for working, `◐` for waiting, `○` for idle, and `⨯` or `⊘` for offline.
+- Displays distinguish reported data from absent data. The web model badge says "not reported" when a harness reports no model. A heartbeat age is not a blocked duration.
+- `attention: "open"` and absent attention both mean normal reception. The web display gives neither a badge. It marks only `dnd` and `focus`.
+
+The operator walkthrough is [Watch a mesh](watch-a-mesh.mdx).

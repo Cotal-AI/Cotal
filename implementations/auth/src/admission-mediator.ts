@@ -87,7 +87,8 @@ function truncateUtf8(s: string, maxBytes: number): string {
   while (Buffer.byteLength(out, "utf8") > maxBytes) out = out.slice(0, -1);
   return out;
 }
-const isCasLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
+// A record helper reported a lost CAS as an envelope `conflict`. Core's `isCasLoss` is the raw broker rule.
+const isConflictEnvelope = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
 /** The CANONICAL content digest of a JSON value, `<hex>` (no prefix) for a `policy` key segment.
  *  Uses core's RFC-8785 canonicalizer (`contractDigest` = `sha256:<hex over I-JSON>`), so
  *  publication is insensitive to property order and a second implementation that content-
@@ -372,7 +373,7 @@ export async function publishPolicyVersion(
     const revision = await createRecordEntry(recordsKv, key, value);
     return { key, revision, digestHex };
   } catch (e) {
-    if (!isCasLoss(e)) throw e;
+    if (!isConflictEnvelope(e)) throw e;
     const existing = await recordsKv.get(key);
     if (!existing || existing.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `the policy version ${key} carries a ${existing?.operation ?? "missing"} marker; policy versions are never deleted (corruption, SPEC 13.12)`);
@@ -666,7 +667,7 @@ async function obtainObligation(
     revision = await createRecordEntry(med.recordsKv, key, fresh);
     row = fresh;
   } catch (e) {
-    if (!isCasLoss(e)) throw e;
+    if (!isConflictEnvelope(e)) throw e;
     // A create loser leader-reads the winner and joins ONLY on the full pinned identity.
     const winner = await readObligationLeader(med, key);
     if (winner === undefined)
@@ -789,7 +790,7 @@ async function settleObligation(
       await updateRecordEntry(med.recordsKv, key, { ...row, state: "rejected" }, revision);
       return "rejected";
     } catch (e) {
-      if (!isCasLoss(e)) throw e;
+      if (!isConflictEnvelope(e)) throw e;
       // Exactly one of { writer's accept, our reject } wins the one-row CAS. Re-read and report.
       const after = await readObligationLeader(med, key);
       if (after === undefined) throw new EpEnvelopeError("internal", `the obligation ${key} vanished mid-settle; rows are never deleted (corruption, SPEC 13.12)`);
@@ -853,7 +854,7 @@ async function advanceRowSettled(med: MediatorInternals, key: string, row: Oblig
   try {
     await updateRecordEntry(med.recordsKv, key, { ...row, state: to }, revision);
   } catch (e) {
-    if (!isCasLoss(e)) throw e;
+    if (!isConflictEnvelope(e)) throw e;
     const after = await readObligationLeader(med, key);
     if (after === undefined) throw new EpEnvelopeError("internal", `the obligation ${key} vanished mid-advance (corruption, SPEC 13.12)`);
     if (after.row.state !== to && !(to === "rejected" && after.row.state === "terminal"))
@@ -904,7 +905,7 @@ export async function acceptSelfObligation(med: AdmissionMediator, proof: Admiss
     const revision = await updateRecordEntry(i.recordsKv, proof.obligationKey, { ...cur.row, state: "accepted" }, cur.revision);
     return { revision };
   } catch (e) {
-    if (!isCasLoss(e)) throw e;
+    if (!isConflictEnvelope(e)) throw e;
     throw new EpEnvelopeError("permission-denied", `the obligation ${proof.obligationKey} moved during the accept (a drain's rejection contends on the one row and exactly one wins); the delayed commit's authority is gone (SPEC 13.8)`);
   }
 }
@@ -1007,7 +1008,7 @@ async function recoverSelfCore(
     try {
       await updateRecordEntry(i.recordsKv, obligationKey, { ...cur.row, state: "terminal" }, cur.revision);
     } catch (e) {
-      if (!isCasLoss(e)) throw e;
+      if (!isConflictEnvelope(e)) throw e;
       const after = await readObligationLeader(i, obligationKey);
       if (after === undefined) throw new EpEnvelopeError("internal", `the obligation ${obligationKey} vanished mid-terminalize (corruption, SPEC 13.12)`);
       if (after.row.state === "terminal") return;

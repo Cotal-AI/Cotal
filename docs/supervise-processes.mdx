@@ -1,0 +1,127 @@
+---
+title: "Supervise the stack"
+description: "Choose process ownership under systemd and monitor actual component health."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Use a service manager to restart the processes it owns, then check that the mesh components are serving.
+Start with [Run a mesh](run-a-mesh.mdx).
+For separate broker and manager hosts, see [Supervise a remote mesh](remote-supervision.mdx).
+
+## Supervising the detached stack [#supervising-the-detached-stack]
+
+`cotal up` runs in the background by default. `cotal up --detach` selects the same mode.
+It starts the broker, delivery daemon, and manager, reports startup, then exits.
+A successful launcher exit does not prove those processes are still running.
+
+<Callout type="warn" title="An active unit can contain a dead stack">
+
+A `Type=oneshot` unit with `RemainAfterExit=yes` stays `active (exited)` after its launcher succeeds.
+It can remain active after every detached component has died.
+Use a foreground launcher when systemd must own the stack's lifetime.
+Use a component check when you deliberately start the stack separately.
+
+</Callout>
+
+Cotal prints a warning when background startup can identify itself as the service unit's main process for the current invocation.
+The warning names the unit and `--foreground` remedy.
+It does not rewrite the unit or change startup.
+Inherited terminal or scope metadata alone does not prove that ownership.
+
+`cotal service install <name>` writes an owned systemd user unit for a saved direct-process service definition on Linux.
+It does not install the manager preset, broker, or sibling components as units in this release.
+The snippets below are examples of process ownership to adapt for your deployment, not a shipped stack installer.
+See the [service reference](cli-services.mdx#service) for supported definitions.
+
+## Keep a foreground stack running
+
+For one host, run a foreground launcher so systemd can restart it after failure:
+
+```ini
+[Service]
+Type=simple
+WorkingDirectory=/srv/cotal-mesh
+ExecStart=/usr/bin/cotal up --foreground --space main --host 0.0.0.0
+Restart=on-failure
+RestartSec=5s
+```
+`cotal up --foreground` refuses when this folder's stack is already running, for example after a
+manual background `cotal up`. Stop that stack before the unit starts.
+
+Set the working directory and binary path for the installation.
+If the host should run only the broker and delivery daemon, add `--no-manager` to `ExecStart`.
+Otherwise `up` also starts a local manager.
+
+An active unit proves that the foreground launcher and broker are running.
+It does not prove that every child component serves requests.
+Pair it with the health check below.
+
+The broker and foreground launcher share the unit's systemd cgroup.
+Restarting the unit restarts the broker too, so remote managers lose their connection until the broker returns.
+Using a detached launcher does not move the broker out of that cgroup.
+A new process group is not a new systemd cgroup: the default `KillMode=control-group` still signals every process left in the service cgroup.
+
+A separate broker unit or an explicit `KillMode=process` policy changes which processes systemd stops.
+Cotal does not configure that separation for you.
+Choose the ownership you need before copying a unit; `Type=simple` alone does not determine the whole recovery policy.
+
+If the broker crashes under foreground `up`, the launcher retains its mesh record and exits nonzero.
+The unit restart repairs the recorded store rather than creating a second mesh.
+If the manager or delivery daemon crashes, its lease remains until expiry, normally 10 seconds for the manager and 30 seconds for delivery.
+A repair `up` can wait out that lease when it proves the holder is gone.
+It refuses if the lease is still renewed by a live holder.
+
+Built-in `pty` seats run with `oom_score_adj` set to `500`.
+Under memory pressure, the kernel prefers them over the broker, manager, and delivery daemon, whose scores are unchanged.
+Extension runtimes do not own the seat process and apply no such preference.
+
+## Check detached component health
+
+If another boot action deliberately uses `cotal up --detach`, monitor the components instead of the launcher's exit:
+
+```ini
+[Unit]
+Description=Check Cotal component liveness
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/cotal-mesh
+ExecStart=/usr/bin/cotal status --components --space main
+```
+
+Run the check from a systemd timer or another monitor and alert on a nonzero exit.
+It distinguishes `absent`, `not-serving`, and `refused` components.
+A dashboard extension that is not installed reports `not-installed` without making the check fail.
+A sibling's health does not count as proof for the target component.
+This `Type=oneshot` unit is a health check, not a detached launcher.
+
+Run it on the broker host because delivery-process checks use that host's local PID.
+For separate hosts, also probe the broker from the manager host and monitor that manager's service.
+An active unit on one machine says nothing about another machine's processes.
+
+## Stop the intended service
+
+Spaces prepared by this release with `cotal setup` or `cotal space create` use the service controller.
+Stop one saved service with `cotal service stop <name> --space <s> --yes`.
+A named `cotal down <name>` also stops a saved service definition, such as `stack-manager` or `web`.
+
+Legacy roots keep their existing launcher.
+They have no command that stops one legacy component without stopping the whole stack.
+Bare `cotal down` refuses while a saved service in the space still runs.
+Stop each named service with the command in the refusal, then stop the stack.
+
+<Callout type="warn" title="Check agent lifetime before shutdown">
+
+Bare `cotal down` leaves managed agents running as unmanaged OS processes, except built-in `pty` seats, which stop with their manager.
+Pass `--with-agents` to stop and deprovision the managed agents too.
+
+A pinned older manager may have no spare-capability record and may not understand the reap request.
+Stop its agents explicitly before whole-stack shutdown.
+Current managers always publish that record.
+
+</Callout>
+
+See [Stop the stack](run-a-mesh.mdx#stop-the-stack) for the shutdown procedure and refusal behavior.

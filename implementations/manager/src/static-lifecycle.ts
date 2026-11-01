@@ -1,9 +1,9 @@
 /**
- * The STATIC §13.1 lifecycle executor (Unit B): the manager-side adapter that drives the ONE
+ * The STATIC §13.1 lifecycle executor: the manager-side adapter that drives the ONE
  * shared core saga (`@cotal-ai/core` lifecycle-saga) over a direct-KV
  * {@link LifecycleStateTransport}, plus the static executor's OWN orchestration — the durable
- * slot mapping (F3 outer spawn intent + the F5-bind alias -> (owner, actor, uid) join), the
- * static credential-ledger rows, and the F1 terminal sequence.
+ * slot mapping (the outer spawn intent + the alias -> (owner, actor, uid) join), the
+ * static credential-ledger rows, and the terminal sequence.
  *
  * Three-way split: the key/value GRAMMAR lives in core
  * `lifecycle-state.ts`; the CAS SEQUENCING is the shared core saga this module DELEGATES to
@@ -13,7 +13,7 @@
  * terminalizing until a complete scan verifies each gone, then footprint cleanup via the manager's
  * deprovision hooks).
  *
- * F5-bind (the F4 restatement): the wire AUTHORITY coordinate is the incarnation-unique nkey
+ * The wire AUTHORITY coordinate is the incarnation-unique nkey
  * (`actor`); the ALIAS is routing only, protected by the name-keyed slot row + uid reservation +
  * the manager's freeSlot hold — never by the head CAS alone (the head is principal-keyed).
  */
@@ -218,7 +218,7 @@ function sameAudit(a: StaticLifecycleAuditSpec, b: StaticLifecycleAuditSpec): bo
  *  An EMPTY set is not a skipped eviction — it is the required eviction of nothing. A lifecycle
  *  whose ledger released no credential (a durable slot row whose spawn never reached its mint: a
  *  crashed provision, a pre-3b-2 legacy row, an orphan reconciled at boot) has no `holderPrincipal`
- *  anywhere, and its incarnation-unique actor nkey (F5-bind) never authenticated to the broker at
+ *  anywhere, and its incarnation-unique actor nkey never authenticated to the broker at
  *  all, so no connection can exist under it for an oracle to find. Demanding the liveness oracle
  *  there asks it to prove the absence of a principal that was never issued.
  *
@@ -313,7 +313,7 @@ export async function walkStaticSlots(recordsKv: KV, owner: string): Promise<{ r
   return (await walkKvLatest(recordsKv, `${STATIC_SLOT_PREFIX}.${owner}.>`)).map((e) => slotOf(e.key, e));
 }
 
-/** Persist the F3 durable OUTER spawn intent — phase `provisioning`, written BEFORE the head
+/** Persist the durable OUTER spawn intent — phase `provisioning`, written BEFORE the head
  *  activation so a crash between them leaves a discoverable coordinate (the boot sweep or the
  *  next same-alias spawn re-drives it). Create-only for a virgin alias; a CAS over the RETIRED
  *  predecessor row for a reused alias; anything else is a live/terminalizing/crashed slot and
@@ -357,7 +357,7 @@ export async function recordSlotCredential(
   if (slot === undefined || slot.row.lifecycleUid !== lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `the static slot for "${owner}/${alias}" ${slot === undefined ? "does not exist" : `is at uid ${slot.row.lifecycleUid}`}, not uid ${lifecycleUid}; a credential is recorded only on its own incarnation's slot`);
   if (slot.row.phase === "terminalizing" || slot.row.phase === "retired")
-    throw new EpEnvelopeError("failed-precondition", `the static slot for "${owner}/${alias}" is ${slot.row.phase}; no credential is minted after terminalizing (F5(b))`);
+    throw new EpEnvelopeError("failed-precondition", `the static slot for "${owner}/${alias}" is ${slot.row.phase}; no credential is minted after terminalizing`);
   if (slot.row.credentialIds.includes(credentialId)) return; // crash-resume idempotence
   await casStaticSlot(t, { ...slot.row, credentialIds: [...slot.row.credentialIds, credentialId] }, slot.revision);
 }
@@ -424,7 +424,7 @@ export async function revokeStaticCredentialRows(
   return [...holders].sort();
 }
 
-/** The static ACTIVATION: F3 intent FIRST (durable outer spawn intent, phase `provisioning`),
+/** The static ACTIVATION: the durable outer spawn intent FIRST (phase `provisioning`),
  *  then the SHARED core activation saga at the spawn's uid (reserve -> gate frozen -> head CAS
  *  -> reopen LAST). Returns the slot revision the spawn path later CASes to `active` once the
  *  managed row owns the slot. */
@@ -486,7 +486,7 @@ async function cleanupStaticSlotOnce(
   return { revision };
 }
 
-/** The static TERMINAL (F1, the (b2) order): freeze-under-the-retirement-op -> head
+/** The static TERMINAL, in this order: freeze-under-the-retirement-op -> head
  *  `active -> retiring` -> B1 ledger revoke -> broker connection eviction -> cleanup (the injected
  *  footprint teardown; on a normal stop the manager separately proves runtime exit) -> gate
  *  `frozen -> retired` -> head `retiring -> retired` LAST -> slot `retired` (the alias frees).
@@ -496,7 +496,7 @@ async function cleanupStaticSlotOnce(
  *  Total over partial durable state: an alias whose activation never reached the saga (slot
  *  `provisioning`, no gate) terminalizes by slot alone; a crashed activation frozen by its own
  *  activation op is terminalized THROUGH that op (gateRetire is op-pinned) — the exact-op static
- *  retirement F3 requires. */
+ *  retirement. */
 export async function runStaticTerminal(
   t: LifecycleStateTransport,
   args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string; managerInstance: string; managerProcessUid: string },
@@ -510,7 +510,7 @@ export async function runStaticTerminal(
     throw new EpEnvelopeError("failed-precondition", `the static slot for "${args.owner}/${args.alias}" is at uid ${slot.row.lifecycleUid}, not ${args.lifecycleUid}; a terminal never addresses another incarnation (SPEC 13.1)`);
   if (slot.row.phase === "retired") return "retired"; // completed terminal, idempotent
   // Latch the DURABLE terminal intent first: after this CAS the slot can never mint again
-  // (recordSlotCredential refuses terminalizing), the exact window the F5 renewal gate needs. Every
+  // (recordSlotCredential refuses terminalizing), the exact window the renewal gate needs. Every
   // final `retired` CAS below re-reads the slot (or takes the marker CAS's revision), so this latch
   // needs no return.
   if (slot.row.phase !== "terminalizing")
@@ -613,7 +613,7 @@ export async function runStaticTerminal(
   return "retired";
 }
 
-/** The boot-sweep resume decision, TOTAL over the phase enum (F3): what the manager must do
+/** The boot-sweep resume decision, TOTAL over the phase enum: what the manager must do
  *  with a durable slot it did not adopt from a live inventory. */
 export function planStaticSlotResume(row: StaticManagedSlotRow, adopted: boolean): "none" | "drive-terminal" {
   switch (row.phase) {
@@ -634,7 +634,7 @@ export function planStaticSlotResume(row: StaticManagedSlotRow, adopted: boolean
       return adopted ? "none" : "drive-terminal";
     default: {
       const never: never = row.phase;
-      throw new EpEnvelopeError("internal", `unhandled static slot phase ${String(never)}; the resume table is total by construction (F3)`);
+      throw new EpEnvelopeError("internal", `unhandled static slot phase ${String(never)}; the resume table is total by construction`);
     }
   }
 }
