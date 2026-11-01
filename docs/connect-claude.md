@@ -1032,7 +1032,10 @@ Carried sessions also stay strict and keep their seat-private home; operator pro
 connected-account credentials are not copied into them. Native managed policy still applies.
 
 The child environment stays allowlisted. References in declared shared servers and the selected
-user-owned MCP configuration forward their named variables. Repository and plugin files cannot
+user-owned MCP configuration forward their named variables. References to per-seat `COTAL_` names,
+such as `COTAL_ROLE` and `COTAL_MODEL`, are refused before launch. The check is case-insensitive;
+machine-wide names such as `COTAL_HOME` remain allowed. Use a non-`COTAL_` name for a server input.
+Repository and plugin files cannot
 add ambient secret names merely by referencing them; supply such names through an explicit
 shared declaration or the existing `spawn.env` policy. Native files retain their own configured
 values. Documented native MCP switches, including the connected-account opt-out and tool-search

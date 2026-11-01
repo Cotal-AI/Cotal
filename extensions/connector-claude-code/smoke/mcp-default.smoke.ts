@@ -18,6 +18,9 @@ const values = {
   HOME: osHome,
   USERPROFILE: osHome,
   CLAUDE_CONFIG_DIR: profile,
+  COTAL_HOME: join(root, "cotal-home"),
+  COTAL_ROLE: "parent-role",
+  COTAL_MODEL: "parent-model",
   ENABLE_CLAUDEAI_MCP_SERVERS: "false",
   ENABLE_TOOL_SEARCH: "auto:5",
   MCP_TIMEOUT: "10000",
@@ -67,6 +70,28 @@ try {
   check("declared overrides do not implicitly disable native discovery", !build({ mcpServers: shared }).args.includes("--strict-mcp-config"));
   const shadowed = build({ mcpServers: { cotal: { command: "wrong-server" } } });
   check("a declared server cannot replace Cotal's own bridge", config(shadowed).mcpServers.cotal.command === "node");
+
+  check("a launch without shared seat variables omits the parent's role and model", ordinary.env?.COTAL_ROLE === undefined && ordinary.env?.COTAL_MODEL === undefined);
+  check("an explicit role does not inherit the parent's model", build({ role: "worker" }).env?.COTAL_MODEL === undefined);
+  const machine = build({ mcpServers: { machine: { command: "node", env: { ROOT: "${COTAL_HOME}" } } } });
+  check("shared references retain allowed machine-wide COTAL names", machine.env?.COTAL_HOME === values.COTAL_HOME);
+  for (const [field, server] of [
+    ["command", { command: "${COTAL_ROLE}" }],
+    ["args", { command: "node", args: ["${COTAL_MODEL}"] }],
+    ["env", { command: "node", env: { INPUT: "${cotal_model:-default}" } }],
+    ["url", { url: "https://example.invalid/${COTAL_ROLE}" }],
+    ["headers", { url: "https://example.invalid", headers: { INPUT: "${COTAL_MODEL}" } }],
+  ] satisfies Array<[string, NonNullable<LaunchOpts["mcpServers"]>[string]]>) {
+    assert.throws(() => build({ mcpServers: { reserved: server } }), /MCP environment references cannot list "(?:COTAL_ROLE|COTAL_MODEL|cotal_model)"/);
+    check(`shared ${field} references refuse per-seat COTAL names`, true);
+  }
+  assert.throws(() => build({ mcpServers: { unset: { command: "node", env: { INPUT: "${COTAL_UNSET_SEAT_INPUT:-default}" } } } }), /MCP environment references cannot list "COTAL_UNSET_SEAT_INPUT"/);
+  check("reserved references are refused even when the parent has no value", true);
+  writeFileSync(profileFile, JSON.stringify({ mcpServers: { reserved: { command: "node", env: { INPUT: "${COTAL_ROLE}" } } } }));
+  assert.throws(() => build(), /MCP environment references cannot list "COTAL_ROLE"/);
+  check("native user MCP references cannot add per-seat COTAL names", true);
+  check("an exclusive selection ignores unselected native reserved references", build({ mcpServersExclusive: true }).env?.COTAL_ROLE === undefined);
+  writeFileSync(profileFile, original);
 
   const other = join(root, "other-profile"); mkdirSync(other);
   writeFileSync(join(other, ".claude.json"), JSON.stringify({ mcpServers: {} }));

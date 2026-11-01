@@ -310,7 +310,10 @@ The listed names are added to the fixed boundary. That is also the opt-in for a 
 a persona has chosen to receive (`CLAUDE_CODE_CHILD_SESSION` and friends). A `COTAL_` name other
 than the machine-wide knobs above is refused and the seat is not launched: the launcher sets those
 names for each seat, so a value from the spawning process would become the seat's role, model or
-read set. An empty array adds nothing. A space-local `spawn` block replaces the operator-level one
+read set. This case-insensitive restriction also applies to `${VAR}` and `${VAR:-default}`
+references in shared MCP servers and the selected Claude user MCP configuration. Use a
+non-`COTAL_` name for a server's own input. Machine-wide names such as `COTAL_HOME` remain allowed.
+An empty array adds nothing. A space-local `spawn` block replaces the operator-level one
 outright rather than merging, so a local list stays local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
 all add no names. A `spawn` that is not an object, or an `env` that is not a list of non-empty names,
 is refused when the file is read, with the file and the field named, so every spawn and resume is

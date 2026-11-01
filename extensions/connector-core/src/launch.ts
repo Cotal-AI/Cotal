@@ -152,16 +152,18 @@ export const OPERATOR_ENV_KEEP = [
  *  BOTH `Path` and `PATH` - a case-duplicate Windows process creation chokes on. Keying off the
  *  source env's actual casing (one entry per lowercased name) forwards each var exactly once.
  *
- *  An `envAllow` name in the `COTAL_` namespace outside {@link OPERATOR_ENV_KEEP} throws. A connector
- *  sets those names per seat and only when the launch has a value, so a forwarded one would stand in
- *  for a role, model or read set this launch never had. */
+ *  An `envAllow` or `mcpKeys` name in the `COTAL_` namespace outside {@link OPERATOR_ENV_KEEP}
+ *  throws. A connector sets those names per seat and only when the launch has a value, so a
+ *  forwarded one would stand in for a role, model or read set this launch never had. */
 export function launchEnv(
   opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[]; envAllow?: readonly string[] } = {},
 ): Record<string, string> {
-  for (const k of opts.envAllow ?? []) {
-    const name = k.toUpperCase();
-    if (name.startsWith("COTAL_") && !OPERATOR_ENV_KEEP.some((keep) => keep === name))
-      throw new Error(`spawn.env cannot list "${k}": the launcher sets COTAL_ names for each seat, and only the machine-wide ones such as COTAL_HOME cross from the spawning process`);
+  for (const [source, keys] of [["spawn.env", opts.envAllow], ["MCP environment references", opts.mcpKeys]] as const) {
+    for (const k of keys ?? []) {
+      const name = k.toUpperCase();
+      if (name.startsWith("COTAL_") && !OPERATOR_ENV_KEEP.some((keep) => keep === name))
+        throw new Error(`${source} cannot list "${k}": the launcher sets COTAL_ names for each seat, and only the machine-wide ones such as COTAL_HOME cross from the spawning process`);
+    }
   }
   const env: Record<string, string> = {};
   const sourceKey = new Map<string, string>();
