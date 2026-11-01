@@ -22,6 +22,34 @@
     "",
     "N7 sends the raw argument instead of the resolved default.",
     "",
+    "N8 drops the explicit channel check, so a pattern or a malformed name is described and handed to send.",
+    "",
+    "N9 drops the first way to reach a family from the refusal.",
+    "",
+    "N10 drops both ways from the advertised channel text.",
+    "",
+    "N11 gives a name that breaks the channel grammar the pattern advice.",
+    "",
+    "N12 drops the durable-backstop caveat from the refusal.",
+    "",
+    "N13 lets a malformed name with no whole-segment wildcard through, so team.** is sent as team.__.",
+    "",
+    "N14 shows a long name whole in the refusal instead of its first 64 characters.",
+    "",
+    "N15 drops the channel grammar from the no-channel-name refusal.",
+    "",
+    "N16 states a limit other than core's MAX_CHANNEL_LENGTH in the no-channel-name refusal.",
+    "",
+    "N17 and N18 move the cut threshold one character either way.",
+    "",
+    "N19 cuts in the wrong place: the first 63 characters and then the last one.",
+    "",
+    "N20 cuts in the wrong place by putting ten earlier characters where the last ten belong.",
+    "",
+    "N21 echoes a name over the limit whole after the refusal.",
+    "",
+    "N22 refuses a valid name of exactly the limit.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -96,6 +124,141 @@
       "expectRed": "an omitted channel goes to the first channel the agent may post to",
       "cell": "an omitted channel goes to the first channel the agent may post to",
       "note": "The receipt would describe team.rocket while the message went to the endpoint default."
+    },
+    {
+      "name": "N8 an explicit channel is no longer checked before the send path",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        if (refusal !== undefined) return err(`Couldn't send: ${refusal}`);\n",
+      "replace": "",
+      "expectRed": "cotal_send refuses the pattern team.> before reading or sending",
+      "cell": "cotal_send refuses the pattern team.> before reading or sending",
+      "note": "Without the guard a pattern or a malformed name reaches describeSendChannel, which reads the channel list, and then the endpoint, which refuses a whole-segment pattern without either way and rewrites a malformed name onto another subject."
+    },
+    {
+      "name": "N9 the refusal stops naming one post to a channel the pattern matches",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "To reach the agents connected and following ${channel} now, post once to one channel it matches. ",
+      "replace": "",
+      "expectRed": "the refusal for team.> says one post to a channel it matches reaches its connected followers",
+      "cell": "the refusal for team.> says one post to a channel it matches reaches its connected followers",
+      "note": "The refusal would still refuse but would teach only the per-channel way."
+    },
+    {
+      "name": "N10 the advertised channel text drops both ways to reach a family",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`",
+      "replace": "}). Reply on the channel you received a message on.`",
+      "expectRed": "the advertised channel text names both ways to reach a family",
+      "cell": "the advertised channel text names both ways to reach a family",
+      "note": "An agent reading the tool schema would learn of the refusal only by hitting it."
+    },
+    {
+      "name": "N11 a name that breaks the channel grammar gets the pattern advice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (legal)\n    return `\"${channel}\" is a pattern",
+      "replace": "  if (true)\n    return `\"${channel}\" is a pattern",
+      "expectRed": "\"team.>.x\" is refused as no channel name before reading or sending",
+      "cell": "\"team.>.x\" is refused as no channel name before reading or sending",
+      "note": "The refusal would call team.>.x and team.** patterns and suggest posting to a channel they match, though nothing can match them."
+    },
+    {
+      "name": "N12 the refusal stops saying an offline follower may miss the post",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "A pattern follow has no durable backstop, so a follower that is offline then may miss it. ",
+      "replace": "",
+      "expectRed": "the refusal for team.> says a pattern follow has no durable backstop",
+      "cell": "the refusal for team.> says a pattern follow has no durable backstop",
+      "note": "A sender who posts once and leaves would assume offline followers got it."
+    },
+    {
+      "name": "N13 a malformed name with no whole-segment wildcard is sent",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (legal && isConcreteChannel(channel)) return undefined;",
+      "replace": "  if (isConcreteChannel(channel)) return undefined;",
+      "expectRed": "\"team.**\" is refused as no channel name before reading or sending",
+      "cell": "\"team.**\" is refused as no channel name before reading or sending",
+      "note": "The cold review's live defect: team.** passes the concrete check, the endpoint rewrites it to team.__, and the receipt names #team.**."
+    },
+    {
+      "name": "N14 a long name that is no channel name is shown whole",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const shown = JSON.stringify(channel.length > 64 ? `${channel.slice(0, 64)}…` : channel);",
+      "replace": "  const shown = JSON.stringify(channel);",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name up to 4096 characters or more would be echoed whole into the refusal."
+    },
+    {
+      "name": "N15 the no-channel-name refusal drops the channel grammar",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce, at most ",
+      "replace": "A channel name is at most ",
+      "expectRed": "the no-channel-name refusal states the channel grammar",
+      "cell": "the no-channel-name refusal states the channel grammar",
+      "note": "The caller would learn the name is refused but not what a channel name is."
+    },
+    {
+      "name": "N16 the no-channel-name refusal states a limit that is not core's",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "at most ${MAX_CHANNEL_LENGTH} characters. Nothing was sent.",
+      "replace": "at most 4000 characters. Nothing was sent.",
+      "expectRed": "the no-channel-name refusal states core's limit of 4096 characters",
+      "cell": "the no-channel-name refusal states core's limit of 4096 characters",
+      "note": "A refusal that names its own number drifts from the limit core enforces."
+    },
+    {
+      "name": "N17 the cut threshold rises to 65, so a 65-character name is shown whole",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "channel.length > 64 ?",
+      "replace": "channel.length > 65 ?",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name just past 64 characters would be echoed whole. A name far past the cut cannot show where it starts."
+    },
+    {
+      "name": "N18 the cut threshold drops to 63, so a 64-character name gets an ellipsis",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "> 64 ? `${channel.slice",
+      "replace": "> 63 ? `${channel.slice",
+      "expectRed": "a 64-character name that is no channel name is shown whole",
+      "cell": "a 64-character name that is no channel name is shown whole",
+      "note": "A name of 64 characters fits and is shown as typed."
+    },
+    {
+      "name": "N19 the cut keeps the first 63 characters and then the last one",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "${channel.slice(0, 64)}…",
+      "replace": "${channel.slice(0, 63)}${channel.slice(-1)}…",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name that repeats characters hides a cut in the wrong place, so the long names use 64 different characters in turn."
+    },
+    {
+      "name": "N20 the cut puts characters 44 to 53 where 54 to 63 belong",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "`${channel.slice(0, 64)}…` : channel",
+      "replace": "`${channel.slice(0, 54)}${channel.slice(44, 54)}…` : channel",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "Characters that repeat every ten positions would hide this cut."
+    },
+    {
+      "name": "N21 a name over the limit is echoed whole after the refusal",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "characters. Nothing was sent.`;",
+      "replace": "characters. Nothing was sent.${channel.length > MAX_CHANNEL_LENGTH ? ` (${channel})` : \"\"}`;",
+      "expectRed": "a name one character over the 4096-character limit is refused as no channel name",
+      "cell": "a name one character over the 4096-character limit is refused as no channel name",
+      "note": "A name of any length would land whole in the refusal."
+    },
+    {
+      "name": "N22 a valid name of exactly the limit is refused",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "if (legal && isConcreteChannel(channel))",
+      "replace": "if (legal && channel.length < MAX_CHANNEL_LENGTH && isConcreteChannel(channel))",
+      "expectRed": "a name of 4096 characters is sent",
+      "cell": "a name of 4096 characters is sent",
+      "note": "The refusal says at most 4096 characters, so a name of 4096 must still send."
     }
   ]
 }

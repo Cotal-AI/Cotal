@@ -92,16 +92,9 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
         const args: Record<string, unknown> = readonlyInbox
           ? { scope: "pull-only" }
           : { ...((params ?? {}) as Record<string, unknown>) };
-        if (spec.name === "cotal_send" && typeof args.channel === "string") {
-          const channel = args.channel.replace(/^#+/, "");
-          if (!isConcreteChannel(channel)) {
-            return {
-              content: [{ type: "text", text: `⚠ ${JSON.stringify(args.channel)} is not a concrete channel` }],
-              details: undefined,
-            };
-          }
-          args.channel = channel;
-        }
+        // The shared handler refuses a pattern or a name that is no channel, with the text the tool
+        // advertises; pi only drops a leading `#`.
+        if (spec.name === "cotal_send" && typeof args.channel === "string") args.channel = args.channel.replace(/^#+/, "");
         const r = await spec.run(mesh, config, args);
         return { content: [{ type: "text", text: r.isError ? `⚠ ${r.text}` : r.text }], details: undefined };
       },
