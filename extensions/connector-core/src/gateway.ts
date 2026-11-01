@@ -20,8 +20,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
-import type { z } from "zod";
-import { array as zArray, enum as zEnum, number as zNumber, strictObject as zStrictObject, string as zString } from "zod";
+import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
@@ -178,12 +177,14 @@ const SELECTION_TEXT =
   "permissions within their current access may be issued. Joining an approved channel is a separate step.";
 
 const SELECTION_SHAPE = {
-  channels: zArray(zStrictObject({ channel: zString().min(1), access: zEnum(["read", "read-post"]) }))
+  channels: z
+    .array(z.strictObject({ channel: z.string().min(1), access: z.enum(["read", "read-post"]) }))
     .max(SELECTION_MAX_ITEMS)
     .optional()
     .describe("Channels this connection may join and read, or read and post to. A pattern such as team.* or team.> covers every matching channel, including ones created later."),
-  role: zString().min(1).optional().describe("A role to hold, so role requests (cotal_anycast) reach this connection."),
-  capabilities: zArray(zEnum(["spawn", "run"]))
+  role: z.string().min(1).optional().describe("A role to hold, so role requests (cotal_anycast) reach this connection."),
+  capabilities: z
+    .array(z.enum(["spawn", "run"]))
     .optional()
     .describe("spawn: start and stop agents through a manager. run: start and manage workflow runs."),
 };
@@ -276,7 +277,8 @@ const SEND_CHANNEL =
   "may post to (cotal_orientation lists both); with none, an omitted channel is refused. Concrete only, not " +
   "a wildcard like team.>; reply on the channel you received a message on.";
 
-const CONNECTION_ID = zString()
+const CONNECTION_ID = z
+  .string()
   .min(1)
   .describe("The connection_id cotal_connect returned in THIS conversation. Never reuse another conversation's.");
 
@@ -448,13 +450,13 @@ export function registerCotalGatewayTools(
         (options.space
           ? " Optional space names one mesh already registered and signed in on this computer, overriding the default target without changing configuration. Omit it to use the CLI's default target."
           : ""),
-      inputSchema: zStrictObject({
-        name: zString().min(1).describe("The agent name to request, for example claude_web."),
-        ...(options.connectContext ? { context: zString().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
-        ...(options.space ? { space: zString().min(1).max(64).optional()
+      inputSchema: z.strictObject({
+        name: z.string().min(1).describe("The agent name to request, for example claude_web."),
+        ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
+        ...(options.space ? { space: z.string().min(1).max(64).optional()
           .describe("Registered signed-in mesh to join for this conversation. Overrides the default target without changing configuration. A blank name is refused.") } : {}),
         ...(options.selection ? SELECTION_SHAPE : {}),
-        ...(options.approvalResume ? { approval_id: zString().regex(/^[a-z2-7]{26}$/).optional()
+        ...(options.approvalResume ? { approval_id: z.string().regex(/^[a-z2-7]{26}$/).optional()
           .describe("The approval.id from THIS conversation's pending result. Resumes only that unchanged request; it does not approve it.") } : {}),
       }),
     },
@@ -535,7 +537,7 @@ export function registerCotalGatewayTools(
       title: "Cotal: disconnect this conversation",
       annotations: gatewayAnnotations("cotal_disconnect"),
       description: "Leave the mesh for this conversation's connection. Other conversations stay connected.",
-      inputSchema: zStrictObject({ connection_id: CONNECTION_ID }),
+      inputSchema: z.strictObject({ connection_id: CONNECTION_ID }),
     },
     async ({ connection_id }, extra) => {
       let account: string;
@@ -556,7 +558,7 @@ export function registerCotalGatewayTools(
       title: "Cotal: participate in workflow turns",
       annotations: gatewayAnnotations("cotal_turn_participate"),
       description: "Opt this user-owned native personal connection into workflow turn participation, or renew its finite lease. The lease is self-only and grants no process stop or attach custody.",
-      inputSchema: zStrictObject({ connection_id: CONNECTION_ID }),
+      inputSchema: z.strictObject({ connection_id: CONNECTION_ID }),
     },
     async ({ connection_id }, extra) => {
       let account: string;
@@ -585,9 +587,10 @@ export function registerCotalGatewayTools(
         `already waiting, and otherwise as soon as one arrives, or after at most ${waitSeconds} seconds with none. ` +
         "Call it again to keep listening. Direct messages, role requests and @mentions always end the wait; other " +
         "channel traffic ends it only in open attention (cotal_status sets attention).",
-      inputSchema: zStrictObject({
+      inputSchema: z.strictObject({
         connection_id: CONNECTION_ID,
-        seconds: zNumber()
+        seconds: z
+          .number()
           .int()
           .min(1)
           .max(waitSeconds)
