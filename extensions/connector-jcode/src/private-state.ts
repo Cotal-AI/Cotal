@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
-import { homedir } from "node:os";
+import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, type Dirent } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { userAppConfigDir, userJcodeHome } from "@1jehuang/jcode-sdk";
 import { hardenPrivate } from "@cotal-ai/core";
-import { copyCursorCredentials, CURSOR_DATABASE_FILES } from "./cursor-credentials.js";
+import { JcodeCursorStateUnreadable, type CursorStateUnreadableReason } from "./startup-diagnostics.js";
 
 const MAX_API_SOCKET_BYTES = 100;
 const JCODE_CREDENTIAL_FILES = [
@@ -23,7 +24,6 @@ const EXTERNAL_CREDENTIAL_FILES = [
   ".cursor/auth.json",
   ".config/cursor/auth.json",
   "AppData/Roaming/Cursor/auth.json",
-  ...CURSOR_DATABASE_FILES,
   ".config/github-copilot/hosts.json",
   ".config/github-copilot/apps.json",
   ".copilot/config.json",
@@ -33,6 +33,22 @@ const EXTERNAL_CREDENTIAL_FILES = [
   ".openclaw/credentials/oauth.json",
   ".local/share/opencode/auth.json",
 ];
+/** Cursor's editor state database: hundreds of megabytes of chat history around a few auth rows.
+ * The seat gets a fresh file holding only the `ItemTable` rows Jcode reads, never a copy. */
+const CURSOR_STATE_FILES = [
+  ".config/Cursor/User/globalStorage/state.vscdb",
+  ".config/cursor/User/globalStorage/state.vscdb",
+  "Library/Application Support/Cursor/User/globalStorage/state.vscdb",
+  "Library/Application Support/cursor/User/globalStorage/state.vscdb",
+  "AppData/Roaming/Cursor/User/globalStorage/state.vscdb",
+  "AppData/Roaming/cursor/User/globalStorage/state.vscdb",
+];
+/** Every key Jcode 0.99.0 (774613c90) reads from that database, in crates/jcode-base/src/auth/cursor.rs.
+ * A Jcode that reads another key needs it added here. */
+const CURSOR_STATE_KEYS = ["cursorAuth/accessToken", "cursorAuth/refreshToken", "storage.serviceMachineId", "cursorAuth/cachedEmail"];
+const CURSOR_STATE_BUSY_MS = 2000;
+/** The real values are a few hundred bytes. A larger one under these keys is not a credential. */
+const CURSOR_STATE_VALUE_MAX_BYTES = 16 * 1024;
 
 function assertRelative(relativePath: string): void {
   if (isAbsolute(relativePath) || relativePath.split(/[\\/]+/u).includes(".."))
@@ -432,10 +448,7 @@ export function copyCredentialFile(home: string, source: string, destinationRela
     const tempName = `.${randomBytes(6).toString("hex")}.tmp`;
     const temp = pin.leaf(tempName);
     try {
-      if (CURSOR_DATABASE_FILES.some(path => join("external", path) === destinationRelative))
-        copyCursorCredentials(source, temp);
-      else
-        copyFileSync(source, temp, constants.COPYFILE_EXCL);
+      copyFileSync(source, temp, constants.COPYFILE_EXCL);
       hardenPrivate(temp, "file");
       renameSync(temp, pin.leaf(base));
     } finally {
@@ -485,7 +498,7 @@ export interface CredentialSources {
 }
 
 export interface CredentialMirrorEntry {
-  family: "jcode-home" | "app-config" | "external-static" | "external-agent";
+  family: "jcode-home" | "app-config" | "external-static" | "cursor-state" | "external-agent";
   source: string;
   destinationRelative: string;
 }
@@ -513,6 +526,8 @@ export function jcodeCredentialMirrorInventory(home: string, sources: Credential
 
   for (const relativePath of EXTERNAL_CREDENTIAL_FILES)
     inventory.push({ family: "external-static", source: join(sources.externalHome, relativePath), destinationRelative: join("external", relativePath) });
+  for (const relativePath of CURSOR_STATE_FILES)
+    inventory.push({ family: "cursor-state", source: join(sources.externalHome, relativePath), destinationRelative: join("external", relativePath) });
 
   const agents = join(sources.externalHome, ".openclaw", "agents");
   const agentNames = new Set([
@@ -528,13 +543,109 @@ export function jcodeCredentialMirrorInventory(home: string, sources: Credential
   return inventory;
 }
 
+function sqliteReason(code: number): CursorStateUnreadableReason {
+  if (code === 776) return "hot_journal"; // SQLITE_READONLY_ROLLBACK: a crashed write a read-only open cannot undo
+  switch (code & 0xff) {
+    case 5: // SQLITE_BUSY
+    case 6: // SQLITE_LOCKED
+      return "locked";
+    case 11:
+      return "corrupt";
+    case 26:
+      return "not_sqlite";
+    default:
+      return "sqlite_error";
+  }
+}
+
+/** Read the keys Jcode uses from Cursor's database, read-only, in one transaction. An absent source,
+ * or one that is not a regular file, returns undefined. Anything that does not give a consistent read
+ * throws, because a seat must not start on a partial or stale login. */
+function readCursorState(source: string, sourceRelative: string): Map<string, string> | undefined {
+  let stats: ReturnType<typeof statSync>;
+  try {
+    stats = statSync(source);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (!stats.isFile()) return undefined;
+  const unreadable = (reason: CursorStateUnreadableReason, code?: number) => new JcodeCursorStateUnreadable(sourceRelative, reason, code);
+
+  // A plain read-only open in whatever journal mode Cursor uses. SQLite follows a link to the real
+  // file and keeps its -journal, -wal and -shm beside that file. On a WAL database whose -wal and -shm
+  // are absent it creates them there, as every SQLite reader does, and leaves them after a read-only
+  // close. They are SQLite's coordination files; Cursor's next close removes them. Deleting them here
+  // could race a Cursor that opens the database in between.
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(source, { readOnly: true });
+    db.exec(`PRAGMA busy_timeout = ${CURSOR_STATE_BUSY_MS}`);
+    db.exec("BEGIN");
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ItemTable'").get()) throw unreadable("no_item_table");
+    // SQLite checks the type and size before a value leaves it, so an integer JavaScript cannot
+    // represent, or a large blob, never reaches node:sqlite's conversion.
+    const select = db.prepare(
+      `SELECT typeof(value) AS kind, CASE WHEN typeof(value) = 'text' AND octet_length(value) <= ${CURSOR_STATE_VALUE_MAX_BYTES} THEN value END AS value FROM ItemTable WHERE key = ?`,
+    );
+    const values = new Map<string, string>();
+    for (const key of CURSOR_STATE_KEYS) {
+      const row = select.get(key) as { kind: string; value: string | null } | undefined;
+      if (row === undefined || row.kind === "null") continue;
+      // Jcode reads each value as text and treats a blank one as missing.
+      if (row.kind !== "text") throw unreadable("value_type");
+      if (row.value === null) throw unreadable("value_size");
+      if (row.value.trim()) values.set(key, row.value);
+    }
+    db.exec("COMMIT");
+    return values;
+  } catch (error) {
+    if (error instanceof JcodeCursorStateUnreadable) throw error;
+    const code = (error as { errcode?: unknown }).errcode;
+    if (typeof code !== "number") throw error;
+    throw unreadable(sqliteReason(code), code);
+  } finally {
+    db?.close();
+  }
+}
+
+/** Publish the keys as a fresh database through the same pinned temp-and-rename as every copy. SQLite
+ * builds it in a private scratch directory because it names its files by full path, which would walk
+ * past the pin. No keys removes the destination, as an absent source does. */
+function publishCursorState(home: string, destinationRelative: string, values: Map<string, string> | undefined): void {
+  if (!values || values.size === 0) {
+    removeCredentialMirror(home, destinationRelative);
+    return;
+  }
+  const scratch = mkdtempSync(join(tmpdir(), "cotal-jcode-cursor-"));
+  try {
+    const file = join(scratch, "state.vscdb");
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
+      const insert = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+      for (const [key, value] of values) insert.run(key, value);
+    } finally {
+      db.close();
+    }
+    copyCredentialFile(home, file, destinationRelative);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 /** Copy the SDK-recognized provider material for this launch. The SDK's default inheritance links
  * rotating auth files; current jcode rejects those links in its external mirror, so the connector
- * owns a fresh, owner-only copy instead. */
+ * owns a fresh, owner-only copy instead. Cursor's state database is read before anything is written,
+ * so a refusal leaves every destination as it was. */
 export function mirrorJcodeCredentials(home: string, sources = credentialSources()): void {
   privateDirectory(home, { pin: true });
-  for (const entry of jcodeCredentialMirrorInventory(home, sources))
-    copyCredentialFile(home, entry.source, entry.destinationRelative);
+  const inventory = jcodeCredentialMirrorInventory(home, sources);
+  const cursorStates = inventory
+    .filter((entry) => entry.family === "cursor-state")
+    .map((entry) => ({ entry, values: readCursorState(entry.source, relative(sources.externalHome, entry.source)) }));
+  for (const entry of inventory) if (entry.family !== "cursor-state") copyCredentialFile(home, entry.source, entry.destinationRelative);
+  for (const { entry, values } of cursorStates) publishCursorState(home, entry.destinationRelative, values);
 }
 
 export interface ShortSocketHome {
