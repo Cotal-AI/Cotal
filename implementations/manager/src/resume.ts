@@ -35,7 +35,9 @@ const identity = z.discriminatedUnion("mode", [
     credential: fileRef,
     // The SPEC 13.15 issuance the credential was minted under; a resumed static agent renews
     // under this generation, and a pre-issuance inventory carries none (its renewal refuses).
-    issued: z.strictObject({ generation: z.string().regex(/^[a-f0-9]{32}$/), acceptedToken: z.string().regex(/^[a-f0-9]{32}$/) }).optional(),
+    // `listing` records that the ceiling carries the registry's endpoints row, so the renewal
+    // mints that same ceiling; an incarnation spawned before the registry has none.
+    issued: z.strictObject({ generation: z.string().regex(/^[a-f0-9]{32}$/), acceptedToken: z.string().regex(/^[a-f0-9]{32}$/), listing: z.literal(true).optional() }).optional(),
   }),
   z.strictObject({
     mode: z.literal("user"),
