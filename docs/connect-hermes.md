@@ -119,6 +119,7 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
 - The persona is written as Hermes' `SOUL.md` (its system-prompt file), the one place a system
   prompt can be set.
+- Tool-call hooks publish only the tool name as presence activity.
 - Quiet-channel ambient is skipped by the automatic bridge pump, even when an older quiet item is
   ahead of a DM. `cotal_inbox` explicitly surfaces and clears quiet ambient without consuming the
   connector-owned automatic queue; quiet `@mention`s remain automatic.
