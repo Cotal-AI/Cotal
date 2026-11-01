@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.133.9
+
+### Patch Changes
+
+- 2c9a28d: `cotal up` on a running mesh re-creates the memory-backed presence bucket when a broker restart has lost it, and says so, instead of refusing with `stream not found`. A missing file-backed bucket still refuses.
+
 ## 0.133.8
 
 No changes in this release.

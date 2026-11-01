@@ -1,5 +1,11 @@
 # @cotal-ai/connector-opencode
 
+## 0.133.9
+
+### Patch Changes
+
+- 69f469b: The OpenCode 2.x adapter ignores execution events from other sessions before its own session id is known, so another session's turn can no longer leave the adapter permanently busy.
+
 ## 0.133.8
 
 ### Patch Changes
