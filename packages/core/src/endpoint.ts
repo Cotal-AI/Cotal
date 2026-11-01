@@ -8342,15 +8342,18 @@ export function defaultProbeTimeoutMs(servers: string): number {
 /** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
  *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
- *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
- *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
- *  that knows which transport is dialing — rather than at every caller composing auth options.
+ *  transport options: a required TLS connection refuses any `ws://` target before dialing.
+ *  `wss://` performs TLS itself, and the w3c transport refuses a `tls` block outright
+ *  ("'tls' is not configurable"), so the block is removed after that check.
  *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
  *  must cover (see {@link withDialedTlsHost}). */
 export function dialerFor(servers: string): typeof connect {
   if (!wsServers(servers)) return ((opts?: Parameters<typeof connect>[0]) => connect(withDialedTlsHost(servers, opts))) as typeof connect;
   return ((opts: Parameters<typeof connect>[0]) => {
-    const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    const { tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    const targets = Array.isArray(rest.servers) ? rest.servers : String(rest.servers ?? servers).split(",");
+    if (tls && targets.some((target) => !/^wss:\/\//i.test(String(target).trim())))
+      return Promise.reject(new Error("TLS-required WebSocket connections must use wss:// for every server"));
     return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
   }) as typeof connect;
 }

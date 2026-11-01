@@ -575,8 +575,9 @@ What the record will require decides what you may register:
   `--allow-unencrypted-overlay`. The tunnel provides the protection, and this command cannot check
   its state. Hostnames are refused because the lookup would choose which machine receives your
   credentials.
-- **With required TLS**, set `--tls` or use a `tls://` URL. The recorded scheme enforces the TLS
-  requirement. A **hostname or public address** is accepted because the certificate chain and
+- **With required TLS**, set `--tls` for TCP or use a `tls://` or `wss://` URL. A `ws://` address
+  is refused when TLS is required, at registration and when an existing record is dialed. Use
+  `wss://` instead; `--force` cannot waive this restriction. A **hostname or public address** is accepted because the certificate chain and
   hostname check identify the peer. A registration whose broker cannot complete the handshake
   fails unless you pass `--force`, which records the entry without verification.
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import tlsMod from "node:tls";
-import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert } from "../src/index.js";
+import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert, dialerFor, probeConnect } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -308,7 +308,46 @@ await sleep(300);
   console.log(`  open mode: plaintext broker answered ${JSON.stringify(acceptedPlain.reply.replace(/\r\n/g, " "))}; TLS-required open listener refused cleartext and served the expected leaf`);
 }
 
-console.log("tls-serve smoke: OK - cleartext refused by TLS-required listeners in BOTH auth and open mode, served leaf matches disk, controls proved each probe detects a real handshake");
+// Required TLS must also survive the WebSocket transport's option boundary.
+{
+  const tcpPort = await freePort(), wsPort = await freePort(), conf = join(dir, "ws.conf");
+  writeFileSync(conf, `host: "127.0.0.1"\nport: ${tcpPort}\nwebsocket { host: "127.0.0.1", port: ${wsPort}, no_tls: true }\n`);
+  const broker = await startBroker("ws", conf);
+  await waitForBroker("127.0.0.1", tcpPort, broker.log);
+  const server = `ws://127.0.0.1:${wsPort}`;
+  const nc = await dialerFor(server)({ servers: server, reconnect: false, timeout: 3000 });
+  await nc.close();
+  assert.equal((await probeConnect(server)).ok, true, "plaintext WebSocket control connects without TLS intent");
+  for (const targets of [server, [server], [`wss://127.0.0.1:${wsPort}`, server]])
+    await assert.rejects(
+      () => dialerFor(`wss://127.0.0.1:${wsPort}`)({ servers: targets, tls: {}, reconnect: false }),
+      /TLS-required WebSocket connections must use wss:\/\//,
+      "every actual WebSocket target must satisfy required TLS",
+    );
+  assert.equal((await probeConnect(server, { tls: true })).ok, false, "TLS-required probe refuses a plaintext WebSocket");
+  broker.kill();
+}
+{
+  const tcpPort = await freePort(), wsPort = await freePort(), conf = join(dir, "wss.conf");
+  const leaf = mintCert("ws-host", "localhost", "DNS:localhost");
+  writeFileSync(conf, `host: "127.0.0.1"\nport: ${tcpPort}\nwebsocket { host: "127.0.0.1", port: ${wsPort}, tls { cert_file: ${JSON.stringify(leaf.certFile)}, key_file: ${JSON.stringify(leaf.keyFile)} } }\n`);
+  const broker = await startBroker("wss", conf);
+  await waitForBroker("127.0.0.1", tcpPort, broker.log);
+  for (const [host, trust, accepted] of [["localhost", true, true], ["localhost", false, false], ["127.0.0.1", true, false]] as const) {
+    const env = { ...process.env };
+    delete env.NODE_EXTRA_CA_CERTS;
+    if (trust) env.NODE_EXTRA_CA_CERTS = leaf.certFile;
+    const code = `import { dialerFor } from ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+      try { const nc = await dialerFor("wss://${host}:${wsPort}")({ servers: "wss://${host}:${wsPort}", tls: {}, reconnect: false, timeout: 3000 }); await nc.close(); console.log("ACCEPTED"); }
+      catch { console.log("REFUSED"); process.exitCode = 2; }`;
+    const child = spawnSync(process.execPath, ["--dns-result-order=ipv4first", "--import", import.meta.resolve("tsx"), "--input-type=module", "-e", code], { env, encoding: "utf8", timeout: 10000 });
+    assert.equal(child.status, accepted ? 0 : 2, `WSS ${host}, trusted=${trust}: ${child.stderr}`);
+    assert.equal(child.stdout.trim(), accepted ? "ACCEPTED" : "REFUSED", "native WSS trust and hostname result");
+  }
+  broker.kill();
+}
+
+console.log("tls-serve smoke: OK - required TLS refuses plaintext TCP and WebSocket; secure listeners preserve certificate and hostname checks");
 } finally {
   killAll();
   // The scratch dir goes with them. Its absence here is why this suite leaked a directory on
