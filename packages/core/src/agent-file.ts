@@ -335,7 +335,9 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  (opts.createOnly ? createPrivateRecord : writePrivateRecord)(path, `---\n${frontmatter}\n---\n\n${body}`);
+  const text = `---\n${frontmatter}\n---\n\n${body}`;
+  if (opts.createOnly) createPrivateRecord(path, text);
+  else writePrivateRecord(path, text);
 }
 
 /** An inline persona (SPEC 13.7): the helper's definition, carried on the spawn instead of read
