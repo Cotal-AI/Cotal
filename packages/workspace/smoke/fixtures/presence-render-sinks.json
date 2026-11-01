@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 739,
+    "total": 758,
     "honest-text": 38,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 633
+    "non-render/control": 652
   },
   "renderers": [
     {
@@ -3033,6 +3033,139 @@
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Comparison that chooses whether the DM acknowledgement appends the offline-delivery note; the token itself is not rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`No request seq ${seq} from you is on the queue, and the delivery daemon holds no record of it. ${UNKNOWN_OUTCOME}`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Request seq ${seq} on @${status.role} is cancelled. ${removalLine(status)}`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "s.role} is cancelled. ${removalLine(status)}`;\n  if (status.state =",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "status-token",
+      "anchor": "\n  if (status.state === \"waiting\")\n    return `Request se",
+      "class": "non-render/control",
+      "rationale": "Comparison on the anycast request record's state: \"waiting\" is one request's place on the queue, not a presence status, and the token picks the reply text without being rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, \"now\")}). ` +\n      `It may sit in a busy holder's buffer until that holder is free or its ack wait runs out. Cancel it with seq ${seq} and cancel: true.`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, \"now\")}). `",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`It may sit in a busy holder's buffer until that holder is free or its ack wait runs out. Cancel it with seq ${seq} and cancel: true.`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "` Before that, ${holderLabel(status.previous)} took it and did not confirm it before its ack wait ran out, so ${attributionSafe(status.previous.name)} may also have started it.`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Request seq ${seq} on @${status.role} was taken by ${holderLabel(status.taker)} at ${new Date(status.at).toISOString()}.${before} ` +\n    `${TAKEN_MEANS} ${takenFollowUp(status.taker)}`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Request seq ${seq} on @${status.role} was taken by ${holderLabel(status.taker)} at ${new Date(status.at).toISOString()}.${before} `",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`${TAKEN_MEANS} ${takenFollowUp(status.taker)}`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Cancelled request seq ${seq} on @${status.role}. ${removalLine(status)}`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "} on @${status.role}. ${removalLine(status)}`;\n  if (status.state =",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Not cancelled: request seq ${seq} on @${status.role} was already taken by ${holderLabel(status.taker)}. ${TAKEN_MEANS} ${takenFollowUp(status.taker)}`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Not cancelled: no request seq ${seq} from you is on the queue, and the delivery daemon holds no record of it. ${UNKNOWN_OUTCOME}`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Not cancelled: request seq ${seq} on @${status.role} is still waiting. Try the cancel again.`",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "status-token",
+      "anchor": "ders = status.state === \"waiting\" ? await agent.roleHolde",
+      "class": "non-render/control",
+      "rationale": "Comparison on the anycast request record's state: \"waiting\" is one request's place on the queue, not a presence status, and the token picks the reply text without being rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "renderAnycastCancel(status)",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "renderAnycastStatus(status, holders)",
+      "class": "non-render/control",
+      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
     },
     {
       "path": "implementations/cli/src/chat/chat-view.tsx",
