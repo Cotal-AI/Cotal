@@ -83,8 +83,8 @@ flowchart TD
 `@cotal-ai/core` contains the wire types, subjects, endpoint client, extension contracts, and shared registry.
 It depends on no other package in this repository. Adapter-specific concepts stay outside core.
 
-`@cotal-ai/workspace` depends on core and supplies machine-local tooling over `~/.cotal`,
-including mesh selection, credential paths, and process custody.
+`@cotal-ai/workspace` depends on core and supplies machine-local tooling over `~/.cotal`
+and shared operator models, including mesh selection, credential paths, process custody, and `MeshView`.
 A client can embed core without adopting that workstation state.
 
 Two packages are independent of core and NATS. `@cotal-ai/lang` implements the workflow language,
@@ -167,7 +167,7 @@ See [process supervision](cli-processes.mdx#supervise) and [managed seats](cli-a
 ## Observers [#observers]
 
 An endpoint observer reads presence, live messages, and history without publishing its own presence.
-The terminal console and plain stream share [MeshView](mesh-view.mdx).
+The terminal console, plain stream, and `cotal watch` share [MeshView](mesh-view.mdx) from `@cotal-ai/workspace/view`.
 The web dashboard uses its own observer and HTTP and SSE model over the same endpoint APIs.
 See [Watch a mesh](watch-a-mesh.mdx) for the operator workflow and
 [dashboard authority](cli-observation.mdx#web-dashboard) for its credential limits.

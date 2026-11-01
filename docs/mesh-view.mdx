@@ -6,7 +6,7 @@ audience: "integrators"
 ---
 
 `MeshView` is the data model used by the terminal [console](watch-a-mesh.mdx) and plain line stream.
-The class lives in [`implementations/cli/src/view/mesh-view.ts`](../implementations/cli/src/view/mesh-view.ts).
+The class ships in `@cotal-ai/workspace/view` and lives in [`packages/workspace/src/view/mesh-view.ts`](../packages/workspace/src/view/mesh-view.ts).
 The web dashboard has a separate observer and HTTP and server-sent event APIs. It does not import `MeshView`.
 
 This API belongs to the reference implementation. Its fields derive from the wire contract, but do not define it.
@@ -15,8 +15,11 @@ Other clients can derive their own models.
 
 ## The observer [#the-observer]
 
-The console and stream supply a `CotalEndpoint` configured with `consume: false`,
-`registerPresence: false`, `watchPresence: true`, and no joined channels.
+The console and stream use `openObserver({ space, server, name, auth?, operator? })`
+from `@cotal-ai/workspace/view`. It returns an unstarted `CotalEndpoint` configured
+with `consume: false`, `registerPresence: false`, `watchPresence: true`, and no joined channels.
+`operator: true` adds the operator role and a lifecycle UID for endpoint service calls;
+broker grants still decide which calls it may make.
 The endpoint stays off the roster and creates no inbox, chat, or anycast durables.
 It reads through a live tap, history reads, and presence and membership watches.
 The web server creates its own endpoint with the same observer flags. Browsers read its HTTP APIs and event stream.

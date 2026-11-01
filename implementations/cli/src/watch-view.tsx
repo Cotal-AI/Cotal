@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { displayWidth, oneLine, renderReport } from "@cotal-ai/workspace";
 import { feedLine, isFeedView, matchesWatchFilter, watchReport, watchViews, type WatchFilter } from "./watch-data.js";
-import type { MeshView } from "./view/mesh-view.js";
+import type { MeshView } from "@cotal-ai/workspace/view";
 
 /** Wrap without dropping a character, including long identities and wide graphemes. */
 function lines(text: string, width: number): string[] {
