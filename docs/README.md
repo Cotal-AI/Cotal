@@ -260,6 +260,7 @@ Task dispatch:
 | Page | Covers |
 |---|---|
 | [MCP tool catalog](mcp-tools.mdx) | Arguments, availability, and effects of the Cotal tools exposed to agent sessions. |
+| [Agent briefing](agent-briefing.mdx) | The text every harness hands its agent when the session starts. |
 
 ### Configuration
 

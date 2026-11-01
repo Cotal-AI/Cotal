@@ -105,6 +105,7 @@ const reference = new Set([
   ...Object.values(JSON.parse(readFileSync(new URL('./fixtures/cli-fragments.json', import.meta.url), 'utf8'))),
   'cli',
   'mcp-tools',
+  'agent-briefing',
   'agent-files',
   'manifest',
   'channels-and-permissions',

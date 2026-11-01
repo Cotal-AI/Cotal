@@ -41,6 +41,7 @@ import type { AgentConfig } from "../src/config.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ApprovalRequired, GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
 import { DOCS_VERSION } from "../src/docs.js";
+import { REPLY_ETIQUETTE } from "../src/briefing.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -290,6 +291,12 @@ try {
   const id1 = idOf(first);
   check("the requested name is used when free", !first.isError && first.text.startsWith("Connected as claude.") && id1 !== "", first);
   check("connect names the connection's own read, join and post access", first.text.includes("\nReads #lobby; may join #lobby; may post to #lobby."), first);
+  check(
+    "connect hands over the orientation card and the shared briefing",
+    first.text.includes("\nIdentity state: ") && first.text.includes("Act → read: cotal_inbox") &&
+      first.text.includes('\n\nYou are connected to the Cotal mesh as "claude" in space') && first.text.endsWith(REPLY_ETIQUETTE),
+    first,
+  );
   const second = await call(a, "cotal_connect", { name: "claude" });
   const id2 = idOf(second);
   check("a taken name moves to the next one and says so", !second.isError && second.text.startsWith('Connected as claude_2 ("claude" was taken).'), second);
