@@ -110,7 +110,7 @@ import { RunHosting } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { rejectionText } from "./rejection-text.js";
 import { controlSession } from "./control-session.js";
-import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, supervisePolicy, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
@@ -6401,7 +6401,14 @@ export class Manager {
     // the lists and the restart policy as admitted.
     opts = ownLists(opts);
     if (opts.resolved) opts.resolved = ownLists(opts.resolved);
-    if (opts.supervise) opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
+    if (opts.supervise) {
+      opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
+      // The budget is checked here, where it is held, not only at the wire: an in-process caller of
+      // this export is refused before anything launches, rather than getting a seat that joins and is
+      // torn down when its seat record will not take the policy (#3298).
+      const policy = supervisePolicy.safeParse(opts.supervise);
+      if (!policy.success) return { ok: false, error: `supervise.${policy.error.issues[0]?.path.join(".")}: expected a positive integer` };
+    }
     let runtime: Runtime;
     try {
       await this.loadSeatRuntime(opts.runtime);
