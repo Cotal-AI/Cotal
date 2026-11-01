@@ -1082,17 +1082,17 @@ async function userManagerStatus(target: MeshTarget, instanceId?: string): Promi
   return reply.data as ManagerServiceStatus;
 }
 
-/** One probe of the space's manager service endpoint. Only a definitive no-answer is
- *  `not-answering`; a refused probe or an `unavailable` user-mode credential is `unchecked`, so a
- *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
- *  `instanceId` an answer from another manager instance is `unchecked` too. Omitting
- *  `instanceId` leaves the answer unpinned, for a probe that is not attributing a local process. */
 /** A no-responder service rail or an absent manager registry: the definitive no-service evidence
  *  that both the manager row and the manager health check grade on, kept in one place (#3046). */
 function managerNoService(e: unknown): boolean {
   return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
 }
 
+/** One probe of the space's manager service endpoint. Only a definitive no-answer is
+ *  `not-answering`; a refused probe or an `unavailable` user-mode credential is `unchecked`, so a
+ *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
+ *  `instanceId` an answer from another manager instance is `unchecked` too. Omitting
+ *  `instanceId` leaves the answer unpinned, for a probe that is not attributing a local process. */
 async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerEndpoint> {
   try {
     let status: ManagerServiceStatus;
