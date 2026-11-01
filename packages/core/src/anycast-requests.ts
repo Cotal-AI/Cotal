@@ -364,7 +364,7 @@ export class AnycastRequestAuthority {
       else await this.deps.kv.create(key, bytes);
       return true;
     } catch (e) {
-      if (isCasLoss(e) || /wrong last sequence|key exists/i.test(String((e as Error).message))) return false;
+      if (isCasLoss(e)) return false;
       throw e;
     }
   }

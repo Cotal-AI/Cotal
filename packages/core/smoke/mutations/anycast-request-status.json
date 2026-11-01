@@ -114,6 +114,14 @@
       "expectRed": "10k a second copy from the old stream is refused as a mismatch",
       "cell": "10k a second copy from the old stream is refused as a mismatch after the endpoint read the new time",
       "note": "A take that reads the endpoint's stream time when it runs, instead of when its copy arrived, sends the new stream's time for a copy buffered from the old one once a refusal has refreshed it."
+    },
+    {
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "      if (isCasLoss(e)) return false;",
+      "replace": "      if (e === undefined) return false;",
+      "expectRed": "3a every race had exactly one winner and a matching status",
+      "cell": "3a every race had exactly one winner and a matching status",
+      "note": "A record write that no longer reads the broker's CAS-loss code throws when a raced take and cancel both write one row, so the loser fails instead of retrying."
     }
   ]
 }
