@@ -1,5 +1,30 @@
 # @cotal-ai/core
 
+## 0.133.11
+
+No changes in this release.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+### Patch Changes
+
+- 2c9a28d: `cotal up` on a running mesh re-creates the memory-backed presence bucket when a broker restart has lost it, and says so, instead of refusing with `stream not found`. A missing file-backed bucket still refuses.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+### Patch Changes
+
+- dd729aa: Pin ajv's `validateSchema` and `meta` in the contract schema profile, so a malformed keyword value such as `{"type": 5}` keeps refusing as `contract-invalid` even if ajv's defaults change.
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+
 ## 0.133.6
 
 No changes in this release.
