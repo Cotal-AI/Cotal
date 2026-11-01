@@ -205,10 +205,12 @@ Both managed-agent operations ride the one verified `POST /manager-service-autho
 `kind: "manager-managed-agent-enrollment"` and `kind: "manager-managed-agent-prepare-retirement"`.
 Stock `cotal auth-service` answers both itself, because it owns the actor ledger and the space's
 provisioning authority. An enrollment writes the managed grant at a fresh UID with the supervising
-actor as its parent, provisions that UID's durables, and returns the daemon's public exchange URL as
+actor as its parent, or, when the request carries `spawn: { served, runId? }`, with the caller the
+host observed publishing that served `spawn` subject, or the run's starter for a run's spawn. It
+provisions that UID's durables, and returns the daemon's public exchange URL as
 `agentBearerExchangeUrl`; a daemon started without `--exchange-public-port` refuses enrollment. A
-retry with the same token digest answers the same UID while the supervising actor's current grant
-covers it, and a fresh enrollment's refusal otherwise. While the agent's grant stands, an enrollment
+retry with the same token digest answers the same UID while its parent's current grant covers it,
+and a fresh enrollment's refusal otherwise. While the agent's grant stands, an enrollment
 with another digest is refused with `conflict` until that lifecycle's retirement is prepared. A
 prepare-retirement releases the target UID's broker footprint and then revokes its grant, so the
 manager's terminal rail finds the grant gone. A platform that keeps these writers in its own storage
@@ -218,7 +220,13 @@ and asks the auth service for the decision at
 `@cotal-ai/auth`) with the `Bearer <cap>` from `auth-service.json` and only `{ owner, request }`. That
 door has the managed retirement door's guards, derives the caller's scope from the local ledger rather
 than the body, checks the manager gate and registration proof in-process, and answers
-`{ authorized: true, owner, actor, instanceId, serveEpoch }`. `authorizeRemoteManagedAgentEnrollment`
+`{ authorized: true, owner, actor, instanceId, serveEpoch, parent }`. `parent` is the ledger
+principal the helper is bounded by: the caller the auth service saw send the manager's `spawn`
+request, the run's starter for a run's spawn, or the manager. The door refuses a target wider than
+that parent's grant. It counts a list the target leaves out as empty, so the platform fills such a
+list from no more than the parent's grant and writes `parent` on the grant, so that narrowing or
+revoking the parent reaches the helper. A retry of the same enrollment gets the same answer.
+`authorizeRemoteManagedAgentEnrollment`
 and `authorizeRemoteManagedAgentPrepareRetirement` are exported too, for a host that composes the
 decision without the HTTP hop. Both require ledger scope `supervise`; `spawn` and `admin` do not
 imply it.
