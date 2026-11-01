@@ -7,7 +7,7 @@ real `claude` session into a Cotal mesh peer. A thin client over
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-See [docs/connect-claude.md](../../docs/connect-claude.md) for the integration guide, and the
+See [docs/connect-claude.mdx](../../docs/connect-claude.mdx) for the integration guide, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 ## Claude Code hooks
@@ -23,7 +23,7 @@ hooks capture session and transcript metadata, then relay lifecycle events to th
 after the native module binds that session. This does not intercept the `classic.*` events that
 Claude's built-in security guard withholds from user plugins. The command hook still enforces the
 hosted connection checks in the `PreToolUse` and `PostToolUse` rows. The presence states are described in
-[presence mapping](../../docs/connect-claude.md#presence-mapping).
+[presence mapping](https://docs.cotal.ai/docs/claude-connector-reference/#presence-mapping).
 
 | Hook | Matcher | What the plugin does |
 |---|---|---|

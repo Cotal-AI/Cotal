@@ -177,6 +177,10 @@ export function parseResumeFinalizeArgs(value: unknown): { attemptId: string; du
   return parseBounded("finalizeResume", MAX_RESUME_COMMIT_BYTES, finalizeArgsSchema, value);
 }
 
+/** A spawn's `supervise` restart budget. Admission and the seat record read this one rule, so a
+ *  policy the record would refuse is never admitted and launched first. */
+export const supervisePolicy = z.strictObject({ restarts: z.number().int().min(1), windowMs: z.number().int().min(1) });
+
 /** What a successor manager needs to take back one seat this manager runs, should this manager's
  *  process end without stopping it: the seat's resume entry, and for a supervised seat the restart
  *  policy its spawn carried and the deaths already counted against it (#4094). One file per seat,
@@ -185,7 +189,7 @@ export function parseResumeFinalizeArgs(value: unknown): { attemptId: string; du
 const seatRecord = z.strictObject({
   version: z.literal("cotal-seat-record/v1"),
   instanceId: z.string().min(1).max(256),
-  supervise: z.strictObject({ restarts: z.number().int().min(1), windowMs: z.number().int().min(1) }).optional(),
+  supervise: supervisePolicy.optional(),
   crashes: z.array(z.number().int().nonnegative()).max(1024),
   agent,
 });

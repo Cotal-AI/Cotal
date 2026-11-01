@@ -1,5 +1,144 @@
 # @cotal-ai/cli
 
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+  - @cotal-ai/workspace@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+  - @cotal-ai/workspace@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- 4bb984c: `cotal status` grades a manager as not answering through one shared predicate for the manager row and the manager health check, so the two can no longer drift apart. No behaviour change.
+- 2c9a28d: `cotal up` on a running mesh re-creates the memory-backed presence bucket when a broker restart has lost it, and says so, instead of refusing with `stream not found`. A missing file-backed bucket still refuses.
+- 46d7550: `cotal watch` and `cotal console` drop the "Observer reported an error" state once presence is current again after a broker restart, instead of keeping it until they are restarted.
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+  - @cotal-ai/workspace@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+  - @cotal-ai/workspace@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+  - @cotal-ai/workspace@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+  - @cotal-ai/workspace@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+
+## 0.133.3
+
+### Patch Changes
+
+- ebca602: The store cleanup guard keeps one rule for a `--store-dir` inside `.cotal`, instead of also checking a partial list of `.cotal` children that never changed the outcome.
+- 22bf7bf: A checked user-auth bundle's type now carries the pinned exchange URL that `checkUserBundle` requires, so callers read `userAuth.endpoints.url` without non-null assertions.
+- Updated dependencies [22bf7bf]
+  - @cotal-ai/workspace@0.133.3
+  - @cotal-ai/core@0.133.3
+
+## 0.133.2
+
+### Patch Changes
+
+- 3f005b8: `clearChannel` no longer reports success when its channel-registry step is refused or fails. Only a missing registry bucket is still a no-op. Any other failure throws `ChannelRegistryRemovalFailed`, which carries the purge count, because the chat purge has already happened. Before, a credential that could purge history but not touch the registry (for example `purger`) resolved with `removed: false` while the channel stayed listed. The web dashboard and console now show that error instead of a successful delete. `cotal channel remove --purge` still reports the partial outcome with the purge count.
+- Updated dependencies [3f005b8]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+
+## 0.133.1
+
+### Patch Changes
+
+- 58d76e2: The ANSI presence lines in `cotal console --plain` and `cotal join` (its presence updates and `/who`) now take their activity suffix from one `activityDetail` helper in `ui.ts`, next to `presenceDetail`. Before, each line built the dimmed ` - <activity> (set <age> ago)` inline. The output is unchanged.
+- 852ebed: `cotal invoke manager <command> --name <agent>` resolves its target again. Since invoke fetched only the invoked command's contract, the `inspect` lookup behind `--name` was refused locally with `TARGET_NOT_FOUND` before anything was published. Invoke now fetches `inspect`'s contract with the command's when `--name` names a manager target.
+- Updated dependencies [ee1b7d4]
+- Updated dependencies [a8f140c]
+- Updated dependencies [b786ccd]
+  - @cotal-ai/core@0.133.1
+  - @cotal-ai/workspace@0.133.1
+
+## 0.133.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.0
+  - @cotal-ai/workspace@0.133.0
+
+## 0.132.7
+
+### Patch Changes
+
+- Updated dependencies [ad4a37e]
+  - @cotal-ai/core@0.132.7
+  - @cotal-ai/workspace@0.132.7
+
+## 0.132.6
+
+### Patch Changes
+
+- ade39ed: `cotal backup restore` and `cotal up --restore` no longer refuse a space with an empty stream when the broker is nats-server 2.15. That server restores a never-written stream as exhausted (`first_seq` 1) rather than initial (`first_seq` 0). The restore check now compares an empty stream by its last sequence alone, which both forms share.
+- @cotal-ai/core@0.132.6
+  - @cotal-ai/workspace@0.132.6
+
+## 0.132.5
+
+### Patch Changes
+
+- 75e5b4f: Report the auth daemon's typed startup refusal to `cotal up` instead of a bare exit. A daemon that refuses its start records the refusal beside its discovery file, bound to its pid. The provider's readiness wait throws it as an `EpEnvelopeError`, and `up` names the code and reason, such as `[unavailable; ai.cotal.auth.plane-claim-refused: unknown]`.
+- 3b7d3d2: `cotal ext add` over an installed extension announces `✓ added` only once the add has committed, so an add interrupted by Ctrl-C or SIGTERM no longer reports the version it rolled back; it still exits 130. A committed add whose copy of the previous installation cannot be removed now succeeds with a warning that names the copy, instead of exiting 1 after reporting the add.
+- f719f72: A bare `cotal up` that adopts the broker of an interrupted `cotal up --restore ... --max-file-store <bytes>` now keeps that store cap in the mesh record instead of dropping it, so a full-store refusal can name the cap the broker runs with. The restore and ordinary-resume adopt paths now share one implementation.
+- @cotal-ai/core@0.132.5
+  - @cotal-ai/workspace@0.132.5
+
+## 0.132.4
+
+### Patch Changes
+
+- c0e9b6f: Let `cotal ext seed --reset` and `--repair` finish when the extensions manifest records a package whose directory is gone, such as one npm pruned as extraneous. `ext add`, `ext remove` and each seed now warn with the package, its path, the command that reinstalls it and `cotal ext remove <package>`, and keep its manifest entry. For a third-party package that command is `cotal ext add <original-spec>` with the placeholder left in, so the warning does not print a recorded spec that may be a URL carrying a credential. They no longer fail on it. A package directory without a readable `package.json`, a dangling package link and a corrupt `package.json` still fail. A seed that failed this way in an earlier release is finished by `cotal ext seed --repair`, after which `cotal ext remove` drops the entry.
+- e6f80e9: Start delivery's liveness oracle before the user-auth startup step on ordinary mesh startup and refresh, with manager startup afterward. A crashed auth predecessor can then be checked in the first repair invocation without weakening its claim guard or changing lease waits.
+- Updated dependencies [c0e9b6f]
+  - @cotal-ai/workspace@0.132.4
+  - @cotal-ai/core@0.132.4
+
 ## 0.132.3
 
 ### Patch Changes

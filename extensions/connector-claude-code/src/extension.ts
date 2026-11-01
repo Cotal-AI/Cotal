@@ -14,7 +14,7 @@ const MCP_SERVER_NAME = "cotal";
 /** Auth and provider-routing env `claude` actually reads for a headless or container seat.
  *  Drawn from Anthropic's authentication precedence
  *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
- *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.md` and
+ *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.mdx` and
  *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
  *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
  *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides

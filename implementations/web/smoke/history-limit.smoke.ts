@@ -38,10 +38,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
-import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
-import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { AGGREGATION_DEADLINE_MS } from "../src/web.js";
+import { bootWeb } from "./boot-web.js";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -122,26 +122,13 @@ try {
   for (let i = 0; i < 40; i++) await seed.unicast(`local.${peer.id}`, `dm${i} ${BODY}`);
   await seed.stop();
 
-  const runWeb = fileURLToPath(new URL("./run-web.mts", import.meta.url));
-  const bootWeb = (broker: string): Promise<{ child: ReturnType<typeof spawn>; cookie: string; port: number }> => onFreePort(async (port) => {
-    const ch = spawn(process.execPath, ["--import", "tsx", runWeb, "--space", SPACE, "--server", broker,
-      "--port", String(port), "--no-open"], { stdio: ["ignore", "pipe", "pipe"] });
-    let log = "";
-    ch.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    ch.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-    const taken = `Port ${port} is in use`;
-    let launchUrl: string | undefined;
-    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(250);
-    }
-    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
-    const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
-    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
-    if (exchange?.status !== 302 || session === undefined) throw new Error(`web launch failed: ${log.slice(-300)}`);
-    return { child: ch, cookie: `cotal_web_session=${session}`, port };
-  });
-  const fast = await bootWeb(SERVER);
+  // One launch, its link spent once, for the fast broker and for the slow link below.
+  const boot = async (broker: string): Promise<{ child: ReturnType<typeof spawn>; cookie: string; port: number }> => {
+    const web = await bootWeb({ server: broker, space: SPACE });
+    if (web.exchangeStatus !== 302 || web.cookie === undefined) throw new Error(`web launch failed: ${web.output().slice(-300)}`);
+    return { child: web.child, cookie: web.cookie, port: web.port };
+  };
+  const fast = await boot(SERVER);
   fastWeb = fast.child;
   const F = `http://127.0.0.1:${fast.port}`;
 
@@ -201,7 +188,7 @@ try {
   // the refusal to be the correct ending. Slowing it further costs no wall clock: once the deadline
   // fires the arm returns at the deadline whatever the link does, so the margin is free.
   link = slowLink({ listen: PROXY, target: PORT, oneWayMs: 80, bytesPerSec: 6 * 1024 });
-  const slow = await bootWeb(`nats://127.0.0.1:${PROXY}`);
+  const slow = await boot(`nats://127.0.0.1:${PROXY}`);
   slowWeb = slow.child;
   const S = `http://127.0.0.1:${slow.port}`;
   const slowRead = await get(`${S}/api/channels/ch0/history?limit=${PER}`, CEILING_MS, slow.cookie);

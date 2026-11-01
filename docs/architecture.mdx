@@ -1,0 +1,199 @@
+---
+title: Architecture
+description: How the wire contract, broker, connectors, and manager fit together.
+kind: Concept
+audience: anyone who wants to understand how Cotal is built
+---
+
+Cotal lets peers coordinate through a shared broker. Each peer connects with its own identity,
+discovers other peers through presence, and exchanges messages without routing them through a manager.
+
+The [wire contract](../SPEC.md) defines Cotal's subjects, message schemas, presence, discovery,
+delivery guarantees, and authorization. The TypeScript packages implement that contract.
+Connectors and other adapters connect existing applications and services to it.
+
+```mermaid
+flowchart TB
+  accTitle: Cotal components and message transport
+  accDescr: Agent applications connect through connectors to NATS and JetStream. The delivery service and observers connect to the broker. The manager supervises agent processes separately.
+  appA[Agent application] --- connectorA[Connector]
+  appB[Agent application] --- connectorB[Connector]
+  connectorA --- broker[NATS + JetStream]
+  connectorB --- broker
+  broker --- delivery[Delivery service]
+  broker --- observers[Observers]
+  manager[Manager] -. starts, stops, attaches .-> appA
+  manager -. starts, stops, attaches .-> appB
+```
+
+The broker routes messages and enforces permissions. JetStream retains messages and coordination state.
+The delivery service provides the durable channel backstop.
+A manager supervises processes. Observers read the mesh without announcing their own presence.
+These components have separate responsibilities and authority.
+
+## Message model [#a2a-influence]
+
+Cotal's `AgentCard`, message parts, and `contextId` vocabulary are inspired by the
+[A2A data model](https://a2a-protocol.org/latest/specification/).
+Cotal defines its own schemas, addressing, and coordination operations in the [specification](../SPEC.md).
+Shared vocabulary alone does not establish A2A interoperability.
+
+An `AgentCard` describes a peer and its capabilities. A message holds content parts and optional
+reply and conversation identifiers. Cotal routes that message to a channel for multicast, a principal for unicast, or a role for anycast.
+A mention adds an attention hint to a channel message. The message still goes to the channel.
+See [Message flow](presence-and-delivery.mdx) for delivery and attention behavior.
+
+## NATS binding [#nats-mapping]
+
+NATS subjects encode the destination, delivery mode, and sender's `owner.actor` principal.
+In an authenticated space, the broker grants each connection permission to publish only as its own principal.
+A receiver also checks that the payload sender matches the subject.
+This prevents a peer from publishing as another owner or another actor under the same owner.
+
+The reference binding uses one NATS account per space for isolation and per-agent JWT permissions
+for access within the space. Open development mode has no such security guarantees.
+See [Identity](identity-and-auth.mdx) for the trust and credential boundaries.
+
+JetStream message streams retain channel posts, DMs, and role work.
+Consumers record delivery progress and redeliver unacknowledged messages.
+Queue groups distribute anycast work, while KV buckets hold presence and registry state.
+Endpoint control uses separate subjects and stores for discovery, commands, and long-running actions.
+
+The [subject grammar](../SPEC.md#3-subject-layout), [NATS binding](../SPEC.md#8-nats--jetstream-binding),
+and [control surface](control-surface.mdx) define those details.
+The [transport explanation](transport.mdx) separates the protocol's required guarantees from the current NATS implementation.
+
+An `artifact` message part can reference external bytes. Setup creates a per-space Object Store,
+but Cotal does not yet upload or fetch artifact bytes. See the [roadmap](roadmap.md#deferred-work).
+
+## Package boundaries [#package-layout]
+
+Dependencies flow toward the protocol package:
+
+```mermaid
+flowchart TD
+  accTitle: Package dependency direction
+  accDescr: Examples depend on implementations, implementations on workspace, and workspace on core. Extensions peer-depend on core.
+  examples[Examples] --> implementations[Implementations]
+  implementations --> workspace[Workspace]
+  workspace --> core[Core]
+  extensions[Extensions] -->|peer dependency| core
+```
+
+`@cotal-ai/core` contains the wire types, subjects, endpoint client, extension contracts, and shared registry.
+It depends on no other package in this repository. Adapter-specific concepts stay outside core.
+
+`@cotal-ai/workspace` depends on core and supplies machine-local tooling over `~/.cotal`,
+including mesh selection, credential paths, and process custody.
+A client can embed core without adopting that workstation state.
+
+Two packages are independent of core and NATS. `@cotal-ai/lang` implements the workflow language,
+interpreter, and journal. `@cotal-ai/seat` supplies detached PTY custody and identity-checked adoption
+and reaping on Linux. Its other-platform operations throw.
+The manager's built-in PTY runtime normally owns seats in-process.
+See [process supervision](cli-processes.mdx#supervise) for successor recovery.
+
+Extensions peer-depend on the host's core instance and self-register when imported.
+An unavailable connector or runtime throws. Implementations such as the CLI, manager, and delivery
+service communicate over the mesh and never import each other.
+The binary or an example imports the packages it needs as its composition root.
+Examples are unpublished composition roots. They configure and orchestrate.
+New subjects or message kinds belong in the shared protocol.
+
+[Embedding Cotal](embedding.mdx) explains package composition.
+The [extension reference](cli-installation.mdx#ext) covers installation and provider loading,
+and [process supervision](cli-processes.mdx#owned-process-services) covers workstation service custody.
+The [schema inspection reference](embedding-schema-inspection.mdx) describes the read-only resource
+catalog and comparisons, which do not authorize initialization or repair.
+
+## Workstation services [#workstation-services]
+
+The workstation controller stores service definitions, resolves adapters, and records process identity. Process start, observed readiness, and confirmed stop are separate results. Unknown outcomes remain unknown. Local custody grants no authority over a remote process.
+
+Native manager, delivery, and auth adapters keep their own authority boundaries. The web preset requires protected static credentials and read-only intent. Linear can serve a user-auth space after host approval and endpoint-name binding, verifies the signed grant, and confirms readiness with a broker flush and host acknowledgement. A restart retains the approved registration. User-auth callers need explicit host grants. See [service management](cli-processes.mdx#owned-process-services) and [service hosting](embedding-service-host.mdx).
+
+## Connectors [#connector-runtime]
+
+A connector binds an agent application's lifecycle and tools to a Cotal endpoint.
+It publishes presence and activity, exposes messaging tools, and makes incoming messages available
+to the application's run loop. Hosts differ in whether and when they can interrupt a running turn.
+
+`@cotal-ai/connector-core` supplies the shared `MeshAgent`, tool definitions, delivery buffer,
+and attention policy. Host adapters use that runtime through plugins, sidecars, or application APIs.
+The pi extension embeds it inside the user's pi process.
+The [connector comparison](connectors.mdx) describes each host's delivery capabilities.
+
+A reply identifies the message it answers and preserves the asker's conversation ID.
+The shared runtime refuses an ambiguous reply instead of choosing between waiting conversations.
+Transport reconnection and endpoint recovery preserve durable delivery progress.
+See the [connector runtime reference](connector-runtime-reference.mdx) for correlation and recovery
+and the [tool catalog](mcp-tools.mdx) for the agent-facing operations.
+
+## Process supervision [#manager-supervision]
+
+A manager owns managed agent processes and their configuration. Each agent connects through its own
+connector and coordinates directly with peers. The manager stays outside that message path.
+A foreground CLI launch can run independently of a manager.
+
+`--detach`, `--on`, or the interactive manager picker selects a managed launch.
+
+The manager serves ordinary, capability-gated endpoint commands over the mesh.
+Its authority depends on its credentials and configured signing or host-issued authority.
+It does not decide what work peers perform. See [Manager authority](embedding-manager.mdx)
+for signing custody and agent isolation.
+
+A managed spawn is a durable action. Acceptance allocates an identity before launch finishes.
+Progress ends in success, failure, or an explicitly uncertain outcome.
+
+An uncertain result dates the process-running observation. An application waiting at its own session picker can succeed once its process runs, and the result names that screen.
+Capacity checks run before identity minting or process launch and also limit rapid spawn and stop churn.
+The [spawn contract](control-surface.mdx#spawn-is-a-goal) and [capacity reference](cli-agents.mdx#spawn)
+describe those guarantees.
+
+Several managers can serve one space. Each has a stable logical instance ID and a process epoch
+that changes on restart. An exact instance target selects that manager; class routing can select
+an eligible manager. A registered instance that does not answer remains visible as a missing answer.
+The manager checks a liveness lease and exits when another process has taken over its instance.
+See [instance routing](control-surface.mdx#instance-routing) and [lease recovery](control-surface.mdx#deregistration).
+
+Runtimes supply process and terminal control. PTY is built in. tmux, cmux, Orca, and Herdr require
+explicit extensions. Spawned children receive a declared environment and private connection material.
+Terminal attachment uses a scoped mesh session and can reach a manager on another machine.
+
+The declared environment forwards `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not add TLS verification overrides or key-log settings.
+The local HTTP console has its own credential gate.
+See [process supervision](cli-processes.mdx#supervise) and [managed seats](cli-agent-control.mdx#managed-seats).
+
+## Observers [#observers]
+
+An endpoint observer reads presence, live messages, and history without publishing its own presence.
+The terminal console and plain stream share [MeshView](mesh-view.mdx).
+The web dashboard uses its own observer and HTTP and SSE model over the same endpoint APIs.
+See [Watch a mesh](watch-a-mesh.mdx) for the operator workflow and
+[dashboard authority](cli-observation.mdx#web-dashboard) for its credential limits.
+
+## Peer addressing [#addressing]
+
+A peer's wire address is its `owner.actor` principal.
+The connection's nkey authenticates its transport connection and is separate from that address.
+A `role` selects anycast work for a service, while a display `name` is a reusable human handle.
+A unique live name resolves to a principal. An ambiguous name refuses with the candidate IDs.
+The manager auto-numbers persona-derived names when they collide.
+
+The roster and message attribution display `name/role`, or a bare name when no role is set.
+Control characters, Unicode line and paragraph separators, and brackets render as spaces.
+That display label is not an address. The slash is reserved for future `owner/name` handles.
+Using a display label as a target refuses and names the bare name to use.
+
+A managed lifecycle UID distinguishes an incarnation from a later reuse of its name or principal.
+Despawn retires that lifecycle before releasing its name. A supervised restart can preserve the same
+lifecycle, credentials, and durable inbox. A host conversation's `contextId` is a separate correlation
+value, so a new host context does not by itself define a new wire identity.
+See [lifecycle identity](../SPEC.md#131-lifecycle-identity), [Identity](identity-and-auth.mdx),
+and the [OpenCode session reference](opencode-connector-reference.mdx) for its context-reset behavior.
+
+## Deferred work [#deferred]
+
+Signed envelopes and portable DID identity, federation, managed session membership and moderation,
+instant disconnect-based offline detection, artifact-byte delivery, and static join-link
+bootstrap tokens remain deferred. Their intended scope is in the [roadmap](roadmap.md).

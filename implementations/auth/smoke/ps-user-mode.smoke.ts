@@ -32,6 +32,7 @@ import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { approveDevice } from "./_device-approval.js";
 
 // Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
 // `.cotal` above `tmpdir()` makes `cotal up` write `manager.pid` into that ancestor. Step 4 then
@@ -278,15 +279,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
   throw new Error(`fixture setup failed (scratch removed, IdP: ${closed}): ${(e as Error).message}`, { cause: e });
 }
-async function approve(userCode: string): Promise<void> {
-  await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-  const res = await fetch(`${base}/device/approve`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie, origin },
-    body: JSON.stringify({ userCode }),
-  });
-  if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-}
+const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
 try {
   console.log("1) up --user-auth");
@@ -325,7 +318,7 @@ try {
   console.log("2) device login + admin grant");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"]);
   check("actor grant succeeds", grant.status === 0 && /^Actor grant stored$/m.test(grant.out), grant.out.slice(-300));
@@ -601,7 +594,6 @@ try {
   }
 
   console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
-  const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
   const { findMesh, loadMeshes, removeMesh, removeMeshes, recordMesh, setCurrent, canonicalRoot, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { loadCalloutAuth } = await import("../src/index.js");
   const original = findMesh(SPACE);
@@ -675,10 +667,13 @@ try {
   removeMesh(SPACE);
   const catalogCache = join(home, "space-catalogs.json");
   rmSync(catalogCache, { force: true });
-  await prepareCatalogTargets({ idpUrl: base, force: true });
+  // The shipped command in its own process. This process already holds the IdP JWT that the login
+  // above minted, for up to a minute, and that held response predates the catalog link advertised here.
+  const synced = await cotal(["sync", "--idp", base], 20_000);
+  mustHaveRun(synced, "`cotal sync`");
   execFileSync("pnpm", ["--filter", "@cotal-ai/auth", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
   execFileSync("pnpm", ["--filter", "@cotal-ai/cli", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
-  check("the empty registry was repopulated as a discovered user-mode target", findMesh(SPACE)?.origin === "catalog", findMesh(SPACE));
+  check("the empty registry was repopulated as a discovered user-mode target", findMesh(SPACE)?.origin === "catalog", { entry: findMesh(SPACE), sync: synced.out.slice(-300) });
   check("the display name is not a registry key", findMesh("Shared project") === undefined && findMesh(SPACE)?.catalogName === "Shared project", findMesh(SPACE));
   check("the discovered entry resolves through the ordinary synchronous target path", targetFromEntry(findMesh(SPACE)!, original.server, "registry").mode === "user");
   const discoveredPs = await cotal(["ps", "--space", SPACE], 20_000);
@@ -800,6 +795,9 @@ try {
     expiredJson.status === 2 && /"code":"DEPENDENCY_UNAVAILABLE"/.test(expiredJson.out) && /"outcome":"refused"/.test(expiredJson.out), expiredJson.out.slice(-400));
 
   console.log("4) kill manager — ps says no manager answered, never a bare empty list");
+  // 3b leaves this space as a discovered entry whose catalog now fails, and ps refuses that target
+  // before it asks any manager. This cell grades the stack's own registration.
+  restoreStackRegistration?.();
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness
   // it here so that shows up as itself and not as the cell below.
   assertScratchHeld(root, "fixture root");

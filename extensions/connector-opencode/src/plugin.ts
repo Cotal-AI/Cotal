@@ -1528,7 +1528,12 @@ export const cotal: Plugin = async () => {
           }
           await safeStatus("idle");
           if (!interrupted) scheduleErrorRetry();
-          else clearErrorRetry(true);
+          else {
+            clearErrorRetry(true);
+            // The stop ended the turn, and the `session.idle` after it finds no turn to close, so
+            // drive here what arrived during it, as completeTurn would have (#3839).
+            if (workPending()) void drive();
+          }
           break;
         case "message.part.updated": {
           // NEAR-LIVE. The bus is the wake signal and never the data path: this says "look now", and

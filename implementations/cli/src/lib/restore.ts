@@ -60,7 +60,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
-  localProcessOwnerStatus, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
+  localProcessOwnerStatus, parsePositiveIntegerFlag, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
   recordRestoreManagerCommit,
@@ -108,6 +108,7 @@ export interface RestoreFlags {
   "restore-only"?: string;
   "accept-missing-source"?: boolean;
   "store-dir"?: string;
+  "max-file-store"?: string;
   space?: string;
   server?: string;
   host?: string;
@@ -131,6 +132,8 @@ export interface PreparedRestore {
   host: string;
   runtime: string;
   detached: boolean;
+  /** The JetStream file storage cap the restore started its broker with (`--max-file-store`). */
+  maxFileStore?: number;
   selection: "full" | "registry";
   /** The streams this attempt restored from the artifact. */
   restoredStreams: readonly string[];
@@ -150,6 +153,15 @@ type RecoverableRestoreRecord = CommitIntentRecord | RestoreManagerCommittedReco
 function launchString(launch: Readonly<Record<string, JsonValue>>, key: string): string {
   const value = launch[key];
   if (typeof value !== "string" || !value) throw new Error(`restore launch record is missing ${key}`);
+  return value;
+}
+
+/** The store cap a preserved launch recorded: absent, or a positive integer byte count. Anything
+ *  else is a damaged journal, refused rather than rendered as the dynamic default. */
+export function journaledMaxFileStore(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+    throw new Error(`the preserved launch records an invalid maxFileStore (${JSON.stringify(value)}); refusing to guess the broker's store cap`);
   return value;
 }
 
@@ -180,6 +192,7 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
   const serverName = journal.listenerProof?.serverName ??
     (replacementPending ? `${journal.restore.attemptId}-${serverNonce}` : launchString(journal.launch, "serverName"));
   restoreServerIdentity(journal.restore.attemptId, serverName, serverNonce);
+  const maxFileStore = journaledMaxFileStore(journal.launch.maxFileStore);
   return {
     root,
     attemptId: journal.restore.attemptId,
@@ -190,6 +203,7 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     host: launchString(journal.launch, "host"),
     runtime: launchString(journal.launch, "runtime"),
     detached: journal.launch.detached === true,
+    ...(maxFileStore !== undefined ? { maxFileStore } : {}),
     selection: restoreOnly,
     restoredStreams: journaledRestoredStreams(journal.launch, journal.space, journal.mode),
     inventory: resume.inventory,
@@ -371,7 +385,9 @@ function dataStateFingerprint(input: Readonly<Record<string, unknown>>): string 
   return JSON.stringify({
     messages: state.messages,
     bytes: state.bytes,
-    first_seq: state.first_seq,
+    // An empty stream is its last sequence: the validator admits it only as initial (0 and 0) or
+    // exhausted (last_seq + 1), and nats-server 2.15 restores an initial one as exhausted.
+    first_seq: state.messages === 0 ? state.last_seq + 1 : state.first_seq,
     last_seq: state.last_seq,
     deleted: [...(state.deleted ?? [])].sort((a, b) => a - b),
     num_deleted: state.num_deleted ?? 0,
@@ -1171,6 +1187,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     })();
     // The controller binding journals each member start before it.
     const controllerLaunch = controller ? newControllerAttemptLaunch() : undefined;
+    // The restored broker starts with this cap, so the journal keeps it for a re-entry that adopts it.
+    const maxFileStore = parsePositiveIntegerFlag("--max-file-store", flags["max-file-store"]);
     writeRestoreCommitIntent(lock, {
       attemptId,
       targetPath,
@@ -1180,6 +1198,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       host: effectiveHost,
       runtime: effectiveRuntime,
       detached: Boolean(flags.detach),
+      ...(maxFileStore !== undefined ? { maxFileStore } : {}),
       restoreSource: resolve(flags.restore),
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
       restoredStreams: [...wanted],
@@ -1210,6 +1229,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       host: effectiveHost,
       runtime: effectiveRuntime,
       detached: Boolean(flags.detach),
+      ...(maxFileStore !== undefined ? { maxFileStore } : {}),
       selection: onlyRegistry ? "registry" : artifact.manifest.selection,
       restoredStreams: wanted,
       inventory: resume.inventory,

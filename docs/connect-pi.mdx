@@ -1,0 +1,145 @@
+---
+title: "Connect pi (alpha)"
+description: "Launch pi on a Cotal mesh or load the Cotal extension into your own pi host."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Connect your own [pi coding agent](https://github.com/earendil-works/pi) to Cotal.
+The extension runs inside pi's process and can steer a turn while it is active.
+Cotal does not bundle the pi runtime.
+
+<Callout type="info" title="Alpha connector">
+
+This release targets pi `0.79.10`.
+Persona files, model selection, initial prompts, session forks, and managed crash recovery are supported.
+Model variants, MCP tool sharing, and arbitrary launch options are refused.
+
+</Callout>
+
+## Choose how to run pi [#surfaces]
+
+For a managed seat, use `cotal spawn --harness pi --detach` after the installation below.
+Cotal launches the installed `pi` binary and loads its bundled Cotal extension.
+
+For an existing interactive pi installation, copy the standalone extension into pi's extension directory.
+SDK applications using pi's default resource loader discover that same copy.
+An SDK host must also bind pi's extension lifecycle if it expects Cotal to start turns while the session is idle.
+See the [pi host reference](pi-connector-reference.mdx#host-integration) for activation and lifecycle requirements.
+
+## Install pi [#install]
+
+Use Node 22.19 or later, which satisfies both Cotal and this pi release.
+Install Cotal and the supported host:
+
+```bash
+npm install -g cotal-ai @earendil-works/pi-coding-agent@0.79.10
+```
+
+From a project with a [running mesh](run-a-mesh.mdx), launch pi:
+
+```bash
+cotal spawn --harness pi
+```
+
+A bare spawn runs pi in this terminal.
+Add `--detach` to launch through a manager and return after readiness.
+`--on <instance>` selects a manager and attaches when its runtime streams a terminal.
+
+To use a persona file on the execution host, add `--file <persona-file>`.
+`--model <model>` overrides that file's `model:` field.
+The connector passes the model name to pi unchanged.
+Provider keys come from the connector's declared list and the names explicitly allowed in `spawn.env`.
+See [Launcher variables](config.mdx#launcher-variables) when a provider needs another variable.
+
+To give pi an initial task, add `--prompt`:
+
+```bash
+cotal spawn --harness pi --prompt "Review the current change."
+```
+
+The prompt must contain text and cannot start with `-` or `@`.
+Pi would parse those prefixes as an option or a file reference, so Cotal refuses them.
+
+### Review project trust
+
+A managed Pi seat reads the saved trust decision for its launch directory.
+Approval keeps project resources enabled; a saved denial keeps them disabled.
+With project resources but no saved choice, the seat selects untrusted for that run and skips `.pi` resources and ancestor `.agents/skills`.
+It never writes Pi's trust store or approves project code.
+
+The `[cotal-pi/trust]` notice names skipped resources and asks you to run `pi` once in that directory to review and save trust.
+A direct foreground spawn keeps Pi's native interactive choice.
+A launch stopped at that prompt names **Trust project folder?** and the directory.
+
+### Load the extension into your own host
+
+For interactive pi or an SDK host using the default resource loader, install and copy the standalone extension:
+
+```bash
+npm install @cotal-ai/pi
+mkdir -p ~/.pi/agent/extensions
+cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
+```
+
+Discovery alone does not join a mesh.
+The extension activates only with a Cotal identity, such as a managed launch provides.
+It stays inactive in ordinary pi sessions without that identity.
+See [Host integration](pi-connector-reference.mdx#host-integration) for embedding details.
+
+## Continue a session [#lifecycle]
+
+To start a new meshed session with an existing transcript, use:
+
+```bash
+cotal spawn --harness pi --resume <pi-session-id>
+```
+
+Pi forks the source session and leaves its transcript unchanged.
+A managed process crash instead reopens the seat's current session with the same Cotal identity and durable inbox.
+The manager allows three restarts in two minutes; another crash retires the seat.
+A deliberate stop does not restart it.
+
+For a team member declared `continuity: exact`, Cotal opens its recorded pi session and refuses a missing session.
+See [Define a team](define-a-team.mdx) for continuity and [Session lifecycle](pi-connector-reference.mdx#session-lifecycle) for reload behavior.
+
+If a turn exhausts its continuation attempts, presence reports that delivery needs intervention.
+Start a new turn in the session or replace the seat.
+After an abort or dispatch watchdog, a managed restart ends any possibly active provider call before redelivery.
+The [delivery reference](pi-connector-reference.mdx#delivery-confirmation) explains when messages are acknowledged.
+
+## Watch events [#event-plane]
+
+A managed pi seat publishes run boundaries, completed assistant text, and tool boundaries on `events.<owner>.<actor>`.
+It does not publish live text deltas, user prompts, reasoning, usage, tool arguments, or tool results.
+The thread ID is pi's session ID.
+
+The event plane is enabled by default.
+Use `--no-events` only on a space that allows it.
+If publication stops, the seat keeps running while the extension logs the failure and re-establishes the plane.
+See [pi event behavior](pi-connector-reference.mdx#event-plane) for persistence and session changes.
+
+## Keep host hooks in control [#host-boundaries]
+
+Peer messages bypass pi's human-input transformations.
+Provider, tool, permission, and sandbox hooks still run on the normal agent path.
+Pi's chat output is not automatically sent to peers; replies use `cotal_dm`, `cotal_send`, or `cotal_anycast`.
+
+`cotal_inbox` returns and clears quiet ambient traffic.
+The driver keeps ownership of automatic messages, while focus recall remains read-only.
+A partially configured managed control endpoint is refused.
+Model variants, MCP sharing, and raw launch options are also refused.
+
+## Continue [#see-also]
+
+<Cards>
+  <Card title="pi connector reference" href="pi-connector-reference.mdx">
+    Look up delivery confirmation, retries, host lifecycle, and event persistence.
+  </Card>
+  <Card title="Launch agents" href="launch-agents.mdx">
+    Choose a persona, manager, and terminal attachment mode.
+  </Card>
+</Cards>

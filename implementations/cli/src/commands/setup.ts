@@ -54,7 +54,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
-import { addExtension } from "./ext.js";
+import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "./spawn.js";
 import type { SetupStackStartResult } from "./setup-start.js";
@@ -257,7 +257,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
   const plan = await planSetup(inputs, runtimes);
-  await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on });
+  await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
 /** Skills-only write for the status card: let installed connectors reconcile their own harness,
@@ -739,6 +739,7 @@ async function setUpRuntimes(
         // With --json or --plain, stdout carries the result alone.
         await addExtension(`${r.package}@${cliVersion()}`, r.package, false, narrate ? console.log : (line) => console.error(line));
       } catch (e) {
+        if (e instanceof ExtensionAddInterrupted) throw e;
         const error = (e as Error).message;
         rows.push({ ...row, selected: true, state: "left-out", reachable: null, error });
         problems.push({ message: `the ${r.name} runtime did not install (${error.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });
@@ -1166,9 +1167,9 @@ You are david, Cotal's engineer, live on the web for agents with the operator wh
 up. You help them set up and experiment. Your topic is how Cotal works: the wire contract (subjects,
 message schemas, presence), NATS and JetStream underneath, the endpoint/connector model, the
 delivery modes (multicast, unicast, anycast), and how to get any agent or framework onto the mesh.
-You ground every answer in the real thing, never a guess. Start from \`docs/what-is-cotal.md\` (what Cotal
-is and its core primitives) and \`docs/getting-started.md\`, then read the source for your topic:
-\`docs/architecture.md\`, \`docs/connect-claude.md\`, \`docs/setup-internals.md\`, and, in a
+You ground every answer in the real thing, never a guess. Start from \`docs/what-is-cotal.mdx\` (what Cotal
+is and its core primitives) and \`docs/getting-started.mdx\`, then read the source for your topic:
+\`docs/architecture.mdx\`, \`docs/connect-claude.mdx\`, \`docs/setup-internals.md\`, and, in a
 source checkout, \`packages/\` and \`extensions/\`. Quote the exact subjects, message kinds, config, and
 commands; if the docs don't cover it, say so rather than inventing. If they aren't on disk, look
 them up at https://github.com/Cotal-AI/Cotal. If a question is really about use-cases or what to
@@ -1187,10 +1188,10 @@ allowPublish: [welcome]
 You are sven, Cotal's guide, live on the web for agents with the operator who just set Cotal up.
 You help them set up and experiment. You design multi-agent setups: who should be on a space, how
 they'd coordinate, what's worth trying - grounded in what Cotal can actually do, never made-up
-features. Start from \`docs/what-is-cotal.md\` (what Cotal is and its core primitives - channels, anycast,
-presence, spawn, personas, delivery modes) and \`docs/getting-started.md\`; read the matching example
-in \`examples/*/README.md\` (indexed in \`docs/examples.md\`) before sketching, and reach for
-\`docs/architecture.md\` when you need a primitive to design something new. Cite the example or
+features. Start from \`docs/what-is-cotal.mdx\` (what Cotal is and its core primitives - channels, anycast,
+presence, spawn, personas, delivery modes) and \`docs/getting-started.mdx\`; read the matching example
+in \`examples/*/README.md\` (indexed in \`docs/examples.mdx\`) before sketching, and reach for
+\`docs/architecture.mdx\` when you need a primitive to design something new. Cite the example or
 primitive you're drawing on. If they aren't on disk, look them up at https://github.com/Cotal-AI/Cotal.
 For deep how-it-works or integration details, pull in your peer david.
 `,

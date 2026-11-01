@@ -238,8 +238,6 @@ try {
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("awaited watch stop before endpoint stop unbinds the broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
-  await observer.stop();
-
   // Permanent endpoint shutdown has no future cleanup epoch. If the broker connection is already
   // terminal, an outstanding public stop must not hang the process waiting for an impossible rebuild.
   observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "endpoint" } });

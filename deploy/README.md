@@ -119,7 +119,7 @@ For opencode, the env var is **per provider**, not fixed: each agent's `model:` 
 `OPENCODE_API_KEY` (opencode's own hosted models, `opencode-go/…`), `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` and `NOUS_API_KEY` without any config. Any other
 provider variable reaches the agent only when the cotal config lists it under
-[`spawn.env`](../docs/config.md#environment-variables). A mixed team sets one var per provider it
+[`spawn.env`](../docs/config.mdx#environment-variables). A mixed team sets one var per provider it
 uses; each opencode process picks up only the keys its model needs.
 
 ### Using your Claude subscription
@@ -182,7 +182,7 @@ agents:
   - { name: builder, agent: opencode, role: builder }
 ```
 
-- [Roster files](../docs/define-a-team.md#roster-files) lists every key an entry takes.
+- [Roster files](https://docs.cotal.ai/docs/define-a-team/#roster-files) lists every key an entry takes.
 - **Persona and model** come from `.cotal/agents/<name>.md` (mounted read-only): the Markdown
   body is the system prompt, `model:` the model override, `subscribe:` the active read set,
   `allowSubscribe:` the read ACL, `allowPublish:` the post ACL (default-deny).

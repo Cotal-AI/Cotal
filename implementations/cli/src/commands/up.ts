@@ -59,6 +59,7 @@ import {
   validateChannelConfig,
   validateChannelDefaults,
   LEASE_TTL_MS,
+  EpEnvelopeError,
   mkSecretDir,
   openPrivateAppend,
   realDirNoSymlink,
@@ -286,6 +287,7 @@ import {
   preservedSourceState,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
+  journaledMaxFileStore,
   journaledRestoredStreams,
   leftOutNotes,
   replacePreparedDeadRestoreListener,
@@ -1777,7 +1779,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof; preserving recovery state`);
       const ownerStatus = localProcessOwnerStatus(restoredAttempt.listenerProof.processOwner);
       if (ownerStatus === "alive") {
-        await resumeProvenRestoreListener(restoredAttempt, startupLock);
+        await provePreparedRestoreListener(restoredAttempt);
+        await adoptProvenListener(restoredAttempt, restoredAttempt.targetPath, "proven restore listener", startupLock);
         return;
       }
       if (ownerStatus === "unknown")
@@ -1792,7 +1795,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (ordinaryAttempt?.adoptProof) {
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
-      await resumeProvenOrdinaryListener(ordinaryAttempt, startupLock);
+      await proveOrdinaryResumeListener(ordinaryAttempt);
+      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -2009,7 +2013,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             ),
           );
         for (const r of await reconcileSpaceTtls({ servers: server, space: held.space, creds: reconcileCreds }))
-          console.log(c.dim(`  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
+          console.log(c.dim(r.recreated
+            ? `  re-created ${r.stream}: it is memory-backed and was lost when the broker restarted`
+            : `  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
       } catch (e) {
         stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
@@ -2969,41 +2975,49 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
     throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
 }
 
-async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, heldLock?: MaintenanceLock): Promise<void> {
-  await proveOrdinaryResumeListener(pending);
-  await recreateAdoptedMemoryBuckets(pending.root, pending.space, pending.server, pending.mode);
-  const svc = await ensureRecoveredUserAuth(pending);
+/** Adopts a listener its resume or restore attempt has proved over the wire: records the mesh,
+ *  starts delivery and completes the attempt. `storeDir` is the store that listener runs on, and
+ *  `listener` names it in a degraded reason. */
+async function adoptProvenListener(
+  attempt: PendingOrdinaryResume | PreparedRestore,
+  storeDir: string,
+  listener: string,
+  heldLock?: MaintenanceLock,
+): Promise<void> {
+  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode);
+  const svc = await ensureRecoveredUserAuth(attempt);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
   // record built without this field would erase the operator's decision, and the adopted manager
   // below would then be launched loopback-only from an entry that no longer remembers otherwise.
-  const adoptAttachHost = attachHostFor(pending.space);
-  const adoptMaxSessions = maxSessionsFor(pending.space);
+  const attachHost = attachHostFor(attempt.space);
+  const maxSessions = maxSessionsFor(attempt.space);
+  // Adopted from the recorded policy: an adopted listener was started from it, never from a default.
+  const tlsRequired = adoptedTlsRequired(attempt.root);
   recordOurMesh({
-    space: pending.space,
-    server: pending.server,
-    root: pending.root,
-    mode: pending.mode,
-    // Adopted from the recorded policy: this path proves and re-adopts a listener it did not start.
-    tlsRequired: adoptedTlsRequired(pending.root),
+    space: attempt.space,
+    server: attempt.server,
+    root: attempt.root,
+    mode: attempt.mode,
+    tlsRequired,
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
-    ...(adoptMaxSessions !== undefined ? { maxSessions: adoptMaxSessions } : {}),
-    ...(pending.maxFileStore !== undefined ? { maxFileStore: pending.maxFileStore } : {}),
-    storeDir: resolve(pending.storeDir),
+    ...(attachHost ? { attachHost } : {}),
+    ...(maxSessions !== undefined ? { maxSessions } : {}),
+    ...(attempt.maxFileStore !== undefined ? { maxFileStore: attempt.maxFileStore } : {}),
+    storeDir: resolve(storeDir),
     ts: new Date().toISOString(),
   }, "started");
-  const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, adoptedTlsRequired(pending.root), {
-    runtime: pending.runtime,
-    attachHost: adoptAttachHost,
-    maxSessions: adoptMaxSessions,
-    resumeAttempt: pending.attemptId,
-    resumeCommit: commitTokenHandoff(pending.root, pending.managerCommit !== undefined, heldLock),
+  const controlPlane = await startDeliveryWithBroker(attempt.space, attempt.server, tlsRequired, {
+    runtime: attempt.runtime,
+    attachHost,
+    maxSessions,
+    resumeAttempt: attempt.attemptId,
+    resumeCommit: commitTokenHandoff(attempt.root, attempt.managerCommit !== undefined, heldLock),
   });
   await completeResumeActivation(
-    pending.attemptId,
+    attempt.attemptId,
     controlPlane !== undefined && svc.ok,
-    !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
-    pending.server,
+    !svc.ok ? `${listener} has no user-auth service` : `${listener} has a degraded control plane`,
+    attempt.server,
     heldLock,
   );
 }
@@ -3023,44 +3037,6 @@ async function ensureRecoveredUserAuth(
     dir: stateDir,
   });
   return startUserAuthService(prepared.space, prepared.server, { prepared: provider, stateDir });
-}
-
-async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): Promise<void> {
-  await provePreparedRestoreListener(prepared);
-  await recreateAdoptedMemoryBuckets(prepared.root, prepared.space, prepared.server, prepared.mode);
-  const svc = await ensureRecoveredUserAuth(prepared);
-  // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
-  // `recordOurMesh` rewrites the entry, or a restore silently demotes the mesh to loopback attach.
-  const restoreAttachHost = attachHostFor(prepared.space);
-  const restoreMaxSessions = maxSessionsFor(prepared.space);
-  recordOurMesh({
-    space: prepared.space,
-    server: prepared.server,
-    root: prepared.root,
-    mode: prepared.mode,
-    // Same as the ordinary-resume path: a restore adopts an existing listener, so the requirement
-    // comes from the policy that listener was started from, never from a default.
-    tlsRequired: adoptedTlsRequired(prepared.root),
-    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
-    ...(restoreMaxSessions !== undefined ? { maxSessions: restoreMaxSessions } : {}),
-    storeDir: resolve(prepared.targetPath),
-    ts: new Date().toISOString(),
-  }, "started");
-  const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, adoptedTlsRequired(prepared.root), {
-    runtime: prepared.runtime,
-    attachHost: restoreAttachHost,
-    maxSessions: restoreMaxSessions,
-    resumeAttempt: prepared.attemptId,
-    resumeCommit: commitTokenHandoff(prepared.root, prepared.managerCommit !== undefined, heldLock),
-  });
-  await completeResumeActivation(
-    prepared.attemptId,
-    controlPlane !== undefined && svc.ok,
-    !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
-    prepared.server,
-    heldLock,
-  );
 }
 
 async function completeResumeActivation(
@@ -3338,7 +3314,12 @@ async function startUserAuthService(
     if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`cotal login --idp ${info.idp.url}\``));
     return { userAuth: info, ok: true };
   } catch (e) {
-    stderrLine("✗ ", `user-auth service did not come up (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
+    // A typed refusal leads with its code and each detail's reason, e.g. a plane claim's
+    // `unknown` liveness against its `live-peer` contention, so no caller parses the copy.
+    const typed = e instanceof EpEnvelopeError
+      ? ` [${[e.code, ...(e.details ?? []).map((d) => typeof d.reason === "string" ? `${d.kind}: ${d.reason}` : d.kind)].join("; ")}]`
+      : "";
+    stderrLine("✗ ", `user-auth service did not come up${typed} (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
     return { userAuth: assertUserAuthInfo(setup.prepared.publicAuth), ok: false };
   }
 }
@@ -4582,15 +4563,6 @@ export function attachHostFor(space: string, explicit?: string): string | undefi
  */
 export function maxSessionsFor(space: string, explicit?: number): number | undefined {
   return explicit ?? findMesh(space)?.maxSessions;
-}
-
-/** The store cap a preserved launch recorded: absent, or a positive integer byte count. Anything
- *  else is a damaged journal, refused rather than rendered as the dynamic default. */
-function journaledMaxFileStore(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
-    throw new Error(`the preserved launch records an invalid maxFileStore (${JSON.stringify(value)}); refusing to guess the broker's store cap`);
-  return value;
 }
 
 /**
