@@ -399,6 +399,7 @@ when Jcode wraps it in `internal`. That diagnostic uses the requested model pin 
 code. Endpoint, authentication details and provider prose remain private.
 
 During that readiness turn, `provider_auth_refused` names an OpenAI-compatible HTTP 401 response.
+`provider_payment_required` names an HTTP 402 response, such as an exhausted provider balance.
 `provider_request_failed` means Jcode could not send the OpenAI-compatible request. It does not
 establish whether the cause was a stopped provider, routing, or another transport failure.
 These fixed codes reach the workflow step error and `cotal run show`. Provider URLs,
