@@ -34,7 +34,7 @@
     }
   },
   "scripts": {
-    "test": "tsx smoke/spawn-args.smoke.ts && tsx smoke/inline-delivery.smoke.ts && tsx smoke/persona-outcome.smoke.ts && tsx smoke/docs-index-lazy.smoke.ts && tsx smoke/docs-index-asset.smoke.ts",
+    "test": "tsx smoke/spawn-args.smoke.ts && tsx smoke/inline-delivery.smoke.ts && tsx smoke/persona-outcome.smoke.ts && tsx smoke/docs-index-lazy.smoke.ts && tsx smoke/docs-index-asset.smoke.ts && tsx smoke/lazy-http-transport.smoke.ts",
     "gen:docsbundle": "node ../../scripts/generate-docs-bundle.mjs",
     "typecheck": "pnpm run gen:docsbundle && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "pnpm run gen:docsbundle && tsc -p tsconfig.json && node -e \"require('node:fs').copyFileSync('src/docs-index.bin','dist/docs-index.bin')\" && node -e \"require('node:fs').copyFileSync('src/docs-bundle.bin','dist/docs-bundle.bin')\"",
