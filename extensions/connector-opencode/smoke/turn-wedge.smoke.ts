@@ -526,6 +526,8 @@ try {
   const prompts2: { body: { text?: string } }[] = [];
   let modelListing: Array<{ providerID: string; modelID: string }> = [];
   let modelReads = 0;
+  // Holds the `POST /api/session` answer, so a cell can feed events before the adapter knows its session.
+  let sessionGate: Promise<void> | undefined;
 
   const oc2 = createHttpServer((req, res) => {
     if (req.headers.authorization !== auth2) {
@@ -537,7 +539,9 @@ try {
     req.on("data", (d) => (raw += d));
     req.on("end", () => {
       if (req.method === "POST" && req.url === "/api/session") {
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } }));
+        void (sessionGate ?? Promise.resolve()).then(() =>
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } })),
+        );
         return;
       }
       if (req.method === "GET" && req.url === "/api/model") {
@@ -708,12 +712,24 @@ try {
       if (line.includes("[cotal-session]")) sessionLine = line;
       return originalStderrWrite2!.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
     }) as typeof process.stderr.write;
-    dispose2 = await bootPlugin2(ctx2);
+    // #3848: another session's execution starts before the adapter's own session id is known and
+    // ends after it is. Neither may touch this adapter's turn state, or `busy` wedges every later drive
+    // (the "one DM drives exactly one prompt POST" cell below goes red).
+    let releaseSession!: () => void;
+    sessionGate = new Promise<void>((r) => (releaseSession = r));
+    const booting = bootPlugin2(ctx2);
+    await sleep(500);
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: "ses_foreign", seq: 1 }, data: { sessionID: "ses_foreign" } });
+    await sleep(200);
+    releaseSession();
+    dispose2 = await booting;
 
     for (let i = 0; i < 50; i++) {
       if (sessionLine) break;
       await sleep(100);
     }
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: "ses_foreign", seq: 2 }, data: { sessionID: "ses_foreign" } });
+    await sleep(200);
     check("2.x: the session id is printed as [cotal-session]", sessionLine.includes(SID2), sessionLine);
 
     for (let i = 0; i < 50; i++) {
