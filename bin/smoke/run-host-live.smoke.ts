@@ -33,6 +33,7 @@ const {
   openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, runDriverCaller, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
+  instanceOnlyManagerCapabilities, runCallerCapabilities,
 } = await import("@cotal-ai/core");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -340,22 +341,47 @@ try {
         const placedOn = (mgrP as unknown as { managerInstanceId: string }).managerInstanceId;
         const placement = `{ placement: { endpoint: "manager", instanceId: "${placedOn}" } }`;
         const seatsP = (mgrP as unknown as { agents: Map<string, unknown> }).agents;
+        // Both managers now serve the class queue, and a run the placed manager took itself would make
+        // its spawn a hosted one. So these runs start on the run's host by instance, from a caller that
+        // holds what the main caller holds plus those commands on that one instance.
+        const hostOn = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+        const pinId = newIdentity(), pinUid = mintLifecycleUid();
+        const pinIssued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
+        const pinCaller: EpCallerT = { owner: DEV_OWNER, actor: pinId.id, uid: pinUid, generation: pinIssued.generation } as EpCallerT;
+        const pinCreds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
+          mintCreds(auth, pinId, "agent", { lifecycleUid: pinUid, capabilities: ["run", "role:worker"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: pinId.id })],
+            endpointCapabilities: instanceOnlyManagerCapabilities([{ endpoint: "manager", command: "describe" }, ...runCallerCapabilities(DEV_OWNER)], hostOn),
+            expiresInSeconds: 3600, issued: pinIssued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+        const pinNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: pinCreds, tls: false }), maxReconnectAttempts: 0 });
+        const hostService = await resolveService(pinNc, spaceA, "manager", pinCaller, { deadlineMs: 10_000, instanceId: hostOn });
+        const callHost = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
+          (await invokeCommand(pinNc, spaceA, hostService, command, args, {
+            deadlineMs: 30_000, currentEpoch: async () => 0,
+            ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+          })).reply;
+        const statusHost = async (runId: string): Promise<RunStatusViewT | undefined> => {
+          const r = await callHost("run-status", { runId });
+          return r.ok ? r.data as RunStatusViewT : undefined;
+        };
         // The run parks after the spawn, so the seat can be seen on the manager it was placed on.
-        const placedRun = await call("run-start", {
+        const placedRun = await callHost("run-start", {
           source: `const h = await spawn({ name: "pl-ok", prompt: "You answer.", capabilities: ["spawn"] }, ${placement});\nawait checkpoint("placed", "Placed?");\nlog("seat", h.agent);\n`,
           file: "placed-ok.cotal.js",
         });
         const placedId = (placedRun.data as { runId?: string } | undefined)?.runId ?? "";
-        const parkedPlaced = await until(async () => { const s = await status(placedId); return pending(s, "Placed?") ?? (stateOf(s) === "failed" ? s : undefined); }, 30_000);
+        const parkedPlaced = await until(async () => { const s = await statusHost(placedId); return pending(s, "Placed?") ?? (stateOf(s) === "failed" ? s : undefined); }, 30_000);
         c("a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host",
           seatsP.has("pl-ok") && !seats.has("pl-ok"), { placed: [...seatsP.keys()], host: [...seats.keys()], parked: parkedPlaced });
-        await call("run-answer", { runId: placedId, stepKey: "/checkpoint:placed#0", value: "yes" });
-        const placedDone = await until(async () => { const s = await status(placedId); return stateOf(s) === "completed" || stateOf(s) === "failed" ? s : undefined; }, 30_000);
+        await callHost("run-answer", { runId: placedId, stepKey: "/checkpoint:placed#0", value: "yes" });
+        const placedDone = await until(async () => { const s = await statusHost(placedId); return stateOf(s) === "completed" || stateOf(s) === "failed" ? s : undefined; }, 30_000);
         c("and the run completes", stateOf(placedDone) === "completed", placedDone?.status);
-        const placedWide = await settledRun(`await spawn({ name: "pl-wide", prompt: "You answer.", capabilities: ["admin"] }, ${placement});\n`, "placed-wide.cotal.js");
+        const wideRun = await callHost("run-start", { source: `await spawn({ name: "pl-wide", prompt: "You answer.", capabilities: ["admin"] }, ${placement});\n`, file: "placed-wide.cotal.js" });
+        const wideId = (wideRun.data as { runId?: string } | undefined)?.runId ?? "";
+        const placedWide = { runId: wideId, v: await until(async () => { const s = await statusHost(wideId); return stateOf(s) === "failed" || stateOf(s) === "completed" ? s : undefined; }, 30_000) };
         c("the placed manager refuses a grant the starter did not hold when the run was admitted, naming the run",
           stateOf(placedWide.v) === "failed" && placedWide.v?.status?.failure?.message.includes(`more than run ${placedWide.runId}'s starter held when the run was admitted`) === true
             && placedWide.v?.status?.failure?.message.includes("capabilities admin") === true, placedWide.v?.status);
+        await pinNc.drain().catch(() => pinNc.close());
         const placedRevoked = await mgrP.startAgent({ name: "pl-revoked", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: parkedId },
           principalKey(driver.owner, driver.actor).key, undefined, driver);
         c("the placed manager reads the run's revocation marker and refuses a revoked run's spawn, and no helper starts",
@@ -633,7 +659,7 @@ try {
     const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
     const parked = await until(async () => { const v = await statusB(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     c("a third checkpoint program parks under the successor", parked !== undefined && stateOf(parked) === "running", parked?.status);
-    await mgrB.stop();
+    await mgrB.stop({ withAgents: true });
     mgrB = undefined;
     // The host on its own, as the manager composes it, so the window between "serving" and
     // "reconciled" is held open by hand rather than raced. Its log is kept: a program's log lines go
@@ -715,7 +741,7 @@ try {
       const refused = (await invokeCommand(nc, spaceA, serviceU, "run-start", { source: PURE, file: "pure.cotal.js" }, { deadlineMs: 10_000, currentEpoch: async () => serviceU.responder.epoch })).reply;
       c("a user-auth mesh refuses run-start as unimplemented, naming the space: no host stands there, and no `--local` is offered", refused.ok === false && refused.error?.code === "unimplemented" && String(refused.error?.message).includes("user-auth space") && !String(refused.error?.message).includes("--local"), refused.error);
     } finally {
-      await mgrU.stop();
+      await mgrU.stop({ withAgents: true });
       removeMesh(spaceA);
     }
     delivery = await bootDeliveryDaemon({
@@ -794,7 +820,7 @@ try {
 
   await nc.drain().catch(() => undefined);
   nc = undefined;
-  await mgrB.stop();
+  await mgrB.stop({ withAgents: true });
   mgrB = undefined;
 } catch (e) {
   fail++;
@@ -881,7 +907,7 @@ try {
       && String(unknownPin.message).startsWith(`--on ${madeUp} names no manager running for space ${spaceB}; the one running is `) && !/ep\.v1|rail|SPEC/.test(String(unknownPin.message))
       && /^run it again with --on [a-z0-9]+, or without --on$/.test(String(unknownPin.remedy)), { unknownPin, pinMs });
   c("B6. and the manager it names is the running one: `run ps --on` that id reads", pinnedPs.includes("ok"), pinnedPs);
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   mgr = undefined;
 } catch (e) {
   fail++;

@@ -615,7 +615,8 @@ try {
     const path = d ? inlineSnapshotPath(root, d.lifecycleUid) : "";
     let inventory: ManagerResumeInventory | undefined;
     const cut = await A.mgr.preserveState({ attemptId: "inline-cut", persistInventory: async (inv) => { inventory = inv; } });
-    const stopped = await A.mgr.stop().then(() => "stopped", (e: unknown) => String(e));
+    // After a cut the manager keeps its seats whatever the stop asks, so the snapshot stays.
+    const stopped = await A.mgr.stop({ withAgents: true }).then(() => "stopped", (e: unknown) => String(e));
     check("control: the preservation cut and its stop complete", cut.ok && stopped === "stopped" && inventory !== undefined, { cut, stopped });
     check("a preservation cut and its stop keep the inline snapshot", existsSync(path));
     const B = managerAt(root, {});
