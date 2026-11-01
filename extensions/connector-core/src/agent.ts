@@ -1626,9 +1626,16 @@ export class MeshAgent extends EventEmitter {
     const drops = this.transportDrops;
     const outcome: AnycastTakeOutcome = await take();
     if (!this.gated.includes(p) || p.take !== take) return;
+    // An answer that crossed a link drop is the old link's, so the request stays held and a read
+    // waiting on this take shows nothing of it. Its host is told again, so the next read takes it on
+    // the new link.
+    if (this.transportDrops !== drops) {
+      this.emit("incoming", p.item);
+      return;
+    }
     if (outcome.taken) {
       this.heldTake = undefined;
-      const current = p.item.deliveryCount === count && this.transportDrops === drops && p.ownedUntil !== undefined && Date.now() < p.ownedUntil;
+      const current = p.item.deliveryCount === count && p.ownedUntil !== undefined && Date.now() < p.ownedUntil;
       if (!current) return; // a newer copy arrived meanwhile and needs its own take
       p.takenCount = count;
       p.takenOnce = true;

@@ -905,6 +905,9 @@ export class CotalEndpoint extends EventEmitter {
   private startPromise?: Promise<void>;
   /** Includes detached predecessors until their actual connection reports closed. */
   private readonly ownedConnections = new Set<NatsConnection>();
+  /** The takes waiting on each connection's answer, ended when that connection closes (see
+   *  {@link takeAnycast}). */
+  private readonly takesAwaitingAnswer = new WeakMap<NatsConnection, Set<() => void>>();
   /** In-flight rebuild (drain+rebind) — serializes manual reconnect, the supervisor's
    *  closed(), and reestablishLoop so only ONE rebuild runs at a time (a second trigger
    *  coalesces onto the shared promise, never starts a parallel connectAndBind). */
@@ -6827,18 +6830,33 @@ export class CotalEndpoint extends EventEmitter {
   private async takeAnycast(role: string, seq: number, id: string, count: number, epoch: string): Promise<AnycastTakeOutcome> {
     const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
       ({ taken: false, drop: false, reason, detail });
-    if (!this.nc) return held("daemon-down", this.notLiveMsg());
+    const nc = this.nc;
+    if (!nc) return held("daemon-down", this.notLiveMsg());
     const subject = takeSubject(this.space, role, this.owner, this.actor);
     const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count, epoch };
+    // nats.js settles a no-mux request only from its reply subscription, and a connection that
+    // closes first closes that subscription without settling it, so the wait ends with the connection.
+    let awaiting = this.takesAwaitingAnswer.get(nc);
+    if (!awaiting) {
+      const takes = new Set<() => void>();
+      void nc.closed().then(() => { for (const end of takes) end(); });
+      this.takesAwaitingAnswer.set(nc, (awaiting = takes));
+    }
+    let end!: () => void;
+    const closed = new Promise<undefined>((resolve) => { end = () => resolve(undefined); });
+    awaiting.add(end);
     let reply: AnycastTakeReply;
     try {
-      const m = await this.nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
+      const m = await Promise.race([nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` }), closed]);
+      if (!m) return held("daemon-down", "the connection closed before the delivery daemon answered the take");
       reply = m.json<AnycastTakeReply>();
     } catch (e) {
       if (isPermissionDenied(e))
         return held("credential-outdated", "this seat's credential was minted before anycast takes existed, so it cannot take role requests; respawn the seat to get a current credential");
       if (this.isNoResponders(e)) return this.takeResponderMissing();
       return held("daemon-down", `the delivery daemon did not answer the take: ${(e as Error).message}`);
+    } finally {
+      awaiting.delete(end);
     }
     if (reply.ok) return { taken: true };
     // A mismatch can mean the stream was recreated under this consumer, which resumes on the new

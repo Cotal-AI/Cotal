@@ -3,7 +3,8 @@
  * delivery daemon, a MeshAgent holding a role shows a role request only once its take is recorded,
  * drops one its sender cancelled first without ever showing it, holds one nobody can record, and a
  * sending MeshAgent shows the daemon's notice as a notice. A read takes only the requests it shows,
- * a request taken and not yet shown is taken again after a reconnect, and an exact drain acks no
+ * a request taken and not yet shown is taken again after a reconnect, a take still waiting when the
+ * link drops ends with that link and its request is announced again, and an exact drain acks no
  * request that was never shown. A request's arrival is announced once: a read that waits on its take
  * announces nothing more, so a gateway reader is woken once per request and again by the next DM,
  * and only a take that lands after its read stopped waiting is announced again. `cotal_anycast` is driven through its spec for the send, status and
@@ -34,6 +35,8 @@ import {
   provisionAgent,
   serverConfig,
   setupSpaceStreams,
+  TAKE_ROUTE,
+  takeServeFilter,
   taskStream,
 } from "@cotal-ai/core";
 import { MeshAgent, type InboxItem } from "../src/agent.js";
@@ -357,9 +360,50 @@ try {
   );
   await gwRead();
 
-  // ── 11. one seq naming two of this session's requests ─────────────────────────────────────
+  // ── 11. a take still waiting when the link drops ──────────────────────────────────────────
+  // A responder that never answers stands in for the daemon, so the take is still waiting when the
+  // link drops. nats.js does not settle a request whose connection closes before its answer.
+  console.log("[11] a take still waiting when the link drops ends with that link, and the request is taken again");
+  const dropper = await mkAgent("drop_holder", "droprole");
+  await until(() => sender.agent.ep.getRoster().some((p) => p.card.id === dropper.id), 8000);
+  const sent11 = await sender.agent.ep.anycastAttributed("droprole", "asked as the link drops");
+  const key11 = await until(() => dropper.agent.inboxKeys().find((k) => k === sent11.msg.id));
+  // Nothing here renews the daemon's lease, so the bucket TTL may have expired it already.
+  await daemon.releaseDeliveryLease(0, lease).catch(async (e) => { if (await daemon.readDeliveryLease(0)) throw e; });
+  await daemon.stop();
+  const silentNc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "delivery"))), maxReconnectAttempts: 0 });
+  stops.push(() => silentNc.close());
+  silentNc.subscribe(takeServeFilter(space), { queue: TAKE_ROUTE, callback: () => {} });
+  await silentNc.flush();
+  const waitMs11 = 8000;
+  const started11 = Date.now();
+  const read11 = dropper.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key11), waitMs11);
+  await sleep(200);
+  await dropper.agent.reconnect();
+  const shown11 = await read11;
+  const ended11 = Date.now() - started11;
+  check(
+    "11a a read waiting on that take ends with the old link, well before its wait runs out, and shows nothing",
+    shown11.length === 0 && ended11 < waitMs11 / 2,
+    { shown: shown11.length, ended11 },
+  );
+  await until(() => dropper.agent.connected || undefined, 10_000);
+  const announced11 = dropper.incoming.filter((i) => i.recvKey === key11).length;
+  check("11b the request is announced again, so its host reads it once more", announced11 === 2, { announced11 });
+  check("11c no held reason is reported for it", dropper.agent.heldTakes().detail === undefined, dropper.agent.heldTakes());
+  await silentNc.close();
+  daemon = await startDaemon();
+  const read11d = await dropper.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key11));
+  const status11 = await sender.agent.ep.anycastStatus(sent11.ack.seq);
+  check(
+    "11d the next read takes it on the new link and shows it",
+    read11d.some((i) => i.recvKey === key11) && status11.state === "taken" && status11.taker.id === dropper.id,
+    { shown: read11d.length, status11 },
+  );
+
+  // ── 12. one seq naming two of this session's requests ─────────────────────────────────────
   // Last, because it deletes and recreates the TASK stream.
-  console.log("[11] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
+  console.log("[12] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
   const sent6 = await run({ role: "reviewer", text: "before the queue is recreated" });
   const seq6 = Number(/seq (\d+)/.exec(sent6.text)?.[1]);
   const teardownIdent = newIdentity();
@@ -373,15 +417,15 @@ try {
     const again = await run({ role: "reviewer", text: `after the recreation ${i}` });
     reused = Number(/seq (\d+)/.exec(again.text)?.[1]) === seq6;
   }
-  check("11a the recreated queue reused the seq", reused, { seq6 });
+  check("12a the recreated queue reused the seq", reused, { seq6 });
   const ambiguous = await run({ seq: seq6 });
   check(
-    "11b a status by that seq is refused as ambiguous",
+    "12b a status by that seq is refused as ambiguous",
     ambiguous.isError === true && ambiguous.text.includes(`seq ${seq6} names 2 requests this session sent`) && ambiguous.text.includes("ambiguous"),
     ambiguous.text,
   );
   const ambiguousCancel = await run({ seq: seq6, cancel: true });
-  check("11c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
+  check("12c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {

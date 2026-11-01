@@ -787,7 +787,8 @@ stays with that holder. It restarts the copy's ack wait (`+WPI`) before it asks,
 returns it shows the request only if it still holds that copy, with the same delivery count, an ack
 wait that has not run out, and no reconnect since it asked. Otherwise it takes the newer copy. A
 request taken and not yet shown when the holder's connection drops is taken again before it is
-shown.
+shown, and so is one whose take is still waiting for its answer then: that take ends with the
+connection.
 
 **Record.** The daemon keeps one row per request in `cotal_anycast_<space>` (history 1, no TTL)
 under the key `r.<epoch>.<seq>`, where `<epoch>` is the `TASK_<space>` stream's creation time

@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=55",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=59",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -112,6 +112,22 @@
       "expectRed": "10d the pending list a notice counts names a held request that a read cannot see yet",
       "cell": "10d the pending list a notice counts names a held request that a read cannot see yet",
       "note": "The pending list leaves out held role requests, so a notice that counts it reads none of them."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.transportDrops !== drops) {\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "replace": "",
+      "expectRed": "11c no held reason is reported for it",
+      "cell": "11c no held reason is reported for it",
+      "note": "An answer that crossed a link drop is treated as the new link's. The take that ended with the old connection reads as a daemon that did not answer, so the request is held with that reason and no read may ask again until the retry delay."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.transportDrops !== drops) {\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "replace": "    if (this.transportDrops !== drops) {\n      return;\n    }\n",
+      "expectRed": "11b the request is announced again, so its host reads it once more",
+      "cell": "11b the request is announced again, so its host reads it once more",
+      "note": "The answer is dropped but the host is not told, so a host that read once and got nothing waits for an announcement that never comes."
     }
   ]
 }
