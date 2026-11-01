@@ -216,5 +216,26 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   await view.stop();
 }
 
+console.log("6. A broker restart's presence error clears when the presence view is current again (AGENT-2889)");
+{
+  // The endpoint's real order across a broker restart, measured: the transport reconnects with no
+  // new `connection`, the view goes stale, `stream not found` arrives, and the view is current once
+  // the space is provisioned again.
+  const stub = new StubEndpoint();
+  const { view } = await viewOver(stub);
+  stub.emit("connection", { connected: true });
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("error", new Error("stream not found"));
+  check("the outage error is shown while the presence view is stale", view.snapshot().status.error === "stream not found", view.snapshot().status);
+  stub.emit("presence-view", { state: "current" });
+  check("the outage error clears once the presence view is current again", view.snapshot().status.error === undefined, view.snapshot().status);
+  // Control: an error raised while the view is current is not an outage's, so recovery never clears it.
+  stub.emit("error", new Error("permission denied"));
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("presence-view", { state: "current" });
+  check("an error raised while the view was current stays until a new connection", view.snapshot().status.error === "permission denied", view.snapshot().status);
+  await view.stop();
+}
+
 console.log(`\n${failures === 0 ? "TOPO-MEMBERSHIP SMOKE OK ✅" : "TOPO-MEMBERSHIP SMOKE FAILED ❌"} (${failures} failed)`);
 process.exit(failures === 0 ? 0 : 1);
