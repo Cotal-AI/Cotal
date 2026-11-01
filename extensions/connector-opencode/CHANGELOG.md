@@ -1,5 +1,11 @@
 # @cotal-ai/connector-opencode
 
+## 0.133.10
+
+### Patch Changes
+
+- 13e667e: An OpenCode 2.x setup that the host refuses no longer leaves its mesh agent joined: the agent start is queued only after the host's hook and tool registrations succeed.
+
 ## 0.133.9
 
 ### Patch Changes
