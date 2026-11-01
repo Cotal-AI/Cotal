@@ -1,10 +1,10 @@
 {
   "expected": {
     "total": 758,
-    "honest-text": 38,
+    "honest-text": 41,
     "presence-only-glyph/count": 57,
     "command-ack": 11,
-    "non-render/control": 652
+    "non-render/control": 649
   },
   "renderers": [
     {
@@ -3066,15 +3066,23 @@
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
       "anchor": "`Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, \"now\")}). ` +\n      `It may sit in a busy holder's buffer until that holder is free or its ack wait runs out. Cancel it with seq ${seq} and cancel: true.`",
-      "class": "non-render/control",
-      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+      "class": "honest-text",
+      "rationale": "Textual presence: a waiting request's status names the role's holders online when it was read, from a fresh roster read, says none is, or says the presence view was not current; it makes no availability or work progress claim. The cited assertion checks that output.",
+      "proof": {
+        "path": "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts",
+        "anchor": "check(\"9a a waiting request's status names the role's holder online now, by name and id\""
+      }
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
       "anchor": "`Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, \"now\")}). `",
-      "class": "non-render/control",
-      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+      "class": "honest-text",
+      "rationale": "Textual presence: a waiting request's status names the role's holders online when it was read, from a fresh roster read, says none is, or says the presence view was not current; it makes no availability or work progress claim. The cited assertion checks that output.",
+      "proof": {
+        "path": "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts",
+        "anchor": "check(\"9b with no holder online it says none is\""
+      }
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
@@ -3164,8 +3172,12 @@
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
       "anchor": "renderAnycastStatus(status, holders)",
-      "class": "non-render/control",
-      "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
+      "class": "honest-text",
+      "rationale": "Textual presence: a waiting request's status names the role's holders online when it was read, from a fresh roster read, says none is, or says the presence view was not current; it makes no availability or work progress claim. The cited assertion checks that output.",
+      "proof": {
+        "path": "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts",
+        "anchor": "check(\"9c a failed roster read reads unknown, not empty\""
+      }
     },
     {
       "path": "implementations/cli/src/chat/chat-view.tsx",

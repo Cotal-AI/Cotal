@@ -275,9 +275,28 @@ try {
   check("8d it is still held, and a read shows it once taken", shown8.some((i) => i.recvKey === key8));
   holder.agent.drainInboxDeliveries([key8!]);
 
-  // ── 9. one seq naming two of this session's requests ──────────────────────────────────────
+  // ── 9. a waiting request's status reads who holds the role now ────────────────────────────
+  console.log("[9] a waiting request's status names the role's holders online now, or says the read failed");
+  const sent9 = await run({ role: "reviewer", text: "still waiting" });
+  const seq9 = Number(/seq (\d+)/.exec(sent9.text)?.[1]);
+  const waiting9 = await run({ seq: seq9 });
+  check("9a a waiting request's status names the role's holder online now, by name and id", waiting9.text.startsWith(`Request seq ${seq9} on @reviewer is waiting on the queue, and no holder has taken it (holder online now: reviewer_x (${holder.id})).`), waiting9.text);
+  const sentNobody = await run({ role: "nobody", text: "no one holds this role" });
+  const seqNobody = Number(/seq (\d+)/.exec(sentNobody.text)?.[1]);
+  const waitingNobody = await run({ seq: seqNobody });
+  check("9b with no holder online it says none is", waitingNobody.text.startsWith(`Request seq ${seqNobody} on @nobody is waiting on the queue, and no holder has taken it (0 holders online now).`), waitingNobody.text);
+  // A roster read that fails gives no holders at all, which is not the same as none online.
+  const roleHolders = sender.agent.roleHolders.bind(sender.agent);
+  sender.agent.roleHolders = async () => undefined;
+  let waitingUnknown: Awaited<ReturnType<typeof run>>;
+  try { waitingUnknown = await run({ seq: seq9 }); } finally { sender.agent.roleHolders = roleHolders; }
+  check("9c a failed roster read reads unknown, not empty", waitingUnknown.text.includes("(holders unknown now: the presence view was not current)"), waitingUnknown.text);
+  await run({ seq: seq9, cancel: true });
+  await run({ seq: seqNobody, cancel: true });
+
+  // ── 10. one seq naming two of this session's requests ─────────────────────────────────────
   // Last, because it deletes and recreates the TASK stream.
-  console.log("[9] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
+  console.log("[10] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
   const sent6 = await run({ role: "reviewer", text: "before the queue is recreated" });
   const seq6 = Number(/seq (\d+)/.exec(sent6.text)?.[1]);
   const teardownIdent = newIdentity();
@@ -291,15 +310,15 @@ try {
     const again = await run({ role: "reviewer", text: `after the recreation ${i}` });
     reused = Number(/seq (\d+)/.exec(again.text)?.[1]) === seq6;
   }
-  check("9a the recreated queue reused the seq", reused, { seq6 });
+  check("10a the recreated queue reused the seq", reused, { seq6 });
   const ambiguous = await run({ seq: seq6 });
   check(
-    "9b a status by that seq is refused as ambiguous",
+    "10b a status by that seq is refused as ambiguous",
     ambiguous.isError === true && ambiguous.text.includes(`seq ${seq6} names 2 requests this session sent`) && ambiguous.text.includes("ambiguous"),
     ambiguous.text,
   );
   const ambiguousCancel = await run({ seq: seq6, cancel: true });
-  check("9c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
+  check("10c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {

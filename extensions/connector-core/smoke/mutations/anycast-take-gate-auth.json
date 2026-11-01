@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=47",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=50",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -72,6 +72,22 @@
       "expectRed": "8a the drain returns nothing for it",
       "cell": "8a the drain returns nothing for it",
       "note": "An exact drain hands back and acks a held request that was never taken or shown, so its sender loses the cancel and its status never reads taken."
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "            const holders = status.state === \"waiting\" ? await agent.roleHolders(status.role) : undefined;",
+      "replace": "            const holders = undefined;",
+      "expectRed": "9a a waiting request's status names the role's holder online now, by name and id",
+      "cell": "9a a waiting request's status names the role's holder online now, by name and id",
+      "note": "A waiting request's status stops reading the roster, so it can no longer say who holds the role now."
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (holders === undefined) return `holders unknown ${when}: the presence view was not current`;",
+      "replace": "  if (holders === undefined) holders = [];",
+      "expectRed": "9c a failed roster read reads unknown, not empty",
+      "cell": "9c a failed roster read reads unknown, not empty",
+      "note": "A roster read that failed renders as no holder online, a claim the read never made."
     }
   ]
 }
