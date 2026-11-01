@@ -158,6 +158,8 @@ See [instance routing](control-surface.mdx#instance-routing) and [lease recovery
 
 Runtimes supply process and terminal control. PTY is built in. tmux, cmux, Orca, and Herdr require
 explicit extensions. Spawned children receive a declared environment and private connection material.
+A tmux seat handle follows its pane after a move and binds stop, interrupt, status and exit waits
+to the server that opened it. A restarted server's reused pane IDs cannot target another seat.
 Terminal attachment uses a scoped mesh session and can reach a manager on another machine.
 
 The declared environment forwards `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not add TLS verification overrides or key-log settings.

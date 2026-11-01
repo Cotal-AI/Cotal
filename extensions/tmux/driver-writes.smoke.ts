@@ -87,6 +87,67 @@ try {
   await handle.waitForExit!();
   check("runtime hard stop closes its window", !tmux.windowAliveRef(window));
 
+  for (const action of ["hard", "graceful", "interrupt"] as const) {
+    const seat = runtime.spawn(`moved-${action}`, { command: "/bin/cat", args: [] }, root);
+    const other = runtime.spawn(`other-${action}`, { command: "/bin/cat", args: [] }, root);
+    const seatPane = seat.reference!.id.split(".")[2]!;
+    const otherPane = other.reference!.id.split(".")[2]!;
+    native(["swap-pane", "-d", "-s", seatPane, "-t", otherPane]);
+    if (action === "hard") seat.stop({ graceful: false });
+    else if (action === "graceful") seat.stop();
+    else seat.interrupt();
+    await seat.waitForExit!();
+    if (action === "graceful") await new Promise((r) => setTimeout(r, 1_600));
+    check(`${action} stop follows a moved pane`, seat.status() === "exited");
+    check(`${action} stop leaves the other pane alive and untouched`,
+      other.status() === "running" && !native(["capture-pane", "-p", "-t", otherPane]).includes("/exit"));
+    other.stop({ graceful: false });
+    await other.waitForExit!();
+  }
+
+  const joined = runtime.spawn("joined", { command: "/bin/cat", args: [] }, root);
+  const joinedOther = runtime.spawn("joined-other", { command: "/bin/cat", args: [] }, root);
+  native(["join-pane", "-d", "-s", joined.reference!.id.split(".")[2]!, "-t", joinedOther.reference!.id.split(".")[1]!]);
+  joined.stop({ graceful: false });
+  await joined.waitForExit!();
+  check("hard stop follows a joined pane after its original window disappears", joined.status() === "exited" && joinedOther.status() === "running");
+  joinedOther.stop({ graceful: false });
+  await joinedOther.waitForExit!();
+
+  async function freshServer(): Promise<void> {
+    const prior = server!;
+    if (native(["-S", socket!, "display-message", "-p", "#{pid}"]) !== prior) throw new Error("private server changed; refusing restart");
+    native(["-S", socket!, "kill-server"]);
+    if (!await waitFor(() => {
+      try { process.kill(Number(prior), 0); return false; }
+      catch (err) { return (err as NodeJS.ErrnoException).code === "ESRCH"; }
+    })) throw new Error("the prior private server did not exit");
+    native(["-f", "/dev/null", "new-session", "-d", "-s", session, "-c", root, "/bin/sleep 120"]);
+    [socket, server] = native(["display-message", "-p", "#{socket_path}\t#{pid}"]).split("\t");
+    if (!socket!.startsWith(`${root}/`)) throw new Error("replacement socket escaped the fixture");
+  }
+
+  for (const action of ["hard", "graceful", "interrupt"] as const) {
+    await freshServer();
+    const old = runtime.spawn(`old-${action}`, { command: "/bin/cat", args: [] }, root);
+    const oldRefs = old.reference!.id.split(".");
+    await freshServer();
+    const replacement = runtime.spawn(`replacement-${action}`, { command: "/bin/cat", args: [] }, root);
+    const refs = replacement.reference!.id.split(".");
+    check(`${action} fixture reuses ids on another native server`, refs[0] !== oldRefs[0] && refs[1] === oldRefs[1] && refs[2] === oldRefs[2]);
+    check(`${action} stale status reports the original seat exited`, old.status() === "exited");
+    await old.waitForExit!();
+    check(`${action} stale wait resolves without waiting for the replacement`, replacement.status() === "running");
+    if (action === "hard") old.stop({ graceful: false });
+    else if (action === "graceful") old.stop();
+    else old.interrupt();
+    if (action === "graceful") await new Promise((r) => setTimeout(r, 1_700));
+    check(`${action} stale handle leaves the replacement alive and untouched`,
+      replacement.status() === "running" && !native(["capture-pane", "-p", "-t", refs[2]!]).includes("/exit"));
+    replacement.stop({ graceful: false });
+    await replacement.waitForExit!();
+  }
+
   const unsafe = join(root, "unsafe");
   const socketDir = join(unsafe, `tmux-${process.getuid!()}`);
   mkdirSync(socketDir, { recursive: true, mode: 0o700 });
