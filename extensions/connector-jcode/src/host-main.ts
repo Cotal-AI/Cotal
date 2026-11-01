@@ -1,6 +1,7 @@
 import { EnvFlagError } from "@cotal-ai/connector-core";
 import { runJcodeHost } from "./host.js";
 import {
+  JcodeCursorStateUnreadable,
   JcodeEffortRefusal,
   JcodeEffortUnsupported,
   JcodeReadinessProviderRefusal,
@@ -25,6 +26,7 @@ const STARTUP_FAILURE_CODES = new Set([
   "readiness_timeout",
   "sessions_enumeration_failed",
   "sessions_unwritable",
+  "cursor_state_unreadable",
   "provider_auth_refused",
   "provider_payment_required",
   "provider_forbidden",
@@ -77,6 +79,10 @@ runJcodeHost().catch((error) => {
     writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode host startup failed (sessions_unwritable): the harness cannot persist sessions at ${error.sessionsPath} (${error.errnoCode}); fix the directory's permissions on the seat's private state\n`,
     );
+  } else if (error instanceof JcodeCursorStateUnreadable) {
+    // Connector-owned text: a path relative to the operator's home, a reason word and a SQLite
+    // result code. Never SQLite's own message.
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${error.code}): ${error.message}\n`);
   } else if (error instanceof EnvFlagError) {
     // The message is only the flag's name and the operator's own value, never child output.
     writeJcodeDiagnostic(`[cotal-jcode] fatal: ${error.message}\n`);

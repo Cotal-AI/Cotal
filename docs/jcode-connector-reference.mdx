@@ -45,8 +45,8 @@ recorded host is the gate: while it is still alive the seat is still serving, so
 signalled and the second launch meets Jcode's own runtime-directory lock instead.
 
 The private Jcode home lives under `<manager-workspace>/.cotal/jcode/`. It is unique per
-space/name and is owner-only. Jcode's own credential inheritance is used for the private instance,
-so provider logins work without copying its transcript/config tree into the seat. The spawned
+space/name and is owner-only. The connector mirrors the operator's provider logins into it (below),
+so provider logins work without copying Jcode's transcript/config tree into the seat. The spawned
 Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
 
 Because the home is keyed by space and name, a seat respawned under the same space, name, and
@@ -105,11 +105,35 @@ earlier, and a mismatch is refused by name. The working directory is restored on
 including the refusing ones. If neither pin is available, the connector throws a named error and
 mirrors nothing. Once a pin holds, `ENOENT` on a child means the mirror path is absent.
 
-Cursor SQLite mirrors contain only the access token, refresh token and service machine ID read by
-Jcode. The source is opened read-only, including committed WAL updates. Other editor state is omitted.
-The compact database uses the same private path and atomic publication as the other login files.
-Existing full copies are replaced on the next launch of that seat; this does not clean up retired
-seat homes. Provider selection and external-auth consent remain Jcode's responsibility.
+Cursor keeps its login inside `User/globalStorage/state.vscdb`, its editor-state database, which can
+hold hundreds of megabytes of chat history. A seat never gets a copy of that file. Each launch opens
+the operator's file read-only and writes a fresh database at the same mirrored path holding only the
+`ItemTable` rows Jcode 0.99.0 reads: `cursorAuth/accessToken`, `cursorAuth/refreshToken`,
+`storage.serviceMachineId` and `cursorAuth/cachedEmail`. The result is a few kilobytes. If a later
+Jcode reads another key, seats get it only after the connector adds it.
+
+Jcode reads the machine id and the email without its external-auth trust check, so every seat sends
+the operator's Cursor machine id with Cursor requests and can show the operator's Cursor email. It
+uses the two tokens only when the file's own path is trusted for `cursor_vscdb`, and nothing trusts a
+seat's mirrored path unless someone adds it.
+
+The read is one read-only SQLite transaction in whatever journal mode Cursor uses, and it waits at
+most 2 seconds for a lock Cursor holds. The source path follows the rule every mirrored file follows:
+a link to a regular file is read at its target, and a directory counts as missing. A blank value
+counts as missing. A database with none of the keys removes the seat's copy, as a missing file does.
+A database the connector cannot read stops the launch with `cursor_state_unreadable` and leaves the
+seat's files as they were: a file that is not SQLite, a damaged database, a write Cursor did not
+finish (a hot journal), a lock held past the wait, no `ItemTable`, or a value under one of the keys
+that is not text or is larger than 16 KB.
+
+When Cursor has closed a WAL-mode database, its `-wal` and `-shm` files are gone. The read-only open
+creates them again beside the database, as any SQLite reader does, and they stay after the read. They
+are SQLite's own coordination files, and the next time Cursor closes the database it removes them.
+The connector does not delete them, because Cursor could open the database between the read and the
+delete.
+
+A seat home made by a release that copied the whole file keeps that copy until its next successful
+launch replaces it. A retired seat home that never launches again keeps its copy.
 
 There is no credential-free opt-out today because the private instance must reproduce the operator's
 current provider-login state rather than silently start with stale or partial authorization.
@@ -229,6 +253,8 @@ Model startup refusals are named without exposing provider output: `model_prefix
 Jcode rejected that bare id, and `model_mismatch` means a requested variant could not be tied to one
 active provider route for the selected model. `private_state` names a different step: the seat's
 private home, its credential mirror, or its short socket alias could not be prepared.
+`cursor_state_unreadable` means the operator's Cursor state database could not be read; the line names
+the file relative to the home, a reason word and, when SQLite gave one, its result code.
 
 Stored sessions have their own refusals. `sessions_enumeration_failed` means listing the home's
 prior sessions killed the harness. `sessions_unwritable` means the home's `sessions/` directory
