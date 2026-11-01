@@ -18,7 +18,7 @@ import { NeedsYou } from "../dist/console/ui/NeedsYou.js";
 import { SpacePicker } from "../dist/console/ui/SpacePicker.js";
 import { Sequence } from "../dist/console/ui/topo/Sequence.js";
 import { foldTopo } from "../dist/console/ui/topo/model.js";
-import type { FeedEntry, MeshSnapshot } from "../src/view/mesh-view.js";
+import type { FeedEntry, MeshSnapshot } from "@cotal-ai/workspace/view";
 
 const counted = countedAssert(assertBase);
 const assert: typeof assertBase = counted.assert as typeof assertBase;

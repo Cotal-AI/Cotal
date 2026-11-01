@@ -56,7 +56,7 @@ import { seedDefaultPersona } from "../lib/default-persona.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
-import type { ManagedLaunchResult } from "./spawn.js";
+import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";

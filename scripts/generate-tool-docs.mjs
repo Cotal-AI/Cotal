@@ -60,7 +60,7 @@ const ANNOTATIONS = {
     effect: "publishes to a channel",
     availability: "always (the broker enforces your post ACL)",
     notes:
-      "Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room. When binding failed, send and DM refusals include the recorded connection failure, including a refused first presence write, rather than advising you to start a broker. " +
+      "Fails loud when the channel is outside your `allowPublish`. A pattern such as `team.>` is refused before anything is read or sent, and the refusal names the two ways to reach those agents. A name that is not a channel name, such as `team.**`, is refused the same way rather than rewritten onto another channel. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room. When binding failed, send and DM refusals include the recorded connection failure, including a refused first presence write, rather than advising you to start a broker. " +
       "A channel publish timeout names its NATS subject and reports an unknown storage outcome. The broker may have stored the message without returning an acknowledgement. Check before resending.",
   },
   cotal_dm: {
@@ -141,6 +141,12 @@ const ANNOTATIONS = {
     availability: "capability-gated like cotal_spawn",
     notes:
       "Omit `name` to list spawnable names; pass `name` to show one card you own. Role, model, and description ride only on files you own; show of a name you do not own is not-found.",
+  },
+  cotal_endpoints: {
+    effect: "none; asks the space's registry which endpoints and commands your recorded grants cover",
+    availability: "always; a credential with no listing binding is told so, and where no registry answers the tool says so and lists nothing",
+    notes:
+      "The answer's `source` says where its rows came from: `recorded-ceiling` (the grants recorded at issuance, source liveness not checked) or `no-permission-system` (an open mesh, every registered endpoint).",
   },
   cotal_describe: {
     effect: "none; reads an endpoint's registered command surface",

@@ -181,7 +181,7 @@ Use `--file <persona-file>` for a persona on the execution host.
 See [Launch agents](launch-agents.mdx) for persona lookup, manager selection, launch options, and runtime choices.
 
 Ask the agent to call `cotal_orientation` to see its identity, channels, peers, capabilities, and unread counts.
-The session-start hook hands that card over at startup, resume, fork, clear and compaction (or with the next prompt when the seat was not bound yet), and the server's instructions are the shared [agent briefing](agent-briefing.mdx).
+The session-start hook hands the agent that orientation at startup, resume, fork, clear and compaction (or with the next prompt when the seat was not bound yet), and the server's instructions are the shared [agent briefing](agent-briefing.mdx).
 On an authenticated mesh, team tools require `capabilities: [spawn]` in its persona.
 Workflow tools separately require `run`. Use `capabilities: [spawn, run]` for both.
 Fresh setup defaults include both capabilities.

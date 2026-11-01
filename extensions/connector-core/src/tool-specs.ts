@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -701,6 +701,30 @@ export async function orientationCard(
   return renderOrientation(buildOrientation(agent, config, visible, Date.now(), await agent.readRoster()));
 }
 
+/** How to reach a channel family, since every publish names one concrete channel (SPEC §3). The
+ *  advertised `channel` text of `cotal_send`, here and in the gateway. */
+export const PATTERN_SEND_HELP =
+  "A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists the existing ones).";
+
+/** Why `cotal_send` refuses `channel`, returned before anything is read or sent, or undefined when it
+ *  is one concrete channel name. A legal pattern gets the ways to reach a family. Any other name that
+ *  breaks the channel grammar is refused with the send's own rule: the endpoint would rewrite its
+ *  characters onto another subject than the receipt names, and the grammar's own message lists the
+ *  wildcard segments a policy may use. */
+function sendChannelRefusal(channel: string): string | undefined {
+  let legal = true;
+  try {
+    assertValidChannel(channel);
+  } catch {
+    legal = false;
+  }
+  if (legal && isConcreteChannel(channel)) return undefined;
+  if (legal)
+    return `"${channel}" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following ${channel} now, post once to one channel it matches. A pattern follow has no durable backstop, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`;
+  const shown = JSON.stringify(channel.length > 64 ? `${channel.slice(0, 64)}…` : channel);
+  return `${shown} is not a channel name. A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce, at most ${MAX_CHANNEL_LENGTH} characters. Nothing was sent.`;
+}
+
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
  *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
@@ -1116,14 +1140,14 @@ export function cotalToolSpecs(
     {
       name: "cotal_send",
       title: "Cotal: broadcast to a channel",
-      description: "Broadcast a message to everyone on a channel in your space.",
+      description: "Broadcast a message to everyone on one channel in your space.",
       schema: {
         text: z.string().describe("The message to broadcast."),
         channel: z
           .string()
           .optional()
           .describe(
-            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
+            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -1133,6 +1157,8 @@ export function cotalToolSpecs(
           ),
       },
       async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
+        const refusal = channel === undefined ? undefined : sendChannelRefusal(channel);
+        if (refusal !== undefined) return err(`Couldn't send: ${refusal}`);
         try {
           const joined = agent.joinedChannels();
           const target = channel ?? defaultSendChannel(config, joined);
@@ -1895,6 +1921,40 @@ export function cotalToolSpecs(
           return ok(`Personas in the manager catalog (${personas.length}):\n${lines.join("\n")}`);
         } catch (e) {
           return controlFailure(name ? `Couldn't show ${name}` : "Couldn't list personas", e);
+        }
+      },
+    },
+    {
+      name: "cotal_endpoints",
+      title: "Cotal: list the endpoints you can call",
+      description:
+        "List the endpoints registered in this space that this session can call, and for each one the commands its grants cover and the request forms they allow. The space's registry answers from the grants recorded when this session's credential was issued, so the broker or the endpoint can still refuse a listed command. Endpoints where this session holds no command are left out, and so are endpoints whose command declarations cannot be read. A command whose grants are too many to list form by form is named under `unprojected`. On a user-auth mesh manager commands ride a separate manager-call credential; pass view=\"manager\" to list what that credential can call. Call cotal_describe for a command's input schema. A page holds up to 100 endpoints; pass the previous page's `next` as `after` for the next one.",
+      schema: {
+        after: z.string().min(1).max(128).optional().describe("The `next` value from the previous page."),
+        limit: z.number().int().min(1).max(REGISTRY_PAGE_LIMIT).optional().describe(`Endpoints per page (default ${REGISTRY_PAGE_LIMIT}).`),
+        view: z.enum(["session", "manager"]).optional().describe("`session` (default): this session's own credential. `manager`: its manager-call credential."),
+        instance: z.string().min(1).max(64).optional().describe("Manager view only: the manager instance whose call credential to use."),
+      },
+      async run(agent, _config, { after, limit, view, instance }: { after?: string; limit?: number; view?: "session" | "manager"; instance?: string }) {
+        if (instance !== undefined && view !== "manager") return err("`instance` selects the manager for view=\"manager\" only.");
+        const label = view === "manager" ? "the manager-call credential" : "this session";
+        try {
+          const input = { ...(after !== undefined ? { after } : {}), ...(limit !== undefined ? { limit } : {}) };
+          const r = view === "manager" ? await agent.listManagerEndpoints(input, instance) : await agent.ep.listEndpoints(input);
+          if ("none" in r) return err(`There is no manager view: ${r.none}.`);
+          if (r.unbound)
+            return err(`The credential of ${label} has no listing binding, so the registry cannot list what it may call. A credential issued before the listing existed, or one with no expiry, has none; a new credential does.`);
+          if (r.reply.reply.ok !== true) {
+            const e = r.reply.reply.error;
+            return err(`The registry refused the listing: ${e?.code ?? "error"}: ${e?.message ?? "no message"}`);
+          }
+          const page = r.page!;
+          const more = page.next !== undefined ? ` More endpoints follow; pass after="${page.next}".` : "";
+          return endpointData(`${page.rows.length} endpoints ${label} can call (source: ${page.source}).${more}`, page);
+        } catch (e) {
+          if (e instanceof EpEnvelopeError && e.details?.some((d) => d.kind === EP_UNANSWERED))
+            return err("The registry did not answer, so nothing is listed. The space may run no registry, or it is down; other tools are unaffected.");
+          return endpointFailure("Couldn't list endpoints", e);
         }
       },
     },

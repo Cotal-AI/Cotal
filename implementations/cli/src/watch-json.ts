@@ -1,7 +1,7 @@
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { oneLine, renderReport, streamRecord, writeStreamRecord } from "@cotal-ai/workspace";
 import { feedLine, isFeedView, matchesWatchFilter, observedText, watchReport, type WatchFilter } from "./watch-data.js";
-import { MeshView, type FeedEntry, type MeshSnapshot } from "./view/mesh-view.js";
+import { MeshView, type FeedEntry, type MeshSnapshot } from "@cotal-ai/workspace/view";
 import { outputFailed, ownStdoutErrors } from "./lib/stdout-owner.js";
 
 const WINDOW = 300;

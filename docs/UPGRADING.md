@@ -7,6 +7,14 @@ other half: what to actually do when the deployment already exists, has credenti
 cannot simply be recreated. Every release that breaks a running deployment gets a section here,
 naming what migrates on its own, what does not, and the order to move the pieces in.
 
+## Jcode reports an unreadable Cursor database as `cursor_state_unreadable`
+
+A Jcode launch that cannot read Cursor's `User/globalStorage/state.vscdb` used to stop with
+`private_state`. It now stops with `cursor_state_unreadable` and a reason, after waiting up to
+2 seconds for a lock Cursor holds ([Connect Jcode](connect-jcode.mdx)). One database that used to
+launch now stops: one where a value under an auth key Jcode reads is not text or is larger than
+16 KB. The previous reader copied that value as is.
+
 ## Identity-pin cleanup API after 0.131.6
 
 `@cotal-ai/workspace` no longer exports the deprecated `removeIdentityPin`. It removed a pin

@@ -135,6 +135,22 @@ missing either `run` input keeps ordinary legacy commands. Without signed `run`,
 `run-start`; with signed `run` but no eligible parent, the manager refuses with
 `ai.cotal.ep.unbound-caller-authority`. A failed issuance never retries on that rail.
 
+The registry's `endpoints` question ([control surface](control-discovery.mdx#listing-what-a-space-offers))
+also needs a generation, because the registry reads the caller's recorded ceiling. A credential on
+the legacy rail can carry a **listing generation** for it: one `ep.v1` request row that reaches
+only `registry` `endpoints`, its reply row, and the read of its own accepted row. At the auth
+callout an `agent` connection and an unissued `manager-caller` view get one, with the bearer's
+expiry as its horizon. The evidence records the credential's complete ceiling. The accepted row's
+token is derived from the connection's inbox nonce and that expiry, so the client finds the row
+without being handed a token. If a row already exists under that token, the callout reuses its
+generation only for the same caller, a generation that is still live and an identical ceiling;
+otherwise it connects the credential without the listing rows. An issued credential asks on its own generation instead: an agent a
+manager spawns on a static mesh, and an interactive `manager-caller` view, carry the `endpoints`
+row from their first issuance. A credential issued before this release has no listing rows, and
+`cotal_endpoints` reports that it has no listing binding until the agent connects again or is
+respawned. An issued `manager-caller` view that reconnects under the same nonce renews the ceiling
+its generation recorded, so one issued before this release keeps connecting without the row.
+
 ## Capabilities [#capabilities]
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying

@@ -1,5 +1,32 @@
 # @cotal-ai/connector-core
 
+## 0.133.13
+
+### Patch Changes
+
+- 8c15963: Keep generated HTTP documentation consistent between root and website installs.
+- c21c940: `MeshView` now reports disconnected while the broker is down. It used to follow only the endpoint's `connection` event, which stays true while the NATS client reconnects on its own, so `cotal console` showed a green dot and `cotal watch` read "live" through the outage. It now also follows the endpoint's `transport` edge, and `cotal watch` reads "Reconnecting" during an outage. Feed entries also carry the wire's `replyTo`, `mentions` and `contextId` when the sender set them, so `cotal watch --json` rows include those fields. A unicast burst coalesces only when those fields match.
+- 67f15b1: Show internal documentation link destinations in terminal output so readers can follow the CLI reference hub. Piped, plain and JSON pages keep their Markdown.
+- 331f050: Move `MeshView`, the live model of a space, from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/view`. The same entry adds `openObserver`, which builds the read-only observer endpoint that `cotal console` and `cotal watch` each used to construct inline. Console and watch behave as before. `@cotal-ai/cli` never exported `MeshView` from its package entry, so no public export is removed.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Split the CLI reference into focused MDX pages and generate the MCP catalog as MDX. Include complete Markdown in the installed release's offline documentation while preserving existing page calls and section links.
+- 13499c0: Rewrite the client, connector authoring, and embedding guides as direct MDX. Split embedding contracts into focused references and include their complete Markdown in the installed release's offline `cotal_docs` bundle.
+- 13499c0: Complete the operator documentation with focused MDX procedures, current CLI instructions, separate console and dashboard guides, and a concise upgrade guide linked to the preserved migration history.
+- 13499c0: Rewrite configuration, agent file, manifest, and channel permission references as direct MDX. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- 13499c0: Rewrite the connector guides as direct MDX and separate launch instructions from implementation reference. Include complete Markdown for the guides and new reference pages in the installed release's offline `cotal_docs` bundle.
+- 13499c0: Split mesh operation documentation into focused guides. Keep existing documentation links and offline page calls available, and point the supervision warning at the stable published guide.
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- 13499c0: Rewrite the Fundamentals concepts as direct MDX and separate Architecture's detailed contracts into their reference pages. Include complete Markdown and schema inspection content in offline documentation. Update documentation pointers and offline checks for the renamed sources.
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+- 13499c0: Rewrite the MeshView, cotal-lang card, and glossary references as direct MDX with source-backed definitions and examples. Update the language example check and terminal model source references for the renamed pages. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- e7f6b09: `cotal_send` refuses a channel pattern such as `team.>` before it reads or sends anything. The refusal and the advertised `channel` text say how to reach those agents: one post to a channel the pattern matches reaches the followers connected at the time, or post to each channel by name. A name that breaks the channel grammar, such as `team.**`, is refused too. It used to be rewritten onto another channel while the receipt named what was typed. In pi, `cotal_send` now returns the shared refusal instead of its own line.
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+
 ## 0.133.11
 
 ### Patch Changes

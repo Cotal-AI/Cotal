@@ -1,5 +1,54 @@
 # cotal-ai
 
+## 0.133.13
+
+### Patch Changes
+
+- 67f15b1: Show internal documentation link destinations in terminal output so readers can follow the CLI reference hub. Piped, plain and JSON pages keep their Markdown.
+- Updated dependencies [8c15963]
+- Updated dependencies [c21c940]
+- Updated dependencies [67f15b1]
+- Updated dependencies [6fcac9f]
+- Updated dependencies [ddd3253]
+- Updated dependencies [331f050]
+  - @cotal-ai/connector-core@0.133.13
+  - @cotal-ai/workspace@0.133.13
+  - @cotal-ai/cli@0.133.13
+  - @cotal-ai/manager@0.133.13
+  - @cotal-ai/auth@0.133.13
+  - @cotal-ai/delivery@0.133.13
+  - @cotal-ai/runtime@0.133.13
+  - @cotal-ai/core@0.133.13
+  - @cotal-ai/seat@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [e7f6b09]
+- Updated dependencies [13499c0]
+  - @cotal-ai/connector-core@0.133.12
+  - @cotal-ai/cli@0.133.12
+  - @cotal-ai/auth@0.133.12
+  - @cotal-ai/manager@0.133.12
+  - @cotal-ai/delivery@0.133.12
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/runtime@0.133.12
+  - @cotal-ai/seat@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
 ## 0.133.11
 
 ### Patch Changes
