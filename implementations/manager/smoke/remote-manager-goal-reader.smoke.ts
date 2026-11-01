@@ -497,11 +497,13 @@ try {
 
   // Configure participant roots with policyCheckedAt in future so supervise doesn't re-query policy
   process.env.COTAL_HOME = homeA;
+  const userAuthA = {
+    provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(userAuthA);
   persistRemoteUserEntry(space, server, partRootA, {
     space, server, tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: userAuthA,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const entryA = findMesh(space);
@@ -509,11 +511,13 @@ try {
   recordMesh({ ...entryA, policyCheckedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
 
   process.env.COTAL_HOME = homeB;
+  const userAuthB = {
+    provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(userAuthB);
   persistRemoteUserEntry(space, server, partRootB, {
     space, server, tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: userAuthB,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const entryB = findMesh(space);
