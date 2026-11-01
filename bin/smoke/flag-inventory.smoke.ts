@@ -229,8 +229,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   // `history clear` confirms with `--yes` and previews with `--dry-run`; `--force` is the removed
-  // spelling and refuses with that remedy.
-  history: { flags: [...TARGET, "dms:boolean", "dry-run:boolean", "follow:boolean", "force:boolean", "from:string", "grep:string", "json:boolean:j", "limit:string", "plain:boolean", "since:string", "yes:boolean:y"], positionals: true },
+  // spelling and refuses with that remedy. `history limit` sets the chat stream's limit with
+  // `--max-age` and `--per-sender`.
+  history: { flags: [...TARGET, "dms:boolean", "dry-run:boolean", "follow:boolean", "force:boolean", "from:string", "grep:string", "json:boolean:j", "limit:string", "max-age:string", "per-sender:string", "plain:boolean", "since:string", "yes:boolean:y"], positionals: true },
   watch: { flags: [...TARGET, "json:boolean:j", "plain:boolean", "view:string"], positionals: false },
   // Held DMs of one agent, or one exact retired durable with `--durable`.
   pending: { flags: ["creds:string", "durable:string", "json:boolean:j", "limit:string", "plain:boolean", "server:string", "space:string"], positionals: true },

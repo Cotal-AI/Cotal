@@ -102,12 +102,12 @@ export interface ClaudeHandleDeps {
   surfaced?: (items: readonly InboxItem[]) => void;
   /** False when native ingress owns delivery and these hooks observe lifecycle only. */
   delivery?: boolean;
-  /** Allow run-turn lifecycle and exact yield correlation while peer inbox delivery stays disabled. */
-  turns?: boolean;
   /** This seat's orientation card, or undefined while the seat is not bound yet. Handed over at
    *  every session start (startup, resume, fork, clear, compact), so the model has its bearings
    *  without asking for them; a card not ready at the start is owed to the next prompt. */
   orientation?: () => Promise<string | undefined>;
+  /** Allow run-turn lifecycle and exact yield correlation while peer inbox delivery stays disabled. */
+  turns?: boolean;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */

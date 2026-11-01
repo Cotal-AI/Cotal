@@ -43,7 +43,7 @@ const metadata = [
   "",
 ].join("\n");
 
-const page = `Every connector hands its agent one briefing when the session starts: who it is, to orient
+const markdown = `Every connector hands its agent one briefing when the session starts: who it is, to orient
 first, when to send feedback, to keep multi-agent work on the mesh, when a durable workflow run
 is the right tool, where to talk, how a peer message reaches it, how to reply, and the reply
 etiquette. The paragraphs are written once, in the connector core, and each harness adds only
@@ -59,5 +59,5 @@ ${sections.join("\n")}
 Generated from [\`briefing.ts\`](../extensions/connector-core/src/briefing.ts) by \`pnpm gen:briefingdoc\`.
 `;
 
-writeFileSync(out, metadata + markdownToMdx(page));
+writeFileSync(out, metadata + markdownToMdx(markdown));
 console.log(`gen:briefingdoc: wrote ${BRIEFING_HARNESSES.length} harness renderings → docs/agent-briefing.mdx`);

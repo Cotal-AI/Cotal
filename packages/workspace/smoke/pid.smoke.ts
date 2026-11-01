@@ -244,7 +244,7 @@ try {
     preflightRefused = (e as Error).message;
   }
   check("the delivery cutover preflight REFUSES on an unattributable manager", preflightRefused !== undefined);
-  check("it refuses BEFORE the daemon, naming double-binding as the reason", /double-bind/i.test(preflightRefused ?? ""), preflightRefused?.slice(0, 90));
+  check("it refuses BEFORE the daemon, saying nothing was started over the record", /Nothing was started over it/.test(preflightRefused ?? ""), preflightRefused?.slice(0, 90));
   check("the preflight leaves the manager pidfile untouched too", readFileSync(mgrPid, "utf8") === before);
 
   // The manager's signal path (an EPERM refusal, a process that outlives SIGTERM) is the shared

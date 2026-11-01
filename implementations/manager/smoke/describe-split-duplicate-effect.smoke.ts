@@ -193,10 +193,13 @@ try {
   // needs a valid lifecycle token, not a nonsense string: the responder parses `bind.instanceId`
   // before comparing it, and a malformed one is refused as bad-request by a different path
   // entirely, which would prove nothing about the fence.
-  const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
-  const bound = cache.get(MANAGER_ENDPOINT);
+  // Unpinned invokes keep their narrow handles per command set (#5122), keyed by the sorted command
+  // names a call needs, so the handle to rewrite is the one the `define-persona` call sends from.
+  const cache = (ep as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const handleKey = [...(cache.get(MANAGER_ENDPOINT)?.keys() ?? [])].find((k) => k.split("\u0000").includes("define-persona"));
+  const bound = handleKey === undefined ? undefined : cache.get(MANAGER_ENDPOINT)?.get(handleKey);
   check("the caller holds a resolved handle to rewrite (the forced case can be set up at all)",
-    bound !== undefined, { cached: [...cache.keys()] });
+    bound !== undefined, { cached: [...(cache.get(MANAGER_ENDPOINT)?.keys() ?? [])] });
   let forcedRecoveries = 0, forcedEffects = 0, forcedOk = false;
   // THE REPAIR IS NOT GUARANTEED TO LAND, BY DESIGN. Core re-issues a bind refusal a bounded
   // number of times and lets the last refusal surface, while in a two-manager space roughly half
@@ -211,7 +214,7 @@ try {
     // Read back through a FRESH cache lookup, not the local alias: this is what proves the probe
     // mutated the entry the client will actually send from, rather than a copy handed out by
     // `get`. If this is ever false the arm below is measuring an unforced call.
-    forcedInstalled = cache.get(MANAGER_ENDPOINT)?.responder.instanceId === forcedUid;
+    forcedInstalled = cache.get(MANAGER_ENDPOINT)?.get(handleKey!)?.responder.instanceId === forcedUid;
     const forcedName = `epsplit-forced-${randomUUID().slice(0, 6)}`;
     recoveriesThisTrial = 0;
     firstBoundTo = "";

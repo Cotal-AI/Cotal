@@ -254,7 +254,8 @@ item. There is no fallback to the event-only identity. Its own event channel sta
 entry. A remote mesh must also advertise `conversationIdentitySelection` version 1, or a selection
 is refused before any request.
 Endpoint calls are not selectable through this connection approval contract, which accepts only
-an empty endpoint selection. These conversations do not offer `cotal_describe` or `cotal_invoke`.
+an empty endpoint selection. These conversations do not offer `cotal_endpoints`, `cotal_describe`
+or `cotal_invoke`.
 
 A connection is offered the tools its grant can use: `cotal_spawn`, `cotal_persona`,
 `cotal_personas` and `cotal_despawn` with `spawn`, and `cotal_run`,

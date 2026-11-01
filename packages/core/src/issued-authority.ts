@@ -360,6 +360,11 @@ export interface IssuedStore {
    *  linearization point, and the horizon is checked again after it. A failed read on either side
    *  is a refusal, never an absence of revocation. */
   resolve(ref: IssuedAuthorityRef, sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>, now?: () => number): Promise<IssuedResolution>;
+  /** A DISCLOSURE read: every check {@link resolve} makes except the source loop, which only the
+   *  source's own owner can attest. It reports the recorded ceiling of a live generation and
+   *  authorizes nothing, so it never admits an effect or feeds a resolution (the registry's
+   *  `endpoints` listing is its one reader). */
+  observe(ref: IssuedAuthorityRef, now?: () => number): Promise<IssuedResolution>;
   /** Retire every issuance indexed under one source that is still before its horizon. The caller
    *  freezes the source gate FIRST. */
   retireSource(source: IssuedSourceRef): Promise<number>;
@@ -544,6 +549,19 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
       liveHorizon(ref.generation, now());
       return Object.freeze({ evidence, revision: after.revision });
     },
+    async observe(ref: IssuedAuthorityRef, now: () => number = nowSec): Promise<IssuedResolution> {
+      liveHorizon(ref.generation, now());
+      const { evidence, digest } = await readEvidence(ref);
+      const before = await readAttempt(ref, digest);
+      if (before.state !== "active") throw new EpEnvelopeError("permission-denied", `generation ${ref.generation} is ${before.state} (SPEC 13.15)`);
+      if (evidence.expiresAt !== undefined && now() >= evidence.expiresAt)
+        throw new EpEnvelopeError("permission-denied", `generation ${ref.generation} expired at ${evidence.expiresAt} (SPEC 13.15)`);
+      const after = await readAttempt(ref, digest);
+      if (after.state !== "active" || after.revision !== before.revision)
+        throw new EpEnvelopeError("permission-denied", `generation ${ref.generation} changed during the read; refused (SPEC 13.15)`);
+      liveHorizon(ref.generation, now());
+      return Object.freeze({ evidence, revision: after.revision });
+    },
     async confirm(ref: IssuedAuthorityRef, permissions: IssuedSubjectPermissions): Promise<void> {
       liveHorizon(ref.generation, nowSec());
       const { evidence, digest } = await readEvidence(ref);
@@ -684,6 +702,91 @@ export function acceptedReadGrant(space: string, acceptedToken: string): string 
 export function connectionAcceptedToken(connId: string): string {
   if (typeof connId !== "string" || connId.length === 0) throw new Error("connectionAcceptedToken: a connection nonce is required");
   return createHash("sha256").update(`cotal.accepted.v1\0${connId}`).digest("hex").slice(0, 32);
+}
+
+/** The accepted-row token of one credential's LISTING generation (SPEC 13.15, "Listing issuance"):
+ *  the first 32 hex characters of SHA-256("cotal.listing.v1\0" + connId + "\0" + horizon). User-auth:
+ *  the inbox nonce and the bearer's expiry. Static: the credential's nkey and its expiry. Issuer and
+ *  client both compute it; it needs no secrecy, because the broker admits the row read only under
+ *  the per-key grant and the listing publish only with the generation the credential carries. */
+export function listingAcceptedToken(connId: string, horizon: number): string {
+  if (typeof connId !== "string" || connId.length === 0) throw new Error("listingAcceptedToken: a connection id is required");
+  if (!Number.isSafeInteger(horizon) || horizon <= 0) throw new Error("listingAcceptedToken: the horizon must be a positive unix-seconds integer");
+  return createHash("sha256").update(`cotal.listing.v1\0${connId}\0${horizon}`).digest("hex").slice(0, 32);
+}
+
+/** The issuer-side handles a listing issuance needs: the connection it reads the accepted row on
+ *  (the way the client reads it), the evidence store and the accepted-row store. */
+export interface ListingSeam {
+  readonly nc: NatsConnection;
+  readonly store: IssuedStore;
+  readonly accepted: KV;
+}
+
+/** The binding a listing mint carries: the generation and the accepted token naming its row. */
+export interface ListingBinding {
+  readonly generation: string;
+  readonly acceptedToken: string;
+}
+
+/** A listing issuance decided but not yet persisted. `permissions` is the set to sign. */
+export interface PreparedListing {
+  readonly permissions: Record<string, unknown>;
+  /** Persist a NEW generation (evidence, release, accepted row). A reused or unbound one has
+   *  nothing to persist. Run it after the material is built and before it is returned. */
+  commit(): Promise<void>;
+}
+
+/**
+ * Decide one credential's listing generation (SPEC 13.15, "Listing issuance"). With no accepted row
+ * under the token, a fresh generation binds and `commit` persists it. A row naming this space and
+ * triple is reused only when its generation is still live and the recorded ceiling equals the
+ * complete permission set being minted; any other row leaves the credential without the listing
+ * rows. That is the one refusal a listing issuance absorbs: no row is ever replaced, and the
+ * connection is not refused for it. A failed read still throws.
+ */
+export async function prepareListing(
+  seam: ListingSeam,
+  args: { space: string; owner: string; actor: string; uid: string; connId: string; horizon: number; sources: readonly IssuedSourceRef[]; expiresAt?: number },
+  mint: (listing?: ListingBinding) => Record<string, unknown>,
+): Promise<PreparedListing> {
+  const { space, owner, actor, uid, horizon } = args;
+  const acceptedToken = listingAcceptedToken(args.connId, horizon);
+  const unbound = (): PreparedListing => ({ permissions: mint(), commit: async () => {} });
+  const existing = await seam.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
+  const code = existing.headers?.code ?? 0;
+  const status = existing.headers?.get("Status") ?? "";
+  const missing = code === 404 || status.startsWith("404");
+  if (!missing && (code >= 400 || status !== "")) throw new Error(`listing issuance: the accepted-row read failed (${code || status})`);
+  if (missing) {
+    const binding = { generation: mintGeneration(horizon), acceptedToken };
+    const permissions = mint(binding);
+    const ref: IssuedAuthorityRef = { space, owner, actor, uid, generation: binding.generation };
+    return {
+      permissions,
+      commit: async () => {
+        const prepared = await seam.store.stage({
+          version: 1, ref, sources: args.sources, permissions: importNativeSubjectPermissions(permissions),
+          ...(args.expiresAt !== undefined ? { expiresAt: args.expiresAt } : {}),
+        });
+        await seam.store.release(prepared, async () => {});
+        await writeAcceptedRow(seam.accepted, acceptedToken, ref);
+      },
+    };
+  }
+  const row = closed(JSON.parse(new TextDecoder().decode(existing.data)), ["version", "ref"], "accepted row");
+  if (row.version !== 1) throw new Error("listing issuance: unsupported accepted-row version");
+  const ref = refSnapshot(row.ref as IssuedAuthorityRef);
+  if (ref.space !== space || ref.owner !== owner || ref.actor !== actor || ref.uid !== uid) return unbound();
+  const permissions = mint({ generation: ref.generation, acceptedToken });
+  try {
+    await seam.store.confirm(ref, importNativeSubjectPermissions(permissions));
+  } catch (e) {
+    // A different ceiling, or a generation that no longer authorizes: retired, past its horizon, or its rows gone.
+    if (e instanceof EpEnvelopeError && (e.code === "failed-precondition" || e.code === "permission-denied")) return unbound();
+    throw e;
+  }
+  return { permissions, commit: async () => {} };
 }
 
 /** Written by the issuer at release, create-only: a token is redeemed once. The row lives as long

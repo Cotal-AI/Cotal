@@ -11,7 +11,7 @@ const models = JSON.parse(read('./fixtures/models-anchors.json'));
 const legacy = { ...JSON.parse(read('./fixtures/api-reference-anchors.json')), ...configuration, ...models };
 const cli = JSON.parse(read('./fixtures/cli-fragments.json'));
 const focused = [...new Set(Object.values(cli))];
-const slugs = ['overview', 'api-reference', 'cli', 'mcp-tools', ...focused, ...Object.keys(configuration), ...Object.keys(models)];
+const slugs = ['overview', 'api-reference', 'cli', 'mcp-tools', 'agent-briefing', ...focused, ...Object.keys(configuration), ...Object.keys(models)];
 const attr = (node, name) => node.attrs?.find(attribute => attribute.name === name)?.value;
 const elements = (node, result = []) => {
   if (node.tagName) result.push(node);

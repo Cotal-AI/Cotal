@@ -1,0 +1,3 @@
+# What a listing generation adds to a legacy-rail credential, counted by direction and subject
+# family, and the v1 subjects it must not reach.
+smoke:listing-rows

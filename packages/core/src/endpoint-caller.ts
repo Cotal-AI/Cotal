@@ -7,7 +7,7 @@ import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, parseEndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { epCall, type EpVerbTarget, type EpAttributedReply } from "./endpoint-call.js";
-import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, assertLifecycleToken, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
+import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, assertLifecycleToken, type EpCaller, type EpRoute, type IssuedCaller } from "./endpoint-subjects.js";
 
 export const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => base64url(globalThis.crypto.getRandomValues(new Uint8Array(24)));
@@ -227,6 +227,9 @@ export async function invokeCommand(
     /** A caller-pinned envelope id (see {@link EpVerbOp.id}): a goal-accepting command binds its
      *  goal under it, which is what lets a durable caller resubmit idempotently. */
     id?: string;
+    /** The issued caller this one call rides, in place of the describe's: a registry listing rides
+     *  its listing generation (SPEC 13.15). It must name the describe's triple. */
+    caller?: IssuedCaller;
   },
 ): Promise<EpAttributedReply> {
   const resolved = service.commands.get(command);
@@ -236,7 +239,9 @@ export async function invokeCommand(
     throw new EpEnvelopeError("bad-request", `command "${command}" is targeted (modes: ${resolved.modes.join(", ")}); an invoke needs its target`);
   if (!resolved.targeted && opts.target !== undefined)
     throw new EpEnvelopeError("bad-request", `command "${command}" is untargeted; an invoke must not carry a target`);
-  const caller = service.caller;
+  const caller = opts.caller ?? service.caller;
+  if (caller.owner !== service.caller.owner || caller.actor !== service.caller.actor || caller.uid !== service.caller.uid)
+    throw new EpEnvelopeError("bad-request", "a call's caller must name the triple its describe ran as");
   // "No args" marshals to the CONTRACT's canonical empty form: absent args ride as null on the
   // wire, so when this command's input rejects null but accepts the empty object (e.g. an
   // all-optional `{type:"object"}` input like despawn's), send `{}` — that IS the caller's
