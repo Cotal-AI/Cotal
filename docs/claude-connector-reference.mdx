@@ -254,7 +254,8 @@ item. There is no fallback to the event-only identity. Its own event channel sta
 entry. A remote mesh must also advertise `conversationIdentitySelection` version 1, or a selection
 is refused before any request.
 Endpoint calls are not selectable through this connection approval contract, which accepts only
-an empty endpoint selection. These conversations do not offer `cotal_describe` or `cotal_invoke`.
+an empty endpoint selection. These conversations do not offer `cotal_endpoints`, `cotal_describe`
+or `cotal_invoke`.
 
 A connection is offered the tools its grant can use: `cotal_spawn`, `cotal_persona`,
 `cotal_personas` and `cotal_despawn` with `spawn`, and `cotal_run`,
@@ -385,7 +386,7 @@ delivers, the other only wakes:
   inline limit. Complete messages that fit are handed off. The reply counts the messages
   still waiting, which remain unacknowledged for another hook or `cotal_inbox`. A message
   too large for one hook is left for the inbox, which can return it in parts. The budget
-  includes the session briefing, run turns, repeat labels and waiting notice.
+  includes the orientation card, the session briefing, run turns, repeat labels and waiting notice.
   If a channel notice accompanies a batch the hook already delivered, an empty `cotal_inbox`
   reply identifies the most recent confirmed hook handoff by count and event. It does not return
   those bodies again or describe the receipt as a new message. A confirmed handoff means the

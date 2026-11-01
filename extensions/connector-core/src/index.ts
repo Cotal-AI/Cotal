@@ -16,6 +16,7 @@ export * from "./inline-delivery.js";
 export * from "./feedback.js";
 export * from "./tool-specs.js";
 export * from "./orientation.js";
+export * from "./briefing.js";
 export * from "./docs.js";
 export * from "./tools.js";
 export * from "./gateway.js";

@@ -20,10 +20,7 @@ import {
   MeshAgent,
   formatInjection,
   scrubLaunchMaterial,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
@@ -229,7 +226,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (brief) parts.unshift(brief);
     if (parts.length === 0) return;
     const text = parts.join("\n\n");
-    const system = !primed && persona ? `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}` : undefined;
+    const system = !primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined;
     if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     execution = "submitted";
     briefed = true;

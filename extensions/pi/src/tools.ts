@@ -23,8 +23,7 @@ import { z } from "zod";
 import { isConcreteChannel } from "@cotal-ai/core";
 import {
   cotalToolSpecs,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
+  briefing,
   NO_TOOL_ARGS,
   type MeshAgent,
   type AgentConfig,
@@ -37,21 +36,6 @@ import { wrapped } from "./wrap.js";
 const PULL_INBOX_DESCRIPTION =
   "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic " +
   "stays queued; in focus mode, normal channel recall is also shown read-only.";
-
-/** Mesh etiquette, appended to the system prompt while the send tools are active. The first
- *  line is load-bearing: with loop-owned delivery removed, plain chat output goes nowhere —
- *  a reply EXISTS only if the model sends it through a tool. */
-const SEND_GUIDELINES = [
-  "Peer messages from the Cotal mesh arrive as user messages tagged 📨. Your chat output is NOT " +
-    "delivered to peers — when a reply is warranted, send it with cotal_dm (back to that peer), " +
-    "cotal_send (to a channel), or cotal_anycast (to a role).",
-  "Reply only when a reply is actually needed — a silent acknowledgement is correct; " +
-    '"agreed/thanks/good point" messages are noise. And @-mention a peer only when you need THAT ' +
-    "specific peer to act: a mention wakes them, so mentioning in acknowledgements or sign-offs " +
-    "makes peers ping-pong wake-ups in an endless loop.",
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-];
 
 function toParameters(schema: CotalToolInput): TSchema {
   // The shared spec's object is CLOSED, and a closed object emits `additionalProperties: false`
@@ -86,6 +70,10 @@ const SEND_TOOLS = new Set(["cotal_send", "cotal_dm", "cotal_anycast"]);
 
 /** Register the full cotal_* tool set on a pi session, wired to one mesh agent. */
 export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: AgentConfig): void {
+  // The shared briefing, appended to the system prompt while the send tools are active. Its reply
+  // paragraph is load-bearing here: with loop-owned delivery removed, plain chat output goes
+  // nowhere — a reply EXISTS only if the model sends it through a tool.
+  const guidelines = briefing(config, "pi").split("\n\n");
   for (const spec of cotalToolSpecs(config, "pi")) {
     const readonlyInbox = spec.name === "cotal_inbox";
     pi.registerTool({
@@ -96,7 +84,7 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
       // is OPEN, so extras would be accepted and then discarded by the substitution below. Render
       // the shared closed-empty object through the same path as every other tool.
       parameters: toParameters(readonlyInbox ? NO_TOOL_ARGS : spec.schema),
-      promptGuidelines: spec.name === "cotal_send" ? SEND_GUIDELINES : undefined,
+      promptGuidelines: spec.name === "cotal_send" ? guidelines : undefined,
       renderCall: SEND_TOOLS.has(spec.name)
         ? (args) => wrapped(sendCallLine(spec.name, config, (args ?? {}) as Record<string, unknown>).replace(/\s+/g, " "))
         : undefined,

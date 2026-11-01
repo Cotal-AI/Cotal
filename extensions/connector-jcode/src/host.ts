@@ -17,6 +17,7 @@ import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
+  JcodeCursorStateUnreadable,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
@@ -49,15 +50,11 @@ import {
   eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
   configFromEnv,
   controlFromEnv,
   envFlag,
   eventPlaneArmed,
-  feedbackLine,
   fmtChannel,
   fmtFrom,
   formatInjection,
@@ -289,11 +286,7 @@ function ensureRelayDirectory(endpoint: RelayEndpoint): void {
 }
 
 function instructions(config: AgentConfig, persona: string | undefined): string {
-  const mesh =
-    `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
-    `${ORIENTATION_BOOTSTRAP} ${feedbackLine(config)}${MESH_FIRST_STEER} ` +
-    `${WORKFLOW_STEER} ${CHANNEL_GUIDANCE} ` +
-    "Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm (privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); use cotal_roster to see who is present and cotal_status to report what you are doing. Reply only when a reply is actually needed — silent acknowledgement is correct, and @-mention a peer only when you need that peer to act now.";
+  const mesh = briefing(config, "jcode");
   return persona ? `${persona}\n\n${mesh}` : mesh;
 }
 
@@ -449,6 +442,8 @@ export async function runJcodeHost(): Promise<void> {
     }
     socketHome = shortSocketHome(home);
   } catch (error) {
+    // Cursor's refusal carries its own public code and connector-owned text.
+    if (error instanceof JcodeCursorStateUnreadable) throw error;
     // These refusals name local paths, which the public startup diagnostic never renders, so
     // without their own code they all reported as `(unknown)` and an operator could not tell a
     // wedged seat from a broken connector (#1211).
