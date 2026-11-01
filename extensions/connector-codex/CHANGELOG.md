@@ -1,5 +1,16 @@
 # @cotal-ai/connector-codex
 
+## 0.133.8
+
+### Patch Changes
+
+- 5ab4118: The Codex model catalog no longer rejects a valid `model/list` reply from an app-server that answers and exits at once; the lister now waits for stdout to close before treating the exit as unanswered.
+- 591c0f9: A Codex seat returns to `working` once the host has declined an app-server request, so a turn that ends after one still fires the done boundary and does not leave an approval condition on an idle seat.
+
+## 0.133.7
+
+No changes in this release.
+
 ## 0.133.6
 
 No changes in this release.

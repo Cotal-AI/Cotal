@@ -81,7 +81,10 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
         clearTimeout(timer);
         reject(e);
       });
-      child.on("exit", (code) => {
+      // `close`, not `exit`: `exit` can fire while stdout still holds the model/list response,
+      // so a child that answers and exits at once raced its own reply (#3749). `close` follows
+      // the end of stdout, after every `data` event has been handled.
+      child.on("close", (code) => {
         clearTimeout(timer);
         reject(new Error(`codex app-server exited (${code}) before model/list answered`));
       });

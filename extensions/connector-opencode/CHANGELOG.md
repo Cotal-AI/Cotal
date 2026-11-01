@@ -1,5 +1,18 @@
 # @cotal-ai/connector-opencode
 
+## 0.133.8
+
+### Patch Changes
+
+- 174b09c: In the OpenCode 1.x adapter, a message that arrives while a turn runs now drives its own turn after the user stops that turn, instead of sitting buffered until unrelated traffic arrives.
+- 63aa37e: In the OpenCode 2.x adapter, a focus @mention that arrives while a turn runs is now delivered when that turn ends, instead of being dropped.
+
+## 0.133.7
+
+### Patch Changes
+
+- 1cf7309: A launcher whose agent session never comes up now exits 1 even when the opencode server exits cleanly on SIGTERM, instead of reporting the failed boot as exit 0.
+
 ## 0.133.6
 
 No changes in this release.

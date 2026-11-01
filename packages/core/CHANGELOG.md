@@ -1,5 +1,16 @@
 # @cotal-ai/core
 
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+### Patch Changes
+
+- dd729aa: Pin ajv's `validateSchema` and `meta` in the contract schema profile, so a malformed keyword value such as `{"type": 5}` keeps refusing as `contract-invalid` even if ajv's defaults change.
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+
 ## 0.133.6
 
 No changes in this release.

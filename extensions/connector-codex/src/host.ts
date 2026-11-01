@@ -901,6 +901,8 @@ export async function runCodexHost(): Promise<void> {
     if (condition) void safeCondition(condition);
     void safeStatus("waiting", detail, detail === "item/tool/requestUserInput");
   });
+  // The request was declined in the same call; resume `working`, which also clears its condition.
+  driver.on("answered", () => void safeStatus("working"));
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);
