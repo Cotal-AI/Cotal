@@ -47,14 +47,14 @@ const releaseBroker = teardownOnSignal(nats, root);
 const present = new Map<string, string>(); // name -> last presence event type
 let observer: CotalEndpoint | undefined;
 
-async function arm(name: string, refuse?: (ctx: FakeOpenCode2Context) => void): Promise<{ error?: string; teardown?: () => Promise<void> }> {
+async function arm(name: string, refuse?: (ctx: FakeOpenCode2Context) => void): Promise<{ error?: string; teardown?: () => Promise<void>; end?: () => void }> {
   for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
   Object.assign(process.env, {
     COTAL_SPACE: SPACE,
     COTAL_NAME: name,
     COTAL_ID: name.toLowerCase(),
     COTAL_SERVERS: servers,
-    COTAL_OPENCODE_SERVER_URL: "http://127.0.0.1:9", // never answers; no model pin, so nothing waits on it
+    COTAL_OPENCODE_SERVER_URL: "http://127.0.0.1:9", // session HTTP is unavailable; this fixture tests mesh presence only
     OPENCODE_SERVER_USERNAME: "opencode",
     OPENCODE_SERVER_PASSWORD: "test-secret",
   });
@@ -63,7 +63,7 @@ async function arm(name: string, refuse?: (ctx: FakeOpenCode2Context) => void): 
   refuse?.(ctx);
   try {
     const teardown = await setupCotal(ctx);
-    return { teardown: teardown as () => Promise<void> };
+    return { teardown: teardown as () => Promise<void>, end: () => ctx.end() };
   } catch (e) {
     ctx.end();
     return { error: (e as Error).message };
@@ -102,6 +102,8 @@ try {
   check("the accepted agent joins (the observer can see a join)", present.has("Accepted") && present.get("Accepted") !== "offline", [...present]);
   check("the agent whose prompt registration was refused never joins", !present.has("RefusedPrompt"), [...present]);
   check("the agent whose tool registration was refused never joins", !present.has("RefusedTransform"), [...present]);
+  // The fake host's iterator ends explicitly; it does not consume the plugin's abort signal.
+  b.end?.();
   await b.teardown?.();
   for (let i = 0; i < 100 && present.get("Accepted") !== "offline"; i++) await sleep(100);
   check("the accepted agent's teardown takes it offline", present.get("Accepted") === "offline", [...present]);
