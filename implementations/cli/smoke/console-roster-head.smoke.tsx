@@ -79,6 +79,24 @@ async function frameWhere(frames: string[], ok: (f: string) => boolean, timeoutM
   return frames.at(-1) ?? "";
 }
 
+/** Resolve on the next paint after now; the console repaints at least every second. */
+async function nextPaint(raws: string[]): Promise<void> {
+  const painted = raws.length;
+  await frameWhere(raws, () => raws.length > painted);
+}
+
+/** Write `key` once the App can take it. Ink attaches a newly focused pane's key handler in an effect
+ *  after the paint that shows the focus, so a key written on that paint reaches no handler and is
+ *  lost (under load, `j` right after `l` was lost 8 times in 30). React runs a commit's effects before
+ *  it renders again, so a key waits for a paint after the one the last key caused. The App reads a
+ *  written key in the same task, so the first paint after the write is this key's own; waiting for
+ *  it keeps the next key from taking that paint for a later one. */
+async function press(stdin: NodeJS.ReadStream, raws: string[], key: string): Promise<void> {
+  await nextPaint(raws);
+  stdin.write(key);
+  await nextPaint(raws);
+}
+
 class Observer extends EventEmitter {
   space = "roster-head";
   card = { id: "local.operator", name: "operator", kind: "endpoint", role: "operator" };
@@ -118,8 +136,11 @@ const selected = (lead: string) => (raw: string) => new RegExp(`\\x1b\\[7m(\\x1b
 
 console.log("1. a wide character at a wrap keeps the box's padding cell");
 {
+  // Stamped ahead of this clock, so each painted age reads `0s` however long the run takes: `ago`
+  // shows a stamp from the future as no time at all. These cells grade wrapping, not time.
+  const ahead = Date.now() + 60 * 60_000;
   const seat = (name: string, activity: string) =>
-    ({ card: { id: "local." + name, name, kind: "endpoint" }, status: "waiting", ts: Date.now(), activity }) as Presence;
+    ({ card: { id: "local." + name, name, kind: "endpoint" }, status: "waiting", ts: ahead, activity }) as Presence;
   const roster = [
     seat("ax", "waiting on approval: production database migration needs a human ok"),
     seat("cx", "等待审批：生产数据库迁移需要人工确认🚦🔐 waiting-on-an-unbroken-identifier-0123456789abcdef"),
@@ -155,9 +176,9 @@ console.log("1. a wide character at a wrap keeps the box's padding cell");
       if (cols !== 47) grade(unselected, "unselected", "cx", cx);
       else check("unselected: the narrow window draws no part of cx", !unselected.includes("⚙ cx") && !unselected.includes("等待"), unselected);
       // `l` focuses the roster with ax selected; `j` moves the selection to cx.
-      stdin.write("l");
+      await press(stdin, raws, "l");
       check("l selects ax", selected("⚙ ax")(await frameWhere(raws, selected("⚙ ax"))));
-      stdin.write("j");
+      await press(stdin, raws, "j");
       const sel = await frameWhere(raws, selected("⚙ cx"));
       check("j selects cx, as one inverse bar", selected("⚙ cx")(sel));
       grade(await frameWhere(frames, (f) => f.includes("⚙ cx")), "cx selected", "cx", cx);
@@ -210,10 +231,10 @@ console.log("2. a long identity keeps its name, activity and ages at every cappe
       if (cols === 80) {
         check("the window leaves out the seat that does not fit", seatRows(f, "● " + long2.slice(0, 6), box).length === 0, f);
         // `l` focuses the roster on long1; three `j` select long2, which the window brings in whole.
-        stdin.write("l");
+        await press(stdin, raws, "l");
         await frameWhere(raws, selected("● " + long1.slice(0, 6)));
         for (const name of ["bob123", "eve456", long2.slice(0, 6)]) {
-          stdin.write("j");
+          await press(stdin, raws, "j");
           await frameWhere(raws, selected("● " + name));
         }
         check("j selects the last seat", selected("● " + long2.slice(0, 6))(raws.at(-1) ?? ""));
@@ -259,9 +280,9 @@ console.log("3. a window that leaves seats out says how many are above and below
       const top = await frameWhere(frames, (f) => f.includes("⚙ ax"));
       check("top: the title leads with the two seats below", firstRow(top, 24).startsWith("│ roster ↓2 more ·") && firstRow(top, 24).endsWith(" │"), firstRow(top, 24));
       check("top: the window draws ax and the long name", same(drawn(top, 24), ["ax", lxn]), drawn(top, 24));
-      stdin.write("l");
+      await press(stdin, raws, "l");
       await frameWhere(raws, selected(lead(ax)));
-      for (const p of [lx, cx]) { stdin.write("j"); await frameWhere(raws, selected(lead(p))); }
+      for (const p of [lx, cx]) { await press(stdin, raws, "j"); await frameWhere(raws, selected(lead(p))); }
       const low = await frameWhere(frames, (f) => f.includes("⚙ manag"));
       check("bottom: j to cx brings in cx and the manager", same(drawn(low, 24), ["cx", "manager"]), drawn(low, 24));
       check("bottom: the title leads with the two seats above", firstRow(low, 24).startsWith("│ roster ↑2 more ·"), firstRow(low, 24));
@@ -281,9 +302,9 @@ console.log("3. a window that leaves seats out says how many are above and below
       const want = (cue: string) => boxRow("roster " + cue + " · 0 agents · 4 ep", 47);
       const top = await frameWhere(frames, (f) => f.includes("⚙ ax"));
       check("top: ↓3 more", firstRow(top, 47) === want("↓3 more"), firstRow(top, 47));
-      stdin.write("l");
+      await press(stdin, raws, "l");
       await frameWhere(raws, selected(lead(ax)));
-      stdin.write("j");
+      await press(stdin, raws, "j");
       const tall = await frameWhere(raws, selected(lead(lx)));
       const tallFrame = strip(tall);
       // The long name's seat is six rows and the narrow window five, so it shows its first five
@@ -295,7 +316,7 @@ console.log("3. a window that leaves seats out says how many are above and below
           boxRow("⚙ endpoint-with-a-very-long-name-for-roster", 47), boxRow("  -wrap-0123", 47),
           boxRow("  compiling the very long module graph for", 47), boxRow("  the roster wrap check 0123456789", 47),
         ]) && tallRows[4]?.startsWith("│   (set 5m ago)  ") && tallRows[5] === "╰" + "─".repeat(45) + "╯", tallRows);
-      stdin.write("j");
+      await press(stdin, raws, "j");
       const mid = strip(await frameWhere(raws, selected(lead(cx))));
       check("middle: ↑2 ↓1 more", firstRow(mid, 47) === want("↑2 ↓1 more"), firstRow(mid, 47));
       check("middle: cx is drawn whole", seatRows(mid, lead(cx), 47).at(-1) === boxRow("  endpoint · unchanged for 3m", 47), seatRows(mid, lead(cx), 47));
@@ -317,7 +338,7 @@ console.log("3. a window that leaves seats out says how many are above and below
       resize(stdout, 30);
       const back = await frameWhere(frames, (f) => f.split("\n").length > 21 && f.includes("⚙ cx"));
       check("resize back to 47x30: the window and its counts come back", firstRow(back, 47) === want("↑2 ↓1 more") && same(drawn(back, 47), ["cx"]), back.split("\n").slice(4, 12));
-      stdin.write("j");
+      await press(stdin, raws, "j");
       const bottom = strip(await frameWhere(raws, selected(lead(mg))));
       check("bottom: ↑3 more", firstRow(bottom, 47) === want("↑3 more"), firstRow(bottom, 47));
       check("no painted row is wider than the terminal", bottom.split("\n").every((r) => displayWidth(r) <= 47));
@@ -360,7 +381,7 @@ console.log("4. closing a detail returns the roster to the seat and window it le
   for (const [cols, box] of [[80, 24], [47, 47]] as const) {
     console.log(`${cols}x30`);
     const { ep, stdin, raws, frames, close } = mount(roster, cols);
-    const key = async (keys: string) => { for (const k of keys) { stdin.write(k); await wait(40); } await wait(160); };
+    const key = async (keys: string) => { for (const k of keys) await press(stdin, raws, k); await wait(160); };
     /** The selected seat, and the seats the roster box draws in order. */
     const view = () => ({
       selected: names.find((n) => selected("⚙ " + n)(raws.at(-1) ?? "")),
