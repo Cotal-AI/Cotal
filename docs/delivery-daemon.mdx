@@ -26,10 +26,11 @@ The daemon separates the work of retaining messages, checking access, and record
 - The trusted reader checks each stored entry before handing the authorized copy to the member's
   `dlv_<owner>-<actor>-<uid>` DELIVER consumer. The copy does not use the reply inbox. The member acknowledges the copy after surfacing or handling it. A crash before
   that acknowledgement causes redelivery.
-- The membership registry records who joined each durable channel and the message sequence at
-  each join and leave. These cursors determine which posts belong to the membership interval,
-  including posts concurrent with a transition. A privileged service writes the registry.
-  An agent cannot assert its own durable membership.
+- The membership registry records who joined each durable channel or channel family, such as
+  `team.>`, and the message sequence at each join and leave. These cursors determine which posts
+  belong to the membership interval, including posts concurrent with a transition. A family row
+  covers the durable-class channels under it, and a member covered by several rows gets one copy.
+  A privileged service writes the registry. An agent cannot assert its own durable membership.
 
 Acknowledgements keep delivery durable through the handoff. The reader releases its source entry
 only after the member confirms it surfaced or handled the copy, or after transfer to another

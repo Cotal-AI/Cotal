@@ -52,7 +52,7 @@ It requires a YAML mapping between `---` fences and a valid `name`.
 | `kind` | `agent` \| `endpoint` | Participation class. Defaults to `agent`. |
 | `description` | string | One-line summary in `card.description`. |
 | `tags` | string[] | Capability tags in `card.tags`. |
-| `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
+| `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. A [family](channels-and-permissions.mdx#families) such as `team.>` gets stored copies of posts on its durable channels from startup. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
 | `allowSubscribe` | string[] | Channels the agent may read. Wildcard subtrees such as `team.>` are allowed. Omitted or empty defaults to `subscribe`. |
 | `allowPublish` | string[] | Channels the agent may post to. Omitted or empty grants no posting permission. Wildcard subtrees are allowed. |
 | `quiet` | string[] | Attention default. Ambient messages stay buffered until `cotal_inbox`; mentions remain automatic. Entries must be concrete channels within the read ACL. |

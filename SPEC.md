@@ -603,6 +603,18 @@ membership cannot be established (for example no privileged writer is present), 
 the live subscription remains active, and the durable shortfall MUST be surfaced as an exceptional
 delivery state (e.g. `durable backstop unavailable`), never silently.
 
+A durable membership names one concrete channel or one **channel family**: one or more concrete
+segments followed by a final `>` (`team.>`), with no `*` and not the root `>`. A family covers every
+channel its pattern matches, now and later, and not its prefix itself (`team.>` does not cover
+`team`). Each covered channel keeps its own effective delivery class: a post on a `durable` channel
+under the family is in the member's backstop, and a post on a `live` channel is not. The join and
+leave cursors and the leave boundary apply to the family's own record as to a channel's. A family
+join MUST lie within one `allowSubscribe` entry, so every channel it can match is readable. A member
+whose own row and a family row both cover a channel holds one backstop copy of each post, and the
+backstop re-check accepts the copy while any of its covering rows' intervals contains it. A
+subscription with `*` or the root `>` takes no durable membership: it is joined live only, and the
+client MUST say so.
+
 ---
 
 ## 8. NATS + JetStream binding
@@ -694,6 +706,14 @@ filter. The store's stream/subject layout, the fan-out writer, the trusted reade
 registry are reference-implementation, not normative; a conformant deployment MAY realize the backstop
 differently as long as the §4 guarantee and the §9 checks hold.
 
+In the reference, fan-out writes a post on a concrete channel for every member whose row is that
+channel or a family covering it, and each copy's `Nats-Msg-Id` is `<id>:<principal>:<lifecycleUid>`,
+so the covering rows of one member collapse into one copy within the duplicate window. A member's
+`dlv` subject keeps its newest 1000 copies (`max_msgs_per_subject=1000`, `discard=Old`), and the broker
+reports no discard. A client that receives a backstop copy with 999 or more copies still pending
+behind it SHOULD tell the member that earlier copies may have been dropped, and that ACL-bounded
+history may still hold them.
+
 The absence of a usable receiver dedup key does not relax acknowledgement ownership: a
 JetStream-consumed copy with `id: ""` that is surfaced or handled MUST be acknowledged
 independently. The reference fan-out and transfer publishes carry no `Nats-Msg-Id` for an
@@ -728,7 +748,8 @@ KV buckets are also streams and are pre-created:
 (key = `card.id`) derived view of who is subscribed to each channel: the **union** of an agent's
 `live` core-subscriptions (read by a privileged daemon from the broker's connection view) and its
 `durable` memberships (the members registry), each value `{ live: string[], durable: string[],
-observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time.
+observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time,
+and `durable` keeping a family row as recorded (`team.>`, §7).
 The backing KV keeps one message per agent key and limits each serialized value to 262144 bytes. Its
 global `max_bytes` is unlimited (`-1`), so creating an empty space reserves no file-store capacity;
 the broker's actual file-store limit remains the aggregate storage bound.
@@ -6596,8 +6617,9 @@ single-function profiles, each granting only the verbs its function needs and no
   teardown with the target's `(principal, lifecycleUid)` in every exact-name grant; it can
   delete only lifecycle-keyed names, so it structurally cannot reach a same-name successor
   (§13.1). The footprint is the `dm_`/`dlv_` durables, the read-ACL row, and the durable
-  membership row for each concrete channel the teardown names (one exact `memberKey` grant per
-  channel). A wildcard channel is refused at mint. The manager names the launch's concrete read
+  membership row for each concrete channel or family the teardown names (one exact `memberKey` grant
+  per row; a family's key stores its final `>` as `=`, so no grant is a wildcard). Any other pattern
+  is refused at mint. The manager names the launch's concrete read
   channels plus the channels the delivery daemon's read-only `lifecycleMemberships` admin verb
   lists for that exact `(principal, lifecycleUid)`. When that inventory cannot be read, rows on
   other channels stay retained, the teardown logs the inventory as incomplete, and retirement
@@ -6770,6 +6792,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-01 | **Durable membership of a channel family (§7, §8, Appendix B), additive.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join lies within one `allowSubscribe` entry. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |
 | 2026-10-28 | **A retiring lifecycle's fence is its ACL row (Appendix B).** The fence of the next entry lived only in one daemon's memory and was checked before a join wrote its row, so a join whose ACL lookup outlived the fence, a join from a still-connected seat after a daemon restart, or a join a quiesced predecessor finished after its successor's inventory each kept one row of a retired lifecycle. The manager now narrows the lifecycle's ACL row to an empty `allowSubscribe` before it asks for the inventory. The daemon re-reads that exact row before and after the write that creates a membership row, and removes the row and refuses the join when the channel is no longer within it. Other membership writes only update the revision they read. The daemon's own refusal and its wait for running writes stay, for a manager that does not narrow, as on a hosted daemon serving older managers. No wire change. |
