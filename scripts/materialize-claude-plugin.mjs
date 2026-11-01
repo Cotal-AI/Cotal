@@ -12,9 +12,11 @@
 // bundles carry the version they are stamped with. Each plugin directory is rebuilt from scratch
 // and swapped in whole, and the run FAILS LOUD when a referenced file is missing or the bundle was
 // built at another version, so a release cannot commit a plugin that does not run.
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkMcpDocsStamp } from "./check-mcp-docs-stamp.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const connector = join(repoRoot, "extensions", "connector-claude-code");
@@ -29,7 +31,7 @@ const legal = [
 // [source, destination inside the plugin directory]
 const plugins = {
   cotal: [
-    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
+    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
     [join(connector, "PLUGIN.md"), "README.md"],
     ...legal,
   ],
@@ -55,13 +57,14 @@ function verify(name, dir) {
   for (const ref of referencedPaths(dir))
     if (!existsSync(join(dir, ref))) throw new Error(`materialize-claude-plugin: ${name} references ${ref}, which is not in the plugin directory`);
   if (name === "cotal") {
-    // The docs bundle inside mcp.cjs is stamped from bin/package.json at build time, so a bundle
-    // built before `changeset version` carries the previous release under the new manifest version.
-    // The bundle is built with `--minify-whitespace`, which closes the gap after the key, so match
-    // the pair rather than one spelling of it.
-    const stamp = new RegExp(`"version":\\s*${JSON.stringify(version).replace(/\./g, "\\.")}`);
-    if (!stamp.test(readFileSync(join(dir, "dist", "mcp.cjs"), "utf8")))
-      throw new Error(`materialize-claude-plugin: dist/mcp.cjs was not built at ${version}; rebuild @cotal-ai/connector-claude-code first`);
+    // The standalone constant also stamps the MCP server. The payload itself may be compressed.
+    const mcp = readFileSync(join(dir, "dist", "mcp.cjs"), "utf8");
+    checkMcpDocsStamp(mcp, version);
+    // Each data file must be the one this mcp.cjs was built with: its digest is in the loader.
+    for (const file of ["docs-bundle.bin", "docs-index.bin"]) {
+      const digest = createHash("sha256").update(readFileSync(join(dir, "dist", file))).digest("hex");
+      if (!mcp.includes(`"${digest}"`)) throw new Error(`materialize-claude-plugin: dist/${file} is not the one dist/mcp.cjs was built with; rebuild @cotal-ai/connector-claude-code first`);
+    }
   }
   if (name === "cotal-skills") {
     const skills = readdirSync(join(dir, "skills"), { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync(join(dir, "skills", e.name, "SKILL.md")));

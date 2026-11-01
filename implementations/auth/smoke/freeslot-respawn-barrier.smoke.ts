@@ -139,7 +139,6 @@ type AddressInfo = import("node:net").AddressInfo;
 const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   principalKey, registry, dmStream, dlvStream, openAclRegistry, openMembersRegistry, readMember, listMembers, memberKey,
-  CotalEndpoint, mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
   createEndpointStreams, DEV_OWNER, recordsBucket, epAuthBucket, mintLifecycleUid, DeprovisionError,
 } = await import("@cotal-ai/core");
 const {
@@ -158,6 +157,8 @@ const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
 } = await import("@cotal-ai/auth");
+const { approveDevice } = await import("./_device-approval.js");
+const { bootDeliveryDaemon } = await import("../../manager/smoke/_boot-delivery.js");
 // @cotal-ai/manager is not a dep of @cotal-ai/auth — drive the REAL Manager from its built dist by
 // relative path (shares the one @cotal-ai/core dist registry with the in-process connector).
 const { Manager } = await import("../../manager/dist/index.js");
@@ -288,7 +289,7 @@ const rowHash = (owner: string): string | undefined => {
 let manager: InstanceType<typeof Manager> | undefined;
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
-let delivery: InstanceType<typeof CotalEndpoint> | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let jsDir: string | undefined;
 try {
   // ---------- A. setup: user-auth broker + streams + auth service + login + grant ----------
@@ -319,16 +320,7 @@ try {
     returnHeaders: true,
   });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0];
-  const approve = async (userCode: string): Promise<void> => {
-    const claim = await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-    if (!claim.ok) throw new Error(`device claim failed: HTTP ${claim.status}`);
-    const res = await fetch(`${base}/device/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie, origin },
-      body: JSON.stringify({ userCode }),
-    });
-    if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-  };
+  const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
   const prepared = await cotalAuthProvider.prepareServer({
     store,
@@ -365,30 +357,12 @@ try {
 
   // The DELIVERY DAEMON (the eviction rail the retirement barrier needs): production `cotal up`
   // runs auth AND delivery, and a terminal retirement's VERIFIED eviction rides the delivery-admin
-  // rail. This harness hosts Plane-3 inline with a REAL evictPrincipal (the $SYS observer + KICK
-  // evictor minted here, the only window their in-memory seed exists), so despawn -> retirement can
+  // rail. This harness boots the shared fixture daemon, which serves both eviction verbs through core's
+  // real executors (its $SYS observer + KICK evictor minted from the space auth here, the only window
+  // their in-memory seed exists) and holds and renews the delivery lease, so despawn -> retirement can
   // reach its terminal exactly as it does under a full stack. Without it the barrier fail-closes at
   // eviction and the alias stays reserved (the pre-delivery composition, proven earlier).
-  const dlvObserverCreds = await mintMembershipObserverCreds(auth, newIdentity());
-  const dlvEvictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
-  const dlvId = newIdentity();
-  const spawnDeliveryDaemon = async () => {
-    const d = new CotalEndpoint({
-      space: SPACE, servers: SERVER, creds: await mintCreds(auth, dlvId, "delivery"),
-      card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
-      channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
-    });
-    d.on("error", () => {});
-    await d.start();
-    await d.startPlane3((owner: string, lifecycleUid: string) => d.aclForOwner(owner, lifecycleUid), {
-      evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
-        servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
-      }),
-      reloadStoreIdentity: () => store.identity,
-    });
-    await d.acquireDeliveryLease(0).catch(() => {});
-    return d;
-  };
+  const spawnDeliveryDaemon = () => bootDeliveryDaemon({ space: SPACE, servers: SERVER, auth, reloadStoreIdentity: store.identity });
   delivery = await spawnDeliveryDaemon();
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -398,7 +372,7 @@ try {
   await waitAuthReady();
   await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
@@ -461,15 +435,15 @@ try {
     inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), ch, principal.key, uid)) !== undefined);
   const memberRowsFor = () =>
     inspect(async (_j, nc) => (await listMembers(await openMembersRegistry(nc, SPACE), { owner: principal.key })).map((r: { channel: string; lifecycleUid: string }) => `${r.channel}/${r.lifecycleUid}`).sort());
-  const jGeneral = await delivery!.durableJoinFor(principal.key, "general", predUid);
-  const jUnnamed = await delivery!.durableJoinFor(principal.key, "unnamed", predUid);
+  const jGeneral = await delivery!.ep.durableJoinFor(principal.key, "general", predUid);
+  const jUnnamed = await delivery!.ep.durableJoinFor(principal.key, "unnamed", predUid);
   // A row on a dotted channel reached only through a wildcard grant, and a FOREIGN principal's row.
-  await delivery!.durableJoinFor(principal.key, "team.api", predUid);
+  await delivery!.ep.durableJoinFor(principal.key, "team.api", predUid);
   const foreign = principalKey(OWNER, "bystander"), foreignUid = predUid.split("").reverse().join("");
-  await delivery!.durableJoinFor(foreign.key, "general", foreignUid);
+  await delivery!.ep.durableJoinFor(foreign.key, "general", foreignUid);
   const foreignRow = () => inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", foreign.key, foreignUid)) !== undefined);
   // A SAME-principal row under another lifecycle uid (a stale/other generation of this alias).
-  await delivery!.durableJoinFor(principal.key, "side", foreignUid);
+  await delivery!.ep.durableJoinFor(principal.key, "side", foreignUid);
   const otherGenRow = () => memberRow("side", foreignUid);
 
   const corruptKey = memberKey("unreadable", principal.key, predUid);
@@ -692,7 +666,7 @@ try {
   // three named BARRIER cells (dm durable, dlv durable, read-ACL), so these cells are not green
   // merely because an unobserved no-op ran.
   console.log("E) replay the retired predecessor's broker cleanup against the live replacement");
-  await delivery!.durableJoinFor(principal.key, "general", succUid);
+  await delivery!.ep.durableJoinFor(principal.key, "general", succUid);
   check("MEMBERS: the replacement holds its own lifecycle-distinct general row", succUid !== predUid && await memberRow("general", succUid), { predUid, succUid });
   replayAtMs = Date.now();
   // A conforming retired-lifecycle no-op may also throw; a DeprovisionError carries that call's accounting.
@@ -756,13 +730,11 @@ try {
   const sibKey = sib ? principalKey(OWNER, sib).key : "";
   const sibRow = (ch: string) => inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), ch, sibKey, sibUid!)) !== undefined);
   if (sib && sibUid) {
-    await delivery!.durableJoinFor(sibKey, "general", sibUid);
-    await delivery!.durableJoinFor(sibKey, "unnamed", sibUid);
+    await delivery!.ep.durableJoinFor(sibKey, "general", sibUid);
+    await delivery!.ep.durableJoinFor(sibKey, "unnamed", sibUid);
   }
 
-  // Stop only the fixture delivery daemon and observe actual lease absence:
-  const leaseEntry = await delivery!.readDeliveryLeaseEntry(0);
-  if (leaseEntry) await delivery!.releaseDeliveryLease(0, leaseEntry.revision).catch(() => {});
+  // Stop only the fixture delivery daemon (its stop releases the lease) and observe actual lease absence:
   await delivery!.stop();
   delivery = undefined;
   await wait(100);
@@ -819,8 +791,8 @@ try {
   // The predecessor was terminalized and reaped: its durable consumers, ACL rows, and 3 member rows are gone.
   // The replacement agent (succUid) is live on the mesh; presence offline or transport disconnect never reaps it.
   const succKey = principal.key;
-  await delivery!.durableJoinFor(succKey, "unnamed", succUid);
-  await delivery!.durableJoinFor(succKey, "team.api", succUid);
+  await delivery!.ep.durableJoinFor(succKey, "unnamed", succUid);
+  await delivery!.ep.durableJoinFor(succKey, "team.api", succUid);
   const succMembersBefore = (await memberRowsFor()).filter((k: string) => k.endsWith(succUid));
   check("OFFLINE: replacement holds complete active memberships before going offline",
     succMembersBefore.length === 3, succMembersBefore);
@@ -917,7 +889,7 @@ try {
     });
     const liveSlotBefore = await readStaticSlot(staticTransport, DEV_OWNER, liveAlias);
     await casStaticSlot(staticTransport, { ...liveSlotBefore!.row, phase: "active" }, liveSlotBefore!.revision);
-    await delivery!.durableJoinFor(livePrincipal.key, "general", liveUid);
+    await delivery!.ep.durableJoinFor(livePrincipal.key, "general", liveUid);
 
     // 2. Setup unadopted orphan static slot (3 channels: general, team.api, unnamed):
     const orphanAlias = "static_orphan";
@@ -935,17 +907,17 @@ try {
     const orphanSlotBefore = await readStaticSlot(staticTransport, DEV_OWNER, orphanAlias);
     await casStaticSlot(staticTransport, { ...orphanSlotBefore!.row, phase: "active" }, orphanSlotBefore!.revision);
 
-    await delivery!.durableJoinFor(orphanPrincipal.key, "general", orphanUid);
-    await delivery!.durableJoinFor(orphanPrincipal.key, "team.api", orphanUid);
-    await delivery!.durableJoinFor(orphanPrincipal.key, "unnamed", orphanUid);
+    await delivery!.ep.durableJoinFor(orphanPrincipal.key, "general", orphanUid);
+    await delivery!.ep.durableJoinFor(orphanPrincipal.key, "team.api", orphanUid);
+    await delivery!.ep.durableJoinFor(orphanPrincipal.key, "unnamed", orphanUid);
 
     // Unrelated foreign principal and successor rows:
     const orphanForeign = principalKey(DEV_OWNER, "bystander_static");
     const orphanForeignUid = mintLifecycleUid();
-    await delivery!.durableJoinFor(orphanForeign.key, "general", orphanForeignUid);
+    await delivery!.ep.durableJoinFor(orphanForeign.key, "general", orphanForeignUid);
 
     const orphanSuccUid = mintLifecycleUid();
-    await delivery!.durableJoinFor(orphanPrincipal.key, "general", orphanSuccUid);
+    await delivery!.ep.durableJoinFor(orphanPrincipal.key, "general", orphanSuccUid);
 
     const orphanRowsFor = () =>
       inspect(async (_j, nc) => (await listMembers(await openMembersRegistry(nc, SPACE), { owner: orphanPrincipal.key })).map((r: { channel: string; lifecycleUid: string }) => `${r.channel}/${r.lifecycleUid}`).sort());
@@ -1023,7 +995,7 @@ try {
     });
     const racedSlot = await readStaticSlot(staticTransport, DEV_OWNER, racedAlias);
     await casStaticSlot(staticTransport, { ...racedSlot!.row, phase: "active" }, racedSlot!.revision);
-    await delivery!.durableJoinFor(racedPrincipal.key, "general", racedUid);
+    await delivery!.ep.durableJoinFor(racedPrincipal.key, "general", racedUid);
     const racedKeys = new Set<string>();
     await inspect(async (_j, nc) => {
       const { commitAcl, aclKey } = await import("@cotal-ai/core");
@@ -1063,7 +1035,7 @@ try {
 
   if (fail) process.exitCode = 1;
 } catch (e) {
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
   try { await manager?.stop({ withAgents: true }); } catch { /* already stopped */ }

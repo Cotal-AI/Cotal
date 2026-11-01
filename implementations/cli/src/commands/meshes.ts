@@ -359,7 +359,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
         `IdP       ${bundle.userAuth.idp.url}`,
         `issuer    ${bundle.userAuth.idp.issuer}`,
         `audience  ${bundle.userAuth.idp.audience}`,
-        `exchange  ${bundle.userAuth.endpoints?.url}`,
+        `exchange  ${bundle.userAuth.endpoints.url}`,
       ].join("\n"),
       "Pins fetched - trust them only if they match what the mesh's operator published",
     );
@@ -392,12 +392,12 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   // design (preflightTarget refuses user targets outright for exactly that reason). Both run even
   // under --force: unlike a static mesh, there is no "register it while it is down" story here —
   // an unverifiable pin set is not a record worth writing.
-  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)));
+  take(await verifyUserExchange(bundle.userAuth.endpoints.url, userExchangeIssuer(bundle.space)));
   take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"));
 
   const result = persistRemoteUserEntry(space, server, root, bundle, tlsRequired, Boolean(dial.residual));
   console.log(c.green(`✓ registered "${space}"`), c.dim(`${server}  user  ${root}`));
-  console.log(c.dim(`  pinned issuer ${bundle.userAuth.idp.issuer} · exchange ${bundle.userAuth.endpoints?.url}`));
+  console.log(c.dim(`  pinned issuer ${bundle.userAuth.idp.issuer} · exchange ${bundle.userAuth.endpoints.url}`));
   if (result.adoptedCurrent) console.log(c.dim(`it is now the default mesh - \`cotal spawn\` from any directory joins it`));
   else if (result.keptCurrent) console.log(c.dim(`current is still "${result.keptCurrent}" - \`cotal use ${space}\` to switch`));
 }

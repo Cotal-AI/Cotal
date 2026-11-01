@@ -106,8 +106,9 @@ const peers: Presence[] = ["alice", "bob", "carol"].map((name) => ({
 for (const lens of ["roster", "needs-you"] as const) {
   let selected: Presence | undefined;
   const open = (peer: Presence) => { selected = peer; };
+  const held = { current: { index: 0 } };
   const view = (rows: Presence[]) => lens === "roster"
-    ? <Roster agents={rows} endpoints={[]} query="" boxWidth={100} boxHeight={20} blocked={false}
+    ? <Roster view={held} agents={rows} endpoints={[]} query="" boxWidth={100} boxHeight={20} blocked={false}
       onFocus={() => {}} onOpenDetail={open} />
     : <NeedsYou waiting={rows} boxWidth={100} boxHeight={20} blocked={false}
       onFocus={() => {}} onOpenDetail={open} />;

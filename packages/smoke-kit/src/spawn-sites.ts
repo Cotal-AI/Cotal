@@ -40,6 +40,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
+import { launchedFiles } from "../../../scripts/mutation-command-safety.mjs";
 
 /** One place in the source that starts a `nats-server`. */
 export interface SpawnSite {
@@ -200,8 +202,23 @@ function paramArguments(src: string): Map<string, string[]> {
   return out;
 }
 
+/** Direct Node/tsx entrypoints declared by root smoke scripts are tests regardless of their names. */
+function smokeEntrypoints(cwd: string): Set<string> {
+  let manifest: { scripts?: Record<string, unknown> };
+  try { manifest = JSON.parse(readFileSync(resolve(cwd, "package.json"), "utf8")); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
+    throw error;
+  }
+  return new Set(Object.entries(manifest.scripts ?? {})
+    .filter(([name]) => name === "smoke" || name.startsWith("smoke:"))
+    .flatMap(([, command]) => launchedFiles(command))
+    .map((file) => relative(cwd, resolve(cwd, file)).replaceAll("\\", "/")));
+}
+
 /** Every site, in `git ls-files` order. */
 export function enumerateSpawnSites(cwd: string): SpawnSite[] {
+  const declaredTests = smokeEntrypoints(cwd);
   const files = execFileSync("git", ["ls-files", "*.ts", "*.mts", "*.cts", "*.mjs", "*.cjs", "*.js"], { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 })
     .split("\n")
     .filter((f) => f !== "");
@@ -285,7 +302,7 @@ export function enumerateSpawnSites(cwd: string): SpawnSite[] {
         ...(effectiveExpr === undefined ? {} : { pathExpr: effectiveExpr }),
         tokened,
         owned,
-        shipped: !(TEST_RE.test(file) || TEST_FILE_RE.test(file)),
+        shipped: !(declaredTests.has(file) || TEST_RE.test(file) || TEST_FILE_RE.test(file)),
         exempt: window.includes(EXEMPT_MARKER),
       });
     }

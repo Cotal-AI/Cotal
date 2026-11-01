@@ -26,10 +26,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, createSpaceAuth, evictDeniedPrincipalWithCreds, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { readRecord, recordPath } from "@cotal-ai/seat";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, makeSeatRoot } from "@cotal-ai/smoke-kit";
+import { bootDeliveryDaemon } from "./_boot-delivery.js";
 
 if (process.platform !== "linux") {
   console.log(`ORPHAN-SEAT ROLLBACK COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -62,14 +63,12 @@ for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete 
 const alias = "rollbackworker";
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `rollback-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); const seatRoot = makeSeatRoot("seats-"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", `${alias}.md`), `---\nname: ${alias}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; let manager: ChildProcess | undefined; const pids: number[] = [];
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined; let manager: ChildProcess | undefined; const pids: number[] = [];
 try {
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await wait(50); await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }), reloadStoreIdentity: () => workspaceSecretStore(root).identity });
-  // The manager's #1694 binding requires the answer to name a real holder of the delivery
-  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
-  // `holdsDeliveryLease` below is truthful.
-  await daemon.acquireDeliveryLease(0).catch(() => {});
+  // The shipped delivery rail: both eviction verbs, and the delivery lease held and renewed for the
+  // suite's whole life, so the manager's #1694 binding finds a real holder of the lease.
+  daemon = await bootDeliveryDaemon({ space, servers, auth, reloadStoreIdentity: workspaceSecretStore(root).identity });
 
   const marker = join(dir, "launched.json");
   let out = "", err = "";

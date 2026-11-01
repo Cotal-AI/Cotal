@@ -42,8 +42,9 @@ import {
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
   type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
-  mintLifecycleUid, type EpIssuanceGate, type EpIssuanceBarrier, type EpGateState, type EpServeLedgerRow,
+  type EpIssuanceGate, type EpIssuanceBarrier,
 } from "../src/index.js";
+import { makeIssuanceGate, type IssuanceGateInit } from "./_issuance-gate.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -109,87 +110,9 @@ function memKv(): KV {
   } as unknown as KV;
 }
 
-/** A faithful in-memory model of the §13.1 durable issuance gate (`gate.<lifecycleUid>`): ONE key
- *  binding `{lifecycleUid, state, generation, processEpoch, registrationRevision,
- *  nameAuthorityRevision, revision, op}` with BOTH halves of the seam sharing it. The mint's `commit`
- *  and every barrier's `freeze` are revision-pinned CAS on the SAME key and each advances
- *  `revision`, so exactly one of a parked mint's commit and a barrier's freeze wins. `freeze`
- *  returns the FROZEN revision as a fencing token; `reopen(token, …)` is a CAS that only the
- *  barrier still holding its token can win (a stale reopen loses). `stage` is CREATE-ONLY /
- *  idempotent-if-identical (a different row for the same credentialId conflicts). `evict` models
- *  verified cluster-wide eviction (records the principal; a per-gate override forces fail-closed).
- *  The ledger `rows` carry the normative §13.1 fields + `active`/`revoked` state. */
-function makeGate(init: { endpoint: string; lifecycleUid: string; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision?: number; evictOk?: boolean; space?: string; principal?: string }) {
-  let gate: EpGateState = {
-    space: init.space ?? space, // this smoke's single space; a per-gate override tests cross-space refusal
-    endpoint: init.endpoint,
-    lifecycleUid: init.lifecycleUid,
-    // The registered serving principal the mint binds to (§13.1): default matches the positive
-    // mint's `u_op.mgr`; a per-gate override drives the sibling-actor refusal probe.
-    principal: init.principal ?? "u_op.mgr",
-    state: "open",
-    generation: init.generation,
-    processEpoch: init.processEpoch,
-    registrationRevision: init.registrationRevision,
-    nameAuthorityRevision: init.nameAuthorityRevision ?? 0,
-    revision: 1,
-  };
-  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
-  const rows = new Map<string, EpServeLedgerRow>(); // keyed by credentialId; row.state is active|revoked
-  const evicted: string[] = [];
-  let evictOk = init.evictOk ?? true;
-  const observe = (): EpGateState | null => ({ ...gate });
-  const revoke = (row: EpServeLedgerRow) => { const e = rows.get(row.credentialId); if (e) e.state = "revoked"; };
-  const seam: EpIssuanceGate = {
-    observe,
-    stage: (row) => {
-      const existing = rows.get(row.credentialId);
-      if (existing) { // create-only / idempotent-if-identical: a differing row for the same id conflicts
-        if (JSON.stringify(existing) !== JSON.stringify(row)) throw new Error(`ledger row conflict: credentialId ${row.credentialId} already staged with a different value`);
-        return;
-      }
-      rows.set(row.credentialId, { ...row });
-    },
-    commit: (expectedRevision) => {
-      if (gate.state !== "open" || gate.revision !== expectedRevision) return false;
-      gate.revision++; // a winning mint advances the gate revision, staying open at the same tuple
-      return true;
-    },
-    revoke,
-  };
-  const barrier: EpIssuanceBarrier = {
-    observe,
-    freeze: (expectedRevision) => {
-      if (gate.state !== "open" || gate.revision !== expectedRevision) return null; // revision-pinned CAS
-      gate = { ...gate, state: "frozen", op, revision: gate.revision + 1 };
-      return gate.revision; // the fencing token = the frozen revision
-    },
-    enumerate: () => [...rows.values()],
-    revoke,
-    evict: (holderPrincipals) => holderPrincipals.map((p) => { if (!evictOk) return false; evicted.push(p); return true; }),
-    reopen: (token, succ) => {
-      if (gate.state !== "frozen" || gate.revision !== token) return false; // token-pinned CAS: a stale reopen loses
-      const { op: _op, ...frozen } = gate;
-      gate = {
-        ...frozen, state: "open",
-        generation: succ.generation, processEpoch: succ.processEpoch,
-        registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision,
-        revision: token + 1,
-      };
-      return true;
-    },
-  };
-  return {
-    seam, barrier, rows, evicted,
-    /** CAS-freeze the gate at its CURRENT revision (a barrier's first step); returns the token or null. */
-    freezeNow: () => barrier.freeze(gate.revision),
-    retire: () => { gate = { ...gate, state: "retired", op: { opId: mintLifecycleUid(), kind: "retirement" }, revision: gate.revision + 1 }; },
-    setEvictOk: (v: boolean) => { evictOk = v; },
-    coord: () => ({ ...gate }),
-    active: () => [...rows.values()].filter((r) => r.state === "active").length,
-    revoked: () => [...rows.values()].filter((r) => r.state === "revoked").length,
-  };
-}
+/** The shared in-memory §13.1 gate (`./_issuance-gate.ts`) in this smoke's space; a per-gate `space`
+ *  override tests cross-space refusal. */
+const makeGate = (init: Omit<IssuanceGateInit, "space"> & { space?: string }) => makeIssuanceGate({ ...init, space: init.space ?? space });
 
 /** Connect with `creds`, run `op`, and classify: any async permission/authorization violation
  *  (connection status or subscription callback) ⇒ "denied"; silence ⇒ "allowed". */

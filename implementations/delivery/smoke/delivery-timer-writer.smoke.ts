@@ -35,12 +35,12 @@ import {
   setupSpaceStreams, mintLifecycleUid, standaloneConnectOpts, openRecordsBucket, mintCheckpoint, readCheckpointStatus,
   eptSubject, eptStreamName, eptReqStreamName, timerWriterDurable,
   compileContract, contractDigest, registerServiceInstance, authorizeServeGrant,
-  type ServiceNameAuthority, type EpIssuanceGate, type EpIssuanceBarrier, type EpGateState,
-  type EpServeLedgerRow,
+  type ServiceNameAuthority,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { spaceMaterialDir } from "@cotal-ai/workspace";
 import { pickFreePort } from "./_free-port.js";
+import { makeIssuanceGate } from "../../../packages/core/smoke/_issuance-gate.js";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -96,60 +96,10 @@ function memKv(): KV {
   } as unknown as KV;
 }
 
-/** A faithful in-memory §13.1 gate: revision-pinned CAS for the mint's commit and the barrier's
- *  freeze/reopen, create-only ledger stage. Same model as the core serve-auth suite, trimmed. */
-function makeGate(init: { generation: number; processEpoch: number; registrationRevision: number }) {
-  let gate: EpGateState = {
-    space, endpoint: EP, lifecycleUid: IID, principal: "u_op.mgr",
-    state: "open",
-    generation: init.generation, processEpoch: init.processEpoch,
-    registrationRevision: init.registrationRevision, nameAuthorityRevision: 0, revision: 1,
-  };
-  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
-  const rows = new Map<string, EpServeLedgerRow>();
-  const observe = (): EpGateState | null => ({ ...gate });
-  const revoke = (row: EpServeLedgerRow) => { const e = rows.get(row.credentialId); if (e) e.state = "revoked"; };
-  const seam: EpIssuanceGate = {
-    observe,
-    stage: (row) => {
-      const existing = rows.get(row.credentialId);
-      if (existing) {
-        if (JSON.stringify(existing) !== JSON.stringify(row)) throw new Error(`ledger row conflict: ${row.credentialId}`);
-        return;
-      }
-      rows.set(row.credentialId, { ...row });
-    },
-    commit: (expectedRevision) => {
-      if (gate.state !== "open" || gate.revision !== expectedRevision) return false;
-      gate.revision++;
-      return true;
-    },
-    revoke,
-  };
-  const barrier: EpIssuanceBarrier = {
-    observe,
-    freeze: (expectedRevision) => {
-      if (gate.state !== "open" || gate.revision !== expectedRevision) return null;
-      gate = { ...gate, state: "frozen", op, revision: gate.revision + 1 };
-      return gate.revision;
-    },
-    enumerate: () => [...rows.values()],
-    revoke,
-    evict: (holderPrincipals) => holderPrincipals.map(() => true),
-    reopen: (token, succ) => {
-      if (gate.state !== "frozen" || gate.revision !== token) return false;
-      const { op: _op, ...frozen } = gate;
-      gate = {
-        ...frozen, state: "open",
-        generation: succ.generation, processEpoch: succ.processEpoch,
-        registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision,
-        revision: token + 1,
-      };
-      return true;
-    },
-  };
-  return { seam, barrier };
-}
+/** The shared in-memory §13.1 gate (`packages/core/smoke/_issuance-gate.ts`) for this suite's one
+ *  instance. */
+const makeGate = (init: { generation: number; processEpoch: number; registrationRevision: number }) =>
+  makeIssuanceGate({ space, endpoint: EP, lifecycleUid: IID, ...init });
 
 let daemon: ReturnType<typeof spawn> | undefined;
 let daemonExited = false;

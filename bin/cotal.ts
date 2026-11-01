@@ -16,6 +16,17 @@
  * late — it would crash while parsing string-width. This shim therefore keeps ZERO static imports
  * of that chain: the check runs first, and ./run.js is only pulled in (dynamically) once it passes.
  */
+import { setFlagsFromString } from "node:v8";
+
+// Node 24 can hang forever in process.exit(), after the command has printed its result
+// (nodejs/node#64274, #5498): exit joins V8's background threads, and a Maglev or background
+// Sparkplug compile parked waiting for a garbage collection never finishes. Turning both off here,
+// before the CLI loads, restores Node 22's defaults; cli-entry.smoke.ts checks that Maglev stays off.
+// Every command, and every daemon this binary re-execs, starts here. Remove these once the supported
+// Node releases carry the fix (nodejs/node#66171).
+setFlagsFromString("--no-maglev");
+setFlagsFromString("--no-concurrent-sparkplug");
+
 const MIN_NODE = "22.10";
 const [MIN_MAJOR, MIN_MINOR] = MIN_NODE.split(".").map(Number) as [number, number];
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map((part) => Number.parseInt(part ?? "", 10));

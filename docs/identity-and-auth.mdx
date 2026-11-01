@@ -1,0 +1,138 @@
+---
+title: Identity
+description: How Cotal identifies a peer and limits what that peer can do.
+kind: Concept
+audience: operators and implementers
+---
+
+import { Cards, Card } from 'fumadocs-ui/components/card';
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Cotal gives each peer an identity and a set of broker-enforced permissions. A peer can publish as itself and read only through the grants on its connection. These guarantees depend on a trusted broker and signer, and on receivers checking the sender.
+
+[SPEC §2](../SPEC.md#2-identity), [§9](../SPEC.md#9-nats--jetstream-security-and-authorization), [§10](../SPEC.md#10-connection-and-onboarding), and [Appendix B](../SPEC.md#appendix-b-profile-acls) define the contract. The [security model](security.mdx) explains the threats and limits.
+
+## On by default [#on-by-default]
+
+`cotal up` creates a space with JWT authentication. `cotal up --open` creates an unauthenticated development mesh. Both bind to loopback by default.
+
+`--host 0.0.0.0` changes the network bind independently of authentication. Open mode is outside the security guarantees in [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization).
+
+## Shared identity [#shared-identity]
+
+A principal is an `owner.actor` pair. The owner identifies the human or organization the peer acts for. The actor is that peer's handle within the owner. The pair appears in its card ID, sender subjects, presence key, and consumer names.
+
+Open development meshes use owner `local`. Per-user authentication derives an opaque owner token, `u_` followed by 26 base32 characters. The token avoids putting the person's identity in routing subjects.
+
+A locally generated nkey authenticates a connection. The signer receives its public key. The nkey is distinct from the principal, and static connections use it to scope their reply inbox.
+
+The broker pins sender tokens in publish subjects to the connection's principal. A peer cannot publish as another owner or as a sibling actor. Receivers must also reject a payload whose `from.id` differs from the subject sender. Both checks are required for sender authenticity ([SPEC §3](../SPEC.md#3-subject-layout), [§5](../SPEC.md#5-envelopes)).
+
+Each space is a NATS account. The broker operator signs that account, and the account signing key mints per-agent user JWTs.
+
+## Provisioner [#provisioner]
+
+The provisioner holds signing authority. It mints scoped credentials and creates the DM and role-task consumers that agents can bind but cannot create for themselves. The manager can host this work, but a space does not require a manager.
+
+Out-of-band minting is a static-auth operation. Its credentials expire after 24 hours by default; `--no-expiry` opts out of that bound. Reusing an identity does not reuse its lifecycle. [Provisioning and credential limits](identity-authority.mdx#provisioning) lists the options and refusal conditions.
+
+## Profiles [#profiles]
+
+A profile is a default-deny allow-list for a credential. The reference implementation builds permissions from the same subject, stream, and durable-name builders as the wire layout.
+
+An `agent` reads within its channel ACL and its own inboxes. An `observer` reads chat and presence. An `admin` adds elevated messaging reads, including DMs, while remaining read-only. Operator and workflow duties use separate, narrower profiles.
+
+An agent's channel configuration distinguishes what it reads at boot (`subscribe`), what it may read (`allowSubscribe`), and where it may post (`allowPublish`, default-deny). [Channels and permissions](channels-and-permissions.mdx) explains the configuration. The [profile reference](identity-authority.mdx#profiles) preserves each profile's grants and consumer limits.
+
+DM and task consumers are pre-created and bind-only. This prevents a peer from creating a consumer that reads another principal's DM inbox or another role's queue.
+
+## Issued authority [#issued-authority]
+
+A caller's identity alone does not prove the permission ceiling accepted by its issuer. For an issued credential, the issuer records that ceiling before releasing the credential. A generation in the endpoint subject binds requests to that record.
+
+Workflow admission requires this binding. Renewals preserve a generation only while the ceiling stays identical. The [issued-authority reference](identity-authority.mdx#issued-authority) explains the stores, endpoint rails, user-auth eligibility, and refusal boundaries.
+
+## Declared capabilities [#declared-capabilities]
+
+Agent files declare control authority. `capabilities: [spawn]` permits spawning, control of the caller's own children, and persona definition. `capabilities: [run]` adds workflow-run commands and includes the spawn set because a workflow may spawn agents.
+
+Without these capabilities, a peer retains self-despawn and the run-turn operations addressed to it. The exposed tools follow the grant. Persona content edits cannot add capabilities. See [capability grants](identity-authority.mdx#capabilities) for the full command and tool boundary.
+
+<Callout type="warn" title="Spawn grants authority on the manager host">
+On a static mesh, a spawn-capable caller can choose its child's channel ACL. Spawn also permits connector launch options on the manager host. Treat it as host-launch and ACL authority. Read the [host boundaries](security-boundaries.mdx#spawn-authority) before granting it.
+</Callout>
+
+## Per-user authentication [#per-user-authentication]
+
+With `cotal up --user-auth --idp <auth base URL>`, people sign in through an external identity provider. The auth service checks the actor ledger at every connection and mints that connection's scoped credential. The manifest equivalent is `broker.auth: "user"`.
+
+The first enable pins the IdP. Later enables cannot replace it with a different IdP. A missing grant denies access. User-auth commands refuse missing login or unavailable auth service rather than trying static credentials.
+
+Ordinary delegated agents stay inside their owner's channel and capability envelope. Checks follow the delegation chain to an authority root at grant time and at bearer exchange. Revocation reaches descendants in that chain. An admin-scoped ancestor is a separate authority root and ends containment checks. [User-auth lifecycle](identity-user-auth.mdx#delegation) covers this boundary and the ledger, catalogs, chat sessions, views, retirement, and recovery.
+
+### Enrollment redeem [#enrollment-redeem]
+
+An owner can give a remote seat a one-time enrollment URL when the seat has no browser, TTY, or cached login. The client redeems it once without redirects or retries. The token expires five minutes after minting.
+
+The URL is secret. It is neither persisted nor forwarded to children. The [enrollment contract](identity-user-auth.mdx#enrollment) gives the URL checks, response fields, and deliberately indistinguishable refusal cases.
+
+### Remote manager authority [#remote-manager-authority]
+
+Running a remote manager requires the separate `supervise` ledger scope. Neither `spawn` nor `admin` grants persistent manager registration authority.
+
+The host issues authority for one owner and one manager instance. The remote manager receives no signer or general mint API. If the host service or renewal is unavailable, it refuses new launches and replacement credentials. [Remote manager authority](identity-user-auth.mdx#remote-manager-authority) explains registration, recovery, and version-skew behavior.
+
+### Callout deadlines [#callout-deadlines]
+
+The auth service bounds callout work, queueing, and slow requests. See [callout deadlines](identity-service-auth.mdx#callout-deadlines) and [connect limits](identity-service-auth.mdx#connect-limits) for defaults, tuning, and refusal behavior.
+
+### Connect limits [#connect-limits]
+
+The broker authorization timeout and callout concurrency are separate limits. See [connect limits](identity-service-auth.mdx#connect-limits).
+
+### Held agent names [#held-agent-names]
+
+A refused name can identify a live actor, pending retirement, or a live lifecycle head. No rename or local deletion proves that authority ended. See [held agent names](identity-user-auth.mdx#held-agent-names).
+
+## The IdP callout contract [#the-idp-callout-contract]
+
+The low-level bridge accepts EdDSA/Ed25519 JWTs against pinned keys, issuer, and audience. The stock login and provider flow expects Better Auth's device-code endpoints and conventions. A different production IdP needs host login and provider wiring. An RS256 or ES256 issuer also needs normalization or re-issuance.
+
+[Auth service and IdP integration](identity-service-auth.mdx) describes both listeners, the bridge hooks, owner derivation, and proof requirements. Better Auth is a development and test fixture, not a runtime dependency.
+
+## Joining [#joining]
+
+A join link carries server, authentication, and space ([SPEC §10](../SPEC.md#10-connection-and-onboarding)).
+
+```text
+cotals://<token>@host:4222/<space>?channel=general
+```
+
+`cotals://` requires TLS. `cotal://` does not require TLS and permits downgrade attacks on an untrusted network.
+
+People use `cotal join --link …`. Agents can set `COTAL_LINK=…`, which the connector expands to join. Token and username/password links belong to the open-mode path. The default authenticated path uses a minted credential file, and the endpoint adopts its principal as the card ID.
+
+A managed seat reads credentials through [launch material](config.mdx#launch-material). Managed launches avoid putting `COTAL_CREDS` in an environment inherited by every descendant process. A manually driven session sets `COTAL_CREDS` itself.
+
+## Honest limitations (v0) [#honest-limitations-v0]
+
+The signer remains trusted, static copied credentials can remain broker-valid until expiry or key rotation, and the system-account credentials need scheduled renewal. Broker-authenticated senders are not portable signatures. Chat and role-task metadata have visibility limits distinct from message content.
+
+[Credential lifetime and rotation](security-boundaries.mdx#credential-lifetime) records the TTLs, rotation procedure, backup consequence, and hosted renewal option. The [security model](security.mdx) describes metadata exposure and the host boundary.
+
+An ACL-denied publish reaches the endpoint's error path as a logged denial. [Run a mesh](run-a-mesh.mdx) explains this diagnostic behavior.
+
+## Standalone endpoint callers [#standalone-endpoint-callers]
+
+Static `auth mint <name> --endpoint <class> --out <private-file>` can create a private native agent credential for supported endpoint calls. It adds explicit request rows from a fresh, digest-verified description and preserves the registered broker TLS policy.
+
+Only untargeted synchronous ephemeral commands are supported. The paired intent is a local coordination record, not broker admission, issued authority, or lifecycle proof. The [standalone caller reference](identity-authority.mdx#standalone-callers) lists the checks and unsupported cases.
+
+<Cards>
+  <Card title="Credential profiles and issued authority" href="identity-authority.mdx">
+    Look up mint options, profile limits, capabilities, and standalone caller checks.
+  </Card>
+  <Card title="Security model" href="security.mdx">
+    Review adversaries, broker guarantees, and limits before choosing a deployment.
+  </Card>
+</Cards>

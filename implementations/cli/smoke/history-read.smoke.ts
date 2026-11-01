@@ -592,6 +592,17 @@ try {
     const posted = await run(["send", "-c", "opz", "kept", "--space", space]);
     const typo = await run(["channel", "remove", "opz", "--yes", "--space", space, "--json"]);
     check("a channel with retained messages and no saved entry is a no-op that removed nothing", posted.status === 0 && typo.status === 0 && typo.envelope?.outcome === "no-op" && removedOf(typo) === false, { posted: shown(posted), typo: shown(typo) });
+    // A purger credential purges history and holds nothing on the channel registry. Its purge-and-remove
+    // purges, then cannot remove the entry: a partial outcome naming the purge, never "nothing was removed".
+    const purger = join(home, "purger.creds");
+    writeFileSync(purger, await mintCreds(auth, newIdentity(), "purger"), { mode: 0o600 });
+    const made = await run(["channel", "set", "scratch", "--desc", "x", "--space", space, "--json"]);
+    const partial = await run(["channel", "remove", "scratch", "--purge", "--yes", "--creds", purger, "--space", space, "--server", servers, "--json"]);
+    const cleaned = await run(["channel", "remove", "scratch", "--yes", "--space", space, "--json"]);
+    check("a purge-and-remove whose registry step is refused is OPERATION_PARTIAL, exit 4, naming the purge it made",
+      made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
+        && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
+      { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
   }
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────

@@ -82,13 +82,16 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  Bumped to 12 for `cli-startup.yml` (a649d6eae): it starts on a dispatch only, so it is not
  *  push-to-main startable and declares no group; only the total moves.
  *
+ *  Bumped to 13, and push-to-main to 8, for `remotion.yml` (760f39c3c): a path-filtered push to main
+ *  starts its typecheck, and it declares no group, so EXPECTED_GROUPED is unchanged.
+ *
  *  `changesets.yml` moved its group from the workflow to its `version-pr` and `publish` jobs
  *  (5046e8632), so a publication waits only for the previous upload and not for its install check.
  *  It still counts as grouped: a job's own group evicts its pending job the same way. */
-const EXPECTED_WORKFLOWS = 12;
-const EXPECTED_PUSH_TO_MAIN = 7;
+const EXPECTED_WORKFLOWS = 13;
+const EXPECTED_PUSH_TO_MAIN = 8;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
- *  workflow but `windows-identity.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
+ *  workflow but `windows-identity.yml` and `remotion.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
  *  when every pushed pull-request head kept its own 12-shard reproof matrix and its own docs build
  *  queued against the org's 20 concurrent-job cap. Both now use the CI policy: a pull-request push
  *  supersedes the run already going for that ref, a merge to main queues (`queue: max`) instead of

@@ -188,6 +188,7 @@ import {
 import { makeDeliveryAdminPrincipalOracle } from "../../auth/src/plane-claim.js";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
+import { approveDevice } from "../../auth/smoke/_device-approval.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { loadOrCreateRemoteManagerIdentity, remoteManagerMaintenanceRequest } from "../src/remote-authority.js";
 import { MANAGER_ENDPOINT, managerClusterArtifacts } from "../src/manager-service-contract.js";
@@ -470,24 +471,20 @@ try {
     returnHeaders: true,
   });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
-  const approve = async (userCode: string): Promise<void> => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-    const response = await fetch(`${idpUrl}/device/approve`, {
-      method: "POST", headers: { "content-type": "application/json", cookie, origin }, body: JSON.stringify({ userCode }),
-    });
-    if (!response.ok) throw new Error(`device approval failed: HTTP ${response.status}`);
-  };
-  await establishIdpSession({ dir: home, idpUrl, clientId, onPrompt: (prompt: { userCode: string }) => void approve(prompt.userCode) });
+  const approve = (userCode: string) => approveDevice({ base: idpUrl, cookie, origin }, userCode);
+  await establishIdpSession({ dir: home, idpUrl, clientId, onPrompt: (prompt: { userCode: string }) => approve(prompt.userCode) });
   const owner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: [], allowPublish: [] });
   grantActor(hostDir, { owner, actor: "admin_requester", scope: ["admin"], allowSubscribe: [], allowPublish: [] });
   const callout = await loadCalloutAuth(hostStore, space);
   if (!callout) throw new Error("host callout material is missing");
+  const participantUserAuth = {
+    provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(participantUserAuth);
   persistRemoteUserEntry(space, server, participantRoot, {
     space, server, tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: participantUserAuth,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const { findMesh, recordMesh } = await import("@cotal-ai/workspace");
@@ -812,31 +809,23 @@ registry.register({
     dir: secondHome,
     idpUrl,
     clientId,
-    onPrompt: async (prompt) => {
-      await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(prompt.userCode)}`, {
-        headers: { cookie: secondCookie, origin },
-      });
-      const response = await fetch(`${idpUrl}/device/approve`, {
-        method: "POST",
-        headers: { "content-type": "application/json", cookie: secondCookie, origin },
-        body: JSON.stringify({ userCode: prompt.userCode }),
-      });
-      if (!response.ok) throw new Error(`second device approval failed: HTTP ${response.status}`);
-    },
+    onPrompt: (prompt) => approveDevice({ base: idpUrl, cookie: secondCookie, origin }, prompt.userCode),
   });
   const savedHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = secondHome;
   const secondOwner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   grantActor(hostDir, { owner: secondOwner, actor: "cli", scope: ["supervise"], allowSubscribe: [], allowPublish: [] });
+  const secondUserAuth = {
+    provider: "cotal",
+    idp: { url: idpUrl, issuer: origin, audience: origin },
+    endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(secondUserAuth);
   persistRemoteUserEntry(space, server, secondRoot, {
     space,
     server,
     tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal",
-      idp: { url: idpUrl, issuer: origin, audience: origin },
-      endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: secondUserAuth,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const foreignEntry = findMesh(space);

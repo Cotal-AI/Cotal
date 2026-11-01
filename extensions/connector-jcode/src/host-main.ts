@@ -26,6 +26,9 @@ const STARTUP_FAILURE_CODES = new Set([
   "sessions_enumeration_failed",
   "sessions_unwritable",
   "provider_auth_refused",
+  "provider_payment_required",
+  "provider_forbidden",
+  "provider_rate_limited",
   "provider_request_failed",
 ]);
 

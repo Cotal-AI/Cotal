@@ -85,9 +85,9 @@ function assertRegistrationAccountBinding(bundle: UserBundle, account: AuthSpace
     throw new Error(`${label} names IdP trust that differs from the proved catalog account`);
   const accountOrigin = new URL(accountIdp).origin;
   for (const [name, raw] of [
-    ["exchange endpoint", bundle.userAuth.endpoints?.url],
-    ["agent-provisioning endpoint", bundle.userAuth.endpoints?.agentProvisioningUrl],
-    ["manager-authority endpoint", bundle.userAuth.endpoints?.managerAuthorityUrl],
+    ["exchange endpoint", bundle.userAuth.endpoints.url],
+    ["agent-provisioning endpoint", bundle.userAuth.endpoints.agentProvisioningUrl],
+    ["manager-authority endpoint", bundle.userAuth.endpoints.managerAuthorityUrl],
   ] as const) {
     if (!raw) continue;
     let endpoint: URL;

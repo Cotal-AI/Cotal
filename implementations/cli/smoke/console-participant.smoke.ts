@@ -170,7 +170,7 @@ try {
 
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
 } finally {
   for (const s of stops.reverse()) { try { await s(); } catch { /* down */ } }
   srv.kill("SIGKILL");

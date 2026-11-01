@@ -6,6 +6,7 @@ export const INFRASTRUCTURE_MARKERS: readonly [
 ];
 
 export function smokeTokens(command: string): string[];
+export function launchedFiles(command: unknown): string[];
 export function isLiveNamedToken(token: string): boolean;
 export function infrastructureMarkerIn(source: string): string | undefined;
 

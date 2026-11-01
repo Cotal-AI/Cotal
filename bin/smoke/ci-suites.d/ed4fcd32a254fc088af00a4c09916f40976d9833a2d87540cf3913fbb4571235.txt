@@ -1,0 +1,2 @@
+# The console roster's head row keeps its padding cell when a wide character meets the cut.
+smoke:console-roster-head

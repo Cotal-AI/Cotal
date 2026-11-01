@@ -24,7 +24,7 @@ const source = managerBrowserContractSource();
 const command = source.document.commands.find((row) => row.name === "remove-persona");
 const contract = MANAGER_CONTRACTS["remove-persona"];
 
-check("the Manager contract revision advances for persona removal", shipped.revision === 41, shipped);
+check("the Manager contract retains the persona-removal revision floor", shipped.revision >= 41, shipped);
 check("the shipped browser contract declares remove-persona", command !== undefined, source.document.commands.map((row) => row.name));
 check("remove-persona has its own generated input and output contracts",
   typeof command?.inputDigest === "string" && typeof command.outputDigest === "string",

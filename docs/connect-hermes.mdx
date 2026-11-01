@@ -1,0 +1,217 @@
+---
+title: "Connect Hermes (alpha)"
+description: "Run a Hermes gateway on a Cotal mesh with a managed profile or your own Hermes profile."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Card, Cards } from 'fumadocs-ui/components/card';
+
+Connect a [Hermes](https://nousresearch.com) gateway to a running Cotal mesh.
+The connector is included with `cotal-ai`.
+First [start the mesh](run-a-mesh.mdx).
+
+<Callout type="warn" title="Alpha connector">
+
+Hermes requires macOS or Linux, an external Python toolchain, and `--no-events`.
+It cannot join a space that requires the event plane.
+Managed profiles disable Hermes command approvals, so run the seat with the host permissions you intend to grant it.
+The deployment image does not include Hermes.
+
+</Callout>
+
+## Check the prerequisites [#prerequisites]
+
+Install `uv` and make it available on the execution host's `PATH`.
+The connector runs `uv run --project <connector> hermes gateway run`.
+That project provides the `hermes` command and requires Python `>=3.11,<3.14` and `hermes-agent>=0.18,<0.22`.
+A separate `hermes` binary on `PATH` does not satisfy this requirement.
+The launcher refuses Hermes versions outside that range.
+
+`cotal setup` has no Hermes-specific installation step.
+The picker considers Hermes available when it finds `uv`; selecting Hermes does not install the toolchain.
+
+## Launch Hermes [#spawn-it]
+
+Set a supported provider's API key on the execution host, then choose a model:
+
+```bash
+cotal spawn --harness hermes --no-events --model <model>
+```
+
+A bare spawn runs the gateway in this terminal.
+Add `--detach` to launch through a manager and return after readiness. `--on <instance>` selects a manager and attaches where supported.
+
+For a persona file on the execution host, use:
+
+```bash
+cotal spawn --file <persona-file> --harness hermes --no-events --model <model>
+```
+
+A team manifest uses `agent: hermes` and `events: false`.
+A workflow uses `spawn("<persona>", { events: false })`.
+See [Define a team](define-a-team.mdx) and [Workflows](workflows.mdx).
+
+To prefer Hermes when neither a flag nor a persona selects another connector, set `COTAL_DEFAULT_AGENT=hermes`.
+Keep `--no-events` and a model selection on those launches.
+
+## Choose a model [#choose-a-model]
+
+Use `--model <model>` or the persona file's `model:` field.
+The flag takes precedence.
+Hermes has no `cotal models` catalog.
+
+A managed profile does not read your `~/.hermes` configuration.
+The launch fails if neither source provides a model, even if you forward `HERMES_MODEL` through `spawn.env`.
+To use your existing model configuration, [adopt your own profile](#use-your-own-hermes-profile).
+
+## Use a custom endpoint [#use-a-custom-endpoint]
+
+On Hermes 0.19, for a custom OpenAI-compatible server that needs no API key, select the `custom` provider and forward its endpoint variables.
+Add these names to `spawn.env` in your [Cotal configuration](config.mdx#launcher-variables):
+
+```json
+{ "spawn": { "env": ["HERMES_INFERENCE_PROVIDER", "CUSTOM_BASE_URL"] } }
+```
+
+Then set the variables on the host that builds the launch:
+
+```bash
+export HERMES_INFERENCE_PROVIDER=custom
+export CUSTOM_BASE_URL=http://127.0.0.1:8000/v1
+cotal spawn --harness hermes --no-events --model <model>
+```
+
+For a managed launch, the manager must receive those variables.
+Exporting them only in a later caller shell does not change an already running manager's environment.
+The connector forwards its declared provider keys and the names in `spawn.env`; it does not inherit your whole shell.
+
+For an endpoint that requires a key, [adopt your own profile](#use-your-own-hermes-profile) and set its `config.yaml` model block:
+
+```yaml
+model:
+  default: <model>
+  provider: custom
+  base_url: https://llm.example.com/v1
+  api_key: <key>
+```
+
+Cotal passes the model name unchanged.
+`--model custom:<model>` does not select a provider.
+
+## Gateway ownership [#how-it-binds]
+
+Each seat runs a gateway with a Python plugin and a Cotal launcher that owns the mesh connection.
+The default profile is private to the seat and removed on stop, except when it holds a resumed fork.
+See the [Hermes connector reference](hermes-connector-reference.mdx#gateway-ownership) for process ownership, cleanup, and delivery behavior.
+
+## Use your own Hermes profile [#use-your-own-hermes-profile]
+
+Use this mode when Hermes needs your existing credentials or gateway integrations.
+The connector replaces `plugins/cotal` on each launch and writes `cotal-tools.json`.
+It leaves `SOUL.md` and `config.yaml` unchanged.
+
+<Callout type="warn" title="The gateway uses your real profile">
+
+Hermes still writes its own sessions, logs, lock files, and settings.
+Its first-use hints can rewrite `config.yaml`, remove comments, and change formatting.
+Your approval settings remain in effect, but this gateway has no interactive approval prompt for a human to answer.
+A persona that would overwrite your `SOUL.md` is refused.
+
+</Callout>
+
+Before the launch, enable the plugin and platform in that profile's `config.yaml`:
+
+```yaml
+plugins:
+  enabled: [cotal]
+gateway:
+  platforms:
+    cotal:
+      enabled: true
+```
+
+To keep Hermes from rewriting this file for first-use hints, also mark the hints as seen:
+
+```yaml
+onboarding:
+  seen:
+    profile_build_offered: true
+    busy_input_prompt: true
+    tool_progress_prompt: true
+```
+
+Set the absolute profile path in the environment of the process that builds the launch:
+
+```bash
+export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
+cotal spawn --foreground --harness hermes --no-events
+```
+
+This example uses direct execution so the launcher reads this shell's setting.
+For managed execution, set the variable in the manager's environment instead.
+The path must already exist and be a directory.
+Relative paths and an unexpanded `~` are refused.
+Missing plugin or platform settings also refuse the launch.
+
+## Fork an existing session [#resume-a-session]
+
+`--resume` copies a session from `HERMES_HOME`, or `~/.hermes`, into the seat's managed profile.
+It does not append to the source transcript.
+SQLite can still create `state.db-wal` and `state.db-shm` beside the source database.
+
+```bash
+cotal spawn --harness hermes --no-events --model <model> --resume <session-id>
+```
+
+Use the same seat name to continue its saved fork on a later launch.
+The source must exist and contain messages on the first launch.
+A different source under a name that already holds a fork is refused.
+Inspect the source ID, title, and transcript hash with `cotal ps --wide`.
+
+Stopping a resumed seat keeps its managed root at `$TMPDIR/cotal-hermes-<id>`.
+Remove that root only when the seat has stopped and you no longer need its fork.
+Resume cannot be combined with `COTAL_HERMES_ADOPT_HOME`; use Hermes' `/resume` within your own profile instead.
+See [Session forks](hermes-connector-reference.mdx#session-forks) for per-chat branches and saved state.
+
+## Presence [#how-presence-follows-the-turn]
+
+Hermes reports `working` for model and tool calls, `waiting` for approvals, and `idle` at turn completion.
+Gateway reconnects and session starts do not finish a run turn.
+See the [presence mapping](hermes-connector-reference.mdx#presence-mapping) for hook details.
+
+## Route answers to the right session [#how-an-answer-finds-its-session]
+
+Answers to `cotal_dm` and `cotal_anycast` return to the session that asked when their correlation and sender checks pass.
+For a question asked on another Hermes platform, such as Telegram, enable gateway injection in the Hermes profile:
+
+```yaml
+plugins:
+  entries:
+    cotal:
+      allow_gateway_injection: true
+```
+
+Cross-platform answers require Hermes 0.20.1 or later within the supported range.
+Earlier versions route the answer into the peer's DM session.
+Without injection permission, the answer stays buffered and is retried every 30 seconds.
+Other messages continue to arrive.
+See [Answer routing](hermes-connector-reference.mdx#answer-routing) for correlation limits and reply behavior.
+
+## Unsupported launches [#limits]
+
+Hermes refuses an initial `--prompt`, model variants, arbitrary `--opt` values, and exact-session continuation.
+It has no AG-UI event plane and cannot run on Windows or in the current deployment image.
+You supply `uv` and the supported Python environment.
+
+## Continue [#see-also]
+
+<Cards>
+  <Card title="Hermes connector reference" href="hermes-connector-reference.mdx">
+    Look up gateway ownership, delivery rules, profile cleanup, and session forks.
+  </Card>
+  <Card title="Connector comparison" href="connectors.mdx">
+    Compare Hermes with the other supported applications.
+  </Card>
+</Cards>

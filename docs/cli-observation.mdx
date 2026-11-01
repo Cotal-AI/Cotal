@@ -1,0 +1,162 @@
+---
+title: CLI observation
+description: Read-only activity feeds, the operator console, and the dashboard service.
+kind: Reference
+audience: operators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The console, observer, and dashboard expose different control boundaries. Their reports describe observed state and do not establish task completion.
+
+
+## console [#console]
+
+```bash
+cotal console [--plain] [--space <s>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
+| `--plain` | off | Line stream instead of the TUI |
+
+A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
+line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
+no status marks and its punctuation in ASCII. The line stream reports a lost connection in one line
+while it re-establishes it. A credential that can no longer connect ends it with the refusal a
+one-shot command with that credential gets, as [`history --follow`](cli-messaging.mdx#history) does. Ctrl-C or
+SIGTERM ends either view at any time. On a
+user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
+`admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the
+same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw
+`--creds` file cannot drive it. `a` (or `:attach <agent>`) runs
+[`cotal attach`](cli-agent-control.mdx#managed-seats) in place and returns to the console on detach. See
+[Watch a mesh](watch-a-mesh.mdx).
+
+Message bodies, names and other text from peers are untrusted. Both views show a control character
+in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
+a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
+The TUI wraps a body, and a roster seat's rows, by terminal columns: a wide character such as a CJK
+ideograph or an emoji takes two, and a word wider than the pane breaks between characters, never
+inside one. On a seat's head, the name, harness tag, activity, the activity's age and the progress
+or heartbeat age each start a new row when they do not fit on the current one, so a long name never
+hides them. The roster draws whole seats around the selected one. When some do not fit, its title
+starts with how many whole seats are left out above and below the window, as in `roster ↑2 ↓1 more`,
+and `j` and `k` reach them. A seat taller than the pane shows only its first rows under the title,
+which a long activity can cause below 80 columns, where the roster has at most five rows for seats.
+The count leaves out those cut rows, since it counts whole seats.
+The agent detail's recent traffic cuts each preview by columns too, never inside a character, and a
+preview that leaves any of its text out ends with `…`. Closing a detail returns the feed to the
+message and scroll position it showed, and the roster to the seat it had selected, or to that row if
+the seat has left.
+
+
+
+## Web dashboard [#web-dashboard]
+
+
+### Dashboard command [#web]
+
+The dashboard is an owned service preset from `@cotal-ai/web`, not a top-level `web` command.
+It is not started by `up`. An absent extension requires the explicit `cotal ext add @cotal-ai/web`;
+starting a service never installs it or creates a caller credential.
+
+```bash
+cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
+cotal service start web --space main
+cotal service status web --space main
+cotal service logs web --space main
+cotal service stop web --space main --yes
+```
+
+
+### Dashboard authority
+
+This route requires a registered static-auth target, an existing protected credential file
+and explicit read-only intent. `--host` chooses a concrete bind/browser address, default
+`127.0.0.1`; wildcard binds refuse. `--port` is 1 to 65535, default 7799. Broker coordinates and
+required TLS come from the registered target. Broker TLS does not encrypt the dashboard's HTTP
+listener. The file supplies the only connection authority.
+No cached human login, managed-seat identity, operator signer or channel-purger credential is
+substituted. User-auth/open targets refuse, because no supported caller handoff is connected for them.
+The page marks this service read-only and hides channel delete; the server also refuses it before
+reading a delete body or opening a mutation connection. The broker still enforces the file's scope.
+
+
+### Private launch record
+
+The real child exclusively claims native PID custody. After the HTTP listener and signal handlers
+exist, it writes a create-only owner-private session record for the full instance and launch, then
+a private process-initialization phase. This is not a fresh authenticated endpoint-health reply.
+Logs print only the session file's reference, never its bootstrap URL or readiness credential. A
+background `service start` ends with the `service logs` command for the new instance, which is where
+that reference appears. An endpoint error or warning in that log names only the error's class, its
+name and code, never its message. Open the private file locally and use its single-use launch link in the
+intended browser. There is no automatic browser action. The existing cookie and origin gates remain in use. Confirmed close
+removes only this child's unchanged session/PID records; uncertainty retains custody.
+
+Foreground service start uses the shared terminal lifetime. OS installation and full native caller
+parity are not supported. An old cached `command:web` descriptor is hidden and refuses with the matching
+extension-update remedy before package loading or repair. It is not resolved by removing the
+dashboard, starting a second process or silently reinstalling it.
+
+
+## watch [#watch]
+
+`cotal watch` opens the read-only activity screen for the selected space. `w` is its shorthand.
+It uses the existing observer view authority; a user-auth space requires the corresponding
+admin view grant. It does not register a participant, bind an inbox or expose local process
+controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
+
+Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
+terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
+300 entries. A reported turn ending is not task completion. An interrupted feed keeps its
+last observations and reports the gap instead of showing them as current. When the connection
+comes back, after a broker restart too, the feed resumes and reports the transition as a gap.
+
+`--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
+are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
+observer stream's row bound. A longer message is cut there, and its line ends with the count not
+shown and the read that shows it whole: `cotal history <channel>`, or `cotal history --dms` for a
+direct message. Authenticated observer views keep direct messages out of
+the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
+of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
+runs until a message arrives or Ctrl-C ends it with exit 130.
+
+A target this observer cannot open, such as a stopped project's space, is refused before any view
+exists, under the refusal's own code and exit 2, as `history`, `channel` and `chat` refuse it in that
+folder. The terminal gets the refusal's report, with the mesh it resolved and its next step;
+`--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
+
+
+### Observer stream [#observer-stream]
+
+`watch --json` emits versioned watch NDJSON records from the same MeshView as the terminal.
+Activity, events and messages filters use the shared classifier. Metadata snapshots identify
+scope, reported roster state, native channel counts and membership-read failures. Feed rows keep
+native message IDs and timestamps; coalesced updates are identified as observed rows, not new
+message publications or proof of task completion. No global sequence is invented.
+
+The feed has a 300-entry window and bounded per-channel prefill, not a complete history export.
+Window loss, connection transitions and text beyond the 16,384-code-unit row bound produce gap
+records, and a cut row carries `textTruncated` and `omittedCodeUnits`. Identity fields are not clipped. The stream does not claim that arbitrary publisher
+content is secret-redacted. Leaving the observer stops its own connection and sends no agent
+control request. Connection or authorization failure is an error, not an empty conversation.
+
+
+### Watch views [#watch-views]
+
+`watch --view` accepts `feed`, `events`, `messages`, `roster`, `channels`, `waiting`, `dms` and
+`topology`; `activity` remains the feed spelling. The terminal cycles available views with `f`.
+Roster and waiting rows show reported state without inventing blocked duration. Channel counts
+keep retained messages separate from observed arrivals. Topology displays broker-sourced live
+patterns and durable channels, not task dependencies or permission grants. Missing or unreadable
+membership is explicit, never an empty complete graph. Long identities wrap without clipping.
+
+The authenticated observer remains narrowed to channel traffic. Its DM view refuses instead of
+broadening credentials or inventing a private conversation identity, and with `--json` its `error`
+record names the space and the reason. Open-space DM observations
+retain native sender and target IDs. Use `--json` for versioned view records or `--plain` for line-oriented reports outside a
+terminal. Both use the same bounded observer lifecycle and shared view model. A line-oriented
+roster, channels, waiting or topology view prints its report again each time that report changes.

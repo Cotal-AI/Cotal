@@ -29,10 +29,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
-import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, PAGE, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
+import { bootWeb, startWeb } from "./boot-web.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -710,29 +711,17 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     await setupSpaceStreams({ servers: server, space: "consoleauthlog" });
 
     let output = "";
-    let token = "";
-    const webPort = await onFreePort(async (port) => {
-      child = spawn(process.execPath, [
-        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-        "--server", server, "--space", "consoleauthlog", "--port", String(port), "--no-open",
-      ], { stdio: ["ignore", "pipe", "pipe"] });
-      child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
-      child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
-      const taken = `Port ${port} is in use`;
-      for (let i = 0; i < 200 && !output.includes(taken); i++) {
-        token = output.match(/\?k=([A-Za-z0-9_-]{32,})/)?.[1] ?? "";
-        if (token) break;
-        await wait(50);
-      }
-      if (!token && output.includes(taken)) throw new PortInUseError(port, output);
-      return port;
+    const web = await bootWeb({
+      server, space: "consoleauthlog",
+      onSpawn: (spawned) => { child = spawned; }, onOutput: (text) => { output += text; },
     });
+    const webPort = web.port;
+    const token = web.launchUrl === undefined ? "" : new URL(web.launchUrl).searchParams.get("k") ?? "";
     check("LOG-LEAK FIXTURE: the real process printed a real launch token", token.length >= 32, output.slice(-300));
 
-    const exchanged = await fetch(`http://127.0.0.1:${webPort}/?k=${token}`, { redirect: "manual" });
-    const cookie = exchanged.headers.get("set-cookie")?.split(";")[0] ?? "";
-    check("LOG-LEAK FIXTURE: the real token minted a real session", exchanged.status === 302 && cookie.startsWith("cotal_web_session="),
-      { status: exchanged.status, cookie: cookie.slice(0, 24) });
+    const cookie = web.cookie ?? "";
+    check("LOG-LEAK FIXTURE: the real token minted a real session", web.exchangeStatus === 302 && cookie.startsWith("cotal_web_session="),
+      { status: web.exchangeStatus, cookie: cookie.slice(0, 24) });
 
     output = "";
     const encodedToken = [...token].map((ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
@@ -844,21 +833,10 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     let output = "";
     const childEnv = { ...process.env };
     for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
-    let served = false;
-    await onFreePort(async (port) => {
-      child = spawn(process.execPath, [
-        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-        "--server", server, "--space", "consoleauthdetached", "--port", String(port), "--no-open",
-      ], { env: { ...childEnv, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
-      child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
-      child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
-      const taken = `Port ${port} is in use`;
-      for (let i = 0; i < 200 && !output.includes(taken); i++) {
-        const response = await fetch(`http://127.0.0.1:${port}/api/meta`).catch(() => undefined);
-        if (response?.status === 401) { served = true; break; }
-        await wait(50);
-      }
-      if (!served && output.includes(taken)) throw new PortInUseError(port, output);
+    const { ready: served } = await startWeb({
+      server, space: "consoleauthdetached", env: { ...childEnv, COTAL_WEB_DETACHED_LOG: "1" },
+      onSpawn: (spawned) => { child = spawned; }, onOutput: (text) => { output += text; },
+      ready: async (_printed, port) => (await fetch(`http://127.0.0.1:${port}/api/meta`).catch(() => undefined))?.status === 401,
     });
     await wait(100);
     check("the real detached child writes startup diagnostics but no live launch URL to its persisted stream",

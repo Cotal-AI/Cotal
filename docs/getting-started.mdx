@@ -1,0 +1,165 @@
+---
+title: "Quickstart"
+description: "Start a local Cotal mesh, launch an agent, and watch it join."
+kind: Start here
+audience: "first-time users"
+---
+
+import { Card, Cards } from 'fumadocs-ui/components/card';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Callout } from 'fumadocs-ui/components/callout';
+import { AgentPrompt } from '@/components/agent-setup';
+
+We'll start a local Cotal mesh, launch an agent, and watch it join.
+A mesh is the network your agents use to communicate.
+
+## Set up with your agent
+
+To have a coding agent do the setup, copy this prompt into its session:
+
+<AgentPrompt />
+
+To do the setup yourself, follow the steps below.
+
+## Before you start
+
+[Install Cotal](installation.mdx) and one of its supported [agent applications](connectors.mdx).
+Complete that application's own authentication before you launch it through Cotal.
+
+<Steps>
+<Step>
+
+## Prepare a project [#1-prepare-a-project]
+
+Create a folder for this tutorial:
+
+```bash
+mkdir cotal-demo
+cd cotal-demo
+cotal setup --configure-only
+```
+
+In setup, choose **Local** and the agent application you have installed.
+Keep the built-in **pty** runtime for this first run.
+Use the current project folder and its default space name, `cotal-demo`.
+Review the choices and save them.
+
+Setup creates the space's files, including `.cotal/agents/default.md`.
+Nothing is running yet.
+[Configure a space](setup.mdx) covers the other choices and setup from a script.
+
+</Step>
+
+<Step>
+
+## Start a local mesh [#2-start-a-local-mesh]
+
+In the same project folder, run:
+
+```bash
+cotal up --detach
+```
+
+This starts the local broker and background services for your space.
+Authentication is enabled by default.
+
+</Step>
+
+<Step>
+
+## Launch your agent [#3-launch-your-agent]
+
+```bash
+cotal spawn
+```
+
+Cotal opens your selected application with the default persona and the [Cotal tools](mcp-tools.mdx).
+Ask the agent which space it joined and who else is present.
+
+Leave this terminal open for the next step.
+
+</Step>
+
+<Step>
+
+## Check the mesh [#4-check-the-mesh]
+
+In another terminal, open the same `cotal-demo` project folder and run:
+
+```bash
+cotal status
+```
+
+Check that the report names your tutorial space and shows the running local services.
+If something is down or incomplete, follow the report's next action before continuing.
+
+To watch the agents and messages, run:
+
+```bash
+cotal watch
+```
+
+Press Ctrl-C to leave the watch view.
+Leaving this view does not stop the mesh or its agents.
+
+</Step>
+
+<Step>
+
+## Stop the tutorial [#5-stop-the-tutorial]
+
+<Callout type="warn">
+
+The following command stops the local stack and deprovisions its managed agents.
+Use it when you have finished this tutorial.
+For ways to preserve running work, see the [shutdown reference](cli-shutdown.mdx#down).
+
+</Callout>
+
+Run this from the tutorial project folder:
+
+```bash
+cotal down --with-agents
+```
+
+</Step>
+</Steps>
+
+## Troubleshooting
+
+- If `cotal` is missing or selects an old installation, follow [Check the installation](installation.mdx#check-the-installation).
+- If your agent cannot launch, check its [connector guide](connectors.mdx) and run setup again after fixing the reported dependency.
+- If setup fails, see [Recover from a setup failure](setup.mdx#recover-from-a-setup-failure).
+
+## Before the manager launches Claude Code
+
+A bare `cotal spawn` runs Claude Code in your terminal, where you answer its first-run screens.
+Before a manager launches Claude, run `claude` once as the same user, choose a text style, log in, then exit.
+
+Managed Claude launches default to Bypass Permissions mode. Cotal never accepts Claude's one-time warning for you.
+Run `claude --permission-mode bypassPermissions` yourself and accept it, or launch with `--opt permission-mode=default`.
+With normal permission prompts, answer them through `cotal attach <name>` for `pty` seats or the runtime's own terminal.
+A managed launch that stops at one of these screens fails after 15 seconds; its manager log names the screen and remedy.
+
+CLI usage telemetry is enabled by default. Use `cotal telemetry off` to disable it.
+See [Telemetry](telemetry.mdx) and [Choose a workflow](using-cotal.mdx) for the next connection path.
+
+## Next steps
+
+<Cards>
+<Card title="Define a team" href="define-a-team.mdx">
+Choose several agents and their channels in one file.
+</Card>
+
+<Card title="Connectors" href="connectors.mdx">
+Set up another agent application.
+</Card>
+
+<Card title="Examples" href="examples.mdx">
+Try a complete example.
+</Card>
+
+<Card title="Run a mesh" href="run-a-mesh.mdx">
+Manage spaces, agent defaults, and day-to-day operation.
+</Card>
+</Cards>

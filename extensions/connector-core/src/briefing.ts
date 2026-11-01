@@ -5,7 +5,7 @@
  * else (orient first, feedback, mesh-first, durable runs, where to talk, how to reply, attention)
  * is composed here from the shared sentences in `orientation.ts` and `config.ts`.
  *
- * `docs/agent-briefing.md` is generated from this module (`pnpm gen:briefingdoc`) so a reviewer
+ * `docs/agent-briefing.mdx` is generated from this module (`pnpm gen:briefingdoc`) so a reviewer
  * reads the text each harness receives, and `pnpm check:docsbundle` fails when the page drifts.
  */
 import { feedbackLine, type AgentConfig } from "./config.js";

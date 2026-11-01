@@ -61,6 +61,11 @@ const withMember = compileContractSchema({
 ok("digest-pinned member resolves from the bundle", withMember({ name: "ok" }) === true && withMember({ name: "x" }) === false);
 
 // 3) Closure violations refuse loudly at registration.
+// #4012: meta-validation is pinned, not inherited, so a malformed keyword value refuses.
+refuses("malformed keyword value refused (type: 5)", () =>
+  compileContractSchema({ root: { type: 5 } }), "schema is invalid");
+refuses("malformed keyword value refused (minLength: -1)", () =>
+  compileContractSchema({ root: { type: "string", minLength: -1 } }), "schema is invalid");
 refuses("http $ref refused (no ambient resolution)", () =>
   compileContractSchema({ root: { $ref: "https://example.com/schema.json" } }), "external $ref");
 refuses("file $ref refused", () =>

@@ -1,0 +1,2 @@
+# An interrupted extension add is reported only once it has committed. Added with the suite, which defined the script but not this fragment.
+smoke:ext-add-interrupt

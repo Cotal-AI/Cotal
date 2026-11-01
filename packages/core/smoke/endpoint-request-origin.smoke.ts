@@ -9,10 +9,11 @@ import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   createSpaceAuth, serverConfig, isReachable, openRecordsBucket,
   registerServiceInstance, authorizeServeGrant, compileContract, contractDigest, VOID_SCHEMA,
-  mintLifecycleUid, serveEndpoint, epRequestSubject, type EpGateState, type EpIssuanceBarrier,
+  serveEndpoint, epRequestSubject,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, emitSentinel } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
+import { makeIssuanceGate } from "./_issuance-gate.js";
 
 // Exercise the public server boundary with native transport headers, not a copy of its filter.
 // Registry authority and the empty-family barrier are fixture seams, as in endpoint-serve.smoke.ts.
@@ -52,23 +53,12 @@ try {
   const clusterDigest = contractDigest(manifest);
   const artifacts = new Map<string, unknown>([[rootDigest, doc], [clusterDigest, manifest]]);
   const authority = { authorize: (name: string, who: string) => ({ authorized: name === endpoint && who === owner, revision: 0 }) };
-  let gate: EpGateState = { space, endpoint, lifecycleUid: instanceId, principal: "local.fixture", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 };
-  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
-  const barrier: EpIssuanceBarrier = {
-    observe: () => ({ ...gate }),
-    freeze: (revision) => { if (gate.state !== "open" || gate.revision !== revision) return null; gate = { ...gate, state: "frozen", op, revision: revision + 1 }; return revision + 1; },
-    enumerate: () => [], revoke: () => {}, evict: (holders) => holders.map(() => true),
-    reopen: (token, successor) => {
-      if (gate.state !== "frozen" || gate.revision !== token) return false;
-      const { op: _op, ...rest } = gate;
-      gate = { ...rest, state: "open", generation: successor.generation, processEpoch: successor.processEpoch, registrationRevision: successor.registrationRevision, nameAuthorityRevision: successor.nameAuthorityRevision, revision: token + 1 };
-      return true;
-    },
-  };
+  const gate = makeIssuanceGate({ space, endpoint, lifecycleUid: instanceId, principal: "local.fixture" });
+  const barrier = gate.barrier;
   const kv = await openRecordsBucket(nc, space, { create: true });
   const readClusterArtifact = (digest: string) => artifacts.get(digest);
   await registerServiceInstance(kv, { space, spec: { endpoint, owner, clusterDigests: [clusterDigest], protocol: { v: 1 } }, instanceId, registrant: { owner }, authority, barrier, readClusterArtifact });
-  const grant = await authorizeServeGrant(kv, { space, endpoint, instanceId, epoch: gate.processEpoch, holder: { owner }, authority, readProcessEpoch: () => gate.processEpoch, readClusterArtifact });
+  const grant = await authorizeServeGrant(kv, { space, endpoint, instanceId, epoch: gate.coord().processEpoch, holder: { owner }, authority, readProcessEpoch: () => gate.coord().processEpoch, readClusterArtifact });
   const calls: string[] = [], describeCalls: string[] = [], replies: string[] = [], observed: string[] = [];
   service = serveEndpoint(nc, space, grant, [{ command: "probe", contract: { input: contract, output: contract }, handler: (ctx) => { calls.push(ctx.request.id); return null; } }], {
     view: (_caller, context) => { describeCalls.push(context!.fingerprint); return { commands: ["probe"] }; },

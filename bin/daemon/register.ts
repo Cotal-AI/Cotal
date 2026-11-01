@@ -6,7 +6,7 @@
  * It runs the A2b.1 readiness check first. Any outcome other than `ready-to-register` is returned
  * unchanged, so a space without service endpoints gets 0 POST and no identity.
  *
- * Request identity follows the stock rule (docs/embedding.md, "Service authority contracts"): one
+ * Request identity follows the stock rule (docs/embedding.mdx, "Service authority contracts"): one
  * requestId per instance and body. It is persisted with the body digest before the first send, through
  * stock `claimIdentityRecord`, and replayed unchanged on every later call, restarts included. The host
  * bounds an instance to 64 distinct requests, so a fresh key is never minted for the same instance. A

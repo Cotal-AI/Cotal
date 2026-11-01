@@ -39,10 +39,12 @@ import {
   ensureOwnerSecret,
   ensurePinnedIdp,
   loadAuthServiceInfo,
+  loadAuthServiceRefusal,
   loadCalloutAuth,
   loadOwnerSecret,
   loadPinnedIdp,
   saveServiceKeys,
+  type AuthServiceRefusal,
 } from "./store.js";
 
 /** The pre-effect half of {@link cotalAuthProvider.prepareServer}: the space segment, the IdP pin
@@ -87,6 +89,14 @@ const READY_MAX_WAIT_MS = 60_000;
  *  accepts an undeterminable pid hands out an endpoint nothing is listening on. */
 function pidAlive(pid: number): boolean {
   return probeLiveness(pid) === "alive";
+}
+
+/** The daemon's recorded startup refusal, rebuilt as the typed error it threw: a caller keys on
+ *  the code and `details[].reason` (a plane-claim refusal's, SPEC 13.13), never on the copy. */
+function startupRefusal(r: AuthServiceRefusal): EpEnvelopeError {
+  if (!(EP_ERROR_CODES as readonly string[]).includes(r.code))
+    throw new Error(`auth service refused to start with an unknown error code (${JSON.stringify(r.code)}) - its log names the refusal`);
+  return new EpEnvelopeError(r.code as EpErrorCode, `auth service refused to start - the process (pid ${r.pid}) exited: ${r.message}`, r.details);
 }
 
 const deprovisionSecretKeys = (space: string) => [authCalloutKey(space), authIssuerKey(space), authOwnerSecretKey(space), authServiceKeysKey(space), authClientSentinelKey(space)];
@@ -202,9 +212,13 @@ export const cotalAuthProvider: AuthProvider = {
               lastReason = e instanceof Error ? e.message : String(e);
             }
             // The process-bound half of the contract: a daemon that EXITED can never become
-            // ready, so the wait ends AT ONCE (not at the clock) and the refusal says so.
-            if (daemonPid !== undefined && probeLiveness(daemonPid) === "dead")
+            // ready, so the wait ends AT ONCE (not at the clock) and the refusal says so. A daemon
+            // that refused its start left the typed refusal; it reaches the caller as itself.
+            if (daemonPid !== undefined && probeLiveness(daemonPid) === "dead") {
+              const refusal = loadAuthServiceRefusal(stateDir);
+              if (refusal?.pid === daemonPid) throw startupRefusal(refusal);
               throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);
+            }
             await new Promise((r) => setTimeout(r, 200));
           }
           if (daemonPid !== undefined && probeLiveness(daemonPid) === "alive")

@@ -1,4 +1,4 @@
-// Generate docs/mcp-tools.md from the live cotal_* tool specs (run: pnpm gen:tooldocs,
+// Generate docs/mcp-tools.mdx from the live cotal_* tool specs (run: pnpm gen:tooldocs,
 // which invokes this through tsx so the TS import below resolves).
 //
 // The names, titles, descriptions, and argument schemas come straight from
@@ -7,13 +7,14 @@
 // failure notes are not modelled on the specs, so they live in the ANNOTATIONS table
 // below; the script FAILS LOUD when a tool is missing an annotation (or an annotation is
 // orphaned), so adding or removing a tool forces the catalog to keep up.
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cotalToolSpecs } from "../extensions/connector-core/src/tool-specs.ts";
+import { markdownToMdx } from "@cotal-ai/docs-content/generate";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const out = join(here, "..", "docs", "mcp-tools.md");
+const out = join(here, "..", "docs", "mcp-tools.mdx");
 
 // A representative config: open-mode-ish (no creds ⇒ the capability-gated tools are
 // included and marked below), subscribed to `general` so channel-defaulted arguments render a
@@ -205,12 +206,6 @@ for (const s of specs) if (!ANNOTATIONS[s.name]) throw new Error(`missing annota
 for (const n of Object.keys(ANNOTATIONS)) if (!specNames.has(n)) throw new Error(`orphaned annotation ${n} — the tool no longer exists`);
 
 const lines = [];
-lines.push("# MCP tool catalog");
-lines.push("");
-lines.push(
-  "> **Reference**: the `cotal_*` tool surface every connected agent gets. · **For:** agents and operators · **Generated** from [`tool-specs.ts`](../extensions/connector-core/src/tool-specs.ts) by `pnpm gen:tooldocs`; do not edit by hand.",
-);
-lines.push("");
 lines.push(
   "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md), [Codex](connect-codex.md) and [Jcode](connect-jcode.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
 );
@@ -288,5 +283,18 @@ lines.push(
 );
 lines.push("");
 
-writeFileSync(out, lines.join("\n"));
+lines.push("Generated from [`tool-specs.ts`](../extensions/connector-core/src/tool-specs.ts) by `pnpm gen:tooldocs`.");
+const metadata = [
+  "---",
+  "title: MCP tool catalog",
+  "description: Arguments, availability, and effects of the Cotal tools exposed to agent sessions.",
+  "kind: Reference",
+  "audience: agents and operators",
+  "---",
+  "",
+  "",
+].join("\n");
+const markdown = lines.join("\n").replace(/\]\(([^)\s]+\.md)(#[^)]*)?\)/g, (match, target, hash = "") => existsSync(join(dirname(out), target + "x")) ? `](${target}x${hash})` : match);
+writeFileSync(out, metadata + markdownToMdx(markdown));
+
 console.log(`gen:tooldocs — wrote ${out} (${specs.length} tools)`);

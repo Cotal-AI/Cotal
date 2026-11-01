@@ -73,3 +73,42 @@ export function saveAuthServiceInfo(dir: string, info: AuthServiceInfo): void {
 export function clearAuthServiceInfo(dir: string): void {
   rmSync(join(dir, SERVICE_FILE), { force: true });
 }
+
+// ---- the auth-service startup refusal ----
+
+const REFUSAL_FILE = "auth-service-refusal.json";
+
+/** The typed refusal a daemon that could not start leaves for the readiness wait of the `up` that
+ *  launched it. The daemon exits, so without this the code and reason survive only in its log.
+ *  Bound to the daemon's pid: another start's refusal never answers this wait. Operator copy and
+ *  typed details only, never key material. */
+export interface AuthServiceRefusal {
+  pid: number;
+  code: string;
+  message: string;
+  details?: { kind: string; [key: string]: unknown }[];
+}
+
+interface RefusalFile extends AuthServiceRefusal {
+  ver: number;
+}
+
+export function loadAuthServiceRefusal(dir: string): AuthServiceRefusal | undefined {
+  const path = join(dir, REFUSAL_FILE);
+  const f = readStoreFile<RefusalFile>(path, "auth service refusal");
+  if (!f) return undefined;
+  const detailsOk = f.details === undefined || (Array.isArray(f.details) && f.details.every((d) => d !== null && typeof d === "object" && typeof d.kind === "string"));
+  if (typeof f.pid !== "number" || typeof f.code !== "string" || typeof f.message !== "string" || !detailsOk)
+    throw new Error(`${path}: malformed auth service refusal - the daemon's log names the refusal; remove this file and run \`cotal up\` again`);
+  return { pid: f.pid, code: f.code, message: f.message, ...(f.details !== undefined ? { details: f.details } : {}) };
+}
+
+export function saveAuthServiceRefusal(dir: string, refusal: AuthServiceRefusal): void {
+  mkSecretDir(dir);
+  writeSecretFileAtomic(join(dir, REFUSAL_FILE), JSON.stringify({ ver: STORE_VER, ...refusal } satisfies RefusalFile, null, 2));
+}
+
+/** Remove the refusal at the next daemon start, so the state dir holds at most the latest one. */
+export function clearAuthServiceRefusal(dir: string): void {
+  rmSync(join(dir, REFUSAL_FILE), { force: true });
+}

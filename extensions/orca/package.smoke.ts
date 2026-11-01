@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 import { fileURLToPath } from "node:url";
 import { launcherSource } from "@cotal-ai/core";
 import { isGoneCode, localCliEnv, OrcaCliError, resolveTerminal } from "./src/driver.js";
@@ -8,11 +9,10 @@ import { privateLauncher } from "./src/runtime.js";
 
 // The orca launcher contract is POSIX by construction: a bash script written 0o600 inside a
 // 0o700 dir. On Windows those modes are a no-op and bash is not the shell; secret-at-rest
-// hardening there is asserted by smoke:secret-fs (NTFS ACLs). Scope, loudly and counted, rather
-// than fail on a contract the platform cannot express.
+// hardening there is asserted by smoke:secret-fs (NTFS ACLs). Report a skip without passing
+// cells when the platform cannot express this contract.
 if (process.platform === "win32") {
-  console.log("  \u2713 win32: orca launcher contract is POSIX-scoped; NTFS hardening is asserted by smoke:secret-fs");
-  process.exit(0);
+  skipSuite("orca launcher contract is POSIX-only");
 }
 
 

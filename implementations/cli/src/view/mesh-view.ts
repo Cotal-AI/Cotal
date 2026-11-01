@@ -1,10 +1,4 @@
-// MeshView — the shared, render-agnostic model behind every "protocol view" surface
-// (the terminal console, the plain stream, the web dashboard). It consumes ONE read-only
-// observer endpoint and turns the raw wire into a normalized model: a status-sorted roster,
-// a classified + burst-coalesced + windowed feed, channel counts, a msgs/s rate, and the
-// derived operator signals (status counts, who's waiting, a per-peer DM roll-up). No ANSI,
-// no React, no HTML, no color — a surface only lays this out, it never re-derives it.
-// See docs/mesh-view.md.
+// See docs/mesh-view.mdx.
 
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
@@ -195,6 +189,8 @@ export class MeshView extends EventEmitter {
   private bucketEpoch = 0; // floor(now/BUCKET_MS) of the newest (last) bucket; 0 = uninitialized
   private connected = false;
   private error?: string;
+  private presenceCurrent = true;
+  private errorWhilePresenceStale = false;
   private warning?: string;
   private dirty = true;
   private membership: MembershipView = {};
@@ -210,6 +206,17 @@ export class MeshView extends EventEmitter {
   private readonly onPresence = (ev: unknown) => this.emit("presence", ev);
   private readonly onError = (e: Error) => {
     this.error = e.message;
+    this.errorWhilePresenceStale = !this.presenceCurrent;
+    this.dirty = true;
+  };
+  /** A broker restart reconnects the transport without a new `connection`, and its errors (the
+   *  presence stream missing until the space is provisioned again) arrive while the presence view
+   *  is stale. When that view is current again the outage is over, so its error clears with it
+   *  (AGENT-2889). An error raised while the view was current stays until the next connection. */
+  private readonly onPresenceView = (v: { state: string }) => {
+    const current = v.state === "current";
+    if (current && !this.presenceCurrent && this.errorWhilePresenceStale) this.error = undefined;
+    this.presenceCurrent = current;
     this.dirty = true;
   };
   /** A rebuilt connection clears the fault that dropped the old one, so the view reports itself
@@ -243,6 +250,7 @@ export class MeshView extends EventEmitter {
     this.ep.on("connection", this.onConnection);
     this.ep.on("roster", this.onRoster);
     this.ep.on("presence", this.onPresence);
+    this.ep.on("presence-view", this.onPresenceView);
     await this.ep.start();
     this.connected = true;
     this.setRoster(this.ep.getRoster());
@@ -270,6 +278,7 @@ export class MeshView extends EventEmitter {
     this.ep.off("connection", this.onConnection);
     this.ep.off("roster", this.onRoster);
     this.ep.off("presence", this.onPresence);
+    this.ep.off("presence-view", this.onPresenceView);
     clearTimeout(this.membershipTimer);
     // The endpoint's stop deletes the watch's consumer over a live connection, and it is what settles
     // the watch's own stop once the connection is closed for good, so it must not wait behind it.

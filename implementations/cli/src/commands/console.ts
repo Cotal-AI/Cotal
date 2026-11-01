@@ -29,16 +29,12 @@ async function loadTui() {
  * `cotal console` — the live protocol view. A real terminal gets the lazygit-style Ink TUI; a pipe
  * or `--plain` gets the passive line stream. With no `--space` on an open mesh it opens an admin
  * overview of every space first (pick one to drill in, `b` to come back); `--space X` goes straight
- * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/mesh-view.md.
+ * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/mesh-view.mdx.
  */
 export async function console_(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; plain?: boolean; creds?: string };
   // Resolve WHICH running mesh (server + trust material) from any directory — same as `spawn`/`web`.
-  // Auth mode self-mints an admin god-view cred (the console shows DMs/anycast, which the narrower
-  // `observer` profile denies → NATS Authorization Violation); an authed server hosts exactly one
-  // space, so we enter it directly. Open mode connects bare; with no --space, the TTY shows the
-  // space overview. An explicit --creds wins. USER MODE rides an exchange-gated "admin" VIEW
-  // bearer (ledger scope "admin") with a bearer source, same standing shape as the separately configured dashboard service.
+  // Admin authentication does not widen the console's chat-only tap.
   const conn = await connectOrExit(values, "admin");
   const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
   const { server, space: resolvedSpace, creds, auth } = conn;

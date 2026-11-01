@@ -18,16 +18,24 @@
  *
  * `--measure` instead reports RSS and CPU per space at 1, 4 and 16 lanes in one process against 16
  * single-space processes, under identical Plane-3 traffic: per space, three members joined durably
- * to one channel and one of them posting at a fixed rate.
+ * to one channel and one of them posting at a fixed rate. `--measure-shape host16|single16`
+ * selects one fresh-state shape. `--sublist-cache on|off` selects the native broker cache.
+ * `--verify-delivery` adds recipient-ID coverage with extra tracking overhead; compare its
+ * timings only with other verification runs. Aggregate-only runs still check accepted posts,
+ * copy counts and endpoint errors. Receiver coverage is not a broker queue-empty proof.
+ * `--cpu-profile-dir /new/private/path` adds native CPU diagnostics for host16 only, not
+ * ordinary performance: the actual delivery CLI child from startup through exit, and the
+ * broker for up to60 seconds requested as posting begins. No forced GC or runtime tuning.
  *
  * Runs the BUILT dist (`pnpm build` first). Needs `nats-server` on PATH.
  * Run: pnpm smoke:delivery-multi-space
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { parseArgs } from "node:util";
 import { connect, credsAuthenticator, NoRespondersError, RequestError, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, CONTROL_DELIVERY, DEV_OWNER, MEMBERSHIP_INBOX_PREFIX, composeSpaceAuth, controlServiceSubject, createBrokerAuth,
@@ -40,8 +48,36 @@ import {
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, procMem, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
+import { deliveryCoverage } from "./_delivery-coverage.js";
 
-const MEASURE = process.argv.includes("--measure");
+const { values } = parseArgs({ options: {
+  measure: { type: "boolean" },
+  "measure-shape": { type: "string", default: "all" },
+  "sublist-cache": { type: "string", default: "on" },
+  "verify-delivery": { type: "boolean" },
+  "cpu-profile-dir": { type: "string" },
+} });
+const MEASURE = values.measure === true;
+const SHAPE = values["measure-shape"];
+const SUBLIST_CACHE = values["sublist-cache"];
+const VERIFY_DELIVERY = values["verify-delivery"] === true;
+const CPU_PROFILE_DIR = values["cpu-profile-dir"];
+if (!["all", "host16", "single16"].includes(SHAPE)) throw new Error("--measure-shape must be all, host16 or single16");
+if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off") throw new Error("--sublist-cache must be on or off");
+if (!MEASURE && (SHAPE !== "all" || VERIFY_DELIVERY)) throw new Error("--measure-shape and --verify-delivery require --measure");
+const SECONDS = Number(process.env.COTAL_MSD_SECONDS ?? "30");
+const RATE = Number(process.env.COTAL_MSD_RATE ?? "2");
+if (MEASURE && (![SECONDS, RATE].every((n) => Number.isFinite(n) && n > 0)))
+  throw new Error("COTAL_MSD_SECONDS and COTAL_MSD_RATE must be positive finite numbers");
+const scheduledPosts = Math.ceil(RATE * SECONDS);
+if (MEASURE && (!Number.isSafeInteger(scheduledPosts) || scheduledPosts < 1))
+  throw new Error("scheduled post count must be a positive safe integer");
+if (CPU_PROFILE_DIR !== undefined) {
+  if (!MEASURE || SHAPE !== "host16" || !isAbsolute(CPU_PROFILE_DIR))
+    throw new Error("--cpu-profile-dir requires --measure --measure-shape host16 and an absolute new directory");
+  mkdirSync(CPU_PROFILE_DIR, { mode: 0o700 }); // existing paths refuse; profiles never overwrite a prior run
+}
+const BROKER_PROFILE_SECONDS = Math.min(60, Math.max(1, Math.ceil(SECONDS)));
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(test: () => boolean | Promise<boolean>, ms: number, step = 150): Promise<boolean> {
   const deadline = Date.now() + ms;
@@ -66,6 +102,7 @@ for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"
 }
 
 const port = await pickFreePort();
+const profilePort = CPU_PROFILE_DIR ? await pickFreePort() : undefined;
 const servers = `nats://127.0.0.1:${port}`;
 const tag = randomUUID().slice(0, 6);
 const brokerAuth = await createBrokerAuth(`msd-${tag}`);
@@ -75,8 +112,12 @@ const names = Array.from({ length: spaceCount }, (_, i) => `msd-${tag}-${String.
 const accounts = await Promise.all(names.map((space) => createSpaceAccountAuth(brokerAuth, space)));
 const auths: SpaceAuth[] = accounts.map((account) => composeSpaceAuth(brokerAuth, account));
 const config = join(dir, "server.conf");
-writeFileSync(config, serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port, host: "127.0.0.1", storeDir: join(dir, "js") }), { mode: 0o600 });
-const nats = spawn("nats-server", ["-c", config], { stdio: "ignore" });
+writeFileSync(config, serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port, host: "127.0.0.1", storeDir: join(dir, "js") })
+  + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\n`
+  + (profilePort ? `prof_port: ${profilePort}\n` : ""), { mode: 0o600 });
+const nats = spawn("nats-server", ["-c", config], { stdio: ["ignore", "ignore", "pipe"] });
+let brokerLog = "";
+nats.stderr!.on("data", (chunk: Buffer) => { brokerLog += chunk.toString(); });
 const releaseBroker = teardownOnSignal(nats, dir);
 
 const store = workspaceSecretStore(root);
@@ -114,7 +155,8 @@ const manifestOf = (spaces: string[]) => JSON.stringify({ version: 1, spaces });
 type Run = { label: string; child: ChildProcess; out: string[]; text(): string; exited: Promise<number | null> };
 const runs: Run[] = [];
 function start(args: string[]): Run {
-  const child = spawn(process.execPath, [cotalJs, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const profileArgs = CPU_PROFILE_DIR ? ["--cpu-prof", `--cpu-prof-dir=${CPU_PROFILE_DIR}`, "--cpu-prof-name=delivery.cpuprofile"] : [];
+  const child = spawn(process.execPath, [...profileArgs, cotalJs, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   children.push(child);
   const out: string[] = [];
   child.stdout!.on("data", (d: Buffer) => out.push(d.toString()));
@@ -332,46 +374,83 @@ function sample(pid: number): { rssMb: number; cpuS: number } {
 /** Real Plane-3 traffic for one space, built as fanout-load builds it: `count` members provisioned
  *  through core's onboarding step and joined durably to one channel at connect, each acking its
  *  durable copies on receipt. The first member posts. */
-async function traffic(i: number, count: number): Promise<{ post(rate: number, seconds: number): Promise<number>; copies(): number; stop(): Promise<void> }> {
+async function traffic(i: number, count: number) {
   const space = names[i]!, auth = auths[i]!, channel = "general";
+  let copies = 0, posted = 0, postErrors = 0, errors = 0;
+  const postedIds: string[] = [];
+  const firstErrors: string[] = [];
+  const note = (e: Error) => { errors++; if (firstErrors.length < 3) firstErrors.push(e.message.slice(0, 500)); };
+  const received = VERIFY_DELIVERY ? Array.from({ length: count }, () => new Map<string, number>()) : undefined;
+  const coverage = () => received?.map((ids, k) => deliveryCoverage(k === 0 ? [] : postedIds, ids));
   const prov = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "msd-prov", role: "manager", kind: "endpoint" } });
-  prov.on("error", () => {});
+  prov.on("error", note);
+  prov.on("warning", note);
+  endpoints.push(prov);
   await prov.start();
   const members: CotalEndpoint[] = [];
-  let copies = 0;
   try {
     for (let k = 0; k < count; k++) {
       const identity = newIdentity(), uid = mintLifecycleUid();
       const creds = await provisionAgent(prov, auth, identity, { subscribe: [channel], allowSubscribe: [channel], allowPublish: [channel], role: "default", lifecycleUid: uid });
       const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid: uid, channels: [channel], card: { id: identity.id, name: `msd-member-${k}`, role: "default", kind: "agent" } });
-      ep.on("error", () => {});
-      ep.on("warning", () => {});
-      ep.on("message", (_m: CotalMessage, d: { durable: boolean; ack(): void }) => { if (d.durable) { copies++; d.ack(); } });
-      await ep.start();
+      ep.on("error", note);
+      ep.on("warning", note);
+      ep.on("message", (m: CotalMessage, d: { durable: boolean; ack(): void }) => {
+        if (d.durable) {
+          copies++;
+          const ids = received?.[k];
+          if (ids) ids.set(m.id, (ids.get(m.id) ?? 0) + 1);
+          d.ack();
+        }
+      });
       members.push(ep);
+      endpoints.push(ep);
+      await ep.start();
     }
   } finally {
     await prov.stop();
   }
   return {
-    async post(rate, seconds) {
-      let posted = 0;
+    reset() { copies = 0; for (const ids of received ?? []) ids.clear(); },
+    async post(rate: number, seconds: number) {
       const sends: Promise<void>[] = [];
       const t0 = Date.now();
       for (let n = 0; n < rate * seconds; n++) {
         const due = t0 + (n * 1000) / rate;
         if (due > Date.now()) await wait(due - Date.now());
-        sends.push(members[0]!.multicast(`msd load #${n}`, { channel }).then(() => { posted++; }, () => {}));
+        sends.push(members[0]!.multicast(`msd load #${n}`, { channel }).then((m) => {
+          posted++;
+          if (VERIFY_DELIVERY) postedIds.push(m.id);
+        }, () => { postErrors++; }));
       }
-      await Promise.allSettled(sends);
+      await Promise.all(sends);
       return posted;
     },
-    copies: () => copies,
-    async stop() { for (const ep of members) await ep.stop().catch(() => {}); },
+    complete: () => copies >= posted * (count - 1) && (coverage()?.every((c) => c.missing === 0) ?? true),
+    result: () => ({ posted, postErrors, copies, expectedCopies: posted * (count - 1), errors, firstErrors, ...(VERIFY_DELIVERY ? { coverage: coverage() } : {}) }),
+    async stop() { for (const ep of members) await ep.stop(); },
   };
 }
 
-/** RSS and CPU per space for one shape, under the same offered Plane-3 traffic per space. */
+/** Native CPU samples only: this endpoint does not request a heap profile or force GC. */
+async function captureBrokerCpu(): Promise<void> {
+  if (!CPU_PROFILE_DIR || !profilePort) throw new Error("CPU profile output was not configured");
+  const startedAt = Date.now();
+  const response = await fetch(`http://127.0.0.1:${profilePort}/debug/pprof/profile?seconds=${BROKER_PROFILE_SECONDS}`, {
+    signal: AbortSignal.timeout((BROKER_PROFILE_SECONDS + 15) * 1000),
+  });
+  if (!response.ok) throw new Error(`broker CPU profile failed with HTTP ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length) throw new Error("broker CPU profile was empty");
+  writeFileSync(join(CPU_PROFILE_DIR, "broker.pprof"), bytes, { mode: 0o600, flag: "wx" });
+  writeFileSync(join(CPU_PROFILE_DIR, "broker-window.json"), JSON.stringify({
+    requestStartedEpochMs: startedAt, responseEndedEpochMs: Date.now(), requestedSeconds: BROKER_PROFILE_SECONDS,
+    scope: "Native broker CPU profile requested as posting begins; separate from the whole-child delivery profile.",
+  }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+}
+
+/** RSS and CPU per space for one shape. The five-second allowance is followed by a bounded
+ * receiver-coverage wait; neither is evidence that every broker queue has drained. */
 async function measureShape(label: string, spaces: number[], hostShape: boolean, seconds: number, rate: number): Promise<string> {
   const shape: Run[] = [];
   const launched = Date.now();
@@ -384,21 +463,57 @@ async function measureShape(label: string, spaces: number[], hostShape: boolean,
     for (const run of shape) if (!await until(() => run.text().includes("delivery daemon up") || run.child.exitCode !== null, 300_000)) throw new Error(`${label}: a daemon did not come up`);
   }
   if (shape.some((r) => r.child.exitCode !== null)) throw new Error(`${label}: a process exited: ${shape.map((r) => r.text().slice(-300)).join("\n")}`);
+  // The host-up message may describe a partial first batch. Read each account's ready lease
+  // before any member binds its delivery durable, then close these measurement-only readers.
+  const readers = await Promise.all(spaces.map((i) => inspector(i)));
+  try {
+    if (!await until(async () => (await Promise.all(readers.map((ep) => ep.readDeliveryLease(0)))).every((lease) => lease?.ready === true), 30_000))
+      throw new Error(`${label}: not every delivery lease became ready before member startup`);
+    check(`${label}: every delivery lease ready before member startup`, true);
+  } finally {
+    for (const ep of readers) await ep.stop();
+  }
   const startup = (Date.now() - launched) / 1000;
   const loads = await Promise.all(spaces.map((i) => traffic(i, 3)));
-  await wait(5_000); // let start-up and the members' joins settle before the window opens
+  await wait(5_000);
+  for (const l of loads) l.reset();
   const before = shape.map((r) => sample(r.child.pid!));
+  const brokerBefore = sample(nats.pid!);
   const load0 = loadavg()[0]!;
   const t0 = Date.now();
+  // Attach rejection handling immediately; a failed profile must fail the diagnostic, not go unhandled.
+  const brokerProfile = CPU_PROFILE_DIR ? captureBrokerCpu().then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error })) : undefined;
   const posted = (await Promise.all(loads.map((l) => l.post(rate, seconds)))).reduce((n, x) => n + x, 0);
-  await wait(5_000); // the daemons' fan-out drains inside the window
+  await wait(5_000);
+  const completed = await until(() => loads.every((l) => l.complete()), 30_000);
   const window = (Date.now() - t0) / 1000;
+  const brokerAfter = sample(nats.pid!);
   const after = shape.map((r) => sample(r.child.pid!));
-  const copies = loads.reduce((n, l) => n + l.copies(), 0);
+  const results = loads.map((l, i) => ({ spaceIndex: spaces[i]!, ...l.result() }));
+  for (const r of results) {
+    check(`${label} space ${r.spaceIndex}: every scheduled publish acknowledged`, r.posted === Math.ceil(rate * seconds) && r.postErrors === 0, r);
+    check(`${label} space ${r.spaceIndex}: receiver copies arrived without endpoint errors`, r.copies >= r.expectedCopies && r.errors === 0, r);
+    if (VERIFY_DELIVERY) check(`${label} space ${r.spaceIndex}: recipient IDs match acknowledged publishes`, r.coverage?.length === 3 && r.coverage.every((c) => c.missing === 0 && c.unexpected === 0), r.coverage);
+  }
+  check(`${label}: receiver completion within allowance`, completed);
+  const brokerWarningsErrors = (brokerLog.match(/\[(?:WRN|ERR|FTL)\]/g) ?? []).length;
+  check(`${label}: no broker warnings/errors`, brokerWarningsErrors === 0, brokerWarningsErrors);
+  const copies = results.reduce((n, r) => n + r.copies, 0);
   const rss = after.reduce((n, s) => n + s.rssMb, 0);
   const cpu = after.reduce((n, s, k) => n + s.cpuS - before[k]!.cpuS, 0);
+  const brokerCpu = brokerAfter.cpuS - brokerBefore.cpuS;
+  console.log(`MSD_RESULT ${JSON.stringify({ label, subscriptionCache: SUBLIST_CACHE, verifyDelivery: VERIFY_DELIVERY, cpuProfiling: Boolean(CPU_PROFILE_DIR), spaces: spaces.length, accounts: accounts.length, deliveryProcesses: shape.length, windowSeconds: window, posted, copies, brokerCpuSeconds: brokerCpu, brokerRssMiB: brokerAfter.rssMb, deliveryCpuSeconds: cpu, deliveryRssMiB: rss, brokerWarningsErrors, receiverComplete: completed, results })}`);
+  if (brokerProfile) {
+    const captured = await brokerProfile;
+    if (!captured.ok) throw captured.error;
+    check(`${label}: native broker CPU profile written`, true);
+  }
   for (const l of loads) await l.stop();
   for (const run of shape) await killAndAwaitExit(run.child, "SIGTERM", 30_000);
+  if (CPU_PROFILE_DIR) {
+    const file = join(CPU_PROFILE_DIR, "delivery.cpuprofile");
+    check(`${label}: actual delivery child CPU profile written`, existsSync(file) && statSync(file).size > 0);
+  }
   await wait(2_000);
   const n = spaces.length;
   return `| ${label} | ${shape.length} | ${rss.toFixed(1)} | ${(rss / n).toFixed(1)} | ${(cpu / window * 100).toFixed(1)} | ${(cpu / window * 100 / n).toFixed(2)} | ${posted} | ${copies} | ${startup.toFixed(1)} | ${load0.toFixed(1)} |`;
@@ -407,15 +522,18 @@ async function measureShape(label: string, spaces: number[], hostShape: boolean,
 async function measure(): Promise<void> {
   if (!await until(() => isReachable(servers), 15_000)) throw new Error("broker did not come up");
   for (let i = 0; i < names.length; i++) await provision(i);
-  const seconds = Number(process.env.COTAL_MSD_SECONDS) || 30, rate = Number(process.env.COTAL_MSD_RATE) || 2;
   const all = names.map((_, i) => i);
-  console.log(`\nMeasured on ${cpus().length} vCPU, Node ${process.version}, per space: 3 durable members of one channel, one posting ${rate} messages/s for ${seconds}s, CPU over the posting window plus a 5s drain.\n`);
-  console.log("| shape | processes | RSS total MB | RSS per space MB | CPU % total | CPU % per space | posted | durable copies | all serving after s | load avg |");
+  const version = spawnSync("nats-server", ["--version"], { encoding: "utf8" });
+  if (version.status !== 0) throw new Error("cannot read native broker version");
+  console.log(`\nMeasured on ${cpus().length} vCPU, Node ${process.version}, ${version.stdout.trim()}, subscription cache ${SUBLIST_CACHE}, recipient ID verification ${VERIFY_DELIVERY ? "on (tracking overhead)" : "off (aggregate only)"}, shape ${SHAPE}, CPU profiling ${CPU_PROFILE_DIR ? "on (diagnostic overhead; delivery startup through exit, broker first up to60s of posting)" : "off"}. Per space: 3 durable members, one posting ${RATE}/s for ${SECONDS}s. CPU includes a 5s allowance and up to 30s for receiver completion.\n`);
+  console.log("| shape | processes | RSS total MiB | RSS per space MiB | CPU % total | CPU % per space | posted | durable copies | all serving after s | load avg |");
   console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  console.log(await measureShape("1 lane, one process", [0], true, seconds, rate));
-  console.log(await measureShape("4 lanes, one process", all.slice(0, 4), true, seconds, rate));
-  console.log(await measureShape("16 lanes, one process", all, true, seconds, rate));
-  console.log(await measureShape("16 single-space processes", all, false, seconds, rate));
+  if (SHAPE === "all") {
+    console.log(await measureShape("1 lane, one process", [0], true, SECONDS, RATE));
+    console.log(await measureShape("4 lanes, one process", all.slice(0, 4), true, SECONDS, RATE));
+  }
+  if (SHAPE !== "single16") console.log(await measureShape("16 lanes, one process", all, true, SECONDS, RATE));
+  if (SHAPE !== "host16") console.log(await measureShape("16 single-space processes", all, false, SECONDS, RATE));
 }
 
 try {
@@ -433,8 +551,5 @@ try {
   releaseBroker();
   rmSync(dir, { recursive: true, force: true });
 }
-if (!MEASURE) {
-  console.log(`\ndelivery multi-space: ${pass} passed, ${fail} failed`);
-  process.exit(fail === 0 ? 0 : 1);
-}
+console.log(`\ndelivery multi-space${MEASURE ? " measure" : ""}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

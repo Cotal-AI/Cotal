@@ -36,6 +36,9 @@ try {
   const sendEnvelope = "Failed to send OpenAI-compatible chat request\n  endpoint: PRIVATE_CANARY\n  model: PRIVATE_CANARY\n  auth: PRIVATE_CANARY\nLocal endpoint hint: PRIVATE_CANARY";
   for (const [name, message, expected] of [
     ["HTTP 401", authEnvelope, "provider_auth_refused"],
+    ["HTTP 402", authEnvelope.replace("401 Unauthorized", "402 Payment Required"), "provider_payment_required"],
+    ["HTTP 403", authEnvelope.replace("401 Unauthorized", "403 Forbidden"), "provider_forbidden"],
+    ["HTTP 429", authEnvelope.replace("401 Unauthorized", "429 Too Many Requests"), "provider_rate_limited"],
     ["failed provider send", sendEnvelope, "provider_request_failed"],
   ] as const) {
     const failure = classifyReadinessFailure(new HarnessError("internal", message));
@@ -45,7 +48,9 @@ try {
     ["plain error", new Error(authEnvelope)],
     ["other SDK code", new HarnessError("invalid_request", authEnvelope)],
     ["unrelated 401", new HarnessError("internal", "unrelated\n  status: 401 Unauthorized\nPRIVATE_CANARY")],
-    ["HTTP 403", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "403 Forbidden"))],
+    ["unrelated 402", new HarnessError("internal", "unrelated\n  status: 402 Payment Required\nPRIVATE_CANARY")],
+    ["unrelated 403", new HarnessError("internal", "unrelated\n  status: 403 Forbidden\nPRIVATE_CANARY")],
+    ["unrelated 429", new HarnessError("internal", "unrelated\n  status: 429 Too Many Requests\nPRIVATE_CANARY")],
     ["HTTP 500", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "500 Internal Server Error"))],
     ["wrong send prefix", new HarnessError("internal", `unrelated ${sendEnvelope}`)],
     ["model refusal", new HarnessError("internal", envelope)],

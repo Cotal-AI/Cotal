@@ -1,9 +1,10 @@
 import { Fragment } from "react";
 import { Box, Text } from "ink";
 import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
+import { displayWidth } from "@cotal-ai/workspace";
 import type { FeedEntry } from "../mesh.js";
 import { activityAge, presenceFacts } from "../../ui.js";
-import { agentColor, STATUS, ago, fmtTime, wrapText } from "./theme.js";
+import { agentColor, STATUS, ago, clipText, fmtTime, wrapText } from "./theme.js";
 
 /** What the user drilled into — a feed row or a roster entry. */
 export type DetailTarget =
@@ -158,10 +159,17 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
                   ? "@" + (e.toService ?? "?")
                   : (e.toNames ?? []).join(", ")
               : e.from.name;
+            const prefix = fmtTime(e.ts) + " " + head + peer + ": ";
+            // Cut by columns between whole characters, to at most `width - 24` columns and to what the
+            // row's `width - 2` (the card's border and padding take 6) leaves after the prefix. A preview
+            // that leaves any text out ends with an ellipsis inside that room, so the terminal's
+            // truncation never splits or straddles a wide one.
+            const room = Math.min(Math.max(8, width - 24), width - 2 - displayWidth(prefix));
+            const text = clipText(e.text, room);
             return (
               <Text key={i} wrap="truncate-end">
-                <Text dimColor>{fmtTime(e.ts) + " " + head + peer + ": "}</Text>
-                {e.text.slice(0, Math.max(8, width - 24))}
+                <Text dimColor>{prefix}</Text>
+                {text === e.text ? text : clipText(text, room - 1) + "…"}
               </Text>
             );
           })

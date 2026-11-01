@@ -12,7 +12,6 @@ import {
   provisionAgent,
   partsToText,
   peerLabel,
-  presenceText,
   isConsumerNotFound,
   type Delivery,
   type EndpointKind,
@@ -25,7 +24,7 @@ import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminal
 import { credentialEnded } from "../lib/connect.js";
 import { resolveSpace } from "../lib/status.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
-import { activityAge, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
+import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: an unprovisioned / auth-rejected join is ONE classified
 // refusal instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
@@ -368,7 +367,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       print(c.dim(`← ${who(ev.presence.card)} went offline`));
     else
       print(
-        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(" - " + presenceText(ev.presence.activity) + activityAge(ev.presence)) : ""}`,
+        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activityDetail(ev.presence)}`,
       );
   });
 
@@ -487,7 +486,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
               " " +
               statusBadge(p.status) +
               presenceDetail(p) +
-              (p.activity ? c.dim(" - " + presenceText(p.activity) + activityAge(p)) : "") +
+              activityDetail(p) +
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");

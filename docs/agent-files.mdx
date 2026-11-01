@@ -1,0 +1,150 @@
+---
+title: "Agent files"
+description: "Fields, lookup rules, and ownership for an agent's persisted identity and persona."
+kind: "Reference"
+audience: "operators"
+---
+
+An agent file stores an agent's identity in YAML frontmatter and its persona in the Markdown body.
+The catalog path is `.cotal/agents/<name>.md`:
+
+```markdown
+---
+name: dave              # → COTAL_NAME / card.name
+role: builder           # → COTAL_ROLE / card.role (presence + anycast address)
+description: …          # → card.description
+tags: [edit, test]      # → card.tags ("what it can do")
+subscribe: [general, team.backend]     # channels it reads at boot (omit = none)
+allowSubscribe: [general, team.>]      # read ACL (omit = same as subscribe)
+allowPublish: [general, team.backend]  # post ACL (omit = none, default-deny)
+model: opus             # optional model override
+variant: high           # optional connector-defined model variant
+capabilities: [spawn, run] # may manage teammates and start workflow runs
+---
+You are a builder on a shared mesh of peer agents…
+```
+
+The file accepts LF or CRLF line endings and an optional UTF-8 byte order mark.
+A UTF-16 file is refused by name with the instruction to save it as UTF-8.
+
+The frontmatter supplies the presence [AgentCard](../SPEC.md#6-presence-and-discovery).
+The body supplies the persona text that the connector applies to the session's system prompt at launch.
+Channel authorization follows [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) and [Appendix B](../SPEC.md#appendix-b-profile-acls).
+
+Connectors that use an external prompt file write a private temporary copy and pass its path.
+The body does not appear in the agent process's arguments.
+The copy is private to the OS user. Other processes running as that user can read it while it exists, just as they can read the agent file.
+
+The launcher removes the copy after it proves that the agent process has exited.
+On POSIX systems, a watcher beside the agent also removes it after exit if the launcher was killed, including for the built-in `pty` runtime and direct foreground launches.
+A refusal before the command could start a process removes the copy at once.
+An uncertain failure before the child started, a killed watcher after its launcher died, or a killed launcher on Windows can leave the copy for the OS temporary-file reaper.
+
+## Fields
+
+The parser is [`agent-file.ts`](../packages/core/src/agent-file.ts).
+It requires a YAML mapping between `---` fences and a valid `name`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `name` | string, required | Display name in `card.name`. At most 128 characters. Longer names are refused before credentials can overflow the broker's CONNECT line. The catalog filename selects the persona; `name` selects its displayed identity. |
+| `role` | string | Presence label and anycast service address. A single `[A-Za-z0-9_-]` token; other spellings are refused when the agent joins. See [SPEC §3](../SPEC.md#3-subject-layout). |
+| `kind` | `agent` \| `endpoint` | Participation class. Defaults to `agent`. |
+| `description` | string | One-line summary in `card.description`. |
+| `tags` | string[] | Capability tags in `card.tags`. |
+| `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
+| `allowSubscribe` | string[] | Channels the agent may read. Wildcard subtrees such as `team.>` are allowed. Omitted or empty defaults to `subscribe`. |
+| `allowPublish` | string[] | Channels the agent may post to. Omitted or empty grants no posting permission. Wildcard subtrees are allowed. |
+| `quiet` | string[] | Attention default. Ambient messages stay buffered until `cotal_inbox`; mentions remain automatic. Entries must be concrete channels within the read ACL. |
+| `muted` | string[] | Attention default. Messages are dropped on receive, including mentions. Entries must be concrete channels within the read ACL. A channel cannot be both `quiet` and `muted`. |
+| `model` | string | Model passed to the application. Claude accepts aliases such as `opus` or a full ID; OpenCode uses `provider/model`. A role's `modelPolicy` entry requires an allowed model and refuses a missing model. Whitespace-only values are refused when the file loads. See [Model policy](config.mdx#model-policy). |
+| `variant` | string | Connector-defined model variant, listed by `cotal models` where supported. A role's `modelPolicy` variants restrict the value when present. Whitespace-only values are refused when the file loads. |
+| `agent` | string | Connector pinned by the persona, such as `claude` or `jcode`. An explicit `--harness` overrides it; the legacy `--agent` spelling is also accepted. The pin overrides caller and manager defaults. An unregistered connector is refused. See [Persona lookup](#persona-lookup). |
+| `launchOptions` | map | Connector-specific options passed through to the application. Claude uses flags; OpenCode uses agent configuration; Codex uses `-c` overrides. Hermes, Jcode, and pi refuse options. `--opt key=value` overrides the same key in the file. A role governed by `modelPolicy` launches without options. See [Launch agents](launch-agents.mdx#spawning-agents). |
+| `capabilities` | string[] | Control permissions. `spawn` grants host-launch authority, named stop, and persona definition. `run` grants workflow start, resume, answer, status, and list, plus the spawn permissions needed by programs; it also exposes `cotal_run`. Missing capabilities grant none. On a user-auth mesh, `role:<r>` permits delegation of role `r`; `admin` is never a persona capability. See [Identity and auth](identity-and-auth.mdx). |
+| `owner` | string | Policy set by `definePersona` to a signed-in creator or one of the manager's own seats. On a static space, another creator, including the CLI, leaves the file operator-owned. Only that owner or an admin can redefine the file over the wire. An operator-written file without an owner requires admin authority for wire redefinition. This field is not peer-supplied content. |
+| Any other scalar key | string | Stored in `meta` for connector-specific hints. Unmodeled maps and lists are not stored. A saved definition cannot use `meta` to overwrite modeled fields or the renamed `channels` and `publish` fields. The live session overlays connector-owned `connector`, `model`, `variant`, and `host` metadata, so the file cannot misstate its connector or machine. |
+
+The parser refuses the old `channels` and `publish` keys.
+[Channels and permissions](channels-and-permissions.mdx) describes the three channel verbs.
+Attention settings are defaults for each instance and reset on restart; runtime changes do not rewrite the file.
+See [Attention](connect-claude.mdx#attention).
+
+The broker enforces control capabilities.
+Because `launchOptions` passes native application options through, `spawn` grants authority to launch applications with those options on the manager host.
+See the [Security model](security.mdx).
+
+## Persona lookup
+
+A catalog name resolves to `<target-root>/.cotal/agents/<name>.md`.
+The selected mesh determines the target root through the registry, including `cotal use`, `--space`, and `--server`.
+Local persona commands, setup, status, and agent-profile minting use that catalog.
+A managed spawn reads the selected manager's catalog on its execution host.
+The file path is a local convention; NATS presence provides mesh discovery, and the file's card supplies the presence record.
+
+The launcher sets `COTAL_AGENT_FILE=<abs path>` for the joined session to read its card.
+`COTAL_LINK` supplies the mesh connection.
+Individual `COTAL_*` variables can override file values as described in [Configuration](config.mdx).
+
+Without an explicit persona, selection checks `COTAL_DEFAULT_PERSONA`, the space's saved `persona`, the user's saved `persona`, and then `default`.
+The application checks an explicit `--harness` or legacy `--agent`, the persona's `agent`, the caller's `COTAL_DEFAULT_AGENT`, the space's saved `harness`, and the user's saved `harness`.
+When the caller supplies no harness preference, a managed launch uses the manager's default before the product default, Claude.
+An explicit flag overrides the file, and the file overrides environment defaults in both managed and foreground launches.
+See [Preferences](config.mdx#preferences).
+
+| Launch mode | Persona source and terminal behavior |
+| --- | --- |
+| Managed with attachment, `cotal spawn dave --on <instance>` | Reads the manager's `.cotal/agents/dave.md`, waits for readiness, and attaches this terminal when the runtime supports it. |
+| Managed without attachment, `cotal spawn dave --detach` | Uses the same manager-side resolution and returns after readiness. |
+| Direct, `cotal spawn dave` or `cotal spawn dave --foreground` | Reads the selected local catalog and runs the native application in this terminal. |
+| Explicit file, `cotal spawn --file <persona-file>` | Reads a persona file on the execution host. It does not upload a local file or deploy a Mesh manifest. The public CLI reserves `--config` for persisted internal callers. |
+
+The launch modes accept model, variant, working-directory, kickoff-prompt, ACL, and shared-tool overrides.
+Mode-specific constraints and attachment requirements are in [Launch agents](launch-agents.mdx) and the [spawn reference](cli-agents.mdx#spawn).
+
+`.cotal/` is gitignored because it contains local state.
+Shared persona files can live outside that directory, as in [`examples/01-lateral-coordination/agents/`](../examples/01-lateral-coordination/agents/).
+
+## Persona purpose
+
+The persona body describes the agent's responsibilities and how it coordinates with peers.
+Useful details include the work it owns, where it reports results, and when it asks another role for help.
+A role title such as "expert" does not specify those behaviors.
+Links to repository docs or other sources give the agent a place to check facts instead of treating the prompt as their authority.
+
+## Defining one at runtime
+
+`cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends content to the manager, which writes an agent file.
+`cotal_spawn(name, role?, agent?, model?, variant?)` then launches it.
+Both tools also accept an `instance` pin for one full manager instance.
+The [tool catalog](mcp-tools.mdx) defines their full argument sets.
+
+A complete agent file in `prompt` is merged into one frontmatter block.
+For a new definition, its grants, role, and agent survive unless an explicit tool argument overrides them.
+On redefinition, existing fields remain unless an explicit tool argument changes them; the prompt replaces the body.
+Malformed leading frontmatter is refused with `prompt-frontmatter`.
+`capabilities` and `owner` remain policy and have no tool argument; prompt frontmatter cannot grant capabilities or claim ownership.
+A new definition records a signed-in creator or one of the manager's own seats as owner. Other static-space definitions remain operator-owned.
+
+A persona without `capabilities` has no `spawn` permission.
+A launch with effective role `manager` and no `spawn` capability is refused before allocation.
+An operator can add `capabilities: [spawn]` to the file, or the persona can launch under another role.
+
+Definition sends no announcement unless `announce` names a channel.
+With `announce: <channel>`, the announcement goes only to that channel.
+A team channel limits the notice to the peers working there; the notice is not a request or authorization for other peers to spawn the persona.
+`cotal_personas` lists and shows the catalog over the wire with spawn capability and ownership checks.
+The local `cotal persona` command and legacy `cotal personas list` read the workspace catalog.
+Spawning a missing name fails.
+
+The operator's `cotal persona` command lists, shows, creates, edits, and removes files in the selected space's catalog without a broker.
+Complete file input preserves all fields and source bytes after validation.
+Local create and edit operations require the frontmatter `name` to match the catalog name.
+Editor drafts validate before promotion and refuse concurrent local CLI changes.
+See the [persona reference](cli-agents.mdx#persona).
+
+On a user-auth mesh, owned persona content can launch only for its creator principal or a caller with a current admin grant.
+A hosted run uses its admitted caller for that check.
+Foreign content returns not-found before connector loading or enrollment, including when selected by an explicit file path.
+Unowned operator files remain launchable.
+[Manifest launches](manifest.mdx) have separate owner authorization.

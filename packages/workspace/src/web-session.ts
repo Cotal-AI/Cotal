@@ -65,6 +65,13 @@ export interface WebSession {
   readonly port: number;
 }
 
+/** The bound dashboard address, with an unbracketed IPv6 host enclosed for URL syntax.
+ *  This is the socket address, not the dashboard's branded default browser URL. */
+export function webBoundUrl(host: string, port: number): string {
+  const literal = host.includes(":") ? `[${host}]` : host;
+  return `http://${literal}:${port}/`;
+}
+
 /** The whole record, or `undefined` while there is none to read: the dashboard writes it only once it
  *  is listening, truncates the file before writing, and removes it on exit, so an absent, empty or
  *  partial file is an ordinary moment in its life. A file that exists and cannot be read is not, and

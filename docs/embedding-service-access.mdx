@@ -1,0 +1,83 @@
+---
+title: Service endpoint access
+description: Authority proofs, serving credentials, verified grants, and renewal.
+kind: Reference
+audience: integrators
+---
+
+## Authority routes [#authority-routes]
+
+With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
+route answers 404. `GET` returns the receiver's account and space, the exact `iss` its service
+access bearers carry, and the public Ed25519 keys `GET /jwks` publishes. `POST` takes a `{request, proof}`
+envelope of at most 2 MiB. An IdP proof derives the owner, who needs a current interactive cli or web
+row; register needs one, and so may activate. A service's renewal proof authorizes activate, renew
+and status, and its access bearer authorizes ready and status; neither is owner authority. A typical
+sequence: the service registers and gets `approval-required`; you bind its name with an operator
+`name-bind`; the owner approves with `decide`; the service replays the same register and gets
+`registered` with its witness and snapshot; it activates and gets a `credential` with an access bearer
+of at most 60 s and a renewal proof of at most 24 h, neither outliving the native root or approval;
+it connects to the broker with the bearer through the composed native service callout, binds its
+responder, calls `ready`, and renews before the bearer expires. The auth provider's
+`serviceEndpointInfo` and `serviceEndpointAuthority` hooks are the client, and accept a service proof
+as well as the signed-in login.
+
+## Verified serving grant [#verified-serving-grant]
+
+The `credential` answer carries no store access and no serve grant, so a service turns it into the
+process-local grant `serveEndpoint` consumes with `authorizeGuestServeGrant({ accountPublicKey,
+result, registration, authenticity })`: the parsed result, the service's own embedded closure, and
+the pinned issuer's `iss` and published keys. The issuer and keys come from the registered
+space's authority URL the service already pins, tenant path included: the auth provider's
+`serviceEndpointInfo` answer carries them, and a service passes `serveAuthenticityOf(info)` as
+`authenticity`; an authority that does not publish them yet makes that call refuse, so the
+service does not serve on a bearer it cannot verify.
+It verifies the access bearer's EdDSA signature under the published key its `kid` names and the
+same closed claims the host's token validator checks, so a bearer the issuer did not sign for
+this witness brands nothing; the closure is bound to the service's own embedded contract, not to
+the bearer. It refuses
+another account, a bearer from another issuer, space, subject or key, one that names another
+witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
+that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
+
+## Renewal source [#renewal-source]
+
+For a serving connection, the auth provider's `serviceEndpointRenewal({ store, dir, witness })` hook
+returns that loop as a bearer function. It is an `AuthProvider` method, not a package export. Pass
+its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
+first pull activates on the signed-in login and every later pull renews on the stored renewal proof.
+If that proof has expired, as after a machine was off for more than a day, the next pull replays the
+same activate request on the signed-in login, which mints again while the root and the approval stand.
+It keeps one activate and one renew requestId per witness, written to `store` before the first send,
+and replays them, with fresh material each time, for as long as the root and the approval allow.
+Concurrent pulls share one request. `credential()` is that same pull answering the validated
+`credential` result without its renewal proof, which never leaves the source, as a copy per caller;
+it is what `authorizeGuestServeGrant` takes. `bearer()` and `credential()` share one pull, so the
+two in flight together send one request under the same persisted ids, and an ended or closed
+source refuses both the same way. It owns no timer. A transport failure, `rate-limited`, a missing
+or rejected sign-in, or a store failure leaves it `unavailable`, and the next pull replays the same
+request; any other denial from the space ends it, and later pulls send nothing. `state()` reports
+expiries only, errors are fixed sentences, and `close()` aborts a pull in flight.
+
+## Recovery [#replay-and-recovery]
+
+Every effectful request is keyed by its requestId and body. Keep one requestId per operation and
+witness, store it with the witness and the renewal material before you send it, and reuse it with
+the same body after a restart: a replay is safe, a changed body under the same requestId is a
+`conflict`, and one instance accepts at most 64 distinct requests, so fresh keys per refresh or
+restart exhaust it. A register requestId stays bound to the body and proposal its first answer
+admitted: after approval, replay that exact request, and after a refusal or expiry, propose again
+under a new requestId. A 503 means the request may be bound: replay the same request, or read its
+status with `target: { kind: "operation", operation, requestId }`; the selector names the operation
+since this release, and the old `{ kind: "operation", requestId }` no longer parses. An owner reads
+status only while it holds an interactive row, and a service proof reads only its own instance.
+`registered` and `ready` in a status mean only that the request's registration is current. A
+pre-activation re-registration sends `expected: { state: "registered", witness }` and yields a new
+witness; a register that another request overtakes before its barrier freezes answers `conflict`,
+so read the instance and expect its current witness. A register whose gate moved under it without a
+new registration, such as a freeze another barrier then aborted, also answers `conflict` with the
+witness unchanged: if the instance still shows the witness you sent, replay the same request. A
+register held inside the native barrier, or while another invocation of the same request is still
+running, answers 503; replay the same request. Once a service has activated, its registration
+can no longer change. Commands must be ephemeral and declare
+no governed trait.
