@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.133.2
+
+### Patch Changes
+
+- 3f005b8: `clearChannel` no longer reports success when its channel-registry step is refused or fails. Only a missing registry bucket is still a no-op. Any other failure throws `ChannelRegistryRemovalFailed`, which carries the purge count, because the chat purge has already happened. Before, a credential that could purge history but not touch the registry (for example `purger`) resolved with `removed: false` while the channel stayed listed. The web dashboard and console now show that error instead of a successful delete. `cotal channel remove --purge` still reports the partial outcome with the purge count.
+- Updated dependencies [3f005b8]
+- Updated dependencies [6ba609a]
+  - @cotal-ai/core@0.133.2
+  - @cotal-ai/workspace@0.133.2
+
 ## 0.133.1
 
 ### Patch Changes
