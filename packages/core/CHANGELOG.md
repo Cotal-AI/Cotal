@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.135.7
+
+### Patch Changes
+
+- bb263b1: Preserve effect outcomes when converting native endpoint replies and envelope errors to ControlReply.
+
 ## 0.135.6
 
 ### Patch Changes

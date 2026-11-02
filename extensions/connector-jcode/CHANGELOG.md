@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.135.7
+
+### Patch Changes
+
+- a5ab860: Stop the private Jcode daemon and MCP child on terminal hangup, including tmux self-despawn, through the existing ownership-checked shutdown path.
+
 ## 0.135.6
 
 No changes in this release.
