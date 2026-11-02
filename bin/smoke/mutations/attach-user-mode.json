@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-user-mode.json",
   "why": [
     "The fixture drives the real bin/cotal.ts attach against a native user-auth broker, auth service and manager, with the space's static seed on disk (the fixture saves it for the pre-flip manager). The CLI and the workspace attach loop it runs resolve to their built dist, so the command rebuilds both first and afterRestore rebuilds the mutated package again.",
-    "The auth service the fixture starts imports @cotal-ai/auth from its dist, so the auth build runs before the suite and again after each restore."
+    "The auth service the fixture starts imports @cotal-ai/auth from its dist, so the auth build runs before the suite and again after each restore of an auth mutation."
   ],
   "mutations": [
     {

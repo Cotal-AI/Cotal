@@ -165,7 +165,7 @@ export function heldSessionNotice(pending: number, verdict: AttachVerdict["kind"
  * cannot be kept alive by reconnecting, because no grant is ever presented twice. `v` carries the
  * caller's {@link AttachCaller} choices beside the seat.
  */
-export async function establishAttachSession(
+async function establishAttachSession(
   v: AttachTarget & AttachCaller,
   on: string | undefined,
   reconnect: boolean,

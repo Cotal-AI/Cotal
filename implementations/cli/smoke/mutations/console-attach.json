@@ -5,7 +5,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-attach.json",
   "why": [
     "The suite drives bin/cotal.ts, which imports @cotal-ai/cli and @cotal-ai/workspace from dist: a mutation must be built to be seen, and its package must be rebuilt after the restore or dist keeps the mutant.",
-    "The detach pressed here lands during a live session, so the compare under test is the session reader's (attach-client.ts); the between-sessions watcher in agents.ts carries the same normalisation but is reached only while a reconnect is in flight, which this suite does not stage.",
+    "The detach pressed here lands during a live session, so the compare under test is the session reader's (attach-client.ts); the between-sessions watcher in attach-seat.ts carries the same normalisation but is reached only while a reconnect is in flight, which this suite does not stage.",
     "Each mutation is compile-clean and unique in the named file."
   ],
   "mutations": [
