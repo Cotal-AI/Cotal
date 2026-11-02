@@ -1,5 +1,5 @@
 /**
- * Idle-seat LOAD harness — what one connected, idle seat costs the broker. Capacity, not correctness.
+ * Idle-seat LOAD harness: what one connected, idle seat costs the broker.
  *
  * Boots a private operator-mode nats-server serving S spaces, one data account each under one
  * broker operator (the hosted shape), provisions every seat through core's own onboarding step
@@ -7,7 +7,8 @@
  * the step the manager runs at spawn), binds the delivery daemon's Plane-3 for every space, and then
  * brings up N seats as real `CotalEndpoint`s configured the way connector-core's `MeshAgent`
  * configures them: one boot channel, consume on, presence registered and read on demand (not
- * watched, AGENT-979), channel registry watched, the endpoint's own default heartbeat and TTL. Nothing on the wire is hand-rolled, so the
+ * watched, AGENT-979), channel registry watch gated by presence watching, and the endpoint's own
+ * default heartbeat and TTL. Nothing on the wire is hand-rolled, so the
  * subscriptions, consumers, presence puts and pull keep-alives the broker serves are the product's.
  *
  * What it reports, once every seat is up and has settled: broker CPU and RSS per seat, broker
@@ -17,10 +18,10 @@
  * that cannot keep up shows first as heartbeats arriving late, so the roster age is the saturation
  * signal, read from the seats rather than inferred from CPU.
  *
- * `--space-size K` puts K seats in each space (default: all N in one). Presence is a per-space KV
- * that every seat in the space watches, so one heartbeat is delivered to every member: the cost of a
- * seat depends on the size of its space, and the two shapes are measured separately rather than
- * averaged. `--heartbeat-ms` overrides the endpoint's heartbeat; a run with a heartbeat far past the
+ * `--space-size K` puts K seats in each space (default: all N in one). Presence is a per-space KV.
+ * The default seats read it on demand; enabling presence watching adds per-member heartbeat fanout.
+ * The cost of a seat depends on its space size, so measure each shape separately.
+ * `--heartbeat-ms` overrides the endpoint's heartbeat; a run with a heartbeat far past the
  * window is the no-heartbeat control, and the difference between the two runs is the heartbeat cost.
  *
  * What a real seat has that this one does not: the turn-notice subscription a MANAGER-launched seat
@@ -31,9 +32,12 @@
  * binding composed from core exactly as `runDelivery` binds it (same endpoint options, lease, and
  * `startPlane3`), without the CLI runner and membership feed around it.
  *
- * `--watch-presence false` builds every seat without the presence watch (it still registers and
- * heartbeats), so the difference against a default run is what the per-seat watch costs;
- * `--watch-channels false` does the same for the channel-registry watch.
+ * `--watch-presence false` is the default: seats register and heartbeat without watching.
+ * Core enables the channel-registry watch only when both watch flags are true. The report prints
+ * its effective value and the requested channel-watch flag separately.
+ *
+ * Failed starts, missing peers, failed roster reads, endpoint errors, broker warnings/errors,
+ * slow consumers or JetStream API errors produce a nonzero exit after reporting and teardown.
  *
  * `--sublist-cache on|off` selects the native NATS subscription-result cache (default: on).
  * Compare both settings with the same workload; disabling the cache may save memory while
@@ -81,6 +85,7 @@ import {
 import { spaceMessageStreamConfigs, standaloneConnectOpts } from "../src/streams.js";
 import { dialerFor } from "../src/endpoint.js";
 import { pickFreePort } from "./_free-port.js";
+import { readRosterSample, nativeLoadFailures } from "./_seat-idle-results.js";
 import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, procMem, teardownOnSignal, type BrokerHeap, type BrokerPart } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
@@ -198,14 +203,14 @@ async function runSeats(job: SeatJob): Promise<void> {
       await ipcSend({ readcost: cost });
       continue;
     }
-    const now = Date.now();
     const ages: number[] = [];
     let missing = 0, stale = 0;
     for (const [space, ep] of readers) {
-      let roster;
-      try { roster = await ep.readPresence(); } catch (e) { stale++; note(e as Error); continue; }
+      let sample;
+      try { sample = await readRosterSample(ep); } catch (e) { stale++; note(e as Error); continue; }
+      const { roster, sampledAt } = sample;
       const peers = roster.filter((p) => p.card.kind === "agent" && p.card.id !== ep.card.id && p.status !== "offline");
-      for (const p of peers) ages.push(now - p.ts);
+      for (const p of peers) ages.push(sampledAt - p.ts);
       missing += Math.max(0, (bySpace.get(space) ?? 1) - 1 - peers.length);
     }
     const cpu = process.cpuUsage(cpu0);
@@ -542,13 +547,25 @@ try {
   // One reader per space now, so a space contributes its K - 1 peers once, not K(K - 1).
   const expectedPeers = [...perSpace.values()].reduce((a, n) => a + (n - 1), 0);
   const missingEnd = end.reduce((a, s) => a + s.missing, 0), staleEnd = end.reduce((a, s) => a + s.stale, 0);
+  const failures = nativeLoadFailures({
+    requested: SEATS, up: seatsUp, failed: seatsFailed,
+    missingMid: mid.reduce((a, s) => a + s.missing, 0), missingEnd,
+    staleMid: mid.reduce((a, s) => a + s.stale, 0), staleEnd,
+    endpointErrors: end.reduce((a, s) => a + s.errors, 0),
+    apiErrors: j1.api.errors - j0.api.errors,
+    slowConsumers: v1.slow_consumers ?? 0, brokerWarnings: brokerWarnings.length,
+  });
+  if (failures.length) {
+    process.exitCode = 1;
+    console.error(`seat-idle-load failed: ${failures.join("; ")}`);
+  }
 
   row("git sha", SHA);
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("subscription cache", SUBLIST_CACHE);
   row("broker Go trace", GO_TRACE ? "on (diagnostic overhead)" : "off");
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
-  row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_CHANNELS ? "on" : "OFF"}`);
+  row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_PRESENCE && WATCH_CHANNELS ? "on" : "OFF"} (requested ${WATCH_CHANNELS ? "on" : "OFF"})`);
   row("setup (spaces + provisioning) (s)", setupS);
   row("seats up / failed", `${seatsUp} / ${seatsFailed}`);
   for (const e of startErrors) row("  start error", e);
@@ -608,7 +625,7 @@ try {
     // ---- RAM profile ----------------------------------------------------------------------------
     const f1 = (x: number) => (Number.isFinite(x) ? x.toFixed(1) : "n/a");
     const f3 = (x: number) => (Number.isFinite(x) ? x.toFixed(3) : "n/a");
-    console.log(`RAM profile: ${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_CHANNELS ? "on" : "OFF"}\n`);
+    console.log(`RAM profile: ${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_PRESENCE && WATCH_CHANNELS ? "on" : "OFF"} (requested ${WATCH_CHANNELS ? "on" : "OFF"})\n`);
     console.log("Broker, step by step (live heap after a forced GC; each delta is that step's memory):\n");
     console.log("| step | RSS MB | live heap MB | Δ live heap MB | goroutine stacks MB | goroutines | streams | consumers | connections | subscriptions |");
     console.log("|---|---|---|---|---|---|---|---|---|---|");
