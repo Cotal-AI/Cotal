@@ -75,7 +75,7 @@
     {
       "name": "G-F4 a post on a hub without a class no longer reads the channels again, so a channel first seen in a message never gets a class",
       "file": "implementations/web/src/web/graph.js",
-      "find": "      if (!h.deliveryClass && !h.heard) rereadChannels();\n",
+      "find": "        if (!h.deliveryClass && !h.heard) rereadChannels();\n",
       "replace": "",
       "expectRed": "7.4 a durable channel first seen in a message gets F's spoke once its class is read"
     },

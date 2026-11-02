@@ -217,8 +217,10 @@
     let toName = null;
     if (mode === "chat" && msg.channel) {
       const h = ensureHub(msg.channel);
-      if (!h.deliveryClass && !h.heard) rereadChannels();
-      h.heard = true;
+      if (h) {
+        if (!h.deliveryClass && !h.heard) rereadChannels();
+        h.heard = true;
+      }
       if (from) chatHit(from, msg.channel, now()).heat = 1;
       // inbound: sender → hub, then the hub flashes and fans the post back out to every other member on
       // the channel (their spokes glow as the wave reaches them) — a real broadcast.
