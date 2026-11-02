@@ -50,13 +50,33 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -102,13 +122,33 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -190,7 +230,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -202,7 +242,7 @@ Content type: `application/json`.
 
 #### HTTP 401
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -214,7 +254,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -226,7 +266,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -238,7 +278,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -250,7 +290,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -262,13 +302,33 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -326,7 +386,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -338,7 +398,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -350,7 +410,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -362,7 +422,7 @@ Content type: `application/json`.
 
 #### HTTP 409
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -374,7 +434,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -386,7 +446,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -398,13 +458,33 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -462,7 +542,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -474,7 +554,7 @@ Content type: `application/json`.
 
 #### HTTP 401
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -486,7 +566,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -498,7 +578,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -510,7 +590,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -522,7 +602,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -534,13 +614,33 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -586,7 +686,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -598,7 +698,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -610,7 +710,7 @@ Content type: `application/json`.
 
 #### HTTP 404
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -622,13 +722,33 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -698,7 +818,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -741,7 +861,7 @@ Content type: `application/json`.
 
 #### HTTP 404
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -753,7 +873,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -777,7 +897,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -789,7 +909,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -820,6 +940,26 @@ Content type: `application/json`.
 ```json
 {
   "$ref": "#/components/schemas/ServiceResult"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -877,7 +1017,7 @@ Content type: `application/json`.
 
 #### HTTP 400
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -889,7 +1029,7 @@ Content type: `application/json`.
 
 #### HTTP 403
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -901,7 +1041,7 @@ Content type: `application/json`.
 
 #### HTTP 404
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -913,7 +1053,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -925,7 +1065,7 @@ Content type: `application/json`.
 
 #### HTTP 413
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -937,7 +1077,7 @@ Content type: `application/json`.
 
 #### HTTP 415
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -949,7 +1089,7 @@ Content type: `application/json`.
 
 #### HTTP 429
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -961,13 +1101,21 @@ Content type: `application/json`.
 
 #### HTTP 500
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -1073,7 +1221,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -1145,13 +1293,21 @@ Content type: `application/json`.
 
 #### HTTP 500
 
-Native refusal where code and outcome are supplied by the chat handler. Pre-dispatch method, Origin, media type and shape refusals are not-executed. Native outcome may be not-executed, executed or unknown. JSON parse/size errors and public admission/deadline errors have only error, without code or outcome.
+Native chat failure with its supplied code and outcome, or an unexpected handler failure with only \{"error":"internal server error"}. Unexpected failure details are logged server-side.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/ChatError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -1269,7 +1425,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -1341,13 +1497,21 @@ Content type: `application/json`.
 
 #### HTTP 500
 
-Native refusal where code and outcome are supplied by the chat handler. Pre-dispatch method, Origin, media type and shape refusals are not-executed. Native outcome may be not-executed, executed or unknown. JSON parse/size errors and public admission/deadline errors have only error, without code or outcome.
+Native chat failure with its supplied code and outcome, or an unexpected handler failure with only \{"error":"internal server error"}. Unexpected failure details are logged server-side.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/ChatError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -1465,7 +1629,7 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
@@ -1537,13 +1701,21 @@ Content type: `application/json`.
 
 #### HTTP 500
 
-Native refusal where code and outcome are supplied by the chat handler. Pre-dispatch method, Origin, media type and shape refusals are not-executed. Native outcome may be not-executed, executed or unknown. JSON parse/size errors and public admission/deadline errors have only error, without code or outcome.
+Native chat failure with its supplied code and outcome, or an unexpected handler failure with only \{"error":"internal server error"}. Unexpected failure details are logged server-side.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/ChatError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
@@ -1599,13 +1771,33 @@ Content type: `application/json`.
 
 #### HTTP 405
 
-JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.
+JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.
 
 Content type: `application/json`.
 
 ```json
 {
   "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Server failure. An unexpected failure reaching the listener boundary returns only \{"error":"internal server error"}; details are logged server-side. A route's named server failure may include its error code and outcome.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "internal server error"
 }
 ```
 
