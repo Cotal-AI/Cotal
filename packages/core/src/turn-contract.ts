@@ -85,3 +85,20 @@ export function turnNoticeFilter(space: string, instanceId: string, seat: EpCall
     ...callerRailTokens(seat), TURN_NOTICE_NONCE,
   ].join(".");
 }
+
+/** A once task as its seat's session reads it: who started the seat, that this is its only task,
+ *  and that the seat is stopped when the turn ends. The prompt is the manager-set `context`, shown
+ *  as text. It lives here so a seat renders it and a manager measures it at admission
+ *  ({@link Connector.turnFrameLimit}) with the same function. */
+export function renderOnceTask(t: { goalId: string; payload: string; spawner?: string; deadlineAt?: number }): string {
+  let context = t.payload;
+  try {
+    const p = JSON.parse(t.payload) as { context?: unknown };
+    if (typeof p.context === "string") context = p.context;
+  } catch { /* shown as it came */ }
+  const from = t.spawner ?? "your spawner";
+  const deadline = t.deadlineAt !== undefined ? `, or at ${new Date(t.deadlineAt).toISOString()} if you are still working then` : "";
+  return `🎯 Cotal — ${from} started this seat for one task (goal ${t.goalId}):\n${context}\n`
+    + `(This is the only task this seat takes. Do it with your own tools, and send your result to whoever needs it, for example with cotal_dm to ${from}, before you end your turn: `
+    + `this seat is stopped when your turn ends${deadline}, and a result you have not sent reaches no one. If you cannot finish, call cotal_yield with blocked or handoff and say why.)`;
+}
