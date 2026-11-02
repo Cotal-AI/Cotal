@@ -928,7 +928,7 @@ try {
       FAKE_JCODE_RUNTIME_MODEL_LAG: "1",
       FAKE_JCODE_RUNTIME_PROVIDER: "active-provider",
       FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
-        { model: "some-other-model", provider: "active-provider", api_method: "responses", available: true, detail: "wrong model" },
+        { model: "some-other-model", provider: "active-provider", api_method: "responses", available: true, detail: "PRIVATE_ROUTE_CANARY" },
       ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
@@ -963,6 +963,23 @@ try {
       !announced.has("missingroutepeer"),
     { missingRouteCode, missingRouteErr, requests: missingRouteRequests.map((entry) => entry.frame?.req), announced: [...announced] },
   );
+
+  check(
+    "model mismatch names the requested model, reported provider and unapplied effort",
+    missingRouteErr.includes('requested model "requested-route-model"') &&
+      missingRouteErr.includes('reported provider "active-provider"') &&
+      missingRouteErr.includes('requested tier "high" was not applied'),
+    missingRouteErr,
+  );
+  const missingRouteFatal = missingRouteErr.split("\n").find((line) => line.includes("fatal:"))!;
+  check("model mismatch distinguishes stale runtime identity from the requested pin",
+    missingRouteFatal.includes('reported model "deepseek-v4-pro"') &&
+      missingRouteFatal.includes("no matching model route was reported") &&
+      missingRouteFatal.includes("matching model routes: 0"), missingRouteFatal);
+  const missingRoutePersisted = connectorLog(managedHome("jcodehost", "missingroutepeer"));
+  check("model mismatch details persist in the private connector log", missingRoutePersisted.includes(missingRouteFatal));
+  check("model mismatch never prints private route details",
+    !missingRouteErr.includes("PRIVATE_ROUTE_CANARY") && !missingRoutePersisted.includes("PRIVATE_ROUTE_CANARY"));
 
   // #777 reproduction: Jcode can lock the first turn's tool snapshot before cotal connects. The
   // old host makes one proof turn and rejects this otherwise healthy launch before it can join.

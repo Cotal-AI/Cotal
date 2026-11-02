@@ -69,7 +69,7 @@ export const ModeMulticast: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[IN_PATH, ...OUT_PATHS]} glow={[inGlow, ...OUT_PATHS.map(() => flash)]} />
+      <Wires wires={[{ d: IN_PATH, glow: inGlow }, ...OUT_PATHS.map((d) => ({ d, glow: flash }))]} />
       <Ripple at={PILL} p={prog(frame, T.fanStart - 2, T.fanStart + 30)} />
       <Ripple at={PILL} p={prog(frame, T.fanStart + 8, T.fanStart + 42)} />
       <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />

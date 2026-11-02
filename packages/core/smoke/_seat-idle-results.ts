@@ -45,17 +45,36 @@ export function nativeErrorClass(error: unknown): string {
   return "other";
 }
 
+export type NativeErrorContext = "presence-write" | "unclassified";
+
+/** Recognize only the stock presence-write wrapper or structured stuck-write condition. Never emit their text or fields. */
+export function nativeErrorContext(error: unknown): NativeErrorContext {
+  let current: unknown = error;
+  const seen = new Set<Error>();
+  for (let depth = 0; depth < 4 && current instanceof Error && !seen.has(current); depth++) {
+    seen.add(current);
+    if ((current.name === "PresenceWriteStuckError" && "code" in current && current.code === "presence-write-stuck")
+      || (current.name === "Error" && current.cause instanceof Error && nativeErrorClass(current.cause) === "TimeoutError"
+        && current.message.endsWith(". The presence write outcome is unknown: the broker may have stored the update. Read the roster before retrying.")))
+      return "presence-write";
+    current = current.cause;
+  }
+  return "unclassified";
+}
+
 /** Bound diagnostic rows per child while counting every observed event and every dropped row. */
-export function nativeErrorObserver(emit: (row: { epochMs: number; source: NativeErrorSource; category: string }) => void, limit = 200) {
+export function nativeErrorObserver(emit: (row: { epochMs: number; source: NativeErrorSource; category: string; context: NativeErrorContext }) => void, limit = 200) {
   if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("native error observation limit must be nonnegative");
   let total = 0, emitted = 0;
   const counts = new Map<string, number>();
+  const contexts = new Map<NativeErrorContext, number>();
   return {
     note(source: NativeErrorSource, error: unknown) {
-      const category = nativeErrorClass(error), key = `${source}:${category}`;
+      const category = nativeErrorClass(error), context = nativeErrorContext(error), key = `${source}:${category}`;
       total++; counts.set(key, (counts.get(key) ?? 0) + 1);
-      if (emitted < limit) { emitted++; emit({ epochMs: Date.now(), source, category }); }
+      contexts.set(context, (contexts.get(context) ?? 0) + 1);
+      if (emitted < limit) { emitted++; emit({ epochMs: Date.now(), source, category, context }); }
     },
-    summary() { return { total, emitted, dropped: total - emitted, counts: Object.fromEntries(counts) }; },
+    summary() { return { total, emitted, dropped: total - emitted, counts: Object.fromEntries(counts), contexts: Object.fromEntries(contexts) }; },
   };
 }

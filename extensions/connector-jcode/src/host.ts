@@ -17,6 +17,7 @@ import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
+  JcodeModelMismatch,
   JcodeCursorStateUnreadable,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
@@ -2073,10 +2074,7 @@ export async function runJcodeHost(): Promise<void> {
     const effectiveModel = config.model ?? runtime?.model;
     const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;
     if (config.variant && (!effectiveModel || !route || !route.provider))
-      throw new JcodeConnectorError(
-        "model_mismatch",
-        `jcode connector: the Harness API did not identify the active provider route for model ${JSON.stringify(effectiveModel ?? "(the provider default)")} — refusing to apply launch settings to an unverified route`,
-      );
+      throw new JcodeModelMismatch(config.model, config.variant, runtime);
     if (effectiveModel && runtime) {
       writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
       const provider = effectiveProvider(runtime, effectiveModel);
