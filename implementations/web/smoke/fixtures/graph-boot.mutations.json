@@ -73,11 +73,25 @@
       "expectRed": "7.2 F's team.> row reaches #team.build when /api/channels answers after the snapshot"
     },
     {
-      "name": "G-F4 a hub first seen in a message no longer reads the channels again, so it never gets a class",
+      "name": "G-F4 a post on a hub without a class no longer reads the channels again, so a channel first seen in a message never gets a class",
       "file": "implementations/web/src/web/graph.js",
-      "find": "      if (!hubs.has(msg.channel)) rereadChannels();\n",
+      "find": "      if (!h.deliveryClass && !h.heard) rereadChannels();\n",
       "replace": "",
       "expectRed": "7.4 a durable channel first seen in a message gets F's spoke once its class is read"
+    },
+    {
+      "name": "G-F5 a hub first seen in a member's row no longer reads the channels again, so a channel with no post yet never gets a class",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "if (!hubs.has(ch)) rereadChannels(); ensureHub(ch);",
+      "replace": "ensureHub(ch);",
+      "expectRed": "7.7 a channel a membership row showed first, with no post yet, gets F's spoke once its class is read"
+    },
+    {
+      "name": "G-F6 every post on a hub without a class reads the channels again, so a channel the list never names costs a read per post",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "if (!h.deliveryClass && !h.heard) rereadChannels();",
+      "replace": "if (!h.deliveryClass) rereadChannels();",
+      "expectRed": "7.8 posts on a channel /api/channels never lists read it once, not once per post"
     }
   ],
   "suite": [

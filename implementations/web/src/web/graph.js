@@ -216,8 +216,9 @@
     const animate = !filter.paused && filter[mode] && tabVisible();
     let toName = null;
     if (mode === "chat" && msg.channel) {
-      if (!hubs.has(msg.channel)) rereadChannels();
       const h = ensureHub(msg.channel);
+      if (!h.deliveryClass && !h.heard) rereadChannels();
+      h.heard = true;
       if (from) chatHit(from, msg.channel, now()).heat = 1;
       // inbound: sender → hub, then the hub flashes and fans the post back out to every other member on
       // the channel (their spokes glow as the wave reaches them) — a real broadcast.
@@ -309,8 +310,8 @@
   }
   // A durable family row reaches only the hubs whose class is durable (`memberChannels`), and a class can
   // land after the snapshot naming the family: the feed's first snapshot comes before `/api/channels`
-  // answers, and a channel first seen in a message has no class until that read runs again. So the last
-  // snapshot's members are kept and drawn again whenever classes land.
+  // answers, and a channel first seen in a member's row or a message has no class until that read runs
+  // again. So the last snapshot's members are kept and drawn again whenever classes land.
   let lastMembers = null;
   function drawMembers(members) {
     const known = [...hubs.keys()];
@@ -321,7 +322,7 @@
       a.live = m.live || []; a.durable = m.durable || [];
       const mc = memberChannels(a.live, a.durable, known);
       a.memberOf = mc.channels; a.wideReader = mc.wide;
-      for (const [ch, kind] of mc.channels) { ensureHub(ch); const e = ensureEdge(a, ch); e.mem = true; e.durableOnly = kind === "durable"; }
+      for (const [ch, kind] of mc.channels) { if (!hubs.has(ch)) rereadChannels(); ensureHub(ch); const e = ensureEdge(a, ch); e.mem = true; e.durableOnly = kind === "durable"; }
       pruneMemberEdges(a, mc.channels);
     }
     // An agent that dropped out of the feed entirely is no longer a member of anything (incl. a wide reader,
@@ -756,8 +757,10 @@
       for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; }
       if (lastMembers) drawMembers(lastMembers);
     } };
-  // A hub first seen in a message reads `/api/channels` again for its class. One read answers for every
-  // hub that appears within the wait.
+  // A hub that appears in a member's row or a message reads `/api/channels` again for its class, and so
+  // does the first post on a hub still without one, since a post can put a channel on that list. A
+  // channel the list never names is read for once, not once per post. One read answers for every hub
+  // that appears within the wait.
   let channelsReread = 0;
   function rereadChannels() {
     if (channelsReread) return;

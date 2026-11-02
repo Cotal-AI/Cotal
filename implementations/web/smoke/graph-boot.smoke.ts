@@ -408,6 +408,39 @@ await main();
   const later = page.frame(2001);
   ok("7.4 a durable channel first seen in a message gets F's spoke once its class is read",
     later.includes("#team.new"), { drawn: later, channelReads: page.fetchedUrls.filter((u) => u.includes("/api/channels")).length });
+  // A hub can also first appear through another member's concrete row. Q's row makes the hub, then Q
+  // leaves, so the hub is drawn only if F's family row reaches it.
+  const members = (...extra: { id: string; live: string[]; durable: string[] }[]) => ({ asOf: Date.now(), members: [
+    { id: "local.F", live: [], durable: ["team.>"] }, { id: "local.G", live: [], durable: ["ops"] }, ...extra] });
+  page.deliver("membership", members({ id: "local.Q", live: [], durable: ["team.quiet"] }));
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  page.deliver("membership", members());
+  chans.push({ channel: "team.quiet", messages: 1, replay: true, deliveryClass: "durable" });
+  page.deliver("message", { mode: "chat", senderId: "local.H", channel: "team.quiet",
+    msg: { id: "q", ts: Date.now(), from: { id: "local.H", name: "hh" }, parts: [{ kind: "text", text: "first post" }] } });
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  const quiet = page.frame(2002);
+  ok("7.6 a channel a membership row showed first gets F's spoke once its first post makes its class readable",
+    quiet.includes("#team.quiet"), quiet);
+  chans.push({ channel: "team.cfg", messages: 0, replay: true, deliveryClass: "durable" });
+  page.deliver("membership", members({ id: "local.R", live: [], durable: ["team.cfg"] }));
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  page.deliver("membership", members());
+  const cfg = page.frame(2003);
+  ok("7.7 a channel a membership row showed first, with no post yet, gets F's spoke once its class is read",
+    cfg.includes("#team.cfg"), cfg);
+  // A channel the list never names, such as an event channel, is read for once, not once per post.
+  const reads = () => page.fetchedUrls.filter((u) => u.includes("/api/channels")).length;
+  const post = (id: string) => page.deliver("message", { mode: "chat", senderId: "local.H", channel: "unlisted",
+    msg: { id, ts: Date.now(), from: { id: "local.H", name: "hh" }, parts: [{ kind: "text", text: "post" }] } });
+  const beforeUnlisted = reads();
+  post("u1");
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  post("u2");
+  post("u3");
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  ok("7.8 posts on a channel /api/channels never lists read it once, not once per post",
+    reads() - beforeUnlisted === 1, { reads: reads() - beforeUnlisted });
   ok("7.5 the page threw nothing", page.thrown.length === 0, page.thrown);
 }
 
