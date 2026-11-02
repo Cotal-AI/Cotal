@@ -15,6 +15,8 @@ const allCalls = (r, tool) => r.calls.filter((c) => c.tool === tool);
 const alicePosts = (r) => r.posts.filter((p) => p.from === r.alice);
 const aliceDms = (r) => r.dms.filter((d) => d.from === r.alice);
 const check = (name, ok, detail) => ({ check: name, ok: Boolean(ok), detail });
+const time = (t) => (typeof t === "number" ? t : Date.parse(t));
+const launchFailed = (r, seat) => r.reaps.some((x) => x.id === seat.id && /launch-failed/.test(x.reason));
 
 /** A seat counts as stopped only when the manager says it stopped itself, ended its once task, or
  *  was stopped at alice's request. A crash or a failed launch is not a stop. */
@@ -29,7 +31,7 @@ function stopped(r, seat) {
 /** Every helper alice started is gone from a roster that was read, and the manager says it
  *  stopped. A seat the manager stopped because its launch failed was never a working helper. */
 function helpersStopped(r) {
-  const helpers = r.spawned.filter((s) => !r.reaps.some((x) => x.id === s.id && /launch-failed/.test(x.reason)));
+  const helpers = r.spawned.filter((s) => !launchFailed(r, s));
   return helpers.length > 0 && r.finalPsOk && helpers.every((s) => !r.presentAtEnd.includes(s.name) && stopped(r, s));
 }
 
@@ -40,23 +42,26 @@ function helperChannels(r, spawn) {
 }
 
 /** A prompt that tells the helper to stop itself: it asks for a despawn or a self-stop with no
- *  negation in the few words before, in the same sentence, so "do not despawn yourself" does not
- *  count and "despawn yourself with cotal_despawn (no name)" does. */
+ *  negation before it in the same clause, so "do not despawn yourself or call cotal_despawn" does not
+ *  count and "when it is out, despawn yourself with cotal_despawn (no name)" does. */
+const NEGATION = /\b(?:not|don't|never|no need to|avoid)\b/i;
 const toldToStop = (prompt) =>
-  prompt.split(/(?<=[.!?])\s+/).some((s) => [...s.matchAll(/\b(?:cotal_despawn|despawn|stop yourself)\b/gi)]
-    .some((m) => !/\b(?:not|don't|never|no need to)\b(?:\W+\w+){0,3}\W*$/i.test(s.slice(0, m.index))));
+  prompt.split(/(?<=[.!?])\s+/).flatMap((s) => s.split(/[;,]|\b(?:then|but)\b/i))
+    .some((clause) => [...clause.matchAll(/\b(?:cotal_despawn|despawn|stop yourself)\b/gi)].some((m) => !NEGATION.test(clause.slice(0, m.index))));
 
 const checks = {
   "get-help"(r) {
     const spawns = okCalls(r, "cotal_spawn");
     const helperIds = new Set(r.spawned.map((s) => s.id));
-    // The brief: alice's post naming the PR, on a channel a helper was put on, before that helper's
-    // first post there.
-    const briefs = alicePosts(r).filter((p) => p.channel.startsWith("review.") && /812/.test(p.text) && spawns.some((s) => helperChannels(r, s).has(p.channel)))
-      .filter((p) => {
-        const first = r.posts.filter((q) => q.channel === p.channel && helperIds.has(q.from)).map((q) => q.ts).sort()[0];
-        return first === undefined || p.ts <= first;
-      });
+    // The brief: alice's post naming the PR, on a channel a helper was put on, while that helper was
+    // running and before it had said anything anywhere. A status posted after the helper spoke or
+    // stopped is not the brief.
+    const said = (id) => [...r.posts, ...r.dms].filter((m) => m.from === id).map((m) => time(m.ts));
+    const stoppedAt = (id) => r.reaps.filter((x) => x.id === id).map((x) => (x.at === undefined ? -Infinity : time(x.at)));
+    const reached = (p, spawn) => r.spawned.filter((h) => h.name === spawn.args?.name && !launchFailed(r, h))
+      .some((h) => [...said(h.id), ...stoppedAt(h.id)].every((t) => time(p.ts) < t));
+    const briefs = alicePosts(r).filter((p) => p.channel.startsWith("review.") && /\b812\b/.test(p.text) &&
+      spawns.some((s) => helperChannels(r, s).has(p.channel) && reached(p, s)));
     const briefDms = aliceDms(r).filter((d) => helperIds.has(d.to));
     return [
       check("alice posts the brief on a review channel a helper is put on", briefs.length > 0, { posts: alicePosts(r).map((p) => ({ channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
@@ -119,13 +124,25 @@ const checks = {
       const read = list(p.allowSubscribe).length ? p.allowSubscribe : p.subscribe;
       return list(read).length > 0 && only(read) && only(p.subscribe) && only(p.allowPublish);
     };
-    const savedAt = new Map();
-    r.calls.forEach((c, i) => { if (c.tool === "cotal_persona" && c.ok && !savedAt.has(c.args?.name)) savedAt.set(c.args?.name, i); });
+    // The persona a helper launched with is the file as it stands only when no save of that name came
+    // after the spawn, and, where the run recorded file times, the file was last written before the seat
+    // started.
+    const saves = (name) => r.calls.map((c, i) => ({ c, i })).filter(({ c }) => c.tool === "cotal_persona" && c.ok && c.args?.name === name).map(({ i }) => i);
+    const unchangedSince = (name) => {
+      const file = r.personas.find((x) => x.written && x.name === name);
+      if (file?.mtimeMs === undefined) return true;
+      const seats = r.spawned.filter((s) => s.name === name && !launchFailed(r, s));
+      return seats.length > 0 && seats.every((s) => s.startedAt !== undefined && file.mtimeMs <= s.startedAt);
+    };
     const spawns = r.calls.map((c, i) => ({ c, i })).filter(({ c }) => c.tool === "cotal_spawn" && c.ok);
-    const scoped = ({ c, i }) => savedAt.has(c.args?.name) && savedAt.get(c.args?.name) < i && limited(c.args?.name);
+    const scoped = ({ c, i }) => {
+      const at = saves(c.args?.name);
+      return at.some((j) => j < i) && !at.some((j) => j > i) && limited(c.args?.name) && unchangedSince(c.args?.name);
+    };
+    const savedNames = [...new Set(r.calls.filter((c) => c.tool === "cotal_persona" && c.ok).map((c) => c.args?.name))];
     return [
-      check("a persona limited to bugs.checkout is saved", [...savedAt.keys()].some(limited), r.personas.filter((p) => p.written).map((p) => ({ name: p.name, subscribe: p.subscribe, allowSubscribe: p.allowSubscribe, allowPublish: p.allowPublish }))),
-      check("that persona is spawned by name after it is saved", spawns.some(scoped), spawns.map(({ c, i }) => ({ name: c.args?.name, at: i, savedAt: savedAt.get(c.args?.name) }))),
+      check("a persona limited to bugs.checkout is saved", savedNames.some(limited), r.personas.filter((p) => p.written).map((p) => ({ name: p.name, subscribe: p.subscribe, allowSubscribe: p.allowSubscribe, allowPublish: p.allowPublish }))),
+      check("that persona is spawned by name after it is saved, and not redefined after", spawns.some(scoped), spawns.map(({ c, i }) => ({ name: c.args?.name, at: i, savedAt: saves(c.args?.name) }))),
       check("nothing is spawned on alice's own permissions", spawns.every(scoped), spawns.map(({ c }) => c.args?.name)),
     ];
   },
@@ -151,8 +168,8 @@ export function frontmatter(src) {
 
 /** How the manager says each seat ended, from its `seat reaped:` log lines. */
 export function reapsFrom(log) {
-  return log.split("\n").map((l) => /seat reaped: (\S+) \((\w+), [^)]*\) - (.*)$/.exec(l)).filter(Boolean)
-    .map(([, name, id, reason]) => ({ name, id, reason }));
+  return log.split("\n").map((l) => /^(\S+) seat reaped: (\S+) \((\w+), [^)]*\) - (.*)$/.exec(l)).filter(Boolean)
+    .map(([, at, name, id, reason]) => ({ at, name, id, reason }));
 }
 
 /** The record a check reads, built from a run directory rehearse.mjs wrote. A run recorded before
@@ -163,7 +180,7 @@ export function loadRecord(dir) {
   const pdir = join(dir, "personas");
   const written = new Set(r.personasWritten ?? (r.personas ?? []).filter((p) => p.written).map((p) => p.file));
   const personas = existsSync(pdir) ? readdirSync(pdir).filter((f) => f.endsWith(".md"))
-    .map((f) => ({ file: f, written: written.has(f), ...frontmatter(readFileSync(join(pdir, f), "utf8")) })) : [];
+    .map((f) => ({ file: f, written: written.has(f), mtimeMs: r.personaTimes?.[f], ...frontmatter(readFileSync(join(pdir, f), "utf8")) })) : [];
   let finalPsOk = r.finalPsOk;
   if (finalPsOk === undefined && existsSync(join(dir, "cli.json"))) {
     const ps = JSON.parse(readFileSync(join(dir, "cli.json"), "utf8")).filter((x) => x.argv[0] === "ps");

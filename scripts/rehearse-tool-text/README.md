@@ -66,14 +66,24 @@ script leaves that file alone, because your live sessions write to it too.
 The sandbox holds copies of your harness credentials while it runs, so nothing in it is kept. After
 `cotal down`, the script stops the processes the run started, which it knows by the sandbox's own
 `COTAL_HOME`, `XDG_CONFIG_HOME` or `TMPDIR` in their environment. Before each signal it checks that
-the pid still names the same process. Then it renames the sandbox to `<sandbox>.gone`, so nothing
-new can open it by its path, and deletes it only when no process has its working directory, an open
-file or a sandbox path inside it. A process that still holds it keeps the renamed sandbox in place
-and fails the run; remove it once that process exits.
+the pid still names the same process.
+
+Then it renames the sandbox to `<sandbox>.gone` and sets its mode to 000, so no process can enter it
+by any path. It looks at every process you own for a working directory, an open file or a sandbox
+path in its environment, inside the sandbox or inside this run's Claude Code project folders. Only
+Claude Code processes working in the sandbox write to those folders, so the same look covers them.
+If nothing holds either, it deletes them. A process that still holds one keeps the sandbox, with its
+mode set back to 700, and fails the run; remove it once that process exits.
+
+The barrier holds against path access only. Your own processes can still enter the sandbox after its
+mode is set back to 700 for the delete, and the script does not guard against that. `--work` is
+resolved to its real path at the start, because the kernel reports a process's working directory and
+open files by their real path.
 
 ## Reading the results
 
-`report.mjs` grades every run again from the files it kept, so runs from different days are read by
+`grade-cases.mjs` runs the pass checks on records built by hand, including runs that look right but
+did not do the thing, and fails if any is graded wrong. `report.mjs` grades every run again from the files it kept, so runs from different days are read by
 the same checks. A run that ended in an error fails whatever its checks say.
 
 A scenario the baseline already passes proves nothing about the revised text. A revised run that

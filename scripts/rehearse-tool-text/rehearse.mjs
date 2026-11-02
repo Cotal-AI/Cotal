@@ -24,10 +24,11 @@
 // The sandbox holds copies of the operator's harness credentials, made by the jcode connector and by
 // this script for jcode's provider file. After the run the script stops the processes the run
 // started, which it knows by the sandbox's own COTAL_HOME, XDG_CONFIG_HOME or TMPDIR in their
-// environment, renames the sandbox so nothing new can open it by its path, and deletes it only when
-// no process has its working directory, an open file or a sandbox path inside it.
+// environment. It renames the sandbox and sets its mode to 000, so no process can enter it by a path,
+// and deletes it only when no process has its working directory, an open file or a sandbox path inside
+// it or inside this run's Claude Code project folders.
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -61,6 +62,10 @@ function parseArgs(argv) {
   for (const p of ["bin/cotal.ts", "node_modules/.bin/tsx", "extensions/connector-claude-code/dist/mcp.cjs"])
     if (!existsSync(join(a.tree, p))) throw new Error(`--tree ${a.tree} has no ${p}: install and build it first`);
   a.jcodeConfig ??= join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "jcode");
+  // Resolve --work once, so every path the run writes is the one the kernel reports for a process's
+  // cwd and open files, even when --work goes through a symlink.
+  mkdirSync(a.work, { recursive: true, mode: 0o700 });
+  a.work = realpathSync(a.work);
   // The sandbox TMPDIR is <work>/r-XXXXXX/tmp, and the manager's control socket under it needs the
   // temp root to be at most 64 bytes.
   if (Buffer.byteLength(join(a.work, "r-XXXXXX", "tmp")) > 64) throw new Error(`--work ${a.work} is too long: the sandbox TMPDIR under it must be at most 64 bytes`);
@@ -177,13 +182,18 @@ class Sandbox {
     let quietSince, aliceId;
     const spawned = new Map();
     while (Date.now() < end) {
+      const before = Date.now();
       const items = this.ps();
       if (items) {
         this.snapshots.push({ at: new Date().toISOString(), items });
         aliceId ??= bare(items.find((i) => i.name === "alice")?.id) || undefined;
-        for (const i of items) if (aliceId && bare(i.spawner) === aliceId) spawned.set(i.name, { name: i.name, id: bare(i.id), agent: i.agent, model: i.model, cwd: i.cwd });
+        // A seat's launch time, taken from before the ps call so it is never later than the real one.
+        for (const i of items) if (aliceId && bare(i.spawner) === aliceId) {
+          const id = bare(i.id), launched = before - (i.uptimeMs ?? 0);
+          spawned.set(id, { name: i.name, id, agent: i.agent, model: i.model, cwd: i.cwd, startedAt: Math.min(spawned.get(id)?.startedAt ?? launched, launched) });
+        }
         const busy = items.some((i) => i.mesh !== "idle");
-        const waiting = scenario.waitForSpawnedExit && [...spawned.keys()].some((n) => items.some((i) => i.name === n));
+        const waiting = scenario.waitForSpawnedExit && [...spawned.keys()].some((id) => items.some((i) => bare(i.id) === id));
         quietSince = !busy && !waiting ? quietSince ?? Date.now() : undefined;
         if (quietSince && Date.now() - quietSince >= args.settleS * 1000) break;
       }
@@ -274,6 +284,7 @@ class Sandbox {
       presentAtEnd: finalPs.map((i) => i.name),
       finalPsOk: true,
       personasWritten: files.filter((f) => !this.catalogAtStart.has(f)),
+      personaTimes: Object.fromEntries(files.map((f) => [f, statSync(join(personaDir, f)).mtimeMs])),
     };
     writeFileSync(join(dir, "record.json"), JSON.stringify(record, null, 2));
     writeFileSync(join(dir, "calls.json"), JSON.stringify(calls, null, 2));
@@ -296,13 +307,18 @@ class Sandbox {
     const afterDown = processes().filter(owned);
     await stop(afterDown);
     const claudeDirs = this.claudeProjectDirs();
-    // The barrier: after the rename nothing can open the sandbox by its old path, and a process that
-    // was inside it still shows up by its cwd, an open file or its environment.
+    // The barrier. Renamed and with mode 000, the sandbox can no longer be entered by any path, so from
+    // the scan through the deletion a new holder can only be a process that was already inside it,
+    // which the scan sees by its cwd or an open file. The only writers to this run's Claude project
+    // folders are Claude processes working in the sandbox, so the same scan covers them.
     const gone = `${this.root}.gone`;
     renameSync(this.root, gone);
-    const holders = processes({ fds: true }).filter((p) => owned(p) || inside(p.cwd, gone) || p.fds.some((f) => inside(f, gone)));
+    chmodSync(gone, 0o000);
+    const held = (f) => inside(f, gone) || claudeDirs.some((d) => inside(f, d));
+    const holders = processes({ fds: true }).filter((p) => owned(p) || held(p.cwd) || p.fds.some(held));
     writeFileSync(join(dir, "teardown.json"), JSON.stringify({ downStatus: down.status, stopped: afterDown.map(({ pid, cmd }) => ({ pid, cmd })), holders: holders.map(({ pid, cmd, cwd }) => ({ pid, cmd, cwd })), kept: holders.length ? gone : undefined, claudeDirs }, null, 2));
     writeFileSync(join(dir, "cli.json"), JSON.stringify(this.log, null, 2));
+    chmodSync(gone, 0o700);
     if (holders.length) throw new Error(`teardown: ${holders.length} process(es) still hold the sandbox, so it was kept at ${gone} (it holds credential copies; remove it once they exit)`);
     for (const d of claudeDirs) rmSync(d, { recursive: true, force: true });
     rmSync(gone, { recursive: true, force: true });
