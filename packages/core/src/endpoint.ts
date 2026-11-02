@@ -913,9 +913,6 @@ export class CotalEndpoint extends EventEmitter {
   private startPromise?: Promise<void>;
   /** Includes detached predecessors until their actual connection reports closed. */
   private readonly ownedConnections = new Set<NatsConnection>();
-  /** The takes waiting on each connection's answer, ended when that connection closes (see
-   *  {@link takeAnycast}). */
-  private readonly takesAwaitingAnswer = new WeakMap<NatsConnection, Set<() => void>>();
   /** In-flight rebuild (drain+rebind) — serializes manual reconnect, the supervisor's
    *  closed(), and reestablishLoop so only ONE rebuild runs at a time (a second trigger
    *  coalesces onto the shared promise, never starts a parallel connectAndBind). */
@@ -6913,34 +6910,13 @@ export class CotalEndpoint extends EventEmitter {
   private async takeAnycast(role: string, seq: number, id: string, count: number, epoch: string): Promise<AnycastTakeOutcome> {
     const nc = this.nc;
     if (!nc) return { taken: false, drop: false, reason: "daemon-down", detail: this.notLiveMsg() };
-    // nats.js settles a no-mux request only from its reply subscription, and a connection that
-    // closes first closes that subscription without settling it, so the take ends with the connection.
-    let awaiting = this.takesAwaitingAnswer.get(nc);
-    if (!awaiting) {
-      const takes = new Set<() => void>();
-      void nc.closed().then(() => { for (const end of takes) end(); });
-      this.takesAwaitingAnswer.set(nc, (awaiting = takes));
-    }
-    let end!: () => void;
-    const closed = new Promise<AnycastTakeOutcome>((resolve) => {
-      end = () => resolve({ taken: false, drop: false, reason: "daemon-down", detail: "the connection closed before the delivery daemon answered the take" });
-    });
-    awaiting.add(end);
-    try {
-      return await Promise.race([this.askTake(nc, role, seq, id, count, epoch), closed]);
-    } finally {
-      awaiting.delete(end);
-    }
-  }
-
-  private async askTake(nc: NatsConnection, role: string, seq: number, id: string, count: number, epoch: string): Promise<AnycastTakeOutcome> {
     const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
       ({ taken: false, drop: false, reason, detail });
     const subject = takeSubject(this.space, role, this.owner, this.actor);
     const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count, epoch };
     let reply: AnycastTakeReply;
     try {
-      const m = await nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
+      const m = await this.requestBoundReply(nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, ANYCAST_TAKE_TIMEOUT_MS);
       reply = m.json<AnycastTakeReply>();
     } catch (e) {
       if (isPermissionDenied(e))
