@@ -49,34 +49,39 @@ function stubAgent(opts: {
     },
     getChannelConfig: (channel: string) => (registered.has(channel) ? { description: "from registry" } : undefined),
   };
-  return { ep, joinedChannels: () => opts.joined, connected: true } as unknown as MeshAgentType;
+  return {
+    ep,
+    joinedChannels: () => opts.joined,
+    connected: true,
+    channelInfo: (channel: string) => ({ replay: true, registered: registered.has(channel) }),
+  } as unknown as MeshAgentType;
 }
 
+type Receipt = { known: boolean; hints: string[] };
 const proto = MeshAgent.prototype as unknown as {
-  describeSendChannel: (this: MeshAgentType, c: string) => Promise<string>;
+  describeSendChannel: (this: MeshAgentType, c: string) => Promise<Receipt>;
 };
 
 {
   const agent = stubAgent({ joined: ["lane.ci"], listed: [{ channel: "lane.ci" }, { channel: "ops" }] });
   const existing = await proto.describeSendChannel.call(agent, "lane.ci");
   const invented = await proto.describeSendChannel.call(agent, "lane.cj");
-  check("send to a joined name reports existing", existing === "existing channel");
+  check("send to a joined name reports existing", existing.known && existing.hints.length === 0, existing);
   check(
     "send to a one-edit typo reports new and names the close match",
-    invented.includes("new channel") && invented.includes("#lane.ci"),
+    !invented.known && invented.hints.includes("lane.ci"),
     invented,
   );
-  check("the typo receipt is not identical to the existing receipt", existing !== invented);
 }
 
 {
   const agent = stubAgent({ joined: [], listed: [], listThrows: true, registered: ["ops"] });
   const fromRegistry = await proto.describeSendChannel.call(agent, "ops");
   const invented = await proto.describeSendChannel.call(agent, "zzz-typo-probe-4471");
-  check("a registry entry still counts as existing when listChannels throws", fromRegistry === "existing channel");
+  check("a registry entry still counts as existing when listChannels throws", fromRegistry.known, fromRegistry);
   check(
     "an unknown name with no list still reports new (create is not refused)",
-    invented.includes("new channel") && !invented.includes("did you mean"),
+    !invented.known && invented.hints.length === 0,
     invented,
   );
 }
@@ -97,7 +102,7 @@ const proto = MeshAgent.prototype as unknown as {
   const info = specs.find((s) => s.name === "cotal_channel_info")!;
   const agent = stubAgent({ joined: ["lane.ci"], listed: [{ channel: "lane.ci" }] });
   (agent as unknown as { send: MeshAgentType["send"]; describeSendChannel: MeshAgentType["describeSendChannel"]; channelInfo: MeshAgentType["channelInfo"] }).send =
-    async (_t, channel) =>
+    async (_t, channel, mentions) =>
       ({
         id: "m",
         ts: 1,
@@ -105,11 +110,13 @@ const proto = MeshAgent.prototype as unknown as {
         from: { id: "a", name: "alice", kind: "agent" },
         channel: channel ?? "lane.ci",
         parts: [],
+        ...(mentions?.length ? { mentions } : {}),
       }) as never;
   (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = (c) =>
     proto.describeSendChannel.call(agent, c);
+  let replays = true;
   (agent as unknown as { channelInfo: MeshAgentType["channelInfo"] }).channelInfo = (channel) => ({
-    replay: true,
+    replay: replays,
     registered: channel === "lane.ci",
   });
 
@@ -118,7 +125,42 @@ const proto = MeshAgent.prototype as unknown as {
   check("cotal_send still succeeds on a new name (create is allowed)", !typo.isError, typo.text);
   check("cotal_send on a known name does not say new channel", !known.text.includes("new channel"), known.text);
   check("cotal_send on a typo says new channel so the caller can TELL", typo.text.includes("new channel"), typo.text);
-  check("cotal_send on a known name says existing channel", known.text.includes("existing channel"), known.text);
+  // #5490: the result says where the post went and the next move, and claims nothing about who woke.
+  check(
+    "cotal_send on a known channel says who sees it and how to make one act",
+    known.text === "Posted to #lane.ci. Agents on it see it; mention one to make it act.",
+    known.text,
+  );
+  check(
+    "cotal_send on a typo names the close match and tells the sender to point others at it",
+    typo.text === "Posted to #lane.cj, a new channel. Did you mean #lane.ci? Others see it once they join; tell them where it is.",
+    typo.text,
+  );
+  replays = false;
+  const unreplayed = await send.run(agent, cfg, { text: "hi", channel: "lane.cj" });
+  replays = true;
+  const mentioned = await send.run(agent, cfg, { text: "hi", channel: "lane.ci", mentions: ["bob"] });
+  const mentionedNew = await send.run(agent, cfg, { text: "hi", channel: "lane.cj", mentions: ["bob"] });
+  check(
+    "cotal_send with a mention names it and says the channel sees the post too",
+    mentioned.text === "Posted to #lane.ci and mentioned @bob. Agents on it see it too.",
+    mentioned.text,
+  );
+  check(
+    "cotal_send with a mention on a new channel keeps the new-channel guidance",
+    mentionedNew.text === "Posted to #lane.cj, a new channel, and mentioned @bob. Did you mean #lane.ci? Others see it once they join; tell them where it is.",
+    mentionedNew.text,
+  );
+  check(
+    "cotal_send claims nothing about waking or counts",
+    [known, typo, unreplayed, mentioned, mentionedNew].every((r) => !/\bwok(e|en)\b|\bwake\b|\d+ (agents|peers|members)/.test(r.text)),
+    [known.text, mentioned.text],
+  );
+  check(
+    "cotal_send on a new channel that does not replay says a later joiner won't see the post",
+    unreplayed.text.includes("doesn't replay history, so agents who join later won't see this post") && !unreplayed.text.includes("Others see it once they join"),
+    unreplayed.text,
+  );
 
   const knownInfo = await Promise.resolve(info.run(agent, cfg, { channel: "lane.ci" }));
   const inventedInfo = await Promise.resolve(info.run(agent, cfg, { channel: "lane.cj" }));
@@ -280,8 +322,8 @@ const proto = MeshAgent.prototype as unknown as {
   }
 
   // (i) M3 proof: recipientStatusAtSend reflects the roster snapshot at send for both an offline
-  //     and an idle card, the ack sequence passes through, and the cotal_dm tool text says
-  //     "stored as seq 7" and "delivery not confirmed" for both.
+  //     and an idle card, the ack sequence passes through, and the cotal_dm tool text says where the
+  //     DM went for both.
   for (const status of ["offline", "idle"] as const) {
     const peerCard = { card: { id: "OTTOID0000000000000000000000000000000000000", name: "otto", role: "worker" }, status };
     const agent = agentOverEp({
@@ -303,9 +345,11 @@ const proto = MeshAgent.prototype as unknown as {
     const dmTool = specsDm.find((s) => s.name === "cotal_dm")!;
     (agent as unknown as { dm: MeshAgentType["dm"] }).dm = async () => dmResult;
     const dmText = await Promise.resolve(dmTool.run(agent, cfgDm, { to: "otto", text: "x" }));
+    // #5490: where the DM went, who can't read it, and when the channel is the better place.
     check(
-      `1229:i cotal_dm text for a ${status} recipient says stored seq and delivery not confirmed`,
-      dmText.text.includes("stored as seq 7") && dmText.text.includes("delivery not confirmed"),
+      `1229:i cotal_dm text for a ${status} recipient says where it went and points shared facts at the channel`,
+      dmText.text.startsWith("Sent to otto.") &&
+        dmText.text.endsWith("Other agents can't read it. If others could use it, post it on the task's channel."),
       dmText.text,
     );
     // Only an offline recipient gets the notice of what happens to the stored DM.
@@ -331,7 +375,7 @@ const proto = MeshAgent.prototype as unknown as {
       sent.push(channel);
       return { id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel: channel ?? joined[0], parts: [] } as never;
     };
-    (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async () => "existing channel";
+    (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async () => ({ known: true, hints: [] });
     const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
     const result = await send.run(agent, cfg, { text: "hi" });
     const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
@@ -404,7 +448,7 @@ const proto = MeshAgent.prototype as unknown as {
   };
   (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async (c) => {
     calls.push(`describe ${c}`);
-    return "existing channel";
+    return { known: true, hints: [] };
   };
   const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
   for (const pattern of ["team.>", "ops.ci.>", "team.*.ci", ">", "*"]) {
@@ -540,7 +584,11 @@ const proto = MeshAgent.prototype as unknown as {
     ),
     described,
   );
-  check("the cotal_send description says one channel", send.description === "Broadcast a message to everyone on one channel in your space.", send.description);
+  check(
+    "the cotal_send description says it posts to one channel and a pattern is refused",
+    send.description.startsWith("Post to a channel.") && send.description.includes("You can't post to a pattern such as review.>. To reach several channels, post to each one by name"),
+    send.description,
+  );
 }
 
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
