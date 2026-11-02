@@ -124,7 +124,9 @@ mints the run's own credential from the folder's trust material, so it runs from
 project folder. A local start also names the run's channel ceiling itself:
 `--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
 required. The record it writes says an operator admitted the run and why, and the host checks
-it the same way it checks a hosted admission. A registered remote user-auth manager can host a
+it the same way it checks a hosted admission. The run's helpers get only channels within that
+ceiling and no capabilities or role. A helper's own event plane counts as a channel, so spawn with
+`events: false` unless the ceiling covers it. A registered remote user-auth manager can host a
 run through its issuing host. The host resolves a versioned caller against live issuance,
 admits the run, and signs only the run's fixed driver, mediator and one-shot operator credentials
 for manager-held nkeys. Renewal checks the activated attempt; the manager holds no signer.

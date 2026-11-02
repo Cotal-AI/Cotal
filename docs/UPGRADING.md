@@ -104,7 +104,14 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   manager persona that spawns workers of another role needs `role:<worker-role>` in its
   capabilities. The refusal names the token.
 - A workflow run's spawns are bounded by what the agent that started the run held when the run was
-  admitted. A run started by an operator command or by an admin agent stays exempt.
+  admitted. A run started by an operator instrument or by an admin agent stays exempt. A
+  `cotal run start --local` run's helpers get only channels within `--admit-read` and
+  `--admit-publish`, and no capabilities or role. A helper's own event plane counts as a channel,
+  so spawn with `events: false` unless the ceiling covers it. A program whose helpers need a
+  capability or role runs hosted. A local run admitted before the upgrade recorded the CLI's own
+  holder id as its caller's uid, so its helpers cannot be measured and each spawn is refused,
+  naming the run. Listing, `show`, `answer`, `resume --local` and `revoke --local` still work on it;
+  start it again to spawn.
 - A run's spawn now names its run in `runId`, so every manager a run's spawns can reach must run
   this release: an older one refuses the field. On a static mesh a manager that does not host the
   run bounds the helper by the run's admission.

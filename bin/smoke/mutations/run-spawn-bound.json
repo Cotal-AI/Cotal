@@ -2,21 +2,21 @@
   "suite": [
     "bin/smoke/run-host-live.smoke.ts"
   ],
-  "guard": "On a static mesh a hosted run's spawns are bounded by its admission (SPEC 14.8): a helper gets no channel or capability its starter's issued credential did not carry when the run was admitted, a starter that was an operator instrument or held the admin set is exempt and its admission records that, and the record carries the verdict through the store, and a run revoked mid-step starts no helper, on the run's host and on another static manager the run places a spawn on, which reads the run's admission and refuses a caller that is not the run's driver.",
+  "guard": "On a static mesh a hosted run's spawns are bounded by its admission (SPEC 14.8): a helper gets no channel or capability its starter's issued credential did not carry when the run was admitted, a local run's helper gets only the channels the operator named, a starter that was an operator instrument or held the admin set is exempt and its admission records that, and the record carries the verdict through the store, and a run revoked mid-step starts no helper, on the run's host and on another static manager the run places a spawn on, which reads the run's admission and refuses a caller that is not the run's driver.",
   "command": "pnpm smoke:run-host-live",
   "completionMarker": "run-host-live.smoke:",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/run-spawn-bound.json",
   "why": [
     "A workflow run's spawns were exempt from the static spawn bound, so a caller holding run could start a run and spawn a helper the direct door refuses.",
     "The suite runs the manager and core from their built packages, so each mutant is seen through that build and afterRestore rebuilds so the restored source is the artifact again.",
-    "R1 exempts every run spawn, R2 writes the exemption for every starter, R3 ignores the recorded exemption, and R4 drops the field when the store's record is read back, and R5 skips the revocation marker read before a run's spawn. R6 reads no admission for a spawn a run placed, R7 skips the driver check, R8 ignores the placed run's revocation marker, R9 drops the run id the runtime sends, R10 treats an unreadable admission as no run, and R11 lets the run's host take another run's id."
+    "R1 exempts every run spawn, R2 writes the exemption for every starter, R3 ignores the recorded exemption, and R4 drops the field when the store's record is read back, and R5 skips the revocation marker read before a run's spawn. R6 reads no admission for a spawn a run placed, R7 skips the driver check, R8 ignores the placed run's revocation marker, R9 drops the run id the runtime sends, R10 treats an unreadable admission as no run, and R11 lets the run's host take another run's id. R12 hands a local run's helpers no grant, R13 exempts them, R14 projects a local run's coordinate under a generation it does not have, R15 records a local admission without its read rows, R16 gives the local holder a uid the mint refuses, and R17 measures an admission written before that without naming why it cannot."
   ],
   "mutations": [
     {
       "name": "R1 every run spawn is exempt",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (admission.spawnExempt) return { kind: \"exempt\" };\n      if (!isIssuedCaller(admission.caller))",
-      "replace": "      if (admission.spawnExempt || admission.runId.length > 0) return { kind: \"exempt\" };\n      if (!isIssuedCaller(admission.caller))",
+      "find": "      if (admission.spawnExempt) return { kind: \"exempt\" };",
+      "replace": "      if (admission.spawnExempt || admission.runId.length > 0) return { kind: \"exempt\" };",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel",
       "cell": "a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel"
@@ -33,8 +33,8 @@
     {
       "name": "R3 the recorded exemption is ignored",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (admission.spawnExempt) return { kind: \"exempt\" };\n      if (!isIssuedCaller(admission.caller))",
-      "replace": "      if (!isIssuedCaller(admission.caller))",
+      "find": "      if (admission.spawnExempt) return { kind: \"exempt\" };",
+      "replace": "",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a run started by a caller holding admin spawns the wider persona",
       "cell": "a run started by a caller holding admin spawns the wider persona"
@@ -110,6 +110,60 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "the run's host refuses a spawn whose driver names another run, and no helper starts",
       "cell": "the run's host refuses a spawn whose driver names another run, and no helper starts"
+    },
+    {
+      "name": "R12 a local run's admission hands on no grant",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (admission.spawnExempt) return { kind: \"exempt\" };",
+      "replace": "      if (admission.spawnExempt) return { kind: \"exempt\" };\n      if (!isIssuedCaller(admission.caller)) return { kind: \"none\", reason: \"its run was admitted with no issued generation\" };",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a local run's helper reading a channel the operator admitted launches, and the run completes",
+      "cell": "a local run's helper reading a channel the operator admitted launches, and the run completes"
+    },
+    {
+      "name": "R13 a local run's spawns are exempt",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (admission.spawnExempt) return { kind: \"exempt\" };",
+      "replace": "      if (admission.spawnExempt || admission.provenance.kind === \"operator\") return { kind: \"exempt\" };",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a local run's helper reading past the admitted channels is refused, naming the channel and the --local ceiling",
+      "cell": "a local run's helper reading past the admitted channels is refused, naming the channel and the --local ceiling"
+    },
+    {
+      "name": "R14 the bound projects every caller under a generation",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "  const issued = isIssuedCaller(caller) ? { issued: { generation: caller.generation, acceptedToken: mintAcceptedToken() } } : {};",
+      "replace": "  const issued = { issued: { generation: (caller as IssuedCaller).generation, acceptedToken: mintAcceptedToken() } };",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a local run's helper reading a channel the operator admitted launches, and the run completes",
+      "cell": "a local run's helper reading a channel the operator admitted launches, and the run completes"
+    },
+    {
+      "name": "R15 a local admission records no read rows",
+      "file": "packages/core/src/grant-bound.ts",
+      "find": "  const named = rows({ allowSubscribe: [...read], allowPublish: [...publish] });",
+      "replace": "  const named = rows({ allowPublish: [...publish] });",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a local run's helper reading a channel the operator admitted launches, and the run completes",
+      "cell": "a local run's helper reading a channel the operator admitted launches, and the run completes"
+    },
+    {
+      "name": "R16 the local holder's uid is not a lifecycle token",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: mintLifecycleUid(), instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a local run's helper reading a channel the operator admitted launches, and the run completes",
+      "cell": "a local run's helper reading a channel the operator admitted launches, and the run completes"
+    },
+    {
+      "name": "R17 an admission whose caller uid the mint refuses is measured anyway",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        assertLifecycleToken(admission.caller.uid);\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a local run admitted before this release is refused its helpers by name, and told to start again",
+      "cell": "a local run admitted before this release is refused its helpers by name, and told to start again"
     }
   ]
 }

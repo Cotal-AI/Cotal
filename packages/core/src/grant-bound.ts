@@ -15,9 +15,9 @@
  * every agent receives (inbox, presence, DM, the endpoint baseline) never decides anything.
  */
 import { capabilityRole, permissionsFor } from "./provision.js";
-import { issuedPermitsPattern, mintAcceptedToken, type IssuedEvidence, type IssuedSubjectPermissions } from "./issued-authority.js";
+import { issuedPermitsPattern, mintAcceptedToken, type IssuedEvidence, type IssuedSubjectAllow, type IssuedSubjectPermissions } from "./issued-authority.js";
 import { presenceKeySubject, resolveReadAcl } from "./subjects.js";
-import type { IssuedCaller } from "./endpoint-subjects.js";
+import { isIssuedCaller, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
 
 /** What a spawner hands a helper. `subscribe` is the helper's read set after `join`; it is folded
  *  into the read ACL here the way provisioning folds it. */
@@ -74,24 +74,26 @@ export function grantParts(grant: DelegatedGrant): GrantOverreach[] {
 }
 
 /**
- * Every part of `grant` that `ceiling` does not cover, for a static spawner `caller` whose issued
- * evidence is `ceiling`. Empty means the grant is within. Each channel, the role and each
- * capability token is tested on its own, so a refusal names what overreached. A part whose
- * projection adds no row cannot be shown to be held and is refused, so an unknown token or an
- * unmapped field fails closed. Throws on a malformed grant (a channel or token the mint refuses).
+ * Every part of `grant` that `ceiling` does not cover, for a static spawner at `caller`'s coordinate
+ * whose ceiling is `ceiling`: its issued evidence, or a run's admitted ceiling. Empty means the
+ * grant is within. Each channel, the role and each capability token is tested on its own, so a
+ * refusal names what overreached. A part whose projection adds no row cannot be shown to be held
+ * and is refused, so an unknown token or an unmapped field fails closed. A caller with no
+ * generation, as a local run's admission records its operator, is projected without one.
+ * Throws on a malformed grant (a channel or token the mint refuses).
  */
 export function grantOverreach(
   space: string,
-  caller: IssuedCaller,
+  caller: EpCaller,
   ceiling: IssuedSubjectPermissions,
   grant: DelegatedGrant,
 ): GrantOverreach[] {
   // One coordinate, one connection id and one accepted token for every projection, so the rows
   // the coordinate alone produces are identical across projections and cancel exactly.
   const pr = { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid };
-  const issued = { generation: caller.generation, acceptedToken: mintAcceptedToken() };
+  const issued = isIssuedCaller(caller) ? { issued: { generation: caller.generation, acceptedToken: mintAcceptedToken() } } : {};
   const rows = (extra: MintExtra) => {
-    const perms = permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, issued, ...extra }) as {
+    const perms = permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, ...issued, ...extra }) as {
       pub: { allow: string[] };
       sub: { allow: string[] };
     };
@@ -106,6 +108,24 @@ export function grantOverreach(
     return pub.every((r) => issuedPermitsPattern(ceiling.publish, r)) && sub.every((r) => issuedPermitsPattern(ceiling.subscribe, r));
   };
   return partsOf(grant).filter(({ project }) => project === undefined || !held(project)).map(({ part }) => part);
+}
+
+/**
+ * The ceiling a set of named channels yields at `caller`'s coordinate: the rows those channels add
+ * to an agent's mint there, in the shape issued evidence states. A local run's admission records it,
+ * so {@link grantOverreach} measures the run's helpers as it measures a hosted starter's. No
+ * channels in a direction is `none`. Throws on a malformed channel or a coordinate the mint refuses.
+ */
+export function channelCeiling(space: string, caller: EpCaller, read: readonly string[], publish: readonly string[]): IssuedSubjectPermissions {
+  const pr = { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid };
+  const rows = (extra: MintExtra) => permissionsFor("agent", space, pr, { lifecycleUid: caller.uid, ...extra }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  const empty = rows({});
+  const named = rows({ allowSubscribe: [...read], allowPublish: [...publish] });
+  const added = (all: string[], base: string[]): IssuedSubjectAllow => {
+    const patterns = all.filter((r) => !base.includes(r));
+    return patterns.length ? { mode: "patterns", patterns } : { mode: "none" };
+  };
+  return { publish: { allow: added(named.pub.allow, empty.pub.allow), deny: [] }, subscribe: { allow: added(named.sub.allow, empty.sub.allow), deny: [] } };
 }
 
 /** How a static spawner stands toward the bound. */

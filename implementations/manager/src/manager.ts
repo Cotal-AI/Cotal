@@ -94,7 +94,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedCaller, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -1051,12 +1051,13 @@ type ManagedEnrollment = Awaited<ReturnType<NonNullable<NonNullable<ManagerOptio
 /** What bounds the grant a spawn hands its helper on a static mesh (SPEC 13.15). Nothing for the
  *  manager's own composition root, an operator instrument or a spawner holding the admin set; no
  *  grant at all for a caller whose evidence does not resolve; no spawn at all for a run that was
- *  revoked or whose revocation marker cannot be read; otherwise the caller's evidence. */
+ *  revoked or whose revocation marker cannot be read; a run's admitted ceiling for its spawns;
+ *  otherwise the caller's evidence. */
 type StaticSpawnBound =
   | { kind: "exempt" }
   | { kind: "none"; reason: string }
   | { kind: "refused"; reason: string }
-  | { kind: "bounded"; caller: IssuedCaller; ceiling: IssuedSubjectPermissions; run?: string };
+  | { kind: "bounded"; caller: EpCaller; ceiling: IssuedSubjectPermissions; run?: string };
 
 /** The workflow run a spawn acts for (SPEC 14.8): the run this manager drives under the spawn's
  *  caller, or, on a static mesh, a run hosted elsewhere whose spawn reached this manager, read from
@@ -6686,9 +6687,10 @@ export class Manager {
    * the manager's own composition root (roster boot, a manifest `launch`, which a static mesh mints
    * only into operator instruments). A workflow run's spawn, whether this manager hosts the run or
    * its spawn reached this manager from another host ({@link spawnRun}), is bounded by the run's admission (SPEC 14.8):
-   * the starter's ceiling as resolved when the run was admitted, at the starter's coordinate, unless
-   * the starter was exempt then. A caller with no issued generation, or whose
-   * evidence does not resolve, hands on no grant. The evidence's own standing decides the rest.
+   * the ceiling it recorded, at the starter's coordinate, unless the starter was exempt then. That
+   * ceiling is the starter's evidence as resolved at admission, or for a local run the channels the
+   * operator named. Any other caller with no issued generation, or whose evidence does not resolve,
+   * hands on no grant. The evidence's own standing decides the rest.
    */
   private async staticSpawnBound(caller: EpCaller | undefined, run: Extract<SpawnRun, { admission: RunAdmission }> | undefined): Promise<StaticSpawnBound> {
     if (this.meshMode !== "static" || caller === undefined) return { kind: "exempt" };
@@ -6709,8 +6711,13 @@ export class Manager {
         }
       if (refusal !== undefined) return { kind: "refused", reason: refusal };
       if (admission.spawnExempt) return { kind: "exempt" };
-      if (!isIssuedCaller(admission.caller))
-        return { kind: "none", reason: "its run was admitted with no issued generation, so it records no ceiling to bound a grant by" };
+      // The helper is projected at the admitted coordinate, which needs a lifecycle token. A local
+      // admission written before its uid was one records the CLI's own holder id, and bounds nothing.
+      try {
+        assertLifecycleToken(admission.caller.uid);
+      } catch {
+        return { kind: "refused", reason: `run ${admission.runId}'s admission records caller uid ${JSON.stringify(admission.caller.uid)}, which is not a lifecycle token, so its helpers cannot be measured and it starts none. Start the run again (SPEC 14.8)` };
+      }
       return { kind: "bounded", caller: admission.caller, ceiling: admission.ceiling, run: admission.runId };
     }
     if (!isIssuedCaller(caller))
@@ -6757,7 +6764,7 @@ export class Manager {
             `Drop these from the persona, or have the operator widen the definer's own persona.`;
     if (bound.kind === "bounded" && bound.run !== undefined)
       return `spawn: this spawn hands its helper more than run ${bound.run}'s starter held when the run was admitted: ${named}. ` +
-        `A run hands on only what its starter's issued credential carried at admission (SPEC 14.8). ` +
+        `A run hands on only what its admission recorded: its starter's issued credential, or for a \`--local\` run the channels named by \`--admit-read\` and \`--admit-publish\` (SPEC 14.8). ` +
         `Drop these from the persona or the spawn, or start the run from a caller that holds them.`;
     return bound.kind === "none"
       ? `spawn: the spawner holds no issued evidence (SPEC 13.15), so it hands on no grant: ${bound.reason}. This spawn asks for ${named}. ` +

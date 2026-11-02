@@ -26,16 +26,16 @@ const home = mkdtempSync(join(tmpdir(), "cotal-runhost-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 
-const { connect } = await import("@nats-io/transport-node");
+const { connect, headers } = await import("@nats-io/transport-node");
 const {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
   openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, runDriverCaller, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
-  instanceOnlyManagerCapabilities, runCallerCapabilities,
+  instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
 } = await import("@cotal-ai/core");
-const { jetstreamManager } = await import("@nats-io/jetstream");
+const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
 type EpServeContextT = import("@cotal-ai/core").EpServeContext;
 type ReplyT = import("@cotal-ai/core").EndpointReply;
@@ -773,10 +773,13 @@ try {
       // A local start names its own ceiling (SPEC 14.8): the operator's evidence, on the command line.
       const driven = cli(["start"], { file, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
       for (let i = 0; i < 100 && localId === ""; i++) { await wait(100); localId = /starting run (run-[0-9a-f]+) on endpoint/.exec(LOGS.join("\n"))?.[1] ?? ""; }
-      for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
-      answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
+      // A start that never names its run is graded below by name, not read further.
+      if (localId !== "") {
+        for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
+        answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
+      }
       finished = await driven;
-      answered = await cli(["journal", localId]);
+      if (localId !== "") answered = await cli(["journal", localId]);
     } finally {
       console.log = realLog;
       process.exitCode = undefined;
@@ -812,6 +815,54 @@ try {
     c("`cotal run revoke --local` writes the revocation marker and says what it means", revoked.includes(`run ${localId} on manager: revoked by dana (the review was withdrawn)`), revoked);
     c("a second revoke is idempotent and keeps the first marker's reason", again.includes("revoked by dana (the review was withdrawn)"), again);
     c("a local resume of the revoked run is refused by name, before any drive", resumed.includes("threw:") && resumed.includes("revoked by dana"), resumed);
+    // A local run's helper is bounded by the ceiling the operator named on the command line (SPEC 14.8).
+    const reader = join(wsA, "reader-local.cotal.js");
+    writeFileSync(reader, 'const h = await spawn({ name: "loc-reader", prompt: "You read review.", allowSubscribe: ["review"] }, { events: false });\nlog("seat", h.agent);\n');
+    const wider = join(wsA, "wider-local.cotal.js");
+    writeFileSync(wider, 'await spawn({ name: "loc-wide", prompt: "You read secret.", allowSubscribe: ["secret"] }, { events: false });\n');
+    let readerOut = "", readerShow = "", widerOut = "";
+    process.env.COTAL_DEFAULT_AGENT = "run-answer-stub";
+    console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
+    try {
+      readerOut = await cli(["start"], { file: reader, "admit-read": "review", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      const readerId = /starting run (run-[0-9a-f]+) on endpoint/.exec(LOGS.join("\n"))?.[1] ?? "";
+      if (!readerOut.includes(": completed")) readerShow = await cli(["show", readerId]).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      widerOut = await cli(["start"], { file: wider, "admit-read": "review", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+    } finally {
+      console.log = realLog;
+      delete process.env.COTAL_DEFAULT_AGENT;
+      process.exitCode = undefined;
+    }
+    c("a local run's helper reading a channel the operator admitted launches, and the run completes", readerOut.includes(": completed"), { readerOut, readerShow });
+    c("a local run's helper reading past the admitted channels is refused, naming the channel and the --local ceiling",
+      widerOut.includes("threw:") && widerOut.includes("allowSubscribe secret") && widerOut.includes("`--admit-read`"), widerOut);
+    // A local run admitted before this release recorded the CLI's own holder id as its caller's uid
+    // and its channels as chat subjects alone, so its helpers cannot be measured. The admission is
+    // written as that release wrote it: create-only, under a one-shot run-admitter credential.
+    const oldId = "run-00112233445566778899aabbccddeeff", oldActor = "cli_run_0a1b2c3d";
+    const admitNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId: oldId } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const js = jetstream(admitNc);
+      const createOnly = { create: async (key: string, data: Uint8Array) => {
+        const h = headers();
+        h.set("Nats-Expected-Last-Subject-Sequence", "0");
+        return (await js.publish(`$KV.${admissionBucket(spaceA)}.${key}`, data, { headers: h })).seq;
+      } } as unknown as Parameters<typeof createRunAdmission>[0];
+      await createRunAdmission(createOnly, {
+        version: 1, space: spaceA, endpoint: "manager", runId: oldId, instanceId: "0a1b2c3d4e5f60718293a4b5c6",
+        caller: { owner: DEV_OWNER, actor: oldActor, uid: "u_0a1b2c3d4e5f60718293" },
+        ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "patterns", patterns: [chatSubject(spaceA, "*", "*", "review")] }, deny: [] } },
+        provenance: { kind: "operator", by: oldActor, reason: "cotal run start --local --admit-read review --admit-publish none" },
+        admittedAt: Date.now(),
+      });
+    } finally {
+      await admitNc.drain().catch(() => admitNc.close());
+    }
+    const oldDriver = runDriverCaller(oldId);
+    const oldSpawn = await mgrB!.startAgent({ name: "old-reader", agent: "run-answer-stub", persona: { prompt: "You read review." }, events: false, runId: oldId },
+      principalKey(oldDriver.owner, oldDriver.actor).key, undefined, oldDriver);
+    c("a local run admitted before this release is refused its helpers by name, and told to start again",
+      oldSpawn.ok === false && String(oldSpawn.error).includes(`run ${oldId}'s admission records caller uid`) && String(oldSpawn.error).includes("Start the run again"), oldSpawn);
   }
 
   console.log("A8. the launch deadline a client uses outlives the manager's activation wait");
@@ -934,7 +985,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 91;
+const EXPECTED_CELLS = 94;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

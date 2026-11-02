@@ -19,12 +19,12 @@
     {
       "name": "a constant holder id lets concurrent drives co-activate through the exact-tuple relaxation",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
-      "replace": "  return { id: \"cli_run\", lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: mintLifecycleUid(), instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: \"cli_run_constant\", lifecycleUid: mintLifecycleUid(), instanceId: uid.slice(0, 26) };",
       "expectRed": "concurrent drives never co-activate: every activation token is held exactly once",
       "completionMarker": "run-command:",
       "cell": "concurrent drives never co-activate: every activation token is held exactly once",
-      "note": "The defect measured at 753e82f8a: two concurrent resumes derive the same fencing token and epoch from one record read, and with the constant id the tuple is exact, so both activate and the journal records two activations sharing a token. The cell asserts the journal invariant across five concurrent pairs rather than which promise lost, because a lost race is a legitimate higher-token takeover while a shared token is impossible by design."
+      "note": "The defect measured at 753e82f8a: two concurrent resumes derive the same fencing token and epoch from one record read, and with the constant id the tuple is exact, so both activate and the journal records two activations sharing a token. The cell asserts the journal invariant across five concurrent pairs rather than which promise lost, because a lost race is a legitimate higher-token takeover while a shared token is impossible by design. The constant id keeps the per-invocation id's length, because the local admission mints its ceiling at the holder's coordinate and refuses a connection id shorter than 8 characters before the run starts."
     },
     {
       "name": "the journal render drops an open pause's question",
@@ -69,8 +69,8 @@
     {
       "name": "a local holder contains a forbidden owner-token separator",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
-      "replace": "  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: mintLifecycleUid(), instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: mintLifecycleUid(), instanceId: uid.slice(0, 26) };",
       "expectRed": "local authenticated publish admission accepts its generated holder identity",
       "completionMarker": "run-command:",
       "cell": "local authenticated publish admission accepts its generated holder identity",
