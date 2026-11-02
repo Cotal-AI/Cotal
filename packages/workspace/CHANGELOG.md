@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.135.1
+
+### Patch Changes
+
+- b3b4bf1: The `cotal-ai` package ships the connectors' docs data once instead of once per connector, which cuts the packed tarball from 16.8 MB to 6.7 MB. The seed puts a copy back in every installed connector, and `cotal update` verifies those copies against the shipped one.
+- @cotal-ai/core@0.135.1
+
 ## 0.135.0
 
 ### Minor Changes

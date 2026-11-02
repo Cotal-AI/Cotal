@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.135.1
+
+### Patch Changes
+
+- ec531ec: A space catalog entry can now say a space is temporarily unavailable, with `"unavailable": "<reason>"` in place of its registration. The CLI keeps the registration it already holds for that space, and commands for the other spaces in the catalog keep working. A command that targets the unavailable space refuses with `DEPENDENCY_UNAVAILABLE` and the catalog's reason, and `cotal sync` lists it under `unavailable`. Before this, a catalog had to fail as a whole, which stopped commands for every space in it.
+- b3b4bf1: The `cotal-ai` package ships the connectors' docs data once instead of once per connector, which cuts the packed tarball from 16.8 MB to 6.7 MB. The seed puts a copy back in every installed connector, and `cotal update` verifies those copies against the shipped one.
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+
 ## 0.135.0
 
 ### Minor Changes
