@@ -1200,14 +1200,18 @@ export const cotal: Plugin = async () => {
   /** Native TUI / API prompts enter through OpenCode's chat.message hook before the model loop
    *  starts. This is the real "next turn" boundary for human-typed input: prepend the buffered Cotal
    *  batch to the user's text, then ack it when the resulting turn ends. We only mutate an existing
-   *  text part so we don't need to manufacture OpenCode's internal part IDs. */
-  function injectIntoPrompt(output: { parts?: unknown[] }): void {
+   *  text part so we don't need to manufacture OpenCode's internal part IDs. A role request held for
+   *  its take rides the prompt only once its take is recorded, so the prompt takes the held requests
+   *  it will carry first; OpenCode awaits this hook before it saves the prompt. */
+  async function injectIntoPrompt(output: { parts?: unknown[] }): Promise<void> {
     if (driving) return; // drive() is submitting the batch itself; an open batch is refused by `inject`
     const textPart = output.parts?.find(
       (p): p is { type: "text"; text: string } =>
         typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string",
     );
     if (!textPart) return;
+    if (!batch.open) await agent.takeChosen("automatic", (preview) => preview);
+    if (driving) return;
     const prefix = batch.inject();
     if (prefix === undefined) return;
     textPart.text = `${prefix}\n\n${textPart.text}`;
@@ -1560,7 +1564,7 @@ export const cotal: Plugin = async () => {
       // default: before the first prompt the dashboard truthfully shows "not reported".
       if (input.model)
         await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));
-      injectIntoPrompt(output);
+      await injectIntoPrompt(output);
     },
 
     // The host disposing this plugin's instance, which it does with its process still serving (a

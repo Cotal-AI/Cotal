@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "extensions/connector-opencode/smoke/native-prompt-take-auth.smoke.ts"
+  ],
+  "guard": "OpenCode's native prompt, on 1.x and 2.x, takes the role requests held for their take and carries them, as a prompt on a mesh without takes carries every waiting request, and a 2.x drive that waited on the same take does not carry them again",
+  "command": "pnpm smoke:opencode-native-prompt-take:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=9",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/native-prompt-take-auth.json",
+  "why": [
+    "A role request held for its take is not in peekInbox, which is what a native prompt's injection",
+    "reads. Unless the prompt takes it first, the user's prompt carries none of them, and they wait",
+    "for a turn of their own after the user's turn ends. On 2.x, a drive that a turn's end started",
+    "while the prompt was taking the request resumes after the prompt has carried it, and only an",
+    "open batch tells it so.",
+    "",
+    "The suite boots both adapters from their source, so the command builds nothing and no restore needs a build."
+  ],
+  "mutations": [
+    {
+      "name": "a native prompt injects only what is already taken",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    if (!batch.open) await agent.takeChosen(\"automatic\", (preview) => preview);\n",
+      "replace": "",
+      "expectRed": "1b the user's next prompt carries the role request",
+      "cell": "1b the user's next prompt carries the role request",
+      "note": "The prompt carries only what a read can already see, so a role request held while the turn ran rides no native prompt."
+    },
+    {
+      "name": "a 2.x native prompt injects only what is already taken",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    if (!batch.open) await agent.takeChosen(\"automatic\", (preview) => preview);\n",
+      "replace": "",
+      "expectRed": "2b on 2.x, the user's next prompt carries the role request",
+      "cell": "2b on 2.x, the user's next prompt carries the role request",
+      "note": "The 2.x prompt hook carries only what a read can already see, so a role request held while the turn ran rides no native prompt."
+    },
+    {
+      "name": "a 2.x drive ignores a batch a native prompt opened during its take",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "      if (execution || submitting || batch.open || controller.signal.aborted) return;\n",
+      "replace": "      if (execution || submitting || controller.signal.aborted) return;\n",
+      "expectRed": "3a the user's prompt carries the request and no driven prompt carries it again",
+      "cell": "3a the user's prompt carries the request and no driven prompt carries it again",
+      "note": "The drive surfaces the requests the prompt already carried and submits them as a prompt of their own."
+    }
+  ]
+}

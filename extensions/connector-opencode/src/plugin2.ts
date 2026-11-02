@@ -214,9 +214,10 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
       parts.push(override);
     } else {
       // A role request is shown only once its take is recorded (SPEC §8.1), so only a turn that
-      // carries the inbox takes one. The recheck covers this await.
+      // carries the inbox takes one. The recheck covers this await, during which a native prompt may
+      // have taken the same requests and carried them: its batch is then open and goes out alone.
       const items = await agent.takeChosen("automatic", (preview) => preview);
-      if (execution || submitting || controller.signal.aborted) return;
+      if (execution || submitting || batch.open || controller.signal.aborted) return;
       if (items.length === 0 && !turnPeek) return;
       if (items.length > 0) {
         ids = items.map((i) => i.recvKey);
@@ -318,9 +319,12 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   });
 
   // `e.prompt` is `DeepMutable` (measured) — mutate the text part directly, as 1.x's
-  // `injectIntoPrompt` does, through the shared batch so the two callers can't drift.
-  await ctx.session.hook("prompt", (e) => {
+  // `injectIntoPrompt` does, through the shared batch so the two callers can't drift. A role request
+  // held for its take rides the prompt only once its take is recorded, so the prompt takes the held
+  // requests it will carry first; OpenCode 2.x awaits this hook before it stores the prompt (measured).
+  await ctx.session.hook("prompt", async (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
+    if (!batch.open) await agent.takeChosen("automatic", (preview) => preview);
     const prefix = batch.inject();
     if (prefix !== undefined) e.prompt.text = `${prefix}\n\n${e.prompt.text}`;
   });
