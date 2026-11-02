@@ -292,6 +292,7 @@
     "smoke:channel-attention:auth": "tsx extensions/connector-core/smoke/per-channel-attention-auth.smoke.ts",
     "smoke:anycast-take-gate:auth": "tsx extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts",
     "smoke:codex-anycast-take-host:auth": "tsx extensions/connector-codex/smoke/anycast-take-host-auth.smoke.ts",
+    "smoke:hermes-anycast-notice:auth": "tsx extensions/connector-hermes/smoke/anycast-notice-auth.smoke.ts",
     "smoke:focus-recall-wildcard": "tsx extensions/connector-core/smoke/focus-recall-wildcard.smoke.ts",
     "smoke:presence-scrub": "tsx packages/core/smoke/presence-offline-scrub.smoke.ts",
     "smoke:cross-path-dedup": "tsx extensions/connector-core/smoke/cross-path-dedup.smoke.ts",

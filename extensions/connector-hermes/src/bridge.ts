@@ -96,6 +96,9 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
     text: i.text,
     replyTo: i.replyTo,
     contextId: i.contextId,
+    // The delivery daemon's notice about a role request this seat sent: the sidecar labels it as the
+    // mesh's own word and gives it no chat to answer in.
+    notice: i.notice,
     // The DM answers a question this seat asked, from the peer it asked: only then may the adapter
     // route it by its contextId (see MeshAgent.answersQuestion).
     answersQuestion: agent.answersQuestion(i),

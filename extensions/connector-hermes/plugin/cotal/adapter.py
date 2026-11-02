@@ -40,11 +40,16 @@ class InjectionRefused(Exception):
     sidecar offers it again later (``deferred``)."""
 
 
+# The chat the delivery daemon's notices run in. It has no mesh target, so a turn's reply to a notice
+# is not sent: a notice wants no answer, and its sender is the daemon, not a peer.
+NOTICE_CHAT = "notice:anycast"
+
+
 def chat_type_for(chat_id: str) -> Optional[str]:
     """The chat type of a chat_id minted on inbound, or None for an id this adapter did not mint."""
     if chat_id.startswith("channel:"):
         return "group"
-    if chat_id.startswith("dm:"):
+    if chat_id.startswith("dm:") or chat_id == NOTICE_CHAT:
         return "dm"
     return None
 
@@ -193,6 +198,8 @@ class CotalAdapter(BasePlatformAdapter):
         if kind == "channel":
             ch = msg.get("channel") or "general"
             chat_id, chat_name = f"channel:{ch}", f"#{ch}"
+        elif msg.get("notice") == "anycast":
+            chat_id, chat_name = NOTICE_CHAT, "anycast notices"
         else:  # dm / anycast → a turn whose reply goes straight back to the sender
             chat_id, chat_name = f"dm:{msg.get('fromId')}", sender
         chat_type = chat_type_for(chat_id)
