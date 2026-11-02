@@ -13,7 +13,7 @@
     "",
     "S3 clears it on a peek, so the read after the peek loses it.",
     "",
-    "S4 and S5 drop it from the reply outside and inside focus mode.",
+    "S4 and S5 drop it from the reply outside and inside focus mode, and S8 from a focus reply with recall to report.",
     "",
     "S6 clears the notice when the read starts, as before the fix, so a recall that throws loses it.",
     "",
@@ -70,6 +70,13 @@
       "find": "this._storedCopiesFull = Math.max(0, this._storedCopiesFull - seen);",
       "replace": "this._storedCopiesFull = 0;",
       "expectRed": "a limit seen while a reply is built is said by the next read, and then not again"
+    },
+    {
+      "name": "S8 a focus reply with recall to report drops the notice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "const warning = [connectionWarning, storedNote, droppedNote(recall.droppedChannels)",
+      "replace": "const warning = [connectionWarning, droppedNote(recall.droppedChannels)",
+      "expectRed": "in focus mode a read with recall to report carries the notice once"
     }
   ]
 }

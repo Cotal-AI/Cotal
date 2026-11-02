@@ -74,6 +74,12 @@ const focused = await read();
 check("in focus mode the next read carries the notice once", count(focused) === 1, focused);
 const focusedAgain = await read();
 check("in focus mode the read after it does not repeat it", count(focusedAgain) === 0, focusedAgain);
+// Recall never reads a family whole, so a family follower's focus read always has recall to report.
+// That reply carries the notice too.
+recallWith(async () => ({ items: [], droppedChannels: ["flood.>"] }));
+agent.ep.emit("stored-copies-full");
+const withRecall = await read();
+check("in focus mode a read with recall to report carries the notice once", count(withRecall) === 1, withRecall);
 
 // The notice clears only once a reply carrying it reaches a caller that is still there.
 agent.ep.emit("stored-copies-full");
