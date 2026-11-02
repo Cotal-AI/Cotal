@@ -27,8 +27,8 @@
     {
       "name": "J2 drop the caller's ACL from the spawn command",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish } };",
-      "replace": "join: opts?.join };",
+      "find": "join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish }, once: opts?.once };",
+      "replace": "join: opts?.join, once: opts?.once };",
       "expectRed": "the spawn carries the caller's own ACL as callerAcl"
     },
     {
