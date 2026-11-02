@@ -12,7 +12,8 @@ peers, and opening a space writes nothing to the registry and starts no service.
 ## Running it
 
 The app needs Node 26.4 or newer. OpenTUI loads its renderer through `node:ffi`, which Node gates
-behind `--experimental-ffi`. The launcher refuses older Node and adds the flag itself.
+behind `--experimental-ffi`. The launcher refuses older Node, says how to install a newer one, and
+adds the flag itself. The `cotal-ai` package itself still runs on Node 22.10 or newer.
 
 ```bash
 pnpm --filter @cotal-ai/tui build

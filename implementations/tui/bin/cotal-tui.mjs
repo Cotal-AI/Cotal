@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 
 const [major, minor] = process.versions.node.split(".").map(Number)
 if (major < 26 || (major === 26 && minor < 4)) {
-  process.stderr.write(`cotal-tui needs Node 26.4.0 or newer, because OpenTUI loads its renderer through node:ffi. This is Node ${process.versions.node}.\n`)
+  process.stderr.write(`cotal-tui needs Node 26.4.0 or newer, because OpenTUI loads its renderer through node:ffi. This is Node ${process.versions.node}. Install Node 26.4 or newer (\`nvm install 26\`) and rerun.\n`)
   process.exit(1)
 }
 
