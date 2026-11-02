@@ -6907,7 +6907,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Holder side of a take (SPEC §8.1): ask the delivery daemon to record this endpoint's take of the
    *  request at `seq`, for the copy with `count` deliveries. Never throws; a take the daemon could
    *  not decide is reported as held, with what the operator has to do when that is anything. */
-  private async takeAnycast(role: string, seq: number, id: string, count: number, epoch: string): Promise<AnycastTakeOutcome> {
+  private async takeAnycast(role: string, seq: number, id: string, count: number, epoch: string, nak: () => void): Promise<AnycastTakeOutcome> {
     const nc = this.nc;
     if (!nc) return { taken: false, drop: false, reason: "daemon-down", detail: this.notLiveMsg() };
     const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
@@ -6926,8 +6926,13 @@ export class CotalEndpoint extends EventEmitter {
     }
     if (reply.ok) return { taken: true };
     // A mismatch can mean the stream was recreated under this consumer, which resumes on the new
-    // stream: read its creation time again, so the copies delivered from here on carry it.
-    if (reply.code === "mismatch") void this.readTaskEpoch().catch(() => {});
+    // stream: read its creation time again, so the copies delivered from here on carry it. When the
+    // time moved, this copy is nakked, so the broker delivers it again at once with the new time. A
+    // redelivery that still mismatches carries the time read here, so it is forgotten, not nakked.
+    if (reply.code === "mismatch") {
+      const current = await this.readTaskEpoch().catch(() => undefined);
+      if (current !== undefined && current !== epoch) nak();
+    }
     if (reply.code === "cancelled" || reply.code === "taken" || reply.code === "gone" || reply.code === "mismatch")
       return { taken: false, drop: true, reason: reply.code, detail: reply.error };
     return held("daemon-busy", reply.error);
@@ -7155,7 +7160,7 @@ export class CotalEndpoint extends EventEmitter {
         const role = opts.takeRole;
         if (role !== undefined) {
           const epoch = this.taskEpoch!;
-          delivery.take = () => this.takeAnycast(role, m.seq, msg.id, m.info.deliveryCount, epoch);
+          delivery.take = () => this.takeAnycast(role, m.seq, msg.id, m.info.deliveryCount, epoch, () => m.nak());
         }
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,

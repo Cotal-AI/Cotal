@@ -774,8 +774,9 @@ cancel.
 body is `{ from: { id, name }, seq, id, count, epoch }`: `seq` is the request's `TASK_<space>`
 stream sequence, `id` is its `CotalMessage.id`, `count` is the broker's delivery count for the copy
 the holder holds, 1 on the first delivery, and `epoch` is the stream's creation time as the holder
-read it when it bound the consumer that delivered the copy. `from.name` is the holder's display
-name: well-formed UTF-16 on a single line of at most 128 characters, with no surrounding
+last read it: when it bound the consumer that delivered the copy, or again after a `mismatch`.
+`from.name` is the holder's display name: well-formed UTF-16 on a single line of at most 128
+characters, with no surrounding
 whitespace, `/` or `\`. The daemon takes the role from the subject and the holder from the subject's sender tokens, and refuses
 a body whose `from.id` is another principal or whose `from.name` breaks those rules. It reads the
 request stored at `seq` with `STREAM.MSG.GET`, a leader-served read, and reads the stream's creation
@@ -789,7 +790,7 @@ take a newer request stored at the same `seq`. It answers `{ ok: true }` or
 | `cancelled` | the sender cancelled the request | forgets its copy |
 | `taken` | a take at this delivery count or a later one holds the request | forgets its copy |
 | `gone` | nothing is stored at `seq`, and no cancel is recorded | forgets its copy |
-| `mismatch` | the request at `seq` is not this role and id, the copy is from an older stream, or the take is malformed | forgets its copy |
+| `mismatch` | the request at `seq` is not this role and id, the copy is from an older stream, or the take is malformed | reads the creation time again, naks its copy if that time moved, and forgets it |
 | `busy` | the daemon could not decide the take now | keeps its copy and asks again later |
 
 A holder MUST NOT show a role request until a take of the copy it holds returns `ok`, and it takes
@@ -797,8 +798,12 @@ a request only when it is about to show it, because a take ends the sender's cha
 host that shows part of its inbox chooses what it will show first and takes only the requests in
 that choice. A count, a wake or a preview never takes; only a read that shows bodies does. A holder forgets a
 refused copy without acking it: a cancelled request is already deleted, and one another holder took
-stays with that holder. It restarts the copy's ack wait (`+WPI`) before it asks, and once the take
-returns it shows the request only if it still holds that copy, with the same delivery count, an ack
+stays with that holder. After a `mismatch` it reads the stream's creation time again. When that time
+differs from the copy's `epoch`, the consumer is on a recreated stream, so it naks the copy first and
+the broker delivers it again at once, carrying the new time. A redelivery that mismatches again
+carries the time just read, so it is forgotten and not nakked. It restarts the copy's ack wait
+(`+WPI`) before it asks, and once the take returns it shows the request only if it still holds that
+copy, with the same delivery count, an ack
 wait that has not run out, and no reconnect since it asked. Otherwise it takes the newer copy. A
 request taken and not yet shown when the holder's connection drops is taken again before it is
 shown, and so is one whose take is still waiting for its answer then: that take ends with the
