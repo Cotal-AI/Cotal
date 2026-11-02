@@ -254,8 +254,13 @@ after selection.
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
 Jcode rejected that bare id, and `model_mismatch` means a requested variant could not be tied to one
-active provider route for the selected model. `private_state` names a different step: the seat's
-private home, its credential mirror, or its short socket alias could not be prepared.
+active provider route for the selected model. That refusal names the requested model separately from
+Jcode's reported runtime model and provider, counts matching model routes, and says why verification
+failed. It distinguishes an absent model, absent route, ambiguous routes, and a route without a provider.
+The requested effort has not been applied. Missing identity fields are marked unreported; identity
+values outside the bounded diagnostic format are withheld. Route details and provider errors stay private.
+`private_state` names a different step: the seat's private home, its credential mirror, or its short
+socket alias could not be prepared.
 `cursor_state_unreadable` means the operator's Cursor state database could not be read; the line names
 the file relative to the home, a reason word and, when SQLite gave one, its result code.
 

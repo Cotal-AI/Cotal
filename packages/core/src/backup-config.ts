@@ -206,17 +206,16 @@ const PLANE3_DUPLICATE_WINDOW = nanos(BACKUP_PLANE3_DEDUP_WINDOW_MS);
  *  One limit per space, enforced by the broker as the stream's `max_age` and
  *  `max_msgs_per_subject`; a chat subject is one sender on one channel. */
 export interface ChatHistoryLimit {
-  /** `max_age` in milliseconds. 0 is no age limit, which only a stream this code did not set holds. */
+  /** `max_age` in milliseconds. 0 is no age limit. */
   maxAgeMs: number;
   /** `max_msgs_per_subject`. */
   perSender: number;
 }
 
-/** The limit a new space's chat stream is created with. */
-export const CHAT_HISTORY_DEFAULT: Readonly<ChatHistoryLimit> = Object.freeze({ maxAgeMs: 30 * 86_400_000, perSender: 1000 });
-/** The limit every chat stream carried before it was configurable. `cotal up` moves a stream that
- *  still holds exactly this pair to {@link CHAT_HISTORY_DEFAULT}, which expires its older posts. */
-export const LEGACY_CHAT_HISTORY: Readonly<ChatHistoryLimit> = Object.freeze({ maxAgeMs: 0, perSender: 1000 });
+/** The limit a new space's chat stream is created with: no age limit, and each sender's newest 1000
+ *  posts on each channel. Every chat stream held this pair before the limit was configurable, and
+ *  `cotal up` changes no existing stream's limit. */
+export const CHAT_HISTORY_DEFAULT: Readonly<ChatHistoryLimit> = Object.freeze({ maxAgeMs: 0, perSender: 1000 });
 /** The shortest age an operator may set: the stream's duplicate window, which the broker requires
  *  `max_age` not to undercut. */
 export const CHAT_HISTORY_MIN_AGE_MS = DEFAULT_DUPLICATE_WINDOW_MS;
@@ -235,14 +234,10 @@ export function chatHistoryLimitProblem(limit: ChatHistoryLimit): string | undef
 }
 
 /** A limit a chat stream may hold: one an operator may set, or no age with a valid count, which a
- *  stream from before the limit was configurable holds. */
+ *  new stream holds by default. */
 export function isAcceptedChatHistory(limit: ChatHistoryLimit): boolean {
   if (limit.maxAgeMs === 0) return Number.isSafeInteger(limit.perSender) && limit.perSender >= 1;
   return chatHistoryLimitProblem(limit) === undefined;
-}
-
-export function isLegacyChatHistory(limit: ChatHistoryLimit): boolean {
-  return limit.maxAgeMs === LEGACY_CHAT_HISTORY.maxAgeMs && limit.perSender === LEGACY_CHAT_HISTORY.perSender;
 }
 
 /** The limit a chat stream config holds, read from its `max_age` and `max_msgs_per_subject`. */

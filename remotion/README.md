@@ -14,3 +14,8 @@ root package-manager pin. It does not render or publish assets.
 
 Use `pnpm studio` to preview compositions and the `render:*` package scripts to
 render them.
+
+`Wires` (also exported as `WireLines`) takes one `wires` array of `{ d, glow }`
+pairs. Build each pair where its geometry and frame timing are known; use an
+explicit `glow: 0` for a resting wire. The typecheck includes negative contract
+checks that reject missing fields and the old parallel-array props.

@@ -2470,7 +2470,7 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *  membership KV and artifact Object Store, whose legacy `max_bytes` values setup reconciles to -1 (the
  *  reservation a positive cap holds against the broker's `max_file_store` is what stopped a tenth space
  *  from being provisioned; `Objm.create` cannot fix an existing bucket's cap either), and the chat
- *  stream, whose history limit `cotal up` and `cotal history limit` write (`setChatHistoryLimit`).
+ *  stream, whose history limit `cotal history limit` writes (`setChatHistoryLimit`).
  *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
  *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
  *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
@@ -2534,10 +2534,9 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // Still CREATE/INFO/UPDATE only:
   // no publish, no CONSUMER.CREATE (a push consumer's caller-chosen `deliver_subject` would export
   // every artifact in the space), no DELETE/PURGE.
-  // ...plus the chat stream, the one durable message stream this credential updates: `cotal up`
-  // moves a chat stream still on the legacy history limit to the default, and `cotal history limit`
-  // sets it (SPEC §8). Both write only `max_age` and `max_msgs_per_subject` (`setChatHistoryLimit`).
-  // DM, TASK, INBOX and DLV stay create-only.
+  // ...plus the chat stream, the one durable message stream this credential updates: `cotal history
+  // limit` sets its history limit (SPEC §8) and writes only `max_age` and `max_msgs_per_subject`
+  // (`setChatHistoryLimit`). DM, TASK, INBOX and DLV stay create-only.
   const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]
     .map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // #404: one EXACT reserved key on each TTL bucket is the post-update enforcement canary. The
@@ -2935,7 +2934,8 @@ function deprovisionerPermissions(space: string, pr: MintPrincipal, deprovisionT
         `$JS.API.DIRECT.GET.KV_${aclBucket(space)}.$KV.${aclBucket(space)}.${aclKey(target.key, t.lifecycleUid)}`,
         `$KV.${aclBucket(space)}.${aclKey(target.key, t.lifecycleUid)}`,
         // Purge the target lifecycle's durable membership rows, one exact key per named concrete
-        // channel. The key embeds the uid, so a successor's row is unreachable by name.
+        // channel or family (a family's `>` is `=` in the key, so no grant here is a wildcard). The key
+        // embeds the uid, so a successor's row is unreachable by name.
         ...(t.memberChannels.length > 0 ? [`$JS.API.STREAM.INFO.KV_${membersBucket(space)}`] : []),
         ...t.memberChannels.map((ch) => `$JS.API.DIRECT.GET.KV_${membersBucket(space)}.$KV.${membersBucket(space)}.${memberKey(ch, target.key, t.lifecycleUid)}`),
         ...t.memberChannels.map((ch) => `$KV.${membersBucket(space)}.${memberKey(ch, target.key, t.lifecycleUid)}`),

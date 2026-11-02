@@ -60,11 +60,9 @@ import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
 import {
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
-  CHAT_HISTORY_DEFAULT,
   canonicalBackupStreamConfig,
   chatHistoryLimitOf,
   chatHistoryLimitProblem,
-  isLegacyChatHistory,
   validateCanonicalBackupStreamConfig,
   type ChatHistoryLimit,
 } from "./backup-config.js";
@@ -320,7 +318,7 @@ export async function createSpaceStreams(
   for (const definition of spaceMessageStreamConfigs(space)) {
     // The chat stream's history limit is the operator's (`cotal history limit`), so an existing
     // stream is left as it is: an add over a different limit would refuse, and this also runs on
-    // every open-mode connect. Only `cotal up` reconciles it ({@link reconcileChatHistory}).
+    // every open-mode connect. `setupSpaceStreams` checks the stream's other settings.
     if (definition.name === chatStream(space)) {
       try {
         await jsm.streams.info(definition.name);
@@ -393,15 +391,6 @@ export async function setChatHistoryLimit(
 ): Promise<ChatHistoryChange | undefined> {
   const problem = chatHistoryLimitProblem(limit);
   if (problem) throw new Error(`invalid chat history limit: ${problem}`);
-  return applyChatHistoryLimit(jsm, space, limit, expected);
-}
-
-async function applyChatHistoryLimit(
-  jsm: JetStreamManager,
-  space: string,
-  limit: ChatHistoryLimit,
-  expected?: ChatHistoryLimit,
-): Promise<ChatHistoryChange | undefined> {
   const stream = chatStream(space);
   const config = await readChatStreamConfig(jsm, space);
   const from = chatHistoryLimitOf(config as unknown as Record<string, unknown>);
@@ -424,18 +413,6 @@ async function applyChatHistoryLimit(
   if (after.maxAgeMs !== limit.maxAgeMs || after.perSender !== limit.perSender)
     throw new ChatHistoryUpdateUnknown(stream, limit, new Error(`${stream} read back ${describeChatHistory(after)}`));
   return { stream, from, to: limit };
-}
-
-/**
- * `cotal up`'s chat history step: a chat stream still on {@link LEGACY_CHAT_HISTORY}, the limit
- * every stream had before it was configurable, moves to {@link CHAT_HISTORY_DEFAULT}, and the
- * broker then expires its posts older than the default age. Any other limit a stream may hold is
- * the operator's and is left alone. A stream that is not canonical apart from its limit refuses.
- */
-export async function reconcileChatHistory(jsm: JetStreamManager, space: string): Promise<ChatHistoryChange | undefined> {
-  const config = await readChatStreamConfig(jsm, space);
-  if (!isLegacyChatHistory(chatHistoryLimitOf(config as unknown as Record<string, unknown>))) return undefined;
-  return applyChatHistoryLimit(jsm, space, CHAT_HISTORY_DEFAULT, chatHistoryLimitOf(config as unknown as Record<string, unknown>));
 }
 
 /**
@@ -872,7 +849,7 @@ export async function setupSpaceStreams(opts: {
   space: string;
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
-}): Promise<{ chatHistory?: ChatHistoryChange }> {
+}): Promise<void> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
@@ -880,6 +857,9 @@ export async function setupSpaceStreams(opts: {
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
+    // An existing chat stream keeps the history limit it holds, so the create above skips it. Every
+    // other setting of it must still be canonical (SPEC §8), or setup refuses.
+    await readChatStreamConfig(jsm, opts.space);
     // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open
     // them. Idempotent. The TTL'd ones come from `ttlBuckets` and ONLY from there, so a new one
     // cannot be created on this path without also being reconciled on the upgrade path; the
@@ -914,11 +894,6 @@ export async function setupSpaceStreams(opts: {
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
     await ensureArtifactStore(nc, opts.space);
-    // A chat stream from before the history limit was configurable moves to the default, and the
-    // broker then expires its posts older than the default age (SPEC §8). It runs last because it
-    // deletes posts, so a setup that a check above refuses deletes nothing.
-    const chatHistory = await reconcileChatHistory(jsm, opts.space);
-    return chatHistory ? { chatHistory } : {};
   } finally {
     await nc.drain();
   }
@@ -1114,7 +1089,8 @@ export async function deprovisionAgent(opts: {
   space: string;
   targetId: string;
   lifecycleUid: string;
-  /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
+  /** Concrete channels or families (`team.>`) whose membership rows to purge; must equal the cred's
+   *  `memberChannels`. */
   memberChannels?: readonly string[];
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {

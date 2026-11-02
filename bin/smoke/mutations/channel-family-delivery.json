@@ -1,0 +1,172 @@
+{
+  "suite": [
+    "packages/core/smoke/channel-family-auth.smoke.ts"
+  ],
+  "guard": "a family follower's stored copies (#5404): fan-out routes the family rows above a channel, the reader accepts a copy that any covering row holds, covering rows store one copy because the dedupe id is per message and lifecycle, each channel's own delivery class decides, the reader re-checks the read ACL per concrete channel; the daemon admits a family join only inside one read-ACL entry; family catch-up copies durable-class channels under their own names; and the agent joins, leaves and boots a family whatever the space default",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:channel-family:auth",
+  "completionMarker": "CHANNEL-FAMILY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/channel-family-delivery.json",
+  "why": [
+    "The suite imports CotalEndpoint from ../src/index.js, but @cotal-ai/smoke-kit resolves @cotal-ai/core through dist/, so the command builds core first and afterRestore rebuilds it, leaving no dist/ compiled from a mutant.",
+    "Every 'stores nothing' cell is closed by a later post on a channel that does store, so a mutation that stops delivery entirely reddens the marker half rather than passing the negative half."
+  ],
+  "mutations": [
+    {
+      "name": "the reader re-checks only the channel's own row",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    for (const row of [channel, ...familiesCovering(channel).reverse()]) {",
+      "replace": "    for (const row of [channel]) {",
+      "expectRed": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "cell": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "fan-out reads only the channel's own rows",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      for (const rec of await listMembers(await this.membersRegistry(), { covering: channel })) {",
+      "replace": "      for (const rec of await listMembers(await this.membersRegistry(), { channel })) {",
+      "expectRed": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "cell": "a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the dedupe id carries the addressing row's generation again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    return entry.msg.id === \"\" ? {} : { msgID: `${entry.msg.id}:${keySuffix}` };",
+      "replace": "    return entry.msg.id === \"\" ? {} : { msgID: `${entry.msg.id}:${keySuffix}:${entry.generation}` };",
+      "expectRed": "review.a's own row (generation 2) and review.> (generation 1) together store ONE copy",
+      "cell": "review.a's own row (generation 2) and review.> (generation 1) together store ONE copy",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "fan-out stores every channel, whatever its delivery class",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if ((await this.deliveryClassFresh(channel)) === \"durable\") {",
+      "replace": "    if ((await this.deliveryClassFresh(channel)) === \"durable\" || isConcreteChannel(channel)) {",
+      "expectRed": "the live-class review.quiet stores nothing for a review.> follower, while durable review.c does",
+      "cell": "the live-class review.quiet stores nothing for a review.> follower, while durable review.c does",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the reader stops re-checking the read ACL per concrete channel",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!channelInAllow(acl, entry.channel)) { m.ack(); return; }",
+      "replace": "    if (false) { m.ack(); return; }",
+      "expectRed": "a read ACL narrowed to review.b and review.c drops review.d's copy and keeps review.c's",
+      "cell": "a read ACL narrowed to review.b and review.c drops review.d's copy and keeps review.c's",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the daemon admits no family at join or leave",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (opts.family && isChannelFamily(channel)) return channel;",
+      "replace": "    if (false) return channel;",
+      "expectRed": "carol's durable join of team.> is accepted and active",
+      "cell": "carol's durable join of team.> is accepted and active",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a family join is authorized as if it were one concrete channel",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!membershipInAllow(acl.allowSubscribe, channel))",
+      "replace": "    if (!channelInAllow(acl.allowSubscribe, channel))",
+      "expectRed": "the daemon refuses perm.> under a perm.* grant, which cannot read perm.a.b",
+      "cell": "the daemon refuses perm.> under a perm.* grant, which cannot read perm.a.b",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a family's catch-up names each copy by the family",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "            msg, channel: parsed.rest, seq: m.seq, reason: \"durable-channel\", generation, ...(family ? { row: channel } : {}),",
+      "replace": "            msg, channel, seq: m.seq, reason: \"durable-channel\", generation, ...(family ? { row: channel } : {}),",
+      "expectRed": "dev.> catch-up stores dev.d's post, which only the family covers (each copy names its own channel)",
+      "cell": "dev.> catch-up stores dev.d's post, which only the family covers (each copy names its own channel)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a family's catch-up copies every channel, whatever its class",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (!(await stored(parsed.rest))) continue;",
+      "replace": "",
+      "expectRed": "dev.> catch-up leaves out the live-class dev.quiet",
+      "cell": "dev.> catch-up leaves out the live-class dev.quiet",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "an agent's join asks for a family row only when the space default is durable",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "replace": "    else if (effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "expectRed": "with a live default, joining team.x.> still asks for and gets its family row",
+      "cell": "with a live default, joining team.x.> still asks for and gets its family row",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "an agent's leave closes a family row only when the space default is durable",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\")) {",
+      "replace": "    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "expectRed": "leaving team.x.> with a live default closes its family row",
+      "cell": "leaving team.x.> with a live default closes its family row",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "boot joins a family only when the space default is durable",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!isChannelFamily(channel)) {\n        if (!isConcreteChannel(channel)) continue;",
+      "replace": "      if (true) {\n        if (!isConcreteChannel(channel)) continue;",
+      "expectRed": "an agent booted on team.> with a live default holds its family row",
+      "cell": "an agent booted on team.> with a live default holds its family row",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a * pattern join gives no reason it stays live only",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!family && !isConcreteChannel(channel))\n      reason = \"a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>\";\n    else if",
+      "replace": "    if (false)\n      reason = \"\";\n    else if",
+      "expectRed": "joining team.* says a * pattern stays live only",
+      "cell": "joining team.* says a * pattern stays live only",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "channelMembers lists a principal once per covering row",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      const ids = new Set(\n        members\n",
+      "replace": "      const ids = new Array<string>().concat(\n        members\n",
+      "expectRed": "channelMembers lists alice once on review.b, which her own row and review.> both cover",
+      "cell": "channelMembers lists alice once on review.b, which her own row and review.> both cover",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "A principal with its own row and a family row above the channel was listed twice."
+    },
+    {
+      "name": "channelMembers counts a family row on a live-class channel",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "(stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel))",
+      "replace": "(isChannelFamily(r.channel) && subjectMatches(r.channel, channel))",
+      "expectRed": "channelMembers leaves alice off the live-class review.quiet, where review.> stores nothing",
+      "cell": "channelMembers leaves alice off the live-class review.quiet, where review.> stores nothing",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The family stores no copies on a live-class channel, so its follower is no durable member there."
+    },
+    {
+      "name": "the full-store check fires on any stored copy",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit(\"stored-copies-full\");",
+      "replace": "if (m.info.pending >= 0) this.emit(\"stored-copies-full\");",
+      "expectRed": "a store of 5 copies gives no notice on the next connect",
+      "cell": "a store of 5 copies gives no notice on the next connect",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Every reconnect with any stored copy would tell the agent posts may be missing."
+    },
+    {
+      "name": "the full-store check waits for one copy more than the store can hold",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit(\"stored-copies-full\");",
+      "replace": "if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT) this.emit(\"stored-copies-full\");",
+      "expectRed": "the endpoint said the store was full, and nothing more for the post after it drained",
+      "cell": "the endpoint said the store was full, and nothing more for the post after it drained",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "A full store delivers its first copy with 999 behind it, so the notice would never fire."
+    }
+  ]
+}

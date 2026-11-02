@@ -1,0 +1,3 @@
+# cotal_join for a channel family: the stored-copy headline, the live-only pattern, the
+# channel-name refusal and the read ACL checked by containment. No broker.
+smoke:channel-family:join

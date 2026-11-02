@@ -192,9 +192,9 @@ export const S3Modes: React.FC = () => {
   // ----------------------------------------------------------- wire structure
   // resting hairlines stay; glow per beat. In/out wires are the channel routes;
   // the direct wire is the unicast route.
-  const wireGlow = [
-    m_inGlow * m_vis, // IN_PATH (alice->pill) during multicast
-    Math.max(m_outGlow * m_vis, a_inGlow * a_vis), // reuse for pill structure cue
+  const wires = [
+    { d: IN_PATH, glow: Math.max(m_inGlow * m_vis, a_inGlow * a_vis) },
+    ...OUT_PATHS.map((d) => ({ d, glow: m_outGlow * m_vis })),
   ];
 
   // ------------------------------------------------------------ captions
@@ -219,9 +219,9 @@ export const S3Modes: React.FC = () => {
 
         {/* resting wires: channel routes (in + fan) always present, direct route
             only reads during unicast. */}
-        <WireLines paths={[IN_PATH, ...OUT_PATHS]} glow={wireGlow} />
+        <WireLines wires={wires} />
         <div style={{ opacity: u_vis }}>
-          <WireLines paths={[DIRECT_PATH]} glow={[u_glow]} />
+          <WireLines wires={[{ d: DIRECT_PATH, glow: u_glow }]} />
         </div>
 
         {/* multicast ripple at the pill */}
@@ -289,7 +289,7 @@ export const S3Modes: React.FC = () => {
 
         {/* anycast wire afterglow on the claimed route */}
         <div style={{ opacity: a_vis }}>
-          <WireLines paths={[OUT_PATHS[claimer]!]} glow={[a_claimGlow]} />
+          <WireLines wires={[{ d: OUT_PATHS[claimer]!, glow: a_claimGlow }]} />
         </div>
 
         {/* bottom captions, one per beat, cross-faded */}

@@ -94,7 +94,7 @@ No arguments.
 
 *read incoming messages*
 
-Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed.
+Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed. If your stored copies reached their limit of 1000, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.
 
 **Connector variants:** Claude Code exposes the `peek` argument and otherwise reads the whole local inbox, one receivable window per call. OpenCode, Codex, Hermes, and Pi expose no arguments: the call pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only. Jcode also pulls only buffered quiet ambient but keeps the `peek` argument. On every variant the call clears only what that response actually carried.
 
@@ -119,7 +119,7 @@ Broadcast a message to everyone on one channel in your space.
 | Argument   | Type      | Required | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ---------- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `text`     | string    | yes      | The message to broadcast.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `channel`  | string    | no       | Channel to send on (default: general). A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists the existing ones). Reply on the channel you received a message on.                                                                                                                                 |
+| `channel`  | string    | no       | Channel to send on (default: general). A pattern such as team.> is refused. To reach the agents following team.>, post once to one channel it matches, such as team.announce: those connected then get it, and one that is away gets a stored copy if that channel is durable. To reach several channels, post to each by name (cotal_channels lists the existing ones). Reply on the channel you received a message on.                                                  |
 | `mentions` | string\[] | no       | Names of peers to call out (e.g. \['bob']). Everyone on the channel still receives the message, but a mentioned peer gets high-priority delivery (eg @bob): woken now if idle, instead of waiting for its next idle moment. Use sparingly: a mention WAKES that peer, so only call someone out when you need THAT specific peer to act now; never mention in an acknowledgement, thanks, or sign-off, or mentions ping-pong between peers and wake the channel in a loop. |
 
 ## `cotal_dm`
@@ -229,28 +229,28 @@ Set how a single channel interrupts you: your per-channel attention, more specif
 
 *join a channel*
 
-Subscribe to a channel mid-session. Returns its registry info; if the channel replays, recent history is delivered to your inbox marked as catch-up (it pre-dates your join, so don't treat it as live). Idempotent. Bounded by your read ACL: a channel outside it is refused.
+Subscribe to a channel mid-session. Returns its registry info; if the channel replays, recent history is delivered to your inbox marked as catch-up (it pre-dates your join, so don't treat it as live). A family such as team.> follows every channel under team, now and later, but not team itself: posts on its durable channels are stored for you while you are away, from the join on, and its live channels reach you only while you are connected. A pattern with \* or the root > is followed live only. Idempotent. Bounded by your read ACL: a channel outside it is refused.
 
 * **Side-effect:** subscribes you to a channel.
 * **Available:** always, within your read ACL (`allowSubscribe`); outside it the join is refused.
 * If the channel replays, recent history lands in your inbox marked as catch-up.
 
-| Argument  | Type   | Required | Meaning                              |
-| --------- | ------ | -------- | ------------------------------------ |
-| `channel` | string | yes      | The channel to join (e.g. incident). |
+| Argument  | Type   | Required | Meaning                                                          |
+| --------- | ------ | -------- | ---------------------------------------------------------------- |
+| `channel` | string | yes      | The channel to join (e.g. incident), or a family such as team.>. |
 
 ## `cotal_leave`
 
 *leave a channel*
 
-Unsubscribe from a channel mid-session; you stop receiving its messages. Leaving your LAST channel is allowed: you stay on the mesh, visible on the roster and reachable by DM and anycast, you just read no channel. You then have no default send channel, so cotal_send refuses a call with no channel until you join one.
+Unsubscribe from a channel or a family such as team.> mid-session; you stop receiving its messages, and a family's stored copies stop. Leaving your LAST channel is allowed: you stay on the mesh, visible on the roster and reachable by DM and anycast, you just read no channel. You then have no default send channel, so cotal_send refuses a call with no channel until you join one.
 
 * **Side-effect:** unsubscribes you from a channel.
 * **Available:** always.
 
-| Argument  | Type   | Required | Meaning               |
-| --------- | ------ | -------- | --------------------- |
-| `channel` | string | yes      | The channel to leave. |
+| Argument  | Type   | Required | Meaning                         |
+| --------- | ------ | -------- | ------------------------------- |
+| `channel` | string | yes      | The channel or family to leave. |
 
 ## `cotal_spawn`
 

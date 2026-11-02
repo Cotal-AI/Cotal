@@ -608,6 +608,18 @@ membership cannot be established (for example no privileged writer is present), 
 the live subscription remains active, and the durable shortfall MUST be surfaced as an exceptional
 delivery state (e.g. `durable backstop unavailable`), never silently.
 
+A durable membership names one concrete channel or one **channel family**: one or more concrete
+segments followed by a final `>` (`team.>`), with no `*` and not the root `>`. A family covers every
+channel its pattern matches, now and later, and not its prefix itself (`team.>` does not cover
+`team`). Each covered channel keeps its own effective delivery class: a post on a `durable` channel
+under the family is in the member's backstop, and a post on a `live` channel is not. The join and
+leave cursors and the leave boundary apply to the family's own record as to a channel's. A family
+join MUST lie within one `allowSubscribe` entry, so every channel it can match is readable. A member
+whose own row and a family row both cover a channel holds one backstop copy of each post, and the
+backstop re-check accepts the copy while any of its covering rows' intervals contains it. A
+subscription with `*` or the root `>` takes no durable membership: it is joined live only, and the
+client MUST say so.
+
 ---
 
 ## 8. NATS + JetStream binding
@@ -622,17 +634,16 @@ mode.
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
 **Chat history limit.** One limit per space sets how long `CHAT_<space>` keeps a channel post: until
-the post is older than the limit's age (`max_age`), or until its sender has posted the limit's count
-(`max_msgs_per_subject`) newer ones on that channel, whichever comes first. A chat subject is one
-sender on one channel, so the count holds per sender per channel. The broker removes a post past
-either bound, and lowering the limit on a live stream removes the posts past the new one at once. A
-new space starts at 30 days and 1000 per sender. An operator MAY set an age from 2 minutes (the
-stream's duplicate window) to 3650 days in whole seconds, and a count of at least 1; the limit MUST
-NOT be set to no age. A stream created before the limit was configurable holds no age and 1000 per
-sender, and a reader MUST accept that pair and any other count with no age. `allow_msg_ttl` stays
-false on the stream: once on it cannot be turned off, and a per-message TTL of `never` escapes
-`max_age`. Copies the Plane 3 backstop already took into its own streams are bounded by those
-streams, not by this limit.
+its sender has posted the limit's count (`max_msgs_per_subject`) newer ones on that channel, or, when
+the limit has an age (`max_age`), until the post is older than that age, whichever comes first. A
+chat subject is one sender on one channel, so the count holds per sender per channel. The broker
+removes a post past either bound, and lowering the limit on a live stream removes the posts past the
+new one at once. A new space starts with no age limit and 1000 per sender, and setting up an
+existing space MUST NOT change its limit. An operator MAY set an age from 2 minutes (the stream's
+duplicate window) to 3650 days in whole seconds, and a count of at least 1. A reader MUST accept no
+age with any count. `allow_msg_ttl` stays false on the stream: once on it cannot be turned off, and a
+per-message TTL of `never` escapes `max_age`. Copies the Plane 3 backstop already took into its own
+streams are bounded by those streams, not by this limit.
 
 **Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
 JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
@@ -712,6 +723,14 @@ filter. The store's stream/subject layout, the fan-out writer, the trusted reade
 registry are reference-implementation, not normative; a conformant deployment MAY realize the backstop
 differently as long as the §4 guarantee and the §9 checks hold.
 
+In the reference, fan-out writes a post on a concrete channel for every member whose row is that
+channel or a family covering it, and each copy's `Nats-Msg-Id` is `<id>:<principal>:<lifecycleUid>`,
+so the covering rows of one member collapse into one copy within the duplicate window. A member's
+`dlv` subject keeps its newest 1000 copies (`max_msgs_per_subject=1000`, `discard=Old`), and the broker
+reports no discard. A client that receives a backstop copy with 999 or more copies still pending
+behind it SHOULD tell the member that earlier copies may have been dropped, and that ACL-bounded
+history may still hold them.
+
 The absence of a usable receiver dedup key does not relax acknowledgement ownership: a
 JetStream-consumed copy with `id: ""` that is surfaced or handled MUST be acknowledged
 independently. The reference fan-out and transfer publishes carry no `Nats-Msg-Id` for an
@@ -747,7 +766,8 @@ KV buckets are also streams and are pre-created:
 (key = `card.id`) derived view of who is subscribed to each channel: the **union** of an agent's
 `live` core-subscriptions (read by a privileged daemon from the broker's connection view) and its
 `durable` memberships (the members registry), each value `{ live: string[], durable: string[],
-observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time.
+observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time,
+and `durable` keeping a family row as recorded (`team.>`, §7).
 The backing KV keeps one message per agent key and limits each serialized value to 262144 bytes. Its
 global `max_bytes` is unlimited (`-1`), so creating an empty space reserves no file-store capacity;
 the broker's actual file-store limit remains the aggregate storage bound.
@@ -923,7 +943,8 @@ operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identit
 - **An agent's channel scope is three concepts**, each a list of channel names or wildcard
   subtrees (`team.>`): `subscribe`, the active read set, the channels it subscribes to at boot
   (now native core subscriptions; mutable at runtime by direct subscribe/unsubscribe with no
-  mediation); it MUST be a subset of `allowSubscribe`. `allowSubscribe`, the read **ACL**, the
+  mediation); it MUST be a subset of `allowSubscribe`, and a pattern in it is a subset only when one
+  `allowSubscribe` entry contains it (`perm.*` does not contain `perm.>`). `allowSubscribe`, the read **ACL**, the
   channels it MAY read (default = `subscribe`), minted as native `sub.allow` subscribe grants over
   `cotal.<space>.chat.*.*.<channel>` (wildcards preserved, so an open ACL needs no enumeration) and
   as the matching per-channel history-consumer create grants. `allowPublish`, the post **ACL**,
@@ -6893,8 +6914,9 @@ single-function profiles, each granting only the verbs its function needs and no
   teardown with the target's `(principal, lifecycleUid)` in every exact-name grant; it can
   delete only lifecycle-keyed names, so it structurally cannot reach a same-name successor
   (§13.1). The footprint is the `dm_`/`dlv_` durables, the read-ACL row, and the durable
-  membership row for each concrete channel the teardown names (one exact `memberKey` grant per
-  channel). A wildcard channel is refused at mint. The manager names the launch's concrete read
+  membership row for each concrete channel or family the teardown names (one exact `memberKey` grant
+  per row; a family's key stores its final `>` as `=`, so no grant is a wildcard). Any other pattern
+  is refused at mint. The manager names the launch's concrete read
   channels plus the channels the delivery daemon's read-only `lifecycleMemberships` admin verb
   lists for that exact `(principal, lifecycleUid)`. When that inventory cannot be read, rows on
   other channels stay retained, the teardown logs the inventory as incomplete, and retirement
@@ -7073,6 +7095,8 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
+| 2026-11-01 | **Durable membership of a channel family (§7, §8, §9, Appendix B), additive except one refusal.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join, and any pattern in `subscribe`, lies within one `allowSubscribe` entry, so an agent definition whose `subscribe` pattern only matches an entry, such as `perm.>` under `perm.*`, is now refused. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
 | 2026-10-30 | **Anycast request status (§3, §4, §8.1, Appendix B), additive.** In auth mode a holder takes a role request on `cotal.<space>.take.<role>.<owner>.<actor>` just before it shows it, and only the requests it is about to show, and the delivery daemon records the take in `cotal_anycast_<space>`, one CAS-fenced row per request keyed by the `TASK` stream's creation time and the request's sequence. The sender gets a DM notice from the daemon naming the holder that took the request, and a second notice when a redelivery moves the take to another holder. The new `anycastStatus` and `anycastCancel` ops on the `delivery` control service read and cancel the caller's own request by seq; a cancel succeeds only while the request waits. JetStream deletes by stream and seq with no condition on the stream's creation time, so a `TASK` stream deleted and recreated between the daemon's read of that time and its delete loses the request the new stream stores at that seq, and the cancel reads `deleted`; operators stop every delivery daemon serving the space and wait until each has exited and its connection has closed before recreating `TASK`. A take carries the `TASK` stream's creation time as the holder read it, and one from a stream since recreated is refused. Agents with a role gain the take publish and its reply subscription. A holder on an auth mesh that cannot take holds the request unshown and reports why. An open mesh is unchanged and refuses status and cancel. |
 | 2026-10-30 | **The chat stream's history limit is configurable per space (§4, §7, §8).** `CHAT_<space>` keeps a post until it is older than the space's age or its sender has posted the space's count of newer ones on that channel, whichever comes first. A new space starts at 30 days and 1000 per sender. A stream with no age and any count, as every stream before this change was created, stays valid. The durable guarantee is bounded by this limit, and `replayWindow` is a read horizon that removes nothing. The reference implementation moves a stream still on no age and 1000 per sender to the default when `cotal up` starts its broker, which deletes posts older than 30 days. |
 | 2026-10-30 | **A registry lists the endpoints a caller can call (§13.15, §13.20), additive.** A space MAY run a registry, a registered endpoint named `registry` whose `endpoints` command lists the registered endpoints the caller holds a command on, with the request forms its recorded ceiling covers. It leaves out every endpoint the ceiling covers nothing of. On a space with a permission system the question rides `ep.v1`, and a credential on the legacy rail MAY carry a listing generation for it: three rows that reach only `registry` `endpoints` and the listing's own accepted row, with evidence recording the credential's complete ceiling. An issued credential MAY carry the same request row on its own generation, fixed at its first issuance. The registry reads that ceiling with a disclosure read that checks no source liveness and admits no effect. |
