@@ -182,6 +182,15 @@ try {
       const agent = await waitFor((f) => f.includes("AGENT") && f.includes("uptime"), "an agent overview in the inspector")
       save(dir, "06-agent-overview")
       check(`${size}: selecting an agent adds its overview`, /status\s+[●◐○⨯]/.test(agent) && agent.includes("model"), agent)
+      for (let i = 0; i < 40 && !/status\s+● working/.test(capture()); i++) {
+        keys("k")
+        await new Promise((r) => setTimeout(r, 30))
+      }
+      const working = await waitFor((f) => /status\s+● working/.test(f), "a working agent's overview")
+      const lines = working.split("\n").map((l) => l.trimEnd())
+      const at = lines.findIndex((l) => /status\s+● working/.test(l))
+      const shown = lines[at].endsWith("● working · progress unknown") || (lines[at].endsWith("● working ·") && /\s{2}progress unknown$/.test(lines[at + 1] ?? ""))
+      check(`${size}: a working agent's overview names its progress as unknown`, shown, working)
     }
 
     await stopBroker()

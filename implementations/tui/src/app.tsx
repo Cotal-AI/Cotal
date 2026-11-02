@@ -387,10 +387,14 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
               <box height={1} flexShrink={0} />
               <For each={overview(a(), now())}>
                 {(f) => (
-                  <text wrapMode="none" fg={theme.text.base}>
-                    <span style={{ fg: theme.text.faint }}>{f.label.padEnd(9)}</span>
-                    {fit(f.value, p.width - 13)}
-                  </text>
+                  <box flexDirection="row" flexShrink={0}>
+                    <text width={9} flexShrink={0} wrapMode="none" fg={theme.text.faint}>
+                      {f.label}
+                    </text>
+                    <text flexGrow={1} flexShrink={1} fg={theme.text.base}>
+                      {f.value}
+                    </text>
+                  </box>
                 )}
               </For>
             </box>

@@ -67,7 +67,7 @@ const metaText = (p: Presence, key: string) => {
  *  "not reported"; uptime dates the publishing process and exists only while it is live. */
 export function overview(p: Presence, now: number): { label: string; value: string }[] {
   return [
-    { label: "status", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}` },
+    { label: "status", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === "working" ? " · progress unknown" : ""}` },
     ...(p.card.role ? [{ label: "role", value: p.card.role }] : []),
     { label: "model", value: metaText(p, "model") ?? "not reported" },
     { label: "harness", value: metaText(p, "connector") ?? "not reported" },
