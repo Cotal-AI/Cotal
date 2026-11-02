@@ -5406,7 +5406,7 @@ host's retirement barrier.
 
 **Delegation bound.** On a static space, a manager that mints a credential for an agent a caller
 spawned MUST first resolve that caller's issued authority and bound the grant it hands on against
-the evidence. The grant is every channel the helper may read, with its subscribe set folded in,
+the evidence. The grant is every channel the helper may read, its subscribe set included,
 every channel it may post to, its role, and every capability token. Each part is projected through the agent
 mint at the spawner's own coordinate, the projection of an empty grant is subtracted, and every
 remaining row MUST be covered by the evidence's `permissions` with no overlapping deny. A part
