@@ -157,6 +157,10 @@ try {
     save(dir, "02-feed")
     check(`${size}: a channel message appears in the all-traffic feed with its channel`, fed.includes("planner #general"), fed)
 
+    await settled(() => planner.multicast(`tab\tseparated (${n})`, { channel: "general" }))
+    const tabbed = await waitFor(has(`separated (${n})`), "a message with a tab")
+    check(`${size}: a tab in message text shows as space, not as an escape`, !tabbed.includes("\\u0009") && /tab\s+separated/.test(tabbed), tabbed)
+
     for (let i = 1; i <= 30; i++) await planner.multicast(`burst ${n}-${String(i).padStart(2, "0")}`, { channel: "general" })
     const burst = await waitFor(has(`burst ${n}-30`), "the newest message of a burst")
     check(`${size}: the feed keeps the newest message in view`, !burst.includes(`burst ${n}-01`), burst)
