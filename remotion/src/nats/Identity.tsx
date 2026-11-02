@@ -146,7 +146,7 @@ export const NatsIdentity: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[PATH_A, PATH_C, PATH_OUT]} glow={[glowA, glowP, glowOut]} />
+      <Wires wires={[{ d: PATH_A, glow: glowA }, { d: PATH_C, glow: glowP }, { d: PATH_OUT, glow: glowOut }]} />
 
       <div
         style={{
