@@ -5,6 +5,8 @@ import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchAr
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { claudeUserMcpEnvKeys } from "./user-mcp.js";
+import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
+import { HOOK_CONTEXT_CHARS } from "./hooks.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -165,6 +167,13 @@ export const claudeConnector: Connector = {
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
+  // A session wakes for a relayed task while idle only with channels on, and Claude reports that only
+  // on its startup screen: the development-channels gate, then its registration notice for this
+  // server (confirmNotice below). A once seat is served its task only when its startup watch saw
+  // both; the hooks hand it over at most once (hooks.ts).
+  supportsTurnRelay: true,
+  onceNeedsConfirmed: "its startup did not show channels on (Claude's development-channels prompt and its notice that server:cotal messages reach the session)",
+  turnFrameLimit: HOOK_CONTEXT_CHARS,
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
   // `--opt resume=` renders a bare `--resume`, which opens Claude's session picker; the session joins
   // the mesh only after the operator picks one. `--opt resume=<id>` resumes that session directly.
@@ -226,7 +235,12 @@ export const claudeConnector: Connector = {
     }
     // A carried resume needs credentials its private home can use. Managed workspace trust is
     // accepted through the native startup dialog below, without rewriting the manager's config.
-    const binary = opts.resolvedBinaries?.claude ?? "claude";
+    // A once launch starts the absolute real path of `claude` and passes it on, so the seat can tell
+    // its parent is that file before its once exit signals it (once-exit.ts).
+    const named = opts.resolvedBinaries?.claude ?? "claude";
+    const hostExe = opts.once ? resolveHostExe(named, env) : undefined;
+    if (hostExe !== undefined) env[HOST_EXE_ENV] = hostExe;
+    const binary = hostExe ?? named;
     if (opts.carried) refuseCarriedLaunch(binary, env);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
@@ -351,6 +365,10 @@ export const claudeConnector: Connector = {
       // default action. The runtime presses Enter once when this connector-owned text appears.
       // Claude skips the gate when channels are off for the session, and opens its input screen.
       confirm: "WARNING: Loading development channels",
+      // Answering the gate is not registration: Claude then prints this line for an admitted
+      // channel server, and a policy warning in its place for a blocked one. Only a once seat waits
+      // for it, because only a once seat's spawn depends on it; a missed notice stops the seat.
+      ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),
       confirmReady: CLAUDE_READY_TEXTS,
       confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
       ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),

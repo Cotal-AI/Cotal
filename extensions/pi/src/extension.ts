@@ -14,6 +14,7 @@ import {
   scrubLaunchMaterial,
   resolveEventsStateRoot,
   eventPlaneStopped,
+  registerOnceExit,
 } from "@cotal-ai/connector-core";
 import type { ExtensionAPI, ExtensionContext, ProjectTrustEventResult } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
@@ -147,6 +148,9 @@ function createRuntime(config: AgentConfig, control: { path: string; token: stri
   mesh.on("wake", () => driver.onWake());
   mesh.on("mention-wake", (item: InboxItem) => driver.onMentionWake(item));
   mesh.start();
+  // A once seat that must end itself, because its task's handoff could not be reported, quits Pi the
+  // way the manager's own stop does.
+  registerOnceExit(() => driver.requestShutdown());
 
   if (control) {
     runtime.controlServer = startControlServer(
