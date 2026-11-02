@@ -497,7 +497,9 @@ attempt and is never deleted. `cotal supervise --resume-commit-token` stays acce
 callers; while such a process runs, its token is visible in its command line. Re-entry from either committed state skips the prior
 idempotent activation/commit phases, retries finalization with the durable token, and finishes the
 workspace transition. Failure before finalization preserves the committed state and cleanup
-suppression; it is not rewritten through a degraded transition. Re-entry between any two earlier
+suppression; it is not rewritten through a degraded transition. A failed listener INFO read names
+whether the attempt is a resume or restore and includes its attempt ID, so an ordinary resume does
+not report a restore failure. Re-entry between any two earlier
 boundaries reuses the same attempt and may retry the idempotent phases without deleting retained state. A missing or
 changed per-agent dependency is a named fail-closed result; the journal becomes degraded and remains
 available for forward repair. A retry from `resume-intent`,
