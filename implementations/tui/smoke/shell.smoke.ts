@@ -9,10 +9,10 @@
  * Run: pnpm --filter @cotal-ai/tui smoke
  */
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const [major, minor] = process.versions.node.split(".").map(Number)
@@ -80,7 +80,7 @@ function launch(home: string, width: number, height: number, err: string) {
   try {
     tmux("kill-session", "-t", "t")
   } catch {}
-  const line = `cd ${pkg} && env -u COTAL_HOME HOME=${home} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
+  const line = `cd ${pkg} && env -u COTAL_HOME -u NODE_COMPILE_CACHE -u NODE_DISABLE_COMPILE_CACHE HOME=${home} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
   tmux("new-session", "-d", "-s", "t", "-x", String(width), "-y", String(height), line)
   tmux("set-option", "-s", "escape-time", "10")
 }
@@ -166,10 +166,16 @@ try {
   const none = await waitFor(has("cotal space create <name>"), "the empty catalog state")
   save(join(captures, "80x24"), "06-empty-home")
   check("empty home: the shell explains how to get a space", none.includes("cotal space create <name>") && none.includes("nothing needs you") && none.includes("✗ not connected"), none)
-  check("empty home: the shell wrote nothing under HOME", readdirSync(empty).length === 0, readdirSync(empty).join(", "))
   keys("C-c")
   await waitFor(has("EXIT=0"), "ctrl+c to quit")
   check("empty home: ctrl+c quits with status 0", true)
+  process.env.HOME = empty
+  const { userCotalDir } = await import("@cotal-ai/workspace")
+  const cache = join(userCotalDir(), "compile-cache")
+  const wrote = readdirSync(empty, { recursive: true, encoding: "utf8" }).filter((f) => !f.startsWith(join(".cotal", "compile-cache") + sep)).sort()
+  check("empty home: the shell wrote nothing under HOME but its compile cache", wrote.join() === [".cotal", join(".cotal", "compile-cache")].join(), wrote.join(", "))
+  const mode = (statSync(cache).mode & 0o777).toString(8)
+  check("empty home: the compile cache is compile-cache under the user's Cotal directory, mode 0700", readdirSync(cache).length > 0 && mode === "700", `${cache} mode ${mode}`)
 
   check("no run dialed the registered broker address", connections === 0, `${connections} connection(s)`)
 } finally {
