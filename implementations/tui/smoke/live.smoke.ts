@@ -120,7 +120,7 @@ try {
   const planner = peer("planner", "planner", "agent", { model: "claude-opus-5-5", connector: "claude-code" })
   const coder = peer("coder-2", "coder", "agent", { connector: "opencode" })
   const reviewer = peer("reviewer", "reviewer", "agent")
-  const linear = peer("linear", "tracker", "endpoint")
+  peer("linear", "tracker", "endpoint")
   for (const ep of peers) await ep.start()
   await planner.setStatus("working", "planning sprint 14")
   await coder.setStatus("waiting", "needs approval: run migration 0042 on staging?")
