@@ -29,13 +29,19 @@ const errorNames = new Set([
   "ConsumerNotFoundError", "StreamNotFoundError",
 ]);
 
-/** Retain fixed categories only. Messages, stacks, subjects and unknown names never enter diagnostics. */
+/** Retain fixed categories only. Inspect at most four error causes; messages, stacks, subjects and unknown names never enter diagnostics. */
 export function nativeErrorClass(error: unknown): string {
   if (!(error instanceof Error)) return "unknown";
-  if (error.name === "AuthorizationError" && error.message.toLowerCase().includes("authentication timeout"))
-    return "AuthenticationTimeout";
-  if (errorNames.has(error.name)) return error.name;
-  if (error.name === "Error" && error.message.toLowerCase() === "timeout") return "TimeoutError";
+  let current: unknown = error;
+  const seen = new Set<Error>();
+  for (let depth = 0; depth < 4 && current instanceof Error && !seen.has(current); depth++) {
+    seen.add(current);
+    if (current.name === "AuthorizationError" && current.message.toLowerCase().includes("authentication timeout"))
+      return "AuthenticationTimeout";
+    if (errorNames.has(current.name)) return current.name;
+    if (current.name === "Error" && current.message.toLowerCase() === "timeout") return "TimeoutError";
+    current = current.cause;
+  }
   return "other";
 }
 
