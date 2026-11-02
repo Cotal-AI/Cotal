@@ -16,6 +16,7 @@ import {
   TimeoutError,
   ClosedConnectionError,
   type NatsConnection,
+  type Msg,
   type Subscription,
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
@@ -48,6 +49,8 @@ import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
 import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
+import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
+import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
@@ -56,7 +59,7 @@ import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
+import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -600,6 +603,10 @@ export class CotalEndpoint extends EventEmitter {
   private readonly bearerSource?: () => Promise<string>;
   /** The freshest bearer — what every (re)connect attempt presents. */
   private currentBearer?: string;
+  /** The expiry, in seconds, of the credential the latest connect attempt presented. The issuer
+   *  keys a listing generation on it (SPEC 13.15), so a listing reads the row bound to the
+   *  credential the broker admitted, never one adopted since. */
+  private presentedExp?: number;
   /** Cancels the armed bearer renewal or retry. */
   private cancelBearerRenewal?: () => void;
   /** Consecutive failed bearer renewals: the retry's step, and whether this run of failures has
@@ -634,6 +641,7 @@ export class CotalEndpoint extends EventEmitter {
   private readonly inactiveThresholdMs: number;
 
   private nc?: NatsConnection;
+  private readonly requestsAwaitingReply = new Map<NatsConnection, Set<(error: Error) => void>>();
   private readonly onConnection?: (nc: NatsConnection) => void;
   private js?: JetStreamClient;
   private jsm?: JetStreamManager;
@@ -1292,6 +1300,20 @@ export class CotalEndpoint extends EventEmitter {
     return creds;
   }
 
+  /** The connect attempt's credential getters: what {@link credsForWire} and {@link bearerForWire}
+   *  return, with its expiry recorded as {@link presentedExp}. */
+  private presentCreds(): string {
+    const creds = this.credsForWire();
+    this.presentedExp = credsClaims(creds).exp;
+    return creds;
+  }
+
+  private presentBearer(): string {
+    const bearer = this.bearerForWire();
+    this.presentedExp = bearerExpiryMs(bearer) / 1000;
+    return bearer;
+  }
+
   /** The cached credential, checked. Handed to nats.js as the authenticator's source on EVERY auth
    *  mode (renewed or static), so each (re)connect attempt — ours or the library's — re-reads a
    *  CHECKED value. A refusal throws out of the authenticator, which nats-core turns into a closed
@@ -1703,7 +1725,7 @@ export class CotalEndpoint extends EventEmitter {
       // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
       // (an empty credential) was never named. Routing it into the checked getter fails it loud
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.bearerForWire() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls,
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined, bearer: this.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls,
         onCreds: (creds) => {
           watchDeletePermission = undefined;
           try {
@@ -2785,6 +2807,37 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Keep native named-reply and NoResponders handling, but settle when its connection closes:
+   *  nats.js can close a no-mux subscription without settling its request. One close observer per
+   *  connection avoids retaining a closed-promise callback for every completed request. */
+  private async requestBoundReply(nc: NatsConnection, subject: string, body: string, reply: string, timeoutMs: number): Promise<Msg> {
+    let pending = this.requestsAwaitingReply.get(nc);
+    if (!pending) {
+      const waiting = new Set<(error: Error) => void>();
+      this.requestsAwaitingReply.set(nc, waiting);
+      void nc.closed().then((error) => {
+        this.requestsAwaitingReply.delete(nc);
+        const failure = error ?? new ClosedConnectionError();
+        for (const reject of waiting) reject(failure);
+        waiting.clear();
+      });
+      pending = waiting;
+    }
+    let rejectClosed!: (error: Error) => void;
+    const closed = new Promise<never>((_resolve, reject) => {
+      rejectClosed = reject;
+      pending.add(reject);
+    });
+    try {
+      return await Promise.race([
+        nc.request(subject, body, { timeout: timeoutMs, noMux: true, reply }),
+        closed,
+      ]);
+    } finally {
+      pending.delete(rejectClosed);
+    }
+  }
+
   /** Send a control request to a service and await its reply (client side). Like {@link requestDelivery},
    *  the reply rides a BOUNDED subject UNDER the request subject (`ctl.<service>.<id>.reply.<uuid>`), not
    *  the per-id `_INBOX`.
@@ -2800,7 +2853,7 @@ export class CotalEndpoint extends EventEmitter {
     const reqSubject = controlServiceSubject(this.space, service, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
     return m.json<ControlReply>();
   }
 
@@ -2892,6 +2945,51 @@ export class CotalEndpoint extends EventEmitter {
     const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
     if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
     return svc;
+  }
+
+  /** The caller a registry listing rides (SPEC 13.15). An issued connection lists as itself. Any
+   *  other connection reads the listing generation the issuer bound to the credential it presented,
+   *  under the token its connection id and that credential's expiry derive. `undefined`: that
+   *  credential carries no listing binding, because it predates listing issuance or has no expiry. */
+  async listingCaller(): Promise<IssuedCaller | undefined> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    return registryListingCaller(this.nc, this.space, this.serviceCaller(), { connId: this.connId, ...(this.presentedExp !== undefined ? { exp: this.presentedExp } : {}) });
+  }
+
+  /** One page of the registry's `endpoints` answer (SPEC 13.20) over this connection
+   *  ({@link listRegistryEndpoints}). The describe rides this connection's own caller; the question
+   *  rides the listing caller on an authed mesh. `unbound`: this credential carries no listing
+   *  binding. */
+  async listEndpoints(input: RegistryEndpointsInput, opts: { deadlineMs?: number; signal?: AbortSignal } = {}): Promise<
+    | { unbound: true }
+    | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }
+  > {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const nc = this.nc;
+    const listing = this.authed ? await this.listingCaller() : undefined;
+    if (this.authed && listing === undefined) return { unbound: true };
+    return this.listEndpointsOver(nc, listing, input, opts);
+  }
+
+  /** Ask the registry over `nc` under `listing`: this connection, or another of this caller triple
+   *  such as a manager-call connection. The describe rides this connection, whose view holds the
+   *  registry's describe. Every endpoint the page lists has its cached describe dropped, so the next
+   *  describe of it reads the surface afresh. `unbound`: the broker refused the question under
+   *  `listing`, whose credential holds no listing row. */
+  async listEndpointsOver(
+    nc: NatsConnection,
+    listing: IssuedCaller | undefined,
+    input: RegistryEndpointsInput,
+    opts: { deadlineMs?: number; signal?: AbortSignal } = {},
+  ): Promise<{ unbound: true } | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const own = this.nc;
+    const result = await listRegistryEndpoints(this.space, (deadlineMs, signal) => resolveService(own, this.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
+      deadlineMs, signal, commands: [REGISTRY_ENDPOINTS_COMMAND],
+    }), { nc, ...(listing ? { caller: listing } : {}) }, input, opts);
+    if (result.unbound) return result;
+    for (const row of result.page?.rows ?? []) this.clearResolvedService(row.endpoint);
+    return result;
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection: resolve
@@ -3118,7 +3216,7 @@ export class CotalEndpoint extends EventEmitter {
     // model. Keep both; don't regress to a counter. (Confirmed by the review panel's fact-check.)
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
     return m.json<ControlReply>();
   }
 
@@ -3133,7 +3231,7 @@ export class CotalEndpoint extends EventEmitter {
     const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY_ADMIN, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
     return m.json<ControlReply>();
   }
 
@@ -3468,7 +3566,7 @@ export class CotalEndpoint extends EventEmitter {
    * other senders' messages from the same time remain. `stream` is false when the chat stream does
    * not exist, which holds nothing. `lastSeq` is the stream's newest sequence, 0 when it has none.
    */
-  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[]; stream: boolean; lastSeq: number }> {
+  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; oldestAt: string | null; senders: { channel: string; sender: string; messages: number }[]; stream: boolean; lastSeq: number }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const mgr = await jetstreamManager(this.nc);
     let info;
@@ -3477,7 +3575,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch (e) {
       // As in listChannels: an absent CHAT stream holds nothing yet; any other failure stays loud.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
-      return { perSender: null, maxAgeMs: null, senders: [], stream: false, lastSeq: 0 };
+      return { perSender: null, maxAgeMs: null, oldestAt: null, senders: [], stream: false, lastSeq: 0 };
     }
     const senders: { channel: string; sender: string; messages: number }[] = [];
     for (const [subject, messages] of Object.entries(info.state.subjects ?? {})) {
@@ -3489,6 +3587,8 @@ export class CotalEndpoint extends EventEmitter {
     return {
       perSender: typeof cap === "number" && cap > 0 ? cap : null,
       maxAgeMs: typeof age === "number" && age > 0 ? Math.round(age / 1_000_000) : null,
+      // The stream's oldest post, of any channel; every post sent before it is gone.
+      oldestAt: info.state.messages > 0 ? info.state.first_ts : null,
       senders: senders.sort((a, b) => a.channel.localeCompare(b.channel) || a.sender.localeCompare(b.sender)),
       stream: true,
       lastSeq: info.state.last_seq,
@@ -5378,7 +5478,10 @@ export class CotalEndpoint extends EventEmitter {
    * record (CAS + generation bump), then ACTIVATION CATCH-UP idempotently copies `(joinCursor, fence]`
    * into the owner inbox where `fence = max(frontier, fanoutDelivered)` — fan-out owns `seq > fence`.
    * Idempotent against a timeout-retry (an already-activated membership no-ops). Returns `{durable:false}`
-   * (honest degrade) only if the catch-up window was evicted.
+   * only when a concurrent leave or rejoin superseded the activation. Catch-up copies what the stream
+   * still holds and does not judge retention: a post the history limit removed before its copy was
+   * taken is outside the durable guarantee (SPEC §4), and stream state cannot show which channel a
+   * removed sequence belonged to.
    *
    * Runs on the daemon (which hosts the fan-out/reader loops + the members KV), so catch-up + the
    * activation fence read are in-process — no cross-process cursor read.
@@ -5405,7 +5508,7 @@ export class CotalEndpoint extends EventEmitter {
       return { durable: true, generation: existing!.record.generation }; // fully activated — idempotent
     // Either a NEW join (no record / a tombstone to supersede) → fresh joinCursor + bumped generation,
     // OR a retry of an INCOMPLETE activation (durable-active but not yet activated, from an earlier
-    // eviction/crash) → re-run catch-up over the SAME join window, no bump. The record is committed
+    // crash or failed catch-up) → re-run catch-up over the SAME join window, no bump. The record is committed
     // `activated:false` first and routes IN-INTERVAL immediately (fan-out + reader deliver via the
     // pure-interval durableEligible) so no live message published during catch-up is lost. `activated`
     // gates only the REPORT — durableJoin returns true / channelMembers lists the owner only after the
@@ -5424,22 +5527,7 @@ export class CotalEndpoint extends EventEmitter {
       if (opts.aclFence) await this.keepRowIfAclAllows(kv, owner, lifecycleUid, channel, written.revision);
     }
     const fence = Math.max(await this.chatFrontier(), await this.fanoutDeliveredSeq());
-    const cu = await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
-    if (cu.evicted) {
-      // Catch-up window irreparably evicted (the oldest in-window message aged out) — this join can never
-      // be a complete backstop. TOMBSTONE the just-committed record at `fence` so it does NOT route:
-      // pure-interval durableEligible would otherwise keep delivering to a record the agent was told is
-      // durable:false AND can't discover to leave (critic BLOCKER-1). Pass `generation` as the expected
-      // generation (ux stale-write guard) so this cleanup can't tombstone a concurrent NEWER rejoin — if
-      // one won, StaleMembershipWrite is the correct no-op (the rejoin is the live record). Then degrade
-      // honestly — a retry is a fresh join (no longer `open`, so a current joinCursor is captured).
-      try {
-        await tombstoneMember(kv, channel, owner, lifecycleUid, fence, this.card.id, generation);
-      } catch (e) {
-        if (!(e instanceof StaleMembershipWrite)) throw e;
-      }
-      return { durable: false, reason: "activation catch-up window partially evicted by retention", generation };
-    }
+    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
     // Flip → reported durable, ATOMICALLY: refuse if a concurrent SAME-generation leave (tombstone) or a
     // rejoin superseded this pending join while catch-up ran. A blind same-gen commit would clobber the
     // tombstone (clear leaveCursor) and resurrect the membership, reopening §7 (review-general-2 BLOCKER).
@@ -5497,19 +5585,13 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Idempotently copy the eligible chat messages in `(fromSeqExcl, toSeqIncl]` for `channel` into the
    *  owner inbox, via a DEDICATED per-(owner,join) ephemeral consumer (NOT the agent-scoped
-   *  `chathist_<id>`/`histLock` — red-team HIGH-8). `evicted` ⇒ the oldest eligible seq aged out under
-   *  `discard=Old` (the start seq could not be served), a durable shortfall the caller surfaces. */
+   *  `chathist_<id>`/`histLock` — red-team HIGH-8). It copies what the stream still holds in that
+   *  window; a post the history limit removed first is not copied and is not reported (SPEC §4). */
   private async catchupCopy(
     owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
-  ): Promise<{ copied: number; evicted: boolean }> {
-    if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return { copied: 0, evicted: false };
+  ): Promise<number> {
+    if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return 0;
     const subject = chatSubject(this.space, "*", "*", channel);
-    // Eviction = a message in `(joinCursor, …]` on THIS channel's subject aged out under discard=Old.
-    // Judged PER-SUBJECT (reuse channelDropped: oldest-retained-for-subject vs the watermark, only at
-    // the per-subject cap), NOT against the stream-global joinCursor+1 — other channels' traffic
-    // inflates the global seq, so a naive "first delivered seq > joinCursor+1" false-positives on any
-    // busy multi-channel space (impl-review HIGH-2). A true eviction → durableJoin reports durable:false.
-    const evicted = await this.channelDropped(subject, fromSeqExcl);
     // Consumer NAME must be JetStream-safe (no `.`) AND collision-free: use the principal DASH-form
     // (`<owner>-<actor>`, `-` reserved as the sole separator), NOT `token(owner)` — `token()` maps the
     // dot-form `.`→`_`, which is NOT collision-free (`_` is legal inside a token, so `a.b_c` and `a_b.c`
@@ -5518,6 +5600,7 @@ export class CotalEndpoint extends EventEmitter {
     // delete/recreate a predecessor's in-flight catch-up consumer — the uid disambiguates.
     const cuP = parsePrincipalKey(owner);
     const name = `cu_${cuP ? lifecycleNameKey(cuP.owner, cuP.actor, lifecycleUid) : `${token(owner)}-${lifecycleUid}`}_${generation}`;
+    // A failed read throws, leaving the pending row to retry over the same window.
     await this.deleteConsumerIfPresent(chatStream(this.space), name);
     await this.jsm.consumers.add(chatStream(this.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
@@ -5533,7 +5616,7 @@ export class CotalEndpoint extends EventEmitter {
         let got = 0;
         for await (const m of iter) {
           got++;
-          if (m.seq > toSeqIncl) return { copied, evicted };
+          if (m.seq > toSeqIncl) return copied;
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
@@ -5547,7 +5630,7 @@ export class CotalEndpoint extends EventEmitter {
     } finally {
       await this.deleteConsumerIfPresent(chatStream(this.space), name);
     }
-    return { copied, evicted };
+    return copied;
   }
 
   /** Start the Plane-3 fan-out writer + trusted reader on THIS (privileged, server-side delivery-daemon)
@@ -6078,7 +6161,7 @@ export class CotalEndpoint extends EventEmitter {
     let answered: ResponderState | undefined;
     let instance: string | undefined;
     try {
-      const m = await this.nc.request(reqSubject, "", { timeout: timeoutMs, noMux: true, reply });
+      const m = await this.requestBoundReply(this.nc, reqSubject, "", reply, timeoutMs);
       let body: unknown;
       try { body = m.json(); } catch { body = undefined; }
       const parsed = parseLivenessAnswer(body, plane);
@@ -7225,10 +7308,11 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Replay-gated pull of a channel's retained ambient from `sinceSeq` (exclusive) forward — the
    * focus-recall read behind `cotal_inbox`. Returns the messages (NOT emitted — this is a pull,
-   * not a push into context) plus `dropped: true` when the window is not complete: either the
-   * channel's earliest *retained* message is already newer than the watermark (some ambient aged
-   * out of the per-subject window), or replay is off for the channel below. Either way the caller
-   * must say so rather than silently reporting an empty, complete window. `seqs[i]` is the chat
+   * not a push into context) plus `dropped: true` when the window may not be complete: the stream's
+   * limits may have removed posts after the watermark ({@link chatMayHaveLost}: a sender at the
+   * per-sender limit, or the stream's oldest post already past the watermark), or replay is off
+   * for the channel below. Either way the caller must say so rather than silently reporting an
+   * empty, complete window. `seqs[i]` is the chat
    * stream sequence of `messages[i]`, the one identity two identical messages do not share.
    * `unanswered` is true when no history read answered (replay is off, or the read failed), so
    * `messages` says nothing about what the channel retains.
@@ -7274,45 +7358,38 @@ export class CotalEndpoint extends EventEmitter {
       collected.push(authenticatedMessage(msg, parsed));
       seqs.push(sm.seq);
     }
-    const dropped = await this.channelDropped(subject, sinceSeq);
+    let dropped: boolean;
+    try {
+      dropped = await this.chatMayHaveLost(subject, sinceSeq);
+    } catch (e) {
+      // Completeness could not be read, so the read is reported as unanswered: nothing settles on it.
+      this.emit("error", e as Error);
+      if (isPermissionDenied(e)) throw e;
+      return { messages: [], seqs: [], dropped: true, unanswered: true };
+    }
     return { messages: collected, seqs, dropped, unanswered: false };
   }
 
-  /** Did focus recall on `subject` miss ambient that aged out past the watermark? Ambient is only
-   *  ever discarded once a sender-subject reaches {@link MAX_MSGS_PER_SUBJECT} (`DiscardPolicy.Old`);
-   *  below the cap nothing was evicted, so the window is complete — return false without crying
-   *  wolf. At the cap, the surviving oldest seq decides: if it already postdates the watermark, the
-   *  eviction reached into the "since you focused" window. (Avoids the false positive of comparing a
-   *  per-subject oldest against the stream-global frontier, which fires on any other channel's
-   *  traffic.) */
-  private async channelDropped(subject: string, sinceSeq: number): Promise<boolean> {
-    if (!this.jsm) return false;
+  /** Whether the chat stream's limits may have removed posts on `subject` after `sinceSeq`, read from
+   *  the stream's own config rather than a compiled default. Throws when it cannot read, so no caller
+   *  takes an unread stream for a complete one. It reports possible loss, never proof: a removed
+   *  sequence does not record its subject, so the stream cannot say which channel lost it.
+   *
+   *  Either rule is enough. The stream's oldest retained post is past the watermark, so every post up
+   *  to it is gone, from this channel or another. Or a sender on the channel is at the stream's
+   *  per-sender limit and the channel's oldest retained post is past the watermark, so that sender's
+   *  eviction may have reached into the window; a sender at exactly the limit may have lost nothing.
+   *  A hole behind a retained older post, as a channel-filtered purge leaves, sets neither. */
+  private async chatMayHaveLost(subject: string, sinceSeq: number): Promise<boolean> {
+    if (!this.jsm) throw new Error(this.notLiveMsg());
+    const info = await this.jsm.streams.info(chatStream(this.space), { subjects_filter: subject });
+    if (info.state.first_seq > sinceSeq + 1) return true;
+    const cap = info.config.max_msgs_per_subject;
     let maxPerSubject = 0;
-    try {
-      const info = await this.jsm.streams.info(chatStream(this.space), { subjects_filter: subject });
-      for (const count of Object.values(info.state.subjects ?? {}))
-        maxPerSubject = Math.max(maxPerSubject, count);
-    } catch (e) {
-      if ((e as { code?: number }).code !== 404) this.emit("error", e as Error);
-      return false; // stream/subject missing — nothing retained, nothing dropped
-    }
-    if (maxPerSubject < MAX_MSGS_PER_SUBJECT) return false; // never hit the cap ⇒ never evicted
-    const oldest = await this.channelOldestSeq(subject);
+    for (const count of Object.values(info.state.subjects ?? {})) maxPerSubject = Math.max(maxPerSubject, count);
+    if (cap < 1 || maxPerSubject < cap) return false; // no sender at the cap ⇒ none evicted
+    const oldest = (await this.collectHistory(subject, { seq: 1 }, { limit: 1 }))[0]?.seq;
     return oldest !== undefined && oldest > sinceSeq + 1;
-  }
-
-  /** Sequence of the earliest message still retained on a channel subject (any sender), or
-   *  undefined if nothing is retained. One message through the contained {@link collectHistory} —
-   *  used for the recall drop marker. */
-  private async channelOldestSeq(subject: string): Promise<number | undefined> {
-    if (!this.jsm) return undefined;
-    try {
-      const [first] = await this.collectHistory(subject, { seq: 1 }, { limit: 1 });
-      return first?.seq;
-    } catch (e) {
-      this.emit("error", e as Error);
-      return undefined;
-    }
   }
 
   private async publishPresence(): Promise<void> {

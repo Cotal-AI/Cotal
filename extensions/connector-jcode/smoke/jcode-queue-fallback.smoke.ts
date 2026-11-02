@@ -66,6 +66,10 @@ async function tryWaitFor<T>(read: () => T | undefined, timeoutMs: number): Prom
 type Entry = { ev: string; frame?: { req?: string; content?: string; no_reply?: boolean }; [key: string]: unknown };
 
 const root = mkdtempSync(join(tmpdir(), `cotal-jcode-queue-fallback-${SMOKE_BROKER_TOKEN}`));
+// The control socket gets a short directory of its own. Under the shard runner the broker token in
+// `root` carries the shard's scope, which pushes a socket there past the unix `sun_path` limit
+// (#5608).
+const controlDir = mkdtempSync(join(tmpdir(), "cjq-"));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -305,7 +309,7 @@ try {
       // the fake refuses, not a driven turn it queues; see issue #2029.
       COTAL_JCODE_PROMPT: "FX26-KICKOFF-AFTER-BUSY-WINDOW-2029",
       COTAL_JCODE_REQUEST_TIMEOUT_MS: String(softInterruptTimeoutMs),
-      COTAL_CONTROL_SOCKET: join(root, "control.sock"),
+      COTAL_CONTROL_SOCKET: join(controlDir, "control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-queue-fallback-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -790,4 +794,5 @@ try {
   // acceptance window can be read. Never set in CI; the default remains a clean teardown.
   if (process.env.COTAL_JCODE_KEEP_FIXTURE_ROOT === "1") console.log(`FIXTURE ROOT KEPT: ${root}`);
   else rmSync(root, { recursive: true, force: true });
+  rmSync(controlDir, { recursive: true, force: true });
 }

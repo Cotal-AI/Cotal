@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -578,7 +578,7 @@ function droppedNote(channels: readonly string[]): string {
   if (!channels.length) return "";
   const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${attributionSafe(c).slice(0, 40)}`).join(", ");
   const rest = channels.length - Math.min(NAMED_DROPPED, channels.length);
-  return `⚠ Some earlier chatter could not be recalled completely on ${named}${rest ? `, and ${rest} more channel${rest === 1 ? "" : "s"}` : ""} (retention or local safety bounds were reached).`;
+  return `⚠ Some earlier chatter could not be recalled completely on ${named}${rest ? `, and ${rest} more channel${rest === 1 ? "" : "s"}` : ""} (retention or local safety bounds were reached, or recall could not read the channel).`;
 }
 
 /** How many channels the recall warning names before it starts counting them instead. */
@@ -683,8 +683,42 @@ export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "c
   return isAuthed(config) ? concrete.find((c) => channelInAllow(config.allowPublish, c)) : concrete[0];
 }
 
-const NO_POSTABLE_DEFAULT =
-  "you may post to none of the channels you read, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)";
+/**
+ * Why a send with no channel has nowhere to go, and the exact next call. Built from the channels
+ * the agent reads now and the channels its ACL lets it post to, so the refusal names a channel the
+ * agent can use rather than pointing at another tool. Two shapes: on no channel at all, or on
+ * channels it may post to none of. `postable` is empty where the ACL grants no concrete post
+ * channel the agent could name (an operator widens that; nothing here can).
+ */
+export function sendNoDefaultRemedy(config: Pick<AgentConfig, "allowSubscribe" | "allowPublish" | "creds" | "userAuth">, reading: readonly string[]): string {
+  const concrete = reading.filter(isConcreteChannel);
+  const authed = isAuthed(config);
+  const named = [...new Set([...config.allowPublish, ...config.allowSubscribe, ...reading].filter(isConcreteChannel))];
+  const postable = authed ? named.filter((c) => channelInAllow(config.allowPublish, c)) : named;
+  const where = concrete.length
+    ? `you may post to none of the channels you read (${concrete.map((c) => `#${c}`).join(", ")})`
+    : "you are on no channel";
+  if (!postable.length)
+    return `${where}, so there is no default and an omitted channel is refused; your post ACL names no channel you could use, so ask an operator to widen it, and reach peers with cotal_dm or cotal_anycast meanwhile`;
+  const first = postable[0]!;
+  const list = postable.map((c) => `#${c}`).join(", ");
+  return `${where}, so there is no default and an omitted channel is refused. You may post to ${list}: call cotal_send with channel: "${first}", or cotal_join ${first} first to make it your default`;
+}
+
+/** The orientation card as the model reads it, over the SAME gated tool list the connector exposes
+ *  (cotalToolSpecs already filters spawn/persona by capability), so the card can't claim a tool the
+ *  agent can't call. The `cotal_orientation` tool, a connect result and a session-start hook all
+ *  hand over this one rendering. */
+export async function orientationCard(
+  agent: MeshAgent,
+  config: AgentConfig,
+  source?: string,
+  env?: NodeJS.ProcessEnv,
+  offered?: ReadonlySet<string>,
+): Promise<string> {
+  const visible: OrientationTool[] = cotalToolSpecs(config, source, env, offered).map((s) => ({ name: s.name, title: s.title }));
+  return renderOrientation(buildOrientation(agent, config, visible, Date.now(), await agent.readRoster()));
+}
 
 /** How to reach a channel family, since every publish names one concrete channel (SPEC §3). The
  *  advertised `channel` text of `cotal_send`, here and in the gateway. */
@@ -750,13 +784,7 @@ export function cotalToolSpecs(
         "present, your status/attention, and how many messages are unread. Call this first to get your " +
         "bearings; it's read-only and safe to re-check anytime.",
       async run(agent) {
-        // Reflect the SAME gated tool list the connector exposes (cotalToolSpecs already filters
-        // spawn/persona by capability), so the card can't claim a tool the agent can't call.
-        const visible: OrientationTool[] = cotalToolSpecs(config, source, env, offered).map((s) => ({
-          name: s.name,
-          title: s.title,
-        }));
-        const card = renderOrientation(buildOrientation(agent, config, visible, Date.now(), await agent.readRoster()));
+        const card = await orientationCard(agent, config, source, env, offered);
         const issue = agent.connectionIssue;
         return ok(
           agent.connected
@@ -1138,7 +1166,7 @@ export function cotalToolSpecs(
           .string()
           .optional()
           .describe(
-            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`,
+            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : `REQUIRED: ${sendNoDefaultRemedy(config, config.subscribe)}`}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -1153,8 +1181,8 @@ export function cotalToolSpecs(
         try {
           const joined = agent.joinedChannels();
           const target = channel ?? defaultSendChannel(config, joined);
-          if (target === undefined && joined.some(isConcreteChannel)) return err(`Couldn't send: ${NO_POSTABLE_DEFAULT}.`);
-          const receipt = target !== undefined ? await agent.describeSendChannel(target) : undefined;
+          if (target === undefined) return err(`Couldn't send: ${sendNoDefaultRemedy(config, joined)}.`);
+          const receipt = await agent.describeSendChannel(target);
           const m = await agent.send(msg, target, mentions);
           const dest = `Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(", @")})` : ""}`;
           return ok(receipt ? `${dest} (${receipt}).` : `${dest}.`);
@@ -1442,9 +1470,13 @@ export function cotalToolSpecs(
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. Pass `once: true` with a `prompt` to start a helper for one task: the peer gets the prompt as its only task and is stopped when it ends that turn, or at the deadline (one hour unless you pass `deadline`). When the spawn succeeds, its result names the task's goal; read its outcome with goal-result. A once task that ends without the peer ending its turn (its deadline passed, its handoff could not be confirmed, or the peer exited or never joined) may have run in part or in full, and nothing runs it again; whether to spawn it again is your call. Jcode, OpenCode, pi and Claude Code peers can take a once task. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent. Channels: the new peer may read and post what its persona file allows; a persona that names no channel at all is scoped to your own allowances. It starts on NO channel unless you pass `join`, so pass the channel you are working on when it should see that traffic and post there (e.g. `join: [\"general\"]`).",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
+        join: z
+          .array(z.string())
+          .optional()
+          .describe("Channels the new peer joins at start, on top of what its persona file lists (e.g. ['general']). Concrete names only, each within YOUR read ACL (a spawn hands on only what you may read yourself; anything else is refused before launch). Omitted, a persona that lists no channel starts on none and its cotal_send with no channel is refused."),
         instance: z
           .string()
           .refine((value) => {
@@ -1493,6 +1525,14 @@ export function cotalToolSpecs(
           .boolean()
           .optional()
           .describe("Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default."),
+        once: z
+          .boolean()
+          .optional()
+          .describe("Run `prompt` as the new peer's one task, then stop the peer. The task reaches the peer as a relayed turn rather than a kickoff, and the peer is stopped when it ends that turn or when the deadline passes. Needs `prompt`. A Claude Code peer takes the task only when its startup shows channels on; otherwise the spawn fails at startup and says why."),
+        deadline: z
+          .string()
+          .optional()
+          .describe("With once: how long the task may run, as a duration such as 30m, 2h or 1d, counted from when the manager accepts the spawn. Omitted, it is 1h. Pass -1 for no deadline: the peer then keeps its name and its seat slot until it ends its turn or is despawned."),
         runtime: z
           .string()
           .trim()
@@ -1505,9 +1545,22 @@ export function cotalToolSpecs(
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string }) {
+      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, once, deadline, runtime, join }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; once?: boolean; deadline?: string; runtime?: string; join?: string[] }) {
+        let onceArg: { deadlineMs?: number } | undefined;
+        if (deadline !== undefined && once !== true) return err("`deadline` applies only to a once spawn; pass once: true with it.");
+        if (once === true) {
+          if (deadline === undefined) onceArg = {};
+          else if (deadline.trim() === "-1") onceArg = { deadlineMs: -1 };
+          else {
+            let ms: number;
+            try { ms = parseDuration(deadline); }
+            catch (e) { return err(`deadline: ${(e as Error).message}, or -1 for no deadline`); }
+            if (!Number.isSafeInteger(ms) || ms < 1) return err(`deadline: "${deadline}" is not a positive duration; pass one such as 30m, or -1 for no deadline`);
+            onceArg = { deadlineMs: ms };
+          }
+        }
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, ...(onceArg !== undefined ? { once: onceArg } : {}) });
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
@@ -1522,6 +1575,7 @@ export function cotalToolSpecs(
           const d = reply.data as {
             name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
             pinAudit?: { requested: string; error: string; unreported?: true };
+            once?: { goalId: string; deadlineAt?: number };
           } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
@@ -1551,7 +1605,11 @@ export function cotalToolSpecs(
           }
           if (pending)
             return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
-          return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.`);
+          // A once spawn names its task, so the spawner can read how it ended.
+          const task = d?.once
+            ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
+            : "";
+          return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.${task}`);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);
         }
@@ -1886,6 +1944,40 @@ export function cotalToolSpecs(
           return ok(`Personas in the manager catalog (${personas.length}):\n${lines.join("\n")}`);
         } catch (e) {
           return controlFailure(name ? `Couldn't show ${name}` : "Couldn't list personas", e);
+        }
+      },
+    },
+    {
+      name: "cotal_endpoints",
+      title: "Cotal: list the endpoints you can call",
+      description:
+        "List the endpoints registered in this space that this session can call, and for each one the commands its grants cover and the request forms they allow. The space's registry answers from the grants recorded when this session's credential was issued, so the broker or the endpoint can still refuse a listed command. Endpoints where this session holds no command are left out, and so are endpoints whose command declarations cannot be read. A command whose grants are too many to list form by form is named under `unprojected`. On a user-auth mesh manager commands ride a separate manager-call credential; pass view=\"manager\" to list what that credential can call. Call cotal_describe for a command's input schema. A page holds up to 100 endpoints; pass the previous page's `next` as `after` for the next one.",
+      schema: {
+        after: z.string().min(1).max(128).optional().describe("The `next` value from the previous page."),
+        limit: z.number().int().min(1).max(REGISTRY_PAGE_LIMIT).optional().describe(`Endpoints per page (default ${REGISTRY_PAGE_LIMIT}).`),
+        view: z.enum(["session", "manager"]).optional().describe("`session` (default): this session's own credential. `manager`: its manager-call credential."),
+        instance: z.string().min(1).max(64).optional().describe("Manager view only: the manager instance whose call credential to use."),
+      },
+      async run(agent, _config, { after, limit, view, instance }: { after?: string; limit?: number; view?: "session" | "manager"; instance?: string }) {
+        if (instance !== undefined && view !== "manager") return err("`instance` selects the manager for view=\"manager\" only.");
+        const label = view === "manager" ? "the manager-call credential" : "this session";
+        try {
+          const input = { ...(after !== undefined ? { after } : {}), ...(limit !== undefined ? { limit } : {}) };
+          const r = view === "manager" ? await agent.listManagerEndpoints(input, instance) : await agent.ep.listEndpoints(input);
+          if ("none" in r) return err(`There is no manager view: ${r.none}.`);
+          if (r.unbound)
+            return err(`The credential of ${label} has no listing binding, so the registry cannot list what it may call. A credential issued before the listing existed, or one with no expiry, has none; a new credential does.`);
+          if (r.reply.reply.ok !== true) {
+            const e = r.reply.reply.error;
+            return err(`The registry refused the listing: ${e?.code ?? "error"}: ${e?.message ?? "no message"}`);
+          }
+          const page = r.page!;
+          const more = page.next !== undefined ? ` More endpoints follow; pass after="${page.next}".` : "";
+          return endpointData(`${page.rows.length} endpoints ${label} can call (source: ${page.source}).${more}`, page);
+        } catch (e) {
+          if (e instanceof EpEnvelopeError && e.details?.some((d) => d.kind === EP_UNANSWERED))
+            return err("The registry did not answer, so nothing is listed. The space may run no registry, or it is down; other tools are unaffected.");
+          return endpointFailure("Couldn't list endpoints", e);
         }
       },
     },

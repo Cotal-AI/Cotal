@@ -44,7 +44,7 @@ test('the shipped shard skips mutation infrastructure and still executes ordinar
     assert.equal(result.status, 0, output);
     assert.ok(output.includes('fixture: broker reaper isolated'), output);
     assert.ok(output.includes('fixture: seat reaper isolated'), output);
-    assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line)), [['smoke:ordinary-before'], ['smoke:ordinary-after']]);
+    assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line)), [['--silent', 'smoke:ordinary-before'], ['--silent', 'smoke:ordinary-after']]);
     for (const suite of mutationSuites) assert.ok(output.includes(`skipped pnpm ${suite} (mutation execution disabled)`), output);
     assert.match(output, /passed \(2 smokes, 6 cells; 6 mutation suite\(s\) excluded by policy\)/);
   } finally {

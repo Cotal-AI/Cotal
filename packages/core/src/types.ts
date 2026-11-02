@@ -241,8 +241,9 @@ export interface MembershipRecord {
    *  gate: {@link durableEligible} is pure membership-interval, so a `durable-active` record routes
    *  in-interval immediately (no live message is lost during catch-up). `activated` instead gates what is
    *  REPORTED — `durableJoin` returns `durable:true` and `channelMembers()` lists the owner only once
-   *  catch-up confirms; a join whose catch-up never completes reports `durable:false`, stays hidden, and
-   *  is tombstoned on eviction so it does not route. A tombstone preserves the `activated` it had at leave. */
+   *  catch-up confirms; a join whose catch-up has not completed reports `durable:false` and stays
+   *  hidden, and a retry reruns catch-up over the same window. Catch-up copies what the stream still
+   *  holds and does not judge retention (SPEC §4). A tombstone preserves the `activated` it had at leave. */
   activated?: boolean;
   /** CHAT stream seq captured at leave — eligibility upper bound `seq <= leaveCursor`. Present ⇒
    *  tombstone. Absent ⇒ open membership (no upper bound). */

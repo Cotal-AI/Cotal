@@ -48,7 +48,7 @@ The effective class is the channel override, then the space default, then `durab
 | Class | Delivery |
 |---|---|
 | `live` | At-most-once delivery to peers subscribed at publish time. |
-| `durable` | Live delivery plus a per-member backstop for busy or offline members. Delivery is at-least-once within retention and the membership interval. The [delivery daemon](delivery-daemon.mdx) provides the backstop. |
+| `durable` | Live delivery plus a per-member backstop for busy or offline members. Delivery is at-least-once within the space's [history limit](#how-long-posts-are-kept) and the membership interval. The [delivery daemon](delivery-daemon.mdx) provides the backstop. |
 
 On a `live` channel, an `@mention` also writes a durable copy for each mentioned target whose current read ACL covers the channel.
 The target does not need an active subscription. A mention cannot deliver content outside the target's read ACL.
@@ -88,6 +88,19 @@ The read ACL is the confidentiality boundary. Confidential content uses a DM or 
 When preservation records the CHAT stream frontier, a managed seat resumed after `cotal down --preserve-state` and `cotal up` backfills its boot channels only after that cut, subject to replay and retention.
 If the manager lacks local space authority to read the frontier, it warns that retained seats replay their channel windows on resume.
 A fresh joiner backfills the retained window. A channel joined later in the resumed session also uses the normal join window.
+
+## How long posts are kept
+
+A space keeps a channel post for 30 days, or until its sender has posted 1000 newer ones on that
+channel, whichever comes first ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)). One limit holds
+for every channel in the space, and the broker deletes a post past either bound. An operator changes
+it with [`cotal history limit`](cli-messaging.mdx#history), by age, per-sender count or both. A lower limit
+deletes the posts it no longer keeps at once. `replayWindow` only bounds what a joiner is backfilled,
+so it cannot reach further back than the limit.
+
+The per-sender count means a busy sender's oldest posts on a channel go first, while other senders'
+posts from the same time stay. A durable member's copy of a post, once the delivery daemon has taken
+it, is not removed by the chat limit.
 
 ## Access examples [#common-tasks]
 

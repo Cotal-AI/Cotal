@@ -519,7 +519,7 @@
     {
       "path": "implementations/cli/src/commands/history.ts",
       "kind": "status-token",
-      "anchor": " there are gone`, tone: \"waiting\" });\n  }\n  if (r.dms) no",
+      "anchor": "ere may be gone`, tone: \"waiting\" });\n  }\n  if (r.dms) no",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

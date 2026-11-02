@@ -104,6 +104,10 @@ export interface ClaudeHandleDeps {
   delivery?: boolean;
   /** Allow run-turn lifecycle and exact yield correlation while peer inbox delivery stays disabled. */
   turns?: boolean;
+  /** This seat's orientation card, or undefined while the seat is not bound yet. Handed over at
+   *  every session start (startup, resume, fork, clear, compact), so the model has its bearings
+   *  without asking for them; a card not ready at the start is owed to the next prompt. */
+  orientation?: () => Promise<string | undefined>;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -113,7 +117,7 @@ const REPEAT_LABEL_CAP = 512;
 
 // Claude Code caps each additionalContext string at 10,000 characters. Keep headroom for
 // host framing and count the assembled context, including briefing, run turns and notices.
-const HOOK_CONTEXT_CHARS = 9_000;
+export const HOOK_CONTEXT_CHARS = 9_000;
 const WAITING_NOTE_RESERVE = 160;
 
 /** The hook side of the connector: the handler plus the delivery callback that commits what it
@@ -125,7 +129,7 @@ export interface ClaudeHooks {
   adoptTranscript(path: string, source: unknown): void;
   handle: HookHandle;
   /** Pass as {@link ControlServerOpts.onReply}. */
-  onReply: (ev: HookEvent, delivered: boolean) => void;
+  onReply: (ev: HookEvent, delivered: boolean, handoff?: boolean) => void;
   /** Receipt for an empty inbox after a confirmed hook handoff. Contains no peer content. */
   inboxDeliveryNote(): string | undefined;
 }
@@ -229,6 +233,13 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   let pendingTool: string | undefined;
   /** SessionStart can arrive during an open turn, including after compaction. */
   let turnOpen = false;
+  /** A session start found the seat unbound, so its card goes with the next prompt instead. */
+  let cardOwed = false;
+  const orientation = async (): Promise<string | undefined> => {
+    const card = await deps.orientation?.();
+    cardOwed = deps.orientation !== undefined && card === undefined;
+    return card;
+  };
   /** A Notification raised a prompt in this turn that no main-agent tool batch has resolved yet. Kept
    *  here rather than read off `agent.status`: relays overlap, and a batch that arrives while the
    *  `waiting` write is still in flight would read `working` and miss the wait it resolves. It opens
@@ -242,7 +253,15 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  the same mis-ack this file exists to prevent, just with a new cause. The event identity is the
    *  only thing that correlates a verdict to the reply that carried the batch. A WeakMap so an
    *  event whose verdict never arrives is collected rather than leaked. */
-  const inFlight = new WeakMap<HookEvent, { ids: string[]; agent: MeshAgent; turnIds?: string[] }>();
+  const inFlight = new WeakMap<HookEvent, { ids: string[]; agent: MeshAgent; turnIds?: string[]; onceIds?: string[] }>();
+  /** Once tasks this session's frames claimed whose delivery verdict has not arrived. A turn end,
+   *  a session end or a replaced session before the verdict seals them, so a late receipt cannot
+   *  confirm a task whose turn already ended. */
+  const awaitingVerdict = new Map<string, MeshAgent>();
+  const sealAwaiting = (): void => {
+    for (const [id, agent] of awaitingVerdict) agent.releaseTurns([id]);
+    awaitingVerdict.clear();
+  };
   /** Ids whose delivery could not be confirmed, so they are being surfaced again. Advisory only —
    *  it labels a possible repeat for the model. Bounded; on overflow the label is dropped (never
    *  the message), because the label is a courtesy and the message is the product. */
@@ -291,7 +310,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       ? `${remaining} Cotal message${remaining === 1 ? " is" : "s are"} still waiting. Read with cotal_inbox; messages too large for a hook remain there.`
       : undefined;
     const body = formatInjection(items);
-    if (!body) return waiting;
+    // A note with no room beside what the frame already carries stays out; a later frame says it.
+    if (!body) return waiting !== undefined && waiting.length <= HOOK_CONTEXT_CHARS - reserved ? waiting : undefined;
     const ids = items.map((i) => i.recvKey);
     // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
     // from under us mid-delivery — unrecoverable, since an acked id is never redelivered. If the
@@ -321,25 +341,59 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     return peek.text;
   };
 
+  /** One injectable frame. A once task takes the hook budget first; the card and briefing that still
+   *  fit come next, then peer messages in what is left. The task is claimed once the text is fixed,
+   *  with nothing awaited between the claim and the reply. A task that does not fit, or whose claim
+   *  fails, leaves the frame without it, claimed by nothing. */
+  const injectFrame = (agent: MeshAgent, ev: HookEvent, event: string, extras: (string | undefined)[]): Record<string, unknown> => {
+    const peek = agent.peekPendingTurns();
+    if (peek?.once && peek.text.length <= HOOK_CONTEXT_CHARS) {
+      const join = (parts: (string | undefined)[]): string => parts.filter(Boolean).join("\n\n");
+      const kept: string[] = [];
+      for (const x of extras) if (x && join([...kept, x, peek.text]).length <= HOOK_CONTEXT_CHARS) kept.push(x);
+      const messages = surfaceAutomatic(agent, ev, join([...kept, peek.text]).length + 2);
+      const text = join([...kept, messages, peek.text]);
+      if (text.length <= HOOK_CONTEXT_CHARS && agent.claimTurns(peek.goalIds)) {
+        const rec = inFlight.get(ev);
+        if (rec) rec.onceIds = peek.goalIds;
+        else inFlight.set(ev, { ids: [], agent, onceIds: peek.goalIds });
+        for (const id of peek.goalIds) awaitingVerdict.set(id, agent);
+        return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
+      }
+      return withContextFor(agent, ev, event, join([...kept, messages]) || undefined);
+    }
+    // surfaceAutomatic first: it creates this frame's inFlight record, and surfaceTurns extends it.
+    const reserved = extras.reduce((n, x) => n + (x?.length ?? 0) + 2, 0) + (peek && !peek.once ? peek.text.length + 2 : 0);
+    const parts = [...extras, surfaceAutomatic(agent, ev, reserved), peek?.once ? undefined : surfaceTurns(agent, ev)].filter(Boolean);
+    return withContextFor(agent, ev, event, parts.length ? parts.join("\n\n") : undefined);
+  };
+
+  /** The reply for `text`, which must fit the hook's cap. A frame over it carries a short note in
+   *  place of its context, and nothing it surfaced commits: the peer messages and run turns go back
+   *  for a later read. */
+  const withContextFor = (agent: MeshAgent, ev: HookEvent, event: string, text: string | undefined): Record<string, unknown> => {
+    if (!text) return {};
+    if (text.length > HOOK_CONTEXT_CHARS) {
+      // The other context can itself exceed the host cap. Never commit peer bodies or run
+      // turns from a frame the host would replace with a preview. Leave both for a later read.
+      const batch = inFlight.get(ev);
+      if (batch) {
+        inFlight.delete(ev);
+        batch.agent.releaseInFlight(batch.ids);
+      }
+      text = `${agent.inboxCount("automatic")} Cotal messages still waiting. Read with cotal_inbox. Additional session context did not fit in this hook.`;
+    }
+    return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
+  };
+
   const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
-    const withContext = (text: string | undefined): Record<string, unknown> => {
-      if (!text) return {};
-      if (text.length > HOOK_CONTEXT_CHARS) {
-        // The other context can itself exceed the host cap. Never commit peer bodies or run
-        // turns from a frame the host would replace with a preview. Leave both for a later read.
-        const batch = inFlight.get(ev);
-        if (batch) {
-          inFlight.delete(ev);
-          batch.agent.releaseInFlight(batch.ids);
-        }
-        text = `${agent.inboxCount("automatic")} Cotal messages still waiting. Read with cotal_inbox. Additional session context did not fit in this hook.`;
-      }
-      return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
-    };
     try {
       switch (event) {
+        // A new session replaces the one an earlier frame's once task rode on. That task is sealed
+        // before anything here awaits, so a late receipt for the old frame cannot confirm it.
         case "SessionStart": {
+          sealAwaiting();
           // `source` is the runtime's explicit new-vs-retained discriminator. A startup prompt may
           // already be in the file before this hook; resume/fork/clear/compact must still adopt at the
           // current boundary and never republish history. The holder carries the value opaquely to
@@ -370,14 +424,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           } catch {
             /* best-effort */
           }
-          // Boot push: a one-line note per subscribed channel (if the registry has loaded),
-          // plus any messages waiting. Both are advisory context.
-          // Order matters: surfaceAutomatic creates this frame's inFlight record; surfaceTurns
-          // extends it (or creates a message-less one), so it must evaluate second.
-          const briefing = agent.channelBriefing();
-          const reserved = (briefing?.length ?? 0) + (agent.peekPendingTurns()?.text.length ?? 0) + 4;
-          const parts = [briefing, surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
-          return withContext(parts.length ? parts.join("\n\n") : undefined);
+          // Boot push: the orientation card, a one-line note per subscribed channel (if the
+          // registry has loaded), plus any messages waiting and any turn. All advisory context.
+          const card = await orientation();
+          return injectFrame(agent, ev, event, [card, agent.channelBriefing()]);
         }
         case "UserPromptSubmit": {
           turnOpen = true;
@@ -387,10 +437,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           await safeStatus(agent, "working");
           // Run turns ride the same frame as peer messages: this is an injectable boundary, and
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
-          // `done` at the coming Stop). surfaceAutomatic first — it creates the inFlight record.
-          const reserved = (agent.peekPendingTurns()?.text.length ?? 0) + 2;
-          const parts = [surfaceAutomatic(agent, ev, reserved), surfaceTurns(agent, ev)].filter(Boolean);
-          return withContext(parts.length ? parts.join("\n\n") : undefined);
+          // `done` at the coming Stop).
+          const card = cardOwed ? await orientation() : undefined;
+          return injectFrame(agent, ev, event, [card]);
         }
         case "PreToolUse":
           // A channel-started turn can reach its first tool without UserPromptSubmit. The
@@ -436,8 +485,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           await Promise.all(writes);
           return {};
         }
+        // StopFailure: the turn died on an API error, so Stop won't fire; it resets here too.
         case "Stop":
-        case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
+        case "StopFailure":
+          sealAwaiting();
           turnOpen = false;
           promptOpen = false;
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
@@ -469,6 +520,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           if (agent.pendingWake() > 0) agent.requestWake();
           return {};
         case "SessionEnd":
+          sealAwaiting();
           turnOpen = false;
           promptOpen = false;
           flushEvents(ev.transcript_path); // best-effort — the process may exit before it lands
@@ -485,6 +537,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       if (rec) {
         inFlight.delete(ev);
         if (rec.ids.length) rec.agent.releaseInFlight(rec.ids);
+        if (rec.onceIds?.length) {
+          for (const id of rec.onceIds) awaitingVerdict.delete(id);
+          rec.agent.releaseTurns(rec.onceIds);
+        }
       }
       return {}; // never block the session
     }
@@ -496,11 +552,18 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    * abandon them un-acked, so JetStream redelivers, `incoming` fires again, and the peer is nudged
    * again — a dropped reply costs a round trip, never the message.
    */
-  const onReply = (ev: HookEvent, delivered: boolean): void => {
+  const onReply = (ev: HookEvent, delivered: boolean, handoff = false): void => {
     const batch = inFlight.get(ev);
     if (!batch) return; // this frame carried no peer messages or turns (PreToolUse, Notification, Stop, …)
     inFlight.delete(ev);
-    const { ids, agent, turnIds } = batch;
+    const { ids, agent, turnIds, onceIds } = batch;
+    // A once task confirms only on the relay's receipt that its write to Claude's pipe completed.
+    // Anything else, a terminal that already sealed it included, seals it and reports.
+    if (onceIds?.length) {
+      const pending = onceIds.filter((id) => awaitingVerdict.delete(id));
+      if (delivered && handoff && pending.length === onceIds.length) agent.commitSurfacedTurns(onceIds);
+      else agent.releaseTurns(onceIds);
+    }
     // Run turns commit only on a delivered frame; an undelivered one leaves them unsurfaced, so
     // they re-inject on a later frame instead of auto-yielding `done` for unseen work.
     if (delivered && turnIds?.length) agent.commitSurfacedTurns(turnIds);

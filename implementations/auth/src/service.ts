@@ -4198,7 +4198,11 @@ async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerR
   const peerThrottled = policy.throttled(ctx, peer);
   let envelope: ReturnType<typeof parseServiceAuthorityEnvelope>;
   try { envelope = parseServiceAuthorityEnvelope(await readJsonBody(req, SERVICE_AUTHORITY_MAX_BYTES)); }
-  catch (e) { return sendRequestError(res, e); }
+  catch (e) {
+    // The parser's bad-request names the caller's own malformed envelope, so it stays a named 400.
+    if (e instanceof EpEnvelopeError && e.code === "bad-request") return send(res, 400, { error: e.message });
+    return sendRequestError(res, e);
+  }
   const { request, proof } = envelope;
   const answer = (r: { status: number; body: unknown }) => send(res, r.status, r.body, noStore);
   if (request.space !== door.space || request.accountPublicKey !== door.accountPublicKey) return answer(serviceAuthorityDenied(request, "account-mismatch"));
