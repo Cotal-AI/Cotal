@@ -3614,8 +3614,10 @@ export class CotalEndpoint extends EventEmitter {
    * not a phantom). Only CURRENT, ACTIVATED members (non-tombstoned, and past activation catch-up — a
    * join still completing or that failed catch-up reported durable:false and stays hidden here until
    * confirmed, so this surface never overstates membership). A row is a concrete channel or a family
-   * (`review.>`, #5404); a family row counts for each durable-class channel under it, and a principal
-   * with several rows is listed once. `live`-class channels carry no durable record — membership there
+   * (`review.>`, #5404). Asked for one channel, a family row counts when the channel is durable-class
+   * and under it, and a principal with several rows is listed once. The map of every channel keys each
+   * row as recorded, so a family's members sit under the family itself (`review.>`), not under each
+   * channel it covers. `live`-class channels carry no durable record — membership there
    * is the live core-sub, not tracked here. Privileged read (the members KV is manager-write/read; agents hold no grant), so
    * it is served by the manager, not an agent capability.
    */

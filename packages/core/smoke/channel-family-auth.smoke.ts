@@ -239,6 +239,10 @@ try {
   check("channelMembers lists alice once on review.b, which her own row and review.> both cover", (await membersOf("review.b")) === 1, await dlv.channelMembers("review.b"));
   check("channelMembers lists alice on the durable review.c through review.> alone", (await membersOf("review.c")) === 1, await dlv.channelMembers("review.c"));
   check("channelMembers leaves alice off the live-class review.quiet, where review.> stores nothing", (await membersOf("review.quiet")) === 0, await dlv.channelMembers("review.quiet"));
+  // The map of every channel keys each row as recorded: alice's family row sits under review.> itself.
+  const everyChannel = await dlv.channelMembers();
+  const inMap = (key: string) => (everyChannel.get(key) ?? []).some((m) => m.id === aPrincipal || m.id === alice.id.id);
+  check("the all-channels map lists alice's family row under review.>, not under review.c", inMap("review.>") && !inMap("review.c"), [...everyChannel.keys()]);
 
   // ───────────── (5) a read ACL narrowed below the family ─────────────
   acls.set(aPrincipal, ["review.b", "review.c"]);
