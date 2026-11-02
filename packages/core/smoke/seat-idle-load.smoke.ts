@@ -69,6 +69,12 @@
  * on stderr. They mark only completed transitions, with `up` and `failed` on
  * `all_seat_starts_settled`.
  *
+ * Every seat process watches its own event loop: the report carries the p99 and maximum loop delay
+ * of the worst seat process, from the ramp to the mid-window sample and over the second half of the
+ * window, and a process whose loop is late by a second or more prints a timestamped
+ * `seat-idle-stall {json}` row on stderr (at most 50 per process). A seat process that stops turning
+ * its loop times out every pending presence write at once; this places that stall in time.
+ *
  * `--server-version X.Y.Z` explicitly selects the expected broker version for a comparison.
  * It defaults to 2.15.1 and refuses a mismatched binary; NATS_SERVER_BIN selects the binary.
  * This changes only the version check, not broker configuration or the workload.
@@ -82,6 +88,7 @@ import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint, LEASE_TTL_MS, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable,
@@ -91,7 +98,7 @@ import {
 import { spaceMessageStreamConfigs, standaloneConnectOpts } from "../src/streams.js";
 import { dialerFor } from "../src/endpoint.js";
 import { pickFreePort } from "./_free-port.js";
-import { readRosterSample, nativeLoadFailures, nativeErrorObserver, type NativeErrorSource } from "./_seat-idle-results.js";
+import { readRosterSample, nativeLoadFailures, nativeErrorObserver, loopStallWatch, type NativeErrorSource } from "./_seat-idle-results.js";
 import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, procMem, teardownOnSignal, type BrokerHeap, type BrokerPart } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
@@ -108,10 +115,12 @@ interface DaemonJob { kind: "daemons"; servers: string; daemons: DaemonSpec[] }
  *  outside the heap (Buffers, ArrayBuffers), and compiled code. */
 interface NodeMem { heapUsedMb: number; heapTotalMb: number; externalMb: number; arrayBuffersMb: number; codeMb: number }
 type ChildCmd = { cmd: "sample" | "readcost" | "stop" } | { cmd: "snapshot"; path: string };
+/** A seat process's event-loop delay since its previous sample, in ms. */
+interface LoopDelay { p99Ms: number; maxMs: number }
 /** What a seat child reports when asked to sample. `ages` are the ages (ms) of every same-space
  *  peer's last heartbeat as each seat's roster holds it; `missing` counts peers a seat's roster
  *  should hold and does not. */
-interface SeatSample { up: number; failed: number; errors: number; ages: number[]; missing: number; stale: number; cpuMs: number; rssMb: number; mem: NodeMem }
+interface SeatSample { up: number; failed: number; errors: number; ages: number[]; missing: number; stale: number; cpuMs: number; rssMb: number; mem: NodeMem; loop: LoopDelay }
 /** What one on-demand roster read costs, from one seat per space: its latency, and the records and
  *  bytes the broker sends for it (subject + value of every record, not counting framing). */
 interface ReadCost { ms: number[]; msgs: number[]; bytes: number[] }
@@ -152,6 +161,16 @@ const nextJob = <T>(): Promise<T> => new Promise((r) => process.once("message", 
 
 async function runSeats(job: SeatJob): Promise<void> {
   const cpu0 = process.cpuUsage();
+  // The loop delay histogram is reset at every sample, so each report covers the time since the
+  // previous one; the stall watch stamps every stall of a second or more.
+  const loop = monitorEventLoopDelay({ resolution: 20 });
+  loop.enable();
+  const stopStallWatch = loopStallWatch((row) => console.error(`seat-idle-stall ${JSON.stringify({ childPid: process.pid, ...row })}`));
+  const loopDelay = (): LoopDelay => {
+    const d = { p99Ms: loop.percentile(99) / 1e6, maxMs: loop.max / 1e6 };
+    loop.reset();
+    return d;
+  };
   const eps: Array<{ ep: CotalEndpoint; space: string }> = [];
   const bySpace = new Map<string, number>();
   for (const s of job.seats) bySpace.set(s.space, (bySpace.get(s.space) ?? 0) + 1);
@@ -229,8 +248,10 @@ async function runSeats(job: SeatJob): Promise<void> {
     const cpu = process.cpuUsage(cpu0);
     // Every seat's view, but never more ages than one IPC message should carry.
     const step = Math.max(1, Math.ceil(ages.length / 200_000));
-    await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / MB, mem: nodeMem() } satisfies SeatSample });
+    await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / MB, mem: nodeMem(), loop: loopDelay() } satisfies SeatSample });
   }
+  stopStallWatch();
+  loop.disable();
   await Promise.all(eps.map(({ ep }) => ep.stop().catch(() => {})));
   if (observation) console.error(`seat-idle-error-summary ${JSON.stringify({ childPid: process.pid, ...observation.summary() })}`);
   await ipcSend({ stopped: true });
@@ -622,6 +643,9 @@ try {
   row("box CPU busy (cores of " + availableParallelism() + ")", ((box1.busy - box0.busy) / (box1.total - box0.total)) * availableParallelism());
   row("box MemAvailable (MB)", memAvail);
   rows.push(["", ""]);
+  const worstLoop = (xs: SeatSample[], of: (d: LoopDelay) => number) => n2(maxOf(xs.map((s) => of(s.loop))));
+  row("seat event-loop delay p99 / max (ms), ramp to mid-window, worst process", `${worstLoop(mid, (d) => d.p99Ms)} / ${worstLoop(mid, (d) => d.maxMs)}`);
+  row("seat event-loop delay p99 / max (ms), second half of window, worst process", `${worstLoop(end, (d) => d.p99Ms)} / ${worstLoop(end, (d) => d.maxMs)}`);
   row("peer heartbeat age mid-window p50 / p99 / max (ms)", `${n2(pct(agesMid, 50))} / ${n2(pct(agesMid, 99))} / ${n2(maxOf(agesMid))}`);
   row("peer heartbeat age at end p50 / p99 / max (ms)", `${n2(pct(agesEnd, 50))} / ${n2(pct(agesEnd, 99))} / ${n2(maxOf(agesEnd))}`);
   row("roster entries missing at end", `${missingEnd} of ${expectedPeers}`);

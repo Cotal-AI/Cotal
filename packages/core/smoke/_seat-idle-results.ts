@@ -78,3 +78,17 @@ export function nativeErrorObserver(emit: (row: { epochMs: number; source: Nativ
     summary() { return { total, emitted, dropped: total - emitted, counts: Object.fromEntries(counts), contexts: Object.fromEntries(contexts) }; },
   };
 }
+
+/** Watch a process's own event loop with a 100 ms timer and report every tick that arrives late by
+ *  `stallMs` or more (a stall), at most `limit` times; returns the stop function. The loop delay
+ *  histogram gives the size of the worst stall, this gives its time. */
+export function loopStallWatch(emit: (row: { epochMs: number; stallMs: number }) => void, stallMs = 1000, limit = 50, intervalMs = 100): () => void {
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("loop stall row limit must be nonnegative");
+  let emitted = 0, last = performance.now();
+  const timer = setInterval(() => {
+    const now = performance.now(), late = now - last - intervalMs;
+    last = now;
+    if (late >= stallMs && emitted < limit) { emitted++; emit({ epochMs: Date.now(), stallMs: Math.round(late) }); }
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
