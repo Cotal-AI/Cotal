@@ -1,5 +1,11 @@
 # @cotal-ai/connector-hermes
 
+## 0.135.4
+
+### Patch Changes
+
+- 3db141d: Keep Hermes tool arguments out of shared presence activity while retaining the tool name and status transitions.
+
 ## 0.135.3
 
 No changes in this release.
