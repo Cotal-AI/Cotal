@@ -3088,56 +3088,56 @@
       "rationale": "Comparison operand that selects the /who roster line's working branch, whose text names unknown progress; the token itself is not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "pe: \"join\" | \"update\" | \"offline\"; presence: Presence }) ",
       "class": "non-render/control",
       "rationale": "Chat session presence handler type: \"offline\" is a presence event type in the listener signature; not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": " \"joined\" : ev.type === \"offline\" ? \"left\" : \"updated\" })",
       "class": "non-render/control",
       "rationale": "Chat session event shaping: maps the presence event type to a joined, left or updated change; the token is not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "\"idle\"",
       "class": "non-render/control",
       "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "\"working\"",
       "class": "non-render/control",
       "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "derived-output",
       "anchor": "this.inputs.endpoint.setStatus(status, activity)",
       "class": "non-render/control",
       "rationale": "Chat session lifecycle: publishes the user's own status update to the endpoint; no rendering."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\").map((p) => p.card.id))",
       "class": "non-render/control",
       "rationale": "Chat session roster: keeps present participants to tell joins from leaves; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "rn;\n    if (ev.type === \"offline\") this.rows.delete(row.i",
       "class": "non-render/control",
@@ -3211,7 +3211,7 @@
       "rationale": "Plain chat session-ending notice: \"waiting\" is the color tone; the text is about this session's own expiry, not a peer's presence."
     },
     {
-      "path": "implementations/cli/src/chat/session.ts",
+      "path": "packages/workspace/src/chat/session.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",

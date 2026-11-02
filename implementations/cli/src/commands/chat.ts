@@ -18,11 +18,9 @@ import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
-import { openRoutingChatSession } from "../chat/open-session.js";
 import { openStaticChatSession } from "../chat/static-session.js";
-import { openUserChatSession } from "../chat/user-session.js";
 import { closeSummary, type Recipient } from "../chat/view.js";
-import type { AdmittedChatSession, CloseReport, RosterView } from "../chat/session.js";
+import { openRoutingChatSession, openUserChatSession, type AdmittedChatSession, type CloseReport, type RosterView } from "@cotal-ai/workspace/chat";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,

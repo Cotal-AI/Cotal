@@ -20,8 +20,8 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, isConnectRefusal, mintControlInstrument, preflightOrThrow, type MeshTarget } from "@cotal-ai/workspace";
-import { NativeChatSession } from "./native-session.js";
-import type { CloseReport, SessionIdentity } from "./session.js";
+import { NativeChatSession } from "@cotal-ai/workspace/chat";
+import type { CloseReport, SessionIdentity } from "@cotal-ai/workspace/chat";
 import { askManager, managerFailure, refuseWithoutLiveManager, type ManagerReply } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 

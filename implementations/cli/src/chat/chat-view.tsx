@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import type { Key as InkKey } from "ink";
-import type { AdmittedChatSession, SessionEvent } from "./session.js";
+import type { AdmittedChatSession, SessionEvent } from "@cotal-ai/workspace/chat";
 import {
   addNotice,
   applyEvent,
