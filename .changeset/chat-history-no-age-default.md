@@ -1,7 +1,7 @@
 ---
-"@cotal-ai/core": patch
-"@cotal-ai/cli": patch
-"@cotal-ai/connector-core": patch
+"@cotal-ai/core": minor
+"@cotal-ai/cli": minor
+"@cotal-ai/connector-core": minor
 ---
 
 Channel history has no age limit by default again. A space keeps a channel post until its sender has posted 1000 newer ones on that channel, as it did up to 0.133.13, and an age applies only when an operator sets one with `cotal history limit`.
