@@ -1,0 +1,86 @@
+{
+  "suite": [
+    "packages/core/smoke/chat-history-limit.smoke.ts"
+  ],
+  "guard": "The chat stream's history limit: the provisioner may update the chat stream and no other message stream, `cotal up` moves only the legacy pair and only after every other setup check, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up copies what the stream holds without judging retention.",
+  "command": "pnpm smoke:chat-history-limit",
+  "completionMarker": "chat-history-limit:",
+  "progressPattern": "^  [✓✗] ",
+  "minTicks": 43,
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/chat-history-limit.json",
+  "why": [
+    "The suite imports core from `src`, so no build is needed and each mutant is what the suite runs. Every cell",
+    "runs against a live broker, so a mutation is graded by the broker's own permission checks, expiry and stored",
+    "config. Each mutation reddens a different named cell."
+  ],
+  "mutations": [
+    {
+      "name": "the provisioner loses its chat stream update grant",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ]\n",
+      "expectRed": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
+      "cell": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
+      "note": "Without the grant every authed space dies on a permissions violation at its first start on this release."
+    },
+    {
+      "name": "the grant is widened to the DM stream",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DM]\n",
+      "expectRed": "the provisioner may not update DM_",
+      "cell": "the provisioner may not update DM_<space>"
+    },
+    {
+      "name": "cotal up moves any limit, not only the legacy pair",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (!isLegacyChatHistory(chatHistoryLimitOf(config as unknown as Record<string, unknown>))) return undefined;\n",
+      "replace": "",
+      "expectRed": "cotal up leaves an operator's limit as it is",
+      "cell": "cotal up leaves an operator's limit as it is",
+      "note": "The mutant still migrates the legacy pair, so only the cell that runs setup over an operator's limit sees it overwritten."
+    },
+    {
+      "name": "a permission refusal of the update is reported as an unknown outcome",
+      "file": "packages/core/src/streams.ts",
+      "find": "    if (e instanceof JetStreamApiError || isPublishPermissionDenied(e)) throw e;",
+      "replace": "    if (e instanceof JetStreamApiError) throw e;",
+      "expectRed": "a credential without the update grant is refused, not reported as an unknown outcome",
+      "cell": "a credential without the update grant is refused, not reported as an unknown outcome"
+    },
+    {
+      "name": "cotal up moves the chat stream before setup's other checks",
+      "file": "packages/core/src/streams.ts",
+      "find": "    await createSpaceStreams(jsm, opts.space);\n",
+      "replace": "    await createSpaceStreams(jsm, opts.space);\n    await reconcileChatHistory(jsm, opts.space);\n",
+      "expectRed": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
+      "cell": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
+      "note": "The move deletes posts, so a setup a later check refuses would delete them and report nothing."
+    },
+    {
+      "name": "catch-up judges the per-sender count again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n",
+      "replace": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n    { const info = await this.jsm!.streams.info(chatStream(this.space), { subjects_filter: chatSubject(this.space, \"*\", \"*\", channel) }); if (Object.values(info.state.subjects ?? {}).some((n) => n >= info.config.max_msgs_per_subject)) { await tombstoneMember(kv, channel, owner, lifecycleUid, fence, this.card.id, generation); return { durable: false, reason: \"activation catch-up window partially evicted by retention\", generation }; } }\n",
+      "expectRed": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
+      "cell": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
+      "note": "Stream state cannot tell this channel's eviction from another channel's removal, so a sender at the count proves nothing; the mutant tombstones a join that lost nothing."
+    },
+    {
+      "name": "recall ignores the stream head",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (info.state.first_seq > sinceSeq + 1) return true;\n",
+      "replace": "",
+      "expectRed": "recall reports a channel whose posts are all gone, with the stream head past the watermark",
+      "cell": "recall reports a channel whose posts are all gone, with the stream head past the watermark"
+    },
+    {
+      "name": "recall judges the count against the compiled 1000, not the stream's limit",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const cap = info.config.max_msgs_per_subject;\n    let maxPerSubject = 0;",
+      "replace": "    const cap = 1000;\n    let maxPerSubject = 0;",
+      "expectRed": "recall reports a channel where a sender passed the stream's per-sender count",
+      "cell": "recall reports a channel where a sender passed the stream's per-sender count"
+    }
+  ]
+}

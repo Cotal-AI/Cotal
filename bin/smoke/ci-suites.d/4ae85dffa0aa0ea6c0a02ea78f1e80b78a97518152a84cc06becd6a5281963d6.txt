@@ -1,0 +1,2 @@
+# The seat side of a once task: it is handed to the harness at most once per process.
+smoke:once-handoff

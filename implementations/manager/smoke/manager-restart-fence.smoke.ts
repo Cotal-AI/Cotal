@@ -128,10 +128,10 @@ try {
   check("incarnation 1 sees the terminal it committed under its own accepted epoch",
     (await readGoalResult(gw1, ref1))?.state === "failed");
 
-  // A LONG-LIVED CLIENT resolves the manager BEFORE the restart. `invokeService` caches the resolve,
-  // bound to the incarnation that answered the describe: (iid1, epoch 0). This is the shape of every
-  // client that outlives a manager restart (a connector's mesh agent, the console), and what it does
-  // with that bind afterwards is graded below.
+  // A LONG-LIVED CLIENT resolves the manager BEFORE the restart. `describeService` caches the full
+  // resolve that every later call reuses, bound to the incarnation that answered the describe:
+  // (iid1, epoch 0). This is the shape of every client that outlives a manager restart (a
+  // connector's mesh agent, the console), and what it does with that bind afterwards is graded below.
   client = new CotalEndpoint({
     space: SPACE, servers: SERVER, lifecycleUid: mintLifecycleUid(),
     card: { name: "restart-probe", role: "operator", kind: "endpoint" },
@@ -140,7 +140,11 @@ try {
   client.on("error", () => {});
   await client.start();
   const cache = (client as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  // Recovery drops the full handle and resolves only the command being retried.
+  const commandCache = (client as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const boundFor = (command: string) => (cache.get(MANAGER_ENDPOINT) ?? commandCache.get(MANAGER_ENDPOINT)?.get(command))?.responder;
   const pubs = (): number => (client as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  await client.describeService(MANAGER_ENDPOINT);
   const warm = await client.invokeService(MANAGER_ENDPOINT, "ps");
   check("a long-lived client is bound to incarnation 1 before the restart",
     warm.reply.ok === true && cache.get(MANAGER_ENDPOINT)?.responder.instanceId === iid1 && cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1,
@@ -155,7 +159,10 @@ try {
   reader.on("error", () => {});
   await reader.start();
   const readerCache = (reader as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const readerCommandCache = (reader as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const readerBound = () => (readerCache.get(MANAGER_ENDPOINT) ?? readerCommandCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder;
   const readerPubs = (): number => (reader as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  await reader.describeService(MANAGER_ENDPOINT);
   const readerWarm = await reader.invokeService(MANAGER_ENDPOINT, "ps");
   check("...and so is a second client, kept for the read arm",
     readerWarm.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
@@ -300,7 +307,7 @@ try {
     check("...and the reply is the manager's own refusal, not the bind refusal (the second attempt really ran)",
       reply?.reply.ok === false && !/WAS NOT RUN/.test(reply.reply.error?.message ?? ""), reply?.reply.error);
     check("...and the stale (epoch 0) bind was replaced by the successor's, inside that one call",
-      cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2, { got: cache.get(MANAGER_ENDPOINT)?.responder });
+      boundFor("spawn")?.epoch === epoch2, { got: boundFor("spawn") });
     // THE RECOVERY IS COUNTED, and this is the cell that keeps it counted. Handling the split makes
     // it invisible, and that routing event is the only evidence the split exists — so a recovery
     // that leaves no trace destroys the very measurement that justified building the fence. The
@@ -324,21 +331,21 @@ try {
       again === undefined && againReply?.responder.instanceId === iid1 && againReply.responder.epoch === epoch2,
       { threw: again instanceof Error ? again.message.slice(0, 160) : again, responder: againReply?.responder, epoch2 });
 
-    check("the re-issue left a fresh bind, at the successor's epoch", cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2, cache.get(MANAGER_ENDPOINT)?.responder);
+    check("the re-issue left a fresh bind, at the successor's epoch", boundFor("spawn")?.epoch === epoch2, boundFor("spawn"));
 
     // THE READ ARM: the second client, still bound to (iid1, epoch 0) from before the restart, reads
     // ONCE. A repeat-safe command on a stale-epoch bind heals inside that one call (drop, re-resolve,
     // re-issue), exactly as it does on the split. Its stale bind is real: obtained by outliving the
     // restart, not written into the cache by the test.
     check("the reader is still bound to the pre-restart epoch (its stale bind is real, not fabricated)",
-      readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
+      readerBound()?.epoch === epoch1, readerBound());
     const readBefore = readerPubs();
     let readThrew: unknown;
     let read: EpAttributedReply | undefined;
     try { read = await reader!.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
     check("a READ bound to the stale epoch heals inside ONE call and comes back bound to the successor",
-      readThrew === undefined && read?.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2,
-      { threw: readThrew instanceof Error ? readThrew.message.slice(0, 160) : readThrew, bound: readerCache.get(MANAGER_ENDPOINT)?.responder });
+      readThrew === undefined && read?.reply.ok === true && readerBound()?.epoch === epoch2,
+      { threw: readThrew instanceof Error ? readThrew.message.slice(0, 160) : readThrew, bound: readerBound() });
     check("...and that heal re-issued (more than the one publish a held guard leaves)",
       readerPubs() - readBefore > 1, { publishes: readerPubs() - readBefore });
   }

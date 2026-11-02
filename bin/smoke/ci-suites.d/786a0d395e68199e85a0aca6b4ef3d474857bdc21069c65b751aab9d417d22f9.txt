@@ -1,0 +1,3 @@
+# The registry's endpoints answer over real records, contract artifacts and recorded ceilings:
+# only covered endpoints and commands, instances and paging, and the unbound and open cases.
+smoke:registry-answer:live

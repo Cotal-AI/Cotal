@@ -11,6 +11,7 @@ import {
   type RuntimeReference,
   type Tab,
   type TerminalLayout,
+  type StartupOutcome,
 } from "@cotal-ai/core";
 import * as tmux from "./driver.js";
 
@@ -30,6 +31,7 @@ const CONFIRM_CALL = { timeoutMs: 1_000 };
 export class TmuxRuntime implements Runtime {
   readonly kind = "tmux" as const;
   readonly streamsTerminal = false;
+  readonly reportsStartupOutcome = true;
 
   constructor(private readonly session: string) {}
 
@@ -48,7 +50,7 @@ export class TmuxRuntime implements Runtime {
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
       if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
       tmux.ensureSession(this.session, cwd);
       // P3: env -i strips the tmux server's inherited environment; only the connector-declared
       // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
@@ -71,7 +73,9 @@ export class TmuxRuntime implements Runtime {
     // A restarted tmux server reuses window and pane ids, so the watch acts only on the one that opened
     // this window. It ends the seat's pane, wherever it is now: the window may hold another pane by then.
     const call = { ...CONFIRM_CALL, server: serverPid };
+    let startup: StartupOutcome = "pending";
     watch?.({
+      settled: (outcome) => { startup = outcome; },
       read: () => tmux.capturePane(paneId, serverPid),
       enter: () => tmux.sendKey("Enter", paneId, call),
       down: () => tmux.sendKey("Down", paneId, call),
@@ -85,14 +89,15 @@ export class TmuxRuntime implements Runtime {
       },
     });
 
-    return this.handle(name, windowId, paneId, serverPid);
+    return this.handle(name, windowId, paneId, serverPid, () => startup);
   }
 
   /** The handle for one seat's window. A spawn and an adoption drive the window the same way. */
-  private handle(name: string, windowId: string, paneId: string, serverPid: string): AgentHandle {
+  private handle(name: string, windowId: string, paneId: string, serverPid: string, startupOutcome?: () => StartupOutcome): AgentHandle {
     return {
       name,
       kind: "tmux",
+      ...(startupOutcome ? { startupOutcome } : {}),
       // Durable enough for a successor manager to close this window if this one dies (see reap).
       reference: { kind: "tmux", id: `${serverPid}.${windowId}.${paneId}` },
       status: () => {

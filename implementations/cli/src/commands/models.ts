@@ -1,9 +1,10 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section } from "@cotal-ai/workspace";
+import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section, resolveControlTarget } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
-import { askManager, onFlag, readFailure, refuseUnregisteredManager, refuseWithoutLiveManager, resolveControlTarget } from "../lib/control.js";
+import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { completingFlagValue } from "../lib/completion.js";
+import { askManager, readFailure, refuseUnregisteredManager, refuseWithoutLiveManager } from "@cotal-ai/workspace/control";
 
 export const modelsFlags = [
   ...targetFlags,
@@ -44,7 +45,7 @@ export async function models(args: ParsedArgs): Promise<void> {
   const live = on === undefined && t.auth.bearer === undefined ? await refuseWithoutLiveManager(t.space, t.server, t.auth, target, "list its model catalogs") : undefined;
   // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
   if (on !== undefined && t.auth.bearer === undefined) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
-  const reply = await askManager(t.space, t.server, "models", { agent: v.harness, refresh: v.refresh === true }, t.auth, "owner", undefined, on === undefined ? {} : { instanceId: on });
+  const reply = await askManager(cliControl, t.space, t.server, "models", { agent: v.harness, refresh: v.refresh === true }, t.auth, "owner", undefined, on === undefined ? {} : { instanceId: on });
   if (!reply.ok) throw readFailure(reply, { ...target, managerInstanceId: reply.managerInstanceId ?? null });
   const items = Array.isArray(reply.data) ? reply.data as ConnectorModelCatalog[] : [reply.data as ConnectorModelCatalog];
   const failed = items.filter((row) => row.error);

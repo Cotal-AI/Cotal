@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { epRequestObservationFilter, epRequestSubject, subjectMatches } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -38,6 +40,19 @@ check("the full census source inventory has no outside builder", () => {
   assert.ok(files.some((file) => /function epRequestSubject/.test(readFileSync(file, "utf8"))));
   assert.ok(files.some((file) => file.endsWith("/bin/cotal.ts") || file.endsWith("\\bin\\cotal.ts")));
   console.log(`shipped source files checked: ${files.length}`);
+});
+
+check("reviewed registry rail sources do not admit another source file", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "issued-sources-"));
+  try {
+    for (const dir of ["packages/core/src", "implementations", "extensions", "bin"])
+      mkdirSync(join(fixture, dir), { recursive: true });
+    for (const name of ["endpoint-coverage.ts", "registry-contract.ts", "unreviewed.ts"])
+      writeFileSync(join(fixture, "packages/core/src", name), 'export const rail = "ep.v1";\n');
+    const { files, unexpected } = issuedRailSourceCensus(fixture);
+    assert.equal(files.length, 3);
+    assert.deepEqual(unexpected, ["packages/core/src/unreviewed.ts"]);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
 
 const space = "observerproof", endpoint = "manager", command = "run-start";
@@ -80,5 +95,5 @@ check("host run observers retain their exact command, route and rail selection",
   assert.equal(servedRunCancelRequestSubject(space), "cotal.observerproof.ep.v1.inst.manager.*.run-cancel.>");
   assert.equal(new Set(requests).size, 12);
 });
-check("all focused cells ran", () => assert.equal(passed, 25));
+check("all focused cells ran", () => assert.equal(passed, 26));
 emitSentinel({ passed, failed: 0 });

@@ -11,6 +11,7 @@ export type JcodeConnectorFailureCode =
   | "readiness_timeout"
   | "sessions_enumeration_failed"
   | "sessions_unwritable"
+  | "cursor_state_unreadable"
   | "provider_auth_refused"
   | "provider_payment_required"
   | "provider_forbidden"
@@ -49,6 +50,31 @@ export class JcodeSessionsUnwritableFailure extends Error {
     readonly errnoCode: string,
   ) {
     super(`stored sessions directory is not writable at ${sessionsPath} (${errnoCode})`);
+  }
+}
+
+export type CursorStateUnreadableReason =
+  | "not_sqlite"
+  | "locked"
+  | "hot_journal"
+  | "corrupt"
+  | "no_item_table"
+  | "value_type"
+  | "value_size"
+  | "sqlite_error";
+
+/** Cursor's state database exists but gave no consistent read of the keys Jcode uses. The reason is
+ * a connector-owned word and the SQLite result code a number, so no SQLite text reaches the public
+ * line. The path is relative to the operator's home. */
+export class JcodeCursorStateUnreadable extends Error {
+  readonly code = "cursor_state_unreadable" as const;
+
+  constructor(
+    readonly sourceRelative: string,
+    readonly reason: CursorStateUnreadableReason,
+    readonly sqliteCode?: number,
+  ) {
+    super(`Cursor's state database ~/${sourceRelative} could not be read (${reason}${sqliteCode === undefined ? "" : `, SQLite code ${sqliteCode}`})`);
   }
 }
 
