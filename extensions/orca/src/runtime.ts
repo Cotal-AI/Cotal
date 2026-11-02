@@ -13,6 +13,7 @@ import {
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
+  type StartupOutcome,
 } from "@cotal-ai/core";
 import * as orca from "./driver.js";
 
@@ -54,6 +55,7 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
 export class OrcaRuntime implements Runtime {
   readonly kind = "orca" as const;
   readonly streamsTerminal = false;
+  readonly reportsStartupOutcome = true;
   readonly #worktrees = new Map<string, orca.OrcaWorktree>();
 
   #cacheWorktree(cwd: string, worktree: orca.OrcaWorktree): void {
@@ -76,7 +78,7 @@ export class OrcaRuntime implements Runtime {
     let launcher: PrivateLauncher;
     try {
       if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
       cwdKey = realpathSync(cwd);
       const cached = this.#worktrees.get(cwdKey);
       cachedWorktree = !!cached;
@@ -110,7 +112,9 @@ export class OrcaRuntime implements Runtime {
       terminal = orca.currentTerminal(terminal) ?? terminal;
       return terminal;
     };
+    let startup: StartupOutcome = "pending";
     watch?.({
+      settled: (outcome) => { startup = outcome; },
       read: () => {
         const resolved = orca.currentTerminal(terminal, CONFIRM_CALL);
         if (!resolved || resolved.connected === false) return undefined;
@@ -135,6 +139,7 @@ export class OrcaRuntime implements Runtime {
     return {
       name,
       kind: "orca",
+      startupOutcome: () => startup,
       status: () => (orca.terminalAlive(terminal) ? "running" : "exited"),
       stop: (opts) => {
         if (opts?.graceful === false) {

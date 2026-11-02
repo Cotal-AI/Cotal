@@ -758,6 +758,11 @@ for a running mesh. A broker record that cannot be proven
 stopped counts as running, as it does for `clean`. A hand-added record is removed by
 `meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
+
+For several names, `meshes rm` loads the registry once, shares the legacy-file scan, and reads the
+selected default once. Each completed entry is reported and its selected default cleared before the
+next entry is attempted. A later removal failure does not roll back earlier removals.
+
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
 wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way. A broker that answers at a record's address and refuses the connection is read the same way

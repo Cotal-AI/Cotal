@@ -2,6 +2,7 @@ import { HarnessError } from "@1jehuang/jcode-sdk";
 import { constants, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { hardenPrivate } from "@cotal-ai/core";
+import { activeModelRoute, type RuntimeIdentity } from "./route-identity.js";
 
 export type JcodeConnectorFailureCode =
   | "model_prefix_rejected"
@@ -22,6 +23,28 @@ export type JcodeConnectorFailureCode =
 export class JcodeConnectorError extends Error {
   constructor(readonly code: JcodeConnectorFailureCode, message: string, options?: ErrorOptions) {
     super(message, options);
+  }
+}
+
+/** A route-verification refusal with bounded identity fields, never route details or child output.
+ * Reported runtime identity is not the accepted session pin, and effort has not yet been applied. */
+export class JcodeModelMismatch extends JcodeConnectorError {
+  constructor(requestedModel: string | undefined, requestedTier: string, runtime: RuntimeIdentity | undefined) {
+    const model = requestedModel ?? runtime?.model;
+    const matches = model ? runtime?.routes?.filter((route) => route?.model === model) ?? [] : [];
+    const route = model ? activeModelRoute(runtime, model) : undefined;
+    const reason = !model ? "no model was reported"
+      : matches.length === 0 ? "no matching model route was reported"
+      : !route ? "matching routes could not be disambiguated by the reported provider"
+      : "the selected route has no provider";
+    const identity = (value: string | undefined, missing = "(unreported)"): string =>
+      value === undefined || value === "" ? missing
+        : typeof value === "string" && SAFE_VALUE.test(value) ? JSON.stringify(value) : "(withheld)";
+    const tier = SAFE_EFFORT_TIERS.has(requestedTier) ? JSON.stringify(requestedTier) : "(withheld)";
+    super(
+      "model_mismatch",
+      `${reason}; requested model ${identity(requestedModel, "(provider default)")}; reported model ${identity(runtime?.model)}; reported provider ${identity(runtime?.provider)}; matching model routes: ${matches.length}; requested tier ${tier} was not applied`,
+    );
   }
 }
 
