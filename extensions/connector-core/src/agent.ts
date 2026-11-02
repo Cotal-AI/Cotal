@@ -3248,22 +3248,25 @@ export class MeshAgent extends EventEmitter {
     // be established (the reader lacks the grant, or the responder errored) renders "unknown",
     // distinct from the degraded of a daemon that answered but holds no membership for this owner —
     // and from the undefined of a channel where health does not apply (not durable-class, not
-    // joined, open mode). A channel's membership is its own row or a family row above it (#5404); a
-    // family's own health is its own row's.
+    // joined, open mode). A channel or family is held by its own row or a family row above it (#5404),
+    // since that family's stored copies cover it.
     const held = (channel: string): "active" | "degraded" | "unknown" =>
       !leaseReadable
         ? "unknown"
         : daemonMemberships !== undefined && leaseLive && daemonMemberships.some((m) => m.channel === channel || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel)))
           ? "active"
           : "degraded";
-    const health = (channel: string, joined: boolean): "active" | "degraded" | "unknown" | undefined =>
-      joined && this.ep.channelDeliveryClass(channel) === "durable" ? held(channel) : undefined;
+    // Health applies where stored copies were asked for: the channel itself or a family over it. A
+    // channel read only through a pattern with * or the root > is live only and has none.
+    const health = (channel: string, stored: boolean): "active" | "degraded" | "unknown" | undefined =>
+      stored && this.ep.channelDeliveryClass(channel) === "durable" ? held(channel) : undefined;
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
       durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
       event?: "own" | "agent"; follow?: "family" | "live";
     }[] = (await this.ep.listChannels()).map((c) => {
       const joined = mine.some((p) => subjectMatches(p, c.channel));
+      const stored = mine.some((p) => p === c.channel || (isChannelFamily(p) && subjectMatches(p, c.channel)));
       return {
         channel: c.channel,
         description: c.config?.description,
@@ -3272,7 +3275,7 @@ export class MeshAgent extends EventEmitter {
         // A live sub was refused while a Plane-3 durable membership stayed open; its §7 tombstone is
         // still retrying. Surface it so the channel is never shown as ordinary "not subscribed" (ux).
         durableUnclosed: unclosed.has(c.channel),
-        deliveryHealth: health(c.channel, joined),
+        deliveryHealth: health(c.channel, stored),
         messages: c.messages,
         mode: this.channelMode(c.channel) ?? "normal",
         event: this.eventChannelOf(c.channel),
@@ -3307,6 +3310,7 @@ export class MeshAgent extends EventEmitter {
         messages: 0,
         mode: this.channelMode(ch) ?? "normal",
         event: this.eventChannelOf(ch),
+        ...(isChannelFamily(ch) ? { follow: "family" as const } : {}),
       });
     }
     return rows;

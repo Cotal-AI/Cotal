@@ -141,4 +141,7 @@ When an agent returns to a full store, earlier copies may have been dropped, and
 `cotal history <channel>` may still hold those posts. Channel history keeps the newest 1000 posts per sender on each channel.
 
 `cotal_channels` lists a followed family as its own row, with the state of its stored copies.
+A family nested in another, such as `team.ci.>` under `team.>`, shows stored copies on while the outer family's membership holds, since that membership stores its posts too.
+A channel read only through the root `>` or a pattern with `*` shows no stored-copy state.
+When the broker stops an agent reading a family, `cotal_channels` shows the family as no longer followed until its stored copies are closed.
 [SPEC §7](../SPEC.md#7-channels) defines the family rule.

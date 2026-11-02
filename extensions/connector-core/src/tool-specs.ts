@@ -1358,6 +1358,8 @@ export function cotalToolSpecs(
                 : "";
           if (c.follow === "live")
             return `● #${c.channel} — pattern you follow, live only (a pattern with * or the root > has no stored copies)`;
+          if (c.follow === "family" && !c.joined)
+            return `○ #${c.channel} — family you no longer follow${c.durableUnclosed ? " · durable cleanup pending (§7 backstop may still deliver — retrying)" : ""}`;
           if (c.follow === "family") {
             const stored =
               c.deliveryHealth === "active"
