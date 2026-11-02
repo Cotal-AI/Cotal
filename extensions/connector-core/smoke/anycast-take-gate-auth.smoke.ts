@@ -11,8 +11,8 @@
  * cancel results and for the calls it must refuse, including a seq that names two of this session's
  * requests after the role queue was recreated. A held request wakes nothing while its retry is waited
  * out or once its copy ran out, a read whose caller left takes nothing, a read reports what its own
- * takes left held and carries what needs no take when a take is undecided, a read after a reconnect
- * on the same connection asks again, a copy from a recreated stream is delivered again at once, and a
+ * takes left held and carries what needs no take when a take is undecided, naming nothing of a
+ * request it never asked, a read after a reconnect on the same connection asks again, a copy from a recreated stream is delivered again at once, and a
  * gateway read that waits on a take leaves its reader's wake latch neither set over an empty inbox
  * nor unsignalled for a message that arrived during it.
  *
@@ -644,6 +644,20 @@ try {
     read17.text.slice(0, 300),
   );
   check("17b and clears the post", !slow.agent.peekInbox().some((i) => i.text.startsWith("channel post")));
+  // A role request that fits a reply, whose take nothing answers, with one too big for any reply
+  // behind it whose take the read never asks for.
+  const behind = await holderOf("behind_holder", "behindrole");
+  const behindCall = await gatewayFor(behind);
+  const sent17c = await sender.agent.ep.anycastAttributed("behindrole", `fits one reply ${"f".repeat(45_000)}`);
+  await until(() => behind.agent.inboxKeys().includes(sent17c.msg.id));
+  const sent17d = await sender.agent.ep.anycastAttributed("behindrole", `too big for any reply ${"t".repeat(60_000)}`);
+  await until(() => behind.agent.inboxKeys().includes(sent17d.msg.id));
+  const read17c = await behindCall("cotal_inbox");
+  check(
+    "17c a read whose take is undecided names nothing of the request behind it that it never asked",
+    !read17c.text.includes("larger than one response") && !read17c.text.includes("asker") && !read17c.text.includes("too big for any reply"),
+    read17c.text.slice(0, 300),
+  );
   await rail17.close();
   daemon = await startDaemon();
 

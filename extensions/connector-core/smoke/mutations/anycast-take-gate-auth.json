@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=82",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=83",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -234,6 +234,14 @@
       "expectRed": "20b a DM that arrives after the read chose is signalled once the read returns, not during it",
       "note": "A DM that arrived after the read chose what it shows stays buffered with nothing signalled for it until another message arrives.",
       "cell": "20b a DM that arrives after the read chose is signalled once the read returns, not during it"
+    },
+    {
+      "name": "a reply chosen again from what needs no take still offers a request never asked",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": " && (!showable || showable.has(i.recvKey))",
+      "replace": "",
+      "expectRed": "17c a read whose take is undecided names nothing of the request behind it that it never asked",
+      "note": "The read chose again from what needs no take after the first request's take stayed undecided, so the request behind it, never asked, is named as too large to carry."
     }
   ]
 }

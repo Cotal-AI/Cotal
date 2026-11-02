@@ -508,9 +508,10 @@ async function takeForReply(
     for (const k of missed) if (open.has(k)) undecided.add(k);
     if (undecided.size) showable = new Set(agent.peekInbox(scope).map((i) => i.recvKey));
   }
-  // A chosen request whose take was refused or is still undecided leaves this reply entirely.
+  // A chosen request whose take was refused or is still undecided leaves this reply entirely. A reply
+  // chosen again from what needs no take offers only that, so a request never asked is not named.
   const live = new Set(agent.inboxKeys(scope));
-  const offered = preview.filter((i) => live.has(i.recvKey) && !undecided.has(i.recvKey) && (!chosen.has(i.recvKey) || taken.has(i.recvKey)));
+  const offered = preview.filter((i) => live.has(i.recvKey) && !undecided.has(i.recvKey) && (!chosen.has(i.recvKey) || taken.has(i.recvKey)) && (!showable || showable.has(i.recvKey)));
   return {
     reply: renderInbox({ ...render, warning: warning(), items: [...offered, ...extra], only: shown }),
     offered,
