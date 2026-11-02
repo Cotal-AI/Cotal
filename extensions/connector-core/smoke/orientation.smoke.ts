@@ -43,7 +43,7 @@ function cfg(over: Partial<AgentConfig> = {}): AgentConfig {
 // roster read it is handed; cotal_roster reads it through readRoster (since #1229 a failed read
 // is part of the rendering).
 function agentStub(
-  over: { id?: string; roster?: any[]; unread?: number; presenceWriteFailure?: unknown; readFailure?: Error; connected?: boolean } = {},
+  over: { id?: string; roster?: any[]; unread?: number; presenceWriteFailure?: unknown; readFailure?: Error; connected?: boolean; notes?: Record<string, string> } = {},
 ): MeshAgent {
   return {
     id: over.id ?? "ALICEID0000000000000000000000000000000000000",
@@ -54,6 +54,8 @@ function agentStub(
     presenceWriteFailure: over.presenceWriteFailure,
     readRoster: async () => ({ roster: over.roster ?? [], ...(over.readFailure ? { failure: over.readFailure } : {}) }),
     inboxCount: () => over.unread ?? 0,
+    // The registry note of a channel, as the card reads it for the channels the seat is not on yet.
+    channelInfo: (channel: string) => ({ replay: false, registered: over.notes?.[channel] !== undefined, description: over.notes?.[channel] }),
   } as unknown as MeshAgent;
 }
 
@@ -182,6 +184,17 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.match(text, /may join \(read ACL\)/);
   assert.match(text, /Model pin: none recorded/);
   assert.equal(o.identity.model, undefined);
+
+  // The channels the seat may join but is not on yet are named with their registry note, so a fresh
+  // seat knows where its team lives before its first send; a seat on everything it may read gets no line.
+  assert.deepEqual(o.access.joinable, [{ channel: "incident" }], "a channel without a registry note is listed bare");
+  assert.match(text, /not on yet: #incident · join one with cotal_join/);
+  const noted = await orient(agentStub({ notes: { incident: "live incidents, post the pager link" } }), authCfg, [], 1);
+  assert.deepEqual(noted.access.joinable, [{ channel: "incident", note: "live incidents, post the pager link" }]);
+  assert.match(renderOrientation(noted), /not on yet: #incident \(live incidents, post the pager link\)/);
+  const onAll = await orient(agentStub(), cfg({ creds: "CREDS" }), [], 1);
+  assert.deepEqual(onAll.access.joinable, []);
+  assert.doesNotMatch(renderOrientation(onAll), /not on yet/);
 
   const pinned = await orient(agentStub(), cfg({ model: "grok-4.6" }), [], 1);
   assert.equal(pinned.identity.model, "grok-4.6");

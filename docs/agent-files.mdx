@@ -115,9 +115,10 @@ Links to repository docs or other sources give the agent a place to check facts 
 ## Defining one at runtime
 
 `cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends content to the manager, which writes an agent file.
-`cotal_spawn(name, role?, agent?, model?, variant?)` then launches it.
+`cotal_spawn(name, role?, agent?, model?, variant?, join?)` then launches it.
 Both tools also accept an `instance` pin for one full manager instance.
 The [tool catalog](mcp-tools.mdx) defines their full argument sets.
+A persona that names no channel field at all is scoped to the spawner's own read and post grants, never wider; it still starts on no channel unless the spawn passes `join`, and each channel in `join` must be one the spawner may read.
 
 A complete agent file in `prompt` is merged into one frontmatter block.
 For a new definition, its grants, role, and agent survive unless an explicit tool argument overrides them.

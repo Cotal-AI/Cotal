@@ -1,0 +1,4 @@
+# The space schema diff gives an operator-set chat history limit its own state and puts the legacy
+# pair behind the chat-legacy-history guard, without copying observed values into the declared
+# config. Hermetic: the diff is a pure function of observed configs.
+smoke:chat-history-schema-diff

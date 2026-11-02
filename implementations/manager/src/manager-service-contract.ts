@@ -501,6 +501,19 @@ const SPAWN_INPUT_SCHEMA = {
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
+    // Channels the new seat joins on top of its persona's read set (the peer door's `join`).
+    join: { type: "array", items: { type: "string" } },
+    // The caller's own read/post ACL. Used only when the persona file names no channel field, so
+    // a helper spawned from a persona that says nothing about channels is scoped to its spawner.
+    callerAcl: {
+      type: "object",
+      additionalProperties: false,
+      required: ["allowSubscribe", "allowPublish"],
+      properties: {
+        allowSubscribe: { type: "array", items: { type: "string" } },
+        allowPublish: { type: "array", items: { type: "string" } },
+      },
+    },
     shareTools: { type: "array", items: { type: "string" } },
     runtime: nonBlank(),
     supervise: {

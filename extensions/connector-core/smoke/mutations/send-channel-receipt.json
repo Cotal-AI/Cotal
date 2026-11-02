@@ -101,11 +101,20 @@
     {
       "name": "N6 no refusal before sending when the agent may post to none of the channels it reads",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (target === undefined && joined.some(isConcreteChannel)) return err(`Couldn't send: ${NO_POSTABLE_DEFAULT}.`);\n",
+      "find": "          if (target === undefined) return err(`Couldn't send: ${sendNoDefaultRemedy(config, joined)}.`);\n",
       "replace": "",
       "expectRed": "with no channel it may post to, an omitted channel is refused before sending",
       "cell": "with no channel it may post to, an omitted channel is refused before sending",
       "note": "Without the guard the send goes out with no channel, the endpoint picks the read-only one, and the broker refusal is the only signal."
+    },
+    {
+      "name": "N8 the refusal points at the orientation card again instead of naming the next call",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  return `${where}, so there is no default and an omitted channel is refused. You may post to ${list}: call cotal_send with channel: \"${first}\", or cotal_join ${first} first to make it your default`;",
+      "replace": "  return `${where}, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)`;",
+      "expectRed": "on no channel, the refusal names the postable channel and the exact next call",
+      "cell": "on no channel, the refusal names the postable channel and the exact next call",
+      "note": "The old sentence sent a fresh seat to a second tool to learn a channel its own ACL already names; agents took the DM instead."
     },
     {
       "name": "N7 the resolved default is computed but the raw argument is sent, so the endpoint picks the read-only channel",
