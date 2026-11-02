@@ -43,6 +43,10 @@
  * Compare both settings with the same workload; disabling the cache may save memory while
  * increasing matching CPU. This changes only the isolated smoke broker, not core defaults.
  *
+ * `--trace-errors` emits at most 200 timestamped fixed-category error rows per seat child,
+ * plus a final exact category/count summary. No error messages, subjects or credentials are emitted
+ * by this observer. Diagnostic I/O adds overhead; it is off by default.
+ *
  * `--go-trace` emits native broker GC/scavenger lines with parent receipt timestamps. It changes
  * no memory limit or GC policy; use it without `--ram` to avoid the profiler's forced collections.
  * Trace output adds diagnostic overhead and is not an ordinary performance sample.
@@ -85,7 +89,7 @@ import {
 import { spaceMessageStreamConfigs, standaloneConnectOpts } from "../src/streams.js";
 import { dialerFor } from "../src/endpoint.js";
 import { pickFreePort } from "./_free-port.js";
-import { readRosterSample, nativeLoadFailures } from "./_seat-idle-results.js";
+import { readRosterSample, nativeLoadFailures, nativeErrorObserver, type NativeErrorSource } from "./_seat-idle-results.js";
 import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, procMem, teardownOnSignal, type BrokerHeap, type BrokerPart } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
@@ -96,7 +100,7 @@ import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, proc
 interface SeatSpec { space: string; id: string; name: string; uid: string; creds: string }
 /** One space's delivery daemon. Carries its credential, so it travels over IPC only. */
 interface DaemonSpec { space: string; id: string; creds: string }
-interface SeatJob { kind: "seats"; servers: string; seats: SeatSpec[]; heartbeatMs?: number; watchPresence: boolean; watchChannels: boolean; concurrency: number }
+interface SeatJob { kind: "seats"; servers: string; seats: SeatSpec[]; heartbeatMs?: number; watchPresence: boolean; watchChannels: boolean; concurrency: number; traceErrors: boolean }
 interface DaemonJob { kind: "daemons"; servers: string; daemons: DaemonSpec[] }
 /** V8's view of a child's memory, in MB: the JS heap in use and what V8 holds for it, memory
  *  outside the heap (Buffers, ArrayBuffers), and compiled code. */
@@ -151,7 +155,14 @@ async function runSeats(job: SeatJob): Promise<void> {
   for (const s of job.seats) bySpace.set(s.space, (bySpace.get(s.space) ?? 0) + 1);
   let up = 0, failed = 0, errors = 0;
   const firstErrors: string[] = [];
-  const note = (e: Error) => { errors++; if (firstErrors.length < 5) firstErrors.push(e.message.slice(0, 200)); };
+  const observation = job.traceErrors ? nativeErrorObserver((row) => {
+    console.error(`seat-idle-error ${JSON.stringify({ childPid: process.pid, ...row })}`);
+  }) : undefined;
+  const note = (source: NativeErrorSource, e: Error) => {
+    errors++;
+    if (firstErrors.length < 5) firstErrors.push(e.message.slice(0, 200));
+    observation?.note(source, e);
+  };
   const queue = [...job.seats];
   const startOne = async (s: SeatSpec) => {
     // MeshAgent's construction (extensions/connector-core/src/agent.ts), minus the bearer, TLS and
@@ -169,10 +180,10 @@ async function runSeats(job: SeatJob): Promise<void> {
       watchChannels: job.watchChannels,
       ...(job.heartbeatMs !== undefined ? { heartbeatMs: job.heartbeatMs } : {}),
     });
-    ep.on("error", note);
-    ep.on("warning", note);
+    ep.on("error", (e) => note("error", e));
+    ep.on("warning", (e) => note("warning", e));
     try { await ep.start(); eps.push({ ep, space: s.space }); up++; }
-    catch (e) { failed++; note(e as Error); }
+    catch (e) { failed++; note("start", e as Error); }
     if ((up + failed) % 100 === 0) await ipcSend({ progress: up + failed });
   };
   await Promise.all(Array.from({ length: job.concurrency }, async () => {
@@ -207,7 +218,7 @@ async function runSeats(job: SeatJob): Promise<void> {
     let missing = 0, stale = 0;
     for (const [space, ep] of readers) {
       let sample;
-      try { sample = await readRosterSample(ep); } catch (e) { stale++; note(e as Error); continue; }
+      try { sample = await readRosterSample(ep); } catch (e) { stale++; note("roster-read", e as Error); continue; }
       const { roster, sampledAt } = sample;
       const peers = roster.filter((p) => p.card.kind === "agent" && p.card.id !== ep.card.id && p.status !== "offline");
       for (const p of peers) ages.push(sampledAt - p.ts);
@@ -219,6 +230,7 @@ async function runSeats(job: SeatJob): Promise<void> {
     await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / MB, mem: nodeMem() } satisfies SeatSample });
   }
   await Promise.all(eps.map(({ ep }) => ep.stop().catch(() => {})));
+  if (observation) console.error(`seat-idle-error-summary ${JSON.stringify({ childPid: process.pid, ...observation.summary() })}`);
   await ipcSend({ stopped: true });
 }
 
@@ -302,6 +314,7 @@ if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off")
   throw new Error("seat-idle-load: --sublist-cache must be on or off");
 const RAM = argv.includes("--ram");
 const GO_TRACE = argv.includes("--go-trace");
+const TRACE_ERRORS = argv.includes("--trace-errors");
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
@@ -497,7 +510,7 @@ try {
     if (!mine.length) continue;
     let done!: (m: Record<string, unknown>) => void;
     allUp.push(new Promise((r) => { done = r; }));
-    seatKids.push(startChild({ kind: "seats", servers: SERVERS, seats: mine, watchPresence: WATCH_PRESENCE, watchChannels: WATCH_CHANNELS, concurrency: CONCURRENCY, ...(HEARTBEAT ? { heartbeatMs: Number(HEARTBEAT) } : {}) }, (m) => {
+    seatKids.push(startChild({ kind: "seats", servers: SERVERS, seats: mine, watchPresence: WATCH_PRESENCE, watchChannels: WATCH_CHANNELS, concurrency: CONCURRENCY, traceErrors: TRACE_ERRORS, ...(HEARTBEAT ? { heartbeatMs: Number(HEARTBEAT) } : {}) }, (m) => {
       if (typeof m.progress === "number") {
         started.set(p, m.progress);
         console.error(`  … ${[...started.values()].reduce((a, b) => a + b, 0)}/${seats.length} seats started (${((performance.now() - tRamp) / 1000).toFixed(0)}s)`);
@@ -564,6 +577,7 @@ try {
   row("nats-server", `${serverVersion} (${NATS_BIN})`);
   row("subscription cache", SUBLIST_CACHE);
   row("broker Go trace", GO_TRACE ? "on (diagnostic overhead)" : "off");
+  row("endpoint error trace", TRACE_ERRORS ? "on (diagnostic overhead; 200 rows per child)" : "off");
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_PRESENCE && WATCH_CHANNELS ? "on" : "OFF"} (requested ${WATCH_CHANNELS ? "on" : "OFF"})`);
   row("setup (spaces + provisioning) (s)", setupS);
