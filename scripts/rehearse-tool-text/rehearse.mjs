@@ -16,20 +16,29 @@
 // arguments), the manager log, the `cotal ps` snapshots, every persona in the catalog at the end,
 // and the roster. grade.mjs then applies the scenario's pass check.
 //
+// Seats run under the operator's own HOME, because Claude Code and jcode read their logins there.
+// So they also write per-user state outside the sandbox: a Claude Code project folder per working
+// directory, which this script removes after the run when it can show the run created it, and
+// entries in Claude Code's own state files, which it leaves alone because live sessions share them.
+//
 // The sandbox holds copies of the operator's harness credentials, made by the jcode connector and by
-// this script for jcode's provider file. After the run every process inside it is stopped and the
-// sandbox is deleted, along with the Claude Code project folders its seats created.
+// this script for jcode's provider file. After the run the script stops the processes the run
+// started, which it knows by the sandbox's own COTAL_HOME, XDG_CONFIG_HOME or TMPDIR in their
+// environment, renames the sandbox so nothing new can open it by its path, and deletes it only when
+// no process has its working directory, an open file or a sandbox path inside it.
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { counts, grade } from "./grade.mjs";
+import { counts, grade, loadRecord } from "./grade.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = JSON.parse(readFileSync(join(HERE, "scenarios.json"), "utf8"));
 const SPACE = "rehearse";
+const CLAUDE_PROJECTS = join(homedir(), ".claude", "projects");
+const inside = (path, root) => path === root || path.startsWith(`${root}/`);
 
 function parseArgs(argv) {
   const a = { timeoutMin: 15, settleS: 60, work: join(process.env.TMPDIR || "/tmp", "rehearse-tool-text") };
@@ -77,6 +86,7 @@ class Sandbox {
     for (const d of ["home", "config", "proj", "work", "tmp", "seats"]) mkdirSync(join(this.root, d), { mode: 0o700 });
     this.proj = join(this.root, "proj");
     this.log = [];
+    this.claudeBefore = new Set(existsSync(CLAUDE_PROJECTS) ? readdirSync(CLAUDE_PROJECTS) : []);
     this.env = {
       HOME: homedir(), USER: process.env.USER ?? "", LANG: "C.UTF-8", TERM: "xterm-256color", PATH: process.env.PATH ?? "",
       ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}),
@@ -185,11 +195,19 @@ class Sandbox {
     this.endedAt = new Date().toISOString();
   }
 
-  /** Every Claude Code project folder a seat of this sandbox created (one per working directory). */
+  /** The Claude Code project folders this run's seats created: new since the run started, named
+   *  for a path in the sandbox, and holding only transcripts whose every recorded cwd is inside it. */
   claudeProjectDirs() {
-    const base = join(homedir(), ".claude", "projects");
+    if (!existsSync(CLAUDE_PROJECTS)) return [];
     const slug = this.root.replace(/[^A-Za-z0-9]/g, "-");
-    return existsSync(base) ? readdirSync(base).filter((d) => d === slug || d.startsWith(`${slug}-`)).map((d) => join(base, d)) : [];
+    return readdirSync(CLAUDE_PROJECTS)
+      .filter((d) => !this.claudeBefore.has(d) && (d === slug || d.startsWith(`${slug}-`)))
+      .map((d) => join(CLAUDE_PROJECTS, d))
+      .filter((dir) => {
+        const cwds = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).flatMap((f) => readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean)
+          .map((l) => { try { return JSON.parse(l).cwd; } catch { return undefined; } }).filter((c) => typeof c === "string"));
+        return cwds.every((c) => inside(c, this.root));
+      });
   }
 
   /** Each seat's tool calls, normalized across harnesses: { seat, tool, args, ok, result }. */
@@ -232,7 +250,8 @@ class Sandbox {
     const items = [...(history.dms?.result?.items ?? []), ...Object.values(history.channels).flatMap((d) => d?.result?.items ?? [])];
     const seen = new Set();
     const msgs = items.filter((i) => (seen.has(i.id) ? false : seen.add(i.id)));
-    const finalPs = this.ps() ?? [];
+    const finalPs = this.ps();
+    if (!finalPs) throw new Error("the final cotal ps returned no roster, so the end of the run was not observed");
     const who = this.cotal(["who", "--json"], { json: true, timeoutS: 90 }).doc;
     const ids = {};
     for (const s of this.snapshots) for (const i of s.items) ids[i.name] = bare(i.id);
@@ -240,10 +259,8 @@ class Sandbox {
     const names = Object.fromEntries(Object.entries(ids).map(([n, id]) => [id, n]));
     const personaDir = join(this.proj, ".cotal", "agents");
     mkdirSync(join(dir, "personas"), { recursive: true });
-    const personas = readdirSync(personaDir).filter((f) => f.endsWith(".md")).map((f) => {
-      copyFileSync(join(personaDir, f), join(dir, "personas", f));
-      return { file: f, written: !this.catalogAtStart.has(f), ...frontmatter(readFileSync(join(personaDir, f), "utf8")) };
-    });
+    const files = readdirSync(personaDir).filter((f) => f.endsWith(".md"));
+    for (const f of files) copyFileSync(join(personaDir, f), join(dir, "personas", f));
     const aliceCalls = calls.filter((c) => c.seat === "alice");
     const record = {
       scenario: this.scenario.id, label: this.args.label, harness: this.args.harness, tree: this.args.tree,
@@ -255,7 +272,8 @@ class Sandbox {
       dms: msgs.filter((m) => !m.channel).map((m) => ({ ts: m.ts, from: bare(m.from?.id), fromName: m.from?.name, to: bare(m.to), toName: names[bare(m.to)], text: m.text })),
       spawned: this.spawned,
       presentAtEnd: finalPs.map((i) => i.name),
-      personas,
+      finalPsOk: true,
+      personasWritten: files.filter((f) => !this.catalogAtStart.has(f)),
     };
     writeFileSync(join(dir, "record.json"), JSON.stringify(record, null, 2));
     writeFileSync(join(dir, "calls.json"), JSON.stringify(calls, null, 2));
@@ -270,21 +288,24 @@ class Sandbox {
     return record;
   }
 
-  /** Stop the stack, then every process left inside the sandbox, then delete the sandbox. */
+  /** Stop the stack, then the processes this run started, then delete the sandbox behind a barrier. */
   async teardown(dir) {
     const down = this.cotal(["down"], { timeoutS: 240 });
-    const afterDown = sandboxProcesses(this.root);
-    let left = afterDown;
-    for (const p of left) try { process.kill(p.pid, "SIGTERM"); } catch {}
-    for (let i = 0; i < 20 && left.length; i++) { await sleep(500); left = left.filter((p) => alive(p.pid)); }
-    for (const p of left) try { process.kill(p.pid, "SIGKILL"); } catch {}
-    await sleep(500);
-    const survivors = sandboxProcesses(this.root);
-    writeFileSync(join(dir, "teardown.json"), JSON.stringify({ downStatus: down.status, stoppedAfterDown: afterDown, survivors }, null, 2));
+    const owned = (p) => p.env.COTAL_HOME === this.env.COTAL_HOME || p.env.XDG_CONFIG_HOME === this.env.XDG_CONFIG_HOME || p.env.TMPDIR === this.env.TMPDIR ||
+      ["JCODE_HOME", "COTAL_JCODE_HOME"].some((k) => p.env[k] !== undefined && inside(p.env[k], this.root));
+    const afterDown = processes().filter(owned);
+    await stop(afterDown);
+    const claudeDirs = this.claudeProjectDirs();
+    // The barrier: after the rename nothing can open the sandbox by its old path, and a process that
+    // was inside it still shows up by its cwd, an open file or its environment.
+    const gone = `${this.root}.gone`;
+    renameSync(this.root, gone);
+    const holders = processes({ fds: true }).filter((p) => owned(p) || inside(p.cwd, gone) || p.fds.some((f) => inside(f, gone)));
+    writeFileSync(join(dir, "teardown.json"), JSON.stringify({ downStatus: down.status, stopped: afterDown.map(({ pid, cmd }) => ({ pid, cmd })), holders: holders.map(({ pid, cmd, cwd }) => ({ pid, cmd, cwd })), kept: holders.length ? gone : undefined, claudeDirs }, null, 2));
     writeFileSync(join(dir, "cli.json"), JSON.stringify(this.log, null, 2));
-    if (survivors.length) throw new Error(`teardown: ${survivors.length} process(es) still run inside ${this.root}; the sandbox was kept`);
-    for (const d of this.claudeProjectDirs()) rmSync(d, { recursive: true, force: true });
-    rmSync(this.root, { recursive: true, force: true });
+    if (holders.length) throw new Error(`teardown: ${holders.length} process(es) still hold the sandbox, so it was kept at ${gone} (it holds credential copies; remove it once they exit)`);
+    for (const d of claudeDirs) rmSync(d, { recursive: true, force: true });
+    rmSync(gone, { recursive: true, force: true });
   }
 }
 
@@ -332,24 +353,14 @@ function jcodeCalls(msgs, seat) {
   return out;
 }
 
-function frontmatter(src) {
-  const m = /^---\n([\s\S]*?)\n---/.exec(src);
-  const out = {};
-  for (const line of (m?.[1] ?? "").split("\n")) {
-    const kv = /^([A-Za-z_]+):\s*(.*)$/.exec(line);
-    if (!kv) continue;
-    let v = kv[2].trim();
-    if (v.startsWith("[")) v = v.slice(1, -1).split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    else v = v.replace(/^["']|["']$/g, "");
-    out[kv[1]] = v;
-  }
-  return out;
+/** A process's start time, which tells a live pid from a reused one. */
+function started(pid) {
+  try { const st = readFileSync(`/proc/${pid}/stat`, "utf8"); return st.slice(st.lastIndexOf(")") + 2).split(" ")[19]; } catch { return undefined; }
 }
 
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-
-/** Processes this user owns whose cwd, command line or Cotal/Jcode/config paths lie inside `root`. */
-function sandboxProcesses(root) {
+/** This user's processes, other than this script and its parent, with cwd, environment and,
+ *  when asked, the paths of their open files. */
+function processes({ fds = false } = {}) {
   const mine = new Set([process.pid, process.ppid]);
   const found = [];
   for (const d of readdirSync("/proc").filter((x) => /^\d+$/.test(x))) {
@@ -357,14 +368,27 @@ function sandboxProcesses(root) {
     if (mine.has(pid)) continue;
     try {
       if (statSync(`/proc/${d}`).uid !== process.getuid()) continue;
-      const cwd = (() => { try { return readlinkSync(`/proc/${d}/cwd`); } catch { return ""; } })();
-      const cmd = readFileSync(`/proc/${d}/cmdline`, "utf8").replace(/\0/g, " ");
-      const env = (() => { try { return readFileSync(`/proc/${d}/environ`, "utf8").split("\0"); } catch { return []; } })();
-      const inEnv = env.some((e) => /^(COTAL_HOME|XDG_CONFIG_HOME|JCODE_HOME|COTAL_JCODE_HOME|TMPDIR)=/.test(e) && e.slice(e.indexOf("=") + 1).startsWith(root));
-      if (cwd.startsWith(root) || cmd.includes(root) || inEnv) found.push({ pid, cwd, cmd: cmd.slice(0, 300) });
+      const read = (f, fn) => { try { return fn(f); } catch { return undefined; } };
+      const env = Object.fromEntries((read(`/proc/${d}/environ`, (f) => readFileSync(f, "utf8")) ?? "").split("\0").filter((e) => e.includes("=")).map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]));
+      found.push({
+        pid, start: started(pid), env,
+        cwd: read(`/proc/${d}/cwd`, readlinkSync) ?? "",
+        cmd: (read(`/proc/${d}/cmdline`, (f) => readFileSync(f, "utf8")) ?? "").replace(/\0/g, " ").slice(0, 300),
+        fds: fds ? (read(`/proc/${d}/fd`, readdirSync) ?? []).map((f) => read(`/proc/${d}/fd/${f}`, readlinkSync) ?? "") : [],
+      });
     } catch {}
   }
   return found;
+}
+
+/** SIGTERM, then SIGKILL after ten seconds, each only while the pid still names the same process. */
+async function stop(procs) {
+  const same = (p) => started(p.pid) === p.start;
+  for (const p of procs) if (same(p)) try { process.kill(p.pid, "SIGTERM"); } catch {}
+  let left = procs;
+  for (let i = 0; i < 20 && left.length; i++) { await sleep(500); left = left.filter(same); }
+  for (const p of left) if (same(p)) try { process.kill(p.pid, "SIGKILL"); } catch {}
+  await sleep(500);
 }
 
 async function main() {
@@ -382,12 +406,14 @@ async function main() {
     try {
       await box.start();
       await box.runAlice();
-      const record = box.record(dir);
+      box.record(dir);
+      const record = loadRecord(dir);
       result = { ...grade(scenario.id, record), counts: counts(record), timedOut: record.timedOut, startedAt: record.startedAt, endedAt: record.endedAt };
     } catch (e) {
       result = { scenario: scenario.id, pass: false, error: String(e?.stack ?? e) };
     } finally {
-      try { await box.teardown(dir); } catch (e) { result = { ...result, teardownError: String(e?.message ?? e) }; }
+      // A run whose sandbox could not be removed is not a result: it fails, and says what was kept.
+      try { await box.teardown(dir); } catch (e) { result = { ...result, pass: false, error: [String(e?.message ?? e), result.error].filter(Boolean).join("\n") }; }
     }
     writeFileSync(join(dir, "result.json"), JSON.stringify(result, null, 2));
     summary.push({ scenario: scenario.id, title: scenario.title, pass: result.pass, error: result.error ? result.error.split("\n")[0] : undefined, failed: (result.checks ?? []).filter((c) => !c.ok).map((c) => c.check) });

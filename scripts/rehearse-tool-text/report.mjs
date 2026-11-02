@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Turn a rehearsal's results into one table: node scripts/rehearse-tool-text/report.mjs <out-dir>
 //
-// Reads every <label>-<harness>-<scenario>/result.json under <out-dir> and writes report.md there:
-// a pass/fail grid per scenario, the scenarios the baseline already passes (they prove nothing about
-// the revised text), and the counts per run.
+// Reads every <label>-<harness>-<scenario>/ run under <out-dir>, grades it again from the files it
+// kept, so every run is read by the same checks whenever it ran, and writes report.md there: a
+// pass/fail grid per scenario, the scenarios the baseline already passes (they prove nothing about
+// the revised text), the runs that ended in an error, and the counts per run. A run that recorded an
+// error, such as a sandbox it could not remove, fails whatever its checks say.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { counts, grade, loadRecord } from "./grade.mjs";
 
 const out = resolve(process.argv[2] ?? "");
 if (!process.argv[2] || !existsSync(out)) throw new Error("usage: report.mjs <out-dir>");
@@ -14,10 +17,18 @@ const { scenarios } = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.
 
 const runs = new Map();
 for (const d of readdirSync(out)) {
-  const f = join(out, d, "result.json");
-  if (!existsSync(f)) continue;
+  const dir = join(out, d);
   const m = /^([a-z0-9-]+?)-(claude|jcode)-(.+)$/.exec(d);
-  if (m) runs.set(`${m[1]}|${m[2]}|${m[3]}`, JSON.parse(readFileSync(f, "utf8")));
+  if (!m || !existsSync(join(dir, "result.json"))) continue;
+  const saved = JSON.parse(readFileSync(join(dir, "result.json"), "utf8"));
+  // An older run kept a teardown failure apart from its result; it is an error all the same.
+  const error = [saved.error, saved.teardownError].filter(Boolean).join("\n") || undefined;
+  let graded = {};
+  if (existsSync(join(dir, "record.json"))) {
+    const record = loadRecord(dir);
+    graded = { ...grade(m[3], record), counts: counts(record) };
+  }
+  runs.set(`${m[1]}|${m[2]}|${m[3]}`, { ...graded, error, pass: !error && graded.pass === true });
 }
 const harnesses = [...new Set([...runs.keys()].map((k) => k.split("|")[1]))].sort();
 const cell = (label, h, id) => {
@@ -39,6 +50,8 @@ const failing = scenarios.flatMap((s) => harnesses.filter((h) => cell("revised",
   return `- ${s.title} on ${h}: ${why || "not run"}`;
 }));
 
+const errors = [...runs].sort().filter(([, r]) => r.error).map(([k, r]) => `- ${k.split("|").join(" ")}: ${r.error.split("\n")[0]}`);
+
 const countRows = [];
 for (const [k, r] of [...runs].sort()) {
   const [label, h, id] = k.split("|");
@@ -53,6 +66,8 @@ writeFileSync(join(out, "report.md"), [
   ...(already.length ? already : ["- none"]), "",
   "## Revised runs that fail", "",
   ...(failing.length ? failing : ["- none"]), "",
+  "## Runs that ended in an error", "",
+  ...(errors.length ? errors : ["- none"]), "",
   "## Counts per run", "",
   "| Scenario | Text | Harness | alice's posts | DMs | anycasts | spawns | despawns | personas saved | refused calls |",
   "|---|---|---|---|---|---|---|---|---|---|",

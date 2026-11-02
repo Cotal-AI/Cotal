@@ -1,17 +1,37 @@
 // Pass checks for the tool-text rehearsal, one per scenario in scenarios.json (#5625).
 //
-// Each check reads one run's record, which rehearse.mjs builds from what the mesh and the seats
-// kept: alice's tool calls from her own transcript, the posts and DMs from `cotal history`, the
-// seats alice started and the roster at the end. A check names what it saw, so a reader can tell a
-// pass from a lucky one.
+// Each check reads one run's record: alice's tool calls in the order she made them, from her own
+// transcript; the posts and DMs from `cotal history`; the seats alice started; the roster at the end;
+// the personas on disk; and how the manager says each seat ended. loadRecord() builds the record from
+// the files a run leaves, so a run can be graded again later from what it kept. A check names what
+// it saw, so a reader can tell a pass from a lucky one.
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const isPattern = (c) => typeof c === "string" && /[*>]/.test(c);
-const list = (v) => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]);
+const list = (v) => (Array.isArray(v) ? v : v === undefined || v === null || v === "" ? [] : [v]);
 const okCalls = (r, tool) => r.calls.filter((c) => c.tool === tool && c.ok);
 const allCalls = (r, tool) => r.calls.filter((c) => c.tool === tool);
 const alicePosts = (r) => r.posts.filter((p) => p.from === r.alice);
 const aliceDms = (r) => r.dms.filter((d) => d.from === r.alice);
 const check = (name, ok, detail) => ({ check: name, ok: Boolean(ok), detail });
+
+/** A seat counts as stopped only when the manager says it stopped itself, ended its once task, or
+ *  was stopped at alice's request. A crash or a failed launch is not a stop. */
+function stopped(r, seat) {
+  return r.reaps.some((x) => x.id === seat.id && (
+    /it stopped itself/.test(x.reason) ||
+    (/its once task ended/.test(x.reason) && !/launch-failed/.test(x.reason)) ||
+    (r.alice && x.reason.includes(`stopped it at local.${r.alice}`))
+  ));
+}
+
+/** Every helper alice started is gone from a roster that was read, and the manager says it
+ *  stopped. A seat the manager stopped because its launch failed was never a working helper. */
+function helpersStopped(r) {
+  const helpers = r.spawned.filter((s) => !r.reaps.some((x) => x.id === s.id && /launch-failed/.test(x.reason)));
+  return helpers.length > 0 && r.finalPsOk && helpers.every((s) => !r.presentAtEnd.includes(s.name) && stopped(r, s));
+}
 
 /** The channels a seat alice started was put on: the join she passed, plus what its persona lists. */
 function helperChannels(r, spawn) {
@@ -19,20 +39,29 @@ function helperChannels(r, spawn) {
   return new Set([...list(spawn.args?.join), ...list(persona?.subscribe)]);
 }
 
+/** A prompt that tells the helper to stop itself: it asks for a despawn or a self-stop with no
+ *  negation in the few words before, in the same sentence, so "do not despawn yourself" does not
+ *  count and "despawn yourself with cotal_despawn (no name)" does. */
+const toldToStop = (prompt) =>
+  prompt.split(/(?<=[.!?])\s+/).some((s) => [...s.matchAll(/\b(?:cotal_despawn|despawn|stop yourself)\b/gi)]
+    .some((m) => !/\b(?:not|don't|never|no need to)\b(?:\W+\w+){0,3}\W*$/i.test(s.slice(0, m.index))));
+
 const checks = {
   "get-help"(r) {
-    const reviewPosts = alicePosts(r).filter((p) => p.channel.startsWith("review."));
-    const channels = new Set(reviewPosts.map((p) => p.channel));
     const spawns = okCalls(r, "cotal_spawn");
-    const joined = spawns.filter((s) => [...helperChannels(r, s)].some((c) => channels.has(c)));
     const helperIds = new Set(r.spawned.map((s) => s.id));
+    // The brief: alice's post naming the PR, on a channel a helper was put on, before that helper's
+    // first post there.
+    const briefs = alicePosts(r).filter((p) => p.channel.startsWith("review.") && /812/.test(p.text) && spawns.some((s) => helperChannels(r, s).has(p.channel)))
+      .filter((p) => {
+        const first = r.posts.filter((q) => q.channel === p.channel && helperIds.has(q.from)).map((q) => q.ts).sort()[0];
+        return first === undefined || p.ts <= first;
+      });
     const briefDms = aliceDms(r).filter((d) => helperIds.has(d.to));
-    const left = r.spawned.filter((s) => !r.presentAtEnd.includes(s.name));
     return [
-      check("a review channel carries alice's post", channels.size > 0, [...channels]),
-      check("a helper is spawned onto that channel", joined.length > 0, spawns.map((s) => ({ name: s.args?.name, join: s.args?.join }))),
+      check("alice posts the brief on a review channel a helper is put on", briefs.length > 0, { posts: alicePosts(r).map((p) => ({ channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
       check("the brief is not DMed to the helper", briefDms.length === 0, briefDms.map((d) => d.text.slice(0, 120))),
-      check("every helper is gone at the end", r.spawned.length > 0 && left.length === r.spawned.length, { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd }),
+      check("every helper stops by the end", helpersStopped(r), { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd, finalPsOk: r.finalPsOk, reaps: r.reaps }),
     ];
   },
   share(r) {
@@ -74,30 +103,76 @@ const checks = {
   },
   "one-job"(r) {
     const spawns = okCalls(r, "cotal_spawn");
-    const told = spawns.filter((s) => s.args?.once === true || /despawn|cotal_despawn/i.test(String(s.args?.prompt ?? "")));
-    const left = r.spawned.filter((s) => !r.presentAtEnd.includes(s.name));
+    const told = spawns.filter((s) => s.args?.once === true || toldToStop(String(s.args?.prompt ?? "")));
     return [
       check("the helper is told to stop (once, or despawn itself)", told.length > 0, spawns.map((s) => ({ name: s.args?.name, once: s.args?.once, prompt: String(s.args?.prompt ?? "").slice(0, 200) }))),
-      check("the helper leaves the roster", r.spawned.length > 0 && left.length === r.spawned.length, { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd }),
+      check("the helper stops and leaves the roster", helpersStopped(r), { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd, finalPsOk: r.finalPsOk, reaps: r.reaps }),
     ];
   },
   scope(r) {
-    const allowed = (c) => c === "bugs.checkout";
-    const saved = okCalls(r, "cotal_persona").filter((c) => {
-      const fields = ["subscribe", "allowSubscribe", "allowPublish"].map((k) => c.args?.[k]).filter((v) => v !== undefined);
-      return fields.length > 0 && fields.every((v) => list(v).every(allowed)) && fields.some((v) => list(v).length > 0);
-    });
-    const savedNames = new Set(saved.map((c) => c.args?.name));
-    const spawns = okCalls(r, "cotal_spawn");
+    const only = (v) => list(v).every((c) => c === "bugs.checkout");
+    // The persona as the manager saved it, not as the call spelled it: a prompt's own frontmatter
+    // can add grants the call's arguments leave out. An empty allowSubscribe reads as subscribe.
+    const limited = (name) => {
+      const p = r.personas.find((x) => x.written && x.name === name);
+      if (!p) return false;
+      const read = list(p.allowSubscribe).length ? p.allowSubscribe : p.subscribe;
+      return list(read).length > 0 && only(read) && only(p.subscribe) && only(p.allowPublish);
+    };
+    const savedAt = new Map();
+    r.calls.forEach((c, i) => { if (c.tool === "cotal_persona" && c.ok && !savedAt.has(c.args?.name)) savedAt.set(c.args?.name, i); });
+    const spawns = r.calls.map((c, i) => ({ c, i })).filter(({ c }) => c.tool === "cotal_spawn" && c.ok);
+    const scoped = ({ c, i }) => savedAt.has(c.args?.name) && savedAt.get(c.args?.name) < i && limited(c.args?.name);
     return [
-      check("a persona limited to bugs.checkout is saved", saved.length > 0, allCalls(r, "cotal_persona").map((c) => ({ name: c.args?.name, subscribe: c.args?.subscribe, allowSubscribe: c.args?.allowSubscribe, allowPublish: c.args?.allowPublish, ok: c.ok }))),
-      check("that persona is spawned by name", spawns.some((s) => savedNames.has(s.args?.name)), spawns.map((s) => s.args?.name)),
-      check("nothing is spawned on alice's own permissions", spawns.every((s) => savedNames.has(s.args?.name)), spawns.map((s) => s.args?.name)),
+      check("a persona limited to bugs.checkout is saved", [...savedAt.keys()].some(limited), r.personas.filter((p) => p.written).map((p) => ({ name: p.name, subscribe: p.subscribe, allowSubscribe: p.allowSubscribe, allowPublish: p.allowPublish }))),
+      check("that persona is spawned by name after it is saved", spawns.some(scoped), spawns.map(({ c, i }) => ({ name: c.args?.name, at: i, savedAt: savedAt.get(c.args?.name) }))),
+      check("nothing is spawned on alice's own permissions", spawns.every(scoped), spawns.map(({ c }) => c.args?.name)),
     ];
   },
 };
 
-/** Grade one run. `record` is the normalized record rehearse.mjs writes as record.json. */
+/** The YAML frontmatter fields a persona check reads: scalars, flow lists and block lists. */
+export function frontmatter(src) {
+  const m = /^---\n([\s\S]*?)\n---/.exec(src);
+  const out = {};
+  let key;
+  for (const line of (m?.[1] ?? "").split("\n")) {
+    const item = /^\s+-\s*(.*)$/.exec(line);
+    if (item && key) { out[key] = [...list(out[key]), item[1].trim().replace(/^["']|["']$/g, "")]; continue; }
+    const kv = /^([A-Za-z_]+):\s*(.*)$/.exec(line);
+    if (!kv) continue;
+    key = kv[1];
+    const v = kv[2].trim();
+    out[key] = v.startsWith("[") ? v.slice(1, -1).split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+      : v === "" ? [] : v.replace(/^["']|["']$/g, "");
+  }
+  return out;
+}
+
+/** How the manager says each seat ended, from its `seat reaped:` log lines. */
+export function reapsFrom(log) {
+  return log.split("\n").map((l) => /seat reaped: (\S+) \((\w+), [^)]*\) - (.*)$/.exec(l)).filter(Boolean)
+    .map(([, name, id, reason]) => ({ name, id, reason }));
+}
+
+/** The record a check reads, built from a run directory rehearse.mjs wrote. A run recorded before
+ *  `finalPsOk` existed takes it from the status of its last `cotal ps`. */
+export function loadRecord(dir) {
+  const r = JSON.parse(readFileSync(join(dir, "record.json"), "utf8"));
+  const log = existsSync(join(dir, "manager.log")) ? readFileSync(join(dir, "manager.log"), "utf8") : "";
+  const pdir = join(dir, "personas");
+  const written = new Set(r.personasWritten ?? (r.personas ?? []).filter((p) => p.written).map((p) => p.file));
+  const personas = existsSync(pdir) ? readdirSync(pdir).filter((f) => f.endsWith(".md"))
+    .map((f) => ({ file: f, written: written.has(f), ...frontmatter(readFileSync(join(pdir, f), "utf8")) })) : [];
+  let finalPsOk = r.finalPsOk;
+  if (finalPsOk === undefined && existsSync(join(dir, "cli.json"))) {
+    const ps = JSON.parse(readFileSync(join(dir, "cli.json"), "utf8")).filter((x) => x.argv[0] === "ps");
+    finalPsOk = ps.length > 0 && ps.at(-1).status === 0;
+  }
+  return { ...r, personas, reaps: reapsFrom(log), finalPsOk: Boolean(finalPsOk) };
+}
+
+/** Grade one run's record. */
 export function grade(scenario, record) {
   const run = checks[scenario];
   if (!run) throw new Error(`grade: no pass check for scenario "${scenario}"`);

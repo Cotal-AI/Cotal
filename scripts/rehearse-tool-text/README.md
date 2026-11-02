@@ -47,14 +47,34 @@ Under `<out>/<label>-<harness>-<scenario>/`:
 - `manager.log`: how each seat ended, stopped by someone or exited on its own.
 - `personas/`: every persona in the catalog at the end, including those the agents wrote.
 - `roster.json`: the roster at the end.
+- `transcripts/`: the Claude Code seats' transcripts.
+- `cli.json`: every `cotal` command the run issued, with its exit status and output.
+- `teardown.json`: what the teardown stopped, and anything that still held the sandbox.
 - `record.json`: the normalized record `grade.mjs` reads, and `result.json`: the graded result.
 
-After the run every process inside the sandbox is stopped and the sandbox is deleted, along with the
-Claude Code project folders its seats created. The sandbox holds copies of the operator's harness
-credentials while it runs, so nothing in it is kept. A process that will not stop keeps the
-sandbox in place and fails the run.
+## Where a run writes outside its sandbox
+
+Seats run under your own `HOME`, because Claude Code and jcode read your logins there. Claude Code
+writes a project folder per working directory under `~/.claude/projects`. After the run the script
+deletes the folders this run created: a folder counts as the run's when it is new since the run
+started, is named for a path in the sandbox, and every transcript in it records a working directory
+inside the sandbox. Claude Code also adds an entry per working directory to `~/.claude.json`. The
+script leaves that file alone, because your live sessions write to it too.
+
+## Teardown
+
+The sandbox holds copies of your harness credentials while it runs, so nothing in it is kept. After
+`cotal down`, the script stops the processes the run started, which it knows by the sandbox's own
+`COTAL_HOME`, `XDG_CONFIG_HOME` or `TMPDIR` in their environment. Before each signal it checks that
+the pid still names the same process. Then it renames the sandbox to `<sandbox>.gone`, so nothing
+new can open it by its path, and deletes it only when no process has its working directory, an open
+file or a sandbox path inside it. A process that still holds it keeps the renamed sandbox in place
+and fails the run; remove it once that process exits.
 
 ## Reading the results
+
+`report.mjs` grades every run again from the files it kept, so runs from different days are read by
+the same checks. A run that ended in an error fails whatever its checks say.
 
 A scenario the baseline already passes proves nothing about the revised text. A revised run that
 fails either changes the text before merge or is written into the PR as a known limit. One run per
