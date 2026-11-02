@@ -7,6 +7,14 @@ other half: what to actually do when the deployment already exists, has credenti
 cannot simply be recreated. Every release that breaks a running deployment gets a section here,
 naming what migrates on its own, what does not, and the order to move the pieces in.
 
+## Jcode reports an unreadable Cursor database as `cursor_state_unreadable`
+
+A Jcode launch that cannot read Cursor's `User/globalStorage/state.vscdb` used to stop with
+`private_state`. It now stops with `cursor_state_unreadable` and a reason, after waiting up to
+2 seconds for a lock Cursor holds ([Connect Jcode](connect-jcode.mdx)). One database that used to
+launch now stops: one where a value under an auth key Jcode reads is not text or is larger than
+16 KB. The previous reader copied that value as is.
+
 ## Identity-pin cleanup API after 0.131.6
 
 `@cotal-ai/workspace` no longer exports the deprecated `removeIdentityPin`. It removed a pin
@@ -57,6 +65,25 @@ commitments make that survivable for someone with a fleet:
 What this page does not promise is a rolling upgrade. Nothing in the current line dual-serves two
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
+
+## Channel posts keep no age limit after 0.134.0
+
+0.134.0 gave a space a 30-day age limit on channel posts, and the first `cotal up` that started an
+existing space's broker moved the space to it, which deleted every channel post older than 30 days.
+This release takes both back. A space keeps a channel post until its sender has posted 1000 newer
+ones on that channel, with no age limit, as it did up to 0.133.13. `cotal up` changes no space's
+limit, so an upgrade deletes no post.
+
+### What changes for you
+
+- An upgrade from 0.133.13 or earlier changes nothing.
+- A space that a 0.134.0 `cotal up` already moved keeps its 30-day limit, and the posts that move
+  deleted do not come back. From the space's root on the broker host,
+  `cotal history limit --max-age <age>` sets a longer age, up to `3650d`.
+- `cotal history limit` still sets an age, a per-sender count or both. A lower limit deletes the
+  posts it no longer keeps, and in a terminal it asks first.
+- `cotal up`, `team boot` and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`.
+- INBOX and DLV, the durable delivery streams, keep their own bound of 1000 entries per subject.
 
 ## Multi-space host acknowledgments after 0.116.1
 

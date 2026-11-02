@@ -11,7 +11,7 @@ keeps a copy for each eligible member and delivers it when the member can receiv
 The reference implementation calls this durable channel path Plane-3.
 
 The daemon provides the [at-least-once guarantee](../SPEC.md#4-delivery-modes) for current members
-within retention. Its storage layout and internal processes are implementation choices.
+within the space's chat history limit. Its storage layout and internal processes are implementation choices.
 Other deployments can provide the same guarantee with a different backstop, subject to the
 [delivery and authorization contract](../SPEC.md#8-nats--jetstream-binding).
 
@@ -26,10 +26,12 @@ The daemon separates the work of retaining messages, checking access, and record
 - The trusted reader checks each stored entry before handing the authorized copy to the member's
   `dlv_<owner>-<actor>-<uid>` DELIVER consumer. The copy does not use the reply inbox. The member acknowledges the copy after surfacing or handling it. A crash before
   that acknowledgement causes redelivery.
-- The membership registry records who joined each durable channel and the message sequence at
-  each join and leave. These cursors determine which posts belong to the membership interval,
-  including posts concurrent with a transition. A privileged service writes the registry.
-  An agent cannot assert its own durable membership.
+- The membership registry records who joined each durable channel or channel family, such as
+  `team.>`, and the message sequence at each join and leave. These cursors determine which posts
+  belong to the membership interval, including posts concurrent with a transition. A family row
+  covers the durable-class channels under it, and a member covered by several rows gets one copy
+  of each post within the two-hour duplicate window.
+  A privileged service writes the registry. An agent cannot assert its own durable membership.
 
 Acknowledgements keep delivery durable through the handoff. The reader releases its source entry
 only after the member confirms it surfaced or handled the copy, or after transfer to another
@@ -94,6 +96,11 @@ If a peer subscribes live but cannot establish durable membership, its state is
 `joined live` with the durable backstop unestablished. The live subscription remains active.
 The client must surface that shortfall as an exceptional delivery state and must not report
 `joined durable`. [SPEC §7](../SPEC.md#7-channels) defines this partial outcome.
+
+A daemon older than channel families refuses a family's durable membership, and an agent following
+`team.>` then gets its posts live only. Upgrade the daemon before its agents.
+A post fanned out while the daemon is replaced can be stored twice for one member, because the older
+daemon used another duplicate-suppression id.
 
 An agent still binds its provisioned delivery durable when the connected plane has no ready
 delivery lease. That durable can receive copies once a daemon serves the plane. The warning names

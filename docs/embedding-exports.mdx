@@ -45,6 +45,13 @@ the IdP refused the cached one, and throws on any other failure. `cotal manager 
 starts the manager, and a team boot that resumes a stopped stack before any write. Each refuses
 the manager `UNSUPPORTED` when the provider does not implement it.
 
+## Compiled service contracts
+
+`serviceContractTable(rows)` returns a frozen `contracts` table. Each command's input/output pair
+compiles on first access, is frozen, and is reused on later reads. Listing command names does not
+compile validators. Callers cannot replace a command or swap its compiled input/output contracts.
+`artifactValues()` still returns the schema roots and closure manifests used at registration.
+
 ## Package entry points [#the-export-surface]
 
 Everything below is a real export of a published package, reachable from the package root (each
@@ -94,7 +101,7 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 | `ManagerStatus` *(type)* | `@cotal-ai/manager` | verified status payload, including optional advisory `host` and `version` from the answering Manager. Older payloads may omit them. |
 | `ManagerOptions.execution` | `@cotal-ai/manager` | omitted or `"runtime"` keeps runtime execution. Explicit `"none"` accepts a genuine hosting user-auth root, or pooled complete signerless authority, with no `runtime` option. It constructs no Runtime and performs no connector inspection, seat launch or workflow hosting. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
-| `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
+| `liveKvEntries(kv, options?)` / `liveKvEntries(kv, filter, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
 
 `remoteManagerServePrincipal(owner, instanceId)` from `@cotal-ai/core` derives the manager's
 serve actor and serializes it through `principalKey`, validating both tokens. Use it when a
@@ -294,8 +301,12 @@ that event affects the service. The option validation and NATS mapping are in
 
 ## Finite KV scans
 
-`liveKvEntries(kv, filterOrOptions?, options?)` reads one finite scan of live entries.
-A `{ signal }` argument can appear second or after a key filter.
+`liveKvEntries(kv, options?)` and `liveKvEntries(kv, filter, options?)` read one finite scan of live entries.
+A `{ signal }` argument can appear second or after a key filter. The filter may be a string, an array
+of strings, or `undefined`. `liveKvValues(kv, decode, options?)` and
+`liveKvValues(kv, decode, filter, options?)` provide the same forms with decoded results.
+Passing options in both slots is a TypeScript error and rejects with `TypeError` at runtime before
+scanning. Combine the signal and callbacks into one options object.
 An interrupted scan throws `IncompleteKvScan`.
 Cancellation throws the signal's reason, including during a bind to an empty bucket.
 The ordered consumer's pending count distinguishes an empty completed scan from an interrupted read.

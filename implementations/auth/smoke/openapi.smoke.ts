@@ -81,6 +81,17 @@ async function request(base: string, path: string, method: string, status: numbe
   return value;
 }
 
+// Every documented operation can reach the listener's generic failure boundary. Keep the
+// route-specific Error/ChatError shapes too; a named native failure may carry code and outcome.
+for (const [path, methods] of Object.entries(spec.paths)) {
+  for (const method of Object.keys(methods)) {
+    const serverError = schemaFor(path, method, 500);
+    conforms(serverError, { error: 'internal server error' });
+    rejects(serverError, {});
+    rejects(serverError, { error: 500 });
+  }
+}
+
 const root = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN + 'auth-openapi-'));
 const releaseRoot = teardownPathOnSignal(root);
 const home = join(root, 'home');

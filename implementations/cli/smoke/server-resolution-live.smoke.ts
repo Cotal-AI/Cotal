@@ -44,7 +44,7 @@ process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls 
 
 const { probeConnect, DEFAULT_SERVER } = await import("@cotal-ai/core");
 const { recordMesh, loadMeshes, resolveMeshTarget, spaceAccountPath, listSpaceAccounts } = await import("@cotal-ai/workspace");
-const { resolveControlTarget } = await import("../src/lib/control.js");
+const { resolveControlTarget } = await import("@cotal-ai/workspace");
 
 let pass = 0;
 const kids: ChildProcess[] = [];

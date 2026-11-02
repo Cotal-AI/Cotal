@@ -1,0 +1,2 @@
+# Both OpenCode plugins hand a once task over at most once and seal it when a submission fails.
+smoke:opencode-once

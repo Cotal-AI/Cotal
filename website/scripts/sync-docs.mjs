@@ -94,7 +94,7 @@ const navigation = [
       page('docs/cli-auth.mdx'),
       page('docs/cli-runs.mdx'),
     ]),
-    group('Agent tools', [page('docs/mcp-tools.mdx')]),
+    group('Agent tools', [page('docs/mcp-tools.mdx'), page('docs/agent-briefing.mdx')]),
     group('Configuration', ['agent-files', 'manifest', 'channels-and-permissions', 'config'].map(name => page(`docs/${name}.mdx`))),
     group('Models', ['mesh-view', 'lang-card', 'glossary'].map(name => page(`docs/${name}.mdx`))),
   ] },

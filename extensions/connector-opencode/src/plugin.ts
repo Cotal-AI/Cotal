@@ -46,10 +46,7 @@ import {
   formatInjection,
   fmtFrom,
   fmtChannel,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
   AguiEmitter,
   AguiEmitterHolder,
   eventPlaneStopped,
@@ -61,6 +58,7 @@ import {
   resolveEventsStateRoot,
   controlFromEnv,
   scrubLaunchMaterial,
+  registerOnceExit,
   type InboxItem,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
@@ -573,6 +571,15 @@ export const cotal: Plugin = async () => {
   // The batch the current turn carries, acked on completion (per delivery, not count). Open while
   // our turn is in flight → ignore a duplicate idle that isn't its end.
   const batch = new SurfacedBatch(agent);
+  // Every turn end this session reports (an idle, an idle status, an error), counted when its event
+  // arrives and before any await. A submission compares the count across its send, because a turn can
+  // end before the answer arrives. 1.x events carry no log position, and OpenCode can report an idle
+  // with no busy before it (a cancel while idle, a run that fails before its first step), so every
+  // end after the send counts and none before it does.
+  let turnEndsSeen = 0;
+  const noteTurnEnd = (): void => {
+    turnEndsSeen += 1;
+  };
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let interruptIntent: { sessionID?: string; expires: number } | undefined;
@@ -799,6 +806,9 @@ export const cotal: Plugin = async () => {
       process.exit(code);
     }
   };
+  // A once seat that must end itself, because its task's handoff could not be reported, leaves
+  // through the same teardown as every other stop.
+  registerOnceExit(() => void shutdown(1));
   if (control) {
     const handle = async (): Promise<Record<string, unknown>> => ({
       ok: false,
@@ -1044,6 +1054,8 @@ export const cotal: Plugin = async () => {
     // preconditions are met, and a pending wake waits in its slot until then.
     if (bootPrompt !== undefined && boot === undefined) return;
     driving = true;
+    // The turns this submission carries under a claim, released if it fails.
+    let turnIds: string[] = [];
     try {
       const id = await ensureSession();
       if (!id) return; // no visible session yet, retry on the next event/wake
@@ -1069,7 +1081,6 @@ export const cotal: Plugin = async () => {
       const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
       // Run turns ride the same composed submission; their ids commit as surfaced only once the
       // submission lands below (two-phase — a failed submit re-surfaces them, never a lie).
-      let turnIds: string[] = [];
       const turnPeek = agent.peekPendingTurns();
       if (text) {
         parts.push({ type: "text", text });
@@ -1082,25 +1093,35 @@ export const cotal: Plugin = async () => {
           if (inj) parts.push({ type: "text", text: inj });
         }
       }
-      if (turnPeek) {
-        turnIds = turnPeek.goalIds;
-        parts.push({ type: "text", text: turnPeek.text });
-      }
       // NOT marked consumed here. Setting the flag before the submission meant a throw below cost
       // the briefing permanently, on this turn and every later one.
       const brief = briefed ? undefined : agent.channelBriefing();
       if (brief) parts.unshift({ type: "text", text: brief });
-      if (parts.length === 0) return;
+      if (parts.length === 0 && !turnPeek) return;
       const body: { parts: typeof parts; system?: string } = { parts };
-      // persona once, as system (no --append-system-prompt). Append the orientation bootstrap so the
-      // agent is told to orient first — gated on persona so we never replace OpenCode's default system.
-      if (!primed && persona) body.system = `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}`;
+      // persona once, as system (no --append-system-prompt), with the shared briefing after it —
+      // gated on persona so we never replace OpenCode's default system.
+      if (!primed && persona) body.system = `${persona}\n\n${briefing(config, "opencode")}`;
       // The surface opens the batch, which arms the turn end BEFORE the await: a turn-end signal can
       // land before the server request resolves, and completeTurn bails unless armed — arming after
       // would drop it and wedge the agent.
       if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+      // The turns' permit, after the last gate and right before the send with no await between: a
+      // once task another dispatch already took is left out, and a submission left with nothing to
+      // say is not sent.
+      if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {
+        turnIds = turnPeek.goalIds;
+        parts.push({ type: "text", text: turnPeek.text });
+      }
+      if (!text && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return; }
       busy = true;
+      const endsAtSend = turnEndsSeen;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
+      // A turn that ended before this answer may be the once task's own turn, already over, or one
+      // the host ran meanwhile, and nothing here tells which; a session replaced meanwhile (`/new`)
+      // hides the old one's end. Either way the task is sealed and reported rather than confirmed,
+      // so a later turn's end cannot yield it.
+      if (turnIds.length && (turnEndsSeen !== endsAtSend || sessionID !== id)) agent.releaseTurns(turnIds);
       // The submission landed with the run turns in its prompt — they are surfaced.
       if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // WHAT THIS TURN CARRIED, so the `session.error` arm can re-arm it if this turn fails instead
@@ -1130,6 +1151,9 @@ export const cotal: Plugin = async () => {
       briefed = true;
       primed = true;
     } catch (e) {
+      // First, before any retry is scheduled: a once task in a submission that failed after it may
+      // have reached the server is sealed and reported, never sent again.
+      agent.releaseTurns(turnIds);
       busy = false;
       batch.abandon();
       // NOTHING TO PUT BACK. A failed submission did not land, so the wake it carried, and any wake
@@ -1420,6 +1444,7 @@ export const cotal: Plugin = async () => {
         case "session.idle": {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;
+          noteTurnEnd();
           // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
@@ -1442,6 +1467,7 @@ export const cotal: Plugin = async () => {
             busy = true;
             await safeStatus("working");
           } else if (s.type === "idle") {
+            noteTurnEnd();
             await safeStatus("idle");
           } else if (s.type === "retry") {
             await safeStatus("working", `retrying: ${s.message}`);
@@ -1453,6 +1479,7 @@ export const cotal: Plugin = async () => {
           // session-less one (id undefined) during an in-flight turn must still close it, else
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
+          noteTurnEnd();
           if (!busy && !batch.open) return; // no turn to fail — stray error
           // WHICH `session.error`s ARE FAILED TURNS, decided here and stated rather than left to be
           // inferred, because that judgment is the whole of #596. Every error that reaches this line

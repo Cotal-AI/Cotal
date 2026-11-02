@@ -760,6 +760,22 @@ try {
     check("a malformed leading frontmatter block is refused by name",
       rBad.reply.ok === false && String(rBad.reply.error?.message ?? rBad.reply.error ?? "").includes("prompt-frontmatter")
       && !existsSync(join(workspaceRoot, ".cotal", "agents", "epbadfm.md")), rBad.reply);
+    // A persona that saves must load. The reader refuses a subscribe entry that no allowSubscribe entry
+    // contains, so the writer refuses it before anything reaches the disk.
+    const rWide = await A.call("define-persona", { name: "epwide", persona: "Reads a family.", subscribe: ["perm.>"], allowSubscribe: ["perm.*"] });
+    check("a definition whose family is wider than every read entry is refused and nothing is written",
+      rWide.reply.ok === false && String(rWide.reply.error?.message ?? "").includes('subscribe "perm.>" is not within allowSubscribe [perm.*]')
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epwide.md")), rWide.reply);
+    const rOutside = await A.call("define-persona", { name: "epoutside", persona: "Reads a channel.", subscribe: ["other"], allowSubscribe: ["perm.*"] });
+    check("so is one whose channel is outside every read entry",
+      rOutside.reply.ok === false && String(rOutside.reply.error?.message ?? "").includes('subscribe "other" is not within allowSubscribe [perm.*]')
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epoutside.md")), rOutside.reply);
+    const narrowPath = join(workspaceRoot, ".cotal", "agents", "epnarrow.md");
+    const rNarrow = await A.call("define-persona", { name: "epnarrow", persona: "Reads one level.", subscribe: ["perm.a"], allowSubscribe: ["perm.*"] });
+    const rWiden = await A.call("define-persona", { name: "epnarrow", persona: "Widened.", subscribe: ["perm.>"] });
+    const narrowLoad = (() => { try { return loadAgentFile(narrowPath).persona; } catch (e) { return (e as Error).message; } })();
+    check("a redefine that reads past the stored allowSubscribe is refused, and the file still loads as it was",
+      rNarrow.reply.ok === true && rWiden.reply.ok === false && narrowLoad === "Reads one level.", { rNarrow: rNarrow.reply, rWiden: rWiden.reply, narrowLoad });
 
     const rDefB = await B.call("define-persona", { name: "eppersona", persona: "takeover" });
     check("a FOREIGN redefine refuses (ownership preserved through the ep door)",

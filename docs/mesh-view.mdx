@@ -6,7 +6,7 @@ audience: "integrators"
 ---
 
 `MeshView` is the data model used by the terminal [console](watch-a-mesh.mdx) and plain line stream.
-The class lives in [`implementations/cli/src/view/mesh-view.ts`](../implementations/cli/src/view/mesh-view.ts).
+The class ships in `@cotal-ai/workspace/view` and lives in [`packages/workspace/src/view/mesh-view.ts`](../packages/workspace/src/view/mesh-view.ts).
 The web dashboard has a separate observer and HTTP and server-sent event APIs. It does not import `MeshView`.
 
 This API belongs to the reference implementation. Its fields derive from the wire contract, but do not define it.
@@ -15,8 +15,11 @@ Other clients can derive their own models.
 
 ## The observer [#the-observer]
 
-The console and stream supply a `CotalEndpoint` configured with `consume: false`,
-`registerPresence: false`, `watchPresence: true`, and no joined channels.
+The console and stream use `openObserver({ space, server, name, auth?, operator? })`
+from `@cotal-ai/workspace/view`. It returns an unstarted `CotalEndpoint` configured
+with `consume: false`, `registerPresence: false`, `watchPresence: true`, and no joined channels.
+`operator: true` adds the operator role and a lifecycle UID for endpoint service calls;
+broker grants still decide which calls it may make.
 The endpoint stays off the roster and creates no inbox, chat, or anycast durables.
 It reads through a live tap, history reads, and presence and membership watches.
 The web server creates its own endpoint with the same observer flags. Browsers read its HTTP APIs and event stream.
@@ -80,13 +83,16 @@ interface FeedEntry {
 	toNames?: string[];    // corresponding roster display names
 	count?: number;        // unicast burst target count, including repeats
 	events?: boolean;      // multicast row on an agent's structured-event channel
+	replyTo?: string;      // ID of the message this one answers
+	mentions?: string[];   // lowercased peer names called out by the sender
+	contextId?: string;    // sender-chosen thread or conversation correlation ID
 	text: string;          // partsToText(msg.parts)
 }
 
 interface MeshSnapshot {
 	agents: Presence[];    // card.kind === "agent"
 	endpoints: Presence[]; // all other card kinds
-	channels: { channel: string; messages: number; arrivals: number }[];
+	channels: { channel: string; messages: number; arrivals: number; deliveryClass: DeliveryClass }[];
 	feed: FeedEntry[];
 	membership: { snapshot?: MembershipSnapshot; unreadable?: string };
 	rates: { msgsPerSec: number; activity: number[] };
@@ -100,19 +106,21 @@ The model applies these rules:
 
 - `deliveryOf(subject)` classifies chat, unicast, and anycast. Chat becomes `multicast` in `FeedEntry`. Control, presence, and trace frames return `null` and do not enter the feed.
 - Live multicast rows on structured-event channels carry `events: true`. Those channels do not appear in channel tabs or history prefill. Their live rows remain in the feed.
-- Unicast messages with the same sender ID and plain text share a 400 ms window, measured from the first arrival. The row appears when that window closes. Its `id` comes from the first message, and its `ts` is the earliest timestamp. `toIds` and `toNames` preserve parallel target lists. Repeated targets contribute to `count`.
+- `replyTo`, `mentions`, and `contextId` are retained on live feed rows and channel history. Fields are absent when the sender did not set them. The wire has no separate DM conversation ID: DM pairs use sender and recipient principals, and `contextId` is optional sender-chosen correlation.
+- Unicast messages with the same sender ID, plain text, and thread fields share a 400 ms window, measured from the first arrival. The row appears when that window closes. Its `id` comes from the first message, and its `ts` is the earliest timestamp. `toIds` and `toNames` preserve parallel target lists. Repeated targets contribute to `count`.
 - `entry` emits each live row after classification and coalescing. History prefill updates snapshots without emitting `entry`. The stream therefore does not print the initial backlog.
 - The roster sorts by status, in the order working, waiting, idle, and offline, then by name. `agents` and `endpoints` split that roster by card kind.
 - `nameOf(id)` reads the roster-derived name map. An unknown ID returns its first eight characters. Message payload names do not update that map.
-- Channel rows sort by name. `messages` is the broker's retained count, which can stop growing at the retention cap. `arrivals` counts live rows seen by this viewer, independently of retained history. A channel's arrival count disappears when the channel leaves the next successful poll.
+- Channel rows sort by name. `messages` is the broker's retained count, which can stop growing at the retention cap. `arrivals` counts live rows seen by this viewer, independently of retained history. A channel's arrival count disappears when the channel leaves the next successful poll. `deliveryClass` is the channel's effective class from the registry cache.
 - Startup prefill reads up to 50 messages per non-event channel. It deduplicates against the current feed by `id`, merges by timestamp, and applies `window`. Channel-list failures skip prefill. Individual history failures contribute no rows.
 - When DMs are visible, prefill also requests up to 1,000 DM messages for the DM roll-up. Those messages do not enter `feed`. A refused DM history read leaves the roll-up with live traffic only.
 - The feed retains at most `window` entries. Live tap arrivals, before coalescing, drive the rolling one-second `msgsPerSec` rate.
 - `rates.activity` contains 15 four-second buckets, oldest first, with raw live-arrival counts over 60 seconds. The buckets decay even without new traffic. The console renders this series as a status-bar sparkline.
 
 `status.error` and `status.warning` retain the latest endpoint error and warning messages.
-`status.connected` becomes true after `ep.start()` resolves. This class does not update it from later connection events or reset it in `stop()`.
-It is not a reconnect health signal.
+`status.connected` is true while the endpoint is bound and its NATS transport is connected.
+A broker outage marks it disconnected during automatic reconnection; transport recovery restores the connected state.
+A successful endpoint rebind clears the previous connection error.
 
 ### Derived operator signals [#derived-operator-signals]
 

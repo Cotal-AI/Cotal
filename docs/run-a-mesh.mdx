@@ -123,6 +123,7 @@ Retained history is operator-owned.
 `cotal clean history --force` purges a space's retained channel history.
 Add `--dms` to purge DMs too. `cotal history clear` is an alias.
 These are operator commands. Agents have no tool that wipes the record.
+How long the space keeps posts is set with `cotal history limit` ([channels](channels-and-permissions.mdx#how-long-posts-are-kept)).
 
 For a stopped mesh, `cotal clean store --force` deletes its on-disk JetStream store.
 `cotal clean all --force` also resets the space identity.

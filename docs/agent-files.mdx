@@ -52,7 +52,7 @@ It requires a YAML mapping between `---` fences and a valid `name`.
 | `kind` | `agent` \| `endpoint` | Participation class. Defaults to `agent`. |
 | `description` | string | One-line summary in `card.description`. |
 | `tags` | string[] | Capability tags in `card.tags`. |
-| `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
+| `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. A [family](channels-and-permissions.mdx#families) such as `team.>` gets stored copies of posts on its durable channels from startup. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
 | `allowSubscribe` | string[] | Channels the agent may read. Wildcard subtrees such as `team.>` are allowed. Omitted or empty defaults to `subscribe`. |
 | `allowPublish` | string[] | Channels the agent may post to. Omitted or empty grants no posting permission. Wildcard subtrees are allowed. |
 | `quiet` | string[] | Attention default. Ambient messages stay buffered until `cotal_inbox`; mentions remain automatic. Entries must be concrete channels within the read ACL. |
@@ -115,14 +115,16 @@ Links to repository docs or other sources give the agent a place to check facts 
 ## Defining one at runtime
 
 `cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends content to the manager, which writes an agent file.
-`cotal_spawn(name, role?, agent?, model?, variant?)` then launches it.
+`cotal_spawn(name, role?, agent?, model?, variant?, join?)` then launches it.
 Both tools also accept an `instance` pin for one full manager instance.
 The [tool catalog](mcp-tools.mdx) defines their full argument sets.
+A persona that names no channel field at all is scoped to the spawner's own read and post grants, never wider; it still starts on no channel unless the spawn passes `join`, and each channel in `join` must be one the spawner may read.
 
 A complete agent file in `prompt` is merged into one frontmatter block.
 For a new definition, its grants, role, and agent survive unless an explicit tool argument overrides them.
 On redefinition, existing fields remain unless an explicit tool argument changes them; the prompt replaces the body.
 Malformed leading frontmatter is refused with `prompt-frontmatter`.
+A definition the manager could not load back is refused and nothing is written, for example one whose `subscribe` names a channel or family that no `allowSubscribe` entry contains.
 `capabilities` and `owner` remain policy and have no tool argument; prompt frontmatter cannot grant capabilities or claim ownership.
 A new definition records a signed-in creator or one of the manager's own seats as owner. Other static-space definitions remain operator-owned.
 

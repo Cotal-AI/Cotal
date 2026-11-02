@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HarnessError } from "@1jehuang/jcode-sdk";
-import { classifyReadinessFailure, classifyReadinessProviderRefusal, installJcodeDiagnosticLog, writeJcodeDiagnostic } from "../src/startup-diagnostics.js";
+import { classifyReadinessFailure, classifyReadinessProviderRefusal, installJcodeDiagnosticLog, JcodeModelMismatch, writeJcodeDiagnostic } from "../src/startup-diagnostics.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -57,6 +57,53 @@ try {
   ] as const) {
     check(`readiness failure leaves ${name} unchanged`, classifyReadinessFailure(error) === undefined);
   }
+
+  const mismatch = new JcodeModelMismatch("requested-model", "high", {
+    model: "previous-model", provider: "active-provider", routes: [],
+  });
+  check("model mismatch keeps its stable code and separates requested and reported identities",
+    mismatch.code === "model_mismatch" &&
+      mismatch.message.includes('requested model "requested-model"') &&
+      mismatch.message.includes('reported model "previous-model"') &&
+      mismatch.message.includes('reported provider "active-provider"'));
+  check("missing model route is distinguished from a rejected effort",
+    mismatch.message.includes("no matching model route was reported") &&
+      mismatch.message.includes("matching model routes: 0") &&
+      mismatch.message.includes('requested tier "high" was not applied'));
+  const ambiguous = new JcodeModelMismatch("requested-model", "high", {
+    model: "requested-model", provider: "other-provider",
+    routes: [{ model: "requested-model", provider: "first" }, { model: "requested-model", provider: "second" }],
+  });
+  check("ambiguous routes name the failed provider disambiguation and count",
+    ambiguous.message.includes("matching routes could not be disambiguated by the reported provider") &&
+      ambiguous.message.includes("matching model routes: 2"));
+  const providerless = new JcodeModelMismatch(undefined, "low", {
+    model: "default-model", provider: "", routes: [{ model: "default-model", provider: "" }],
+  });
+  check("variant-only launch reports the default model and providerless selected route",
+    providerless.message.includes("the selected route has no provider") &&
+      providerless.message.includes("requested model (provider default)") &&
+      providerless.message.includes('reported model "default-model"') &&
+      providerless.message.includes("reported provider (unreported)") &&
+      providerless.message.includes("matching model routes: 1"));
+  const absent = new JcodeModelMismatch(undefined, "high", undefined);
+  check("missing runtime identity is explicit rather than fabricated",
+    absent.message.includes("no model was reported") &&
+      absent.message.includes("reported model (unreported)") &&
+      absent.message.includes("reported provider (unreported)"));
+  for (const unsafe of ["line\nPRIVATE_CANARY", "\u001b[31mPRIVATE_CANARY", "x".repeat(257), "https://user:PRIVATE_CANARY@host"]) {
+    const bounded = new JcodeModelMismatch(unsafe, unsafe, { model: unsafe, provider: unsafe });
+    check("unsafe or oversized model, provider and effort fields are withheld",
+      !bounded.message.includes(unsafe) && !bounded.message.includes("PRIVATE_CANARY") &&
+        bounded.message.includes("requested model (withheld)") &&
+        bounded.message.includes("reported model (withheld)") &&
+        bounded.message.includes("reported provider (withheld)") &&
+        bounded.message.includes("requested tier (withheld) was not applied") &&
+        bounded.message.length < 500);
+  }
+  const privateRoute = { model: "requested-model", provider: "", detail: "PRIVATE_CANARY", api_method: "PRIVATE_CANARY" };
+  const privateFields = new JcodeModelMismatch("requested-model", "high", { routes: [privateRoute] });
+  check("route details and API metadata never enter mismatch diagnostics", !privateFields.message.includes("PRIVATE_CANARY"));
 
   const home = join(root, "home");
   mkdirSync(home, { mode: 0o700 });

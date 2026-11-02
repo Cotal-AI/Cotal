@@ -22,6 +22,40 @@
     "",
     "N7 sends the raw argument instead of the resolved default.",
     "",
+    "N8 drops the explicit channel check, so a pattern or a malformed name is described and handed to send.",
+    "",
+    "N9 drops the connected-followers way from the refusal for a pattern with *.",
+    "",
+    "N10 drops both ways from the advertised channel text.",
+    "",
+    "N11 gives a name that breaks the channel grammar the pattern advice.",
+    "",
+    "N12 drops the no-stored-copies caveat from the refusal for a pattern with *.",
+    "",
+    "N13 lets a malformed name with no whole-segment wildcard through, so team.** is sent as team.__.",
+    "",
+    "N14 shows a long name whole in the refusal instead of its first 64 characters.",
+    "",
+    "N15 drops the channel grammar from the no-channel-name refusal.",
+    "",
+    "N16 states a limit other than core's MAX_CHANNEL_LENGTH in the no-channel-name refusal.",
+    "",
+    "N17 and N18 move the cut threshold one character either way.",
+    "",
+    "N19 cuts in the wrong place: the first 63 characters and then the last one.",
+    "",
+    "N20 cuts in the wrong place by putting ten earlier characters where the last ten belong.",
+    "",
+    "N21 echoes a name over the limit whole after the refusal.",
+    "",
+    "N22 refuses a valid name of exactly the limit.",
+    "",
+    "N23 drops the stored-copy way from the refusal for a family (#5404).",
+    "",
+    "N24 and N25 swap the family and the pattern-with-* advice.",
+    "",
+    "N26 drops the stored copy from the advertised channel text.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -73,11 +107,20 @@
     {
       "name": "N6 no refusal before sending when the agent may post to none of the channels it reads",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (target === undefined && joined.some(isConcreteChannel)) return err(`Couldn't send: ${NO_POSTABLE_DEFAULT}.`);\n",
+      "find": "          if (target === undefined) return err(`Couldn't send: ${sendNoDefaultRemedy(config, joined)}.`);\n",
       "replace": "",
       "expectRed": "with no channel it may post to, an omitted channel is refused before sending",
       "cell": "with no channel it may post to, an omitted channel is refused before sending",
       "note": "Without the guard the send goes out with no channel, the endpoint picks the read-only one, and the broker refusal is the only signal."
+    },
+    {
+      "name": "N8 the refusal points at the orientation card again instead of naming the next call",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  return `${where}, so there is no default and an omitted channel is refused. You may post to ${list}: call cotal_send with channel: \"${first}\", or cotal_join ${first} first to make it your default`;",
+      "replace": "  return `${where}, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)`;",
+      "expectRed": "on no channel, the refusal names the postable channel and the exact next call",
+      "cell": "on no channel, the refusal names the postable channel and the exact next call",
+      "note": "The old sentence sent a fresh seat to a second tool to learn a channel its own ACL already names; agents took the DM instead."
     },
     {
       "name": "N7 the resolved default is computed but the raw argument is sent, so the endpoint picks the read-only channel",
@@ -87,6 +130,177 @@
       "expectRed": "an omitted channel goes to the first channel the agent may post to",
       "cell": "an omitted channel goes to the first channel the agent may post to",
       "note": "The receipt would describe team.rocket while the message went to the endpoint default."
+    },
+    {
+      "name": "N8 an explicit channel is no longer checked before the send path",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        if (refusal !== undefined) return err(`Couldn't send: ${refusal}`);\n",
+      "replace": "",
+      "expectRed": "cotal_send refuses the pattern team.> before reading or sending",
+      "cell": "cotal_send refuses the pattern team.> before reading or sending",
+      "note": "Without the guard a pattern or a malformed name reaches describeSendChannel, which reads the channel list, and then the endpoint, which refuses a whole-segment pattern without either way and rewrites a malformed name onto another subject."
+    },
+    {
+      "name": "N9 the refusal for a pattern with * stops naming one post to a channel it matches",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "To reach the agents connected and following ${channel} now, post once to one channel it matches. ",
+      "replace": "",
+      "expectRed": "the refusal for team.*.ci says one post to a channel it matches reaches its connected followers",
+      "cell": "the refusal for team.*.ci says one post to a channel it matches reaches its connected followers",
+      "note": "The refusal would still refuse but would teach only the per-channel way."
+    },
+    {
+      "name": "N10 the advertised channel text drops both ways to reach a family",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`",
+      "replace": "}). Reply on the channel you received a message on.`",
+      "expectRed": "the advertised channel text names both ways to reach a family",
+      "cell": "the advertised channel text names both ways to reach a family",
+      "note": "An agent reading the tool schema would learn of the refusal only by hitting it."
+    },
+    {
+      "name": "N11 a name that breaks the channel grammar gets the pattern advice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (notName !== undefined) return notName;\n  if (isConcreteChannel(channel)) return undefined;",
+      "replace": "  if (isConcreteChannel(channel)) return undefined;",
+      "expectRed": "\"team.>.x\" is refused as no channel name before reading or sending",
+      "cell": "\"team.>.x\" is refused as no channel name before reading or sending",
+      "note": "The refusal would call team.>.x a pattern and suggest posting to a channel it matches, though nothing can match it."
+    },
+    {
+      "name": "N12 the refusal for a pattern with * stops saying an offline follower may miss the post",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "A pattern with * or the root > has no stored copies, so a follower that is offline then may miss it. ",
+      "replace": "",
+      "expectRed": "the refusal for team.*.ci says such a pattern has no stored copies",
+      "cell": "the refusal for team.*.ci says such a pattern has no stored copies",
+      "note": "A sender who posts once and leaves would assume offline followers got it."
+    },
+    {
+      "name": "N13 a malformed name with no whole-segment wildcard is sent",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (notName !== undefined) return notName;\n  if (isConcreteChannel(channel)) return undefined;",
+      "replace": "  if (isConcreteChannel(channel)) return undefined;\n  if (notName !== undefined) return notName;",
+      "expectRed": "\"team.**\" is refused as no channel name before reading or sending",
+      "cell": "\"team.**\" is refused as no channel name before reading or sending",
+      "note": "The cold review's live defect: team.** passes the concrete check, the endpoint rewrites it to team.__, and the receipt names #team.**."
+    },
+    {
+      "name": "N14 a long name that is no channel name is shown whole",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const shown = JSON.stringify(channel.length > 64 ? `${channel.slice(0, 64)}…` : channel);",
+      "replace": "  const shown = JSON.stringify(channel);",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name up to 4096 characters or more would be echoed whole into the refusal."
+    },
+    {
+      "name": "N15 the no-channel-name refusal drops the channel grammar",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce, at most ",
+      "replace": "A channel name is at most ",
+      "expectRed": "the no-channel-name refusal states the channel grammar",
+      "cell": "the no-channel-name refusal states the channel grammar",
+      "note": "The caller would learn the name is refused but not what a channel name is."
+    },
+    {
+      "name": "N16 the no-channel-name refusal states a limit that is not core's",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "at most ${MAX_CHANNEL_LENGTH} characters. ${outcome}",
+      "replace": "at most 4000 characters. ${outcome}",
+      "expectRed": "the no-channel-name refusal states core's limit of 4096 characters",
+      "cell": "the no-channel-name refusal states core's limit of 4096 characters",
+      "note": "A refusal that names its own number drifts from the limit core enforces."
+    },
+    {
+      "name": "N17 the cut threshold rises to 65, so a 65-character name is shown whole",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "channel.length > 64 ?",
+      "replace": "channel.length > 65 ?",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name just past 64 characters would be echoed whole. A name far past the cut cannot show where it starts."
+    },
+    {
+      "name": "N18 the cut threshold drops to 63, so a 64-character name gets an ellipsis",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "> 64 ? `${channel.slice",
+      "replace": "> 63 ? `${channel.slice",
+      "expectRed": "a 64-character name that is no channel name is shown whole",
+      "cell": "a 64-character name that is no channel name is shown whole",
+      "note": "A name of 64 characters fits and is shown as typed."
+    },
+    {
+      "name": "N19 the cut keeps the first 63 characters and then the last one",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "${channel.slice(0, 64)}…",
+      "replace": "${channel.slice(0, 63)}${channel.slice(-1)}…",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "A name that repeats characters hides a cut in the wrong place, so the long names use 64 different characters in turn."
+    },
+    {
+      "name": "N20 the cut puts characters 44 to 53 where 54 to 63 belong",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "`${channel.slice(0, 64)}…` : channel",
+      "replace": "`${channel.slice(0, 54)}${channel.slice(44, 54)}…` : channel",
+      "expectRed": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "cell": "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      "note": "Characters that repeat every ten positions would hide this cut."
+    },
+    {
+      "name": "N21 a name over the limit is echoed whole after the refusal",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "characters. ${outcome}`;",
+      "replace": "characters. ${outcome}${channel.length > MAX_CHANNEL_LENGTH ? ` (${channel})` : \"\"}`;",
+      "expectRed": "a name one character over the 4096-character limit is refused as no channel name",
+      "cell": "a name one character over the 4096-character limit is refused as no channel name",
+      "note": "A name of any length would land whole in the refusal."
+    },
+    {
+      "name": "N22 a valid name of exactly the limit is refused",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (isConcreteChannel(channel)) return undefined;\n  const reach",
+      "replace": "  if (channel.length < MAX_CHANNEL_LENGTH && isConcreteChannel(channel)) return undefined;\n  const reach",
+      "expectRed": "a name of 4096 characters is sent",
+      "cell": "a name of 4096 characters is sent",
+      "note": "The refusal says at most 4096 characters, so a name of 4096 must still send."
+    },
+    {
+      "name": "N23 the refusal for a family stops naming one post to a channel it matches",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "To reach the agents following ${channel}, post once to one channel it matches: those connected then get it, and one that is away gets a stored copy if that channel is durable. ",
+      "replace": "",
+      "expectRed": "the refusal for the family team.> says one post to a channel it matches reaches its followers, away ones by stored copy",
+      "cell": "the refusal for the family team.> says one post to a channel it matches reaches its followers, away ones by stored copy",
+      "note": "A family's followers that are away get stored copies on its durable channels, and the refusal is where a sender learns that one post reaches them."
+    },
+    {
+      "name": "N24 a family gets the live-only advice of a pattern with *",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const reach = isChannelFamily(channel)\n",
+      "replace": "  const reach = false\n",
+      "expectRed": "the refusal for the family team.> says one post to a channel it matches reaches its followers, away ones by stored copy",
+      "cell": "the refusal for the family team.> says one post to a channel it matches reaches its followers, away ones by stored copy",
+      "note": "A sender would be told a family follower that is away may miss the post, though the follower gets a stored copy on a durable channel."
+    },
+    {
+      "name": "N25 a pattern with * gets the family's stored-copy advice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const reach = isChannelFamily(channel)\n",
+      "replace": "  const reach = true\n",
+      "expectRed": "the refusal for team.*.ci says such a pattern has no stored copies",
+      "cell": "the refusal for team.*.ci says such a pattern has no stored copies",
+      "note": "A sender would be told an away follower of team.* gets a stored copy, though a pattern with * keeps none."
+    },
+    {
+      "name": "N26 the advertised channel text says an away family follower may miss a post",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "such as team.announce: those connected then get it, and one that is away gets a stored copy if that channel is durable. To reach several",
+      "replace": "such as team.announce: those connected then get it. To reach several",
+      "expectRed": "the advertised channel text names both ways to reach a family",
+      "cell": "the advertised channel text names both ways to reach a family",
+      "note": "The schema text is what an agent reads before it ever hits the refusal."
     }
   ]
 }

@@ -3,9 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
-import { control, controlPs, createManagedPoller, deleteChannel, type ControlCtx, type ControlOp } from "./control.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "../lib/attach-client.js";
+import { cliControl } from "../lib/control.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
 import { Roster, harnessTag, useRosterView } from "./ui/Roster.js";
@@ -29,6 +29,7 @@ import { spawnPersona } from "../lib/spawn-defaults.js";
 import { launchAgent } from "./launch.js";
 import { NewAgent } from "./ui/NewAgent.js";
 import type { FeedEntry, FocusId } from "./mesh.js";
+import { control, controlPs, createManagedPoller, deleteChannel, type ControlCtx, type ControlOp } from "@cotal-ai/workspace/control";
 
 /** An in-progress compose: post to a channel, DM a peer, or reply to a feed message. */
 type ComposeTarget =
@@ -133,7 +134,7 @@ export function App({
   // One control call against the manager of THIS space (console/control.ts): resolve, mint a
   // one-shot instrument, call, drop. The observer endpoint is never involved.
   const ctl = useCallback(
-    (op: ControlOp, args?: Record<string, unknown>) => control({ ...controlCtx, space: ep.space }, op, args),
+    (op: ControlOp, args?: Record<string, unknown>) => control(cliControl, { ...controlCtx, space: ep.space }, op, args),
     [ep.space, controlCtx],
   );
 
@@ -153,7 +154,7 @@ export function App({
     // The poller owns the per-instance rows, the single-flight guard and the announce-once state;
     // a new space or credential builds a new one, so nothing is carried over.
     const poller = createManagedPoller(
-      () => controlPs({ ...controlCtx, space: ep.space }),
+      () => controlPs(cliControl, { ...controlCtx, space: ep.space }),
       {
         rows: (flat) =>
           setManaged((prev) => {
@@ -441,7 +442,7 @@ export function App({
   };
 
   // Run a typed palette line against the live endpoint.
-  const readPaletteAgents = useCallback(() => controlPs({ ...controlCtx, space: ep.space }), [controlCtx, ep.space]);
+  const readPaletteAgents = useCallback(() => controlPs(cliControl, { ...controlCtx, space: ep.space }), [controlCtx, ep.space]);
   const runPaletteLine = (line: string) => {
     setPalette({ active: false, query: "" });
     const ctx: CommandCtx = {
@@ -456,7 +457,7 @@ export function App({
       exit,
       notify: setNotice,
       control: ctl,
-      ps: () => controlPs({ ...controlCtx, space: ep.space }),
+      ps: () => controlPs(cliControl, { ...controlCtx, space: ep.space }),
       confirmPurge: () => setConfirm({ kind: "purge", space: ep.space }),
       confirmDelchan: (channel: string) => setConfirm({ kind: "delchan", channel }),
       startAttach: handleAttach,

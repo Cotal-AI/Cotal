@@ -123,22 +123,22 @@
     },
     {
       "name": "THE SIXTH REACH: an open mesh's scatter probe tries to mint instead of riding bare",
-      "file": "implementations/cli/src/lib/control.ts",
+      "file": "packages/workspace/src/control/manager.ts",
       "find": "  if (!auth.creds && !auth.bearer) return { kind: \"bare\" };",
       "replace": "  if (false && !auth.creds && !auth.bearer) return { kind: \"bare\" };",
       "expectRed": "ACCEPT: an open mesh's scatter probes bare, minting nothing",
       "cell": "ACCEPT: an open mesh's scatter probes bare, minting nothing",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "The sixth seed reach on the attach path (attach -> pinForTarget -> locateSeat -> scatterManager). Losing the bare arm makes an open mesh fall through to the seed test at a site the redeem never sees."
     },
     {
       "name": "THE SIXTH REACH, the dangerous direction: a sealed mesh with no seed REFUSES at the scatter",
-      "file": "implementations/cli/src/lib/control.ts",
+      "file": "packages/workspace/src/control/manager.ts",
       "find": "  return { kind: \"as-is\" };",
       "replace": "  return auth.creds && !spaceAuth ? { kind: \"bare\" } : { kind: \"as-is\" };",
       "expectRed": "REFUSE (same creds, seed absent): a sealed mesh keeps what it arrived with and DEGRADES, never refusing",
       "cell": "REFUSE (same creds, seed absent): a sealed mesh keeps what it arrived with and DEGRADES, never refusing",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "A sealed mesh with no seed must DEGRADE here, not be reclassified as open. Treating it as open at this site is the same class of error as #1205, one call before the redeem."
     },
     {

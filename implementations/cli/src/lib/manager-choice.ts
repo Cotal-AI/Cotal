@@ -1,16 +1,13 @@
 import type { Readable, Writable } from "node:stream";
-import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, remoteManagerActors, resolveService, type Command, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection } from "@cotal-ai/workspace";
-import { askManager, liveManagerIds, onInstance, onInstanceId, reportedManagerHost, resolveControlTarget, type ControlAuth } from "./control.js";
+import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, resolveService, type Command, type Presence } from "@cotal-ai/core";
+import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth } from "@cotal-ai/workspace";
+import { cliControl, onInstance, onInstanceId } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { commandWord } from "./leading-flags.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 import { openTransient } from "./transient.js";
-
-/** The exchange's refusal of an unpinned manager-caller selection while several of the caller's own
- *  managers are live: their count, the owner and the instance ids. */
-const SEVERAL_LIVE = /(\d+) live remote manager candidates for owner (\S+) \(([^)]*)\)/;
+import { askManager, liveManagerIds, managerCandidate, reportedManagerHost, severalLive, type ManagerCandidate } from "@cotal-ai/workspace/control";
 
 /** The exchange's refusal of an unpinned manager-caller selection when it counts none of the caller's
  *  managers live: each one it registered has stopped, or none was registered. */
@@ -18,53 +15,6 @@ const NONE_LIVE = /remote manager for owner \S+ is unavailable \(\d+ gates?, non
 
 /** Whether `failure` refused an unpinned manager selection because none of your managers is live. */
 export const noLiveManager = (failure: CommandFailure): boolean => failure.code === "PERMISSION_DENIED" && NONE_LIVE.test(failure.message);
-
-/** One live manager a refused selection could have chosen, with what presence says about it. */
-export interface ManagerCandidate {
-  /** The manager's name, or `<host>/<runtime>` for one started without a name. */
-  readonly name: string | null;
-  readonly instanceId: string;
-  readonly host: string | null;
-  readonly activity: string | null;
-  /** The runtime it spawns agents through, read from its activity; null when presence does not
-   *  carry it. */
-  readonly runtime: string | null;
-  /** Whether a seat it spawns can be attached in a terminal, as it reports: `none` means no
-   *  `cotal attach` and no attached foreground spawn can open one there. Null when presence does
-   *  not carry it, as for a manager started by a cotal before 0.104.0. */
-  readonly terminal: "stream" | "none" | null;
-  readonly since: string | null;
-}
-
-/** How a manager is shown: the name it was started with, or `<host>/<runtime>` for one left at the
- *  default name, with the runtime read from its `supervisor (<runtime>)` activity. A manager whose
- *  presence names no host, as one started by a cotal before 0.100.0, is shown by its runtime. */
-export function managerLabel(p: Presence): string {
-  if (p.card.name !== DEFAULT_MANAGER_NAME) return p.card.name;
-  const host = presenceHost(p);
-  const runtime = presenceRuntime(p);
-  return host !== null && runtime ? `${host}/${runtime}` : host ?? runtime ?? p.card.name;
-}
-
-const presenceHost = (p: Presence): string | null => typeof p.card.meta?.host === "string" && p.card.meta.host ? p.card.meta.host : null;
-
-/** The runtime a manager reports, read from its `supervisor (<runtime>)` activity. */
-const presenceRuntime = (p: Presence): string | null => /^supervisor \((.+)\)$/.exec(p.activity ?? "")?.[1] ?? null;
-
-/** What a manager reports about attaching to its seats' terminals. Only the two values it writes
- *  are taken; anything else, an absent key included, is "it did not say". */
-const presenceTerminal = (p: Presence): "stream" | "none" | null =>
-  p.card.meta?.terminal === "stream" ? "stream" : p.card.meta?.terminal === "none" ? "none" : null;
-
-const candidateOf = (instanceId: string, row: Presence | undefined): ManagerCandidate => ({
-  name: row ? managerLabel(row) : null,
-  instanceId,
-  host: row ? presenceHost(row) : null,
-  activity: row?.activity ?? null,
-  runtime: row ? presenceRuntime(row) : null,
-  terminal: row ? presenceTerminal(row) : null,
-  since: row?.runtime ? new Date(row.runtime.startedAt).toISOString() : null,
-});
 
 /** Whether `selector` names `manager`: its given name, its host, or the `<host>/<runtime>` it is
  *  shown as. The default name "manager" names none of them. */
@@ -115,10 +65,6 @@ export class AgentManagerUnsettled extends CommandFailure {
   }
 }
 
-/** The managers `instanceIds` name, as `known` shows them, or by instance id alone. */
-export const managersByInstance = (instanceIds: readonly string[], known: readonly ManagerCandidate[] = []): ManagerCandidate[] =>
-  instanceIds.map((instanceId) => known.find((m) => m.instanceId === instanceId) ?? candidateOf(instanceId, undefined));
-
 const targetFlags = (values: { space?: unknown; server?: unknown }) =>
   ({ ...(typeof values.space === "string" ? { space: values.space } : {}), ...(typeof values.server === "string" ? { server: values.server } : {}) });
 
@@ -130,7 +76,7 @@ async function yourLiveManagers(flags: { space?: string; server?: string }): Pro
   const prefix = `${connection.epCaller?.owner}.manager_`;
   return roster.flatMap((p) => {
     const instanceId = p.card.id.startsWith(prefix) ? p.card.id.slice(prefix.length) : "";
-    return connection.epCaller !== undefined && p.card.role === "manager" && p.status !== "offline" && instanceIdShaped(instanceId) ? [candidateOf(instanceId, p)] : [];
+    return connection.epCaller !== undefined && p.card.role === "manager" && p.status !== "offline" && instanceIdShaped(instanceId) ? [managerCandidate(instanceId, p)] : [];
   });
 }
 
@@ -192,7 +138,7 @@ async function registeredManagersWithPersona(flags: { space?: string; server?: s
   for (const instanceId of (await liveManagerIds(t.space, t.server, t.auth)).filter((id) => id !== exclude)) {
     try {
       const pinned = await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" });
-      const listed = await askManager(pinned.space, pinned.server, "listPersonas", undefined, pinned.auth, "owner", 5_000, { instanceId });
+      const listed = await askManager(cliControl, pinned.space, pinned.server, "listPersonas", undefined, pinned.auth, "owner", 5_000, { instanceId });
       const personas = listed.ok ? (listed.data as { personas?: unknown } | undefined)?.personas : undefined;
       if (Array.isArray(personas) && personas.some((row) => (row as { name?: unknown } | null)?.name === persona)) holding.push(instanceId);
     } catch { /* a manager that cannot be asked is not named */ }
@@ -219,14 +165,14 @@ export async function whereAgentRuns(values: { space?: unknown; server?: unknown
   if (user) managers = await yourLiveManagers(flags);
   else {
     const t = await resolveControlTarget(flags, "control-caller-privileged", undefined, { onRefusal: "throw" });
-    managers = (await liveManagerIds(t.space, t.server, t.auth)).map((instanceId) => candidateOf(instanceId, undefined));
+    managers = (await liveManagerIds(t.space, t.server, t.auth)).map((instanceId) => managerCandidate(instanceId, undefined));
   }
   const found = (m: ManagerCandidate): RunningOn => ({ instanceId: m.instanceId, selector: user ? selectorFor(m, managers) : m.instanceId, host: m.host });
   const kept = managers.find((m) => m.instanceId === custodian);
   for (const manager of kept ? [kept, ...managers.filter((m) => m !== kept)] : managers) {
     try {
       const pinned = await resolveControlTarget(flags, "control-caller-privileged", manager.instanceId, { onRefusal: "throw" });
-      const row = await askManager(pinned.space, pinned.server, "status", { name }, pinned.auth, "owner", 5_000, { instanceId: manager.instanceId });
+      const row = await askManager(cliControl, pinned.space, pinned.server, "status", { name }, pinned.auth, "owner", 5_000, { instanceId: manager.instanceId });
       if (row.ok) return { runsOn: found(manager), custodian: kept ? found(kept) : null };
     } catch { /* a manager that cannot be asked is not named */ }
   }
@@ -279,26 +225,6 @@ const reruns = (managers: readonly ManagerCandidate[], argv: readonly string[]):
   const byInstance = hostedRunArgv(argv);
   return `rerun it on one: ${managers.map((m) => rerunOn(argv, byInstance ? m.instanceId : selectorFor(m, managers))).join(" or ")}`;
 };
-
-/** The managers an unpinned manager selection refused to choose between, with what the roster
- *  says about each, or undefined when `failure` is not that refusal. A roster that cannot be read
- *  leaves the instance ids, and `unread` says why: its refusal's message and remedy. */
-export async function severalLive(failure: CommandFailure, readRoster: () => Promise<readonly Presence[]>): Promise<{ managers: ManagerCandidate[]; unread?: string } | undefined> {
-  const found = failure.code === "PERMISSION_DENIED" ? SEVERAL_LIVE.exec(failure.message) : null;
-  if (!found) return undefined;
-  const owner = found[2]!;
-  const ids = found[3]!.split(",").map((id) => id.trim()).filter(Boolean);
-  let roster: readonly Presence[] = [];
-  let unread: string | undefined;
-  try { roster = await readRoster(); } catch (error) {
-    const refusal = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
-    const why = refusal ? [refusal.message, refusal.remedy].filter(Boolean).join("; ") : error instanceof Error ? error.message : String(error);
-    unread = `names unavailable: ${why}`;
-  }
-  const managers = ids.map((instanceId) => candidateOf(instanceId, roster.find((p) => p.card.id === `${owner}.${remoteManagerActors(instanceId).supervisor}` && p.status !== "offline")));
-  return { managers, unread };
-}
-
 /** What a manager's row says about its backend: the runtime it spawns through and whether a
  *  terminal attaches to a seat it starts, so the choice is informed before anything is launched. A
  *  manager whose presence carries neither falls back to the activity line it does carry. */
@@ -427,9 +353,9 @@ export async function managerSelection(
   let mode: string | undefined;
   try { mode = resolveMeshTarget(process.cwd(), flags).mode; } catch { /* not a registered mesh: presence names no instance */ }
   const shown = mode === "user" ? (await yourLiveManagers(flags)).find((m) => m.instanceId === instanceId) : undefined;
-  const manager = shown ?? candidateOf(instanceId, undefined);
+  const manager = shown ?? managerCandidate(instanceId, undefined);
   if (manager.host !== null || target === undefined) return { manager, selector: String(values.on ?? instanceId) };
-  const host = await reportedManagerHost(target.space, target.server, target.auth, instanceId);
+  const host = await reportedManagerHost(cliControl, target.space, target.server, target.auth, instanceId);
   return { manager: { ...manager, host: host ?? null }, selector: String(values.on ?? instanceId) };
 }
 

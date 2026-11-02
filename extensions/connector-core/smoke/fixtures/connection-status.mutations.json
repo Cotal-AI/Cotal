@@ -99,8 +99,8 @@
     {
       "name": "durable delivery health collapses back to the lease-only conjunct, certifying a killed daemon's residue (#445)",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      joined && this.ep.channelDeliveryClass(channel) === \"durable\"\n        ? !leaseReadable\n          ? \"unknown\"\n          : daemonMemberships === undefined\n            ? \"degraded\"\n            : daemonMemberships.some((m) => m.channel === channel) && leaseLive\n              ? \"active\"\n              : \"degraded\"\n        : undefined;",
-      "replace": "      joined && this.ep.channelDeliveryClass(channel) === \"durable\"\n        ? leaseLive\n          ? \"active\"\n          : \"degraded\"\n        : undefined;",
+      "find": "    const held = (channel: string): \"active\" | \"degraded\" | \"unknown\" =>\n      !leaseReadable\n        ? \"unknown\"\n        : daemonMemberships !== undefined && leaseLive && daemonMemberships.some((m) => m.channel === channel || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel)))\n          ? \"active\"\n          : \"degraded\";",
+      "replace": "    const held = (channel: string): \"active\" | \"degraded\" | \"unknown\" =>\n      leaseLive\n        ? \"active\"\n        : \"degraded\";",
       "expectRed": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
       "cell": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:channel-attention:auth",

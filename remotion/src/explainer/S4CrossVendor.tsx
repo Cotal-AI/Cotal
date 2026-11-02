@@ -58,13 +58,6 @@ const LEGS: { from: Pt; to: Pt; t0: number; t1: number }[] = [
 const LEG_CTRL = LEGS.map((l) => ctrl(l.from, l.to));
 const LEG_PATHS = LEGS.map((l, i) => wirePath(l.from, ...LEG_CTRL[i]!, l.to));
 
-// Resting mesh outline (the full triangle), shown faintly under the beams.
-const MESH = [
-  wirePath(CLAUDE, ...ctrl(CLAUDE, OPENCODE), OPENCODE),
-  wirePath(OPENCODE, ...ctrl(OPENCODE, HERMES), HERMES),
-  wirePath(HERMES, ...ctrl(HERMES, CLAUDE), CLAUDE),
-];
-
 // A badge flashes when a beam *arrives* at it: peak at the leg's t1, decay.
 function arrivalFlash(frame: number, at: Pt): number {
   let f = 0;
@@ -94,14 +87,12 @@ export const S4CrossVendor: React.FC = () => {
   });
 
   // Per-leg afterglow so each wire lingers gold right after its beam runs.
-  const glow = LEGS.map((l) =>
-    fade(frame, l.t1 - 6, l.t1) * (1 - fade(frame, l.t1 + 6, l.t1 + 26)),
-  );
-  // Collapse the 5 directed-leg glows onto the 3 mesh edges by max.
-  const meshGlow = [
-    Math.max(glow[0]!, glow[4]!), // claude<->opencode
-    Math.max(glow[1]!, glow[3]!), // opencode<->hermes
-    glow[2]!, // hermes<->claude
+  const legGlow = (leg: (typeof LEGS)[number]) =>
+    fade(frame, leg.t1 - 6, leg.t1) * (1 - fade(frame, leg.t1 + 6, leg.t1 + 26));
+  const meshWires = [
+    { d: wirePath(CLAUDE, ...ctrl(CLAUDE, OPENCODE), OPENCODE), glow: Math.max(legGlow(LEGS[0]), legGlow(LEGS[4])) },
+    { d: wirePath(OPENCODE, ...ctrl(OPENCODE, HERMES), HERMES), glow: Math.max(legGlow(LEGS[1]), legGlow(LEGS[3])) },
+    { d: wirePath(HERMES, ...ctrl(HERMES, CLAUDE), CLAUDE), glow: legGlow(LEGS[2]) },
   ];
 
   const claudeFlash = arrivalFlash(frame, CLAUDE);
@@ -125,7 +116,7 @@ export const S4CrossVendor: React.FC = () => {
       <AbsoluteFill style={{ opacity: loopEnvelope(frame, CROSS_VENDOR_DURATION), fontFamily }}>
         <SharedSpace x={430} y={300} w={1060} h={520} label="one mesh" />
 
-        <WireLines paths={MESH} glow={meshGlow} />
+        <WireLines wires={meshWires} />
 
         <Ripple at={OPENCODE} p={meshRipple} />
         <Ripple at={CENTROID} p={prog(frame, LEGS[0]!.t0 + 6, LEGS[0]!.t0 + 40)} />
