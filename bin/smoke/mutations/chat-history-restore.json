@@ -2,17 +2,19 @@
   "suite": [
     "bin/smoke/chat-history-restore-live.smoke.ts"
   ],
-  "guard": "A restore holds the chat stream at the recorded count and no age through every check of the restored state, then sets the age the backup recorded on the target and reads it back; a `cotal up` that fails after moving the chat stream's limit says so in its error and envelope, and `cotal setup --start`, whose start runs in a child process, reports the move in its own receipt whether the start then fails or goes on.",
+  "guard": "An existing space keeps its posts older than 30 days, on the limit it had, through a `cotal up` that starts its broker, and a new space starts with no age limit and 1000 per sender. A restore holds the chat stream at the recorded count and no age through every check of the restored state, then sets the age the backup recorded on the target and reads it back, and a backup on the old settings keeps them at the next start. A `cotal setup --start` whose manager identity does not read afterwards reports an unknown outcome with that reason.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build && pnpm smoke:chat-history-restore:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 36,
+  "minTicks": 26,
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/chat-history-restore.json",
   "why": [
     "The suite drives `tsx bin/cotal.ts`, which loads core and the CLI from their built dist, so each mutation",
-    "rebuilds both and `afterRestore` rebuilds them from the restored source. The first scenario's posts are older",
-    "than the recorded age when the restore checks them, so a restore that set the age first would watch the broker",
-    "delete them during its own checks."
+    "rebuilds both and `afterRestore` rebuilds them from the restored source. The aged-posts scenario backdates its",
+    "posts in the stopped broker's store and then starts it with `cotal up`, so a start that moved the limit to an",
+    "age would watch the broker delete them. The recorded-age scenario's posts are older than the recorded age when",
+    "the restore checks them, so a restore that set the age first would watch the broker delete them during its",
+    "own checks."
   ],
   "mutations": [
     {
@@ -34,80 +36,33 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "a start that fails after the move does not say the limit moved",
-      "file": "implementations/cli/src/commands/up.ts",
-      "find": "    throw chatHistoryMovedFailure(seedMovedFailure(error));\n",
-      "replace": "    throw seedMovedFailure(error);\n",
-      "expectRed": "a start that moves the limit and then fails on a later step says the limit moved",
-      "cell": "a start that moves the limit and then fails on a later step says the limit moved",
+      "name": "cotal up moves a stream on the old settings to 30 days, as 0.134.0 did",
+      "file": "packages/core/src/streams.ts",
+      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
+      "replace": "    await readChatStreamConfig(jsm, opts.space);\n    { const { config } = await jsm.streams.info(chatStream(opts.space)); if (config.max_age === 0 && config.max_msgs_per_subject === 1000) await setChatHistoryLimit(jsm, opts.space, { maxAgeMs: 30 * 86_400_000, perSender: 1000 }); }\n",
+      "expectRed": "an existing space keeps every post older than 30 days through cotal up",
+      "cell": "an existing space keeps every post older than 30 days through cotal up",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
-      "note": "The broker deleted the posts older than the new age at the move, and the next start finds nothing to move, so this error is the only report of it."
+      "note": "The bug of #5643: the broker deletes the three posts older than 30 days the moment the limit lands."
     },
     {
-      "name": "setup's child does not report a move before its failure",
-      "file": "implementations/cli/src/commands/setup-start.ts",
-      "find": "    } catch (error) {\n      await reportChatHistoryMove(args);\n",
-      "replace": "    } catch (error) {\n",
-      "expectRed": "a setup whose start moves the limit and then fails says the limit moved",
-      "cell": "a setup whose start moves the limit and then fails says the limit moved",
-      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
-      "note": "Setup reads none of its startup child's output, so this message is the only way the move reaches setup's receipt."
-    },
-    {
-      "name": "setup's child does not report a move when its start returns",
-      "file": "implementations/cli/src/commands/setup-start.ts",
-      "find": "    }\n    await reportChatHistoryMove(args);\n  },\n",
-      "replace": "    }\n  },\n",
-      "expectRed": "a setup whose start moves the limit and goes on warns that the limit moved",
-      "cell": "a setup whose start moves the limit and goes on warns that the limit moved",
+      "name": "the default goes back to 30 days",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "Object.freeze({ maxAgeMs: 0, perSender: 1000 })",
+      "replace": "Object.freeze({ maxAgeMs: 30 * 86_400_000, perSender: 1000 })",
+      "expectRed": "a new space starts with no age limit and 1000 per sender",
+      "cell": "a new space starts with no age limit and 1000 per sender",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "setup drops the child's move from a startup failure",
+      "name": "an unreadable manager identity escapes as a raw error",
       "file": "implementations/cli/src/commands/setup-start.ts",
-      "find": "  const failed = (error: CommandFailure) => moved ? chatHistoryMovedFailure(error, { space, change: moved }) : error;\n",
-      "replace": "  const failed = (error: CommandFailure) => error;\n",
-      "expectRed": "a setup whose start moves the limit and then fails says the limit moved",
-      "cell": "a setup whose start moves the limit and then fails says the limit moved",
-      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
-    },
-    {
-      "name": "setup does not warn about a move its start reported",
-      "file": "implementations/cli/src/commands/setup.ts",
-      "find": "          warnings.push({ code: \"CHAT_HISTORY_MIGRATED\", target: { root: inputs.project, space: inputs.space, stream: moved.stream }, message: chatHistoryMigratedNotice(inputs.space, moved) });\n",
-      "replace": "",
-      "expectRed": "a setup whose start moves the limit and goes on warns that the limit moved",
-      "cell": "a setup whose start moves the limit and goes on warns that the limit moved",
-      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
-    },
-    {
-      "name": "setup leaves the move out of its changed list",
-      "file": "implementations/cli/src/commands/setup.ts",
-      "find": "changed: [...written, ...moved, ...(startup.agent ? [startup.agent] : [])]",
-      "replace": "changed: [...written, ...(startup.agent ? [startup.agent] : [])]",
-      "expectRed": "...and setup's envelope names the chat stream as changed",
-      "cell": "...and setup's envelope names the chat stream as changed",
-      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
-    },
-    {
-      "name": "setup refuses a failure receipt that follows a move",
-      "file": "implementations/cli/src/commands/setup-start.ts",
-      "find": "      if (!parsed.success || receipt || parsed.data.root !== root || parsed.data.space !== space || parsed.data.pid !== child.pid) invalidReceipt = true;\n",
-      "replace": "      if (!parsed.success || receipt || moved !== undefined || parsed.data.root !== root || parsed.data.space !== space || parsed.data.pid !== child.pid) invalidReceipt = true;\n",
-      "expectRed": "a setup whose start moves the limit and then fails says the limit moved",
-      "cell": "a setup whose start moves the limit and then fails says the limit moved",
-      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
-      "note": "The move comes first on the failure path, so the receipt after it must still be read as the classified result."
-    },
-    {
-      "name": "an unreadable manager identity escapes the move",
-      "file": "implementations/cli/src/commands/setup-start.ts",
-      "find": "  let manager: ReturnType<typeof loadManagerInstanceIdentity>;\n  try { manager = loadManagerInstanceIdentity(root, space); }\n  catch { throw failed(new CommandFailure(\"unknown\", \"OPERATION_UNKNOWN\", \"native up returned, but this root's manager instance identity does not read; no readiness was inferred\", { target: { root, space, coordinator }, remedy: \"inspect the selected space and original startup before another attempt\" })); }\n",
+      "find": "  let manager: ReturnType<typeof loadManagerInstanceIdentity>;\n  try { manager = loadManagerInstanceIdentity(root, space); }\n  catch { throw new CommandFailure(\"unknown\", \"OPERATION_UNKNOWN\", \"native up returned, but this root's manager instance identity does not read; no readiness was inferred\", { target: { root, space, coordinator }, remedy: \"inspect the selected space and original startup before another attempt\" }); }\n",
       "replace": "  const manager = loadManagerInstanceIdentity(root, space);\n",
-      "expectRed": "a setup whose manager identity does not read after the move says the limit moved",
-      "cell": "a setup whose manager identity does not read after the move says the limit moved",
+      "expectRed": "a setup whose manager identity does not read after its start reports an unknown outcome with that reason",
+      "cell": "a setup whose manager identity does not read after its start reports an unknown outcome with that reason",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
-      "note": "The read throws a plain Error, which setup keeps out of its receipt, so the move reaches it only as a classified failure."
+      "note": "The read throws a plain Error, which setup keeps out of its receipt, so the reason reaches it only as a classified failure."
     }
   ]
 }

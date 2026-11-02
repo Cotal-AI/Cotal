@@ -618,17 +618,16 @@ mode.
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
 **Chat history limit.** One limit per space sets how long `CHAT_<space>` keeps a channel post: until
-the post is older than the limit's age (`max_age`), or until its sender has posted the limit's count
-(`max_msgs_per_subject`) newer ones on that channel, whichever comes first. A chat subject is one
-sender on one channel, so the count holds per sender per channel. The broker removes a post past
-either bound, and lowering the limit on a live stream removes the posts past the new one at once. A
-new space starts at 30 days and 1000 per sender. An operator MAY set an age from 2 minutes (the
-stream's duplicate window) to 3650 days in whole seconds, and a count of at least 1; the limit MUST
-NOT be set to no age. A stream created before the limit was configurable holds no age and 1000 per
-sender, and a reader MUST accept that pair and any other count with no age. `allow_msg_ttl` stays
-false on the stream: once on it cannot be turned off, and a per-message TTL of `never` escapes
-`max_age`. Copies the Plane 3 backstop already took into its own streams are bounded by those
-streams, not by this limit.
+its sender has posted the limit's count (`max_msgs_per_subject`) newer ones on that channel, or, when
+the limit has an age (`max_age`), until the post is older than that age, whichever comes first. A
+chat subject is one sender on one channel, so the count holds per sender per channel. The broker
+removes a post past either bound, and lowering the limit on a live stream removes the posts past the
+new one at once. A new space starts with no age limit and 1000 per sender, and setting up an
+existing space MUST NOT change its limit. An operator MAY set an age from 2 minutes (the stream's
+duplicate window) to 3650 days in whole seconds, and a count of at least 1. A reader MUST accept no
+age with any count. `allow_msg_ttl` stays false on the stream: once on it cannot be turned off, and a
+per-message TTL of `never` escapes `max_age`. Copies the Plane 3 backstop already took into its own
+streams are bounded by those streams, not by this limit.
 
 **Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
 JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
@@ -6884,6 +6883,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
 | 2026-10-30 | **The chat stream's history limit is configurable per space (§4, §7, §8).** `CHAT_<space>` keeps a post until it is older than the space's age or its sender has posted the space's count of newer ones on that channel, whichever comes first. A new space starts at 30 days and 1000 per sender. A stream with no age and any count, as every stream before this change was created, stays valid. The durable guarantee is bounded by this limit, and `replayWindow` is a read horizon that removes nothing. The reference implementation moves a stream still on no age and 1000 per sender to the default when `cotal up` starts its broker, which deletes posts older than 30 days. |
 | 2026-10-30 | **A registry lists the endpoints a caller can call (§13.15, §13.20), additive.** A space MAY run a registry, a registered endpoint named `registry` whose `endpoints` command lists the registered endpoints the caller holds a command on, with the request forms its recorded ceiling covers. It leaves out every endpoint the ceiling covers nothing of. On a space with a permission system the question rides `ep.v1`, and a credential on the legacy rail MAY carry a listing generation for it: three rows that reach only `registry` `endpoints` and the listing's own accepted row, with evidence recording the credential's complete ceiling. An issued credential MAY carry the same request row on its own generation, fixed at its first issuance. The registry reads that ceiling with a disclosure read that checks no source liveness and admits no effect. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
