@@ -5,7 +5,7 @@
  * The census asks one question of each item: which CLI command performs it. This module only lists
  * the items. `owner-map.json` records each item's owner, and `capability-census.smoke.ts` fails when
  * an item has no owner, an owner names no real command or flag, or a row names an item that no
- * longer exists. Prose sources (SPEC.md §13, the console and dashboard actions, docs/mesh-view.md
+ * longer exists. Prose sources (SPEC.md §13, the console and dashboard actions, docs/mesh-view.mdx
  * and the delivery daemon's `ctl.delivery` requests) are covered by the checklist in the owner map,
  * not by this list.
  *
@@ -46,6 +46,7 @@ const ENDPOINT_CONTRACTS = [
   { endpoint: "manager", file: "implementations/manager/dist/manager-service-contract.js", doc: "managerClusterDocument", values: "managerContractArtifactValues" },
   { endpoint: "auth", file: "implementations/auth/dist/auth-service-contract.js", doc: "authClusterDocument", values: "authContractArtifactValues" },
   { endpoint: "linear", file: "implementations/linear/dist/contract.js", doc: "linearClusterDocument", values: "linearContractArtifactValues" },
+  { endpoint: "registry", file: "packages/core/dist/registry-contract.js", doc: "registryClusterDocument", values: "registryContractArtifactValues" },
 ] as const;
 
 /** Every input field of a schema, nested object fields included, as dotted paths. */

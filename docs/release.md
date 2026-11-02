@@ -132,3 +132,51 @@ publisher authorization is an access problem, not permission to borrow credentia
 
 Add a `**Correction:**` paragraph under the affected changelog bullet. Preserve the original text
 and use the same correction wording in each affected package so release notes can deduplicate it.
+
+## Earlier section links
+
+These links lead to the current guidance for sections renamed in earlier versions.
+
+### Publication deadline [#publication-deadline]
+
+See [Publish](#publish).
+
+### CI policy [#ci-policy]
+
+See [Prepare the version](#prepare-the-version).
+
+### Trusted publishing [#trusted-publishing]
+
+See [Configure npm](#configure-npm).
+
+### Adding a publishable package [#adding-a-publishable-package]
+
+See [Configure npm](#configure-npm).
+
+### Preparing a release [#preparing-a-release]
+
+See [Prepare the version](#prepare-the-version).
+
+### Publishing the prepared candidate [#publishing-the-prepared-candidate]
+
+See [Publish](#publish).
+
+### Publication controls [#publication-controls]
+
+See [Publish](#publish).
+
+### Verifying availability [#verifying-availability]
+
+See [Verify the result](#verify-the-result).
+
+### Recovering late registry visibility [#recovering-late-registry-visibility]
+
+See [Verify the result](#verify-the-result).
+
+### Correcting a released changelog entry [#correcting-a-released-changelog-entry]
+
+See [Correct release notes](#correct-release-notes).
+
+### 0.11 runtime migration [#011-runtime-migration]
+
+See [Prepare the version](#prepare-the-version).

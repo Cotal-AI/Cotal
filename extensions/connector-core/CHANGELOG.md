@@ -1,5 +1,150 @@
 # @cotal-ai/connector-core
 
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
+## 0.135.0
+
+### Minor Changes
+
+- a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
+  
+  `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
+  
+  An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
+  
+  `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+- 21f937e: Channel history has no age limit by default again. A space keeps a channel post until its sender has posted 1000 newer ones on that channel, as it did up to 0.133.13, and an age applies only when an operator sets one with `cotal history limit`.
+  
+  An upgrade no longer moves or deletes posts. 0.134.0 moved every existing space to a 30-day limit at its first `cotal up`, which deleted every channel post older than 30 days. That move is gone: `cotal up` changes no space's limit, and a space that 0.134.0 already moved keeps its 30-day limit until an operator changes it. `cotal up`, `team boot` and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`. `@cotal-ai/core` no longer exports `LEGACY_CHAT_HISTORY`, `isLegacyChatHistory` or `reconcileChatHistory`, and `setupSpaceStreams` returns nothing; it still refuses a chat stream whose settings other than the limit are not canonical.
+- e7fbeb8: `cotal_spawn` takes `once: true` with a `prompt` to start a helper for one task. The manager relays the prompt to the helper as its only turn and stops the helper when that turn ends or when the deadline passes. The deadline is one hour unless `deadline` sets another, and `-1` sets none. A spawn that succeeds names the task's goal in its result, and `goal-result` reads how it ended. A task that ends without the helper ending its turn may have run in part or in full, and nothing runs it again. A once spawn needs no `run` capability.
+  
+  The manager's `spawn` command takes `once: { deadlineMs }`, and the manager contract revision is 44. The task is served only after the spawn's succeeded terminal is written, so a manager that restarts before then cancels the task as never served. A seat hands a once task to its harness at most once. When it cannot confirm the harness took the task, it reports that with the new self-mode `turn-unconfirmed` command, which fails the task with `delivery-unconfirmed` and stops the seat. A manager that inherits a once seat it cannot hold ends the task without serving it, says so in the outcome, and answers that seat's every `turn-pending` with `stop` while its debt stays recorded.
+  
+  A connector declares `supportsTurnRelay` to take a once task: Jcode, OpenCode, pi and Claude Code do. A connector whose seat needs a confirmed startup declares `onceNeedsConfirmed`, and the manager serves its task only when the runtime reports the startup watch ended `confirmed`. Claude Code needs it: a once launch waits for Claude's development-channels prompt and then its `confirmNotice`, the line saying `server:cotal` messages reach the session. A runtime declares `reportsStartupOutcome` and its handles report `startupOutcome()`; the built-in pty runtime, tmux, cmux, herdr and orca do. A connector may declare `turnFrameLimit`, and a once prompt whose task does not fit it is refused at admission. A once exit registered with `registerOnceExit` may answer false to decline, and the seat then keeps reporting instead of exiting. A connector whose seat launches processes outside its own implements `retireAfterExit`, and the manager keeps the task's debt until that hook proves them gone. Jcode records each native launch of a once seat under the seat's uid for that proof, and a Jcode once seat always starts a fresh session, never one an earlier seat of the same name left in its home.
+
+## 0.134.0
+
+### Minor Changes
+
+- 8b80ca6: Every connector now hands its agent the same briefing, composed once in `@cotal-ai/connector-core` (`briefing(config, harness)`): identity, orient first, feedback, mesh-first delegation, durable workflow runs, where to talk, how a peer message arrives, how to reply, attention modes and reply etiquette. Codex, Jcode, OpenCode, Hermes and pi used to carry their own shorter copies and drifted; each now adds only the sentence that says how a peer message appears in its context. `docs/agent-briefing.mdx` is generated from the module (`pnpm gen:briefingdoc`) so a wording change shows as a diff of what each harness reads, and `pnpm check:docsbundle` fails when it drifts.
+  
+  A conversation that joins through `cotal_connect` (the Claude Code plugin in a session you opened, Claude Desktop, a hosted connector) used to be told only how to connect and listen; the connect result now carries its orientation card and the briefing. The Claude Code session-start hook hands the orientation card over at startup, resume, fork, clear and compaction, or with the next prompt when the seat was not bound yet, so the model has its bearings without asking. `orientationCard()` is the one rendering the `cotal_orientation` tool, the connect result and the hook share. Hermes' `setupProfile` takes the seat's `config` to render the briefing into `SOUL.md`.
+- 4ee7ede: A space's channel history now has a limit you can set. The chat stream keeps a post for 30 days, or until its sender has posted 1000 newer ones on that channel, whichever comes first, and `cotal history limit --max-age <age> --per-sender <n>` changes it for the whole space. A lower limit deletes the posts it no longer keeps, and in a terminal it asks first.
+  
+  The first `cotal up` that starts an existing space's broker moves a chat stream still on the old settings (no age limit, 1000 per sender) to the new default, which deletes every channel post older than 30 days. The move runs after every other setup check, so a start that a check refuses deletes nothing, and a start that fails after the move says in its error that the limit moved. `cotal setup --start` reports the move in its own receipt the same way. To keep posts longer, run `cotal history limit` against the running broker before it restarts; UPGRADING.md has the steps. INBOX and DLV keep their own bound of 1000 entries per subject.
+  
+  `cotal history` shows the age limit and the time of the oldest post the stream still holds, and says a sender at the per-sender limit may have lost older posts there. Focus recall reports a window the stream's oldest post has passed as possibly incomplete, and its warning now also names a channel recall could not read as one possible reason. Backup restore holds the chat stream at no age through its checks, then sets the age the backup recorded.
+  
+  Durable join catch-up no longer judges retention. Its per-sender check is removed because the loss it reported cannot be proven: the stream does not record which channel a removed post belonged to, so the check could refuse a join that lost nothing. Catch-up now copies the posts the stream still holds, and a post the history limit removed first is outside the durable guarantee (SPEC §4). The delivery daemon never reached that check before this release, because its read of the channel's oldest post failed.
+- 86de17e: Agents can list what a space offers them. The new `cotal_endpoints` tool asks the space's registry,
+  a registered endpoint named `registry`, which endpoints the agent can call. The answer lists each
+  registered endpoint where the agent holds at least one command, with the commands and request forms
+  its recorded grants cover, and leaves out every other endpoint. On an open mesh it lists every
+  registered endpoint. The registry reads the grants recorded when the credential was issued, so the
+  broker or the endpoint can still refuse a listed command, and the answer says so. On a user-auth
+  mesh, `view: "manager"` lists what the agent's manager-call credential can call, asked over that
+  credential. A listing drops the agent's cached `describe` of each endpoint it lists.
+  
+  To ask, a credential on the legacy rail now carries a listing generation: one `ep.v1` request row
+  that reaches only the registry's `endpoints` command, its reply row, and the read of its own
+  accepted row. The auth callout issues one for an agent connection and an unissued `manager-caller`
+  view. An agent a manager spawns on a static mesh, and an interactive `manager-caller` view, carry
+  the row on their own issued generation from their first issuance. A credential issued before this
+  release has no listing rows, and the tool says so until the agent connects again or is respawned.
+  An issued `manager-caller` view that reconnects under the same nonce keeps the ceiling it was issued
+  with.
+  The new `@cotal-ai/registry` package holds the registry's answer and reads.
+- 136a640: `cotal_spawn` takes `join`: concrete channels the new peer joins at start, on top of what its persona file lists. Each is checked against the caller's own read ACL before the request is sent, so a spawn never hands on a channel the caller may not read. The request also carries the caller's read and post ACL as `callerAcl`; the manager consults it only for a persona that names no channel field at all, so such a helper is scoped to its spawner, never wider, and the spawner's event channel is never part of it. The joined set is not copied from the spawner: without `join`, a channel-less persona still starts on no channel. The manager's `spawn` operation accepts both fields; a manifest launch rejects them like the other imperative overrides.
+  
+  A `cotal_send` with no channel and no default is now refused with the channels the agent may post to and the exact next call (`cotal_send` with `channel`, or `cotal_join` to make one the default), instead of pointing at the orientation card. The orientation card lists the concrete channels in the read ACL the agent is not on yet, each with its registry note. The briefing's channel paragraph leads with the model (information moves through channels; subscribe to what you need, publish what others need), then the rule (the channel for work, a mention only to make one peer act now, a DM only for what one peer alone needs), then the mechanics, and says a spawned helper needs `join`.
+
+## 0.133.13
+
+### Patch Changes
+
+- 8c15963: Keep generated HTTP documentation consistent between root and website installs.
+- c21c940: `MeshView` now reports disconnected while the broker is down. It used to follow only the endpoint's `connection` event, which stays true while the NATS client reconnects on its own, so `cotal console` showed a green dot and `cotal watch` read "live" through the outage. It now also follows the endpoint's `transport` edge, and `cotal watch` reads "Reconnecting" during an outage. Feed entries also carry the wire's `replyTo`, `mentions` and `contextId` when the sender set them, so `cotal watch --json` rows include those fields. A unicast burst coalesces only when those fields match.
+- 67f15b1: Show internal documentation link destinations in terminal output so readers can follow the CLI reference hub. Piped, plain and JSON pages keep their Markdown.
+- 331f050: Move `MeshView`, the live model of a space, from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/view`. The same entry adds `openObserver`, which builds the read-only observer endpoint that `cotal console` and `cotal watch` each used to construct inline. Console and watch behave as before. `@cotal-ai/cli` never exported `MeshView` from its package entry, so no public export is removed.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Split the CLI reference into focused MDX pages and generate the MCP catalog as MDX. Include complete Markdown in the installed release's offline documentation while preserving existing page calls and section links.
+- 13499c0: Rewrite the client, connector authoring, and embedding guides as direct MDX. Split embedding contracts into focused references and include their complete Markdown in the installed release's offline `cotal_docs` bundle.
+- 13499c0: Complete the operator documentation with focused MDX procedures, current CLI instructions, separate console and dashboard guides, and a concise upgrade guide linked to the preserved migration history.
+- 13499c0: Rewrite configuration, agent file, manifest, and channel permission references as direct MDX. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- 13499c0: Rewrite the connector guides as direct MDX and separate launch instructions from implementation reference. Include complete Markdown for the guides and new reference pages in the installed release's offline `cotal_docs` bundle.
+- 13499c0: Split mesh operation documentation into focused guides. Keep existing documentation links and offline page calls available, and point the supervision warning at the stable published guide.
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- 13499c0: Rewrite the Fundamentals concepts as direct MDX and separate Architecture's detailed contracts into their reference pages. Include complete Markdown and schema inspection content in offline documentation. Update documentation pointers and offline checks for the renamed sources.
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+- 13499c0: Rewrite the MeshView, cotal-lang card, and glossary references as direct MDX with source-backed definitions and examples. Update the language example check and terminal model source references for the renamed pages. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- e7f6b09: `cotal_send` refuses a channel pattern such as `team.>` before it reads or sends anything. The refusal and the advertised `channel` text say how to reach those agents: one post to a channel the pattern matches reaches the followers connected at the time, or post to each channel by name. A name that breaks the channel grammar, such as `team.**`, is refused too. It used to be rewritten onto another channel while the receipt named what was typed. In pi, `cotal_send` now returns the shared refusal instead of its own line.
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+
+## 0.133.11
+
+### Patch Changes
+
+- 9182cfc: Restore the tool specs' and gateway's zod namespace import. The by-name imports released in 0.133.9 made the bundled claude, codex, hermes, jcode and opencode connectors throw `Class2 is not a constructor` when imported, so a fresh `cotal setup` failed its first connector seed.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+### Patch Changes
+
+- 2e16657: Import the zod members the tool specs and gateway use by name, so bundles of those two modules no longer reach zod's locale tables through their own `z` namespace import. Tool schemas, tool names and descriptions, argument validation, and error messages are unchanged. Carriers that import zod elsewhere keep their own references.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+### Patch Changes
+
+- Decode and cache bundled documentation one source at a time for page reads and search results. Preserve corpus/index integrity checks, search scores, returned-page behavior and the full-bundle build helper without changing the two-asset package layout.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
 ## 0.133.3
 
 ### Patch Changes

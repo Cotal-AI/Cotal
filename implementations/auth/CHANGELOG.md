@@ -1,5 +1,203 @@
 # @cotal-ai/auth
 
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+  - @cotal-ai/lang@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/lang@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/lang@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/lang@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/lang@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+  - @cotal-ai/lang@0.135.1
+
+## 0.135.0
+
+### Patch Changes
+
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+  - @cotal-ai/workspace@0.135.0
+  - @cotal-ai/lang@0.135.0
+
+## 0.134.0
+
+### Minor Changes
+
+- 86de17e: Agents can list what a space offers them. The new `cotal_endpoints` tool asks the space's registry,
+  a registered endpoint named `registry`, which endpoints the agent can call. The answer lists each
+  registered endpoint where the agent holds at least one command, with the commands and request forms
+  its recorded grants cover, and leaves out every other endpoint. On an open mesh it lists every
+  registered endpoint. The registry reads the grants recorded when the credential was issued, so the
+  broker or the endpoint can still refuse a listed command, and the answer says so. On a user-auth
+  mesh, `view: "manager"` lists what the agent's manager-call credential can call, asked over that
+  credential. A listing drops the agent's cached `describe` of each endpoint it lists.
+  
+  To ask, a credential on the legacy rail now carries a listing generation: one `ep.v1` request row
+  that reaches only the registry's `endpoints` command, its reply row, and the read of its own
+  accepted row. The auth callout issues one for an agent connection and an unissued `manager-caller`
+  view. An agent a manager spawns on a static mesh, and an interactive `manager-caller` view, carry
+  the row on their own issued generation from their first issuance. A credential issued before this
+  release has no listing rows, and the tool says so until the agent connects again or is respawned.
+  An issued `manager-caller` view that reconnects under the same nonce keeps the ceiling it was issued
+  with.
+  The new `@cotal-ai/registry` package holds the registry's answer and reads.
+
+### Patch Changes
+
+- 3b69c52: Answer a malformed `/service-endpoint-authority` envelope, such as one with an unknown field, with its named `400` again, as documented, rather than the generic `500` meant for unexpected failures.
+- Updated dependencies [4ee7ede]
+- Updated dependencies [86de17e]
+- Updated dependencies [4272b2e]
+  - @cotal-ai/core@0.134.0
+  - @cotal-ai/workspace@0.134.0
+  - @cotal-ai/lang@0.134.0
+
+## 0.133.13
+
+### Patch Changes
+
+- Updated dependencies [c21c940]
+- Updated dependencies [6fcac9f]
+- Updated dependencies [ddd3253]
+- Updated dependencies [331f050]
+  - @cotal-ai/workspace@0.133.13
+  - @cotal-ai/core@0.133.13
+  - @cotal-ai/lang@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Rewrite Security and Agent coordination as focused MDX explanations with complete supporting references. Preserve documentation URLs, Markdown downloads, and offline documentation tools, and update source links and documentation checks for the renamed pages.
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+- Updated dependencies [13499c0]
+  - @cotal-ai/lang@0.133.12
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+  - @cotal-ai/lang@0.133.11
+  - @cotal-ai/workspace@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+  - @cotal-ai/lang@0.133.10
+  - @cotal-ai/workspace@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+  - @cotal-ai/workspace@0.133.9
+  - @cotal-ai/lang@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+  - @cotal-ai/lang@0.133.8
+  - @cotal-ai/workspace@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+  - @cotal-ai/workspace@0.133.7
+  - @cotal-ai/lang@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+  - @cotal-ai/lang@0.133.6
+  - @cotal-ai/workspace@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- cb6c6c4: Every refused exchange that spends a face's refusal budget answers through one helper. The helper records the failure, writes the audit line, and answers 429 with the mask when the peer is already throttled, or else the route's own status. The routes covered are the exchange body and view refusals, the agent and human exchange catches, chat sessions, the manager instance list, the service endpoint host and manager-service authority. Before, each route spelled the sequence itself. Behavior is unchanged.
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+  - @cotal-ai/lang@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [5629f59]
+- Updated dependencies [4b483de]
+- Updated dependencies [60b5c33]
+  - @cotal-ai/lang@0.133.4
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+
 ## 0.133.3
 
 ### Patch Changes

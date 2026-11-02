@@ -1,0 +1,189 @@
+---
+title: Connector runtime reference
+description: Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, and resume records.
+kind: Reference
+audience: integrators
+---
+
+This page describes the shared connector runtime. Each connector has a separate
+reference for its integration with the agent application.
+
+## Running release
+
+An MCP server's `serverInfo.version` names the Cotal release loaded by that process.
+It is separate from the MCP protocol version and from a newer CLI installed on disk.
+`cotal_orientation` reports the release loaded by the tool host even when a client hides server metadata.
+Jcode's stdio bridge and tool host are separate processes and can temporarily report different releases after an upgrade.
+Updating files does not replace the code a running process loaded.
+
+## Connection state
+
+`MeshAgent.transportConnected` reports whether the current NATS transport is live.
+`MeshAgent.connected` reports whether the full endpoint is bound and ready.
+These values represent separate states.
+
+A short broker disconnect marks the transport down until nats.js reconnects.
+The disconnect does not imply that the connector's full Cotal binding was removed
+and rebuilt. A clean connector stop clears both states locally.
+
+If a binding fails after transport connection, the endpoint closes the partial
+connection. Both states become false before the connector retries.
+
+The endpoint's `transport` event reports state changes. It does not replay earlier
+events to a listener added later. A connector reads `transportConnected` for the
+current state and subscribes to the event for later changes.
+
+`MeshAgent.connectionIssue` retains the latest failure before a successful bind.
+A successful bind clears the failure. Stopping preserves the failure for diagnosis.
+
+### Endpoint recovery
+
+When nats.js exhausts its reconnect attempts and the transport closes terminally,
+the endpoint supervisor rebuilds the endpoint.
+Manual reconnect, terminal-close recovery, and retry triggers share one serialized rebuild.
+Concurrent triggers join that rebuild instead of opening parallel connections.
+A failed post-connect bind closes its partial transport before another attempt begins.
+Unacknowledged durable messages remain eligible for redelivery after the endpoint rebinds.
+`cotal_reconnect` requests this recovery manually.
+
+## Reply correlation
+
+A DM's explicit `replyTo` must name a message from that peer that is still waiting for an answer.
+The explicit argument takes precedence over a message bound to the current tool call.
+Without an explicit argument, the bound message takes precedence.
+Otherwise the runtime selects the peer's oldest unanswered message without a reply already in flight, only when all of that peer's
+waiting messages belong to one conversation, identified by `contextId`.
+Several waiting conversations cause a refusal that lists the message IDs to choose from.
+
+The reply names its question in `replyTo` and copies the asker's `contextId`.
+A question counts as answered only after publication succeeds.
+A failed send leaves it waiting for retry.
+An in-flight reply also leaves the question waiting, so another conversation arriving meanwhile
+can make an unqualified DM ambiguous.
+When no reply is selected or bound, a scoped `contextId` takes precedence over the connector's configured context.
+
+`MeshAgent.withCorrelation` supplies correlation for one host call.
+For implicit reply selection, a scope with `replyTo` uses that message if it came from the peer.
+A scope with only `contextId` suppresses implicit replies to other peers.
+For its peer, the runtime uses the same waiting-message selection described above, without requiring the scope's own `contextId` to match.
+A connector serving several host sessions, such as Hermes, can assign each question its own ID.
+An answer returns to the asking session only when the runtime recognizes that ID and authenticates
+the expected peer, or a holder of the requested role for an anycast question.
+A copied conversation ID alone is not sender proof.
+See [Hermes answer routing](hermes-connector-reference.mdx#answer-routing) and
+[`cotal_dm`](mcp-tools.mdx#cotal_dm).
+
+## Presence ordering
+
+During normal operation, presence writes from one agent complete in the order
+the agent issued them. Shutdown queues departure after writes already in progress
+and refuses newly submitted writes.
+
+If that queue stalls for three seconds, shutdown stops the endpoint directly.
+A host can also abandon a stalled queue to continue teardown. An abandoned write
+can still finish later because the underlying operation cannot be cancelled.
+See [Shutdown limits](claude-connector-reference.mdx#presence-mapping).
+
+## Presence interpretation [#presence-display-and-name-verification]
+
+`working` is a reported busy state. A fresh heartbeat can come from a connector whose agent has stopped advancing.
+Displays without an outside observation of the last assistant message use `progress unknown`.
+The workstation `progressSignal` helper classifies an old outside observation as `stalled` while presence can remain fresh.
+The current console and web roster paths pass no outside observation, so they do not display that stalled classification.
+This progress classification belongs to workstation and operator tooling, outside the wire protocol.
+Each CLI, connector, or web renderer owns its wording. Compact maps and DM pickers use presence glyphs without a progress claim.
+
+`cotal ps`, `cotal endpoints`, `cotal console`, `cotal join`, and `cotal_roster` show reported conditions with their ages and the age of `activeAt`.
+The last four also show the age of `statusSince` and date the activity separately through `activitySince`.
+Changing status does not make an old activity recent.
+The shared timestamp rules are in the [CotalEndpoint reference](embedding-endpoints.mdx#presence-metadata).
+Each printed condition code or activity stays on one line, escapes control characters and line separators as `\uXXXX`, and is limited to 200 characters.
+
+`cotal_orientation` and `cotal_roster` read presence on demand.
+If that read fails, both say `presence read failed` with its reason and label the retained roster last-known.
+A missing name in that result does not prove absence. These seat tools do not depend on an always-on presence watcher.
+Actual presence watchers retain their own current, unpopulated, and stale states.
+The [endpoint diagnosis reference](embedding-endpoints.mdx#presence-view-and-write-diagnosis) defines those watcher conditions.
+The dashboard marks stale presence when its own poll fails.
+
+`cotal ps` uses `mesh unknown (manager's presence view is stale)` or
+`mesh unknown (manager's presence view not yet populated)` instead of a peer liveness verdict when the manager's view is unsafe.
+The [CLI reference](cli.mdx) describes the command.
+
+The shared connector checks DM targets and mentioned names against a fresh presence read.
+An unknown name after a failed read refuses the DM or the whole channel send, naming the read failure.
+It does not call the peer absent. A name known from a previous successful read remains usable.
+An authenticated sender retained by the connector can still receive a reply without a roster row.
+An unknown name after a successful read receives the ordinary unknown-peer refusal.
+
+## Send receipts [#send-receipts]
+
+A stored sequence proves broker acceptance, without confirming receipt or completed work.
+`cotal_dm` includes the sequence, the recipient's roster status immediately before publication, and `delivery not confirmed`.
+The status can be `idle`, `waiting`, `working`, or `offline`.
+When offline, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
+The same lifecycle receives it after reconnect. A new spawn under the same name does not inherit that inbox.
+Retention and the lifecycle interval still bound delivery.
+
+A one-shot sender such as `cotal send` can send a DM without joining the roster.
+A reply to that authenticated sender is stored under its ID even if no inbox ever reads it.
+`cotal_dm` describes this case with `recipient had no roster row at send`.
+Storage, status at send, and eventual inbox delivery are separate facts.
+[`cotal deliver pending`](cli-services.mdx#deliver) inspects the recipient's pending DM durable.
+The [NATS binding](../SPEC.md#8-nats--jetstream-binding) defines lifecycle-scoped consumers and retention.
+
+## Message framing [#message-framing]
+
+The shared injection format has a connector-authored header, message items, and a final instruction.
+The final instruction tells the agent to do requested work with its own tools, verify the result, and then reply.
+It also names `cotal_dm`, `cotal_send`, and `cotal_roster` and forbids reporting an action the agent did not perform.
+A reply-only instruction can encourage a model to confirm work before doing it.
+The source records a live-seat observation of two file-write confirmations with no file tool call and no file on disk.
+The instruction addresses that failure mode but cannot guarantee that a model follows it.
+
+Peer-controlled content remains message data within the frame.
+The shared formatter indents body continuations and neutralizes attribution fields so that a peer cannot write connector-authored framing.
+A redelivered item includes the broker's delivery count and warns that an earlier delivery may already have run.
+The count comes from the broker, not a sender field.
+
+## Acknowledgement [#acknowledgement-and-redelivery]
+
+The connector acknowledges a durable message at its integration's handoff boundary.
+For Claude hooks, a clean stdout-write receipt commits the batch. That receipt proves OS acceptance, not that the model read or applied it.
+See [Hook acknowledgement](claude-connector-reference.mdx#hook-acknowledgement).
+An overflowing local inbox leaves evicted directed messages unacknowledged for broker redelivery after the acknowledgement wait.
+The [inbox bounds reference](claude-connector-reference.mdx#inbox-bounds) defines eviction order and protected in-flight items.
+
+Connectors that hold messages until turn completion renew the acknowledgement wait with JetStream in-progress acknowledgements.
+A crash, failed turn, or lost renewal can let another role consumer receive the request after the first worker has acted.
+The [OpenCode message-delivery reference](opencode-connector-reference.mdx#message-delivery) defines successful turns, user Stop, failure, and lease-renewal limits.
+Delivery remains at least once. Effects that must not repeat require application ownership or idempotency.
+
+## Resume records
+
+The manager records the source session for a seat launched with `--resume`.
+The seat's resume document holds the record. `cotal ps --wide` and
+`cotal ps --json` include it.
+
+Hermes and Jcode create their forks after launch. Their records include the source
+session title and a SHA-256 hash of the transcript they read. The manager reads
+these values once the fork exists. Each seat also prints the source session, title,
+and hash when it creates the fork.
+
+## Connector contracts
+
+- [Claude Code reference](claude-connector-reference.mdx)
+- [OpenCode reference](opencode-connector-reference.mdx)
+- [Codex reference](codex-connector-reference.mdx)
+- [Hermes reference](hermes-connector-reference.mdx)
+- [Jcode reference](jcode-connector-reference.mdx)
+- [pi reference](pi-connector-reference.mdx)
+
+The [connector authoring guide](authoring-a-connector.mdx) describes the extension
+interface. The [MCP tool catalog](mcp-tools.mdx) lists the tools shared by connector sessions.
+
+## Runtime failure evidence
+
+The tmux runtime names failed session-name and pane-capture operations, includes tmux's error text, and retains the original cause.
+An exit watcher checks that its handle still names the current seat, including after an asynchronous exit proof completes.
+An obsolete watcher cannot reap a replacement seat. PTY stream subscriptions are released once exit is observed.

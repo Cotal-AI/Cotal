@@ -908,7 +908,7 @@ try {
   writeFileSync(authPidAt, String(process.pid));
   check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(authComp as never, guardCtx as never) === true);
   // The REAL command path: `cotal down nats` is a named down, so a service stop. It resolves a saved
-  // service definition and never a component's pidfile (docs/cli.md, `down`), so with none saved it
+  // service definition and never a component's pidfile (docs/cli.mdx, `down`), so with none saved it
   // refuses before any teardown and leaves the unattributable auth record as it was.
   const prevCwd26 = process.cwd();
   const prevExit = process.exitCode;

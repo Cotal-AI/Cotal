@@ -6,8 +6,9 @@
  *  signal path then re-teardowned the same stack with none of it (#1307). The helpers live here so
  *  the two teardown verbs cannot drift apart again. */
 import { c } from "../ui.js";
-import { askManager, resolveControlTarget } from "../lib/control.js";
-import { loadMeshes, probeLiveness, type LocalProcessContext, type ManagerSpareSeats } from "@cotal-ai/workspace";
+import { loadMeshes, probeLiveness, type LocalProcessContext, type ManagerSpareSeats, resolveControlTarget } from "@cotal-ai/workspace";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "./control.js";
 
 export type SpareSeatRow = {
   name: string;
@@ -40,7 +41,7 @@ export async function listManagerSeatsForSpare(context: LocalProcessContext): Pr
     console.error(c.dim(`could not list managed agents (${(e as Error).message})`));
     return undefined;
   }
-  const reply = await askManager(target.space, target.server, "ps", undefined, target.auth, "any");
+  const reply = await askManager(cliControl, target.space, target.server, "ps", undefined, target.auth, "any");
   if (!reply.ok || !Array.isArray(reply.data)) {
     console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"})`));
     return undefined;

@@ -669,7 +669,7 @@ Reason for the last row: it is the `agentAuthState` rule verbatim
 one must not render the same. Silence in a liveness slot reads exactly like a live seat, and that is
 how a dead seat keeps a lane.
 
-**Decision: presence stays honest about what it measures.** `docs/presence-and-delivery.md` already
+**Decision: presence stays honest about what it measures.** `docs/presence-and-delivery.mdx` already
 says `working` is a process-alive claim and not a progress claim, and that surfaces with no outside
 observation render `progress unknown`. A hosted seat's lease is an attach claim, weaker still: it
 says the hosted side called something recently. It is rendered as attach freshness, never as work.

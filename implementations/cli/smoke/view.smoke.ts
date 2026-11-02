@@ -7,7 +7,8 @@
  */
 import { EventEmitter } from "node:events";
 import { renderReport } from "@cotal-ai/workspace";
-import { MeshView } from "../src/view/mesh-view.js";
+// By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
+import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { runLog } from "../src/render.js";
 import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
 import {
@@ -65,6 +66,7 @@ class MockEndpoint extends EventEmitter {
   tap(handler: (subject: string, m: CotalMessage | undefined) => void): void {
     this.tapHandler = handler;
   }
+  channelDeliveryClass() { return "live"; }
   async listChannels(): Promise<{ channel: string; messages: number }[]> {
     return [];
   }

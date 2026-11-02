@@ -4,7 +4,7 @@ Status: implemented. `openDeliveryLane` is in `implementations/delivery/src/deli
 `runDeliveryHost` is in `implementations/delivery/src/delivery-host.ts`, and the manifest grammar
 and reconcile loop are `runSpaceHost` in `packages/workspace/src/space-host.ts`, which the auth
 callout host now runs on too. `cotal deliver --spaces <manifest>` is documented under
-[server daemons](../cli.md#server-daemons). SPEC Appendix B was amended in the same change.
+[server daemons](../cli.mdx#server-daemons). SPEC Appendix B was amended in the same change.
 `pnpm smoke:delivery-multi-space` drives three spaces through one process on a live broker. The
 shipped code settles or extends the text below in six places:
 

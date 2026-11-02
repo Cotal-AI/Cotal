@@ -1,5 +1,193 @@
 # @cotal-ai/cli
 
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- 8eebff8: `cotal ext add` no longer fails with `EEXIST` on `node_modules/.bin` when the new extension installs a bin link that the extensions prefix already has, for example a dependency shared with a seeded connector. Node's `fs.cpSync` refuses to copy a symlink onto an existing one, so the add now removes each link it is about to replace before it promotes the staged install.
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- ec531ec: A space catalog entry can now say a space is temporarily unavailable, with `"unavailable": "<reason>"` in place of its registration. The CLI keeps the registration it already holds for that space, and commands for the other spaces in the catalog keep working. A command that targets the unavailable space refuses with `DEPENDENCY_UNAVAILABLE` and the catalog's reason, and `cotal sync` lists it under `unavailable`. Before this, a catalog had to fail as a whole, which stopped commands for every space in it.
+- b3b4bf1: The `cotal-ai` package ships the connectors' docs data once instead of once per connector, which cuts the packed tarball from 16.8 MB to 6.7 MB. The seed puts a copy back in every installed connector, and `cotal update` verifies those copies against the shipped one.
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+
+## 0.135.0
+
+### Minor Changes
+
+- a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
+  
+  `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
+  
+  An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
+  
+  `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+- 21f937e: Channel history has no age limit by default again. A space keeps a channel post until its sender has posted 1000 newer ones on that channel, as it did up to 0.133.13, and an age applies only when an operator sets one with `cotal history limit`.
+  
+  An upgrade no longer moves or deletes posts. 0.134.0 moved every existing space to a 30-day limit at its first `cotal up`, which deleted every channel post older than 30 days. That move is gone: `cotal up` changes no space's limit, and a space that 0.134.0 already moved keeps its 30-day limit until an operator changes it. `cotal up`, `team boot` and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`. `@cotal-ai/core` no longer exports `LEGACY_CHAT_HISTORY`, `isLegacyChatHistory` or `reconcileChatHistory`, and `setupSpaceStreams` returns nothing; it still refuses a chat stream whose settings other than the limit are not canonical.
+
+### Patch Changes
+
+- a26360f: `cotal meshes rm` now resolves all requested space names from a single registry load, removes the accepted records in one `removeMeshes` batch call, and reads the `current-mesh` pointer once for the batch instead of once per name. Each completed removal is reported and its selection cleared before the next removal, so a later filesystem failure cannot hide earlier progress.
+- 1279537: `cotal up` names the attempt when a recovered listener fails its NATS INFO read. The read used to report every failure as a restore listener failure, so an ordinary resume that timed out printed `restore listener INFO timed out` with no attempt id. It now prints the same `<kind> attempt <id>` label as the rest of the listener proof, for example `resume attempt <id> listener INFO timed out`.
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+  - @cotal-ai/workspace@0.135.0
+
+## 0.134.0
+
+### Minor Changes
+
+- 4ee7ede: A space's channel history now has a limit you can set. The chat stream keeps a post for 30 days, or until its sender has posted 1000 newer ones on that channel, whichever comes first, and `cotal history limit --max-age <age> --per-sender <n>` changes it for the whole space. A lower limit deletes the posts it no longer keeps, and in a terminal it asks first.
+  
+  The first `cotal up` that starts an existing space's broker moves a chat stream still on the old settings (no age limit, 1000 per sender) to the new default, which deletes every channel post older than 30 days. The move runs after every other setup check, so a start that a check refuses deletes nothing, and a start that fails after the move says in its error that the limit moved. `cotal setup --start` reports the move in its own receipt the same way. To keep posts longer, run `cotal history limit` against the running broker before it restarts; UPGRADING.md has the steps. INBOX and DLV keep their own bound of 1000 entries per subject.
+  
+  `cotal history` shows the age limit and the time of the oldest post the stream still holds, and says a sender at the per-sender limit may have lost older posts there. Focus recall reports a window the stream's oldest post has passed as possibly incomplete, and its warning now also names a channel recall could not read as one possible reason. Backup restore holds the chat stream at no age through its checks, then sets the age the backup recorded.
+  
+  Durable join catch-up no longer judges retention. Its per-sender check is removed because the loss it reported cannot be proven: the stream does not record which channel a removed post belonged to, so the check could refuse a join that lost nothing. Catch-up now copies the posts the stream still holds, and a post the history limit removed first is outside the durable guarantee (SPEC §4). The delivery daemon never reached that check before this release, because its read of the channel's oldest post failed.
+
+### Patch Changes
+
+- Updated dependencies [4ee7ede]
+- Updated dependencies [86de17e]
+- Updated dependencies [4272b2e]
+  - @cotal-ai/core@0.134.0
+  - @cotal-ai/workspace@0.134.0
+
+## 0.133.13
+
+### Patch Changes
+
+- c21c940: `MeshView` now reports disconnected while the broker is down. It used to follow only the endpoint's `connection` event, which stays true while the NATS client reconnects on its own, so `cotal console` showed a green dot and `cotal watch` read "live" through the outage. It now also follows the endpoint's `transport` edge, and `cotal watch` reads "Reconnecting" during an outage. Feed entries also carry the wire's `replyTo`, `mentions` and `contextId` when the sender set them, so `cotal watch --json` rows include those fields. A unicast burst coalesces only when those fields match.
+- 6fcac9f: Move the managed launch request from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/launch`. `requestManagedLaunch` sends a `ManagedLaunchRequest` as the manager's `start` command, and `readManagedLaunch` reads the joined agent from its reply as a `ManagedLaunchResult`. `cotal spawn --detach` sends the same request and prints the same output as before. `@cotal-ai/cli` never exported these from its package entry, so no public export is removed.
+- ddd3253: Move the manager control calls from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/control`: the requests to a space's manager and their typed replies (`askManager`, `scatterManager` and the registry reads beside them), the seat lookup that pins a targeted verb to the manager hosting the seat (`locateSeat`), and the console's control helpers (`control`, `controlPs`, `deleteChannel` and the managed-row poller). A caller passes a `ControlClient` that supplies its own version wording and roster read, so the library never imports CLI code. `staleStoreHint` and `nativeEndpointRefusal` move to the `@cotal-ai/workspace` root with it. Every command that calls the manager behaves as before.
+- 331f050: Move `MeshView`, the live model of a space, from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/view`. The same entry adds `openObserver`, which builds the read-only observer endpoint that `cotal console` and `cotal watch` each used to construct inline. Console and watch behave as before. `@cotal-ai/cli` never exported `MeshView` from its package entry, so no public export is removed.
+- Updated dependencies [c21c940]
+- Updated dependencies [6fcac9f]
+- Updated dependencies [ddd3253]
+- Updated dependencies [331f050]
+  - @cotal-ai/workspace@0.133.13
+  - @cotal-ai/core@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Split mesh operation documentation into focused guides. Keep existing documentation links and offline page calls available, and point the supervision warning at the stable published guide.
+- 13499c0: Preserve documentation bookmarks and offline HTTP reference navigation after the MDX migration. Keep executable documentation checks aligned with the split references, validate generated HTTP content on root builds, preserve complete Card destinations, and improve light-mode navigation contrast.
+- 13499c0: Rewrite the Fundamentals concepts as direct MDX and separate Architecture's detailed contracts into their reference pages. Include complete Markdown and schema inspection content in offline documentation. Update documentation pointers and offline checks for the renamed sources.
+- 13499c0: Rewrite the MeshView, cotal-lang card, and glossary references as direct MDX with source-backed definitions and examples. Update the language example check and terminal model source references for the renamed pages. Preserve complete Markdown and existing page calls in the installed release's offline documentation.
+- Updated dependencies [13499c0]
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
+## 0.133.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.11
+  - @cotal-ai/workspace@0.133.11
+
+## 0.133.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.10
+  - @cotal-ai/workspace@0.133.10
+
+## 0.133.9
+
+### Patch Changes
+
+- 4bb984c: `cotal status` grades a manager as not answering through one shared predicate for the manager row and the manager health check, so the two can no longer drift apart. No behaviour change.
+- 2c9a28d: `cotal up` on a running mesh re-creates the memory-backed presence bucket when a broker restart has lost it, and says so, instead of refusing with `stream not found`. A missing file-backed bucket still refuses.
+- 46d7550: `cotal watch` and `cotal console` drop the "Observer reported an error" state once presence is current again after a broker restart, instead of keeping it until they are restarted.
+- Updated dependencies [2c9a28d]
+  - @cotal-ai/core@0.133.9
+  - @cotal-ai/workspace@0.133.9
+
+## 0.133.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.8
+  - @cotal-ai/workspace@0.133.8
+
+## 0.133.7
+
+### Patch Changes
+
+- Updated dependencies [dd729aa]
+- Updated dependencies [55a7597]
+  - @cotal-ai/core@0.133.7
+  - @cotal-ai/workspace@0.133.7
+
+## 0.133.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.133.6
+  - @cotal-ai/workspace@0.133.6
+
+## 0.133.5
+
+### Patch Changes
+
+- Updated dependencies [9dd94c6]
+  - @cotal-ai/core@0.133.5
+  - @cotal-ai/workspace@0.133.5
+
+## 0.133.4
+
+### Patch Changes
+
+- Updated dependencies [4b483de]
+  - @cotal-ai/core@0.133.4
+  - @cotal-ai/workspace@0.133.4
+
 ## 0.133.3
 
 ### Patch Changes

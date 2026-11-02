@@ -8,6 +8,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'parse5';
+import { AGENT_PROMPT } from '@cotal-ai/docs-content/agent-prompt';
 
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const fail = (msg) => {
@@ -16,6 +18,8 @@ const fail = (msg) => {
 };
 
 const llms = readFileSync(join(dist, 'llms.txt'), 'utf8');
+if (!llms.includes('## Route by task') || llms.indexOf('## Route by task') > llms.indexOf('## All pages'))
+  fail('llms.txt lost task routing above its complete page list');
 for (const needle of ['/prompt.md', '/getting-started.md', '/mcp-tools.md', '/spec.md', '/cotal.schema.json']) {
   if (!llms.includes(needle)) fail(`llms.txt lost its task link to ${needle}`);
 }
@@ -27,18 +31,34 @@ for (const cmd of ['npx cotal-ai setup --destination local --harness claude --pr
   if (!runbook.includes(cmd)) fail(`prompt.md lost its command: ${cmd}`);
 }
 
-// The Quickstart ships the interactive prompt card on the page, and its
-// Markdown twin (plus the llms dumps) must stay clean Markdown: the plain
-// fence restored, no component tag leaking through.
-const quickstartHtml = readFileSync(join(dist, 'getting-started', 'index.html'), 'utf8');
-if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt card');
-const quickstartTwin = readFileSync(join(dist, 'getting-started.md'), 'utf8');
-if (!quickstartTwin.includes('prompt.md, then set up Cotal'))
-  fail('quickstart twin lost the setup prompt');
-for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {
-  if (!quickstartTwin.includes(cmd)) fail(`quickstart lost the runbook command: ${cmd}`);
+const quickstartHtml = readFileSync(join(dist, 'docs', 'getting-started', 'index.html'), 'utf8');
+const landingHtml = readFileSync(join(dist, 'docs', 'what-is-cotal', 'index.html'), 'utf8');
+const textOf = node => node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join('');
+function find(node, predicate) {
+  if (predicate(node)) return node;
+  for (const child of node.childNodes ?? []) {
+    const result = find(child, predicate);
+    if (result) return result;
+  }
 }
-for (const f of ['getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
+const promptFigure = find(parse(quickstartHtml), node => node.nodeName === 'figure' &&
+  find(node, child => child.nodeName === 'pre' && textOf(child).trim() === AGENT_PROMPT));
+if (!promptFigure || !find(promptFigure, node => node.nodeName === 'button' && textOf(node) === 'Copy Text'))
+  fail('quickstart lost its native copyable setup prompt');
+if (!landingHtml.includes('Set up with your agent. Copy setup prompt') || !landingHtml.includes(AGENT_PROMPT))
+  fail('landing page lost its complete copyable setup card');
+const landingTwin = readFileSync(join(dist, 'docs/what-is-cotal.md'), 'utf8');
+if (!landingTwin.includes('```text wrap\n' + AGENT_PROMPT + '\n```'))
+  fail('landing Markdown lost its complete setup prompt');
+const quickstartTwin = readFileSync(join(dist, 'docs/getting-started.md'), 'utf8');
+if (!quickstartTwin.includes('```text wrap\n' + AGENT_PROMPT + '\n```'))
+  fail('quickstart Markdown does not contain the complete setup prompt fence');
+if (!quickstartTwin.includes('/docs/setup/')) fail('quickstart lost its link to setup instructions');
+const setupTwin = readFileSync(join(dist, 'docs/setup.md'), 'utf8');
+for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {
+  if (!setupTwin.includes(cmd)) fail(`setup lost the runbook command: ${cmd}`);
+}
+for (const f of ['docs/getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
   if (readFileSync(join(dist, f), 'utf8').includes('AgentPrompt'))
     fail(`AgentPrompt component leaked into ${f}`);
 }
@@ -81,7 +101,7 @@ function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== '_astro' && entry.name !== 'pagefind') scan(p);
+      if (entry.name !== '_next') scan(p);
       continue;
     }
     if (!/\.(html|md|txt)$/.test(entry.name)) continue;

@@ -1,0 +1,110 @@
+---
+title: Host boundaries
+description: Credential lifetimes, metadata exposure, launch authority, and local process risks.
+kind: Reference
+audience: operators and security reviewers
+---
+
+The [security model](security.mdx) assumes a trusted broker and signer. This reference records where broker permissions stop protecting a peer, along with the reference implementation's operational limits.
+
+## Credential lifetime [#credential-lifetime]
+
+Static authentication puts permissions into a signed credential. Reconnecting does not recheck an actor ledger. Per-user authentication checks current authority during exchange and connect, with lifecycle retirement responsible for live eviction.
+
+| Credential | Lifetime and retirement boundary |
+| --- | --- |
+| One-shot command credential | Expires in minutes. |
+| Standing daemon credential | Expires in 24 hours and is renewed by the manager. `cotal doctor auth` diagnoses and repairs this authority. |
+| Manager-spawned static agent | Expires in 24 hours. Renewal occurs only while the agent is live. Despawn drives lifecycle retirement, revokes ledger rows, and causes manager control operations to refuse the retired incarnation. A copied credential retains inline data-plane grants until expiry. |
+| Out-of-band `cotal auth mint` | Expires after 24 hours by default. `--expires-in` or `--expires-at` sets an explicit bound. `--no-expiry` keeps it valid until signing-key rotation. |
+| User-auth managed bearer | Lasts five minutes or less. Refresh requires current authority. `cotal actor revoke` denies later exchanges and connects and evicts the principal's live connections through retirement. |
+| Copied account signing seed | Remains signing authority until the signing key is rotated, on either auth mode. |
+
+Signing-key rotation is the revocation mechanism for copied trust material. A static credential issued before enabling user auth is not invalidated merely by refusing new static mints. Its own expiry and signing-key rotation still matter.
+
+### System-account rotation
+
+`membership-observer` and `connection-evictor` use the system-account signer. The trust record omits that signing seed. Own-broker CLI provisioning separately retains a host copy for caller issuance. The observer and evictor credentials expire after 30 days; retaining the key does not add a renewal loop to those running clients.
+
+Renewal issues a new system account with `cotal down` followed by `cotal up --rotate-sys`. This preserves the data account, agent credentials, and store. Earlier full backups become invalid because they bind the old operator JWT and system account. A new `cotal backup` is required after rotation.
+
+After these credentials expire, mesh delivery continues but the membership feed and live eviction stop. `cotal doctor auth` and the manager warn once 75% of the lifetime has elapsed.
+
+A host with a registered system signer can instead re-mint the observer into the delivery daemon's secret store. At 75% of its lifetime, the feed rereads the credential, proves it on a temporary connection, and adopts it only if issuer and permission scope match the starting credential. This hosted observer path does not supply in-place renewal for the stock evictor credential.
+
+An out-of-band `cotal auth mint` credential expires after 24 hours by default. `--no-expiry` keeps it valid until signing-key rotation. The CA-file paths `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE` cross the launch boundary, while TLS verification overrides and key-log settings do not.
+
+## Manager authority [#manager-authority]
+
+Operator duties use narrow, single-purpose profiles. There is no allow-all credential.
+
+The standing supervisor serves control, touches presence, and maintains its lease. It cannot read DMs, create consumers, or delete streams. Destructive verbs, including `STREAM.DELETE`, `STREAM.PURGE`, cross-agent stop, and per-agent provisioning, use ephemeral teardown, `control-caller-admin`, deployer, or provisioner credentials.
+
+On a static mesh, the account signing key remains on the mint or local-manager host. On a user-auth mesh, the auth service holds it for the callout. A local manager using that space's trust bundle also holds it for supervisor credentials and renewal. A remotely authorized manager receives only the host's [instance-scoped authority](identity-user-auth.mdx#remote-manager-authority).
+
+A compromised signer can mint fresh credentials regardless of the grants on any existing narrow connection. In the default single-host and container compositions, a same-uid agent can access the signer through the filesystem or process environment. Preventing that access requires isolation in the hosted composition.
+
+## Spawn authority [#spawn-authority]
+
+### Static channel grants
+
+On a static mesh, a caller that can spawn can also select its child's channel ACL. There is no actor ledger against which to attenuate that selection. This includes ordinary channels and `events.*`.
+
+On a user-auth mesh, ordinary non-admin delegation must fit the spawner's current grant. NATS-pattern containment is checked when the grant is written and at every bearer exchange, up to a parentless row or admin-scoped authority root. An admin ancestor ends that containment walk. See [delegation](identity-user-auth.mdx#delegation). Static `spawn` therefore grants ACL authority in addition to the ability to launch a teammate.
+
+### Connector launch options
+
+Launch options are passed through without an allow-list or deny-list. A `capabilities: [spawn]` persona can use the connector's full launch options on the manager host, including Claude `--mcp-config`, `--add-dir`, and permission flags, or OpenCode agent-configuration keys.
+
+The capability authenticates who may launch. It does not restrict which connector flags that caller may pass. [Launch agents](launch-agents.mdx#spawning-agents) describes the launch surface.
+
+## Filesystem access [#filesystem-access]
+
+Managed spawn filters inherited environment variables.
+
+| Forwarded | Boundary |
+| --- | --- |
+| Fixed OS execution allow-list | Includes `PATH`, allowing connector binaries in `~/.local/bin` to resolve. |
+| Machine-wide `COTAL_*` operator settings | Passed to the child. |
+| Connector-declared provider inputs | Includes documented credential variables. Claude receives `CLAUDE_CODE_OAUTH_TOKEN` and its other declared authentication inputs so containers without Keychain can sign in. This is the forwarding promised by [Deploy](deploy.mdx). |
+| Shared-MCP references | Passed to the child. |
+| Explicit `spawn.env` names | Added through the [configuration file](config.mdx). |
+
+Ambient host-session markers are not inherited. These include `CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, and analogous nested-session markers for other hosts. Temporary credentials, source-control tokens, and unrelated service secrets are excluded unless explicitly supplied by a persona or operator.
+
+Environment filtering does not confine files accessible through `HOME` or another supplied filesystem root. Filesystem containment requires a sandbox or VM.
+
+### Resume transcripts
+
+A carried resume transcript travels through a transfer bucket readable only by the target manager instance's transfer reader. The operator's writer is confined to that transcript. Seats and peers have no transfer-bucket grant.
+
+The carried Claude seat uses its own Claude home. Other seats' ordinary Claude list and find operations do not expose that transcript. Seats still share one OS user. A process that opens another seat's home by path can read it. [Connecting Claude](connect-claude.mdx) describes carried sessions.
+
+## Stream metadata [#metadata]
+
+Channel read ACLs protect content without hiding all subject metadata.
+
+| Stream | Agent metadata visibility |
+| --- | --- |
+| CHAT | `STREAM.INFO` with `subjects_filter` can enumerate retained subjects, channel names, sender IDs, and per-subject counts, including channels outside `allowSubscribe`. It does not return message bodies. Channel names are public in the channel registry too. |
+| TASK | Only credentials carrying a role have `STREAM.INFO` on this stream, under the same role gate as task-consumer grants. Subject enumeration reveals `svc.<role>.<owner>.<actor>`, including which principal sent work to which role. It does not return message bodies. |
+| TASK for a roleless agent | No grant on the stream. |
+| DM, delivery, and contract streams | No agent `STREAM.INFO` grant. The CHAT and TASK paths do not reveal who DMed whom. |
+
+Hiding the existence and volume of other channels requires a per-channel-stream model. This stricter containment remains deferred work in the [roadmap](roadmap.md).
+
+## Local PTY reap [#pty-reap]
+
+`reapSeat` in `@cotal-ai/seat` reaps a custodied PTY seat. It signals the custodian and direct child only while their current start identities match the custody record.
+
+Descendants have no individual start identities in that record. Reap signals the child's process group, then kills remaining members based on group membership. The kernel refuses `setpgid(2)` into another session's process group, preventing a process outside the child's session from joining the group and being killed this way.
+
+A remaining member can exit after the `/proc` read and have its PID reused before the signal. In that race, an unrelated process receives the signal.
+
+### Custody record replacement
+
+`record.json` is mode `0600` in a `0700` directory. It has no authentication. Reap trusts the PIDs and start tokens it names.
+
+A same-uid process can replace the record and cause the next legitimate reap to signal selected processes. Each forged PID still needs its real start token, and a record from another boot signals nothing. Same-uid access to `/proc` supplies the current tokens.
+
+This is part of the same-uid host boundary. In the default compositions, such a process can also reach the account signer.

@@ -25,11 +25,11 @@
     {
       "name": "manager stops importing MAX_AGENTS from the defining module",
       "file": "implementations/manager/src/manager.ts",
-      "find": "import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from \"./resume.js\";\n",
-      "replace": "import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from \"./resume.js\";\n",
+      "find": "import { MAX_AGENTS, parseResumeCommitArgs,",
+      "replace": "import { parseResumeCommitArgs,",
       "expectRed": "a value import of MAX_AGENTS resolves to the definition",
       "cell": "a value import of MAX_AGENTS resolves to the definition",
-      "note": "Capacity checks can keep using the identifier; without the import they no longer acquire the definition."
+      "note": "Capacity checks can keep using the identifier; without the import they no longer acquire the definition. Re-anchored for #3298: the resume.js import list gained `supervisePolicy`, so the whole-line anchor no longer matched. It now anchors on the import's head only, so another name added to the list does not disarm it. Same severing: MAX_AGENTS leaves the import. Not re-measured."
     },
     {
       "name": "resume schema recaps the array with a literal instead of the shared binding",
