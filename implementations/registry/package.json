@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/registry",
   "description": "Cotal registry: the registered endpoint that answers discovery questions, starting with the endpoints a caller's recorded grants cover.",
-  "version": "0.127.3",
+  "version": "0.134.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
