@@ -3065,7 +3065,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, \"now\")}). ` +\n      `A busy holder may already have it. If that holder does not confirm it in time, it goes back on the queue for another holder. Cancel it with seq ${seq} and cancel: true.`",
+      "anchor": "`Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, \"now\")}). ` +\n      `A busy holder may already have it. If that holder does not confirm it in time, it goes back on the queue for a holder. Cancel it with seq ${seq} and cancel: true.`",
       "class": "honest-text",
       "rationale": "Textual presence: a waiting request's status names the role's holders online when it was read, from a fresh roster read, says none is, or says the presence view was not current; it makes no availability or work progress claim. The cited assertion checks that output.",
       "proof": {
@@ -3087,7 +3087,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`A busy holder may already have it. If that holder does not confirm it in time, it goes back on the queue for another holder. Cancel it with seq ${seq} and cancel: true.`",
+      "anchor": "`A busy holder may already have it. If that holder does not confirm it in time, it goes back on the queue for a holder. Cancel it with seq ${seq} and cancel: true.`",
       "class": "non-render/control",
       "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
     },
