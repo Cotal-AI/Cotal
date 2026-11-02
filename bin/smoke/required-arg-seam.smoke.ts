@@ -510,14 +510,16 @@ const SEAMS: Seam[] = [
   // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
   // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
   // starts and states `tls: false`.
-  // 364/282 -> 373/290: the inline persona and hosted helper bound add nine. The core issuer
-  // session's lifecycle-executor connection passes the caller's resolved tls. The eight smoke calls
+  // 364/282 -> 381/298. The inline persona and hosted helper bound add ten. The core issuer
+  // session's lifecycle-executor connection passes the caller's resolved tls. The nine smoke calls
   // dial the plaintext loopback broker their suite starts and state `tls: false`: in
-  // bin/smoke/run-host-live a caller pinned to the run's host, an admin caller and an admission
-  // reader; in auth/smoke/managed-run-issuance an admission reader; in
-  // cli/smoke/foreground-issuance-live the foreground seat; and in manager/smoke/spawn-grant-door
-  // the spawner, a rival and a definer.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 373, untypecheckedSites: 290 },
+  // bin/smoke/run-host-live a caller pinned to the run's host, an admin caller, an admission
+  // reader and a run-admitter writing an admission as an earlier release wrote it; in
+  // auth/smoke/managed-run-issuance an admission reader; in cli/smoke/foreground-issuance-live the
+  // foreground seat; and in manager/smoke/spawn-grant-door the spawner, a rival and a definer. The
+  // once-task smokes add seven: two Jcode calls (df46417125), two manager restart calls
+  // (d9776d84b1) and three manager spawn calls (048d2cb41e), each stating `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 381, untypecheckedSites: 298 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -525,6 +527,8 @@ const SIDECARS = [
   "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs",
   "bin/seeded-connectors/hermes/plugin/cotal/_sidecar/standalone.cjs",
 ];
+/** Each built sidecar bundles manager-call.ts, so it carries a copy of every call counted there. */
+const SIDECAR_SITES = SITE_COUNTS["extensions/connector-core/src/manager-call.ts"];
 const countsByFile = (sites: Site[]): Record<string, number> => {
   const counts: Record<string, number> = {};
   for (const site of sites) counts[site.file] = (counts[site.file] ?? 0) + 1;
@@ -2743,11 +2747,11 @@ for (const seam of SEAMS) {
   if (process.argv.includes("--census")) console.log(`REQUIRED_ARG_CENSUS ${JSON.stringify({ seam: seam.fn, sites })}`);
   const walked = new Set(files.map((file) => relative(ROOT, file).split(sep).join("/")));
   const sidecars = SIDECARS.filter((sidecar) => walked.has(sidecar));
-  const expectedByFile = { ...SITE_COUNTS, ...Object.fromEntries(sidecars.map((sidecar) => [sidecar, 1])) };
+  const expectedByFile = { ...SITE_COUNTS, ...Object.fromEntries(sidecars.map((sidecar) => [sidecar, SIDECAR_SITES])) };
   const normalized = sites.map((site) => ({ ...site, file: site.file.split(sep).join("/") }));
   const drift = censusDrift(expectedByFile, countsByFile(normalized));
   check(`\`${seam.fn}\`: every file matches its reviewed exact call count`, drift.length === 0, drift);
-  const expectedSites = seam.sites + sidecars.length;
+  const expectedSites = seam.sites + sidecars.length * SIDECAR_SITES;
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);

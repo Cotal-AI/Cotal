@@ -624,7 +624,7 @@ export async function heartbeatCheckpoint(
 const SCHEDULING_HEADERS = ["Nats-Schedule", "Nats-Schedule-Target", "Nats-Schedule-Rollup", "Nats-Scheduler"] as const;
 
 /** The largest ms-epoch the broker's `@at <ISO>` schedule can represent (JS Date's ISO range). */
-const MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+export const MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
 
 /** The timer writer's RESOURCE-ATTESTED context: an OPAQUE token carrying only the ONE space
  *  this writer serves. The broker resources it operates with (the `.armed` publish rail and the

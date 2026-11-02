@@ -1,5 +1,41 @@
 # @cotal-ai/connector-core
 
+## 0.134.0
+
+### Minor Changes
+
+- 8b80ca6: Every connector now hands its agent the same briefing, composed once in `@cotal-ai/connector-core` (`briefing(config, harness)`): identity, orient first, feedback, mesh-first delegation, durable workflow runs, where to talk, how a peer message arrives, how to reply, attention modes and reply etiquette. Codex, Jcode, OpenCode, Hermes and pi used to carry their own shorter copies and drifted; each now adds only the sentence that says how a peer message appears in its context. `docs/agent-briefing.mdx` is generated from the module (`pnpm gen:briefingdoc`) so a wording change shows as a diff of what each harness reads, and `pnpm check:docsbundle` fails when it drifts.
+  
+  A conversation that joins through `cotal_connect` (the Claude Code plugin in a session you opened, Claude Desktop, a hosted connector) used to be told only how to connect and listen; the connect result now carries its orientation card and the briefing. The Claude Code session-start hook hands the orientation card over at startup, resume, fork, clear and compaction, or with the next prompt when the seat was not bound yet, so the model has its bearings without asking. `orientationCard()` is the one rendering the `cotal_orientation` tool, the connect result and the hook share. Hermes' `setupProfile` takes the seat's `config` to render the briefing into `SOUL.md`.
+- 4ee7ede: A space's channel history now has a limit you can set. The chat stream keeps a post for 30 days, or until its sender has posted 1000 newer ones on that channel, whichever comes first, and `cotal history limit --max-age <age> --per-sender <n>` changes it for the whole space. A lower limit deletes the posts it no longer keeps, and in a terminal it asks first.
+  
+  The first `cotal up` that starts an existing space's broker moves a chat stream still on the old settings (no age limit, 1000 per sender) to the new default, which deletes every channel post older than 30 days. The move runs after every other setup check, so a start that a check refuses deletes nothing, and a start that fails after the move says in its error that the limit moved. `cotal setup --start` reports the move in its own receipt the same way. To keep posts longer, run `cotal history limit` against the running broker before it restarts; UPGRADING.md has the steps. INBOX and DLV keep their own bound of 1000 entries per subject.
+  
+  `cotal history` shows the age limit and the time of the oldest post the stream still holds, and says a sender at the per-sender limit may have lost older posts there. Focus recall reports a window the stream's oldest post has passed as possibly incomplete, and its warning now also names a channel recall could not read as one possible reason. Backup restore holds the chat stream at no age through its checks, then sets the age the backup recorded.
+  
+  Durable join catch-up no longer judges retention. Its per-sender check is removed because the loss it reported cannot be proven: the stream does not record which channel a removed post belonged to, so the check could refuse a join that lost nothing. Catch-up now copies the posts the stream still holds, and a post the history limit removed first is outside the durable guarantee (SPEC §4). The delivery daemon never reached that check before this release, because its read of the channel's oldest post failed.
+- 86de17e: Agents can list what a space offers them. The new `cotal_endpoints` tool asks the space's registry,
+  a registered endpoint named `registry`, which endpoints the agent can call. The answer lists each
+  registered endpoint where the agent holds at least one command, with the commands and request forms
+  its recorded grants cover, and leaves out every other endpoint. On an open mesh it lists every
+  registered endpoint. The registry reads the grants recorded when the credential was issued, so the
+  broker or the endpoint can still refuse a listed command, and the answer says so. On a user-auth
+  mesh, `view: "manager"` lists what the agent's manager-call credential can call, asked over that
+  credential. A listing drops the agent's cached `describe` of each endpoint it lists.
+  
+  To ask, a credential on the legacy rail now carries a listing generation: one `ep.v1` request row
+  that reaches only the registry's `endpoints` command, its reply row, and the read of its own
+  accepted row. The auth callout issues one for an agent connection and an unissued `manager-caller`
+  view. An agent a manager spawns on a static mesh, and an interactive `manager-caller` view, carry
+  the row on their own issued generation from their first issuance. A credential issued before this
+  release has no listing rows, and the tool says so until the agent connects again or is respawned.
+  An issued `manager-caller` view that reconnects under the same nonce keeps the ceiling it was issued
+  with.
+  The new `@cotal-ai/registry` package holds the registry's answer and reads.
+- 136a640: `cotal_spawn` takes `join`: concrete channels the new peer joins at start, on top of what its persona file lists. Each is checked against the caller's own read ACL before the request is sent, so a spawn never hands on a channel the caller may not read. The request also carries the caller's read and post ACL as `callerAcl`; the manager consults it only for a persona that names no channel field at all, so such a helper is scoped to its spawner, never wider, and the spawner's event channel is never part of it. The joined set is not copied from the spawner: without `join`, a channel-less persona still starts on no channel. The manager's `spawn` operation accepts both fields; a manifest launch rejects them like the other imperative overrides.
+  
+  A `cotal_send` with no channel and no default is now refused with the channels the agent may post to and the exact next call (`cotal_send` with `channel`, or `cotal_join` to make one the default), instead of pointing at the orientation card. The orientation card lists the concrete channels in the read ACL the agent is not on yet, each with its registry note. The briefing's channel paragraph leads with the model (information moves through channels; subscribe to what you need, publish what others need), then the rule (the channel for work, a mention only to make one peer act now, a DM only for what one peer alone needs), then the mechanics, and says a spawned helper needs `join`.
+
 ## 0.133.13
 
 ### Patch Changes

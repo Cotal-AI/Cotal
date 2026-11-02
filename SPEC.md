@@ -3816,8 +3816,8 @@ run's admission (§14.8).
 `define-persona` also takes `capabilities`. The manager MUST refuse, before it writes, a capability
 the persona would carry that the definer does not hold under the same delegation bound (§13.15). That
 includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
-same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 44 of the manager cluster adds both fields; both inputs
-are closed, so a revision-43 contract rejects either.
+same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 45 of the manager cluster adds both fields; both inputs
+are closed, so a revision-44 contract rejects either.
 
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
@@ -6187,6 +6187,34 @@ pull on a timer while it is connected and its last pull succeeded, except under 
 A pull that fails because the manager is unavailable or unanswered MAY be retried at that same
 interval until one succeeds; a refusal MUST NOT be retried on a timer.
 
+**Once spawns.** A manager MAY relay a turn of its own: the task of a `spawn` that carries `once`.
+It accepts that turn with the spawn, before the seat launches, addressed to the spawned incarnation
+under the spawn's caller triple, and serves it under the protocol above only once the spawn's
+`succeeded` terminal is written, so a served task always has that terminal. The task's
+`turn-pending` row carries `once: true`. Its `deadlineAt` is absent when the spawn set no deadline,
+and a row without `deadlineAt` never expires. While the task is pending, the
+manager MUST refuse every other turn to that incarnation. On the task's terminal, the manager MUST
+stop the incarnation, found by its lifecycle uid and never by its name. When the seat exits first,
+the manager MUST NOT commit the task's end before it has proved that exit, and then cancels the task
+with the reason the seat ended.
+
+A seat hands a once task to its harness at most once. A seat that cannot confirm its harness took
+the task MUST NOT offer it again, and reports it with the self-mode `turn-unconfirmed` command, input
+`{ goalId }`, answered like `turn-yield`. The manager accepts the report only from the addressed
+seat's own credential and only for the once task pending against it, refuses it for a run's turn,
+commits the task `failed` with `delivery-unconfirmed`, and stops the seat. A report repeated after
+the terminal is answered with that terminal.
+
+A manager that inherits a once task from an earlier incarnation of itself MUST NOT serve it when the
+spawn has no `succeeded` terminal; it cancels the task as never served. It MUST NOT serve a task
+whose seat it does not hold, and the reason of that task's terminal says the seat may still be
+running. Once such a task has a terminal, the manager answers that seat's `turn-pending` with
+`{ "turns": [], "notices": true, "stop": true }`, keyed by its lifecycle uid, and repeats the turn
+notice at most every 5 seconds until a pull has returned that answer. `stop` appears on no other
+answer, and a seat MUST NOT read an empty `turns` as a stop. A seat answered with `stop` ends its own
+process when it can. One that cannot keeps reporting a task it holds unconfirmed; one that holds no
+task stays running until a person or its runtime stops it.
+
 ### 14.4 The step journal on the wire
 
 The journal of a run is carried by the per-space **`WFJ_<space>` stream** (§13.12) on **one subject
@@ -7010,7 +7038,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | 2026-10-30 | **A static spawn bounds the helper's role, and a static agent mint maps `role:<r>` (§13.15), breaking.** A static spawner could hand its helper any role, because the role was outside the bound. The bound now measures the role as the rows that bind its task-queue durable, and the agent mint grants those rows for each `role:<r>` token in the agent's capabilities as well as for its own role, so a spawner hands on a role it was given either way. A spawn that hands on a role its spawner was not given is refused, naming the `role:<r>` token. A user-auth mint is unchanged. No wire change. |
 | 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn. It refuses a subject it did not observe, or one another enrollment took for another helper or token digest, and answers a retry of the same enrollment again. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. The loopback `verify-enrollment` door decides the same parent and bound and answers `parent`, which a host platform that writes its own grants must record, filling an omitted list from no more than the parent's grant. A grant's read is the set its durables read, so a target that names only a subscribe set is measured as reading it, and an enrollment retry whose read set is not its grant's is refused with `conflict`. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
 | 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A local run's helpers get only channels within the ceiling its operator named. A spawn after the run's revocation marker, or with a marker the manager cannot read, is refused. A reader that predates the field refuses an admission carrying it. |
-| 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name, owned as `define-persona` would own it for the spawner, or by the run's starter for a run's spawn. `define-persona` takes `capabilities`, bounded against the definer before the write. A run's spawn names its run (`runId`), so a static manager that does not host the run bounds it by the run's admission. The manager cluster advances to revision 44. Additive. |
+| 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name, owned as `define-persona` would own it for the spawner, or by the run's starter for a run's spawn. `define-persona` takes `capabilities`, bounded against the definer before the write. A run's spawn names its run (`runId`), so a static manager that does not host the run bounds it by the run's admission. The manager cluster advances to revision 45. Additive. |
 | 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The helper's role and a workflow run's spawns are outside the bound in this revision. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |
 | 2026-10-30 | **The chat stream's history limit is configurable per space (§4, §7, §8).** `CHAT_<space>` keeps a post until it is older than the space's age or its sender has posted the space's count of newer ones on that channel, whichever comes first. A new space starts at 30 days and 1000 per sender. A stream with no age and any count, as every stream before this change was created, stays valid. The durable guarantee is bounded by this limit, and `replayWindow` is a read horizon that removes nothing. The reference implementation moves a stream still on no age and 1000 per sender to the default when `cotal up` starts its broker, which deletes posts older than 30 days. |
 | 2026-10-30 | **A registry lists the endpoints a caller can call (§13.15, §13.20), additive.** A space MAY run a registry, a registered endpoint named `registry` whose `endpoints` command lists the registered endpoints the caller holds a command on, with the request forms its recorded ceiling covers. It leaves out every endpoint the ceiling covers nothing of. On a space with a permission system the question rides `ep.v1`, and a credential on the legacy rail MAY carry a listing generation for it: three rows that reach only `registry` `endpoints` and the listing's own accepted row, with evidence recording the credential's complete ceiling. An issued credential MAY carry the same request row on its own generation, fixed at its first issuance. The registry reads that ceiling with a disclosure read that checks no source liveness and admits no effect. |

@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -1470,7 +1470,7 @@ export function cotalToolSpecs(
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. A spawn has two prompts: `persona.prompt` says who the helper is, and `prompt` is the first message it works on. Usually you define the helper here with `persona` and a `name`. Pass `persona.save: true` only for a broad persona worth reusing; to spawn a persona already in the catalog, pass its filename as `name` and no `persona`. Channels and capabilities you give the helper must be ones you hold; on a mesh that checks grants, a spawn that asks for more is refused, and the refusal names each part you do not hold. The new peer joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent. Channels: the new peer may read and post what its persona allows; a persona that names no channel at all is scoped to your own read and post grants. It starts on the channels its persona's `subscribe` lists, and on none when it lists none. `join` adds channels, so pass the channel you are working on when it should see that traffic and post there (e.g. `join: [\"general\"]`).",
+        "Ask the manager to start a new peer endpoint in your space. A spawn has two prompts: `persona.prompt` says who the helper is, and `prompt` is the first message it works on. Usually you define the helper here with `persona` and a `name`. Pass `persona.save: true` only for a broad persona worth reusing; to spawn a persona already in the catalog, pass its filename as `name` and no `persona`. Channels and capabilities you give the helper must be ones you hold; on a mesh that checks grants, a spawn that asks for more is refused, and the refusal names each part you do not hold. The new peer joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. Pass `once: true` with a `prompt` to start a helper for one task: the peer gets the prompt as its only task and is stopped when it ends that turn, or at the deadline (one hour unless you pass `deadline`). When the spawn succeeds, its result names the task's goal; read its outcome with goal-result. A once task that ends without the peer ending its turn (its deadline passed, its handoff could not be confirmed, or the peer exited or never joined) may have run in part or in full, and nothing runs it again; whether to spawn it again is your call. Jcode, OpenCode, pi and Claude Code peers can take a once task. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly. A partial result means the seat started but its requested model pin could not be read back: it names the seat and the `cotal ps --on <manager>` command that shows the pin, and spawning again would start a second agent. Channels: the new peer may read and post what its persona allows; a persona that names no channel at all is scoped to your own read and post grants. It starts on the channels its persona's `subscribe` lists, and on none when it lists none. `join` adds channels, so pass the channel you are working on when it should see that traffic and post there (e.g. `join: [\"general\"]`).",
       schema: {
         name: z.string().describe("With `persona`, the new helper's name (auto-numbered with an underscore, e.g. reviewer_2, if that's taken). Without it, which catalog persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md; the peer joins under the persona's own `name:`, and an unknown name fails."),
         persona: z
@@ -1541,6 +1541,14 @@ export function cotalToolSpecs(
           .boolean()
           .optional()
           .describe("Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default."),
+        once: z
+          .boolean()
+          .optional()
+          .describe("Run `prompt` as the new peer's one task, then stop the peer. The task reaches the peer as a relayed turn rather than a kickoff, and the peer is stopped when it ends that turn or when the deadline passes. Needs `prompt`. A Claude Code peer takes the task only when its startup shows channels on; otherwise the spawn fails at startup and says why."),
+        deadline: z
+          .string()
+          .optional()
+          .describe("With once: how long the task may run, as a duration such as 30m, 2h or 1d, counted from when the manager accepts the spawn. Omitted, it is 1h. Pass -1 for no deadline: the peer then keeps its name and its seat slot until it ends its turn or is despawned."),
         runtime: z
           .string()
           .trim()
@@ -1553,9 +1561,22 @@ export function cotalToolSpecs(
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, persona, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, join }: { name: string; persona?: InlinePersona; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; join?: string[] }) {
+      async run(agent, _config, { name, persona, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, once, deadline, runtime, join }: { name: string; persona?: InlinePersona; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; once?: boolean; deadline?: string; runtime?: string; join?: string[] }) {
+        let onceArg: { deadlineMs?: number } | undefined;
+        if (deadline !== undefined && once !== true) return err("`deadline` applies only to a once spawn; pass once: true with it.");
+        if (once === true) {
+          if (deadline === undefined) onceArg = {};
+          else if (deadline.trim() === "-1") onceArg = { deadlineMs: -1 };
+          else {
+            let ms: number;
+            try { ms = parseDuration(deadline); }
+            catch (e) { return err(`deadline: ${(e as Error).message}, or -1 for no deadline`); }
+            if (!Number.isSafeInteger(ms) || ms < 1) return err(`deadline: "${deadline}" is not a positive duration; pass one such as 30m, or -1 for no deadline`);
+            onceArg = { deadlineMs: ms };
+          }
+        }
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, persona });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, persona, ...(onceArg !== undefined ? { once: onceArg } : {}) });
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
@@ -1570,6 +1591,7 @@ export function cotalToolSpecs(
           const d = reply.data as {
             name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
             pinAudit?: { requested: string; error: string; unreported?: true };
+            once?: { goalId: string; deadlineAt?: number };
           } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
@@ -1599,7 +1621,11 @@ export function cotalToolSpecs(
           }
           if (pending)
             return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
-          return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.`);
+          // A once spawn names its task, so the spawner can read how it ended.
+          const task = d?.once
+            ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
+            : "";
+          return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.${task}`);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);
         }
