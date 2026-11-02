@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 740,
-    "honest-text": 38,
-    "presence-only-glyph/count": 57,
+    "total": 778,
+    "honest-text": 42,
+    "presence-only-glyph/count": 60,
     "command-ack": 11,
-    "non-render/control": 634
+    "non-render/control": 665
   },
   "renderers": [
     {
@@ -5352,6 +5352,288 @@
       "anchor": "jetstreamManager(nc)",
       "class": "non-render/control",
       "rationale": "Live-lease down control path: opens the JetStream manager for the lease read; no rendering."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "indexed-map",
+      "anchor": "({ working: theme.text.feedback.success.base, waiting: theme.text.feedback.warning.base, idle: theme.text.muted, offline: theme.text.faint })[p.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "App tree row: the status glyph color; presence emphasis only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "indexed-map",
+      "anchor": "STATUS[p.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "App tree row: the status glyph alone, beside the agent name; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "App tree row: dims an offline row's name; styling only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "peerOf(p.mesh, id)",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "feedFor(p.mesh, open())",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{title()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{`  ${p.mesh.status.space}`}",
+      "class": "non-render/control",
+      "rationale": "App header: the open space's name from the connection status; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "`  ${p.mesh.status.space}`",
+      "class": "non-render/control",
+      "rationale": "App header: the open space's name from the connection status; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={peer()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{peer()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`◐ ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\"}>\n                <For each={overview(pr(), now())}>{(f) => <text fg={theme.text.muted}>{`${f.label.padEnd(9)}${f.value}`}</text>}</For>\n              </Show>\n            </box>\n          )}",
+      "class": "honest-text",
+      "rationale": "App peer header: a waiting agent's own question, then the overview fields whose status names working progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={pr().status === \"waiting\"}",
+      "class": "non-render/control",
+      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{pr().status === \"waiting\"}",
+      "class": "non-render/control",
+      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={feed().length}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{feed().length}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "each={feed()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{feed()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "fallback={<Show when={mesh()}>{(m) => <Conversation mesh={m()} />}</Show>}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{<Show when={mesh()}>{(m) => <Conversation mesh={m()} />}</Show>}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={mesh()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{(m) => <Conversation mesh={m()} />}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "fallback={\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
+      "class": "non-render/control",
+      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
+      "class": "non-render/control",
+      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}",
+      "class": "non-render/control",
+      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "derived-output",
+      "anchor": "v.on(\"change\", show)",
+      "class": "non-render/control",
+      "rationale": "App connection: forwards each MeshView change to the app's state signal; nothing is rendered here."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "ter((a) => a.status !== \"offline\").length\n  items.push({ ",
+      "class": "non-render/control",
+      "rationale": "App agents header: the offline filter feeding the live-agent count; routing only."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "`${live}/${mesh.agents.length}`",
+      "class": "presence-only-glyph/count",
+      "rationale": "App agents header: an aggregate live/total agent count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "ing: { mark: \"●\", word: \"working\" },\n  waiting: { mark: \"",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "\"idle\"",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "ine: { mark: \"⨯\", word: \"offline\" },\n} as const\n\nexport f",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "`${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}`",
+      "class": "honest-text",
+      "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "indexed-map",
+      "anchor": "el: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status",
+      "class": "honest-text",
+      "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "indexed-map",
+      "anchor": "TATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"wo",
+      "class": "honest-text",
+      "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "us].word}${p.status === \"working\" ? \" · progress unknown\"",
+      "class": "non-render/control",
+      "rationale": "App overview status: the working check that adds the unknown-progress qualifier; routing only."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "e\", value: p.status !== \"offline\" && p.runtime ? duration",
+      "class": "non-render/control",
+      "rationale": "App overview uptime: the offline check decides whether uptime exists; no status word is rendered."
     }
   ]
 }
