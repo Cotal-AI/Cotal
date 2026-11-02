@@ -316,8 +316,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       items = await agent.takeChosen("automatic", (pending) => (chosen = fitting(pending)));
       const shown = new Set(items.map((i) => i.recvKey));
       const missed = chosen.filter((i) => !shown.has(i.recvKey));
+      if (!missed.length) break;
       const open = new Set(agent.inboxPreview("automatic").map((i) => i.recvKey));
-      if (!missed.length || missed.some((i) => open.has(i.recvKey))) break;
+      if (missed.some((i) => open.has(i.recvKey))) break;
     }
     const remaining = agent.inboxCount("automatic") - items.length;
     if (!items.length && !remaining) return undefined;

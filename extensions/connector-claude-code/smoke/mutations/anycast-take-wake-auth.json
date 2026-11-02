@@ -45,7 +45,7 @@
     {
       "name": "a frame chooses once, whatever its takes refused",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "      if (!missed.length || missed.some((i) => open.has(i.recvKey))) break;",
+      "find": "      if (missed.some((i) => open.has(i.recvKey))) break;",
       "replace": "      break;",
       "expectRed": "4a the frame carries the second request in the room the cancelled one left",
       "note": "A refused take leaves its room empty, so the frame carries nothing a choosing again would have fit.",
