@@ -20,7 +20,7 @@ import { cliControl } from "../lib/control.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
 import { closeSummary, type Recipient } from "../chat/view.js";
-import { openRoutingChatSession, openStaticChatSession, openUserChatSession, type AdmittedChatSession, type CloseReport, type RosterView } from "@cotal-ai/workspace/chat";
+import { USER_CHAT_TTL_SEC, openChatSession, type AdmittedChatSession, type ChatAdmission, type CloseReport, type RosterView } from "@cotal-ai/workspace/chat";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,
@@ -43,10 +43,6 @@ const NOT_YET: readonly (readonly [keyof Values & string, string])[] = [
   ["creds", "a chat session gets its own identity from the space, and no admission accepts an explicit credential"],
   ["lifecycle-uid", "it pairs with --creds, which no chat admission accepts"],
 ];
-
-/** A user-mode session asks for the auth service's whole lifetime cap, 8 hours, which it never
- *  extends. Each bearer within it still lasts at most 15 minutes. */
-export const USER_CHAT_TTL_SEC = 8 * 60 * 60;
 
 export interface ChatInput {
   readonly channel?: string;
@@ -77,29 +73,12 @@ export function chatArguments(args: ParsedArgs): ChatInput {
   return { ...(channel === undefined ? {} : { channel }), ...(values.name === undefined ? {} : { label: values.name }), frontEnd: picked.frontEnd };
 }
 
-/** What one admission asks for, by the target's recorded mode. A named channel is the session's
- *  initial channel, read ceiling and post list. Without one, an authenticated session starts on no
- *  channel and can neither join nor post to one; an open session routes anywhere. */
-export type ChatAdmission =
-  | { readonly mode: "open"; readonly label: string; readonly channels: readonly string[] }
-  | { readonly mode: "auth"; readonly label: string; readonly subscribe: readonly string[]; readonly allowPublish: readonly string[] }
-  | { readonly mode: "user"; readonly label: string; readonly channels: readonly string[]; readonly read: readonly string[]; readonly post: readonly string[]; readonly ttlSec: number };
-
 export function chatAdmission(mode: MeshTarget["mode"], label: string, channel: string | undefined): ChatAdmission {
   const channels = channel === undefined ? [] : [channel];
   if (mode === "open") return { mode, label, channels };
   if (mode === "auth") return { mode, label, subscribe: channels, allowPublish: channels };
   if (mode === "user") return { mode, label, channels, read: channels, post: channels, ttlSec: USER_CHAT_TTL_SEC };
   throw new CommandFailure("refused", "UNSUPPORTED", `chat has no admission for a mesh recorded in "${String(mode)}" mode; no other mode was tried`);
-}
-
-/** Admit through the one adapter the mode names. Each adapter refuses a target of another mode. */
-function admit(target: MeshTarget, admission: ChatAdmission, reopen: (channel: string) => string): Promise<AdmittedChatSession> {
-  switch (admission.mode) {
-    case "open": return openRoutingChatSession(target, { ...admission, reopen });
-    case "auth": return openStaticChatSession(target, { ...admission, reopen, control: cliControl });
-    case "user": return openUserChatSession(target, { ...admission, reopen });
-  }
 }
 
 /** The command that opens a session on a channel with the flags this one was started with, such as
@@ -228,7 +207,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
       process.exitCode = before;
       return;
     }
-    session = await admit(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), reopenCommand(args));
+    session = await openChatSession(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), { reopen: reopenCommand(args), control: cliControl });
   } catch (e) {
     signals.release();
     throw e;

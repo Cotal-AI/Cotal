@@ -16,9 +16,9 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import { disableInput, exitCode, globalFlagDeclarationProblems, isCommandFailure, outputDeclarationProblems, type CommandFailure } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands
 import { printCommandHelp } from "../src/help.js";
-import { USER_CHAT_TTL_SEC, channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, reopenCommand, sharedNameWarning, type ChatInput } from "../src/commands/chat.js";
+import { channelDisclosure, chatAdmission, chatArguments, chatComplete, closeExitCode, holdSignals, reopenCommand, sharedNameWarning, type ChatInput } from "../src/commands/chat.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
-import type { AdmittedChatSession, CloseReport, RosterRow } from "@cotal-ai/workspace/chat";
+import { USER_CHAT_TTL_SEC, type AdmittedChatSession, type CloseReport, type RosterRow } from "@cotal-ai/workspace/chat";
 
 const { check, finish } = createSuite();
 const cmd = registry.resolve<Command>("command", "chat");
