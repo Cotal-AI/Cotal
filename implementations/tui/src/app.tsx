@@ -73,16 +73,25 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     if (seen()[o.channel] !== arrivals) setSeen((s) => ({ ...s, [o.channel!]: arrivals }))
   })
 
+  // Each switch takes a number. One that a later switch or the app closing overtook while it waited
+  // closes the session it opened instead of showing it.
+  let switches = 0
   const switchTo = async (space?: string) => {
+    const mine = ++switches
     const old = session()
     setSession(undefined)
     setOpen({ kind: "channel" })
     setSeen({})
     await old?.close()
-    setSession(await props.openSpace(space))
+    const next = await props.openSpace(space)
+    if (mine !== switches) return void next.close()
+    setSession(next)
   }
   void switchTo()
-  onCleanup(() => void session()?.close())
+  onCleanup(() => {
+    switches++
+    void session()?.close()
+  })
 
   const read = async (announce: boolean) => {
     try {

@@ -4,7 +4,8 @@
  * and messages on the space, and the frame text must follow: the roster, a channel message in the
  * feed, a waiting agent in the inspector (the one-line summary at 80x24), and the connection going
  * from live to reconnecting when the broker stops and back to live when it returns. The app's own
- * observer must stay off the roster. Captures are kept under the printed directory.
+ * observer must stay off the roster. Switching spaces twice in a row must end live on the space
+ * picked last, with one app connection on the broker. Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, so it is not part of smoke:ci, which runs Node 22.
  * Run: pnpm --filter @cotal-ai/tui smoke
@@ -41,12 +42,13 @@ const check = (name: string, ok: boolean, detail?: string) => {
 }
 
 const port = await freePort()
+const monitor = await freePort()
 const server = `nats://127.0.0.1:${port}`
 let broker: ChildProcess | undefined
 let release = () => {}
 async function startBroker() {
   let output = ""
-  broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", store], { stdio: ["ignore", "pipe", "pipe"] })
+  broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-m", String(monitor), "-sd", store], { stdio: ["ignore", "pipe", "pipe"] })
   broker.stdout!.on("data", (d) => (output += d))
   broker.stderr!.on("data", (d) => (output += d))
   release = teardownOnSignal(broker, store)
@@ -76,6 +78,11 @@ const save = (dir: string, name: string) => {
   writeFileSync(join(dir, `${name}.ansi`), tmux("capture-pane", "-p", "-e", "-t", "t"))
 }
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
+// An open-mode endpoint names its broker connection after its card, and the app's observer is "tui".
+async function appConnections(): Promise<number> {
+  const connz = (await (await fetch(`http://127.0.0.1:${monitor}/connz?limit=1024`)).json()) as { connections?: { name?: string }[] }
+  return (connz.connections ?? []).filter((c) => c.name === "cotal:tui").length
+}
 
 function launch(width: number, height: number, err: string) {
   try {
@@ -208,6 +215,25 @@ try {
     await waitFor(has("EXIT=0"), "q to quit with status 0")
     check(`${size}: q quits with status 0`, true)
   }
+
+  console.log("fast space switch")
+  const other = "team-beta"
+  mkdirSync(join(work, "project-beta"))
+  await setupSpaceStreams({ servers: server, space: other })
+  w.recordMesh({ space: other, server, root: join(work, "project-beta"), mode: "open", origin: "manual", ts: new Date().toISOString() })
+  launch(209, 52, join(work, "switch.err"))
+  await waitFor(has(`● live · ${space}`), "the launch folder's space live")
+  keys("j", "Enter", "k", "Enter")
+  await waitFor(has("● live ·"), "a space live after two quick switches")
+  // A switch that finishes late lands after the first live frame, so give it time to.
+  await new Promise((r) => setTimeout(r, 3000))
+  const switched = capture()
+  save(join(captures, "switch"), "01-after-two-switches")
+  check("switching away and back quickly ends live on the space picked last", switched.includes(`● live · ${space}`) && !switched.includes(`● live · ${other}`), switched)
+  const open = await appConnections()
+  check("switching quickly leaves one app connection on the broker", open === 1, `app connections: ${open}`)
+  keys("q")
+  await waitFor(has("EXIT=0"), "q to quit after the switches")
 } finally {
   try {
     tmux("kill-server")
