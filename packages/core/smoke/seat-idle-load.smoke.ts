@@ -427,6 +427,12 @@ const startChild = (job: SeatJob | DaemonJob, onMessage: (m: Record<string, unkn
   child.send(job);
   return child;
 };
+/** Resolves when the child has exited, or after `ms`. */
+const exited = (child: ChildProcess, ms: number): Promise<void> => new Promise((resolve) => {
+  if (child.exitCode !== null || child.signalCode !== null) return resolve();
+  const timer = setTimeout(resolve, ms);
+  child.once("exit", () => { clearTimeout(timer); resolve(); });
+});
 const ask = (child: ChildProcess, cmd: ChildCmd, key: string): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
   const on = (m: Record<string, unknown>) => { if (key in m) { child.off("message", on); resolve(m); } };
   child.on("message", on);
@@ -731,7 +737,9 @@ try {
 
   startTeardown();
   stopping = true;
-  await Promise.all([...seatKids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").catch(() => undefined)));
+  // A child that answered stop exits on its own; give it up to 15 s so what Node writes at exit
+  // (a CPU profile under --cpu-prof) is complete before the teardown below kills what remains.
+  await Promise.all([...seatKids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").then(() => exited(c, 15_000)).catch(() => undefined)));
 } catch (e) {
   console.error("  ✗ seat-idle-load threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
