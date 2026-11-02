@@ -87,6 +87,7 @@ It depends on no other package in this repository. Adapter-specific concepts sta
 and shared operator models, including mesh selection, credential paths, process custody, and `MeshView`.
 `@cotal-ai/workspace/control` supplies manager requests, registry reads, seat lookup, and shared console control helpers.
 `@cotal-ai/workspace/launch` builds the managed-launch request and reads the manager's joined result.
+`@cotal-ai/workspace/attach` attaches a terminal to an agent's seat over a mesh session and re-establishes the session when the link drops.
 Command flags, prompts, and version-specific remedies stay in each caller.
 A client can embed core without adopting that workstation state.
 
