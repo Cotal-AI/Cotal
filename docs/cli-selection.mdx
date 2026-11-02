@@ -668,9 +668,11 @@ creating a control directory or lock. An explicit IdP without a cached login ref
 `AUTH_REQUIRED`. An unreadable sign-in or catalog cache refuses with `DEPENDENCY_UNAVAILABLE`
 before refresh or registry application. Both exit 2 and leave the cache untouched; diagnostics
 name the path without printing cache contents or parser excerpts.
-`cotal sync` bypasses freshness and reports added, changed, removed, unchanged, and name collisions. `--idp` limits it to one signed-in account. It never connects
+`cotal sync` bypasses freshness and reports added, changed, removed, unchanged, name collisions, and the spaces the catalog marks unavailable. `--idp` limits it to one signed-in account. It never connects
 to a broker. `--json` gives each account under `accounts` with its `idp`, `state`, `catalog`, the
-five name lists, `selectionCleared` and `error`. An account whose catalog could not be refreshed keeps
+six name lists, `selectionCleared` and `error`. An unavailable space keeps the registration this
+machine holds, which is also listed as unchanged; a command that targets it refuses with
+`DEPENDENCY_UNAVAILABLE` and the catalog's reason while its siblings keep working. An account whose catalog could not be refreshed keeps
 its last snapshot and is named in a `CATALOG_UNAVAILABLE` warning, so the result is partial, exit 4;
 when no account could be refreshed, `sync` refuses with `DEPENDENCY_UNAVAILABLE`, exit 2.
 
