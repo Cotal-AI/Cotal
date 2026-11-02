@@ -1,10 +1,10 @@
 import {
   homeCotalDir,
   isMeshRegistryError,
-  loadPreparedSpaces,
   preparedSpacesDir,
   readCurrent,
   readMeshRegistry,
+  readPreparedSpaces,
   type MeshEntry,
 } from "@cotal-ai/workspace"
 
@@ -19,8 +19,7 @@ export type Catalog = { home: string; current?: string; entries: Entry[] }
 
 /** Reads this machine's registrations offline: no broker is dialed and nothing is written. A record
  *  workspace refuses becomes an `unusable` entry naming it, so one damaged file never hides the
- *  rest. A prepared-space reader that refuses hides every prepared space, because workspace reads
- *  that directory all or nothing. */
+ *  rest. Only a prepared spaces folder that cannot be read at all hides every prepared space. */
 export function readCatalog(): Catalog {
   const entries: Entry[] = []
   const refuse = (source: string, e: unknown) => entries.push({ kind: "unusable", source, message: (e as Error).message })
@@ -36,7 +35,9 @@ export function readCatalog(): Catalog {
   }
 
   try {
-    for (const p of loadPreparedSpaces()) entries.push({ kind: "prepared", space: p.space, root: p.root, preparedAt: p.ts })
+    const prepared = readPreparedSpaces()
+    for (const p of prepared.spaces) entries.push({ kind: "prepared", space: p.space, root: p.root, preparedAt: p.ts })
+    for (const e of prepared.unusable) refuse(e.file, e)
   } catch (e) {
     refuse(preparedSpacesDir(), e)
   }

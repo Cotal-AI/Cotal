@@ -53,6 +53,7 @@ async function seed(home: string) {
   w.setCurrent("team-alpha")
   writeFileSync(join(w.meshesDir(), "broken.json"), "{ not json")
   writeFileSync(join(w.meshesDir(), "space.68616c66.json"), JSON.stringify({ space: "half", mode: "auth", ts }))
+  writeFileSync(join(w.preparedSpacesDir(), "broken-prep.json"), "{ not json")
 }
 
 const capture = () => tmux("capture-pane", "-p", "-t", "t")
@@ -113,7 +114,7 @@ try {
 
     const first = await waitFor((f) => f.includes("✗ not connected") && f.includes("broken.json"), "the catalog rows and the refused resolution")
     save(dir, "01-catalog")
-    for (const row of ["team-alpha", "research-lab", "staging", "prepared", "broken.json", "space.68616c66"]) check(`${size}: the tree lists ${row}`, first.includes(row), first)
+    for (const row of ["team-alpha", "research-lab", "staging", "prepared", "broken.json", "space.68616c66", "broken-prep.json"]) check(`${size}: the tree lists ${row}`, first.includes(row), first)
     check(`${size}: with no space resolvable the middle says why and how to open one`, title(first).includes("No space open") && first.includes("does not parse as a") && first.includes("Pick a space on the left"), first)
     if (width >= 97) check(`${size}: the inspector has nothing that needs you before a space is open`, first.includes("NEEDS YOU · 0") && first.includes("Waiting agents show here"), first)
     else check(`${size}: the inspector shrinks to a one-line summary`, !first.includes("NEEDS YOU") && first.includes("nothing needs you"), first)
@@ -150,7 +151,7 @@ try {
     tmux("send-keys", "-t", "t", "-l", "reread")
     await waitFor((f) => f.includes("Reread spaces") && !f.includes("Quit"), "the filtered palette")
     keys("Enter")
-    const toast = await waitFor(has("Reread 5 registration(s)"), "the reread toast")
+    const toast = await waitFor(has("Reread 6 registration(s)"), "the reread toast")
     save(dir, "05-reread-toast")
     check(`${size}: the palette runs a command and a toast reports it`, toast.includes(".cotal"), toast)
 
