@@ -9,43 +9,53 @@
   "mutations": [
     {
       "name": "MeshView stops storing the latest endpoint warning",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "    this.warning = e.message;",
       "replace": "    void e.message;",
       "expectRed": "MeshView's own warning listener reaches the model and stream event",
-      "cell": "MeshView's own warning listener reaches the model and stream event"
+      "cell": "MeshView's own warning listener reaches the model and stream event",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:view",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "MeshView stops emitting endpoint warnings to stream renderers",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "    this.emit(\"warning\", e);",
       "replace": "    void e;",
       "expectRed": "MeshView's own warning listener reaches the model and stream event",
-      "cell": "MeshView's own warning listener reaches the model and stream event"
+      "cell": "MeshView's own warning listener reaches the model and stream event",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:view",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "ingest writes the payload from.name back into the id-to-name map, so a spoofed DM relabels the authenticated sender in every lens (#1399)",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "    this.recentTs.push(now);\n    this.roll(now);\n    this.bucketCounts[BUCKET_COUNT - 1]++;\n    if (kind === \"unicast\") return this.coalesce(msg);",
       "replace": "    this.recentTs.push(now);\n    this.roll(now);\n    this.bucketCounts[BUCKET_COUNT - 1]++;\n    if (msg.from?.id && msg.from.name) this.byId.set(msg.from.id, msg.from.name);\n    if (kind === \"unicast\") return this.coalesce(msg);",
       "expectRed": "tap spoof: nameOf keeps the roster name for the authenticated id",
-      "cell": "tap spoof: nameOf keeps the roster name for the authenticated id"
+      "cell": "tap spoof: nameOf keeps the roster name for the authenticated id",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:view",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "prefillDms writes history rows' payload from.name back into the id-to-name map, so a spoofed backlog row relabels the sender after a restart (#1399)",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "      if (!m.to) continue;\n      const d: RawDm = { ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) };",
       "replace": "      if (!m.to) continue;\n      if (m.from?.id && m.from.name) this.byId.set(m.from.id, m.from.name);\n      const d: RawDm = { ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) };",
       "expectRed": "prefill spoof: nameOf still the roster name after dmHistory",
-      "cell": "prefill spoof: nameOf still the roster name after dmHistory"
+      "cell": "prefill spoof: nameOf still the roster name after dmHistory",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:view",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "rollupDms keys each conversation on the payload from.name again, so a forged name moves the line into another pair's thread (#1399)",
-      "file": "implementations/cli/src/view/mesh-view.ts",
+      "file": "packages/workspace/src/view/mesh-view.ts",
       "find": "      const a = d.from.id;\n      const b = d.toId;",
       "replace": "      const a = d.from.name;\n      const b = this.nameOf(d.toId);",
       "expectRed": "tap spoof: the forged line never lands in a carol-keyed conversation (payload name cannot re-key a thread)",
-      "cell": "tap spoof: the forged line never lands in a carol-keyed conversation (payload name cannot re-key a thread)"
+      "cell": "tap spoof: the forged line never lands in a carol-keyed conversation (payload name cannot re-key a thread)",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:view",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }
   ]
 }

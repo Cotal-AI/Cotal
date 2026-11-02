@@ -7,12 +7,14 @@ import {
   isPermissionDenied,
   issuedUserCaller,
   managerCallerBinding,
+  registryListingCaller,
   replyRefusedBeforeEffect,
   resolveService,
   standaloneConnectOpts,
   type EpAttributedReply,
   type EpCaller,
   type EpVerbTarget,
+  type IssuedCaller,
   type ResolvedService,
 } from "@cotal-ai/core";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -50,6 +52,47 @@ type UserManagerFollow = (
   submit: (signal?: AbortSignal) => Promise<EpAttributedReply>,
   prepare: (signal: AbortSignal, deadline: number) => Promise<void>,
 ) => Promise<EpAttributedReply>;
+
+/** Open a manager-call connection on `token` as a manager call opens it, find the caller a registry
+ *  listing rides on it (SPEC 13.15), run `ask` over it, and close it. `exp` is the bearer's expiry,
+ *  the listing's horizon at the callout. The issued read shares the manager calls' legacy-rail
+ *  memory, so a legacy credential is refused that read once, not once per listing. */
+export async function withUserManagerListing<T>(
+  config: ManagerConfig,
+  token: string,
+  exp: number | undefined,
+  ask: (nc: NatsConnection, listing: IssuedCaller | undefined) => Promise<T>,
+): Promise<T> {
+  const user = config.userAuth!;
+  const binding = managerCallerBinding(token, {
+    space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
+  });
+  const railKey = binding.credentialId ?? token;
+  const connectOpts = standaloneConnectOpts({ bearer: token, sentinelCreds: user.sentinelCreds, tls: config.tls });
+  const connId = String(connectOpts.name);
+  const nc = await dialerFor(config.servers)({ servers: config.servers, ...connectOpts, maxReconnectAttempts: 0, timeout: 10_000 });
+  // An issued view lists as itself; any other under the listing generation its credential carries.
+  const issued = async (): Promise<IssuedCaller | undefined> => {
+    try {
+      const caller = await issuedUserCaller(nc, config.space, connId, binding.caller);
+      legacyRail.delete(railKey);
+      return caller;
+    } catch (e) {
+      if (!isPermissionDenied(e)) throw e;
+      rememberLegacyRail(railKey);
+      return undefined;
+    }
+  };
+  try {
+    const skipped = onLegacyRail(railKey);
+    const caller = skipped ? undefined : await issued();
+    const listing = caller ?? await registryListingCaller(nc, config.space, binding.caller, { connId, ...(exp !== undefined ? { exp } : {}) });
+    // A remembered legacy verdict may be stale: with no listing binding, check the issued read once.
+    return await ask(nc, listing ?? (skipped ? await issued() : undefined));
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
 
 /** A control connection never replaces the seat's presence, messages or standing bearer source. */
 export async function invokeUserManager(

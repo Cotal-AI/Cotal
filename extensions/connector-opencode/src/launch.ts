@@ -236,8 +236,11 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   };
   serve.stdout?.on("data", scan);
   serve.stderr?.on("data", scan);
+  // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
+  // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
+  let bootFailed = false;
   serve.on("exit", (code, signal) => {
-    if (!attached) process.exit(code ?? (signal ? 1 : 0)); // died before the TUI came up
+    if (!attached) process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0))); // died before the TUI came up
   });
 
   // Poke the server until the plugin's session handshake lands (lazy plugin load → mesh join +
@@ -269,6 +272,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     process.stderr.write(
       `[cotal-connector] serve: agent session never came up (~60s) — aborting. Check the boot log above for plugin/mesh errors (OPENCODE_DB=${dbPath})\n`,
     );
+    bootFailed = true;
     await terminate(serve);
     process.exit(1);
   }

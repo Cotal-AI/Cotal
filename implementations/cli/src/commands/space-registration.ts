@@ -311,7 +311,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   const root = take(checkRoot(v.root, process.cwd()), spaceTarget);
   take(checkMode(space, root, [], "user", true), spaceTarget);
   const replaced = replaceable(space, v.force === true, spaceTarget);
-  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)), spaceTarget);
+  take(await verifyUserExchange(bundle.userAuth.endpoints.url, userExchangeIssuer(bundle.space)), spaceTarget);
   take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"), spaceTarget);
   const rows: [string, string][] = [
     ["space", space],
@@ -319,7 +319,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
     ["IdP", bundle.userAuth.idp.url],
     ["issuer", bundle.userAuth.idp.issuer],
     ["audience", bundle.userAuth.idp.audience],
-    ["exchange", bundle.userAuth.endpoints!.url!],
+    ["exchange", bundle.userAuth.endpoints.url],
     ["root", root],
   ];
   // A fetched document is always confirmed: the operator, not the network, adopts its pins.

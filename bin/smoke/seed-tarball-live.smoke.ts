@@ -11,6 +11,8 @@
  *    `package.json` and no `seeded-connectors/`, so only resolving it reaches the payloads
  *  - each connector registers into THE BINARY'S single `@cotal-ai/core` (ext add asserts this; a
  *    dual-core install would fail it), recorded `source:"seeded"`
+ *  - the docs data every connector reads ships once, in `seeded-connectors/_shared`; the seed puts it
+ *    back in each installed connector, and `cotal update` verifies those copies against it
  *
  * Broker-free and deterministic. Needs `npm` + `pnpm` on PATH and network for third-party deps.
  * Run: pnpm smoke:seed-tarball:live
@@ -75,9 +77,12 @@ try {
     header.writeUInt16LE(machine, 18);
     writeFileSync(helper, header);
   }
+  // workspace's prepack refuses without its Windows and macOS identity bindings, which only the native
+  // builder jobs produce and a Linux install never loads, so it packs without that check.
   for (const d of dirs) {
     const root = d === "packages/seat" ? seatClone : join(REPO, d);
-    execFileSync("pnpm", ["-C", root, "pack", "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
+    const skipPrepack = d === "packages/workspace" ? ["--config.ignore-scripts=true"] : [];
+    execFileSync("pnpm", ["-C", root, "pack", ...skipPrepack, "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
   }
   const tarballs = readdirSync(tgz).filter((f) => f.endsWith(".tgz"));
   check("packed the full @cotal-ai closure", tarballs.length === dirs.length, tarballs.length);
@@ -91,6 +96,14 @@ try {
     listing.includes("package/seeded-connectors/web/dist/web/vendor/marked.umd.js") &&
       listing.includes("package/seeded-connectors/web/dist/web/vendor/purify.min.js"),
   );
+  // Every connector bundle reads the same docs data from beside itself; the tarball carries it once.
+  const docsEntries = listing.split("\n").filter((line) => /\/docs-(bundle|index)\.bin$/.test(line)).sort();
+  check(
+    "cotal-ai tarball ships each docs file once, in seeded-connectors/_shared",
+    docsEntries.join(" ") === "package/seeded-connectors/_shared/docs-bundle.bin package/seeded-connectors/_shared/docs-index.bin",
+    docsEntries,
+  );
+  check("cotal-ai tarball ships the shared-file placements", listing.includes("package/seeded-connectors/_shared/placements.json"));
   const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { encoding: "utf8" });
   check("cotal-ai tarball has concrete dep versions (workspace: replaced)", !packedPkg.includes("workspace:"));
 
@@ -148,7 +161,8 @@ try {
     check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
   }
   // A read no longer seeds, so seed explicitly; the listing after it is a read.
-  spawnSync("node", [invokedBin, "ext", "seed"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  const seed = spawnSync("node", [invokedBin, "ext", "seed"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  check("ext seed from the published layout succeeded", seed.status === 0, `${seed.stdout}${seed.stderr}`.split("\n").slice(-12).join("\n"));
   const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
   const out = list.stdout ?? "";
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
@@ -184,6 +198,55 @@ try {
   }
   const hermesLaunch = readFileSync(join(extRoot, "@cotal-ai", "connector-hermes", "dist", "launch.js"), "utf8");
   check("Hermes launcher is self-contained (no late host-core import)", !/^\s*import\b[^\n]* from ["']@cotal-ai\/core["'];?\s*$/m.test(hermesLaunch));
+
+  // The seed store put the shared docs data back at every path the prepack took it from, so each
+  // installed connector holds the files it was packed with.
+  const seededPkgs: Record<string, string> = {
+    claude: "@cotal-ai/connector-claude-code", opencode: "@cotal-ai/connector-opencode", codex: "@cotal-ai/connector-codex",
+    hermes: "@cotal-ai/connector-hermes", jcode: "@cotal-ai/connector-jcode", pi: "@cotal-ai/pi", web: "@cotal-ai/web",
+  };
+  const sharedDir = join(prefix, "node_modules", "cotal-ai", "seeded-connectors", "_shared");
+  const placements = (JSON.parse(readFileSync(join(sharedDir, "placements.json"), "utf8")) as { placements: Record<string, string[]> }).placements;
+  // Every connector bundles the docs data; the web dashboard does not.
+  const connectors = Object.keys(seededPkgs).filter((name) => name !== "web");
+  check("every connector, and only a connector, shipped its docs data in the shared copy", Object.keys(placements).sort().join(" ") === [...connectors].sort().join(" "), Object.keys(placements));
+  const installedAt = (name: string, rel: string) => join(extRoot, ...seededPkgs[name].split("/"), ...rel.split("/"));
+  const sharedCopy = (rel: string) => readFileSync(join(sharedDir, rel.slice(rel.lastIndexOf("/") + 1)));
+  let restored = 0;
+  for (const name of connectors) {
+    for (const rel of placements[name] ?? []) {
+      const at = installedAt(name, rel);
+      if (existsSync(at) && readFileSync(at).equals(sharedCopy(rel))) restored++;
+      else check(`installed ${name} holds ${rel}, byte-equal to the shared copy`, false);
+    }
+  }
+  const placed = Object.values(placements).flat().length;
+  check(`every placement is restored byte-equal in the installed connectors (${restored}/${placed})`, restored === placed && placed > 0);
+
+  // `cotal update` keeps a seeded built-in only when its store and installed copies are byte-equal to
+  // the shipped payload, which for a restored file is the shared copy. A tampered copy is reinstalled.
+  const updateEnv = { ...process.env, HOME: join(base, "home"), XDG_CONFIG_HOME: cfg };
+  mkdirSync(updateEnv.HOME, { recursive: true });
+  const update = () => {
+    const run = spawnSync("node", [invokedBin, "update"], { cwd: prefix, encoding: "utf8", env: updateEnv });
+    return `${run.stdout ?? ""}${run.stderr ?? ""}`;
+  };
+  const reconciled = (out: string) => out.split("\n").find((line) => line.includes("connectors reconciled")) ?? "";
+  const kept = reconciled(update());
+  check(
+    "cotal update verifies all seven built-ins against the shipped payload and reinstalls none",
+    Object.keys(seededPkgs).every((name) => new RegExp(`verified [^;]*\\b${name}\\b`).test(kept)) && !kept.includes("refreshed"),
+    kept,
+  );
+  const tamperedRel = placements.claude?.[0] ?? "";
+  writeFileSync(installedAt("claude", tamperedRel), Buffer.concat([sharedCopy(tamperedRel), Buffer.from([0])]));
+  const repairOut = update();
+  check(
+    "cotal update reinstalls a built-in whose restored docs file differs from the shared copy",
+    repairOut.includes(`claude: the installed copy differs at ${join(...tamperedRel.split("/"))}; reinstalling`) && /refreshed claude\b/.test(reconciled(repairOut)),
+    repairOut.split("\n").filter((line) => line.includes("claude")).join("\n"),
+  );
+  check("the reinstall restores the shared copy", readFileSync(installedAt("claude", tamperedRel)).equals(sharedCopy(tamperedRel)));
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

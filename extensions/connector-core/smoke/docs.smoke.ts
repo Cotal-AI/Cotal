@@ -6,14 +6,21 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { discoverDocuments } from "@cotal-ai/docs-content";
 import { runDocs, searchDocs, renderDocsIndex, DOCS_VERSION } from "@cotal-ai/connector-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
+const originalFetch = globalThis.fetch;
+let networkCalls = 0;
+globalThis.fetch = async () => {
+  networkCalls++;
+  throw new Error("docs smoke runs offline");
+};
 
 // 1 — release safety: the bundle version equals the version we actually ship. A release can
 // never hand agents docs stamped for a different version than the package they installed.
@@ -55,6 +62,25 @@ console.log("✓ 2 — the index names the version and offers real page slugs");
   const schema = await runDocs({ page: "schema" });
   assert.match(schema.text, /"\$schema"|"\$id"|"properties"/, "schema alias returns JSON Schema");
 
+  const quickstart = await runDocs({ page: "getting-started.md" });
+  assert.equal(quickstart.isError, undefined);
+  assert.match(quickstart.text, /# Quickstart/);
+  assert.match(quickstart.text, /cotal setup --configure-only/);
+  assert.match(quickstart.text, /cotal down --with-agents/);
+  assert.match(quickstart.text, /deprovisions its managed agents/);
+  assert.match(quickstart.text, /Read https:\/\/docs\.cotal\.ai\/prompt\.md, then set up Cotal/);
+  assert.match(quickstart.text, /\[Define a team\]\(define-a-team\.mdx\)/, "Card title and URL reach the installed tool");
+  assert.match(quickstart.text, /Choose several agents and their channels in one file/, "Card children reach the installed tool");
+  assert.doesNotMatch(quickstart.text, /<(?:Card|Cards|Step|Steps|Callout)\b|^import /m);
+
+  const interfaces = await runDocs({ page: "api-reference" });
+  for (const slug of ["auth-api", "auth-host-api", "dashboard-api", "manager-console-api", "feedback-intake-api"]) {
+    assert.ok(interfaces.text.includes(`](${slug}.mdx)`), `${slug} remains a bundled HTTP reference link`);
+    const reference = await runDocs({ page: `${slug}.mdx` });
+    assert.equal(reference.isError, undefined, `${slug} resolves without the network`);
+    assert.match(reference.text, /## Schemas/);
+  }
+
   // Case-insensitive and tolerant of a trailing .md.
   const alt = await runDocs({ page: "Architecture.md" });
   assert.match(alt.text, /# Architecture/);
@@ -89,10 +115,14 @@ console.log("✓ 4 — an unknown page fails loud and lists what is available");
     "exact identifier ‘allowSubscribe’ retrieves the channels page",
   );
 
-  // Subject wildcards hit the intended sections: the exact wildcard form keeps its boost so it
-  // ranks the Wildcards section first.
-  assert.equal(searchDocs("team.>")[0].slug, "channels-and-permissions", "‘team.>’ ranks the Wildcards section first");
-  assert.equal(searchDocs("team.*")[0].slug, "channels-and-permissions", "‘team.*’ ranks the Wildcards section first");
+  for (const wildcard of ["team.>", "team.*"]) {
+    const literal = searchDocs(wildcard, Number.MAX_SAFE_INTEGER);
+    assert.ok(literal[0]?.text.includes(wildcard), `leading result documents literal wildcard ${wildcard}`);
+    const reference = literal.find((hit) => hit.slug === "channels-and-permissions" && hit.heading.endsWith(" › Wildcards"));
+    const base = searchDocs("team", Number.MAX_SAFE_INTEGER).find((hit) => hit.slug === reference?.slug && hit.heading === reference.heading);
+    assert.ok(reference && base, `wildcard reference remains reachable for ${wildcard} and its base subject`);
+    assert.ok(reference.score > base.score, `literal wildcard ${wildcard} increases its reference section score`);
+  }
 
   // A wildcard with NO literal form anywhere — `$SYS.>` is written nowhere in the corpus — reaches
   // its sections only because the tokenizer strips the wildcard and searches the base subject.
@@ -163,9 +193,8 @@ console.log("✓ 5 — BM25 section search");
 {
   const docsDir = join(repoRoot, "docs");
   // README.md is the human index; cotal_docs renders its own, so the generator excludes it.
-  const expected = readdirSync(docsDir)
-    .filter((f) => f.endsWith(".md") && f !== "README.md")
-    .map((f) => f.slice(0, -3).toLowerCase())
+  const expected = (await discoverDocuments(docsDir))
+    .map(path => basename(path, extname(path)).toLowerCase())
     .sort();
   assert.ok(expected.length > 0, "the docs directory has pages to serve");
 
@@ -186,6 +215,42 @@ console.log("✓ 5 — BM25 section search");
   assert.equal(DOCS_VERSION, shipped, "the built module is stamped with the shipped version");
 }
 console.log("✓ 6 — the built docs module serves every page in docs/ at the shipped version");
+
+{
+  const sources = new Map((await discoverDocuments(join(repoRoot, "docs")))
+    .map(path => [path, basename(path, extname(path)).toLowerCase()]));
+  sources.set(join(repoRoot, "SPEC.md"), "spec");
+  sources.set(join(repoRoot, "spec", "cotal-lang.md"), "lang");
+  sources.set(join(repoRoot, "spec", "cotal.schema.json"), "schema");
+  const followed = new Set<string>();
+  const outsideBundle = new Set<string>();
+  for (const [source, slug] of sources) {
+    const page = await runDocs({ page: slug });
+    let fenced = false;
+    const prose = page.text.split("\n").filter(line => {
+      if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; return false; }
+      return !fenced;
+    }).join("\n");
+    for (const [, href] of prose.matchAll(/(?<!!)\[[^\]\n]*\]\(([^()\s]+)(?:\s+"[^"]*")?\)/g)) {
+      if (/^(?:[a-z][a-z0-9+.-]*:|#|\/)/i.test(href)) continue;
+      const path = resolve(dirname(source), decodeURIComponent(href.split(/[?#]/)[0]));
+      const destination = sources.get(path);
+      if (!destination) { outsideBundle.add(href); continue; }
+      const linked = await runDocs({ page: href });
+      assert.equal(linked.isError, undefined, `exported documentation link resolves: ${slug} -> ${href}`);
+      const canonical = await runDocs({ page: destination });
+      assert.equal(linked.text, canonical.text, `exported documentation link reads its intended page: ${href}`);
+      followed.add(href);
+    }
+  }
+  assert.ok(followed.has("identity-and-auth.mdx"), "the link census follows an authored MDX reference");
+  assert.ok(followed.has("../SPEC.md#7-channels"), "the link census follows a relative spec heading");
+  assert.ok(outsideBundle.size > 0, "repository source links remain outside the documentation bundle");
+  for (const page of ["https://elsewhere.test/architecture.mdx", "../examples/architecture.mdx", "../packages/architecture.md"]) {
+    assert.equal((await runDocs({ page })).isError, true, `unrelated paths are refused: ${page}`);
+  }
+  console.log(`✓ exported documentation links resolve through cotal_docs (${followed.size} destinations; ${outsideBundle.size} repository links outside the bundle)`);
+}
 
 // 7 — FAIL LOUD ON A HOLLOW SOURCE, which is the property the generator documents and the only
 // thing standing between an empty page and a release that ships docs answering nothing. This
@@ -216,6 +281,9 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
     mkdirSync(join(tree, "bin"), { recursive: true });
     cpSync(join(repoRoot, "bin", "package.json"), join(tree, "bin", "package.json"));
     cpSync(gen, join(tree, "scripts", "generate-docs-bundle.mjs"));
+    symlinkSync(join(repoRoot, "node_modules"), join(tree, "node_modules"), "dir");
+    mkdirSync(join(tree, "extensions", "connector-core", "src"), { recursive: true });
+    cpSync(join(repoRoot, "extensions", "connector-core", "src", "docs-index-core.js"), join(tree, "extensions", "connector-core", "src", "docs-index-core.js"));
     const copied = join(tree, "scripts", "generate-docs-bundle.mjs");
 
     // ACCEPT CONTROL FOR THE COPY. The refuse legs below are only evidence if the copy itself is
@@ -237,16 +305,16 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
     };
 
     // REFUSE LEG: an empty page.
-    writeFileSync(join(tree, "docs", "architecture.md"), "");
+    writeFileSync(join(tree, "docs", "architecture.mdx"), "");
     assert.match(
       refusal(join(dir, "hollow.ts")),
-      /gen:docsbundle: docs\/architecture\.md is empty/,
+      /gen:docsbundle: docs\/architecture\.mdx is empty/,
       "an empty source page makes the generator throw rather than emit hollow docs",
     );
 
     // REFUSE LEG: an empty normative source. A hollow SPEC.md is a different failure from an
     // empty page, and a generator that only guarded pages would ship a bundle with no spec.
-    cpSync(join(repoRoot, "docs", "architecture.md"), join(tree, "docs", "architecture.md"));
+    cpSync(join(repoRoot, "docs", "architecture.mdx"), join(tree, "docs", "architecture.mdx"));
     writeFileSync(join(tree, "SPEC.md"), "");
     assert.match(
       refusal(join(dir, "nospec.ts")),
@@ -259,4 +327,6 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
 }
 console.log("✓ 7 — the generator refuses a hollow source, naming which one");
 
-console.log("docs.smoke: OK — 7 sections");
+assert.equal(networkCalls, 0, "page, index and search calls use no network");
+globalThis.fetch = originalFetch;
+console.log("docs.smoke: OK — 7 sections, zero network calls");

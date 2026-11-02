@@ -23,6 +23,7 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { hardenPrivate, wfjStreamName } from "@cotal-ai/core";
+import { findCotalRoot } from "./auth-paths.js";
 import { recordOperationWarning } from "./output.js";
 import { foreignStoreEntries, STORE_ENTRY_NAMES, storeAccounts } from "./store-entries.js";
 
@@ -4264,4 +4265,21 @@ function retireCleanedRestore(lock: MaintenanceLock, record: RestoreActiveRecord
   unlinkSync(paths.journal);
   fsyncDirectory(paths.versionDir);
   return record;
+}
+
+/** A follow-up hint for failures whose signature is stale on-disk broker state: streams/durable
+ *  consumers minted by an older, incompatible Cotal generation survive every down/up cycle, and
+ *  JetStream rejects a same-name re-create with a different config. Rendered dim under the red
+ *  line by the error surfaces - the error itself stays the broker's own sentence. A root whose
+ *  maintenance journal holds a restore or a preserved cut gets no clean recipe: its store is that
+ *  data, and the hint never names a command that would delete it. */
+export function staleStoreHint(msg: string, root?: string): string | undefined {
+  if (!/consumer already exists|stream already exists/i.test(msg)) return undefined;
+  let held: string | undefined;
+  try { held = readMaintenanceJournal(root ?? findCotalRoot())?.state; } catch { held = "unreadable"; }
+  if (held) return `this root's maintenance journal holds a restore or a preserved cut (state ${held}), so its store holds that data and must not be cleaned; check it with \`cotal status\` before any recovery`;
+  // The recipe must not promise a configuration-preserving restart: a bare `cotal up` would turn
+  // a named/open/user-auth mesh into the default authenticated one, and a custom --store-dir is
+  // not recorded - so both variable parts are called out instead of implied.
+  return "likely stale on-disk mesh state from an older Cotal version - reset: `cotal down`, `cotal clean store --force` (repeat any custom --store-dir), then `cotal up` with your usual flags";
 }

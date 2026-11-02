@@ -68,6 +68,7 @@ const comparisonLabels: Record<SpaceSchemaDiffRow["state"], string> = {
   "native-store-verification-unconfirmed": "Native checks not confirmed",
   "unclassified-stream-settings": "Undeclared settings block apply",
   "creation-options-policy-required": "Creation option policy incomplete",
+  "operator-set-history-limit": "Operator-set history limit",
 };
 
 const initializationLabels: Record<SpaceInitializationDiffRow["state"] | "not-compared", string> = {

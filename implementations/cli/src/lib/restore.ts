@@ -17,6 +17,9 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   canonicalBackupStreamConfig,
+  chatHistoryLimitOf,
+  chatHistoryRestoreStaging,
+  chatStream,
   consumerConfigFromCheckpoint,
   deliveryBucket,
   downloadStreamSnapshot,
@@ -41,7 +44,9 @@ import {
   createEndpointStreams,
   ensureArtifactStore,
   hardenedAuthorityStreamNames,
+  setChatHistoryLimit,
   wfjStreamName,
+  type ChatHistoryLimit,
 } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -469,6 +474,13 @@ function smokeFailRestoreStream(pass: RestorePass, stream: string): boolean {
   return spec.slice(0, separator) === pass && spec.slice(separator + 1) === stream;
 }
 
+/** The chat history limit the backup recorded, when `record` is the chat stream's. Every restore
+ *  check holds that stream at {@link chatHistoryRestoreStaging} of it, which keeps the recorded
+ *  count and sets no age, so nothing expires while the restored state is compared. */
+function recordedChatHistory(space: string, record: BackupManifest["streams"][number]): ChatHistoryLimit | undefined {
+  return record.stream === chatStream(space) ? chatHistoryLimitOf(record.config) : undefined;
+}
+
 async function restoreStream(
   broker: IsolatedBroker,
   space: string,
@@ -476,6 +488,7 @@ async function restoreStream(
   pass: RestorePass,
   stream: BackupManifest["streams"][number],
 ): Promise<void> {
+  const recorded = recordedChatHistory(space, stream);
   const initLogin = await broker.addLogin({
     profile: "restore",
     scope: { operation: "initiate", stream: stream.stream },
@@ -487,7 +500,7 @@ async function restoreStream(
       init,
       space,
       stream.stream,
-      canonicalBackupStreamConfig(space, stream.stream),
+      canonicalBackupStreamConfig(space, stream.stream, recorded && chatHistoryRestoreStaging(recorded)),
       stream.state as unknown as Readonly<Record<string, unknown>>,
       RESTORE_TIMEOUT_MS,
     );
@@ -510,7 +523,7 @@ async function restoreStream(
       await uploadStreamRestoreChunk(upload, session, buffer.subarray(0, count), RESTORE_TIMEOUT_MS);
     }
     const restored = await finalizeStreamRestore(upload, session, RESTORE_TIMEOUT_MS);
-    validateCanonicalBackupStreamConfig(space, stream.stream, restored.config);
+    validateCanonicalBackupStreamConfig(space, stream.stream, restored.config, { restoreStagingFor: recorded });
     assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, restored.state as unknown as Readonly<Record<string, unknown>>);
   } finally {
     closeSync(fd);
@@ -552,7 +565,7 @@ async function sanitizeStreamSnapshot(
         }
       },
     });
-    validateCanonicalBackupStreamConfig(space, stream.stream, metadata.config);
+    validateCanonicalBackupStreamConfig(space, stream.stream, metadata.config, { restoreStagingFor: recordedChatHistory(space, stream) });
     assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, metadata.state as unknown as Readonly<Record<string, unknown>>);
     fsyncSync(fd);
   } finally {
@@ -581,10 +594,28 @@ async function validateRestoredStream(
     };
     if (info.error) throw new Error(info.error.description ?? `${record.stream} validation failed`);
     if (!info.config || !info.state) throw new Error(`${record.stream} validation returned an incomplete response`);
-    validateCanonicalBackupStreamConfig(space, record.stream, info.config as unknown as Record<string, unknown>);
+    validateCanonicalBackupStreamConfig(space, record.stream, info.config as unknown as Record<string, unknown>, { restoreStagingFor: recordedChatHistory(space, record) });
     assertRestoredState(record.stream, record.state as unknown as Readonly<Record<string, unknown>>, info.state as unknown as Readonly<Record<string, unknown>>);
     if (info.state.consumer_count !== expectedConsumers)
       throw new Error(`${record.stream} has ${info.state.consumer_count} consumers after restore; expected ${expectedConsumers}`);
+  } finally {
+    await nc.drain().catch(() => {});
+  }
+}
+
+/** Give the restored chat stream the age the backup recorded, after the target's last check, and
+ *  read it back; a failure fails the restore. No full-state comparison runs after it, since the
+ *  broker may expire posts as soon as it lands. A process that dies before this write leaves the
+ *  target at age 0, before commit intent, so the attempt rolls back with it. The login reaches the
+ *  chat stream alone. */
+async function applyRecordedChatAge(broker: IsolatedBroker, space: string, record: BackupManifest["streams"][number]): Promise<void> {
+  const recorded = chatHistoryLimitOf(record.config);
+  if (recorded.maxAgeMs === 0) return;
+  const stream = chatStream(space);
+  const login = await broker.addLogin({ profile: "infrastructure", streams: [stream], updateStreams: [stream] });
+  const nc = await connectIsolatedBroker(broker, login);
+  try {
+    await setChatHistoryLimit(await jetstreamManager(nc), space, recorded, chatHistoryRestoreStaging(recorded));
   } finally {
     await nc.drain().catch(() => {});
   }
@@ -1159,6 +1190,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // journals of both stores: the restored one here, the set-aside one from a private clone.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
+    const chatRecord = artifact.manifest.streams.find((entry) => entry.stream === chatStream(journal.space));
+    if (chatRecord && wanted.includes(chatRecord.stream)) await applyRecordedChatAge(broker, journal.space, chatRecord);
     await broker.stop();
     broker = undefined;
     const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;

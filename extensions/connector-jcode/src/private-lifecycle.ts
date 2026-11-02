@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { writePrivateRecord } from "@cotal-ai/core";
+import { writePrivateRecord, writeSecretFileAtomic } from "@cotal-ai/core";
 
 /** Exact teardown of one seat's private Jcode process tree (#839).
  *
@@ -20,11 +20,15 @@ export interface ProcessIdentity {
   start: string;
 }
 
-interface ProcessStat extends ProcessIdentity {
+export interface ProcessStat extends ProcessIdentity {
   parentPid: number;
+  /** The process group, which the process table shows for any process, readable environment or not. */
+  group: number;
+  /** Set when the process has exited and waits for its parent to reap it (Linux). */
+  zombie?: true;
 }
 
-function processStat(pid: number): ProcessStat | undefined {
+export function processStat(pid: number): ProcessStat | undefined {
   try {
     if (process.platform === "linux") {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -32,18 +36,21 @@ function processStat(pid: number): ProcessStat | undefined {
       if (after < 0) return undefined;
       const fields = stat.slice(after + 2).trim().split(/\s+/u);
       const parentPid = Number(fields[1]);
+      const group = Number(fields[2]);
       const start = fields[19];
-      return Number.isInteger(parentPid) && parentPid >= 0 && start ? { pid, parentPid, start } : undefined;
+      if (!(Number.isInteger(parentPid) && parentPid >= 0 && Number.isInteger(group) && group >= 0 && start)) return undefined;
+      return fields[0] === "Z" ? { pid, parentPid, group, start, zombie: true } : { pid, parentPid, group, start };
     }
     if (process.platform === "darwin" || process.platform.endsWith("bsd")) {
-      const out = execFileSync("/bin/ps", ["-o", "ppid=", "-o", "lstart=", "-p", String(pid)], {
+      const out = execFileSync("/bin/ps", ["-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-p", String(pid)], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
-      const match = out.match(/^(\d+)\s+(.+)$/u);
+      const match = out.match(/^(\d+)\s+(\d+)\s+(.+)$/u);
       const parentPid = Number(match?.[1]);
-      const start = match?.[2]?.trim();
-      return Number.isInteger(parentPid) && parentPid >= 0 && start ? { pid, parentPid, start } : undefined;
+      const group = Number(match?.[2]);
+      const start = match?.[3]?.trim();
+      return Number.isInteger(parentPid) && parentPid >= 0 && Number.isInteger(group) && group >= 0 && start ? { pid, parentPid, group, start } : undefined;
     }
   } catch {
     return undefined;
@@ -157,13 +164,13 @@ export const processHasLaunchIdentityForTest = (
   probe: Pick<ProcessIdentityProbe, "ps" | "pidExists">,
 ): boolean => processHasLaunchIdentityFromPs(pid, identityValue, probe);
 
-function captureLaunchProcesses(identityValue: string, probe: ProcessIdentityProbe = processIdentityProbe): ProcessIdentity[] {
-  const owned: ProcessIdentity[] = [];
+function captureLaunchProcesses(identityValue: string, probe: ProcessIdentityProbe = processIdentityProbe, readStat: (pid: number) => ProcessStat | undefined = processStat): ProcessStat[] {
+  const owned: ProcessStat[] = [];
   for (const pid of processPids()) {
     try {
       if (launchIdentityProof(pid, identityValue, probe) !== true) continue;
-      const stat = processStat(pid);
-      if (stat) owned.push({ pid: stat.pid, start: stat.start });
+      const stat = readStat(pid);
+      if (stat) owned.push(stat);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT" || code === "ESRCH" || code === "EACCES" || code === "EPERM") continue;
@@ -197,20 +204,11 @@ export function recordedTreePids(jcodeHome: string): number[] {
   return [...pids];
 }
 
+/** Whether `pid` runs, from one read of its process table entry. A zombie has exited. An entry that
+ * cannot be read is asked of the kernel, so a failed read never reads as an exit. */
 const alive = (pid: number): boolean => {
   const stat = processStat(pid);
-  if (stat) {
-    try {
-      if (process.platform === "linux") {
-        const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
-        const after = raw.lastIndexOf(") ");
-        if (after >= 0 && raw.slice(after + 2).startsWith("Z ")) return false;
-      }
-    } catch {
-      return false;
-    }
-    return true;
-  }
+  if (stat) return !stat.zombie;
   try {
     process.kill(pid, 0);
     return true;
@@ -283,6 +281,169 @@ export function readLaunchRecord(home: string): LaunchRecord | undefined {
   const host = record?.host;
   if (typeof identity !== "string" || !identity) return undefined;
   return isPid(host?.pid) && typeof host?.start === "string" && host.start ? { identity, host: { pid: host.pid, start: host.start } } : undefined;
+}
+
+/** A once seat's launch evidence, keyed by its lifecycle uid rather than by its name, so a same-name
+ * successor's launches never overwrite it: the host that launched, and every launch identity it
+ * used, a bridge relaunch included. A proof of retirement replaces it with a receipt, which stays
+ * until the manager has cleared the seat's debt and discards it. */
+type OnceRecord = { uid: string; host: ProcessIdentity; launches: string[] } | { uid: string; retired: true };
+
+const LIFECYCLE_UID = /^[a-z0-9]{26,32}$/u;
+
+function onceRecordPath(home: string, uid: string): string {
+  if (!LIFECYCLE_UID.test(uid)) throw new Error(`jcode connector: "${uid}" is not a lifecycle uid`);
+  return join(home, `cotal-once-${uid}.json`);
+}
+
+/** The uid's record, or `undefined` when there is none. A record that is not well formed throws. */
+function readOnceRecord(home: string, uid: string): OnceRecord | undefined {
+  const path = onceRecordPath(home, uid);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  const r = JSON.parse(raw) as { uid?: unknown; retired?: unknown; host?: { pid?: unknown; start?: unknown }; launches?: unknown };
+  if (r?.uid !== uid) throw new Error(`jcode connector: ${path} does not name once seat ${uid}`);
+  if (r.retired === true) return { uid, retired: true };
+  const launches = r.launches;
+  if (!isPid(r.host?.pid) || typeof r.host?.start !== "string" || !r.host.start
+    || !Array.isArray(launches) || launches.length === 0 || !launches.every((v) => typeof v === "string" && v.length > 0))
+    throw new Error(`jcode connector: ${path} is not well formed`);
+  return { uid, host: { pid: r.host.pid as number, start: r.host.start }, launches };
+}
+
+/** Add one native launch to a once seat's evidence, before the launch creates anything. */
+export function recordOnceLaunch(home: string, uid: string, record: LaunchRecord): void {
+  const prior = readOnceRecord(home, uid);
+  if (prior && "retired" in prior) throw new Error(`jcode connector: once seat ${uid} was already proved retired — refusing to launch under it again`);
+  if (prior && (prior.host.pid !== record.host.pid || prior.host.start !== record.host.start))
+    throw new Error(`jcode connector: once seat ${uid} was launched by another host — refusing to launch under it`);
+  writeSecretFileAtomic(onceRecordPath(home, uid), `${JSON.stringify({ uid, host: record.host, launches: [...(prior?.launches ?? []), record.identity] })}\n`);
+}
+
+/** Whether a process a scan captured is still that process, decided by one read of its entry: the
+ * pid shows the captured start token and has not exited. A live process whose entry cannot be read
+ * throws, because nothing then rules it out. */
+function stillOwned(p: ProcessIdentity, readStat: (pid: number) => ProcessStat | undefined): boolean {
+  const stat = readStat(p.pid);
+  if (!stat) {
+    if (alive(p.pid)) throw new Error(`jcode connector: PID ${p.pid} was found in the once launch, and its process table entry can no longer be read to rule it out`);
+    return false;
+  }
+  return stat.start === p.start && !stat.zombie;
+}
+
+/** The live processes a once seat's launches own: each process that carries one of the launch
+ * identities, each descendant reached through parents already found, and each member of a process
+ * group one of the carriers leads. The process table shows parentage and group for every process, so
+ * a descendant whose environment cannot be read (a setuid program, or one that turned off its own
+ * dumpable flag) is still found while it keeps either link. A parent or a leader counts only while
+ * its pid still has the start token this scan captured. `groups` keeps each group found led, by its
+ * leader's start token, so a later scan still finds the members after the leader is gone; Linux does
+ * not reuse a group's id while a member lives, and a new process on that pid shows another start
+ * token. A group a descendant leads proves nothing: another process of the same session can join
+ * it. A live process whose process table entry cannot be read throws. */
+function onceTree(
+  launches: readonly string[],
+  probe: ProcessIdentityProbe,
+  groups: Map<number, string>,
+  readStat: (pid: number) => ProcessStat | undefined,
+): ProcessIdentity[] {
+  const carriers = launches.flatMap((identity) => captureLaunchProcesses(identity, probe, readStat)).filter((p) => p.pid !== process.pid);
+  // A carrier's group comes from the same read as its start token.
+  for (const p of carriers) if (p.group === p.pid) groups.set(p.pid, p.start);
+  const leads = (group: number): boolean => {
+    const start = groups.get(group);
+    if (start === undefined) return false;
+    const leader = readStat(group);
+    return leader === undefined || leader.start === start;
+  };
+  const tree = new Map<number, ProcessIdentity>(carriers.map((p) => [p.pid, { pid: p.pid, start: p.start }]));
+  const rest = new Map<number, ProcessStat>();
+  for (const pid of processPids()) {
+    if (pid === process.pid || tree.has(pid)) continue;
+    const stat = readStat(pid);
+    if (!stat) {
+      if (alive(pid)) throw new Error(`jcode connector: cannot read PID ${pid}'s process table entry to rule it out of a once launch`);
+      continue;
+    }
+    rest.set(pid, stat);
+  }
+  // A process joins once its parent has, so the scan repeats until a pass adds nothing.
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [pid, stat] of rest) {
+      const parent = tree.get(stat.parentPid);
+      if (!leads(stat.group) && !(parent !== undefined && stillOwned(parent, readStat))) continue;
+      tree.set(pid, { pid, start: stat.start });
+      rest.delete(pid);
+      grew = true;
+    }
+  }
+  return [...tree.values()].filter((p) => stillOwned(p, readStat));
+}
+
+/** Prove that nothing a once seat's launches own still runs outside its host, stopping what they
+ * own. Returns only with that proof, recorded as a receipt so a later call gives the same answer;
+ * throws when there is no evidence, when the recorded host PID is alive (the host, or a process that
+ * reused its PID), or when an owned process survives. Ownership is what {@link onceTree} reads. Each
+ * signal goes to a process that still shows its captured start token: to its group when the scan
+ * proved that group led by a carrier, and to its pid alone otherwise. A process whose environment
+ * cannot be read and that has left both links before this runs (it forked and called setsid, as a
+ * daemon does) cannot be tied to the launch, so it is neither signalled nor counted. `processStat`
+ * replaces the process table read, for a suite. */
+export async function retireOnceTree(
+  home: string,
+  uid: string,
+  opts: { gracefulWaitMs?: number; killWaitMs?: number; identityProbe?: ProcessIdentityProbe; processStat?: (pid: number) => ProcessStat | undefined } = {},
+): Promise<void> {
+  const { gracefulWaitMs = 3_000, killWaitMs = 2_000, identityProbe = processIdentityProbe, processStat: readStat = processStat } = opts;
+  const record = readOnceRecord(home, uid);
+  if (!record) throw new Error(`jcode connector: once seat ${uid} has no launch evidence in ${home} — its processes cannot be proved gone`);
+  if ("retired" in record) return;
+  if (alive(record.host.pid))
+    throw new Error(`jcode connector: once seat ${uid}'s recorded host PID ${record.host.pid} is alive — its processes cannot be proved gone`);
+  const groups = new Map<number, string>();
+  const targets = onceTree(record.launches, identityProbe, groups, readStat);
+  const live = () => targets.filter((p) => stillOwned(p, readStat));
+  const signal = (sig: NodeJS.Signals) => {
+    for (const p of live()) {
+      if (groups.get(p.pid) !== p.start) signalPid(p.pid, sig);
+      else {
+        try {
+          process.kill(-p.pid, sig);
+        } catch {
+          signalPid(p.pid, sig);
+        }
+      }
+    }
+  };
+  if (targets.length) {
+    const pids = targets.map((p) => p.pid);
+    signal("SIGTERM");
+    if (!(await waitGone(pids, gracefulWaitMs))) {
+      signal("SIGKILL");
+      await waitGone(pids, killWaitMs);
+    }
+  }
+  // A descendant found through its parent loses that link when the parent dies, so the first scan's
+  // targets are checked again by their own identity.
+  const left = [...new Set([...onceTree(record.launches, identityProbe, groups, readStat), ...live()].map((p) => p.pid))];
+  if (left.length) throw new Error(`jcode connector: once seat ${uid}'s Jcode processes survived teardown (pids ${left.join(", ")})`);
+  writeSecretFileAtomic(onceRecordPath(home, uid), `${JSON.stringify({ uid, retired: true })}\n`);
+}
+
+/** Remove a once seat's retirement receipt, after its manager cleared the debt. Live evidence is
+ * never removed here. */
+export function discardOnceReceipt(home: string, uid: string): void {
+  const record = readOnceRecord(home, uid);
+  if (!record) return;
+  if (!("retired" in record)) throw new Error(`jcode connector: once seat ${uid}'s evidence is not a retirement receipt — refusing to discard it`);
+  rmSync(onceRecordPath(home, uid), { force: true });
 }
 
 export interface StopOrphanedTreeOptions {

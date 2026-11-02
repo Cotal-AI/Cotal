@@ -543,7 +543,11 @@ try {
     } }),
     def("inspect", { handler: () => ({ which }) }),
     def("badout", { handler: () => ({ wrong: true }) }),
-    def("cyclic", { handler: () => { const o: Record<string, unknown> = { which }; o.self = o; return o; } }),
+    // The value validates (its own properties are `{ which }`) and only its JSON form is cyclic, so
+    // the reply reaches the serialize step. A plain `o.self = o` is refused by the output schema first.
+    def("cyclic", { handler: () => Object.assign(Object.create(Object.defineProperty({}, "toJSON", {
+      value: () => { const o: Record<string, unknown> = { which }; o.self = o; return o; },
+    })), { which }) }),
     def("poke", { handler: () => { castRuns++; throw new Error("cast handlers may fail; nobody hears it"); } }),
     def("slow", { contract: { input: argsContract, output: slowContract }, handler: () => slowPayload }),
     def("ping", { contract: { input: voidContract, output: outContract }, handler: () => ({ which }) }),
@@ -621,9 +625,16 @@ try {
   const r3c = await send(oneSubj("badout"), req({ op: { endpoint: "manager", command: "badout", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("handler output violating the output schema is internal, never published as success",
     r3c !== undefined && r3c.reply.ok === false && r3c.reply.error?.code === "internal");
+  // §13.3: each refusal below is raised AFTER the handler returned, so the effect landed and the
+  // reply MUST say `executed`; an omitted outcome reads as `unknown` (#3397).
+  c("the output-schema refusal states `executed`: the handler ran to completion",
+    r3c?.reply.error?.outcome === "executed", JSON.stringify(r3c?.reply.error));
   const r3d = await send(oneSubj("cyclic"), req({ op: { endpoint: "manager", command: "cyclic", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a non-serializable reply is replaced by a structured internal error, never dropped",
-    r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal");
+    r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal"
+      && (r3d.reply.error?.message ?? "").includes("does not serialize"), JSON.stringify(r3d?.reply.error));
+  c("the non-serializable replacement states `executed`: it replaces a success",
+    r3d?.reply.error?.outcome === "executed", JSON.stringify(r3d?.reply.error));
   // Tee console.error: the demoted budget's ONLY observable is its report, and asserting the reply
   // alone would pass just as well if the validation had never been over budget. Tee rather than
   // swallow, so the serve side's diagnostics still reach the log.
@@ -646,6 +657,8 @@ try {
   c("a reply too large to publish is answered `resource-exhausted`, never silently dropped",
     r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "resource-exhausted",
     r3e === undefined ? "NO REPLY - the caller was left with silence" : JSON.stringify(r3e.reply).slice(0, 220));
+  c("the unpublishable replacement states `executed`: it replaces a success",
+    r3e?.reply.error?.outcome === "executed", JSON.stringify(r3e?.reply.error).slice(0, 220));
 
   // §13.7 canonical void: absent OR explicit null args both validate on a void-input command
   const pingOp = { endpoint: "manager", command: "ping", inputDigest: D_VOID, outputDigest: D_OUT };

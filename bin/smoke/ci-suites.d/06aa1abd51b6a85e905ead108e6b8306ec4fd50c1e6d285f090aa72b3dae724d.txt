@@ -1,0 +1,6 @@
+# The chat stream's history limit on a real broker: a new space starts with no age limit and 1000 per
+# sender, `cotal up` leaves an existing stream's limit as it is, the provisioner may update the chat
+# stream and no other message stream, recall and durable catch-up read the stream's own limits, and an
+# age the broker expires posts under survives a restart. Live-broker only: the permission checks, the
+# expiry and the persisted config are all the broker's.
+smoke:chat-history-limit

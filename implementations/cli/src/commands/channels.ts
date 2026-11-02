@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  ChannelRegistryConflict, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
+  ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -143,6 +143,8 @@ export async function channels(args: ParsedArgs): Promise<void> {
       wrote = await seedChannelRegistry({ ...options, file });
     }
   } catch (error) {
+    // The purge went through and the registry step did not: report the partial outcome below.
+    if (error instanceof ChannelRegistryRemovalFailed) purged = error.purged;
     // A write that kept losing the revision race to other writers saved nothing.
     if (error instanceof ChannelRegistryConflict)
       throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with `cotal ch show`, then repeat the change" });

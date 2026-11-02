@@ -1,0 +1,122 @@
+---
+title: "Upgrade Cotal"
+description: "Choose an exact release, prepare the deployment, and verify the upgraded installation."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Upgrade an existing installation without recreating its space identity or losing its trust material.
+Use the [upgrade history](UPGRADING.md) for the migration instructions that apply to your source and target releases.
+
+## Plan the upgrade
+
+From the project's folder, record the current installation and mesh state:
+
+```bash
+cotal version
+cotal status
+```
+
+Choose an exact target version, such as `0.N.P`, rather than a version range.
+Read every applicable migration section between the installed version and the target release before changing the deployment.
+Treat notes marked unreleased as unreleased until the target release includes them.
+
+List the hosts that run the broker, auth service, managers, CLI, and connectors.
+Use each release section's component order for a split deployment.
+Plan a downtime window. The current upgrade contract does not promise rolling upgrades or mixed authority versions.
+
+If a service manager or container owns the native stack's lifetime, check its launch command before upgrading.
+Background startup is the default for `cotal up`; a supervisor that must own the stack needs `cotal up --foreground`.
+See [Supervise the stack](supervise-processes.mdx).
+
+## Prepare for downtime
+
+Save agent work and arrange a quiet maintenance window before stopping services.
+Pause automatic restarts and new managed launches when the applicable migration requires them.
+
+<Callout type="warn" title="Check shutdown and backup limits first">
+
+Built-in `pty` seats stop with their manager, including a normal `cotal down`.
+An older manager may also have different shutdown guarantees.
+Read [Stop the stack](run-a-mesh.mdx#stop-the-stack) before choosing the stop command.
+
+A controller-owned stack cannot use the preserve, backup, or restore commands in this release.
+Use the deployment's supported protected backup procedure for its durable state and trust material.
+The [offline backup guide](backup-a-mesh.mdx) describes the supported mesh types and their limits.
+
+</Callout>
+
+Take the snapshots required by the applicable release section before any migration writes occur.
+A Cotal backup artifact contains no credentials or trust secrets, so protect the original trust material separately.
+Stop components in the release section's stated order.
+For an ordinary local whole-stack shutdown, use the procedure in [Run a mesh](run-a-mesh.mdx#stop-the-stack).
+
+## Install the target version
+
+Use the same installation route and prefix that currently supply your `cotal` command.
+Replace `<target-version>` with the exact version you selected.
+
+### Shell installation
+
+Read the [installer script](https://get.cotal.ai) before running it, then pin the target release:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh -s -- --version <target-version> --no-setup
+```
+
+If the original installation used custom locations, supply those same locations again.
+See [Install Cotal](installation.mdx) for installer options and PATH checks.
+
+### npm installation
+
+For an npm installation, run:
+
+```bash
+npm install -g cotal-ai@<target-version>
+```
+
+Open a new terminal or use the installer's absolute launcher path if the shell still selects the previous installation.
+Run `cotal version` and confirm that the selected binary is the target version before continuing.
+
+## Reconcile the installation
+
+From the prepared project folder, run the target version's command:
+
+```bash
+cotal update
+```
+
+This reconciles installed extensions and connector integrations with the running CLI's release.
+It checks running-manager continuity before installation repair.
+If it refuses, follow the reported remedy instead of removing credentials or reinstalling an unrelated copy.
+
+`cotal update --check` only reports registry availability and recorded extension versions.
+It installs and restarts nothing, so it does not replace this reconciliation step.
+`cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
+
+## Restart the mesh
+
+Complete the release-specific credential and state migrations before restarting components.
+Start them in the order specified for that release.
+
+For a local background stack, return to its existing project folder and run:
+
+```bash
+cotal up --detach
+cotal version
+cotal status --components
+```
+
+Reuse the existing project root. Do not run `space create` or `space add` to replace an existing local mesh during an ordinary upgrade.
+A foreground service must retain its `--foreground` launch mode.
+Restart or reconnect agent applications when the migration instructions require them to load the new connector.
+
+Confirm the target binary and installed extension versions, then check the component report for absent, not-serving, or refused components.
+A version report describes the selected installation; it does not prove that every previously running process loaded the new code.
+Resume new work only after the required components are serving and the release-specific checks pass.
+
+If a migration or restart fails, keep the failed step's evidence and use [Recover a mesh](recover-a-mesh.mdx).
+Installing an older package does not automatically undo credential or on-disk migrations.
+Use the matching release's recovery instructions before restoring state or attempting a downgrade.

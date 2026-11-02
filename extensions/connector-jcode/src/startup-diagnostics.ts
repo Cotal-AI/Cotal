@@ -2,6 +2,7 @@ import { HarnessError } from "@1jehuang/jcode-sdk";
 import { constants, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { hardenPrivate } from "@cotal-ai/core";
+import { activeModelRoute, type RuntimeIdentity } from "./route-identity.js";
 
 export type JcodeConnectorFailureCode =
   | "model_prefix_rejected"
@@ -11,13 +12,39 @@ export type JcodeConnectorFailureCode =
   | "readiness_timeout"
   | "sessions_enumeration_failed"
   | "sessions_unwritable"
+  | "cursor_state_unreadable"
   | "provider_auth_refused"
+  | "provider_payment_required"
+  | "provider_forbidden"
+  | "provider_rate_limited"
   | "provider_request_failed";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
 export class JcodeConnectorError extends Error {
   constructor(readonly code: JcodeConnectorFailureCode, message: string, options?: ErrorOptions) {
     super(message, options);
+  }
+}
+
+/** A route-verification refusal with bounded identity fields, never route details or child output.
+ * Reported runtime identity is not the accepted session pin, and effort has not yet been applied. */
+export class JcodeModelMismatch extends JcodeConnectorError {
+  constructor(requestedModel: string | undefined, requestedTier: string, runtime: RuntimeIdentity | undefined) {
+    const model = requestedModel ?? runtime?.model;
+    const matches = model ? runtime?.routes?.filter((route) => route?.model === model) ?? [] : [];
+    const route = model ? activeModelRoute(runtime, model) : undefined;
+    const reason = !model ? "no model was reported"
+      : matches.length === 0 ? "no matching model route was reported"
+      : !route ? "matching routes could not be disambiguated by the reported provider"
+      : "the selected route has no provider";
+    const identity = (value: string | undefined, missing = "(unreported)"): string =>
+      value === undefined || value === "" ? missing
+        : typeof value === "string" && SAFE_VALUE.test(value) ? JSON.stringify(value) : "(withheld)";
+    const tier = SAFE_EFFORT_TIERS.has(requestedTier) ? JSON.stringify(requestedTier) : "(withheld)";
+    super(
+      "model_mismatch",
+      `${reason}; requested model ${identity(requestedModel, "(provider default)")}; reported model ${identity(runtime?.model)}; reported provider ${identity(runtime?.provider)}; matching model routes: ${matches.length}; requested tier ${tier} was not applied`,
+    );
   }
 }
 
@@ -46,6 +73,31 @@ export class JcodeSessionsUnwritableFailure extends Error {
     readonly errnoCode: string,
   ) {
     super(`stored sessions directory is not writable at ${sessionsPath} (${errnoCode})`);
+  }
+}
+
+export type CursorStateUnreadableReason =
+  | "not_sqlite"
+  | "locked"
+  | "hot_journal"
+  | "corrupt"
+  | "no_item_table"
+  | "value_type"
+  | "value_size"
+  | "sqlite_error";
+
+/** Cursor's state database exists but gave no consistent read of the keys Jcode uses. The reason is
+ * a connector-owned word and the SQLite result code a number, so no SQLite text reaches the public
+ * line. The path is relative to the operator's home. */
+export class JcodeCursorStateUnreadable extends Error {
+  readonly code = "cursor_state_unreadable" as const;
+
+  constructor(
+    readonly sourceRelative: string,
+    readonly reason: CursorStateUnreadableReason,
+    readonly sqliteCode?: number,
+  ) {
+    super(`Cursor's state database ~/${sourceRelative} could not be read (${reason}${sqliteCode === undefined ? "" : `, SQLite code ${sqliteCode}`})`);
   }
 }
 
@@ -220,6 +272,24 @@ export function classifyReadinessFailure(error: unknown): JcodeConnectorError | 
     /^  status: 401 Unauthorized\r?$/m.test(error.message)
   ) {
     return new JcodeConnectorError("provider_auth_refused", "Jcode provider refused readiness authentication");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 402 Payment Required\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_payment_required", "Jcode provider refused the readiness request for payment");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 403 Forbidden\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_forbidden", "Jcode provider refused the readiness request as forbidden");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 429 Too Many Requests\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_rate_limited", "Jcode provider rate-limited the readiness request");
   }
   return undefined;
 }

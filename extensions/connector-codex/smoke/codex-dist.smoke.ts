@@ -21,7 +21,7 @@ import { skipSuite } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design: the isolated CODEX_HOME symlinks the
-  // operator's auth.json, which needs Developer Mode on Windows (docs/connect-codex.md). There
+  // operator's auth.json, which needs Developer Mode on Windows (docs/connect-codex.mdx). There
   // is no Windows Codex case anywhere in the suite — this is a stated limitation, not coverage.
   skipSuite("managed Codex agents are POSIX-only");
 }

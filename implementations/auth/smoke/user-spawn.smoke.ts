@@ -1223,7 +1223,12 @@ try {
     auth,
     reloadStoreIdentity: workspaceSecretStore(root).identity,
   });
-  // Re-drive the held retirement now that genuine delivery has returned:
+  // The refused spawn above re-drove delta's teardown before any daemon served, and that teardown can
+  // still be in flight here. A re-drive joins an in-flight teardown of the same lifecycle instead of
+  // starting another, so re-driving now would only rejoin the one whose inventory found no responder.
+  // Let it settle first; the re-drive below then reads the inventory from the daemon that now serves.
+  const teardowns = (manager as unknown as { deprovisioningFlight: Map<string, Promise<void>> }).deprovisioningFlight;
+  await teardowns.get(JSON.stringify(["delta", deltaUid]))?.catch(() => {});
   await manager.startAgent({ name: "delta", agent: "e2e", events: false }).catch(() => {});
 
   // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
@@ -1232,10 +1237,9 @@ try {
   // serveIdentity.id)` while the request used to carry the manager's ENDPOINT identity: two real
   // identities of the same manager that can never be equal. Every user-mesh retirement was refused.
   //
-  // WHY NOT ASSERT THE TERMINAL. `runAgentRetirementBarrier` cannot reach its terminal here: the
-  // final step needs `verifiedGone` from the delivery daemon's `evictPrincipal`, and this fixture
-  // runs no delivery daemon. Asserting "the name was released" would therefore be red for a reason
-  // that has nothing to do with authorization.
+  // WHY NOT REQUIRE THE TERMINAL. The barrier's terminal also depends on the delivery daemon's
+  // verified eviction, the drain and the cleaner. Asserting "the name was released" would therefore
+  // be red for reasons that have nothing to do with authorization.
   //
   // WHY NOT ASSERT THE REFUSAL IS GONE. That is the wrong experiment, and it is the one I would
   // most easily have run: a fix that only rewrote the refusal's wording would pass it. Measured on

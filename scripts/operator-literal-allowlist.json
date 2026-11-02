@@ -8,7 +8,7 @@
   "claude-plugin/cotal/dist/mcp.cjs": {
     "home-path": {
       "count": 2,
-      "reason": "docs/cli.md macOS home path examples carried in the bundled docs"
+      "reason": "CLI reference macOS home path examples carried in the bundled docs"
     },
     "shared-ipv4": {
       "count": 2,
@@ -21,16 +21,16 @@
       "reason": "container user home configuration"
     }
   },
-  "docs/cli.md": {
-    "home-path": {
-      "count": 2,
-      "reason": "macOS home path examples"
-    }
-  },
-  "docs/run-a-mesh.md": {
+  "docs/register-a-mesh.mdx": {
     "shared-ipv4": {
       "count": 2,
       "reason": "shared address examples"
+    }
+  },
+  "docs/remote-supervision.mdx": {
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "shared address examples for broker and manager hosts"
     }
   },
   "examples/02-self-improving-console/ITERATIONS.md": {
@@ -169,6 +169,12 @@
     "home-path": {
       "count": 1,
       "reason": "attribution scrubber fixture"
+    }
+  },
+  "docs/cli-agent-control.mdx": {
+    "home-path": {
+      "count": 2,
+      "reason": "macOS home path examples"
     }
   }
 }
