@@ -1,6 +1,7 @@
 // Copies the seeds from upstream.mjs and every file they import at the pinned commit into
-// vendor/opencode/, applies patches/*.patch in name order, and records each file's sha256 in
-// vendor/opencode/UPSTREAM.json. Rerunning it produces the same tree.
+// vendor/opencode/, applies patches/*.patch in name order, and records the sha256 of each vendored
+// file, each patch and each type excerpt under types/ in vendor/opencode/UPSTREAM.json. Rerunning
+// it produces the same tree.
 // Usage: node scripts/vendor.mjs [--upstream <opencode clone>]   (default: .upstream/opencode, cloned on demand)
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -11,7 +12,6 @@ import { ALIASES, COMMIT, NOTICES, REPO, SEEDS, TYPE_SHIMS } from "./upstream.mj
 
 const pkg = fileURLToPath(new URL("..", import.meta.url))
 const out = path.join(pkg, "vendor/opencode")
-const patchDir = path.join(pkg, "patches")
 const flag = process.argv.indexOf("--upstream")
 const upstream = path.resolve(flag > 0 ? process.argv[flag + 1] : path.join(pkg, ".upstream/opencode"))
 
@@ -66,16 +66,19 @@ for (const [file, data] of blobs) {
   fs.mkdirSync(path.dirname(path.join(out, file)), { recursive: true })
   fs.writeFileSync(path.join(out, file), data)
 }
-const patches = fs.readdirSync(patchDir).filter((f) => f.endsWith(".patch")).sort()
-for (const p of patches) execFileSync("patch", ["-p1", "--forward", "--no-backup-if-mismatch", "-d", out, "-i", path.join(patchDir, p)], { stdio: "inherit" })
-
 const sha256 = (data) => createHash("sha256").update(data).digest("hex")
+// Every file in the folder, with its package-relative path, so check-vendor.mjs can match the
+// listing exactly.
+const listing = (dir) => fs.readdirSync(path.join(pkg, dir)).sort().map((f) => ({ file: `${dir}/${f}`, sha256: sha256(fs.readFileSync(path.join(pkg, dir, f))) }))
+
+const patches = listing("patches")
+for (const p of patches) execFileSync("patch", ["-p1", "--forward", "--no-backup-if-mismatch", "-d", out, "-i", path.join(pkg, p.file)], { stdio: "inherit" })
 const files = [...blobs.keys()].sort().map((file) => {
   const vendored = fs.readFileSync(path.join(out, file))
   const upstreamSha256 = sha256(blobs.get(file))
   const record = { file, sha256: sha256(vendored) }
   return record.sha256 === upstreamSha256 ? record : { ...record, upstreamSha256 }
 })
-fs.writeFileSync(path.join(out, "UPSTREAM.json"), JSON.stringify({ repo: REPO, commit: COMMIT, patches, files }, null, 2) + "\n")
+fs.writeFileSync(path.join(out, "UPSTREAM.json"), JSON.stringify({ repo: REPO, commit: COMMIT, patches, typeExcerpts: listing("types"), files }, null, 2) + "\n")
 console.log(`vendored ${files.length} files at ${COMMIT.slice(0, 10)} with ${patches.length} patch(es)`)
 console.log(`external specifiers at the pinned commit: ${[...external].sort().join(", ")}`)

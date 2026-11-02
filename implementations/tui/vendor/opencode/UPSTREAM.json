@@ -2,8 +2,20 @@
   "repo": "https://github.com/anomalyco/opencode.git",
   "commit": "9425a65eb358e06221e4982d5620c50fbd86a1dd",
   "patches": [
-    "0001-fuzzysort-default-import.patch",
-    "0002-effect-subpath-imports.patch"
+    {
+      "file": "patches/0001-fuzzysort-default-import.patch",
+      "sha256": "d95b80356196fb79de0eea51b9b99739e97d9fd704108f76aea1d5e8a0d23aac"
+    },
+    {
+      "file": "patches/0002-effect-subpath-imports.patch",
+      "sha256": "d473b8b8e690bd405563d01564445d9d71af631ed5c820ab98a4ccd4529691d8"
+    }
+  ],
+  "typeExcerpts": [
+    {
+      "file": "types/opencode-plugin.d.ts",
+      "sha256": "c2ebd864cd0e571a530f3774c7b2a863ab6486aad373627256eb28a68922eb52"
+    }
   ],
   "files": [
     {

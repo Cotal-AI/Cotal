@@ -41,11 +41,16 @@ last model stays on screen), closed, or not connected with the reason in the mid
 (`vendor/opencode/LICENSE`). Do not edit them by hand.
 
 - `scripts/upstream.mjs` names the commit and the files Cotal imports. `scripts/vendor.mjs` copies
-  those files and everything they import, applies `patches/*.patch` in order, and records each
-  file's sha256 in `vendor/opencode/UPSTREAM.json`.
-- To change vendored code, add a patch and rerun `pnpm --filter @cotal-ai/tui vendor`.
-- `build`, `typecheck` and `test` run `scripts/check-vendor.mjs`, which fails when a vendored file
-  differs from its recorded hash or is not recorded.
+  those files and everything they import, applies `patches/*.patch` in order, and records the
+  sha256 of each vendored file, each patch and each file under `types/` in
+  `vendor/opencode/UPSTREAM.json`.
+- `types/opencode-plugin.d.ts` is a trimmed copy of the OpenCode plugin types that the vendored
+  keymap imports. The typecheck reads it in place of OpenCode's client types.
+- To change vendored code, add a patch and rerun `pnpm --filter @cotal-ai/tui vendor`. Rerun it
+  after editing a patch or the type file too.
+- `build`, `typecheck` and `test` run `scripts/check-vendor.mjs`. It fails when a file under
+  `vendor/opencode/`, `patches/` or `types/` differs from its recorded hash, is not recorded, or is
+  recorded but missing.
 
 `scripts/build.mjs` compiles `src/` and `vendor/` to `dist/` with Babel, because Solid on OpenTUI
 needs babel-preset-solid's universal output. `tsc` only typechecks.
