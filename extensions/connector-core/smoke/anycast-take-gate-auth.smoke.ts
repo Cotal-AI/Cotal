@@ -12,7 +12,9 @@
  * requests after the role queue was recreated. A held request wakes nothing while its retry is waited
  * out or once its copy ran out, a read whose caller left takes nothing, a read reports what its own
  * takes left held and carries what needs no take when a take is undecided, a read after a reconnect
- * on the same connection asks again, and a copy from a recreated stream is delivered again at once.
+ * on the same connection asks again, a copy from a recreated stream is delivered again at once, and a
+ * gateway read that waits on a take leaves its reader's wake latch neither set over an empty inbox
+ * nor unsignalled for a message that arrived during it.
  *
  * Run: pnpm smoke:anycast-take-gate:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -500,7 +502,8 @@ try {
   // The cells below run after the recreation above, each on a role of its own, so the TASK stream
   // they bind is the new one. Cell 19 relies on reviewer_x still holding the old stream's creation
   // time, so it runs last.
-  const gatewayFor = async (h: Awaited<ReturnType<typeof mkAgent>>) => {
+  // With `signals`, the gateway wakes its reader, and each signal is recorded there.
+  const gatewayFor = async (h: Awaited<ReturnType<typeof mkAgent>>, signals?: number[]) => {
     const conn: GatewayConnection = { id: `conn-${h.config.name}`, agent: h.agent, config: h.config };
     const server = new McpServer({ name: "gw", version: "0" });
     registerCotalGatewayTools(server, {
@@ -508,7 +511,7 @@ try {
       open: async () => conn,
       find: async (_account, id) => (id === conn.id ? conn : undefined),
       close: async () => true,
-    }, "gateway");
+    }, "gateway", signals ? { wake: { listening: () => "Notifications enabled.", signal: () => { signals.push(Date.now()); return true; } } } : {});
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "smoke", version: "0" });
     await server.connect(serverSide);
@@ -707,6 +710,61 @@ try {
     "19a its first take is refused as a mismatch, and the copy delivered again is taken and shown within seconds",
     arrived19 === true && shown19 && Date.now() - started19 < 15_000,
     { arrived: arrived19, shown: shown19, ms: Date.now() - started19 },
+  );
+
+  // ── 20. a gateway reader's wake around a read that waits on a take ────────────────────────
+  // Takes reach a rail that records each one a second after it is asked, so a read that takes a role
+  // request waits that second and shows it. The gateway clears its wake latch when a read starts and
+  // signals nothing while the read runs.
+  console.log("[20] a read that waits on a take neither leaves the wake latch set over an empty inbox nor leaves a message unsignalled");
+  await stopDaemon();
+  const railNc20 = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "delivery"))), maxReconnectAttempts: 0 });
+  stops.push(() => railNc20.close());
+  railNc20.subscribe(takeServeFilter(space), { queue: TAKE_ROUTE, callback: (_e, m) => {
+    setTimeout(() => m.respond(JSON.stringify({ ok: true })), 1000);
+  } });
+  await railNc20.flush();
+  const buffered = (h: Awaited<ReturnType<typeof mkAgent>>, text: string) => h.agent.peekInbox().some((i) => i.text === text);
+  // A read queued behind one whose take waits shows a DM that arrived while it was queued.
+  const queued = await holderOf("queued_reader", "queuedrole");
+  const queuedSignals: number[] = [];
+  const queuedCall = await gatewayFor(queued, queuedSignals);
+  await sender.agent.ep.anycastAttributed("queuedrole", "a role request the first read takes");
+  await until(() => queuedSignals.length === 1 || undefined, 8000);
+  const readA = queuedCall("cotal_inbox");
+  await sleep(100);
+  const readB = queuedCall("cotal_inbox");
+  await sleep(300);
+  await sender.agent.ep.unicastAttributed(queued.id, "a DM while a read is queued");
+  const [shownA, shownB] = await Promise.all([readA, readB]);
+  const signalsAfterReads = queuedSignals.length;
+  await sender.agent.ep.unicastAttributed(queued.id, "the next DM");
+  await until(() => buffered(queued, "the next DM") || undefined, 5000);
+  await until(() => queuedSignals.length > signalsAfterReads || undefined, 3000);
+  check(
+    "20a a DM that a queued read shows leaves the next DM signalled",
+    (shownA.text + shownB.text).includes("a DM while a read is queued") && !buffered(queued, "a DM while a read is queued") &&
+      queuedSignals.length === signalsAfterReads + 1,
+    { signals: queuedSignals.length, signalsAfterReads, shownA: shownA.text.slice(0, 160), shownB: shownB.text.slice(0, 160) },
+  );
+  // A DM that arrives after a read chose what it shows stays buffered and is signalled after the read.
+  const late = await holderOf("late_reader", "laterole");
+  const lateSignals: number[] = [];
+  const lateCall = await gatewayFor(late, lateSignals);
+  await sender.agent.ep.anycastAttributed("laterole", "a role request the read takes");
+  await until(() => lateSignals.length === 1 || undefined, 8000);
+  const lateRead = lateCall("cotal_inbox");
+  await sleep(300);
+  await sender.agent.ep.unicastAttributed(late.id, "a DM after the read chose");
+  await until(() => buffered(late, "a DM after the read chose") || undefined, 3000);
+  await sleep(300);
+  const signalsDuringRead = lateSignals.length;
+  const lateShown = await lateRead;
+  await until(() => lateSignals.length > signalsDuringRead || undefined, 3000);
+  check(
+    "20b a DM that arrives after the read chose is signalled once the read returns, not during it",
+    signalsDuringRead === 1 && lateSignals.length === 2 && !lateShown.text.includes("a DM after the read chose") && buffered(late, "a DM after the read chose"),
+    { signalsDuringRead, signals: lateSignals.length, shown: lateShown.text.slice(0, 160) },
   );
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);

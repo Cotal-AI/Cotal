@@ -92,8 +92,10 @@ listening. The streams default to the process's own, and stdout then carries onl
 
 An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
 `registerCotalGatewayTools`. The gateway calls `wake.signal(connection, preview)` when a connection
-gets something that would end a `cotal_wait` while no wait holds it. A true result means a reader
-heard the signal, not that it received complete message content. The preview never consumes mail.
+gets something that would end a `cotal_wait` while no wait or inbox read holds it. Something that
+arrives during a wait or a read and is still unread when it returns is signalled once then. A true
+result means a reader heard the signal, not that it received complete message content. The preview
+never consumes mail.
 `cotal_connect` adds `wake.listening(connection)` to its reply. An embedder delivering full content
 can return false from `wake.inboxNotice(connection)` to omit competing inbox-read advice from other
 tool results. Notification-only clients retain that advice.

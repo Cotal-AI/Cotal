@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=80",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=82",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -216,6 +216,24 @@
       "expectRed": "18c and a read then waits on the new take rather than asking a third time",
       "note": "The old take ending clears the newer take a read started, so the next read asks a third time instead of waiting on it.",
       "cell": "18c and a read then waits on the new take rather than asking a third time"
+    },
+    {
+      "name": "an inbox read is not held, and clears the latch before it reads",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        const result = spec.name === \"cotal_inbox\" ? await holdFor(c, run) : await run();",
+      "replace": "        if (spec.name === \"cotal_inbox\") signalled.delete(c.agent);\n        const result = await run();",
+      "expectRed": "20a a DM that a queued read shows leaves the next DM signalled",
+      "note": "As before the fix: a DM that arrives while the read is queued behind one waiting on a take is signalled, the read then shows it, and the latch stays set over an empty inbox, so the next DM is never signalled.",
+      "cell": "20a a DM that a queued read shows leaves the next DM signalled"
+    },
+    {
+      "name": "the last hold ends without checking what arrived during it",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (left === 0 && missed.delete(c.agent)) checks.get(c.agent)?.();\n",
+      "replace": "",
+      "expectRed": "20b a DM that arrives after the read chose is signalled once the read returns, not during it",
+      "note": "A DM that arrived after the read chose what it shows stays buffered with nothing signalled for it until another message arrives.",
+      "cell": "20b a DM that arrives after the read chose is signalled once the read returns, not during it"
     }
   ]
 }
