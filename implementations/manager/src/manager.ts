@@ -36,6 +36,7 @@ import {
   addDeprovisionAccounting,
   type DeprovisionResourceAccounting,
   isConcreteChannel,
+  isChannelFamily,
   deprovisionTargetPrincipal,
   firstFreeName,
   spawnNameError,
@@ -5606,7 +5607,7 @@ export class Manager {
     try {
       const r = await this.ep.requestDeliveryAdmin("lifecycleMemberships", { principal: principalKey(t.owner, t.actor).key, lifecycleUid: t.lifecycleUid }, 5_000);
       const data = r.data as { complete?: unknown; channels?: unknown } | undefined;
-      if (!r.ok || data?.complete !== true || !Array.isArray(data.channels) || !data.channels.every((c) => typeof c === "string" && isConcreteChannel(c)))
+      if (!r.ok || data?.complete !== true || !Array.isArray(data.channels) || !data.channels.every((c) => typeof c === "string" && (isConcreteChannel(c) || isChannelFamily(c))))
         return { complete: false, channels: [], reason: r.ok ? "malformed inventory reply" : (r.error ?? "refused") };
       return { complete: true, channels: data.channels as string[] };
     } catch (e) {

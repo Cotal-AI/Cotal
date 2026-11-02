@@ -1,7 +1,7 @@
 // See docs/mesh-view.mdx.
 
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
+import type { CotalEndpoint, CotalMessage, DeliveryClass, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
 import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
@@ -102,8 +102,9 @@ export interface MeshSnapshot {
   endpoints: Presence[]; // everything else
   /** `messages`: the broker's retained count (capped per sender, so it can stop climbing under
    *  live traffic). `arrivals`: messages this viewer saw ARRIVE on the live tap since it started,
-   *  monotonic, dropped with the channel: the honest base for an unread badge. */
-  channels: { channel: string; messages: number; arrivals: number }[];
+   *  monotonic, dropped with the channel: the honest base for an unread badge. `deliveryClass`: the
+   *  channel's effective class from the registry cache. */
+  channels: { channel: string; messages: number; arrivals: number; deliveryClass: DeliveryClass }[];
   feed: FeedEntry[]; // classified + coalesced + windowed
   /** Broker-authoritative channel membership (the delivery daemon's CONNZ view plus the durable
    *  registry), as last read; the topology lens overlays it to show silent subscribers. */
@@ -369,7 +370,7 @@ export class MeshView extends EventEmitter {
 
   snapshot(): MeshSnapshot {
     const channels = [...this.channelCounts]
-      .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0 }))
+      .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0, deliveryClass: this.ep.channelDeliveryClass(channel) }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
     return {
       agents: this.roster.filter((p) => p.card.kind === "agent"),

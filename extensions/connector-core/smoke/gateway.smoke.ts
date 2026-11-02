@@ -387,7 +387,7 @@ try {
   check(
     "a pattern send through the gateway is refused and names both ways",
     patternSend.isError && patternSend.text.includes('"lobby.>" is a pattern') && patternSend.text.includes("post once to one channel it matches") &&
-      patternSend.text.includes("A pattern follow has no durable backstop") && patternSend.text.includes("cotal_channels lists the existing ones"),
+      patternSend.text.includes("one that is away gets a stored copy if that channel is durable") && patternSend.text.includes("cotal_channels lists the existing ones"),
     patternSend,
   );
   const familySend = await call(a, "cotal_send", { connection_id: id1, text: "family-probe", channel: "lobby.news" });

@@ -34,7 +34,7 @@ export function Topo({
   agents: Presence[];
   /** The membership feed as MeshView last read it; the header pill says how far to trust it. */
   membership?: MembershipView;
-  channels: { channel: string; messages: number }[];
+  channels: { channel: string; messages: number; deliveryClass: string }[];
   /** Id → display name from the shared model (resolves endpoints and silent members too). */
   nameOf?: (id: string) => string;
   variant: TopoVariant;
@@ -52,9 +52,10 @@ export function Topo({
 
   // The 1s age tick in App re-renders this tree, so `now` stays fresh between snapshots.
   const knownChannels = channels.map((c) => c.channel);
+  const durableChannels = channels.filter((c) => c.deliveryClass === "durable").map((c) => c.channel);
   const graph = useMemo(
-    () => foldTopo(feed, agents, { membership, knownChannels: channels.map((c) => c.channel), nameOf }),
-    [feed, agents, membership, nameOf, knownChannels.join(",")], // eslint-disable-line react-hooks/exhaustive-deps
+    () => foldTopo(feed, agents, { membership, knownChannels: channels.map((c) => c.channel), durableChannels, nameOf }),
+    [feed, agents, membership, nameOf, knownChannels.join(","), durableChannels.join(",")], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const msgs = graph.edges.reduce((n, e) => n + e.count, 0);
   const fresh = membershipFreshness(graph.now, graph.membership);
