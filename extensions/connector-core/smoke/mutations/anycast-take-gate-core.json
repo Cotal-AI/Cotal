@@ -12,7 +12,7 @@
     "through requestBoundReply, which ends them with their connection. Without it, a take in flight across a",
     "reconnect never ends, and the holder reuses it for every later read, so the request is never shown.",
     "",
-    "The suite imports @cotal-ai/core through its package export, so the command builds core before each",
+    "The suite imports core from its built dist, so the command builds core before each",
     "run and the mutation rebuilds it after restore."
   ],
   "mutations": [

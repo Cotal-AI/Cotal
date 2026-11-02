@@ -47,7 +47,7 @@ import {
   TAKE_ROUTE,
   takeServeFilter,
   taskStream,
-} from "@cotal-ai/core";
+} from "../../../packages/core/dist/index.js";
 import { MeshAgent, type InboxItem } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { cotalToolSpecs, type CotalToolSpec } from "../src/tool-specs.js";

@@ -6,6 +6,13 @@
   "command": "pnpm smoke:hermes-anycast-notice:auth",
   "completionMarker": "COTAL_SMOKE_SENTINEL cells=6",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-hermes/smoke/mutations/anycast-notice-auth.json",
+  "assembles": [
+    "extensions/connector-hermes/plugin/cotal"
+  ],
+  "why": [
+    "Launch copies the plugin into the seat's Hermes home. The suite copies it the same way and the",
+    "probe runs that copy, so a mutation of the plugin's Python is what the probe loads."
+  ],
   "mutations": [
     {
       "name": "the bridge leaves the notice mark off what it pushes",

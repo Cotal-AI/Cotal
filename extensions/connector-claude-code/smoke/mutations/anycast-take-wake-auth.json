@@ -10,7 +10,7 @@
     "A held role request wakes the session but is not in peekInbox until its take is recorded. A batch",
     "notice that lists peekInbox counts none of them and tells the agent 0 messages are waiting.",
     "",
-    "The suite imports MeshAgent through the connector-core package export, so the command builds it",
+    "The suite imports MeshAgent from the built connector-core dist, so the command builds it",
     "before each run and the agent.ts mutation rebuilds it after restore."
   ],
   "mutations": [

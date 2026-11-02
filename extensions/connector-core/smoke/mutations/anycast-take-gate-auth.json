@@ -6,6 +6,7 @@
   "completionMarker": "COTAL_SMOKE_SENTINEL cells=83",
   "mutations": [
     {
+      "name": "a role request skips its take and lands in the inbox at once",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "this.gated.push(pending);",
       "replace": "this.inbox.push(pending);",
@@ -13,6 +14,7 @@
       "cell": "1f a read before the take does not show it"
     },
     {
+      "name": "a take refused with a drop keeps the copy it refused",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    if (outcome.drop) {\n      this.dropGated(p);\n      return;\n    }",
       "replace": "    if (outcome.drop) {\n      return;\n    }",
@@ -20,6 +22,7 @@
       "cell": "2c and drops its copy"
     },
     {
+      "name": "a notice-shaped DM from any sender is read as the daemon's notice",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id);",
       "replace": "this.ingest(m, delivery, meta, true);",
@@ -27,6 +30,7 @@
       "cell": "4a it arrives as a DM from its real sender"
     },
     {
+      "name": "status by seq on an open mesh is asked anyway",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "          if (!isAuthed(config))\n            return err(\"This is an open mesh",
       "replace": "          if (false)\n            return err(\"This is an open mesh",
@@ -34,6 +38,7 @@
       "cell": "3g on an open mesh status is refused, naming why"
     },
     {
+      "name": "the read takes every request in its preview instead of the ones its reply carries",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return picked;",
       "replace": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return p;",
@@ -42,6 +47,7 @@
       "note": "The read takes every request in the preview instead of the ones its reply carries, so two requests it never showed can no longer be cancelled."
     },
     {
+      "name": "a refused take keeps its room, so the request behind it is not carried",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "    if (!missed.length || showable) break;",
       "replace": "    break;",
@@ -50,6 +56,7 @@
       "note": "A refused take no longer frees its room, so a read whose first choice was cancelled carries nothing although the request behind it fits."
     },
     {
+      "name": "the take ignores the host's choice and takes every held request in scope",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "      .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()))",
       "replace": "      .filter((p) => p.taking !== undefined || this.mayAskTakes())",
@@ -58,6 +65,7 @@
       "note": "The take ignores the host's choice and takes every held request in scope."
     },
     {
+      "name": "a request taken before a link drop stays showable while the link is down",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "        for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);",
       "replace": "        void 0;",
@@ -66,6 +74,7 @@
       "note": "A request taken before the drop stays showable while the link is down, though this reader cannot vouch for its copy."
     },
     {
+      "name": "an exact drain hands back a held request that was never taken",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey) && p.takenOnce);",
       "replace": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey));",
@@ -74,6 +83,7 @@
       "note": "An exact drain hands back and acks a held request that was never taken or shown, so its sender loses the cancel and its status never reads taken."
     },
     {
+      "name": "a waiting request's status stops naming the role's holder online now",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "            const holders = status.state === \"waiting\" ? await agent.roleHolders(status.role) : undefined;",
       "replace": "            const holders = undefined;",
@@ -82,6 +92,7 @@
       "note": "A waiting request's status stops reading the roster, so it can no longer say who holds the role now."
     },
     {
+      "name": "a failed roster read renders as no holder online",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  if (holders === undefined) return `holders unknown ${when}: the presence view was not current`;",
       "replace": "  if (holders === undefined) holders = [];",
@@ -90,6 +101,7 @@
       "note": "A roster read that failed renders as no holder online, a claim the read never made."
     },
     {
+      "name": "a take the read waits on is announced as a new arrival",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
       "replace": "      this.emit(\"incoming\", p.item);",
@@ -98,6 +110,7 @@
       "note": "A take the read waits on is announced as a new arrival. The gateway signals its reader again in the middle of that read, so the reader stays signalled over the inbox the read empties and the next DM wakes nobody."
     },
     {
+      "name": "a take that answers after its read gave up is admitted silently",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
       "replace": "      if (false) this.emit(\"incoming\", p.item);",
@@ -106,6 +119,7 @@
       "note": "A take that answers after its read gave up is admitted silently, so no host hears that the request may be shown now."
     },
     {
+      "name": "the pending list leaves out held role requests",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    const held = scope === \"pull-only\" ? [] : this.gated;\n    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item);",
       "replace": "    return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);",
@@ -114,6 +128,7 @@
       "note": "The pending list leaves out held role requests, so a notice that counts it reads none of them."
     },
     {
+      "name": "an answer that crossed a link drop is treated as the new link's",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
       "replace": "",
@@ -122,6 +137,7 @@
       "note": "An answer that crossed a link drop is treated as the new link's. The take that ended with the old connection reads as a daemon that did not answer, so the request is held with that reason and no read may ask again until the retry delay."
     },
     {
+      "name": "a dropped answer is never announced again",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
       "replace": "    if (this.transportDrops !== drops) {\n      return;\n    }\n",
@@ -130,6 +146,7 @@
       "note": "The answer is dropped but the host is never told, so a host that read once and got nothing waits for an announcement that never comes."
     },
     {
+      "name": "a take that ended with the link is announced while the link is still down",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
       "replace": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
@@ -138,6 +155,7 @@
       "note": "The request is announced at once, while the link is still down and the read that waited on the take is still running. A host that reads one batch at a time drops that wake, its read returns nothing, and nothing announces the request again until the broker redelivers it."
     },
     {
+      "name": "the link's return announces nothing for a request kept for it",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "      if (e.connected) {\n        for (const p of this.retakes) if (this.gated.includes(p)) this.emit(\"incoming\", p.item);\n        this.retakes.clear();\n      }\n",
       "replace": "",
@@ -146,6 +164,7 @@
       "note": "A request whose take ended while the link was down is kept for the link's return, but the return announces nothing, so no host hears of it until the broker redelivers it."
     },
     {
+      "name": "a request held through the retry wait counts toward a wake",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;",
       "replace": "    const held = this.gated.filter((p) => !skip?.(p.item)).length;",
@@ -154,6 +173,7 @@
       "cell": "13b while the retry is waited out it counts toward no wake"
     },
     {
+      "name": "a copy whose ack wait ran out still counts toward a wake",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    this.dropLapsedTakes();\n    const held = this.mayAskTakes()",
       "replace": "    const held = this.mayAskTakes()",
@@ -162,6 +182,7 @@
       "cell": "14a once its ack wait ran out it counts toward no wake"
     },
     {
+      "name": "a read whose caller went away still takes what it chose",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "round < READ_TAKE_ROUNDS && !signal?.aborted; round++",
       "replace": "round < READ_TAKE_ROUNDS; round++",
@@ -170,6 +191,7 @@
       "cell": "15a the request that read would have shown still reads waiting"
     },
     {
+      "name": "the held note is read before the take",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  const { warning, signal, ...render } = opts;",
       "replace": "  const { signal, ...render } = opts;\n  const frozen = opts.warning();\n  const warning = () => frozen;",
@@ -178,6 +200,7 @@
       "cell": "16a a read that shows a DM names the request its take left held"
     },
     {
+      "name": "the focus read's empty answer uses the note read before the take",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "        const connectionWarning = inboxConnectionWarning(agent);\n        const warning = focusWarning();",
       "replace": "        const connectionWarning = \"\";\n        const warning = focusWarning();",
@@ -186,6 +209,7 @@
       "cell": "16b in focus mode a read whose take left it held says so, not that the inbox is empty"
     },
     {
+      "name": "an undecided take ends the read with nothing chosen in its place",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "    if (undecided.size) showable = new Set(agent.peekInbox(scope).map((i) => i.recvKey));",
       "replace": "    if (undecided.size) break;",
@@ -194,6 +218,7 @@
       "cell": "17a the reply carries the channel post and not the request"
     },
     {
+      "name": "a read after a reconnect waits on the old link's take",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "(p.taking !== undefined && p.takingDrops === this.transportDrops ? p.taking : this.startTake(p))",
       "replace": "(p.taking ?? this.startTake(p))",
@@ -202,6 +227,7 @@
       "cell": "18a a read after the reconnect asks for the take again rather than waiting on the old link's"
     },
     {
+      "name": "the old link's take ending announces the request while a newer take is asked",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "      if (p.takingDrops !== drops) return;\n",
       "replace": "",
@@ -210,6 +236,7 @@
       "cell": "18b the old take ending announces nothing while the new one is still asked"
     },
     {
+      "name": "the old take ending clears the newer take a read started",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "      if (p.taking === run) p.taking = undefined;",
       "replace": "      p.taking = undefined;",
@@ -241,7 +268,8 @@
       "find": " && (!showable || showable.has(i.recvKey))",
       "replace": "",
       "expectRed": "17c a read whose take is undecided names nothing of the request behind it that it never asked",
-      "note": "The read chose again from what needs no take after the first request's take stayed undecided, so the request behind it, never asked, is named as too large to carry."
+      "note": "The read chose again from what needs no take after the first request's take stayed undecided, so the request behind it, never asked, is named as too large to carry.",
+      "cell": "17c a read whose take is undecided names nothing of the request behind it that it never asked"
     }
   ]
 }

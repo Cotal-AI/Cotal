@@ -26,7 +26,7 @@ import { join } from "node:path";
 import {
   CotalEndpoint, createSpaceAuth, deprovisionAgent, DEV_OWNER, listMembers, memberKey, mintCreds, mintLifecycleUid, newIdentity,
   openMembersRegistry, principalKey, provisionAgent, setupSpaceStreams, type ControlReply, type ControlRequest,
-} from "@cotal-ai/core";
+} from "../../../packages/core/dist/index.js";
 import { workspaceSecretStore } from "@cotal-ai/workspace";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";

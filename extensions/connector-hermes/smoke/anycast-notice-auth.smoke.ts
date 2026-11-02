@@ -10,7 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect as netConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,6 +48,9 @@ const until = async (read: () => boolean, ms = 8000): Promise<boolean> => {
 const { check, finish } = createSuite();
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+// Launch copies the plugin into the seat's Hermes home, so the probe loads a copy laid out the same way.
+const plugins = join(dir, "plugins");
+cpSync(fileURLToPath(new URL("../plugin/cotal", import.meta.url)), join(plugins, "cotal"), { recursive: true });
 const auth = await createSpaceAuth(space);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -121,7 +124,7 @@ try {
   await until(() => frames.some((f) => f.t === "incoming"), 10_000);
   const msg = (frames.find((f) => f.t === "incoming") as { msg?: Record<string, unknown> } | undefined)?.msg ?? {};
   check("1a the bridge pushes the notice marked as one", msg.notice === "anycast", msg);
-  const py = spawnSync(python!, [fileURLToPath(new URL("./anycast-notice.probe.py", import.meta.url)), fileURLToPath(new URL("../plugin", import.meta.url)), JSON.stringify(msg)], { encoding: "utf8", timeout: 60_000 });
+  const py = spawnSync(python!, [fileURLToPath(new URL("./anycast-notice.probe.py", import.meta.url)), plugins, JSON.stringify(msg)], { encoding: "utf8", timeout: 60_000 });
   const result = JSON.parse(/RESULT (.*)/.exec(py.stdout)?.[1] ?? "null") as { text: string; chat_id: string; replies: { target: Record<string, string>; content: string }[] } | null;
   check("1b the adapter ran", result !== null, py.stderr.slice(-600));
   check("1c the sidecar labels it the delivery daemon's notice, not a peer's DM", result?.text.startsWith("[anycast notice from the delivery daemon] ") === true, result?.text);

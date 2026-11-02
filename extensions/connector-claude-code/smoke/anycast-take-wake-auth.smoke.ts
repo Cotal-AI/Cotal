@@ -28,7 +28,7 @@ import {
   setupSpaceStreams,
   takeServeFilter,
 } from "@cotal-ai/core";
-import { MeshAgent } from "@cotal-ai/connector-core";
+import { MeshAgent } from "../../connector-core/dist/index.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createClaudeHandle, createWakePolicy, HOOK_CONTEXT_CHARS, type WakePolicy } from "../src/hooks.js";
 

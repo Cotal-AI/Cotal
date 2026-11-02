@@ -2,16 +2,19 @@
   "suite": [
     "extensions/pi/pi.smoke.ts"
   ],
-  "guard": "pi shows a role request only from a batch whose take returned it (SPEC §8.1), never sends a dnd batch left with only chatter by a refused or undecided take, and keeps a user turn's forced pump across a take",
+  "guard": "pi shows a role request only from a batch whose take returned it (SPEC §8.1), takes only the requests the batch carries, never sends a dnd batch left with only chatter by a refused or undecided take, and keeps a user turn's forced pump across a take",
   "command": "pnpm smoke:pi",
-  "completionMarker": "pi smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/anycast-take.json",
   "why": [
     "PT1 sends whatever a take returned, so a dnd batch whose role request was refused or is undecided goes out with only chatter.",
     "",
     "PT2 forgets a pump forced while a take is out, and PT3 drops it when the take's own pump runs, so a user turn that starts during a refused take carries none of the chatter waiting for it.",
     "",
-    "NO BUILD STEP: the suite imports ./src."
+    "PT4 takes the whole preview instead of the 32 messages the batch carries, so role requests the turn never shows lose their sender's cancel.",
+    "",
+    "NO BUILD STEP: the suite imports ./src.",
+    "",
+    "NO COMPLETION MARKER: the suite stops at its first failed check, so its closing line prints only on a pass."
   ],
   "mutations": [
     {
@@ -37,6 +40,14 @@
       "replace": "const forced = force;",
       "expectRed": "a user turn that starts during a take still carries the chatter once the take is refused",
       "cell": "a user turn that starts during a take still carries the chatter once the take is refused"
+    },
+    {
+      "name": "PT4 a batch holding a role request takes the whole preview instead of the batch it carries",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "        void this.inbox.take(items).then((shown) => {",
+      "replace": "        void this.inbox.take(this.inbox.preview()).then((shown) => {",
+      "expectRed": "the take covers only the 32 messages the batch carries",
+      "cell": "the take covers only the 32 messages the batch carries"
     }
   ]
 }

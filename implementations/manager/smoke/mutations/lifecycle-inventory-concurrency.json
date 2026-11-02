@@ -12,7 +12,7 @@
     "ran in its own time too, a join sent behind a held one would be authorized and written before the",
     "lifecycle's inventory, and the inventory would list a row the deprovisioner then leaves behind.",
     "",
-    "The suite imports core through its package export, so the command builds core before each run",
+    "The suite imports core from its built dist, so the command builds core before each run",
     "and the mutation rebuilds it after restore. Without that, the run would grade a stale dist and",
     "leave compiled mutant output behind."
   ],
