@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/registry",
   "description": "Cotal registry: the registered endpoint that answers discovery questions, starting with the endpoints a caller's recorded grants cover.",
-  "version": "0.127.3",
+  "version": "0.134.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,6 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/registry-answer-live.smoke.ts && tsx smoke/registry-listing-e2e-live.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

@@ -16,6 +16,7 @@ import {
   TimeoutError,
   ClosedConnectionError,
   type NatsConnection,
+  type Msg,
   type Subscription,
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
@@ -640,6 +641,7 @@ export class CotalEndpoint extends EventEmitter {
   private readonly inactiveThresholdMs: number;
 
   private nc?: NatsConnection;
+  private readonly requestsAwaitingReply = new Map<NatsConnection, Set<(error: Error) => void>>();
   private readonly onConnection?: (nc: NatsConnection) => void;
   private js?: JetStreamClient;
   private jsm?: JetStreamManager;
@@ -2805,6 +2807,37 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Keep native named-reply and NoResponders handling, but settle when its connection closes:
+   *  nats.js can close a no-mux subscription without settling its request. One close observer per
+   *  connection avoids retaining a closed-promise callback for every completed request. */
+  private async requestBoundReply(nc: NatsConnection, subject: string, body: string, reply: string, timeoutMs: number): Promise<Msg> {
+    let pending = this.requestsAwaitingReply.get(nc);
+    if (!pending) {
+      const waiting = new Set<(error: Error) => void>();
+      this.requestsAwaitingReply.set(nc, waiting);
+      void nc.closed().then((error) => {
+        this.requestsAwaitingReply.delete(nc);
+        const failure = error ?? new ClosedConnectionError();
+        for (const reject of waiting) reject(failure);
+        waiting.clear();
+      });
+      pending = waiting;
+    }
+    let rejectClosed!: (error: Error) => void;
+    const closed = new Promise<never>((_resolve, reject) => {
+      rejectClosed = reject;
+      pending.add(reject);
+    });
+    try {
+      return await Promise.race([
+        nc.request(subject, body, { timeout: timeoutMs, noMux: true, reply }),
+        closed,
+      ]);
+    } finally {
+      pending.delete(rejectClosed);
+    }
+  }
+
   /** Send a control request to a service and await its reply (client side). Like {@link requestDelivery},
    *  the reply rides a BOUNDED subject UNDER the request subject (`ctl.<service>.<id>.reply.<uuid>`), not
    *  the per-id `_INBOX`.
@@ -2820,7 +2853,7 @@ export class CotalEndpoint extends EventEmitter {
     const reqSubject = controlServiceSubject(this.space, service, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
     return m.json<ControlReply>();
   }
 
@@ -3183,7 +3216,7 @@ export class CotalEndpoint extends EventEmitter {
     // model. Keep both; don't regress to a counter. (Confirmed by the review panel's fact-check.)
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
     return m.json<ControlReply>();
   }
 
@@ -3198,7 +3231,7 @@ export class CotalEndpoint extends EventEmitter {
     const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY_ADMIN, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
     return m.json<ControlReply>();
   }
 
@@ -6128,7 +6161,7 @@ export class CotalEndpoint extends EventEmitter {
     let answered: ResponderState | undefined;
     let instance: string | undefined;
     try {
-      const m = await this.nc.request(reqSubject, "", { timeout: timeoutMs, noMux: true, reply });
+      const m = await this.requestBoundReply(this.nc, reqSubject, "", reply, timeoutMs);
       let body: unknown;
       try { body = m.json(); } catch { body = undefined; }
       const parsed = parseLivenessAnswer(body, plane);

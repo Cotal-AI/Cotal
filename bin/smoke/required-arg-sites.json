@@ -1,5 +1,6 @@
 {
   "bin/smoke/backup-conservation-live.smoke.ts": 1,
+  "bin/smoke/jcode-once.smoke.ts": 2,
   "bin/smoke/lang-spawn-live-conclave.ts": 4,
   "bin/smoke/run-cancel-live.smoke.ts": 2,
   "bin/smoke/run-host-live.smoke.ts": 7,
@@ -110,6 +111,8 @@
   "implementations/manager/smoke/session-ledger-family.smoke.ts": 2,
   "implementations/manager/smoke/sibling-mint-fence.smoke.ts": 1,
   "implementations/manager/smoke/spawn-action-auth.smoke.ts": 5,
+  "implementations/manager/smoke/spawn-once-restart.smoke.ts": 2,
+  "implementations/manager/smoke/spawn-once.smoke.ts": 3,
   "implementations/manager/smoke/static-lifecycle.smoke.ts": 6,
   "implementations/manager/smoke/stock-process-restart.smoke.ts": 2,
   "implementations/manager/smoke/supervise-manager-crash.smoke.ts": 2,

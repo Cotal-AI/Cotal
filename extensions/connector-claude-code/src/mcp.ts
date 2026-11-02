@@ -31,6 +31,7 @@ import {
   NATIVE_GATEWAY_TOOLS,
   serveGatewayStdio,
   DOCS_VERSION,
+  registerOnceExit,
 } from "@cotal-ai/connector-core";
 import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
@@ -40,6 +41,7 @@ import { createClaudeEventPlane } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
+import { endHost, recordHost } from "./once-exit.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
 const LOCAL =
@@ -162,6 +164,11 @@ async function main(): Promise<void> {
     await serveLocal(process.argv.includes("--desktop"));
     return;
   }
+  // A once seat's process is `claude`, and this server is its child, so ending this process does not
+  // end the seat. Its parent is recorded first, before anything can change it, and the once exit ends
+  // that parent while it is still the same process, or declines.
+  const host = recordHost(process.env);
+  registerOnceExit(() => endHost(host));
   const session = await serveClaudeSession({
     env: process.env,
     input: process.stdin,
@@ -240,7 +247,7 @@ async function startSession(
   const channelFlag = envFlag(env, "COTAL_CHANNEL");
   // One process may host several sessions, so its own directory is not a session's: the card's
   // directory comes from that session's SessionStart hook instead.
-  const agent = new MeshAgent(config, env, { withholdProcessCwd: true });
+  const agent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true });
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
 

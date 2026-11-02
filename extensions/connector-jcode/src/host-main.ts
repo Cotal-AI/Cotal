@@ -4,6 +4,7 @@ import {
   JcodeCursorStateUnreadable,
   JcodeEffortRefusal,
   JcodeEffortUnsupported,
+  JcodeModelMismatch,
   JcodeReadinessProviderRefusal,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
@@ -79,9 +80,8 @@ runJcodeHost().catch((error) => {
     writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode host startup failed (sessions_unwritable): the harness cannot persist sessions at ${error.sessionsPath} (${error.errnoCode}); fix the directory's permissions on the seat's private state\n`,
     );
-  } else if (error instanceof JcodeCursorStateUnreadable) {
-    // Connector-owned text: a path relative to the operator's home, a reason word and a SQLite
-    // result code. Never SQLite's own message.
+  } else if (error instanceof JcodeModelMismatch || error instanceof JcodeCursorStateUnreadable) {
+    // These classes construct bounded diagnostics from selected fields, never downstream messages.
     writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${error.code}): ${error.message}\n`);
   } else if (error instanceof EnvFlagError) {
     // The message is only the flag's name and the operator's own value, never child output.
