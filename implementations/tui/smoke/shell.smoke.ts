@@ -102,7 +102,7 @@ function rendererChildren(): string[] {
 
 try {
   const home = join(work, "home")
-  mkdirSync(home)
+  mkdirSync(home, { mode: 0o700 })
   await seed(home)
   console.log(`node ${process.versions.node}, tmux ${tmux("-V").trim()}, captures in ${captures}`)
 
@@ -161,7 +161,7 @@ try {
   }
 
   const empty = join(work, "empty-home")
-  mkdirSync(empty)
+  mkdirSync(empty, { mode: 0o700 })
   launch(empty, 80, 24, join(work, "empty.err"))
   const none = await waitFor(has("cotal space create <name>"), "the empty catalog state")
   save(join(captures, "80x24"), "06-empty-home")

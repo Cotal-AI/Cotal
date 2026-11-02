@@ -114,7 +114,7 @@ function peer(name: string, role: string, kind: "agent" | "endpoint", meta?: Rec
 }
 
 try {
-  mkdirSync(home)
+  mkdirSync(home, { mode: 0o700 })
   mkdirSync(project)
   await startBroker()
   await setupSpaceStreams({ servers: server, space })
