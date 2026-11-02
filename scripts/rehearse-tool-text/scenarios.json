@@ -64,7 +64,12 @@
         "review.a": { "description": "Reviews of service A" },
         "review.b": { "description": "Reviews of service B" },
         "review.announce": { "description": "Notices for everyone on the review channels" }
-      }
+      },
+      "seedPosts": [
+        { "channel": "review.a", "text": "This channel carries reviews of service A." },
+        { "channel": "review.b", "text": "This channel carries reviews of service B." },
+        { "channel": "review.announce", "text": "This channel carries notices for everyone on the review channels." }
+      ]
     },
     {
       "id": "one-job",
