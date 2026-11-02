@@ -68,6 +68,9 @@
     "N32 drops the cotal_dm description's sentence that sends a status for a peer to the task's",
     "channel with a mention.",
     "",
+    "N33 restores the claim that a live channel reaches every connected agent, which SPEC §4 does not",
+    "give a busy one. N34 offers once on every harness, though the manager refuses it without turn relay.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -367,6 +370,24 @@
       "expectRed": "the cotal_dm description sends a status for a peer to the task's channel with a mention",
       "cell": "the cotal_dm description sends a status for a peer to the task's channel with a mention",
       "note": "A harness that lists descriptions before the agent chooses, as jcode does, shows the agent this sentence there."
+    },
+    {
+      "name": "N33 the cotal_send description says a live channel reaches everyone connected again",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it. ",
+      "replace": "On a live channel, only agents connected at that moment get it. ",
+      "expectRed": "the cotal_send description says a live post misses an agent that is disconnected or busy",
+      "cell": "the cotal_send description says a live post misses an agent that is disconnected or busy",
+      "note": "SPEC §4: a live post misses an agent that is disconnected, busy or not yet joined."
+    },
+    {
+      "name": "N34 the cotal_spawn description offers once on every harness",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true",
+      "replace": "For a single job, pass once: true",
+      "expectRed": "the cotal_spawn description names the harnesses once works on",
+      "cell": "the cotal_spawn description names the harnesses once works on",
+      "note": "The manager refuses once for a connector without supportsTurnRelay, such as Hermes or Codex."
     }
   ]
 }

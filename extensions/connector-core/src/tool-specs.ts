@@ -1227,8 +1227,8 @@ export function cotalToolSpecs(
       title: "Cotal: broadcast to a channel",
       description:
         "Post to a channel. Use it for anything more than one agent could use, now or later: briefs, plans, status, decisions, results. " +
-        "Every agent on the channel receives the post, unless it has muted the channel. An idle agent is woken by it, unless it set dnd or focus or made the channel quiet. " +
-        "Channels deliver in one of two ways. On a durable channel, the usual kind, a member that is offline gets the post when it comes back. On a live channel, only agents connected at that moment get it. " +
+        "Channels deliver in one of two ways. On a durable channel, the usual kind, every agent on it gets the post unless it has muted the channel, and a member that is offline gets it when it comes back. " +
+        "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it. An idle agent is woken by a post, unless it set dnd or focus or made the channel quiet. " +
         "Separately, most channels replay history: an agent that joins later is shown recent posts, and those old posts don't wake it. cotal_channel_info says whether a channel replays. " +
         "If only one agent will ever need it, use cotal_dm instead. Give the channel's full name. If you leave it out, the post goes to your default channel, the first one you are on and may post to. " +
         "To reach a group, post on a channel the group follows, such as review.announce. You can't post to a pattern such as review.>. To reach several channels, post to each one by name; cotal_channels lists them. " +
@@ -1578,7 +1578,7 @@ export function cotalToolSpecs(
         'Example: `{name: "reviewer", join: ["review.login-page"], prompt: "Read the brief on #review.login-page, post your findings there, then despawn yourself."}` ' +
         "The new agent can read and post wherever its persona allows. An operator's persona that names no channels gets your permissions and no more; one you save with cotal_persona gets only the channels it lists. Give a helper only what its job needs. To limit its channels, write a persona with cotal_persona that lists just the ones it needs, then spawn that persona. " +
         "Only an operator can let a helper spawn agents or run workflows, and endpoint access also comes from the operator, so ask the user if the job needs them. cotal_orientation shows what you hold. " +
-        "For a single job, pass once: true with the prompt, and the helper is stopped when it ends that turn; or tell it in the prompt to despawn itself when done, as in the example. A standing teammate keeps running until it despawns itself or you call cotal_despawn. " +
+        "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true with the prompt, and the helper is stopped when it ends that turn; or tell it in the prompt to despawn itself when done, as in the example. A standing teammate keeps running until it despawns itself or you call cotal_despawn. " +
         "For work with several steps, a wait on a person, or a need to survive restarts, use cotal_run.",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),

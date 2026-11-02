@@ -596,6 +596,20 @@ const proto = MeshAgent.prototype as unknown as {
     dm.description.includes("To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there."),
     dm.description,
   );
+  // SPEC §4: a live post is at-most-once, so only a durable channel reaches every member.
+  check(
+    "the cotal_send description says a live post misses an agent that is disconnected or busy",
+    send.description.includes("On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it.") &&
+      !send.description.includes("Every agent on the channel receives the post"),
+    send.description,
+  );
+  // The manager refuses once for a connector without supportsTurnRelay.
+  const spawn = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_spawn")!;
+  check(
+    "the cotal_spawn description names the harnesses once works on",
+    spawn.description.includes("For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true"),
+    spawn.description,
+  );
 }
 
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);

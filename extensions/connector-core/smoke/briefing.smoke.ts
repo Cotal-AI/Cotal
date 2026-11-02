@@ -63,6 +63,11 @@ cell("the channel guidance sends a status for a peer to the shared channel with 
   assert.ok(CHANNEL_GUIDANCE.includes("Use cotal_dm only for something one peer alone needs"), CHANNEL_GUIDANCE);
 });
 
+cell("the briefing says a live post misses an agent that is away, and where once works", () => {
+  assert.ok(CHANNEL_GUIDANCE.includes("on a live channel, one that is disconnected or busy then misses it."), CHANNEL_GUIDANCE);
+  assert.ok(MESH_FIRST_STEER.includes("starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends."), MESH_FIRST_STEER);
+});
+
 cell("every harness carries the reply etiquette", () => {
   for (const [h, text] of all) assert.ok(text.includes(REPLY_ETIQUETTE), h);
 });
