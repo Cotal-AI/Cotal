@@ -4,7 +4,8 @@
  * (1.x, then 2.x with a fake plugin context). A role request that arrives while a turn runs is held
  * and driven nowhere. The user's next prompt takes it and carries it, and the end of that turn acks
  * it, so no later turn carries it again. On 2.x, a turn that ends while that prompt is taking the
- * request does not drive it a second time.
+ * request does not drive it a second time, and a prompt the host refuses after its hook does not keep
+ * the next arrival from being driven.
  *
  * Run: pnpm smoke:opencode-native-prompt-take:auth   (needs `nats-server` on PATH; local-only)
  * Graded: node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/native-prompt-take-auth.json
@@ -192,6 +193,18 @@ try {
     "3a the user's prompt carries the request and no driven prompt carries it again",
     native3.prompt.text.includes(text3) && driven3.length === 0,
     { native: native3.prompt.text.slice(0, 300), driven3, status: await sender.anycastStatus(sent3.ack.seq) },
+  );
+
+  // OpenCode 2.x runs the prompt hook before it reads the prompt's attachments and skills, and refuses
+  // the prompt when one is missing, so that prompt never runs and nothing ends the batch it carried.
+  // The host here never starts the prompt above.
+  const text4 = "role request sent after the host refused the user's prompt";
+  const sent4 = await sender.anycastAttributed("auditor", text4);
+  const drove4 = await until(() => driven2.some((t) => t.includes(text4)), 5000);
+  check(
+    "3b after the host refuses that prompt, the next role request is driven with the batch the prompt carried",
+    drove4 && driven2.some((t) => t.includes(text4) && t.includes(text3)),
+    { driven: driven2.slice(before3), status: await sender.anycastStatus(sent4.ack.seq) },
   );
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);

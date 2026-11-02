@@ -215,9 +215,12 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     } else {
       // A role request is shown only once its take is recorded (SPEC §8.1), so only a turn that
       // carries the inbox takes one. The recheck covers this await, during which a native prompt may
-      // have taken the same requests and carried them: its batch is then open and goes out alone.
+      // have taken the same requests and carried them: a batch it opened meanwhile goes out alone. A
+      // batch already open before the take is replaced, since a native prompt the host refuses after
+      // its hook (an unreadable attachment, an unknown skill) never runs and nothing else closes it.
+      const openBefore = batch.open;
       const items = await agent.takeChosen("automatic", (preview) => preview);
-      if (execution || submitting || batch.open || controller.signal.aborted) return;
+      if (execution || submitting || (!openBefore && batch.open) || controller.signal.aborted) return;
       if (items.length === 0 && !turnPeek) return;
       if (items.length > 0) {
         ids = items.map((i) => i.recvKey);
