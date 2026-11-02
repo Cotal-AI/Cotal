@@ -114,7 +114,7 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { serializedFor } from "./serialized.js";
 import { RunCancelObservations, type RunCancelLimits } from "./run-cancel-observation.js";
-import { jitteredBackoffMs, readCancellationAdmission, type RunDelegation } from "@cotal-ai/core";
+import { jitteredBackoffMs, readCancellationAdmission, resolveReadAcl, type RunDelegation } from "@cotal-ai/core";
 import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
 import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
@@ -1676,11 +1676,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       });
       // The host platform writes the grant, so this door decides its parent and bounds it as the
       // enrollment below does: by the caller it observed asking, or the run's starter, through the
-      // ledger walk, and for a run also by the grant its admission froze (SPEC 13.6). A list the
-      // target omits is measured as empty.
+      // ledger walk, and for a run also by the grant its admission froze (SPEC 13.6). The read is
+      // the set the enrollment provisions; any other list the target omits is measured as empty.
       const t = r.target;
       const spawner = await resolveRemoteSpawner({ request: r, owner, takeObserved: takeObservedSpawnRequest, readAdmission: readRunStarterAdmission });
-      const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [], role: t.role };
+      const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe), allowPublish: t.allowPublish ?? [], role: t.role };
       if (spawner.run !== undefined) assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, helper);
       assertWithinSpawnerGrant(opts.dir, { ...helper, parent: spawner.parent }, "spawn");
       return { request: r, parent: spawner.parent };
@@ -1701,6 +1701,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const r = await authorizeRemoteManagedAgentEnrollment({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate: observeLegacyManagerGate });
       const t = r.target;
       const subscribe = t.subscribe ?? [];
+      // An omitted or empty read list reads the subscribe set, so the bound, the row and the
+      // footprint all take the read set it resolves to.
+      const allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe);
       const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
         // The custody this enrollment attests: the instance the authorized request names, checked
         // against its current registration above. Never a field of the participant's target.
@@ -1738,7 +1741,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           // walk over the starter's current row below.
           if (spawner.run !== undefined)
             assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, {
-              owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [], role: t.role,
+              owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe, allowPublish: t.allowPublish ?? [], role: t.role,
             });
           // A fresh uid is never one a retirement tombstoned, and only the host can make that
           // promise. The grant's envelope walk refuses an over-wide request before any durable exists.
@@ -1747,7 +1750,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             owner,
             actor: t.actor,
             scope: t.capabilities ?? [],
-            allowSubscribe: t.allowSubscribe ?? [],
+            allowSubscribe,
             allowPublish: t.allowPublish ?? [],
             ...(t.role !== undefined ? { role: t.role } : {}),
             ...(t.label !== undefined ? { label: t.label } : {}),

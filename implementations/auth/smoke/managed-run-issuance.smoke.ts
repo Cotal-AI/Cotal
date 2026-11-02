@@ -76,6 +76,8 @@ const names = [
   "U1 an observed spawn enrolls one helper: its token digest under another actor is refused",
   "U1 a run's saved persona is owned by the run's starter, and the run and the starter spawn it by name",
   "U1 same nonce renews a generation issued before the listing row existed",
+  "U1 a served spawn whose subscribe set reads past its caller is refused by the host",
+  "U1 the verify door refuses a served spawn whose subscribe set reads past its caller",
 ];
 let pass = 0, fail = 0;
 async function cell(index: number, fn: () => Promise<void>) {
@@ -502,6 +504,23 @@ try {
     } finally {
       delete process.env.COTAL_DEFAULT_AGENT;
     }
+  });
+  // A subscribe set with no read list reads that set, so it is measured as the helper's read.
+  await cell(24, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `subwide${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "subwide", tokenHash: newActorToken().tokenHash, label: "subwide", subscribe: ["secret"] }, { served });
+    await assert.rejects(post("/manager-service-authority", { idpToken, request }),
+      (error: Error) => /would exceed its spawner's grant/.test(error.message) && /read \[secret\]/.test(error.message));
+    assert.equal(findManagedActor(a.stateDir, owner, "subwide"), undefined);
+  });
+  await cell(25, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `verifysub${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "verifysub", tokenHash: newActorToken().tokenHash, label: "verifysub", subscribe: ["secret"], allowSubscribe: [] }, { served });
+    await assert.rejects(verify(request), (error: Error) => /would exceed its spawner's grant/.test(error.message) && /read \[secret\]/.test(error.message));
   });
   await cell(5, async () => {
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["admin", "spawn"], allowSubscribe: [], allowPublish: [] });

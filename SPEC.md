@@ -2111,6 +2111,8 @@ refuse them with `unimplemented` rather than answering a manager-lifecycle phase
 service that owns the actor ledger and the space's provisioning authority answers both itself, after
 the same decision. Its enrollment writes the managed grant at a fresh host-minted lifecycle UID with
 a parent the ledger's delegation envelope bounds it by, and then provisions that UID's durables. The
+grant's read is the set those durables read: `target.allowSubscribe`, or `target.subscribe` when
+that list is omitted or empty, and the bound measures the same set. The
 parent is the request's supervising actor unless the request carries `spawn: { served, runId? }`, the
 manager `spawn` request subject the participant served and, for a run's spawn, the run id. The host
 reads every manager `spawn` request subject published in the space and takes the caller from a
