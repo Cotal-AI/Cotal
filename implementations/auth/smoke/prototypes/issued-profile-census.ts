@@ -310,7 +310,10 @@ export function hasIssuedRailLiteral(source: string): boolean {
 /** The same closed shipped-source inventory used by the full census and its focused gate. */
 export function issuedRailSourceCensus(root: string): { files: string[]; unexpected: string[] } {
   const builders = new Set(["packages/core/src/endpoint-subjects.ts", "packages/core/src/endpoint-grants.ts",
-    "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts"]);
+    "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts",
+    // The registry's coverage projection labels the issued rail but builds its requests through
+    // epRequestSubject; its output schema names the same rail in an enum. Neither builds a grant.
+    "packages/core/src/endpoint-coverage.ts", "packages/core/src/registry-contract.ts"]);
   const files = shippedSources(root);
   const unexpected = files.filter((file) => relative(root, file).split("\\").join("/") !== "extensions/connector-core/src/docs-bundle.generated.ts"
     && hasIssuedRailLiteral(readFileSync(file, "utf8")))
