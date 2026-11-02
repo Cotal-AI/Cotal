@@ -2,8 +2,8 @@
  * The stored-copy notice (#5404).
  *
  * When the endpoint says this session's stored copies reached their limit, the next cotal_inbox reply
- * carries one line in either attention mode. A peek keeps the notice for the next read, and the read
- * that carries it clears it. A read that throws, or whose caller goes before the reply, keeps it, and a
+ * carries one line in either attention mode, whether it shows messages or reports an empty inbox. A
+ * peek keeps the notice for the next read, and the read that carries it clears it. A read that throws, or whose caller goes before the reply, keeps it, and a
  * limit seen while a reply is being built is said by the next read.
  *
  * No broker: a real MeshAgent that never starts, whose own endpoint emits the event. channel-family-auth
@@ -61,6 +61,12 @@ check(
 );
 const second = await read();
 check("the read after it does not repeat it", count(second) === 0 && agent.storedCopiesFull === 0, second);
+
+// A read that shows a message builds its reply from what it takes, and the notice rides that reply.
+agent.ep.emit("message", { id: "dm-1", ts: 1, space: cfg.space, from: { id: "peer", name: "ada" }, to: cfg.name, parts: [{ kind: "text", text: "a waiting dm" }] }, { ack: () => {}, nak: () => {}, durable: true }, { historical: false, kind: "dm" });
+agent.ep.emit("stored-copies-full");
+const shown = await read();
+check("a read that shows a message carries the notice once", count(shown) === 1 && shown.includes("a waiting dm") && agent.storedCopiesFull === 0, shown);
 
 // Focus mode reads recall instead of the live buffer; the notice rides there too.
 Object.defineProperty(agent, "attention", { get: () => "focus" });
