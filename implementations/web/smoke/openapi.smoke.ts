@@ -131,9 +131,13 @@ try {
   const events = new Set<string>();
   const timeout = setTimeout(() => streamAbort.abort(), 10_000);
   await seed.multicast('live-contract', { channel: 'general' });
-  // A permitted publisher can send JSON that is not a wire message. The observer
-  // forwards it; the HTTP description must not claim it validated that payload.
+  // The tap enforces the subject's sender, but does not validate the whole wire message. Send a
+  // senderless frame first, then a sender-matched partial payload on the same subject. Seeing the
+  // latter bounds the refusal check without waiting for a frame the tap must drop.
   const rawSubject = chatSubject(space, 'local', 'raw_json', 'general');
+  const senderless = JSON.stringify({ probe: 'senderless' });
+  const rawMessage = { from: { id: 'local.raw_json' }, probe: 'partial-message' };
+  const rawPayload = JSON.stringify(rawMessage);
   await new Promise<void>((resolve, reject) => {
     const socket = connectTcp(brokerPort, '127.0.0.1');
     socket.setTimeout(5000, () => socket.destroy(new Error('Raw test publish timed out')));
@@ -144,7 +148,10 @@ try {
       if (reply.includes('-ERR')) { socket.destroy(); reject(new Error('Raw test publish refused')); }
       if (reply.includes('PONG')) { socket.end(); resolve(); }
     });
-    socket.once('connect', () => socket.write('CONNECT {}\r\nPUB ' + rawSubject + ' 2\r\n{}\r\nPING\r\n'));
+    socket.once('connect', () => socket.write(
+      `CONNECT {}\r\nPUB ${rawSubject} ${Buffer.byteLength(senderless)}\r\n${senderless}\r\n` +
+      `PUB ${rawSubject} ${Buffer.byteLength(rawPayload)}\r\n${rawPayload}\r\nPING\r\n`,
+    ));
   });
   let sawRaw = false;
   try {
@@ -162,7 +169,13 @@ try {
         assert(schema, `Undocumented SSE event ${name}`);
         const value = JSON.parse(data);
         conforms(schema, value);
-        if (name === 'message' && JSON.stringify(value.msg) === '{}') sawRaw = true;
+        if (name === 'message') {
+          assert(value.msg?.probe !== 'senderless', 'The tap must drop the frame without its subject sender');
+          if (value.msg?.probe === rawMessage.probe) {
+            assert.deepEqual(value.msg, { ...rawMessage, channel: 'general' });
+            sawRaw = true;
+          }
+        }
         events.add(name);
       }
     }
