@@ -5,13 +5,12 @@ import {
   checkDiscoveryDocument,
   clearCurrent,
   discoveryDocumentUrl,
-  findMesh,
   getCurrent,
   keepsRegistration,
   loadMeshes,
   pinnedFetch,
   PinnedFetchRefused,
-  removeMesh,
+  removeMeshes,
   renderReport,
   type MeshEntry,
 } from "@cotal-ai/workspace";
@@ -83,7 +82,7 @@ export async function meshes(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   if (sub === "add") return addMesh(args.positionals.slice(1), v);
-  if (sub === "rm" || sub === "remove") return removeMeshes(args.positionals.slice(1), v);
+  if (sub === "rm" || sub === "remove") return rmMeshes(args.positionals.slice(1), v);
   if (sub !== undefined && sub !== "list") {
     stderrLine("✗ ", `unknown subcommand "${sub}" - usage: cotal meshes [list | add <space> --server <url> | rm <space> …]`, c.red);
     process.exit(1);
@@ -359,7 +358,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
         `IdP       ${bundle.userAuth.idp.url}`,
         `issuer    ${bundle.userAuth.idp.issuer}`,
         `audience  ${bundle.userAuth.idp.audience}`,
-        `exchange  ${bundle.userAuth.endpoints?.url}`,
+        `exchange  ${bundle.userAuth.endpoints.url}`,
       ].join("\n"),
       "Pins fetched - trust them only if they match what the mesh's operator published",
     );
@@ -392,12 +391,12 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   // design (preflightTarget refuses user targets outright for exactly that reason). Both run even
   // under --force: unlike a static mesh, there is no "register it while it is down" story here —
   // an unverifiable pin set is not a record worth writing.
-  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)));
+  take(await verifyUserExchange(bundle.userAuth.endpoints.url, userExchangeIssuer(bundle.space)));
   take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"));
 
   const result = persistRemoteUserEntry(space, server, root, bundle, tlsRequired, Boolean(dial.residual));
   console.log(c.green(`✓ registered "${space}"`), c.dim(`${server}  user  ${root}`));
-  console.log(c.dim(`  pinned issuer ${bundle.userAuth.idp.issuer} · exchange ${bundle.userAuth.endpoints?.url}`));
+  console.log(c.dim(`  pinned issuer ${bundle.userAuth.idp.issuer} · exchange ${bundle.userAuth.endpoints.url}`));
   if (result.adoptedCurrent) console.log(c.dim(`it is now the default mesh - \`cotal spawn\` from any directory joins it`));
   else if (result.keptCurrent) console.log(c.dim(`current is still "${result.keptCurrent}" - \`cotal use ${space}\` to switch`));
 }
@@ -415,15 +414,16 @@ function take<T>(r: Check<T>): T {
 /** `cotal meshes rm <space> …` — drop records. This never stops a mesh: it removes what THIS
  *  machine remembers about one. For a mesh running here that distinction is a footgun (the broker
  *  keeps running with nothing pointing at it), so those are refused in favour of `cotal down`. */
-async function removeMeshes(names: string[], v: Values): Promise<void> {
+async function rmMeshes(names: string[], v: Values): Promise<void> {
   if (names.length === 0) {
     console.error(c.red("usage: cotal meshes rm <space> [<space> …]"));
     process.exit(1);
   }
+  const byName = new Map(loadMeshes().map((m) => [m.space, m]));
+  const removed: MeshEntry[] = [];
   let failed = false;
-  let clearedCurrent = false;
   for (const space of names) {
-    const m = findMesh(space);
+    const m = byName.get(space);
     if (!m) {
       stderrLine("✗ ", `no mesh named "${space}" is registered - see \`cotal meshes\``, c.red);
       failed = true;
@@ -463,14 +463,29 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
       failed = true;
       continue;
     }
-    removeMesh(space);
-    if (getCurrent() === space) {
-      clearCurrent();
-      clearedCurrent = true;
-    }
-    console.log(c.green(`✓ unregistered "${space}"`), c.dim(m.server));
+    byName.delete(space);
+    removed.push(m);
   }
-  if (clearedCurrent) console.log(c.dim("there is no default mesh now - `cotal use <name>` to set one"));
+  if (removed.length > 0) {
+    const current = getCurrent();
+    let clearedCurrent = false;
+    try {
+      // The batch removes each yielded space before requesting the next. Report that completed
+      // removal now: a later native filesystem failure must not hide it or leave its selection.
+      removeMeshes((function* () {
+        for (const m of removed) {
+          yield m.space;
+          if (current === m.space) {
+            clearCurrent();
+            clearedCurrent = true;
+          }
+          console.log(c.green(`✓ unregistered "${m.space}"`), c.dim(m.server));
+        }
+      })());
+    } finally {
+      if (clearedCurrent) console.log(c.dim("there is no default mesh now - `cotal use <name>` to set one"));
+    }
+  }
   if (failed) process.exit(1);
 }
 

@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { approveDevice } from "../../implementations/auth/smoke/_device-approval.js";
 
 const worktree = resolve(import.meta.dirname, "..", "..");
 
@@ -125,16 +126,7 @@ const signup = await ba.api.signUpEmail({
 });
 const cookie = signup.headers.get("set-cookie")!.split(";")[0];
 const userId = signup.response.user.id;
-async function approve(userCode: string): Promise<void> {
-  const claim = await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-  if (!claim.ok) throw new Error(`device claim failed: HTTP ${claim.status}`);
-  const res = await fetch(`${base}/device/approve`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie, origin },
-    body: JSON.stringify({ userCode }),
-  });
-  if (!res.ok) throw new Error(`device/approve failed: HTTP ${res.status}`);
-}
+const approve = (userCode: string) => approveDevice({ base, cookie, origin }, userCode);
 
 const stateDir = userAuthStateDir(root, SPACE);
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
@@ -181,7 +173,7 @@ try {
   console.log("B) login + grant + retained agent + seeded channel + a user-mode message");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
-    onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
+    onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
   });
   check("device login established", sub === userId, { sub, userId });
   // The operator actor needs scope "admin": `channel set` rides the "channel-writer" view and the

@@ -32,6 +32,10 @@ import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } f
 scrubAmbientBrokerEnv();
 const scratch = makeScratch("cotal-up-refresh-identity-");
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+// The foreground `up` this suite holds and signals runs under Node itself with the tsx loader, so
+// its ChildProcess is the real CLI. `.bin/tsx` would add a wrapper that relays only SIGINT and
+// SIGTERM, and a SIGKILL would end only that wrapper.
+const TSX_LOADER = import.meta.resolve("tsx");
 const CLI = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
@@ -461,7 +465,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
   const { findMesh } = await import("@cotal-ai/workspace");
   const space = "fg-crash";
-  const child = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout?.setEncoding("utf8");
@@ -511,7 +515,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
 
   // CONTROL: the same foreground `up`, ended with SIGINT (the intended stop) instead of SIGKILL,
   // exits 0 and drops the record — proving the crash branch above is the ONLY one that keeps it.
-  const control = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const control = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {

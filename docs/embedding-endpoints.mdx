@@ -1,0 +1,170 @@
+---
+title: CotalEndpoint reference
+description: Presence metadata, observer freshness, write diagnosis, liveness probes, and DM-only endpoint readers.
+kind: Reference
+audience: integrators
+---
+
+This page describes `CotalEndpoint` behavior in the TypeScript reference implementation.
+[Message flow](presence-and-delivery.mdx) explains how presence and delivery fit together.
+The wire requirements are in [SPEC §6](../SPEC.md#6-presence-and-discovery) and [§8](../SPEC.md#8-nats--jetstream-binding).
+
+## Presence metadata [#presence-metadata]
+
+Each presence record contains an `AgentCard`, status, and heartbeat timestamp, under the key `card.id`.
+An endpoint writes only its own key. Offline records can remain in an observer's roster.
+Optional metadata has the following meaning:
+
+| Field | Meaning |
+|---|---|
+| `activity` | The peer's description of its current work. |
+| `condition` | A structured cause reported by the agent application, such as `rate_limit`, `approval`, or `input`. Missing means no cause was reported. The shared connector clears it when the agent next enters `working`. |
+| `activeAt` | Epoch milliseconds of the last reported work event, such as a token or tool call. Missing means no work event was reported. `noteActivity` records the event locally. The next heartbeat publishes it. |
+| `statusSince` | Epoch milliseconds when either status or activity last changed. A heartbeat or repeated report leaves it unchanged. Offline records omit it because a stale heartbeat does not establish a departure time. |
+| `activitySince` | Epoch milliseconds when the current activity was set. A status change or heartbeat leaves it unchanged. |
+| `environment` | An opaque provider reference. Core publishes the value without interpreting it. |
+| `attention`, `channelModes` | Advisory receive preferences. They confer no authorization and are not read back into delivery. |
+
+`ts` dates the heartbeat. A fresh `ts` can accompany an old `activeAt`, `statusSince`, or `activitySince`.
+The shared `presenceAges` helper omits an age for a nonfinite or nonnumeric timestamp and clamps clock-skewed negative ages to zero.
+An empty activity has no displayed activity age.
+The [connector runtime reference](connector-runtime-reference.mdx#presence-display-and-name-verification) describes rendered ages and progress observations.
+The [embedding exports reference](embedding-exports.mdx#endpoint-presence-metadata) describes the `environment` option and connector process labels.
+
+### Runtime observation [#runtime-observation]
+
+`runtime` describes the OS process that holds the mesh connection.
+Its `id` is a random opaque token minted once per process and lifecycle scope.
+A new process or a different lifecycle scope receives a new token.
+Status changes, activity changes, heartbeats, and in-process reconnects leave that observation unchanged within the scope.
+
+`startedAt` is the process's own `performance.timeOrigin`, rounded down to epoch milliseconds.
+All endpoints in the process share that start time, including a lifecycle registered later.
+It does not date a separately launched parent or model process.
+The only supported `source` is `endpoint-process`.
+An offline record retains the observation but makes no claim about a running duration.
+A missing observation means unknown. A change to runtime metadata notifies presence observers even when status and activity match.
+
+### Record validation [#record-validation]
+
+The endpoint rejects a presence row when any of these checks fails:
+
+- The row and `card` are objects, and `card.id` equals the KV key.
+- `card.name` is a string, and `status` is one of `idle`, `waiting`, `working`, or `offline`.
+- `ts` is a finite number.
+- Each present `card.role`, `activity`, and `attention` is a string.
+- A present `condition` is an object with a string `code`.
+
+A rejection uses the recoverable warning path.
+A `condition` of `null`, a bare string, or an object without `code` is rejected.
+These checks prevent a malformed timestamp from leaving a row live indefinitely and a nonstring display value from breaking roster rendering.
+They are separate from the timestamp checks used to render optional ages.
+The complete wire field definitions are in [SPEC §6](../SPEC.md#6-presence-and-discovery).
+
+## On-demand presence [#on-demand-presence]
+
+Agent seats call `CotalEndpoint.readPresence()` when a tool needs a roster. Batched Direct Gets bind no consumer, apply presence validation and liveness rules, share concurrent calls, and retain a missing previously observed peer as offline. They need `$JS.API.DIRECT.GET.KV_cotal_presence_<space>`. Older issuers can mint credentials without it. Upgrade the issuer, mint replacement credentials, and connect with those credentials. Reconnecting the same credential adds no grant. A refused read remains an authorization failure.
+
+A failed read leaves a last-known roster. A DM or mention with a name that the failed read cannot verify refuses with that same reason. A name verified by an earlier read remains accepted. Watching managers, delivery, chat, and dashboard endpoints retain their transition watches.
+
+## Presence diagnosis [#presence-view-and-write-diagnosis]
+
+`presenceView()` reports the trust state of this endpoint's local presence watch.
+
+| `state` | `fresh` | Meaning |
+|---|---|---|
+| `current` | `true` | The local watch can support an absence verdict. |
+| `unpopulated` | `false` | The current watch has not completed its initial snapshot. The roster may be partial. |
+| `stale` | `false` | The whole watch has been silent past the liveness window. The roster is last-known as of `staleSince`. |
+
+This API describes the observer, not a peer's health.
+An endpoint without a presence watch returns `current`.
+`waitForPresenceSnapshot(timeoutMs = 1000)` returns `snapshot` or `timeout`.
+A timeout bounds the wait. It does not prove that the initial snapshot completed.
+
+Per-peer age-out requires evidence that the watch continued receiving after that peer's last heartbeat.
+Whole-watch silence marks the view stale instead of marking every peer offline.
+Explicit offline records and KV delete or purge events also mark a peer offline.
+
+### Watch recovery [#watch-recovery]
+
+With the connection up, the endpoint attempts one presence-watch rebind per liveness window, without overlapping attempts.
+The replacement starts from the bucket's current state.
+A successful rebind reports a `warning` with the silent interval.
+A failed or silent rebind leaves the view stale.
+A bind that completes after stop or connection replacement installs no watch.
+
+An empty bucket is a completed empty view for an observer that does not register presence.
+The endpoint marks previously known peers offline and holds the empty view current.
+For an endpoint that registers, an empty bucket also lacks its own expected key.
+That endpoint republishes itself and waits for the resulting delivery to restore freshness.
+It does not treat a wiped bucket as proof that every peer departed.
+
+### Write failure [#write-failure]
+
+Presence publishing is monitored separately from the watch.
+A refused write is recoverable. After at least two consecutive failures spanning a full presence TTL,
+the endpoint emits `PresenceWriteStuckError` with code `presence-write-stuck` and records `stuck: true`.
+`presenceWriteFailure()` exposes the bucket, start time, elapsed duration, consecutive count, latest error, and stuck flag.
+This diagnosis is local and adds no wire field.
+
+A successful current write clears the failure record. Stop or connection replacement also clears the connection-scoped diagnosis.
+An old connection's late result cannot change a newer connection's diagnosis.
+Within one connection, an older write's late result cannot replace newer settled evidence.
+The diagnosis reports observed presence-write refusals. It does not establish that the fault is limited to presence.
+See [connector presence display](connector-runtime-reference.mdx#presence-display-and-name-verification) for tool behavior.
+
+## Plane liveness probes [#plane-liveness-probes]
+
+`probeLiveness(plane, timeoutMs = 2000)` accepts `manager` or `delivery`.
+An unsupported plane is refused before publication. Calling without a connection also throws.
+The method sends an empty request on `cotal.<space>.live.<plane>.<owner>.<actor>` and receives
+the reply under `<request>.reply.<nonce>`, using a fresh nonce and no muxed inbox.
+
+The returned `LivenessAnswer` contains the requested `plane`, a `responder` verdict, and an optional opaque `instance` token.
+The broker's no-responders answer becomes `unbound`.
+A timeout, permission refusal, transport failure, or malformed reply becomes `unknown`.
+A parsed reply supplies its own verdict.
+The token identifies a responder binding. Rebinding mints a new token, so a changed token alone does not prove a different process.
+One probe samples one queue member and cannot establish the state of every responder.
+The complete reply, responder-state, grant, reply-target validation, and rebinding contracts are in
+[SPEC §6.1](../SPEC.md#61-plane-liveness).
+
+## DM-only reader [#dm-only-reader]
+
+`dmOnly: { handler, settleTimeoutMs? }` binds the endpoint's existing `dm_<owner>-<actor>-<uid>` durable.
+The mode requires credentials or a bearer and a lifecycle UID.
+It requires `consume: true` and `registerPresence`, `watchPresence`, `watchChannels`, and `readOnce` set to `false`.
+Channels, a card role, and `acceptedToken` are refused.
+`handler` must be a function. An optional `settleTimeoutMs` must be a positive safe integer.
+
+The mode creates no durable and registers no presence.
+It reads no presence, channel registry, channel subscription, delivery durable, retained history, or JetStream account information.
+Its JetStream requests are `CONSUMER.INFO` and `CONSUMER.MSG.NEXT` for the one durable, with acknowledgements under its `$JS.ACK` subtree.
+The `dm-reader` user-auth exchange view issues this credential.
+Its grants and lifecycle scope are defined in [SPEC §8](../SPEC.md#8-nats--jetstream-binding) and [§10](../SPEC.md#10-connection-and-onboarding).
+
+### Acknowledgement [#binding-and-acknowledgement]
+
+A missing durable fails startup with `dm-durable-missing`.
+A refused bind fails with `dm-bind-refused`. The endpoint tries no alternate credential.
+Each DM passes the standard durable sender check before reaching the handler.
+Handlers run one at a time, with one message pulled per batch.
+The handler acknowledges explicitly. A handler rejection does not acknowledge its copy and reports through the endpoint's `error` event.
+An unacknowledged copy remains eligible for broker redelivery.
+
+### Reader shutdown [#stop-and-reconnect]
+
+`stop()` waits for the running handler to settle, then closes the connection.
+The settlement bound defaults to 30 seconds.
+It throws if the handler does not settle within that bound or connection closure cannot be established.
+The caller retains custody after either failure.
+Reconnect uses the endpoint's normal credential-renewal and recovery paths and waits for the previous handler before reading another DM.
+
+A copy already received by the client cannot reach a new handler after stop begins or its connection is replaced.
+That copy stays unacknowledged and can redeliver after the durable's acknowledgement wait.
+An acknowledgement, negative acknowledgement, or in-progress signal from a handler on a closed connection throws.
+
+## Watch cleanup [#watch-cleanup]
+
+Presence and channel-registry watch cleanup first disarms local delivery. A known excluded consumer-delete subject causes no delete request. Unknown credential context still asks the broker, and refused deletes leave the consumer to inactivity expiry. Permitted deletes reclaim immediately. Endpoint stop, silent-watch rebind, and manual reconnect retire their owned watches, including an in-flight bind. A connection that closes on its own leaves the watch to the broker threshold. SDK-internal ordered-consumer recovery remains unchanged.

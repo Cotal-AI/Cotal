@@ -1,0 +1,463 @@
+---
+title: CLI usage
+description: Command discovery, global flags, structured receipts, and exit codes.
+kind: Reference
+audience: operators
+---
+
+The CLI reports its selected space, discovers commands, and returns receipts for operations.
+Its help describes the flags and output formats each command supports.
+
+
+## Invocation [#running-it]
+
+```bash
+npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22.10+)
+cotal                     # the selected space, common commands, and where to start
+cotal help                # the same, then every command group (also `cotal --help`)
+cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags
+cotal version             # cotal-ai version + each installed extension's (also `cotal --version`, `cotal -V`)
+cotal version --json      # the same as one JSON document (also `-j`)
+```
+
+The shell installer prints its absolute launcher path. Use it when an older installation still
+wins plain `cotal`. Having `~/.local/bin` somewhere on PATH does not establish precedence, and a
+child installer cannot change the parent shell's command cache, aliases or functions. Inspect
+`type -a cotal` in that shell. After putting the new directory first, refresh its command cache
+with `hash -r` (or `rehash` in zsh). An alias or function must be corrected separately. To restore
+connectors after an old executable rebuilt them, run the verified newer absolute executable with
+`ext seed`, without `--force`.
+
+`npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
+the space this folder has registered, else the selected space, else, with nothing selected, the space
+this folder prepared, and lists common commands. It reads no
+broker. When this folder's own records show the stack of its registered space stopped, as after
+`cotal down` there, and another space is selected, it names the selected space, which the commands
+run there target, as for a prepared folder. Otherwise, when that folder's space is not the selection,
+it adds that the folder's space applies while it runs and the selected space applies outside the
+folder and while it is stopped. When the folder holds a space that is prepared, or whose stack is
+stopped, it names what it holds and the `cotal up` that starts it, as the note under a command's
+`Mesh:` heading there does. In a copy or a moved folder, which holds the records of a stack that
+runs from another folder, it says what the folder holds: a copy of a controller stack, a legacy
+root's records and the folder that space is registered for, or records moved from their recorded
+folder. It ends that line with the step the commands there name. It points a prepared space to the `cotal up` that starts it, with
+`--root <dir>` when the space is prepared in another folder and `<dir>` quoted when a shell would
+split it, and a machine with no space to `cotal setup`. While the space it names is prepared or
+stopped, that `cotal up` is its first step and it offers no `cotal spawn`, in any folder. Otherwise,
+in a folder that holds another space, its first step is that folder's own `cotal up`, which it says
+starts this folder's space, and `cotal spawn` follows. A stopped stack's recorded file-store cap does
+not change that restart command. Membership and artifact stores reserve no capacity at creation, so
+there is no per-space `--max-file-store` floor. With spaces on the machine but none selected
+or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
+flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
+command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
+itself do (exit 1), rather than print the command's help. A subcommand's help gives its whole
+usage, from `cotal` through its arguments, and lists only the options that subcommand takes.
+`-v` is not a version flag.
+
+A command's help shows its summary, then Usage, Shorthands when it has any, Examples, its
+subcommands under Commands, Options, and the structured output it supports. Every command and
+subcommand `cotal help` lists has one to three examples, the most common use first. Each is a
+command that works as written, with a note on what it does. A value in angle brackets, such as
+`<persona>`, is one you fill in. `cotal help spawn` shows:
+
+```text
+Examples
+  cotal spawn                              run an agent in this terminal
+  cotal spawn -d                           launch through a manager and return
+  cotal spawn <persona> -p "review PR 12"  start a persona with a task
+```
+
+Some commands have short aliases, listed in `cotal help` and under Shorthands in each
+command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), `h` (history),
+`t` (team), `p` (persona), `ch` (channel), `w` (watch), `ep` (endpoint), `mgr` (manager), `svc` and
+`services` (service), and `cfg` (config). Subcommands can have their own, such as
+`cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
+subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
+unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. `cotal despawn`
+suggests `stop`, the command Cotal's own text calls a despawn. A command, alias,
+or extension command that would claim a word another one already claims is refused when it
+registers or installs.
+
+
+### Source checkouts
+
+In a dev clone, `pnpm cotal <command>` runs `bin/cotal.ts` through `tsx`, but `bin/` loads the other
+packages from their built `dist/`. Run `pnpm build` after `pnpm install`, and again after you edit a
+package, or the command fails with `ERR_MODULE_NOT_FOUND` for `@cotal-ai/cli/dist/index.js` or runs
+the old code. A Windows source build needs the matching MSVC Developer Command Prompt to compile
+its first-party process identity binding. Published packages already contain the x64 and arm64
+binaries and need no compiler or native download.
+
+Commands that change the installation run the automatic connector seed and stop when the
+operator-global seed store is not current for the checkout's version, which includes a fresh config
+and a store another version wrote. The error includes
+`this would migrate the machine-wide store and can take an installed cotal down`. A
+checkout never writes the connector store an installed `cotal` uses. For day-to-day
+work, set `COTAL_SKIP_CONNECTOR_SEED=1` to skip that seed step:
+
+```bash
+pnpm install
+pnpm build
+COTAL_SKIP_CONNECTOR_SEED=1 pnpm cotal status
+```
+
+Pointing `XDG_CONFIG_HOME` at a scratch dir is not enough by itself. Isolated release tests
+that must seed from a checkout also set `COTAL_ALLOW_CHECKOUT_SEED=1`, as described under
+[Built-in connectors are seeded extensions](cli-installation.mdx#built-in-connectors-are-seeded-extensions).
+
+Before publication, the release workflow installs the packaged candidate into fresh homes and
+caches on Linux, macOS and Windows, on x64 and arm64 with Node 22, 24 and 26. Each setup seeds
+connectors, starts the broker, delivery daemon and Manager, checks native process identity and
+Manager control, then stops and restarts them. Every platform must pass before normal or snapshot
+publication can proceed.
+
+An undeclared flag is a usage error, and so is a flag given more than once unless it is
+repeatable, as `--opt` and `down --session-store` are. A word that starts with a dash and a digit,
+as `-1` does, after a flag that takes a value is that flag's value, so `--limit -1` gets the
+command's own check of `--limit`. So is an unknown command, and a first word
+that is not one of the command's subcommands when it declares them. So is input a command checks
+before it acts, such as a missing argument, an invalid flag value or two flags that conflict, and
+`cotal help` with a subcommand that does not exist. So is a word that starts with an en dash, an em
+dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
+`--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
+typed. The command prints the error, then any remedy,
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. The help is the one
+`--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
+help. A refusal for a missing
+`--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
+help. A control character in
+a word the error quotes, from the command line or from a file, shows as its `\uXXXX` escape, so a
+typed word cannot clear the screen or retitle the terminal. A refusal that repeats an argument
+longer than 128 characters, such as an unknown command, a space name or a run id, shows its first
+128 characters followed by `… (<n> characters)`, in text and in the `--json` message. The command
+still checks and uses the whole value. A usage error is found before any effect, so it never seeds
+connectors or writes configuration. Help, version and completion never do either.
+A word that starts with `-` reads as an option. A message or name that starts with one goes after
+`--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
+which the refusal gives. An option given with no value, last or just before another option, is
+refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
+rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
+typeset text, is refused naming the option it meant, rather than read as a positional.
+
+
+### Color
+
+Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
+the `console` screen, is colored only on a terminal: a line on stdout only when stdout is a terminal
+and a line on stderr only when stderr is one, so a pipe or redirect of either stream is plain text.
+Some lines a command writes directly, such as progress notes, are colored only when both streams
+are terminals. A terminal whose `TERM` is `dumb` gets no color either. A non-empty `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
+piped or `TERM` is `dumb`, unless it is `0` or `false` in any letter case, and it takes precedence over `NO_COLOR`
+with no Node warning about the pair. `--no-color` turns
+color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the
+run starts, but they are no longer forced into color by `FORCE_COLOR`.
+
+
+### Global flags
+
+At any question the CLI asks, Ctrl-D on an empty line or an input that closes cancels the question
+as Ctrl-C does, so the command reports its own cancelled outcome.
+`--no-input` means the run never prompts, opens an editor or opens a browser. A command that would
+prompt behaves as it does without a terminal, `web` prints its link without opening it, and
+`personas edit` is refused. A refusal for a missing `--yes` names what kept the command from asking:
+`--json`, `--no-input`, `COTAL_NO_PROMPT=1` or no interactive terminal. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
+the command word on every command, and after it on every command except one that takes its words
+raw. After `--` they are ordinary words. Each is given once, as any flag is, before or after the
+command word. No command may declare a flag with either name. The output
+flags `--json` (`-j`) and `--plain` may also come before the command word, as in
+`cotal --json status`; they are read as the command's own flags, so a command without that output
+refuses them as it does after the command word. A command that takes its words raw, such as the
+hidden completion entry, has no flags to read them as and refuses them before its word with a usage
+error. A `--` before the command word ends these leading flags. An installed extension
+whose command declares one is an internal error, and `cotal` exits 1 before running any command.
+Shell completion treats the current `--` word as a flag prefix until it is committed. After `-- `,
+it completes positional values without offering options. A string option's value is completed
+from its own candidates or file hint, without inserting other option names.
+
+Commands come from the surfaces the binary composes: the base mesh CLI, the manager and the
+delivery daemon, plus any operator-installed extensions. Hidden entries such as the deprecated
+`deliver` and `auth-service` are not completed.
+`cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
+runtimes, service presets and local process lifecycle descriptors. The `web` dashboard and
+optional manager runtimes ship this way. A `@cotal-ai/*` package named without a version installs
+this cotal's version, as `setup` and `update` do; a version or tag you name is installed as given.
+A new third-party extension is installed and validated in a temporary prefix before it is added
+to the live installation. A refused new add leaves installed package links and the three prefix
+manifests unchanged, and removes its temporary prefix. An add over an installed extension that
+fails or is interrupted puts the previous installation back. An interrupted add exits 130 and never
+reports the version it rolled back. Once an add has committed, failing to remove its copy of the
+previous installation is a warning that names the copy, not a failed add.
+
+
+## Structured output [#structured-output]
+
+A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
+one JSON document on stdout. Most commands have one, among them `cotal status`, `cotal space`,
+`cotal service`, `cotal up`, `cotal down`, `cotal ps`, `cotal history` and `cotal config`.
+`cotal help <command>` shows whether a command and each of its subcommands has one.
+`cotal version --json` writes:
+
+```json
+{"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
+```
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `1` |
+| `command` | The command that ran |
+| `target` | What it acted on, or `null` for a command that reads only local metadata |
+| `outcome` | `ok`, `no-op`, `refused`, `failed`, `partial` or `unknown` |
+| `completeness` | How much of the read scope the result covers: `complete`, `partial` or `not-checked`. It says nothing about whether the work succeeded |
+| `result` | The command's result. A `partial` read keeps what it read; a refused, failed or unknown run has `null` |
+| `warnings` | One `{code, target, message}` for each thing it could not read or check |
+| `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
+| `changed` | What a command that did not succeed changed anyway |
+
+Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
+envelope alone and writes no text report on stderr. The text report goes to stderr only when the
+envelope cannot be written to stdout, and the exit code is the same either way. A usage error under
+`--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
+subcommands and is near none of them is a usage error that lists the subcommands the command takes.
+A command without a JSON output refuses `--json` as an unknown option.
+
+A subcommand's help has its own `structured output` line, and only the forms that show one write a
+document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
+`ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
+failure.
+
+A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
+report as plain lines: no color, ASCII labels, and no marks other than the `!` that begins a warning
+or failure line on stderr. Plain writes these punctuation marks in ASCII wherever they appear: `·`
+and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§` as `section`. Other characters,
+such as the letters of a name or a message, are written as they are.
+Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
+reports and error lines draw their marks and punctuation as plain does, and keep their color. With
+none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
+A usage refusal under `--plain` or such a locale prints the classified report that begins
+`Request refused`, then the command's help. Every refusal line, the `✗` line included, shows a
+control character in the text it quotes, such as a file's bytes or an argument, as an escape like
+\u001b, so that text cannot move the cursor or change the screen. A refusal of a value that names
+its own fix prints that line and its next step without the help: an `--on` value that is empty, a
+principal id or not an instance id, a `spawn --on` that needs a terminal or `-d`, `attach` with no
+name and no terminal, and a `run` command given no run id.
+Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
+terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
+to the terminal at spaces, each continuation line under its text.
+
+
+### Target context
+
+Shared human reports for a resolved space begin with `Mesh: <space>`, including
+empty `ps` results, manager inventories, the impact a command shows before it
+stops something, and classified failures. A failure raised after the command
+resolved its space carries that space in `target.space`, even when the failing
+step named no space. The label comes from the operation's target, not a new read
+of the current selection. Global reports do not invent a selected mesh. JSON
+retains `target.space` without a text header. A refusal for a name no space has, such as one
+`space create` refuses or one `space show` and `space forget` do not find, carries the name as
+`target.requested` and has no `Mesh:` heading. Plain watch feeds and followed
+history prefix each new row with the mesh name so the context remains visible as
+output scrolls.
+
+On a terminal, a long title, value, line, warning or failure wraps at spaces, and each continuation
+line starts under the text it continues. A labeled value with a word too wide to fit beside its label,
+such as an identity, starts on the line under the label. A word wider than the line, such as a path,
+keeps a line of its own and is never split. A command under Next wraps as one word, so a copied line
+never holds part of one. So does anything a line writes in backticks, from its opening backtick to its
+closing one, whatever it starts with and whatever words it holds, such as
+`systemctl --user show-environment`. A remedy, Next line, hint, message or option description that
+names a command after other words writes it in backticks, so it wraps whole and `--json` carries the same text. A command that holds a
+backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
+and wraps whole to the matching pair. A line that starts with a command outside backticks, such as a
+usage line, wraps at its spaces. A command or a span in backticks wider than the line, such as a
+`next:` command or a remedy that is one whole command, is never broken: it overflows as one line, so
+a copy is whole. Help wraps the same way, including the title of `cotal help`.
+
+A question that defaults to No, such as the one before `history clear`, `down`, `channel remove` or
+`persona remove`, is answered by typing: `y` or `yes`, in any case, then Enter confirms it. Enter
+alone, any other text, Esc or Ctrl-C keeps No, so a word typed at the prompt by mistake never
+confirms a step you cannot undo. `space delete` asks you to type the space's name instead. A
+question that defaults to Yes is a Yes and No choice: the arrow keys move the selection, `y` and `n`
+answer at once, and Enter takes the selection.
+
+A usage line breaks only between options, never between an option and its argument. A ` | ` stays
+on the line before it whenever it fits there. A compact `|`, such as the one in
+`<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
+with the following option, and no space is added or lost. A usage too wide for the line breaks after
+its own ` | ` or compact `|` alternatives first. A group too wide for the line, such as
+`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, breaks the same way inside, and so
+does a group nested in it. When its first piece opens a bracket, as `(--to/-t <agent> |` does, and
+fits on the line before the group, the group continues that line, so on a narrow terminal the usage
+starts `cotal send (--to/-t <agent> |`. Otherwise the group starts a line, which keeps two words
+such as `cotal stop` together. What follows the group starts a new line. A group that fits, such as
+`[--json|--plain]`, stays whole. Only a single option with its argument that is wider than the line
+breaks at its spaces. An example's command is not wrapped, so each stays one line to copy.
+
+When the flag names leave their descriptions fewer than 30 columns, each description goes on the
+lines under its flag. A report's list of commands, and the notes beside a help's examples, follow
+the same 30-column rule. Below 48 columns,
+a record puts each label on a line of its own with its value under it. Output to a pipe or a file is
+never wrapped.
+
+
+### Partial reads
+
+A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
+`completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is
+never presented as complete when part of it is missing.
+
+A target the command cannot resolve or reach is refused before any request, with the code for why:
+`TARGET_NOT_FOUND` (no such mesh), `TARGET_AMBIGUOUS` (several match), `TARGET_UNAVAILABLE` (its
+broker or manager did not answer), `AUTH_REQUIRED` (it needs a sign-in or a fresh credential),
+`PERMISSION_DENIED` (it refused the credential), `DEPENDENCY_UNAVAILABLE` (trust material, the
+user-auth service or a space catalog it needs could not be used), or `UNSUPPORTED`.
+
+On Linux, a broker on a loopback address whose process is stopped by a signal, such as SIGSTOP,
+still accepts connections and never answers. Once the first dial to it times out, the refusal names
+that process's pid and gives `kill -CONT <pid>` as the remedy, without waiting out the longer
+confirm, so a command such as `send` or `run` returns in a few seconds. `cotal status` shows the
+connection as `broker process <pid> is stopped` and offers the same command. A broker that runs but
+does not answer, or one on another host, still waits out the confirm.
+
+
+### Exit codes
+
+A command with a JSON output exits by its outcome, with or without `--json`:
+
+| Outcome | Exit | Codes |
+|---|---|---|
+| `ok`, `no-op` | 0 | none |
+| `refused` before any effect, for invalid input | 1 | `USAGE_INVALID`, `SCHEMA_INVALID` |
+| `refused` at a known boundary before any effect | 2 | `PERMISSION_DENIED`, `AUTH_REQUIRED`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`, `CONFLICT`, `LIFECYCLE_BLOCKED` |
+| `unknown`: it may have had an effect that cannot be attributed. Do not retry blindly | 3 | `OPERATION_UNKNOWN` |
+| `partial`: some of the work completed, or cleanup remains | 4 | `OPERATION_PARTIAL` |
+| `failed`: a confirmed failure with no cleanup left | 5 | `OPERATION_FAILED` |
+
+An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
+failure. A command run from a folder that no longer exists refuses with `USAGE_INVALID`, exit 1,
+before it does anything, and says to `cd` to an existing folder. It prints that line and the `cd`
+remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
+`.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
+2, before it does anything, names that file and says to rename or move it. `help`, `version` and
+`completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
+exists, and there `help` says the folder is gone instead of showing a space.
+
+A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
+session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
+143. This holds for `watch`, `chat`, `console`, `history --follow`, `channel members --follow` and
+`join`, and for `service logs --follow`, the `--wait` follows and a foreground `up`. The JSON
+streams of `watch`, `chat --stdio`, `history --follow` and `channel members --follow` end with an
+`end` record whose reason is `interrupted` for SIGINT or `terminated` for SIGTERM. Inside a terminal
+view a key that leaves, such as `q` or Ctrl-C, is not a signal, and the view exits as it does when
+you leave it.
+
+Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
+the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
+partway, so check what it did before you retry. A reader that closes the output early, as `| head`
+does, ends the command quietly with the status it had already set, or 0. A command that follows a
+stream, such as `watch`, `history --follow`, `console` or `channel members --follow`, notices the
+closed reader at its next line, so on a quiet mesh it runs until a message arrives or it is
+interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above.
+
+
+## Commands [#commands]
+
+| Section | Command | Purpose |
+|---|---|---|
+| Setup | [`setup`](cli-installation.mdx#setup) | Prepare a space, application and runtimes; opt into startup separately |
+| Setup | [`help`](#running-it) | List the commands, or show one command's help |
+| Setup | [`version`](#running-it) | Print this binary's version and each installed extension's |
+| Setup | [`ext`](cli-installation.mdx#ext) | List, install and remove operator CLI extensions |
+| Setup | [`config`](cli-installation.mdx#config) | Show and set your preferences: the defaults your commands use |
+| Setup | [`telemetry`](cli-installation.mdx#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
+| Setup | [`update`](cli-installation.mdx#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
+| Setup | [`completion`](cli-installation.mdx#completion) | Report, print or install shell completion |
+| Setup | [`docs`](cli-installation.mdx#docs) | Read this version's protocol and CLI docs, offline |
+| Mesh | [`up`](cli-startup.mdx#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
+| Mesh | [`down`](cli-shutdown.mdx#down) | Stop the whole stack, selected registered components, or a manifest deploy |
+| Mesh | [`backup`](cli-backups.mdx#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
+| Mesh | [`clean`](cli-shutdown.mdx#clean) | Legacy, hidden from `cotal help`: purge history or wipe a stopped store; `reset`, `history clear` and `backup cleanup-fallback` replace it |
+| Mesh | [`reset`](cli-shutdown.mdx#reset) | Preview or reset one stopped local store or space identity |
+| Mesh | [`meshes`](cli-selection.mdx#mesh-registry) | Legacy, hidden from `cotal help`: list, register and drop meshes; `space`, `space add` and `space forget` replace it |
+| Mesh | [`space`](cli-selection.mdx#selecting-a-space) | List the spaces this machine can reach, or show one in full |
+| Mesh | [`sync`](cli-selection.mdx#mesh-registry) | Refresh the signed-in account's advertised spaces |
+| Mesh | [`status`](cli-selection.mdx#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
+| Mesh | [`doctor`](cli-auth.mdx#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
+| Mesh | [`use`](cli-selection.mdx#selecting-a-space) | Select the space commands target when none is named, or show the selection |
+| Mesh | [`join`](cli-installation.mdx#join) | Legacy, hidden from `cotal help`: join a space as your own presence; `chat` replaces it |
+| Mesh | [`topology`](cli-startup.mdx#manifest-deploys) | Legacy, hidden from `cotal help`: view a manifest's access graph; `team check --graph` replaces it |
+| Messaging | [`send`](cli-messaging.mdx#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
+| Messaging | [`chat`](cli-messaging.mdx#chat) | Open a live session under its own identity: terminal view, `--plain` lines, or `--stdio` for programs |
+| Messaging | [`channel`](cli-messaging.mdx#channel) | Read channel metadata and observed members, or change a channel's settings |
+| Messaging | [`history`](cli-messaging.mdx#history) | Read retained messages, or clear them |
+| Messaging | [`feedback`](cli-installation.mdx#feedback) | Send feedback to the Cotal developers |
+| Messaging | [`pending`](cli-messaging.mdx#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
+| Agents | [`spawn`](cli-agents.mdx#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
+| Agents | [`models`](cli-agents.mdx#models) | List connector model catalogs and variants from the manager |
+| Agents | [`app-identity`](cli-auth.mdx#plumbing) | Plumbing for a Claude app conversation's identity on a local mesh; you never run it directly |
+| Agents | [`start`](cli-agents.mdx#spawn) | Removed: `cotal start` was merged into `cotal spawn --detach` |
+| Agents | [`stop`](cli-agent-control.mdx#managed-seats) | Ask the manager to stop a managed agent |
+| Agents | [`ps`](cli-agent-control.mdx#managed-seats) | List managed agents and their mesh status |
+| Agents | [`attach`](cli-agent-control.mdx#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
+| Agents | [`input`](cli-agent-control.mdx#input) | Type one line into a managed agent's terminal without attaching |
+| Agents | [`persona`](cli-agents.mdx#persona) | List, show, edit, create, or remove local personas |
+| Agents | [`personas`](cli-agents.mdx#persona) | Legacy, hidden from `cotal help`: the earlier persona parser; `persona` replaces it |
+| Observe | [`endpoints`](cli-endpoints.mdx#endpoints) | Legacy, hidden from `cotal help`: list every endpoint in the live roster; `who --all` replaces it |
+| Observe | [`who`](cli-endpoints.mdx#who) | The live roster of the selected space, and whether a manager runs each seat |
+| Observe | [`whoami`](cli-endpoints.mdx#whoami) | The identity this CLI acts under, and what it may read, post and do |
+| Observe | [`describe`](cli-endpoints.mdx#endpoint-control) | Legacy, hidden from `cotal help`: read a native endpoint's contracts; `endpoint describe` replaces it |
+| Observe | [`invoke`](cli-endpoints.mdx#endpoint-control) | Legacy, hidden from `cotal help`: invoke one native command; `endpoint invoke` replaces it |
+| Observe | [`watch`](cli-observation.mdx#watch) | Follow authorized activity without starting, stopping or attaching agents |
+| Observe | [`console`](cli-observation.mdx#console) | Legacy, hidden from `cotal help`: the protocol TUI; `watch` replaces it |
+| Manager | [`runtimes`](cli-agents.mdx#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
+| Manager | [`reconcile-gate`](cli-maintenance.mdx#reconcile-gate) | Hidden from `cotal help`, which lists `manager reconcile`: unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
+| Manager | [`deregister-instance`](cli-endpoints.mdx#endpoint-deregister) | Hidden from `cotal help`: the old spelling of `endpoint deregister`, which refuses and names it |
+| Manager | [`seats`](cli-agents.mdx#seats) | Hidden from `cotal help`, which lists `manager seats`: list the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
+| Manager | [`supervise`](cli-processes.mdx#supervise) | Deprecated and hidden from `cotal help`: run a manager in this terminal; use `cotal manager start` |
+| Manager | [`feedback-intake`](cli-services.mdx#server-daemons) | Deprecated and hidden from `cotal help`: run a feedback intake server; use the `feedback-intake` service preset |
+| Manager | [`deliver`](cli-services.mdx#deliver) | Deprecated and hidden from `cotal help`: run the delivery daemon; use the `delivery` service preset |
+| Manager | [`run`](cli-runs.mdx#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
+| Manager | [`agent-bearer`](cli-auth.mdx#plumbing) | Hidden from `cotal help`: plumbing that prints a fresh bearer for a spawned user-auth agent; you never run it directly |
+| Manager | [`auth-service`](cli-services.mdx#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
+| Manager | [`daemon`](cli-processes.mdx#daemon) | Linux: connect this machine to a space with one command, install the local machine daemon as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space |
+| Services | [`service`](cli-services.mdx#service) | Run Cotal's built-in services and your own programs: list, add, start, stop, status, logs |
+| Services | [`manager`](cli-maintenance.mdx#manager) | Start, stop and check the manager that runs your agents, and its maintenance |
+| Identity | [`mint`](cli-auth.mdx#auth-mint) | Moved: credential minting is `cotal auth mint` |
+| Identity | [`actor`](cli-auth.mdx#actor) | Legacy, hidden from `cotal help`: the actor ledger; `auth grants`, `auth grant` and `auth revoke` replace it |
+| Identity | [`service-endpoint`](cli-endpoints.mdx#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
+| Identity | [`login`](cli-auth.mdx#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
+| Identity | [`logout`](cli-auth.mdx#login) | Revoke the IdP session and clear the cached login |
+| Identity | [`auth`](cli-auth.mdx#auth-mint) | Mint credentials, inspect account metadata, manage actor grants and export a protected account signer |
+| Teams | [`team`](cli-startup.mdx#manifest-deploys) | Inspect teams, boot a fresh mesh from a manifest, or add its channels and agents to a running one |
+| Endpoints | [`endpoint`](cli-endpoints.mdx#endpoint-authoring) | Save endpoint references, author contracts offline, inspect or invoke native endpoints, and deregister a departed instance |
+
+The table has one row per command, including the hidden ones `cotal help` leaves out, under the
+section help lists it in.
+Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command, and
+`@cotal-ai/web` adds the [web dashboard](cli-observation.mdx#web) as a service preset.
+
+The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered
+together under [Manifest deploys](cli-startup.mdx#manifest-deploys).
+
+
+### Executable selection [#executable-selection]
+
+See the [current command contract](cli-usage.mdx#running-it) for this behavior.
+
+### Command aliases [#command-aliases]
+
+See the [current command contract](cli-usage.mdx#running-it) for this behavior.
+
+### Usage errors [#usage-errors]
+
+See the [current command contract](cli-usage.mdx#running-it) for this behavior.
+
+### Output formats [#output-formats]
+
+See the [current command contract](cli-usage.mdx#structured-output) for this behavior.
+
+### Terminal layout [#terminal-layout]
+
+See the [current command contract](cli-usage.mdx#structured-output) for this behavior.

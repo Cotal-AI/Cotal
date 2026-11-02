@@ -43,7 +43,7 @@ import {
 } from "./issuer.js";
 import { STORE_VER, parseStoreDoc, readStoreFile } from "./store-file.js";
 
-export { clearAuthServiceInfo, loadAuthServiceInfo, saveAuthServiceInfo, type AuthServiceInfo } from "./store-file.js";
+export { clearAuthServiceInfo, clearAuthServiceRefusal, loadAuthServiceInfo, loadAuthServiceRefusal, saveAuthServiceInfo, saveAuthServiceRefusal, type AuthServiceInfo, type AuthServiceRefusal } from "./store-file.js";
 
 /** The registered auth-provider name, as it appears in a mesh registry entry's `userAuth.provider`
  *  and in the discovery bundle the public face serves. ONE constant, because those two must agree:
@@ -230,7 +230,7 @@ export async function claimAuthInstanceIdentity(store: SecretStore, space: strin
     const value = earlier ?? mint();
     return { value, doc: JSON.stringify({ ver: STORE_VER, ...value } satisfies AuthInstanceFile, null, 2) };
   });
-  if (earlier && (identity.instanceId !== earlier.instanceId || identity.serveIdentity.seed !== earlier.serveIdentity.seed))
+  if (earlier && (identity.instanceId !== earlier.instanceId || identity.serveIdentity.id !== earlier.serveIdentity.id || identity.serveIdentity.seed !== earlier.serveIdentity.seed))
     throw new Error(`${authInstanceKey(space)} and the record under ${stateDir} hold different auth instance identities for space "${space}" - refusing to guess which is this context's. Remove the one that did not come from this context, then retry.`);
   if (earlier) removeAuthInstanceIdentity(stateDir, space);
   return identity;

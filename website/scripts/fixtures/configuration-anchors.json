@@ -1,0 +1,34 @@
+{
+  "agent-files": [
+    "fields",
+    "persona-lookup",
+    "persona-purpose",
+    "defining-one-at-runtime"
+  ],
+  "manifest": [
+    "top-level",
+    "agent-forms",
+    "channel-grants",
+    "how-access-is-resolved"
+  ],
+  "channels-and-permissions": [
+    "the-three-verbs",
+    "delivery-classes",
+    "membership-changes",
+    "replay",
+    "common-tasks",
+    "wildcards"
+  ],
+  "config": [
+    "the-config-file",
+    "model-policy",
+    "preferences",
+    "environment-variables",
+    "launcher-variables",
+    "launch-material",
+    "on-disk-layout",
+    "project-files",
+    "machine-files",
+    "configuration-files"
+  ]
+}

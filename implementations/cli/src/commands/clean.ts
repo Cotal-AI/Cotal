@@ -594,9 +594,10 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   const canonicalRoot = realpathSync.native(root);
   const cotal = join(canonicalRoot, ".cotal");
   const defaultStore = join(cotal, "nats");
-  const protectedTrees = [join(cotal, "auth"), join(cotal, "agents"), join(cotal, "maintenance"), join(cotal, "run")];
-  if (target === parse(target).root || target === cotal ||
-      protectedTrees.some((path) => pathContains(path, target)) || (override && pathContains(cotal, target) && target !== defaultStore))
+  // The default store is the only `.cotal` child cleanup may remove; any other `--store-dir` inside
+  // `.cotal` names project state. Without an override the target is that store, or lies outside this
+  // spelling of `.cotal` when `.cotal` is a symlink.
+  if (target === parse(target).root || target === cotal || (override && pathContains(cotal, target) && target !== defaultStore))
     throw new Error(`refusing unsafe store cleanup target: ${target}`);
   // A store in the project folder, as `up --store-dir .` makes, lies beside the project's own files,
   // so no cleanup removes the folder; its store entries are named for removal by hand.

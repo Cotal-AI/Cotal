@@ -30,10 +30,12 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { connect as netConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { mock } from "node:test";
 import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, screen } from "./_console-pty.js";
 
@@ -47,7 +49,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable, registry } = await import("@cotal-ai/core");
-const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, clearCurrent, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, meshesDir, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -126,7 +128,8 @@ function trustingChildEnv(ca: string): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = { NODE_EXTRA_CA_CERTS: ca };
   for (const [k, v] of Object.entries(process.env)) {
     // The `startsWith("COTAL_")` test is written out rather than folded into DENIED_KNOBS because
-    // the census matches that exact spelling (`suite-ambient-env.smoke.ts:52`). Folding it into one
+    // the census matches that exact spelling (its `startsWith("COTAL_")` patterns in
+    // `suite-ambient-env.smoke.ts`). Folding it into one
     // regex is a STRICTER filter that the census reads as NO filter at all — measured: the combined
     // form failed the census naming this file. One more way that instrument grades a spelling
     // rather than the property, noted here because the next person to tidy this loop will hit it.
@@ -147,8 +150,8 @@ function trustingChildEnv(ca: string): NodeJS.ProcessEnv {
 // construction while the gate is red. Run `pnpm smoke:ci` before pushing anything that spawns.
 //
 // BUT A GREEN CENSUS IS NOT EVIDENCE A SPAWN IS CLEAN, and this is the more important half.
-// `bin/smoke/suite-ambient-env.smoke.ts` matches the literal text `...process.env` (:49) and SKIPS
-// any file that does not contain it (:150). So it covers EXPLICIT spreads only. A spawn that omits
+// `bin/smoke/suite-ambient-env.smoke.ts` matches the literal text `...process.env` (its `SPREAD`
+// pattern) and SKIPS any file that does not contain it. So it covers EXPLICIT spreads only. A spawn that omits
 // `env:` entirely inherits the parent environment in full — measured: with no `env:` the child reads
 // a COTAL_ value, with an explicit env it does not — and passes the census by construction. The
 // census therefore detects a SPELLING where the hazard is a PROPERTY: what the child inherited.
@@ -856,7 +859,7 @@ try {
   check("add refuses a --server with a path", pathy.code === 1 && findMesh("pathy") === undefined, pathy.out);
 
   // ── THE INVARIANT: a sweep keeps a dead `up` record the same way it keeps a manual one ─────────
-  // REVERSAL of the previous origin split (meshes-registry.smoke.ts:631-632): a dead `up` record
+  // REVERSAL of the previous origin split (before e3f2d21af): a dead `up` record
   // and a dead pre-origin record used to be deleted. Their redness is expected and intended.
   rmSync(join(home, "meshes"), { recursive: true, force: true });
   const localRoot = projectRoot("local");
@@ -1234,19 +1237,91 @@ try {
     /^space: +remote-dead \(default\)$/m.test(narrow) && /^notes: +registered (·|-) offline$/m.test(narrow) && !/^SPACE /m.test(narrow), narrow);
 
   // ── rm ────────────────────────────────────────────────────────────────────────────────────────
-  setCurrent("remote-dead");
-  const removed = await run(["rm", "remote-dead"]);
-  check("rm drops the record", removed.code === 0 && findMesh("remote-dead") === undefined, loadMeshes());
-  check("rm releases a current that pointed at it", getCurrent() === undefined, getCurrent());
-  check("rm says the default is gone", removed.out.includes("no default mesh now"), removed.out);
+  const currentPointer = join(home, "current-mesh");
+  const counted = async <T>(work: () => Promise<T>): Promise<{ value: T; listings: number; pointerReads: number }> => {
+    const listing = mock.method(fs, "readdirSync");
+    const reading = mock.method(fs, "readFileSync");
+    syncBuiltinESMExports();
+    try {
+      const value = await work();
+      return {
+        value,
+        listings: listing.mock.calls.filter((c) => String(c.arguments[0]) === meshesDir()).length,
+        pointerReads: reading.mock.calls.filter((c) => String(c.arguments[0]) === currentPointer).length,
+      };
+    } finally {
+      listing.mock.restore();
+      reading.mock.restore();
+      syncBuiltinESMExports();
+    }
+  };
 
-  const unknown = await run(["rm", "never-existed"]);
-  check("rm of an unknown mesh exits non-zero", unknown.code === 1 && unknown.out.includes("no mesh named"), unknown.out);
+  setCurrent("remote-dead");
+  const removed = await counted(() => run(["rm", "remote-dead"]));
+  check("rm drops the record", removed.value.code === 0 && findMesh("remote-dead") === undefined, loadMeshes());
+  check("rm releases a current that pointed at it", getCurrent() === undefined, getCurrent());
+  check("rm says the default is gone", removed.value.out.includes("no default mesh now"), removed.value.out);
+  check("rm with one name lists the registry twice and reads the current pointer once",
+    removed.listings === 2 && removed.pointerReads === 1, { listings: removed.listings, pointerReads: removed.pointerReads });
+
+  const unknown = await counted(() => run(["rm", "never-existed"]));
+  check("rm of an unknown mesh exits non-zero", unknown.value.code === 1 && unknown.value.out.includes("no mesh named"), unknown.value.out);
+  check("rm with no accepted names skips the removal scan and pointer read",
+    unknown.listings === 1 && unknown.pointerReads === 0, { listings: unknown.listings, pointerReads: unknown.pointerReads });
 
   recordMesh({ space: "a1", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   recordMesh({ space: "a2", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
-  const multi = await run(["rm", "a1", "a2"]);
-  check("rm takes several names at once", multi.code === 0 && loadMeshes().length === 0, loadMeshes());
+  writeFileSync(
+    join(meshesDir(), "a3.json"),
+    JSON.stringify({ space: "a3", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() }),
+    { mode: 0o600 },
+  );
+  setCurrent("a2");
+  const multi = await counted(() => run(["rm", "a1", "a2", "a3"]));
+  check("rm takes several names at once, including a pre-hex record, and clears a matching current",
+    multi.value.code === 0 && loadMeshes().length === 0 && getCurrent() === undefined && multi.value.out.includes("no default mesh now"),
+    { out: multi.value.out, meshes: loadMeshes(), current: getCurrent() });
+  check("rm with several names lists the registry twice and reads the current pointer once for the whole batch",
+    multi.listings === 2 && multi.pointerReads === 1, { listings: multi.listings, pointerReads: multi.pointerReads });
+
+  recordMesh({ space: "keep-selected", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordMesh({ space: "drop-twice", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  setCurrent("keep-selected");
+  const repeated = await counted(() => run(["rm", "drop-twice", "drop-twice"]));
+  check("repeating a name unregisters it once, reports the second as missing, and keeps an unrelated current",
+    repeated.value.code === 1 && findMesh("drop-twice") === undefined && getCurrent() === "keep-selected" &&
+      repeated.value.out.includes('✓ unregistered "drop-twice"') && repeated.value.out.includes('no mesh named "drop-twice" is registered') &&
+      !repeated.value.out.includes("no default mesh now") && repeated.listings === 2 && repeated.pointerReads === 1,
+    { out: repeated.value.out, listings: repeated.listings, pointerReads: repeated.pointerReads, current: getCurrent() });
+  clearCurrent();
+  removeMesh("keep-selected");
+
+  if (process.platform !== "win32") {
+    // The second legacy record fits its original basename, but its canonical hex basename exceeds
+    // the native component limit. This real removal failure must not hide the first completed one.
+    const first = "removed-before-error";
+    const long = "l".repeat(130);
+    const legacy = join(meshesDir(), `${long}.json`);
+    const entry = { space: first, server: DEAD, root, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
+    recordMesh(entry);
+    writeFileSync(legacy, JSON.stringify({ ...entry, space: long }), { mode: 0o600 });
+    setCurrent(first);
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+    const bin = new URL("../../../bin/cotal.ts", import.meta.url).pathname;
+    const partial = spawnSync(process.execPath, ["--import", "tsx", bin, "meshes", "rm", first, long], {
+      encoding: "utf8", timeout: 60_000,
+      env: { ...env, HOME: home, COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" },
+    });
+    check("a later native removal failure still exits non-zero", partial.status === 1 && partial.stderr.includes("ENAMETOOLONG"), partial.stderr);
+    check("the earlier removed record leaves no stale current pointer", findMesh(first) === undefined && getCurrent() === undefined);
+    check("the earlier removal and cleared default are reported before the failure",
+      partial.stdout.includes(`unregistered "${first}"`) && partial.stdout.includes("no default mesh now"), partial.stdout);
+    check("the failing legacy record stays and is never reported removed", existsSync(legacy) && !partial.stdout.includes(`unregistered "${long}"`));
+    rmSync(legacy);
+  } else {
+    console.log("  SKIP: native oversized-basename partial-removal control is POSIX-only");
+  }
 
   // A mesh RUNNING here: `rm` is the wrong verb — it would leave a live broker with no record.
   // "Running here" must be LOCAL PROCESS OWNERSHIP, not a reachable address: any broker answers on

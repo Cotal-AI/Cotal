@@ -41,8 +41,8 @@
     {
       "name": "the seat's turn pull answers during the boot window",
       "file": "implementations/manager/src/manager.ts",
-      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[]; notices: true } {\n",
-      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[]; notices: true } {\n    if (!this.goalReconcileDone) return { turns: [], notices: true };\n",
+      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n",
+      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n    if (!this.goalReconcileDone) return { turns: [], notices: true };\n",
       "expectRed": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "cell": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none"
@@ -59,8 +59,8 @@
     {
       "name": "the boot sweep stamps every adopted turn's seat dead",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    this.pendingTurns.set(key, p);\n",
-      "replace": "    this.pendingTurns.set(key, p);\n    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);\n",
+      "find": "    const key = goalKey(p.ref);\n    this.pendingTurns.set(key, p);\n",
+      "replace": "    const key = goalKey(p.ref);\n    this.pendingTurns.set(key, p);\n    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);\n",
       "expectRed": "and NOT marked as addressing a dead seat",
       "cell": "and NOT marked as addressing a dead seat: an empty agents map at boot is not evidence of death",
       "note": "The agents map is EMPTY during reconcile: seats re-register later, so 'not in the map' meant 'not yet re-registered' and every adopted turn's deadline terminal carried `agentDownAt`, raising L4002 where the reference says L4003."
@@ -77,8 +77,8 @@
     {
       "name": "an elapsed turn is still the head of its seat's queue",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      .filter((p) => now < p.deadlineAt)\n      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
-      "replace": "      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
+      "find": "      .filter((p) => (p.deadlineAt === undefined || now < p.deadlineAt) && p.once?.deliverable !== false)\n      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
+      "replace": "      .filter((p) => p.once?.deliverable !== false)\n      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
       "expectRed": "an ELAPSED turn is not served and does not dam the seat's queue",
       "cell": "an ELAPSED turn is not served and does not dam the seat's queue: the live one behind it surfaces",
       "note": "Only the oldest unsettled turn is served, so an expired one at the head buys the seat work whose yield is refused and hides every turn behind it."
@@ -86,8 +86,8 @@
     {
       "name": "a retried yield hears not-found for work that committed",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      const settled = this.turnAcceptances.get(key);\n      if (settled !== undefined) {",
-      "replace": "      const settled = this.turnAcceptances.get(key);\n      if (false && settled !== undefined) {",
+      "find": "    const settled = this.turnAcceptances.get(key);\n    if (settled !== undefined) {",
+      "replace": "    const settled = this.turnAcceptances.get(key);\n    if (false && settled !== undefined) {",
       "expectRed": "a retried yield is served the answer the lost reply carried, never `not-found`",
       "cell": "a retried yield is served the answer the lost reply carried, never `not-found`",
       "note": "The commit deletes the pending turn, so a retry after a lost reply found nothing and the seat read `not-found` as 'drop it': failure reported for work the run already has."
@@ -149,8 +149,8 @@
     {
       "name": "a turn with no minted hold is adopted as pending anyway",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if ((await readCheckpointSpec(gw.ctx.kv, { endpoint: p.ref.endpoint, token: p.holdToken })) === undefined) {\n      console.error(`turn reconcile ${p.goalId}: its deadline hold was never minted (the accept crashed before it); left unsettled`);\n      return;\n    }\n",
-      "replace": "",
+      "find": "    if (p.holdToken !== undefined && (await readCheckpointSpec(gw.ctx.kv, { endpoint: p.ref.endpoint, token: p.holdToken })) === undefined) {\n",
+      "replace": "    if (false) {\n",
       "expectRed": "a turn whose hold was never minted is not adopted as pending",
       "cell": "a turn whose hold was never minted is not adopted as pending: nothing could settle it",
       "note": "The hold is minted after the index entry and the goal record. A crash between them leaves a goal nothing can settle; adopted, the sweep would try to expire a pause that was never minted on every tick and the seat could never yield it."
@@ -167,8 +167,8 @@
     {
       "name": "a late yield after the deadline committed hears not-found instead of the deny",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        if (settled.ref !== undefined) {\n          const ended = await readGoalResult(gw.ctx, settled.ref);\n          if (ended !== undefined) {\n            this.rememberSettledTurn(key, ended.state, ended.ts);\n            return { goalId, state: ended.state };\n          }\n        }",
-      "replace": "        if (settled.ref !== undefined) {\n          void settled.ref;\n        }",
+      "find": "      if (settled.ref !== undefined && this.goalWriter) {\n        const ended = await readGoalResult(this.goalWriter.ctx, settled.ref);\n        if (ended !== undefined) {\n          this.rememberSettledTurn(key, ended.state, ended.ts);\n          return { goalId, state: ended.state };\n        }\n      }",
+      "replace": "      if (settled.ref !== undefined && this.goalWriter) {\n        void settled.ref;\n      }",
       "expectRed": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
       "cell": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
       "note": "#1262. After commitTurnDeadline deletes pending (the latch, before the terminal CAS) the only in-memory answer a late yield could find was turnAcceptances.settled. When that field was not yet written, or a concurrent sweep dropped it, the yield heard not-found for a deny the run already has. The durable terminal is the answer; the index drop is not the cause (the yield path never consults it)."

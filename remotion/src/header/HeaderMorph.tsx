@@ -178,8 +178,16 @@ export const HeaderMorph: React.FC = () => {
     fade(frame, 100, 116) * (1 - fade(frame, 166, 178));
 
   // --- wire glow bundles -------------------------------------------------------
-  const upGlow = upArrive.map((g) => g * upStructure);
-  const latGlow = latArrive.map((g) => g * latStructure);
+  const upWires = [
+    { d: upPath(ALICE), glow: arrival(frame, ...A.up[0]) * upStructure },
+    { d: upPath(BOB), glow: arrival(frame, ...A.up[1]) * upStructure },
+    { d: upPath(CAROL), glow: arrival(frame, ...A.up[2]) * upStructure },
+  ];
+  const latWires = [
+    { d: AB_PATH, glow: arrival(frame, ...B.lat[0]) * latStructure },
+    { d: BC_PATH, glow: arrival(frame, ...B.lat[1]) * latStructure },
+    { d: AC_PATH, glow: arrival(frame, ...B.lat[2]) * latStructure },
+  ];
 
   // root loop envelope (fade in/out so the loop is seamless over the cream bg)
   const rootOpacity = loopEnvelope(frame, DURATION);
@@ -189,15 +197,12 @@ export const HeaderMorph: React.FC = () => {
       <div style={{ position: "absolute", inset: 0, opacity: rootOpacity }}>
         {/* up-wires (beat A) */}
         <div style={{ opacity: upStructure }}>
-          <WireLines paths={UP_PATHS} glow={upGlow} />
+          <WireLines wires={upWires} />
         </div>
 
         {/* lateral wires (beat B) */}
         <div style={{ opacity: latStructure }}>
-          <WireLines
-            paths={[AB_PATH, BC_PATH, AC_PATH]}
-            glow={latGlow}
-          />
+          <WireLines wires={latWires} />
         </div>
 
         {/* shared-space ripples as the peer mesh forms */}

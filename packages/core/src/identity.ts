@@ -241,7 +241,11 @@ export function identityFromCreds(creds: string): Identity {
   const seedM = creds.match(/BEGIN USER NKEY SEED-----\s*([\s\S]*?)\s*------END USER NKEY SEED/);
   if (!seedM) throw new Error("creds: no user nkey seed block found");
   const seed = seedM[1].trim();
-  const id = fromSeed(new TextEncoder().encode(seed)).getPublicKey();
+  // Node's Ed25519 derives the public key in well under a millisecond; the library's JavaScript
+  // curve takes milliseconds, which a process constructing thousands of endpoints pays per endpoint.
+  const signer = nativeNkeySigner(new TextEncoder().encode(seed));
+  const id = signer.getPublicKey();
+  signer.clear();
   const payload = jwtFromCreds(creds)?.split(".")[1];
   const sub = payload
     ? (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string }).sub

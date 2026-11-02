@@ -7,7 +7,7 @@ attached and the `cotal_*` tools served over a loopback MCP endpoint. A thin cli
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-See [docs/connect-codex.md](../../docs/connect-codex.md) for the integration guide, and the
+See [docs/connect-codex.mdx](../../docs/connect-codex.mdx) for the integration guide, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 The host, dist, installed-path and events-lifecycle smokes are POSIX-only. On Windows they emit

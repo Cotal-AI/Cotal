@@ -39,7 +39,8 @@
  *     the disk says several tenants (or an unreadable one) exist.
  */
 import { strict as assert } from "node:assert";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
@@ -282,6 +283,27 @@ try {
     check("removeMesh THROWS when the pre-hex sweep cannot list the registry", sweepMsg.includes("EACCES"), sweepMsg);
     removeMesh("legacyname");
   }
+  // A pre-hex record the sweep parsed but cannot unlink: the removal must fail rather than return
+  // with the record left to list the mesh again. The refusal is injected on that one path only.
+  const pinned = join(home, "meshes", "legacyname.json");
+  writeFileSync(pinned, JSON.stringify(meshEntry("legacyname")));
+  const realRm = fs.rmSync;
+  fs.rmSync = ((target: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+    if (String(target) === pinned) throw Object.assign(new Error(`EBUSY: resource busy or locked, unlink '${pinned}'`), { code: "EBUSY" });
+    return realRm(target, options);
+  }) as typeof fs.rmSync;
+  syncBuiltinESMExports();
+  let unlinkMsg: string;
+  try {
+    unlinkMsg = await refusal(() => removeMesh("legacyname"));
+  } finally {
+    fs.rmSync = realRm;
+    syncBuiltinESMExports();
+  }
+  check("removeMesh THROWS when a parsed pre-hex record cannot be unlinked, naming it (the mesh is still listed)",
+    unlinkMsg.includes(pinned) && unlinkMsg.includes("EBUSY") && loadMeshes().some((m) => m.space === "legacyname"), unlinkMsg);
+  removeMesh("legacyname");
+  check("with the unlink allowed again, the same removal completes", !loadMeshes().some((m) => m.space === "legacyname") && !existsSync(pinned));
   for (const s of ["gamma", "Gamma"]) removeMesh(s);
 
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
@@ -886,7 +908,7 @@ try {
   writeFileSync(authPidAt, String(process.pid));
   check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(authComp as never, guardCtx as never) === true);
   // The REAL command path: `cotal down nats` is a named down, so a service stop. It resolves a saved
-  // service definition and never a component's pidfile (docs/cli.md, `down`), so with none saved it
+  // service definition and never a component's pidfile (docs/cli.mdx, `down`), so with none saved it
   // refuses before any teardown and leaves the unattributable auth record as it was.
   const prevCwd26 = process.cwd();
   const prevExit = process.exitCode;

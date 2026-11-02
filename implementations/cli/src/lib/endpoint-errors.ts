@@ -1,11 +1,5 @@
 import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
-import { CommandFailure, codeSpan, isCommandFailure, isConnectRefusal, type RefusalCode } from "@cotal-ai/workspace";
-
-/** Native boundary codes only. A code without a not-executed outcome is not proof of refusal. */
-export function nativeEndpointRefusal(code: string | undefined): RefusalCode | undefined {
-  const codes: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "unimplemented": "UNSUPPORTED", "already-exists": "CONFLICT", "expired": "LIFECYCLE_BLOCKED" };
-  return code === undefined ? undefined : codes[code];
-}
+import { CommandFailure, codeSpan, isCommandFailure, isConnectRefusal, nativeEndpointRefusal } from "@cotal-ai/workspace";
 
 export class NativeReplyError extends Error {
   constructor(readonly response: EpAttributedReply, readonly phase: "invocation" | "target-inspection") { super("the native reply did not report success"); }

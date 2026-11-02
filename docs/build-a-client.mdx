@@ -1,0 +1,215 @@
+---
+title: Build a Cotal client
+description: Implement a client in another language using the wire specification and a NATS client library.
+kind: Guide
+audience: integrators
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+Use this build order to implement a Cotal client in Go, Python, Rust, or another language.
+The result connects to a mesh, announces its presence, and exchanges messages with reference clients.
+The [wire specification](../SPEC.md) is normative and takes precedence over this guide.
+
+## Define the client boundary [#what-you-are-implementing]
+
+Use a NATS client library for connections, JetStream, and KV.
+Your client supplies subject construction and parsing, envelope validation, authenticity checks, presence, and channel behavior.
+
+Read both parts of the contract:
+
+- [SPEC sections 3 through 7](../SPEC.md#3-subject-layout) define subjects, delivery, envelopes, presence, and channels.
+- [SPEC sections 8 through 10](../SPEC.md#8-nats--jetstream-binding) bind those rules to NATS and JetStream.
+  This is the only defined transport binding.
+
+See [Transport](transport.mdx) for the capabilities a binding must provide.
+
+## Prepare a reference mesh [#prerequisites]
+
+Choose a NATS client library with JetStream and KV support.
+Prepare a local mesh with the [mesh setup guide](setup.mdx).
+For the credential example below, use a static-auth space whose signing authority is available on this host.
+User-auth onboarding uses a bearer and deny-all sentinel instead, as [SPEC section 10](../SPEC.md#10-connection-and-onboarding) describes.
+
+Start the space and mint a credential for a client that receives messages:
+
+```bash
+cotal up
+cotal auth mint <name> --profile agent --provision
+```
+
+This static mint path creates a `local.<nkey>` reference principal for integration checks.
+It does not establish authenticated-owner conformance, which requires the owner rules in [SPEC section 2](../SPEC.md#2-identity).
+
+Use `--role <role>` when the client also receives anycasts for that role.
+Provisioning creates the bind-only DM and task consumers.
+Save the lifecycle UID printed by the command and use it when binding consumers.
+A later mint allocates a new lifecycle, so an old inbox or durable coordinate is not reusable.
+
+Set channel grants deliberately with `--allow-subscribe <channels>` and `--allow-publish <channels>`.
+These flags apply only to the `agent` profile.
+The `observer` and `admin` profiles have fixed read sets, and mint refuses channel overrides for them.
+An observer reads the whole chat plane.
+Use the agent profile for a scoped reader.
+
+To write the credential elsewhere, use `--out <path>`.
+Keep that path private.
+Without a lifetime flag, the credential expires after 24 hours.
+Use `--expires-in <seconds>` or `--expires-at <unix-seconds>` to set another expiry.
+A standing-renewal consumer requires an expiry.
+To keep an existing nkey, use `--identity <creds>` when re-minting, while adopting the new lifecycle UID.
+
+The credential binds the client's principal and channel grants.
+See [Identity and auth](identity-and-auth.mdx), [auth mint](cli-auth.mdx#auth-mint), and [SPEC section 2](../SPEC.md#2-identity).
+
+Use `--no-expiry` only when an unbounded credential is intended.
+
+## Implement in this order [#build-order]
+
+<Steps>
+<Step>
+### Connect with the assigned identity
+
+Read the server version from its [pre-authentication INFO message](https://docs.nats.io/reference/protocols/client#info).
+Refuse servers older than NATS 2.12 and configurations where the required schedule features are unavailable.
+Follow the [binding's broker floor](../SPEC.md#1312-nats--jetstream-binding).
+
+Bound reconnect attempts.
+Repeated disconnects before authentication can mean that `CONNECT` exceeds the broker's control-line limit.
+Report that possibility instead of retrying forever.
+
+Connect with the minted credential and use its assigned principal as the wire identity.
+Before any request, consumer pull, or KV watch, set the reply inbox prefix to `_INBOX_<connId>`.
+Use the connection identifier, not the owner and actor principal.
+In static mode the identifier is the connection nkey.
+In user mode it is the client-chosen nonce.
+See [SPEC sections 2 and 10](../SPEC.md#10-connection-and-onboarding).
+
+For verification, check that a valid credential connects and an invalid credential is refused.
+
+</Step>
+<Step>
+### Validate subjects
+
+Implement the three message subject shapes in [SPEC section 3](../SPEC.md#3-subject-layout) and the endpoint control subjects in [section 13.2](../SPEC.md#132-grammar).
+Locate the sender's owner and actor tokens according to the subject kind.
+Their positions differ between channel messages, DMs, and anycasts.
+
+Parsing tokens is not sufficient validation.
+Before surfacing a delivery, validate the principal owner token and reject old-shape aliases or raw nkeys in that position.
+Run every subject vector in [SPEC section 12](../SPEC.md#12-conformance), including malformed and invalid-owner inputs.
+
+</Step>
+<Step>
+### Encode delivery envelopes
+
+Emit UTF-8 JSON that satisfies [SPEC section 5](../SPEC.md#5-envelopes).
+Set one routing field, and leave the other routing fields absent.
+Publish through JetStream with `msgID` equal to the message `id`, as [section 8](../SPEC.md#8-nats--jetstream-binding) requires.
+Ignore unknown fields when reading a valid envelope.
+
+Validate emitted messages against [`cotal.schema.json`](../spec/cotal.schema.json) and the sample messages in [section 12](../SPEC.md#12-conformance).
+
+</Step>
+<Step>
+### Publish presence
+
+Write only your own presence key at the heartbeat interval.
+Derive peer `offline` status from stale timestamps and KV deletes.
+See [SPEC section 6](../SPEC.md#6-presence-and-discovery).
+
+Advertise `protocolVersion: "0.4"` in the AgentCard.
+In auth mode, include the assigned `lifecycleUid` in presence.
+Presence is advisory for display. Authority checks use the trusted lifecycle mapping.
+A peer without `protocolVersion` is treated as pre-0.4 and cannot receive endpoint control requests.
+
+Use [the console](console.mdx) to check that your endpoint appears and becomes stale after heartbeats stop.
+
+</Step>
+<Step>
+### Join channels
+
+Record the CHAT frontier as the join watermark before the live subscription becomes active.
+Then subscribe under the client's read ACL to join the channel's live stream.
+Treat the join as effective only after the broker accepts the subscription.
+Drop it on a later permission refusal.
+Unsubscribe to leave the live stream.
+
+When replay is enabled, backfill permitted history up to that watermark and mark those messages `historical`.
+For durable channels, establish membership through the privileged provisioner as [SPEC section 7](../SPEC.md#7-channels) requires.
+
+For verification, exchange a channel message with a reference peer.
+Join a second client later and check that replay does not duplicate a live copy.
+
+</Step>
+<Step>
+### Receive direct messages
+
+Bind the pre-created `dm_<owner>-<actor>-<lifecycleUid>` durable.
+If the client holds a role, also bind the `svc_<role>` durable.
+Do not create these consumers from the agent connection.
+See [SPEC section 8](../SPEC.md#8-nats--jetstream-binding).
+
+Send a DM from a reference peer and check that your client receives it.
+Send an anycast to the role and check that one competing consumer receives the work.
+
+</Step>
+<Step>
+### Check authenticity before acknowledgement
+
+Derive the delivery kind from the subject, rather than payload routing fields.
+Reject a message whose `from.id` differs from the subject sender.
+Acknowledge only after the message has been surfaced or handled.
+
+Terminate permanent anomalies instead of redelivering them.
+The permanent classes are `malformed-subject`, `sender-mismatch`, and `malformed-json`.
+See [SPEC sections 4 and 8](../SPEC.md#4-delivery-modes).
+
+</Step>
+<Step>
+### Handle durable delivery
+
+Resolve each channel's effective `live` or `durable` delivery class from its configuration.
+Use that resolution for live joins, fan-out, history, and membership reporting.
+
+On a durable channel, recover missed live messages from the backstop.
+Deduplicate by `id` across live, backfill, and durable copies.
+Do not merge copies solely because their `id` is the empty string.
+Publishers still must supply a unique string ID.
+Duplicate surfacing is disclosed only for at-least-once paths.
+
+Bound history reads by the current read ACL.
+Re-authorize durable-backstop reads against the current read ACL and the required membership interval before surfacing them.
+Treat a leave as a hard boundary on backstop reads.
+
+If durable membership cannot be established, report a live join with the backstop unestablished.
+Do not report a durable join.
+See [Message flow](presence-and-delivery.mdx) and [Delivery daemon](delivery-daemon.mdx) for the reference implementation.
+
+</Step>
+</Steps>
+
+## Verify conformance [#testing-conformance]
+
+Use the complete checklist in [SPEC section 12](../SPEC.md#12-conformance) as the acceptance criteria.
+Reuse its subject vectors and message examples in your language's test suite.
+Validate delivery messages against the draft-07 [message schema](../spec/cotal.schema.json).
+
+Then run the section's interoperability scenario against a local reference mesh.
+Connect two clients, exchange multicast, unicast, and anycast messages, and check a late joiner's replay.
+Use a reference agent as the other party through [Launch agents](launch-agents.mdx) or [Define a team](define-a-team.mdx).
+
+The repository's `packages/core/smoke/` and `bin/smoke/` suites exercise the TypeScript reference endpoint through `tsx`.
+They are regression suites for that implementation.
+The interoperability scenario is the current conformance test for a client in another language.
+
+## Keep the client focused [#what-not-to-build]
+
+Bind directly to the NATS client library.
+There is one defined binding, so a pluggable transport layer adds no current capability.
+For another transport, implement the [binding capability contract](transport.mdx), including durability and presence.
+
+Keep process scheduling and supervision in separate tooling.
+A wire client connects, announces itself, and exchanges messages as a peer.
+The [manager](run-a-mesh.mdx) and [MCP tools](mcp-tools.mdx) provide the reference implementation's launch and supervision features.

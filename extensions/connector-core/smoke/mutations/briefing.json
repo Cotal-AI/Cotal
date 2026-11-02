@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/briefing.smoke.ts"
+  ],
+  "guard": "every harness renders the same briefing paragraphs from one module, each adds only the sentence that says how a peer message arrives, and the gateway leaves that sentence out",
+  "command": "pnpm smoke:briefing",
+  "completionMarker": "BRIEFING SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/briefing.json",
+  "why": [
+    "Six connectors used to assemble their own briefing from the shared sentences, and the copies",
+    "drifted: Codex and Jcode carried a shorter reply etiquette, OpenCode and Hermes carried no",
+    "feedback or etiquette paragraph, pi carried no orientation or channel guidance. The module",
+    "composes the paragraphs once; the cells grade that composition, not any connector's copy.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports by RELATIVE SOURCE PATH",
+    "(../src/index.js), so the bytes mutated are the bytes graded. No dist is in the path and no",
+    "build is in the command.",
+    "",
+    "M1 is the drift that shipped: a connector that forgets one paragraph. M2 is the gateway's",
+    "exception going the other way, an arrival sentence that would contradict the connect result's",
+    "own listening line. M3 is the identity line losing the role, which the orientation card and",
+    "every harness used to agree on."
+  ],
+  "mutations": [
+    {
+      "name": "M1 drop the reply etiquette paragraph",
+      "file": "extensions/connector-core/src/briefing.ts",
+      "find": "    ATTENTION_GUIDANCE,\n    REPLY_ETIQUETTE,\n  ].join",
+      "replace": "    ATTENTION_GUIDANCE,\n  ].join",
+      "expectRed": "every harness carries the reply etiquette",
+      "cell": "every harness carries the reply etiquette",
+      "note": "The paragraph Codex and Jcode carried only in a shorter copy, and OpenCode and Hermes not at all."
+    },
+    {
+      "name": "M2 give the gateway an arrival sentence of its own",
+      "file": "extensions/connector-core/src/briefing.ts",
+      "find": "  gateway: undefined,",
+      "replace": "  gateway: \"Peer messages are delivered into your turns as blocks marked 📨.\",",
+      "expectRed": "the gateway briefing leaves the arrival sentence out",
+      "cell": "the gateway briefing leaves the arrival sentence out",
+      "note": "A gateway conversation hears messages however its embedder says in the connect result; a sentence here would contradict it."
+    },
+    {
+      "name": "M3 drop the role from the identity line",
+      "file": "extensions/connector-core/src/briefing.ts",
+      "find": "${config.role ? ` (role: ${config.role})` : \"\"}",
+      "replace": "",
+      "expectRed": "every harness opens with the identity line",
+      "cell": "every harness opens with the identity line",
+      "note": "The role is what cotal_anycast routes on; a seat not told its role does not know which requests are its own."
+    }
+  ]
+}

@@ -50,13 +50,6 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
   // probe from looking like a managed seat. A later PATH change cannot pick a different file.
   const bin = process.env.COTAL_CODEX_BIN?.trim() || opts.resolvedBinaries?.codex || "codex";
   const child = spawn(bin, ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
-  const kill = (): void => {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      /* ignore */
-    }
-  };
   try {
     const result = await new Promise<{ data?: CodexModelEntry[] }>((resolvePromise, reject) => {
       const timer = setTimeout(() => reject(new Error("codex app-server model/list timed out (10s)")), 10_000);
@@ -88,7 +81,10 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
         clearTimeout(timer);
         reject(e);
       });
-      child.on("exit", (code) => {
+      // `close`, not `exit`: `exit` can fire while stdout still holds the model/list response,
+      // so a child that answers and exits at once raced its own reply (#3749). `close` follows
+      // the end of stdout, after every `data` event has been handled.
+      child.on("close", (code) => {
         clearTimeout(timer);
         reject(new Error(`codex app-server exited (${code}) before model/list answered`));
       });
@@ -119,7 +115,7 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
       }));
     return { source: "codex app-server model/list", models };
   } finally {
-    kill();
+    child.kill("SIGKILL");
   }
 }
 
@@ -199,7 +195,7 @@ export const codexConnector: Connector = {
     // decides there (one setting for every codex agent it supervises), while a foreground spawn
     // reads the shell that ran it. Passing it through the spawn request instead would make it a
     // per-agent launch option, which is a bigger surface than a display toggle earns; the split is
-    // documented in docs/connect-codex.md rather than half-wired.
+    // documented in docs/connect-codex.mdx rather than half-wired.
     const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
     if (tuiPref) env.COTAL_CODEX_TUI = tuiPref;
 

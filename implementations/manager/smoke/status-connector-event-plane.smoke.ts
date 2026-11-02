@@ -39,7 +39,7 @@ const status = (eventPlane: boolean) => ({
   connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane }],
 });
 
-check("the Manager contract retains connector event-plane facts after native participation advances it", shipped.revision === 43, shipped);
+check("the Manager contract retains connector event-plane facts after once on spawn advances it", shipped.revision === 44, shipped);
 check("status accepts eventPlane true on a connector row", MANAGER_STATUS_CONTRACT.output.validate(status(true)) === true);
 check("status accepts eventPlane false on a connector row", MANAGER_STATUS_CONTRACT.output.validate(status(false)) === true);
 check("status requires an explicit eventPlane fact and never defaults it to true",

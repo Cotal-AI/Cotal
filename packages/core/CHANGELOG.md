@@ -1,5 +1,191 @@
 # @cotal-ai/core
 
+## 0.135.6
+
+### Patch Changes
+
+- 65311dd: Derive a creds file's identity with Node's Ed25519 instead of the nkeys library's JavaScript curve. `identityFromCreds` runs on every endpoint construction and took about 8 ms per call; it now takes about 0.2 ms, which a process constructing thousands of endpoints paid per endpoint.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
+## 0.135.0
+
+### Minor Changes
+
+- a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
+  
+  `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
+  
+  An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
+  
+  `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+- 21f937e: Channel history has no age limit by default again. A space keeps a channel post until its sender has posted 1000 newer ones on that channel, as it did up to 0.133.13, and an age applies only when an operator sets one with `cotal history limit`.
+  
+  An upgrade no longer moves or deletes posts. 0.134.0 moved every existing space to a 30-day limit at its first `cotal up`, which deleted every channel post older than 30 days. That move is gone: `cotal up` changes no space's limit, and a space that 0.134.0 already moved keeps its 30-day limit until an operator changes it. `cotal up`, `team boot` and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`. `@cotal-ai/core` no longer exports `LEGACY_CHAT_HISTORY`, `isLegacyChatHistory` or `reconcileChatHistory`, and `setupSpaceStreams` returns nothing; it still refuses a chat stream whose settings other than the limit are not canonical.
+- 1d8d6c5: `liveKvEntries` and `liveKvValues` now declare separate `(kv, options?)` and `(kv, filter, options?)` overloads (and the matching `decode` pair on `liveKvValues`), and refuse a call that passes options in the filter slot followed by a second options argument instead of dropping the trailing options. This is a breaking call-shape restriction: combine the signal and callbacks into one options object.
+- e7fbeb8: `cotal_spawn` takes `once: true` with a `prompt` to start a helper for one task. The manager relays the prompt to the helper as its only turn and stops the helper when that turn ends or when the deadline passes. The deadline is one hour unless `deadline` sets another, and `-1` sets none. A spawn that succeeds names the task's goal in its result, and `goal-result` reads how it ended. A task that ends without the helper ending its turn may have run in part or in full, and nothing runs it again. A once spawn needs no `run` capability.
+  
+  The manager's `spawn` command takes `once: { deadlineMs }`, and the manager contract revision is 44. The task is served only after the spawn's succeeded terminal is written, so a manager that restarts before then cancels the task as never served. A seat hands a once task to its harness at most once. When it cannot confirm the harness took the task, it reports that with the new self-mode `turn-unconfirmed` command, which fails the task with `delivery-unconfirmed` and stops the seat. A manager that inherits a once seat it cannot hold ends the task without serving it, says so in the outcome, and answers that seat's every `turn-pending` with `stop` while its debt stays recorded.
+  
+  A connector declares `supportsTurnRelay` to take a once task: Jcode, OpenCode, pi and Claude Code do. A connector whose seat needs a confirmed startup declares `onceNeedsConfirmed`, and the manager serves its task only when the runtime reports the startup watch ended `confirmed`. Claude Code needs it: a once launch waits for Claude's development-channels prompt and then its `confirmNotice`, the line saying `server:cotal` messages reach the session. A runtime declares `reportsStartupOutcome` and its handles report `startupOutcome()`; the built-in pty runtime, tmux, cmux, herdr and orca do. A connector may declare `turnFrameLimit`, and a once prompt whose task does not fit it is refused at admission. A once exit registered with `registerOnceExit` may answer false to decline, and the seat then keeps reporting instead of exiting. A connector whose seat launches processes outside its own implements `retireAfterExit`, and the manager keeps the task's debt until that hook proves them gone. Jcode records each native launch of a once seat under the seat's uid for that proof, and a Jcode once seat always starts a fresh session, never one an earlier seat of the same name left in its home.
+
+### Patch Changes
+
+- 67e439b: `registerServiceInstance` distinguishes a reopen that lost its compare-and-set from one whose outcome is unknown. Both its Phase-4 and abort refusals tell the caller to re-read the gate rather than asserting it stayed frozen when the write may have committed. Both remain `unavailable`, and the abort refusal retains its original cause.
+- e56dc31: Freeze lazy service contract tables and their input/output pairs so callers cannot replace a command's validators. This also makes the exported registry contract table immutable. Commands still compile only on first access.
+- a1e7bc6: Release each completed batched KV read's native reply subscription immediately through the native callback API, instead of retaining it until its five-second timeout. Paging, empty reads, tombstones and permission refusals remain unchanged.
+- b1462d3: Settle pending named-reply control, delivery and delivery-admin requests when their connection closes instead of leaving their promises pending after the reply subscription disappears. Interrupted liveness probes return unknown. Keep native reply subjects, timeout and no-responder handling, and do not replay requests on a replacement connection.
+
+## 0.134.0
+
+### Minor Changes
+
+- 4ee7ede: A space's channel history now has a limit you can set. The chat stream keeps a post for 30 days, or until its sender has posted 1000 newer ones on that channel, whichever comes first, and `cotal history limit --max-age <age> --per-sender <n>` changes it for the whole space. A lower limit deletes the posts it no longer keeps, and in a terminal it asks first.
+  
+  The first `cotal up` that starts an existing space's broker moves a chat stream still on the old settings (no age limit, 1000 per sender) to the new default, which deletes every channel post older than 30 days. The move runs after every other setup check, so a start that a check refuses deletes nothing, and a start that fails after the move says in its error that the limit moved. `cotal setup --start` reports the move in its own receipt the same way. To keep posts longer, run `cotal history limit` against the running broker before it restarts; UPGRADING.md has the steps. INBOX and DLV keep their own bound of 1000 entries per subject.
+  
+  `cotal history` shows the age limit and the time of the oldest post the stream still holds, and says a sender at the per-sender limit may have lost older posts there. Focus recall reports a window the stream's oldest post has passed as possibly incomplete, and its warning now also names a channel recall could not read as one possible reason. Backup restore holds the chat stream at no age through its checks, then sets the age the backup recorded.
+  
+  Durable join catch-up no longer judges retention. Its per-sender check is removed because the loss it reported cannot be proven: the stream does not record which channel a removed post belonged to, so the check could refuse a join that lost nothing. Catch-up now copies the posts the stream still holds, and a post the history limit removed first is outside the durable guarantee (SPEC §4). The delivery daemon never reached that check before this release, because its read of the channel's oldest post failed.
+- 86de17e: Agents can list what a space offers them. The new `cotal_endpoints` tool asks the space's registry,
+  a registered endpoint named `registry`, which endpoints the agent can call. The answer lists each
+  registered endpoint where the agent holds at least one command, with the commands and request forms
+  its recorded grants cover, and leaves out every other endpoint. On an open mesh it lists every
+  registered endpoint. The registry reads the grants recorded when the credential was issued, so the
+  broker or the endpoint can still refuse a listed command, and the answer says so. On a user-auth
+  mesh, `view: "manager"` lists what the agent's manager-call credential can call, asked over that
+  credential. A listing drops the agent's cached `describe` of each endpoint it lists.
+  
+  To ask, a credential on the legacy rail now carries a listing generation: one `ep.v1` request row
+  that reaches only the registry's `endpoints` command, its reply row, and the read of its own
+  accepted row. The auth callout issues one for an agent connection and an unissued `manager-caller`
+  view. An agent a manager spawns on a static mesh, and an interactive `manager-caller` view, carry
+  the row on their own issued generation from their first issuance. A credential issued before this
+  release has no listing rows, and the tool says so until the agent connects again or is respawned.
+  An issued `manager-caller` view that reconnects under the same nonce keeps the ceiling it was issued
+  with.
+  The new `@cotal-ai/registry` package holds the registry's answer and reads.
+
+### Patch Changes
+
+- 4272b2e: Align the reconnect smoke with permission-aware read-only watch cleanup. Assert stop, reconnect and unbinding without ungranted consumer DELETE attempts; runtime behavior and grants are unchanged.
+
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+
+## 0.133.11
+
+No changes in this release.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+### Patch Changes
+
+- 2c9a28d: `cotal up` on a running mesh re-creates the memory-backed presence bucket when a broker restart has lost it, and says so, instead of refusing with `stream not found`. A missing file-backed bucket still refuses.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+### Patch Changes
+
+- dd729aa: Pin ajv's `validateSchema` and `meta` in the contract schema profile, so a malformed keyword value such as `{"type": 5}` keeps refusing as `contract-invalid` even if ajv's defaults change.
+- 55a7597: Rename the private envelope-conflict check in the lifecycle saga and the admission mediator so it no longer shadows core's exported `isCasLoss`. No behaviour change.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+### Patch Changes
+
+- 9dd94c6: An endpoint reply refused after its handler returned now states `outcome: "executed"` (SPEC 13.3): an output that fails its schema, and the replacement for a successful reply that does not serialize or that the broker refuses to publish. These replies used to omit the outcome, so callers read a command that had run as `unknown`.
+
+## 0.133.4
+
+### Patch Changes
+
+- 4b483de: Every receive path in the endpoint checks the SPEC §5 sender rule through one predicate: the payload is an object whose `from.id` is the subject's sender, and the subject's owner is a real principal. The paths used to spell it inline in three ways. Behavior is unchanged.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+### Patch Changes
+
+- 3f005b8: `clearChannel` no longer reports success when its channel-registry step is refused or fails. Only a missing registry bucket is still a no-op. Any other failure throws `ChannelRegistryRemovalFailed`, which carries the purge count, because the chat purge has already happened. Before, a credential that could purge history but not touch the registry (for example `purger`) resolved with `removed: false` while the channel stayed listed. The web dashboard and console now show that error instead of a successful delete. `cotal channel remove --purge` still reports the partial outcome with the purge count.
+
+## 0.133.1
+
+### Patch Changes
+
+- ee1b7d4: `newAmendmentId` no longer slices its id to 43 characters. 32 random bytes always encode to exactly 43 base64url characters, so the slice never removed anything, and it read as a truncation the id depended on. The doc comment and SPEC now say the length outright. Ids are unchanged.
+- a8f140c: `spaceBackupInventory` now checks that its backed-up and excluded lists classify exactly `spaceDeletionStreams`, the set `deleteSpace` removes and the teardown grant names, and throws when they differ. The backup inventory and the deletion set were two hand-kept lists, and nothing compared them. They agree today, so no inventory changes.
+
+## 0.133.0
+
+No changes in this release.
+
+## 0.132.7
+
+### Patch Changes
+
+- ad4a37e: `CotalEndpoint.tap` now checks messaging frames the way history and live delivery already do. A chat, DM or anycast frame whose payload sender is not the sender in its subject is dropped. A frame that passes carries the channel, recipient or role named by its subject, not the one in its payload.
+  
+  Before this, the console's live feed (`cotal console`, `cotal watch`) and `cotal history --follow` could show a frame under a sender, channel, recipient or role it was never published as, and the dashboard's live feed was handed the payload's recipient and role. Frames outside the messaging planes reach the tap handler unchanged.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+### Patch Changes
+
+- 35eb67a: Use one persona catalog reader for core and the CLI. Preserve strict CLI directory errors and share its encoding, non-regular-file and symbolic-link metadata. Core's existing forgiving listing remains empty for unreadable catalogs, including directories that cannot be searched; manager replies retain their ownership filtering.
+
 ## 0.132.2
 
 ### Patch Changes

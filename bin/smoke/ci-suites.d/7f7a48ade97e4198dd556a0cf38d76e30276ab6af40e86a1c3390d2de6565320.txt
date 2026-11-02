@@ -1,0 +1,3 @@
+# The registry's disclosure read: it answers an active generation without checking sources, and
+# refuses a prepared, retired, expired or absent one.
+smoke:issued-observe:live

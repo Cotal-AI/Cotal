@@ -1,12 +1,14 @@
 /**
  * LIVE-broker e2e for the `cotal web` account-seed hardening (#102/#103). After dropping the
  * account signing seed, the dashboard connects with an ADMIN cred and purges channels with a
- * SEPARATELY pre-minted MANAGER cred (minted once at startup), instead of re-minting from the seed
+ * SEPARATELY pre-minted CHANNEL-PURGER cred (minted once at startup), instead of re-minting from the seed
  * per delete. This proves the behavioral guarantee that change must keep — against a real JWT-auth
  * broker:
- *   • the pre-minted manager cred purges a channel (web's delete path still works), and
- *   • the admin connection cred CANNOT purge (which is *why* web pre-mints a manager cred — if admin
- *     could, the separate mint would be pointless).
+ *   • the pre-minted channel-purger cred purges a channel (web's delete path still works), and
+ *   • the admin connection cred CANNOT purge (which is *why* web pre-mints a channel-purger cred — if admin
+ *     could, the separate mint would be pointless), and
+ *   • a `purger` cred, which purges history but cannot touch the channel registry, gets a
+ *     `ChannelRegistryRemovalFailed` naming what it purged, not a success while the channel stays listed (#3168).
  *
  * Needs `nats-server` on PATH (like the other auth smokes). Kills only the broker it spawns.
  * Run: pnpm smoke:web-seed:live
@@ -18,11 +20,13 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import {
   CotalEndpoint,
+  ChannelRegistryRemovalFailed,
   clearChannel,
   createSpaceAuth,
   isReachable,
   mintCreds,
   newIdentity,
+  readChannelRegistry,
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
@@ -69,9 +73,9 @@ try {
   ok("JWT-auth broker up", up, up ? undefined : readFileSync(log, "utf8").slice(-400));
 
   await setupSpaceStreams({ servers: server, space, creds: mgrCreds });
-  await seedChannelRegistry({ servers: server, space, creds: mgrCreds, file: { channels: { ops: { replay: true } } } });
+  await seedChannelRegistry({ servers: server, space, creds: mgrCreds, file: { channels: { ops: { replay: true }, fix: { replay: true } } } });
 
-  // web's NEW model: connect as ADMIN, pre-mint ONE MANAGER cred for the purge, drop the seed.
+  // web's NEW model: connect as ADMIN, pre-mint ONE CHANNEL-PURGER cred for the purge, drop the seed.
   const adminCreds = await mintCreds(auth, newIdentity(), "admin");
   const purgeCreds = await mintCreds(auth, newIdentity(), "channel-purger"); // pre-minted once, like web
   const publisherCreds = await mintCreds(auth, newIdentity(), "operator");
@@ -92,32 +96,50 @@ try {
     await pub.start();
     try {
       await pub.multicast("seeded history", { channel: "ops" });
+      await pub.multicast("seeded history", { channel: "fix" });
     } catch (error) {
       publisherErrors.push(error instanceof Error ? error.message : String(error));
     }
     await sleep(300);
-    ok("operator publisher seeds #ops without broker permission violations", publisherErrors.length === 0, publisherErrors);
+    ok("operator publisher seeds #ops and #fix without broker permission violations", publisherErrors.length === 0, publisherErrors);
   } finally {
     await pub.stop().catch(() => {});
   }
 
   // The ADMIN connection cred (what web connects with) must NOT be able to purge — that's the whole
-  // reason web mints a manager cred separately.
+  // reason web mints a channel-purger cred separately.
   let adminBlocked = false;
   try {
     await clearChannel({ servers: server, space, channel: "ops", creds: adminCreds });
   } catch {
     adminBlocked = true;
   }
-  ok("admin connection cred CANNOT purge (why web pre-mints a manager cred)", adminBlocked);
+  ok("admin connection cred CANNOT purge (why web pre-mints a channel-purger cred)", adminBlocked);
 
-  // The pre-minted MANAGER cred purges the channel — web's delete path works after the seed-drop.
+  // The pre-minted CHANNEL-PURGER cred purges the channel — web's delete path works after the seed-drop.
   const result = await clearChannel({ servers: server, space, channel: "ops", creds: purgeCreds });
   ok(
-    "pre-minted manager cred purges the channel (web delete works post-seed-drop)",
+    "pre-minted channel-purger cred purges the channel (web delete works post-seed-drop)",
     result !== undefined && (result.purged ?? 0) >= 1,
     result,
   );
+
+  // A `purger` cred holds the chat purge and nothing on the channel registry. The purge goes through
+  // and the registry step is refused, so the call must say so rather than resolve.
+  const purgerCreds = await mintCreds(auth, newIdentity(), "purger");
+  let refusal: unknown;
+  try {
+    await clearChannel({ servers: server, space, channel: "fix", creds: purgerCreds });
+  } catch (error) {
+    refusal = error;
+  }
+  ok(
+    "purger cred: clearChannel rejects with ChannelRegistryRemovalFailed naming the purge it already made",
+    refusal instanceof ChannelRegistryRemovalFailed && refusal.channel === "fix" && refusal.purged >= 1,
+    refusal instanceof Error ? refusal.message : refusal,
+  );
+  const listed = Object.keys((await readChannelRegistry({ servers: server, space, creds: publisherCreds, directGet: true })).channels ?? {});
+  ok("and #fix is still listed, as the rejection says", listed.includes("fix") && !listed.includes("ops"), listed);
 
   console.log(`\nweb account-seed live e2e: ${pass} checks passed`);
 } finally {

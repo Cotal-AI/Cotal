@@ -2,7 +2,7 @@
  * The stock service endpoint renewal source behind `AuthProvider.serviceEndpointRenewal`: the bearer
  * function one registered service witness passes to a long-lived endpoint (`EndpointOptions.bearer`).
  *
- * Request identity follows the service authority rule (docs/embedding.md, "Service authority
+ * Request identity follows the service authority rule (docs/embedding.mdx, "Service authority
  * contracts"): one requestId per operation and witness, persisted with the witness's renewal material
  * in the caller's store before the first send, and replayed with the same body on every later pull,
  * restarts included. The first pull activates (the signed-in IdP proof); every later pull renews on

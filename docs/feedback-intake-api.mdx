@@ -1,0 +1,293 @@
+---
+title: "Feedback intake HTTP API"
+description: "HTTP operations, parameters, responses, and authentication for the Feedback intake HTTP interface."
+kind: "Reference"
+audience: "HTTP client authors"
+---
+Source: [OpenAPI description](../implementations/delivery/openapi.json).
+
+HTTP interface of the reference feedback intake service. The default listener is 127.0.0.1:8787 and the operator can configure host and port. Health is unauthenticated. Feedback requires a provisioned tester key. The service persists an accepted record before publishing it to the feedback channel. A 202 with published false still means the record was stored. This implementation reference does not establish a hosted public feedback product.
+
+The body limit defaults to 65536 bytes and is configurable with --max-bytes. The rate limit defaults to 30 authenticated admissions per tester per fixed minute, configurable with --rate-limit. Failed body validation still consumes an admission. Query strings are accepted because dispatch uses the URL pathname. Unknown paths and methods return JSON 404. The handler does not enforce Content-Type or Origin and sends no CORS promise.
+
+## Reading the contract
+
+The [interactive reference](https://docs.cotal.ai/api/feedback-intake/) and [downloadable OpenAPI specification](https://docs.cotal.ai/feedback-intake.openapi.json) describe the same operations.
+
+Schema references in the sections below resolve inside the downloadable specification.
+
+See [API reference](api-reference.mdx) for the other integration interfaces.
+
+## Read feedback intake health [#read-feedback-health]
+
+```http
+GET /health
+```
+
+Return readiness of the running feedback HTTP listener. No tester key is required.
+
+### Parameters
+
+No operation parameters.
+
+### Responses
+
+#### HTTP 200
+
+The listener is running.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "ok": {
+      "const": true
+    }
+  },
+  "required": [
+    "ok"
+  ],
+  "additionalProperties": false
+}
+```
+
+## Submit tester feedback [#submit-feedback]
+
+```http
+POST /v1/feedback
+```
+
+Authenticate the tester key, reserve one rate-limit admission, validate and persist the record, then attempt mesh publication. Tester identity comes from the provisioned key record, not the request body. Raw diagnostics are not echoed in the response.
+
+### Parameters
+
+No operation parameters.
+
+### Request body
+
+The request uses the schema below.
+
+Required: yes.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Feedback"
+}
+```
+
+Example:
+
+```json
+{
+  "origin": "human",
+  "type": "friction",
+  "summary": "The setup command did not explain the missing broker.",
+  "severity": "low"
+}
+```
+
+### Responses
+
+#### HTTP 202
+
+Stored feedback. published reports whether mesh publication was confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "ok": {
+      "const": true
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "published": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "ok",
+    "id",
+    "published"
+  ],
+  "additionalProperties": false
+}
+```
+
+#### HTTP 400
+
+Malformed JSON or invalid fields.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+Missing or invalid tester key.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 413
+
+Feedback body exceeds the configured byte limit.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 429
+
+Tester exceeded the configured fixed-minute admission limit.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+Unexpected intake failure.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+## Schemas
+
+These schemas describe the HTTP request and response wrappers. The downloadable specification includes the referenced definitions.
+
+### Error
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "error"
+  ]
+}
+```
+
+### Feedback
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "origin": {
+      "type": "string",
+      "enum": [
+        "human",
+        "agent"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "bug",
+        "idea",
+        "friction",
+        "praise",
+        "other"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "client": {},
+    "diagnostics": {},
+    "details": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 10000
+    },
+    "area": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 120
+    },
+    "repro": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 10000
+    },
+    "expected": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 5000
+    },
+    "actual": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 5000
+    },
+    "source": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 40
+    }
+  },
+  "required": [
+    "origin",
+    "type",
+    "summary"
+  ],
+  "description": "Strings are trimmed before length checks. Empty or null optional strings are omitted. Unknown properties are discarded. client and diagnostics accept arbitrary JSON."
+}
+```

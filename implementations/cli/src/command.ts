@@ -45,8 +45,9 @@ import {
   userCotalDir,
   type OperationScope,
   type OutputWarning,
+  staleStoreHint,
 } from "@cotal-ai/workspace";
-import { c, staleStoreHint, stderrLine } from "./ui.js";
+import { c, stderrLine } from "./ui.js";
 import { debugFlag } from "./lib/debug-flag.js";
 import {
   isExtensionStub,

@@ -27,7 +27,7 @@ export async function discoverConversationAuthority(target: MeshTarget): Promise
   const bundle = checked.value;
   if (bundle.space !== target.space || bundle.server !== target.server || bundle.tlsRequired !== target.tlsRequired ||
       bundle.userAuth.provider !== pinned.provider || bundle.userAuth.idp.url !== pinned.idp.url || bundle.userAuth.idp.issuer !== pinned.idp.issuer ||
-      bundle.userAuth.idp.audience !== pinned.idp.audience || bundle.userAuth.endpoints?.url !== pinned.endpoints.url)
+      bundle.userAuth.idp.audience !== pinned.idp.audience || bundle.userAuth.endpoints.url !== pinned.endpoints.url)
     throw new Error("conversation identity discovery changed the selected registration's trust pins");
   const capabilities = JSON.parse(raw)?.cloudCapabilities;
   const capability = capabilities?.conversationIdentity;
@@ -124,7 +124,7 @@ export function checkConversationMaterial(
   }
   if (JSON.stringify(body.policy ?? null) !== JSON.stringify(authority.bundle.policy ?? null))
     throw new Error("conversation identity response changed the selected event policy");
-  if (body.sentinelCreds !== authority.bundle.sentinelCreds || body.exchangeUrl !== authority.bundle.userAuth.endpoints?.url)
+  if (body.sentinelCreds !== authority.bundle.sentinelCreds || body.exchangeUrl !== authority.bundle.userAuth.endpoints.url)
     throw new Error("conversation identity response changed the sentinel or exchange pin");
   const retire = object(body.retire);
   if (Object.keys(retire).length !== 1 || typeof retire.url !== "string") throw new Error("conversation identity has no exact retirement URL");

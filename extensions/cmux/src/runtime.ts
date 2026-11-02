@@ -13,6 +13,7 @@ import {
   type RuntimeProvider,
   type Tab,
   type TerminalLayout,
+  type StartupOutcome,
 } from "@cotal-ai/core";
 import * as cmux from "./driver.js";
 
@@ -82,6 +83,7 @@ function cmuxLayout(label: string, tab: Tab): string {
 export class CmuxRuntime implements Runtime {
   readonly kind = "cmux";
   readonly streamsTerminal = false;
+  readonly reportsStartupOutcome = true;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token
@@ -99,7 +101,7 @@ export class CmuxRuntime implements Runtime {
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
       if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers);
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
       launch = paneCommand(
         { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,
@@ -118,7 +120,9 @@ export class CmuxRuntime implements Runtime {
       throw err;
     }
 
+    let startup: StartupOutcome = "pending";
     watch?.({
+      settled: (outcome) => { startup = outcome; },
       read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),
       enter: () => cmux.sendKey("enter", { workspace }, CONFIRM_CALL),
       down: () => cmux.sendKey("down", { workspace }, CONFIRM_CALL),
@@ -135,6 +139,7 @@ export class CmuxRuntime implements Runtime {
     return {
       name,
       kind: "cmux",
+      startupOutcome: () => startup,
       status: () => {
         try {
           return cmux.workspaceState(workspace);

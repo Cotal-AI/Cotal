@@ -48,6 +48,7 @@ import { createServer as createHttpServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
+import { approveDevice } from "../../implementations/auth/smoke/_device-approval.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (child: ChildProcess, ms = 5_000): Promise<void> =>
@@ -371,16 +372,8 @@ try {
     returnHeaders: true,
   });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
-  const approve = async (userCode: string): Promise<void> => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin: idpOrigin } });
-    const response = await fetch(`${idpUrl}/device/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie, origin: idpOrigin },
-      body: JSON.stringify({ userCode }),
-    });
-    if (!response.ok) throw new Error(`device approval failed: HTTP ${response.status}`);
-  };
-  await establishIdpSession({ dir: trustHome, idpUrl, clientId: idpClientId, onPrompt: (prompt: { userCode: string }) => void approve(prompt.userCode) });
+  const approve = (userCode: string) => approveDevice({ base: idpUrl, cookie, origin: idpOrigin }, userCode);
+  await establishIdpSession({ dir: trustHome, idpUrl, clientId: idpClientId, onPrompt: (prompt: { userCode: string }) => approve(prompt.userCode) });
   const owner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise"], allowSubscribe: ["general"], allowPublish: ["general"] });
   const callout = await loadCalloutAuth(hostStore, space);
