@@ -19,7 +19,10 @@
     "M1 is the drift that shipped: a connector that forgets one paragraph. M2 is the gateway's",
     "exception going the other way, an arrival sentence that would contradict the connect result's",
     "own listening line. M3 is the identity line losing the role, which the orientation card and",
-    "every harness used to agree on."
+    "every harness used to agree on.",
+    "",
+    "M4 drops the sentence that sends a status meant for one peer to the shared channel with a",
+    "mention. Claude Code reads the briefing before it picks a tool, and loads a tool's description only after."
   ],
   "mutations": [
     {
@@ -48,6 +51,15 @@
       "expectRed": "every harness opens with the identity line",
       "cell": "every harness opens with the identity line",
       "note": "The role is what cotal_anycast routes on; a seat not told its role does not know which requests are its own."
+    },
+    {
+      "name": "M4 drop the sentence that sends a status for a peer to the shared channel",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "  \"it even in dnd, and a mention in an acknowledgement or sign-off starts a wake-up loop. When you are \" +\n  \"asked to tell a peer about shared work, such as a status or a result, post it on the channel you \" +\n  \"share and mention that peer there. Use cotal_dm only for something one peer alone needs, such as a \" +",
+      "replace": "  \"it even in dnd, and a mention in an acknowledgement or sign-off starts a wake-up loop. \" +\n  \"Use cotal_dm only for something one peer alone needs, such as a \" +",
+      "expectRed": "the channel guidance sends a status for a peer to the shared channel with a mention",
+      "cell": "the channel guidance sends a status for a peer to the shared channel with a mention",
+      "note": "Without it, \"Tell bob the build is green\" went to a DM on both rehearsal harnesses."
     }
   ]
 }

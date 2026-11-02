@@ -65,6 +65,9 @@
     "",
     "N31 drops the DM line's guidance, so a DM again says nothing about the task's channel.",
     "",
+    "N32 drops the cotal_dm description's sentence that sends a status for a peer to the task's",
+    "channel with a mention.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -355,6 +358,15 @@
       "expectRed": "1229:i cotal_dm text for a offline recipient says where it went and points shared facts at the channel",
       "cell": "1229:i cotal_dm text for a offline recipient says where it went and points shared facts at the channel",
       "note": "Fresh agents DM each other instead of posting on the task's channel; this line is where they are told."
+    },
+    {
+      "name": "N32 the cotal_dm description drops the sentence that sends a status to the task's channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": " To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there.",
+      "replace": "",
+      "expectRed": "the cotal_dm description sends a status for a peer to the task's channel with a mention",
+      "cell": "the cotal_dm description sends a status for a peer to the task's channel with a mention",
+      "note": "A harness that lists descriptions before the agent chooses, as jcode does, shows the agent this sentence there."
     }
   ]
 }

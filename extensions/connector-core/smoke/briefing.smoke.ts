@@ -53,6 +53,16 @@ cell("every harness carries the shared paragraphs", () => {
       assert.ok(text.includes(p), `${h} lacks: ${p.slice(0, 50)}`);
 });
 
+// Claude Code loads a tool's description only after picking the tool by name, so this sentence is
+// what an agent reads before it chooses between a post and a DM.
+cell("the channel guidance sends a status for a peer to the shared channel with a mention", () => {
+  assert.ok(
+    CHANNEL_GUIDANCE.includes("When you are asked to tell a peer about shared work, such as a status or a result, post it on the channel you share and mention that peer there."),
+    CHANNEL_GUIDANCE,
+  );
+  assert.ok(CHANNEL_GUIDANCE.includes("Use cotal_dm only for something one peer alone needs"), CHANNEL_GUIDANCE);
+});
+
 cell("every harness carries the reply etiquette", () => {
   for (const [h, text] of all) assert.ok(text.includes(REPLY_ETIQUETTE), h);
 });

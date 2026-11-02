@@ -589,6 +589,13 @@ const proto = MeshAgent.prototype as unknown as {
     send.description.startsWith("Post to a channel.") && send.description.includes("You can't post to a pattern such as review.>. To reach several channels, post to each one by name"),
     send.description,
   );
+  // The rehearsal's "Tell bob the build is green" went to a DM on both harnesses until this sentence.
+  const dm = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_dm")!;
+  check(
+    "the cotal_dm description sends a status for a peer to the task's channel with a mention",
+    dm.description.includes("To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there."),
+    dm.description,
+  );
 }
 
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);

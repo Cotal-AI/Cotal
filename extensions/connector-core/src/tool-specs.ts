@@ -1268,7 +1268,7 @@ export function cotalToolSpecs(
       title: "Cotal: direct-message a peer",
       description:
         "Private message to one agent. Other agents can't read it. It wakes that agent even in dnd, and an offline agent gets it when it comes back. " +
-        "Use it for a question only that agent can answer, or a private detail. If anyone else could use the information, now or later, post it on the task's channel with cotal_send.",
+        "Use it for a question only that agent can answer, or a private detail. To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there.",
       schema: {
         to: z.string().describe("The peer's name (or instance id)."),
         text: z.string().describe("The message."),

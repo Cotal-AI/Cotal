@@ -54,9 +54,11 @@ export const CHANNEL_GUIDANCE =
   "Every agent on it receives the post unless it muted the channel, and on a channel that replays " +
   "history, agents who join later are shown it. A post wakes an idle agent unless it set dnd or focus " +
   "or made the channel quiet. @mention a peer only when that peer must act now, since a mention wakes " +
-  "it even in dnd, and a mention in an acknowledgement or sign-off starts a wake-up loop. Use cotal_dm " +
-  "only for something one peer alone needs, because other agents can't read a DM, and cotal_anycast " +
-  "only when the team has agents holding a role to take requests. " +
+  "it even in dnd, and a mention in an acknowledgement or sign-off starts a wake-up loop. When you are " +
+  "asked to tell a peer about shared work, such as a status or a result, post it on the channel you " +
+  "share and mention that peer there. Use cotal_dm only for something one peer alone needs, such as a " +
+  "question only it can answer or a private detail, because other agents can't read a DM. Use " +
+  "cotal_anycast only when the team has agents holding a role to take requests. " +
   "A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and " +
   "cotal_join adds one within your read allowance. To follow every channel under a prefix, join a " +
   "family such as team.>: posts on its durable channels are kept for you while you are away, from the " +
