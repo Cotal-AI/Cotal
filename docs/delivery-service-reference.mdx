@@ -109,6 +109,12 @@ A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than t
 `max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's
 size in bytes, so the caller fails at once and does not wait out its timeout.
 
+An endpoint's pending control and delivery requests reject if their connection closes, including
+when the endpoint stops or replaces it. The request is not replayed on the new connection: a lost
+reply does not prove that the operation did not run. A liveness probe interrupted this way returns
+`unknown`, not `unbound`. Normal replies, timeouts and broker no-responder answers keep their usual
+classification.
+
 A restart verify-evicts every holder in the manager's credential family, and the family keeps a
 ledger row for every credential an earlier incarnation was issued. The manager keeps its serve,
 goal-writer and session-ledger identities across restarts, so restarts add no holders; each attach

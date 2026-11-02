@@ -40,6 +40,7 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
+  type ChatHistoryChange,
   removeIssuedStoresBeforeRetention,
   IssuedStoreBeforeRetentionError,
   IssuedStoreRecreateRefusal,
@@ -251,6 +252,8 @@ import {
   type ExistingStorePin,
   type StackUpNative,
   unparsableDaemonCredsNotice,
+  chatHistoryChanged,
+  chatHistoryMigratedNotice,
 } from "./stack-up.js";
 import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
@@ -865,7 +868,7 @@ export async function upCommand(args: ParsedArgs): Promise<void> {
     // A run that started no process, such as one that found its stack running, still reconciles.
     await seedBeforeLaunch();
   } catch (error) {
-    throw seedMovedFailure(error);
+    throw chatHistoryMovedFailure(seedMovedFailure(error));
   }
   const warning = upSystemdSupervisionWarning(args.values);
   if (warning) console.error(c.yellow(warning));
@@ -885,6 +888,32 @@ function seedMovedFailure(error: unknown): unknown {
   }
   const changed = { kind: "seed-store", path: seedDir(), ...(moved.from === undefined ? {} : { from: moved.from }), to: moved.to };
   return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), changed], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
+}
+
+/** A chat stream's history limit that one start moved, and the space it belongs to. */
+export interface ChatHistoryMove { space: string; change: ChatHistoryChange }
+
+/** The chat history limit this run's stream setup moved, recorded the moment setup returns it. */
+let chatHistoryMoved: ChatHistoryMove | undefined;
+
+/** The move this process's stream setup made, if it made one. `cotal setup` starts its stack in a
+ *  child whose output it does not read, so that child reports the move from here. */
+export function chatHistoryMovedThisRun(): ChatHistoryMove | undefined {
+  return chatHistoryMoved;
+}
+
+/** A failure after a start moved a chat stream's history limit says so, instead of claiming that
+ *  nothing was written: the broker deleted the posts older than the new age, and a later start finds
+ *  nothing left to move and reports nothing. `moved` is this run's own move unless the caller names
+ *  the one a child process reported. */
+export function chatHistoryMovedFailure(error: unknown, moved = chatHistoryMoved): unknown {
+  if (!moved || !(error instanceof Error)) return error;
+  const message = `${error.message.replace(/; nothing was (?:started or )?written$/, "")}; ${chatHistoryMigratedNotice(moved.space, moved.change)}`;
+  if (!isCommandFailure(error)) {
+    error.message = message;
+    return error;
+  }
+  return new CommandFailure(error.outcome, error.code, message, { remedy: error.remedy, native: error.native, target: error.target, changed: [...(error.changed ?? []), chatHistoryChanged(moved.change)], cause: error.cause, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand });
 }
 
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
@@ -2673,7 +2702,7 @@ function sameRestoreListenerProof(a: RestoreListenerProof, b: RestoreListenerPro
     a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target);
 }
 
-function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<string, unknown>> {
+function readNatsInfo(label: string, endpoint: string, timeoutMs = 2_000): Promise<Record<string, unknown>> {
   return new Promise((resolveInfo, rejectInfo) => {
     let settled = false;
     let socket: ReturnType<typeof createConnection> | undefined;
@@ -2688,7 +2717,7 @@ function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<strin
     try {
       url = new URL(endpoint);
     } catch {
-      rejectInfo(new Error(`invalid restore listener endpoint ${endpoint}`));
+      rejectInfo(new Error(`${label} has an invalid listener endpoint ${endpoint}`));
       return;
     }
     socket = createConnection({ host: url.hostname, port: Number(url.port) || 4222 });
@@ -2696,25 +2725,25 @@ function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<strin
     let input = "";
     socket.on("data", (chunk: Buffer) => {
       input += chunk.toString("utf8");
-      if (input.length > 64 * 1024) return finish(new Error("restore listener INFO exceeds 64 KiB"));
+      if (input.length > 64 * 1024) return finish(new Error(`${label} listener INFO exceeds 64 KiB`));
       const newline = input.indexOf("\r\n");
       if (newline < 0) return;
       const line = input.slice(0, newline);
       const brace = line.indexOf("{");
       if (!/^INFO\b/.test(line) || brace < 0)
-        return finish(new Error("restore listener did not present a NATS INFO greeting"));
+        return finish(new Error(`${label} listener did not present a NATS INFO greeting`));
       try {
         const info = JSON.parse(line.slice(brace)) as unknown;
         if (!info || typeof info !== "object" || Array.isArray(info))
           throw new Error("INFO is not an object");
         finish(undefined, info as Record<string, unknown>);
       } catch (error) {
-        finish(new Error(`restore listener presented invalid NATS INFO: ${(error as Error).message}`));
+        finish(new Error(`${label} listener presented invalid NATS INFO: ${(error as Error).message}`));
       }
     });
-    socket.on("timeout", () => finish(new Error("restore listener INFO timed out")));
-    socket.on("error", (error) => finish(new Error(`restore listener INFO failed: ${error.message}`)));
-    socket.on("close", () => finish(new Error("restore listener closed before NATS INFO")));
+    socket.on("timeout", () => finish(new Error(`${label} listener INFO timed out`)));
+    socket.on("error", (error) => finish(new Error(`${label} listener INFO failed: ${error.message}`)));
+    socket.on("close", () => finish(new Error(`${label} listener closed before NATS INFO`)));
   });
 }
 
@@ -2761,7 +2790,7 @@ async function proveBoundListener(
   if (mesh && (mesh.server !== attempt.server || mesh.root !== attempt.root || mesh.mode !== attempt.mode))
     throw new Error(`${label} conflicts with the recorded mesh identity`);
 
-  const info = await readNatsInfo(proof.serverEndpoint);
+  const info = await readNatsInfo(label, proof.serverEndpoint);
   if (info.server_name !== proof.serverName)
     throw new Error(`${label} reached a foreign NATS server name/nonce`);
 
@@ -2840,7 +2869,7 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
   try {
     if (journal.state === "resume-intent" || journal.state === "commit-intent") {
       await startControllerMembers(lock, root, space, launch.serverName);
-      const brokerInfo = await readNatsInfo(launch.server);
+      const brokerInfo = await readNatsInfo(`${restoring ? "restore" : "resume"} attempt ${attemptId}`, launch.server);
       if (brokerInfo.server_name !== launch.serverName) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the resumed broker reports another server name than this attempt recorded; nothing further was started", { target: { root, space } });
       bindControllerBroker(lock, root, space, launch);
       await startControllerMember(lock, root, space, "manager", managerResumeAttempt(root));
@@ -2972,9 +3001,10 @@ function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<Re
 /** Light wire check for a freshly SPAWNED ordinary-resume listener: the greeted server must carry
  *  the attempt's exact name/nonce (the full seven-point prove is for adopting a survivor). */
 async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
-  const info = await readNatsInfo(pending.server);
+  const label = `resume attempt ${pending.attemptId}`;
+  const info = await readNatsInfo(label, pending.server);
   if (info.server_name !== pending.serverName)
-    throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
+    throw new Error(`${label} spawned listener reports a foreign NATS server name`);
 }
 
 /** Adopts a listener its resume or restore attempt has proved over the wire: records the mesh,
@@ -4038,7 +4068,8 @@ async function serveReadyListener(l: {
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
   else {
     try {
-      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores);
+      const chatHistory = await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores);
+      if (chatHistory) console.error(c.yellow(`! ${chatHistoryMigratedNotice(space, chatHistory)}`));
     } catch (e) {
       await stopFailedListener(child);
       throw e;
@@ -4925,10 +4956,12 @@ async function postStart(
   setup?: { creds: string },
   seedFile?: ChannelRegistryFile,
   recreateIssuedStores?: string,
-): Promise<void> {
+): Promise<ChatHistoryChange | undefined> {
   if (recreateIssuedStores !== undefined) await recreateIssuedStoresBeforeSetup(server, space, setup !== undefined, recreateIssuedStores);
+  let chatHistory: ChatHistoryChange | undefined;
   try {
-    await setupSpaceStreams({ servers: server, space, creds: setup?.creds });
+    ({ chatHistory } = await setupSpaceStreams({ servers: server, space, creds: setup?.creds }));
+    if (chatHistory) chatHistoryMoved = { space, change: chatHistory };
   } catch (error) {
     // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
     if (error instanceof IssuedStoreBeforeRetentionError)
@@ -4954,6 +4987,7 @@ async function postStart(
     if (!(error instanceof UndecodableRegistryEntry)) throw error;
     throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space }, remedy: "read the key and replace the value; the bytes were left as they are" });
   }
+  return chatHistory;
 }
 
 /** `--recreate-issued-stores`: on the broker this boot just started, before any issuer or resolver

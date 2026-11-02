@@ -45,6 +45,13 @@ the IdP refused the cached one, and throws on any other failure. `cotal manager 
 starts the manager, and a team boot that resumes a stopped stack before any write. Each refuses
 the manager `UNSUPPORTED` when the provider does not implement it.
 
+## Compiled service contracts
+
+`serviceContractTable(rows)` returns a frozen `contracts` table. Each command's input/output pair
+compiles on first access, is frozen, and is reused on later reads. Listing command names does not
+compile validators. Callers cannot replace a command or swap its compiled input/output contracts.
+`artifactValues()` still returns the schema roots and closure manifests used at registration.
+
 ## Package entry points [#the-export-surface]
 
 Everything below is a real export of a published package, reachable from the package root (each

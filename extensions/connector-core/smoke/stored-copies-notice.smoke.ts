@@ -56,7 +56,7 @@ const first = await read();
 check("the next read carries the notice once", count(first) === 1, first);
 check(
   "the notice points to channel history and its own bound",
-  first.includes("Channel history may still hold them: `cotal history <channel>` reads it, and it keeps the newest 1000 posts per sender on each channel."),
+  first.includes("Channel history may still hold them: `cotal history <channel>` reads it, within the space's history limit."),
   first,
 );
 const second = await read();

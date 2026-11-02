@@ -20,10 +20,7 @@
  *      at the same generation, and the agent keeps ONE copy.
  *  (8) A family's catch-up copies only durable-class channels, names each copy by its own channel, and
  *      keeps one copy beside a concrete row of another generation.
- *  (9) Catch-up on the daemon judges eviction per sender subject: a quiet old post cannot hide an
- *      evicted busy channel, a live-class channel at its cap does not count, and a concrete row's
- *      evicted window is reported too.
- * (10) With a live space default, a family is still joined durable, left with its row closed, and
+ *  (9) With a live space default, a family is still joined durable, left with its row closed, and
  *      joined at boot; a `*` pattern says it stays live only.
  *
  * Every "not stored" cell is closed by a later post that IS stored: the pipeline is in order, so the
@@ -58,7 +55,7 @@ import {
   chatStream,
   dlvStream,
   dlvSubject,
-  MAX_MSGS_PER_SUBJECT,
+  PLANE3_MAX_MSGS_PER_SUBJECT,
   DEV_OWNER,
   type MembershipRecord,
   type CotalMessage,
@@ -125,7 +122,7 @@ try {
     maxReconnectAttempts: 0,
   });
   const channelKv = await openChannelRegistry(writerNc, space);
-  for (const quiet of ["review.quiet", "dev.quiet", "bulk2.quiet"]) await writeChannelConfig(channelKv, quiet, { deliveryClass: "live" });
+  for (const quiet of ["review.quiet", "dev.quiet"]) await writeChannelConfig(channelKv, quiet, { deliveryClass: "live" });
 
   // The reader's read ACL per principal; a cell narrows alice's.
   const acls = new Map<string, string[]>();
@@ -139,7 +136,6 @@ try {
   };
   const alice = await enrol("alice", ["review.>"]);
   const carol = await enrol("carol", ["team.>", "ops.>", "dev.>", "perm.*"]);
-  const dave = await enrol("dave", ["bulk.>", "bulk2.>", "bulk3.>"]);
   const fred = await enrol("fred", ["flood.>"]);
   const erin = await enrol("erin", ["team.>"], ["team.>"]);
   const uidA = alice.uid, aPrincipal = alice.principal;
@@ -306,29 +302,7 @@ try {
     countC("dev-own") === 1, gotC);
   check("dev.> catch-up leaves out the live-class dev.quiet", !gotC.includes("dev-quiet"), gotC);
 
-  // ───────────── (9) family catch-up eviction, per sender subject ─────────────
-  // Dave never connects; the daemon runs his joins directly.
-  await post("bulk-old", "bulk.old");
-  const bulkFrom = await frontier();
-  for (let i = 0; i <= 1000; i++) await post(`busy-${i}`, "bulk.busy");
-  await commitMember(kv, pendingRow(dave, "bulk.>", 1, bulkFrom));
-  const evicted = await join(dlv.durableJoinFor(dave.principal, "bulk.>", dave.uid));
-  check("bulk.> reports its window evicted: bulk.busy lost posts past its cap, and bulk.old's older post does not hide it",
-    evicted.durable === false && /evicted/.test(evicted.reason ?? ""), evicted);
-  const quietFrom = await frontier();
-  for (let i = 0; i <= 1000; i++) await post(`quiet-${i}`, "bulk2.quiet");
-  await commitMember(kv, pendingRow(dave, "bulk2.>", 1, quietFrom));
-  const liveOnly = await join(dlv.durableJoinFor(dave.principal, "bulk2.>", dave.uid));
-  check("bulk2.> stays complete: the live-class bulk2.quiet at its cap does not count", liveOnly.durable === true, liveOnly);
-  // A concrete channel's catch-up on the daemon is judged the same way.
-  const soloFrom = await frontier();
-  for (let i = 0; i <= 1000; i++) await post(`solo-${i}`, "bulk3.solo");
-  await commitMember(kv, pendingRow(dave, "bulk3.solo", 1, soloFrom));
-  const soloEvicted = await join(dlv.durableJoinFor(dave.principal, "bulk3.solo", dave.uid));
-  check("bulk3.solo reports its window evicted after one sender's 1001 posts (a concrete row's catch-up on the daemon)",
-    soloEvicted.durable === false && /evicted/.test(soloEvicted.reason ?? ""), soloEvicted);
-
-  // ───────────── (10) a live space default ─────────────
+  // ───────────── (9) a live space default ─────────────
   await writeChannelDefaults(channelKv, { deliveryClass: "live" });
   await wait(500); // the agents' channel registry watch picks up the new default
   const joinedLive = await join(c.joinChannel("team.x.>"));
@@ -356,7 +330,7 @@ try {
   const stored = async (): Promise<number> =>
     (await jsm.streams.info(dlvStream(space), { subjects_filter: fredSubject })).state.subjects?.[fredSubject] ?? 0;
   let held = 0;
-  for (let i = 0; i < 300 && (held = await stored()) < MAX_MSGS_PER_SUBJECT; i++) await wait(200);
+  for (let i = 0; i < 300 && (held = await stored()) < PLANE3_MAX_MSGS_PER_SUBJECT; i++) await wait(200);
   let notices = 0;
   const fredEp = new CotalEndpoint({
     space, servers: SERVERS, creds: fred.creds, card: { id: fred.id.id, name: fred.name, kind: "agent" },
@@ -373,8 +347,8 @@ try {
   await until(() => gotF.includes("after-drain"), 10_000);
   // The reader may still be moving copies when fred connects, so he can read more than 1000, never all 1100.
   const floods = gotF.filter((t) => t.startsWith("flood-")).length;
-  check(`fred's store held its limit of ${MAX_MSGS_PER_SUBJECT}, older copies were gone, and he read the newest post`,
-    held === MAX_MSGS_PER_SUBJECT && floods < 1100 && gotF.includes("flood-1099"), { held, floods });
+  check(`fred's store held its limit of ${PLANE3_MAX_MSGS_PER_SUBJECT}, older copies were gone, and he read the newest post`,
+    held === PLANE3_MAX_MSGS_PER_SUBJECT && floods < 1100 && gotF.includes("flood-1099"), { held, floods });
   check("the endpoint said the store was full, and nothing more for the post after it drained", drained >= 1 && notices === drained && gotF.includes("after-drain"), { drained, notices });
   await fredEp.stop();
   for (let i = 0; i < 5; i++) await post(`small-${i}`, "flood.x");

@@ -505,7 +505,15 @@ const SEAMS: Seam[] = [
   // passes `tls: config.tls` like the first, plus three registry smoke dials (the shared fixture,
   // the e2e executor and the user-auth reader). The smoke dials reach a plaintext loopback broker
   // and state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 358, untypecheckedSites: 277 },
+  // 358/277 -> 364/282: the chat history limit adds the provisioner
+  // dial of `cotal history limit` in cli/src/commands/history-limit, which states the mesh's recorded
+  // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
+  // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
+  // starts and states `tls: false`.
+  // 364/282 -> 371/289: the once-task smokes add two Jcode calls (df46417125), two manager
+  // restart calls (d9776d84b1), and three manager spawn calls (048d2cb41e). Each dials its suite's
+  // plaintext loopback broker and states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 371, untypecheckedSites: 289 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -513,6 +521,8 @@ const SIDECARS = [
   "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs",
   "bin/seeded-connectors/hermes/plugin/cotal/_sidecar/standalone.cjs",
 ];
+/** Each built sidecar bundles manager-call.ts, so it carries a copy of every call counted there. */
+const SIDECAR_SITES = SITE_COUNTS["extensions/connector-core/src/manager-call.ts"];
 const countsByFile = (sites: Site[]): Record<string, number> => {
   const counts: Record<string, number> = {};
   for (const site of sites) counts[site.file] = (counts[site.file] ?? 0) + 1;
@@ -2731,11 +2741,11 @@ for (const seam of SEAMS) {
   if (process.argv.includes("--census")) console.log(`REQUIRED_ARG_CENSUS ${JSON.stringify({ seam: seam.fn, sites })}`);
   const walked = new Set(files.map((file) => relative(ROOT, file).split(sep).join("/")));
   const sidecars = SIDECARS.filter((sidecar) => walked.has(sidecar));
-  const expectedByFile = { ...SITE_COUNTS, ...Object.fromEntries(sidecars.map((sidecar) => [sidecar, 1])) };
+  const expectedByFile = { ...SITE_COUNTS, ...Object.fromEntries(sidecars.map((sidecar) => [sidecar, SIDECAR_SITES])) };
   const normalized = sites.map((site) => ({ ...site, file: site.file.split(sep).join("/") }));
   const drift = censusDrift(expectedByFile, countsByFile(normalized));
   check(`\`${seam.fn}\`: every file matches its reviewed exact call count`, drift.length === 0, drift);
-  const expectedSites = seam.sites + sidecars.length;
+  const expectedSites = seam.sites + sidecars.length * SIDECAR_SITES;
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);

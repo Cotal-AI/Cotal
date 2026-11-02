@@ -229,8 +229,9 @@ per-message metadata (`MessageMeta` need not carry it); it MUST NOT assume one c
 - **`durable`** is `live` plus a per-subscriber durable backstop and is **at-least-once for
   current members within retention**: the message is also retained for each member and delivered on
   that member's next connection or turn, remaining pending until acked. A crash or `ack_wait` expiry
-  redelivers the durable copy. At-least-once is bounded by the channel's retention / `replayWindow`
-  (§7): a message evicted by retention before ack may be lost; the guarantee is not unbounded.
+  redelivers the durable copy. At-least-once is bounded by the space's chat history limit (§8): a
+  message the chat stream removes before its durable copy is taken may be lost, and the guarantee is
+  not unbounded. A durable copy already taken is not removed by that limit.
 
 Unicast (`to`) and anycast (`toService`) are at-least-once via their own DM/TASK consumers (§8);
 they have no channel membership and are not subject to the per-channel delivery-class mechanism. An
@@ -511,7 +512,7 @@ token.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `replay` | boolean | history replay-on-join; overrides the space default |
-| `replayWindow` | string | backfill horizon matching `^\d+(s\|m\|h\|d)$`, e.g. `"24h"` |
+| `replayWindow` | string | backfill horizon matching `^\d+(s\|m\|h\|d)$`, e.g. `"24h"`; it bounds what a backfill reads and removes nothing, so it cannot reach past the chat history limit (§8) |
 | `deliveryClass` | `live` \| `durable` | per-channel delivery class (§4); overrides the space default |
 | `description` | string | one-line purpose; max 200 chars |
 | `instructions` | string | advisory usage text; max 2000 chars |
@@ -624,9 +625,22 @@ mode.
 
 | Stream | Captures | Retention | Required config |
 | --- | --- | --- | --- |
-| `CHAT_<space>` | `cotal.<space>.chat.>` | Limits | file storage, `max_msgs_per_subject=1000`, `discard=Old`, `allow_direct=true` |
+| `CHAT_<space>` | `cotal.<space>.chat.>` | Limits | file storage, `max_age` and `max_msgs_per_subject` from the chat history limit below, `discard=Old`, `allow_msg_ttl=false`, `allow_direct=true` |
 | `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
+
+**Chat history limit.** One limit per space sets how long `CHAT_<space>` keeps a channel post: until
+the post is older than the limit's age (`max_age`), or until its sender has posted the limit's count
+(`max_msgs_per_subject`) newer ones on that channel, whichever comes first. A chat subject is one
+sender on one channel, so the count holds per sender per channel. The broker removes a post past
+either bound, and lowering the limit on a live stream removes the posts past the new one at once. A
+new space starts at 30 days and 1000 per sender. An operator MAY set an age from 2 minutes (the
+stream's duplicate window) to 3650 days in whole seconds, and a count of at least 1; the limit MUST
+NOT be set to no age. A stream created before the limit was configurable holds no age and 1000 per
+sender, and a reader MUST accept that pair and any other count with no age. `allow_msg_ttl` stays
+false on the stream: once on it cannot be turned off, and a per-message TTL of `never` escapes
+`max_age`. Copies the Plane 3 backstop already took into its own streams are bounded by those
+streams, not by this limit.
 
 **Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
 JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
@@ -6110,6 +6124,34 @@ pull on a timer while it is connected and its last pull succeeded, except under 
 A pull that fails because the manager is unavailable or unanswered MAY be retried at that same
 interval until one succeeds; a refusal MUST NOT be retried on a timer.
 
+**Once spawns.** A manager MAY relay a turn of its own: the task of a `spawn` that carries `once`.
+It accepts that turn with the spawn, before the seat launches, addressed to the spawned incarnation
+under the spawn's caller triple, and serves it under the protocol above only once the spawn's
+`succeeded` terminal is written, so a served task always has that terminal. The task's
+`turn-pending` row carries `once: true`. Its `deadlineAt` is absent when the spawn set no deadline,
+and a row without `deadlineAt` never expires. While the task is pending, the
+manager MUST refuse every other turn to that incarnation. On the task's terminal, the manager MUST
+stop the incarnation, found by its lifecycle uid and never by its name. When the seat exits first,
+the manager MUST NOT commit the task's end before it has proved that exit, and then cancels the task
+with the reason the seat ended.
+
+A seat hands a once task to its harness at most once. A seat that cannot confirm its harness took
+the task MUST NOT offer it again, and reports it with the self-mode `turn-unconfirmed` command, input
+`{ goalId }`, answered like `turn-yield`. The manager accepts the report only from the addressed
+seat's own credential and only for the once task pending against it, refuses it for a run's turn,
+commits the task `failed` with `delivery-unconfirmed`, and stops the seat. A report repeated after
+the terminal is answered with that terminal.
+
+A manager that inherits a once task from an earlier incarnation of itself MUST NOT serve it when the
+spawn has no `succeeded` terminal; it cancels the task as never served. It MUST NOT serve a task
+whose seat it does not hold, and the reason of that task's terminal says the seat may still be
+running. Once such a task has a terminal, the manager answers that seat's `turn-pending` with
+`{ "turns": [], "notices": true, "stop": true }`, keyed by its lifecycle uid, and repeats the turn
+notice at most every 5 seconds until a pull has returned that answer. `stop` appears on no other
+answer, and a seat MUST NOT read an empty `turns` as a stop. A seat answered with `stop` ends its own
+process when it can. One that cannot keeps reporting a task it holds unconfirmed; one that holds no
+task stays running until a person or its runtime stops it.
+
 ### 14.4 The step journal on the wire
 
 The journal of a run is carried by the per-space **`WFJ_<space>` stream** (§13.12) on **one subject
@@ -6894,6 +6936,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | Date | Revision |
 | --- | --- |
 | 2026-11-01 | **Durable membership of a channel family (§7, §8, §9, Appendix B), additive except one refusal.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join, and any pattern in `subscribe`, lies within one `allowSubscribe` entry, so an agent definition whose `subscribe` pattern only matches an entry, such as `perm.>` under `perm.*`, is now refused. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
+| 2026-10-30 | **The chat stream's history limit is configurable per space (§4, §7, §8).** `CHAT_<space>` keeps a post until it is older than the space's age or its sender has posted the space's count of newer ones on that channel, whichever comes first. A new space starts at 30 days and 1000 per sender. A stream with no age and any count, as every stream before this change was created, stays valid. The durable guarantee is bounded by this limit, and `replayWindow` is a read horizon that removes nothing. The reference implementation moves a stream still on no age and 1000 per sender to the default when `cotal up` starts its broker, which deletes posts older than 30 days. |
 | 2026-10-30 | **A registry lists the endpoints a caller can call (§13.15, §13.20), additive.** A space MAY run a registry, a registered endpoint named `registry` whose `endpoints` command lists the registered endpoints the caller holds a command on, with the request forms its recorded ceiling covers. It leaves out every endpoint the ceiling covers nothing of. On a space with a permission system the question rides `ep.v1`, and a credential on the legacy rail MAY carry a listing generation for it: three rows that reach only `registry` `endpoints` and the listing's own accepted row, with evidence recording the credential's complete ceiling. An issued credential MAY carry the same request row on its own generation, fixed at its first issuance. The registry reads that ceiling with a disclosure read that checks no source liveness and admits no effect. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |
 | 2026-10-29 | **The Manager persona catalog has a typed removal command (§13.7), additive.** `remove-persona` rides the same `manager.persona` capability as `define-persona`, removes only the machine-local definition, refuses an unknown name, and accepts a safe filename stem even when it exceeds the current spawn-name limit. The reference Manager cluster advances to revision 41. |

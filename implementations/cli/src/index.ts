@@ -552,10 +552,10 @@ const baseCommands: Command[] = [
     name: "history",
     aliases: ["h"],
     group: "Messaging",
-    summary: "read the newest retained messages within this identity's read grant, or clear history (`history clear`)",
+    summary: "read the newest retained messages within this identity's read grant, clear history (`history clear`), or set how long it is kept (`history limit`)",
     usage:
-      "cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json|--plain] | cotal history clear --yes [--dms]",
-    positionals: "[<channel> | clear]",
+      "cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json|--plain] | cotal history clear --yes [--dms] | cotal history limit [--max-age <age>] [--per-sender <n>] [--yes]",
+    positionals: "[<channel> | clear | limit]",
     flags: historyFlags,
     outputs: ["json", "ndjson", "plain"],
     examples: [{ command: "cotal history <channel>", note: "read a channel's newest messages" }, { command: "cotal history <channel> --follow", note: "keep printing new ones as they arrive" }, { command: "cotal history --since 2h --grep <text>", note: "search the last two hours" }],
