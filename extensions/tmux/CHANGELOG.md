@@ -1,5 +1,11 @@
 # @cotal-ai/tmux
 
+## 0.135.6
+
+### Patch Changes
+
+- 1913cdd: Bind tmux seat handles to their pane and opening server. Stop and interrupt follow moved panes, including the delayed graceful close, while status and exit waits refuse replacement-server ID reuse without touching another seat.
+
 ## 0.135.5
 
 No changes in this release.
