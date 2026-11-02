@@ -22,6 +22,12 @@ node implementations/tui/bin/cotal-tui.mjs
 
 The `cotal` binary does not start this app yet.
 
+Only open spaces open for now. A user-auth space is refused with `uses the "cotal" auth provider,
+which this build does not register`. Its credentials come from the auth provider in
+`@cotal-ai/auth`, which this standalone launcher does not register, and this package cannot import
+it without depending on another implementation. User-auth spaces will open once the bare `cotal`
+command launches the app.
+
 ## Layout
 
 Three columns. The left one lists the spaces, then the open space's channels, agents and endpoints.
