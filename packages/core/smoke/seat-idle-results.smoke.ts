@@ -32,6 +32,14 @@ assert.equal(nativeErrorClass(Object.assign(new Error("private"), { name: "priva
 assert.equal(nativeErrorClass("private"), "unknown"); checks++;
 assert.equal(nativeErrorClass(new Error("timeout")), "TimeoutError"); checks++;
 assert.equal(nativeErrorClass(Object.assign(new Error("private"), { name: "AuthorizationError" })), "AuthorizationError"); checks++;
+const wrapped = new Error("private wrapper and subject", { cause: timeout });
+assert.equal(nativeErrorClass(wrapped), "TimeoutError"); checks++;
+const cycle = new Error("private cycle"); cycle.cause = cycle;
+assert.equal(nativeErrorClass(cycle), "other"); checks++;
+let deep: Error = timeout;
+for (let i = 0; i < 4; i++) deep = new Error("private deep wrapper", { cause: deep });
+assert.equal(nativeErrorClass(deep), "other"); checks++;
+assert.equal(nativeErrorClass(new Error("private", { cause: "private non-error" })), "other"); checks++;
 const rows: unknown[] = [];
 const observation = nativeErrorObserver((row) => rows.push(row), 2);
 observation.note("warning", timeout); observation.note("warning", timeout); observation.note("warning", timeout);
