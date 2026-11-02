@@ -4,7 +4,7 @@
   ],
   "guard": "A take still waiting when its connection closes ends with that connection, the probe it falls back to included, so a read waiting on it returns and the request can be taken again on the new link",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=83",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=86",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/anycast-take-gate-core.json",
   "why": [
     "nats.js settles a no-mux request only from its reply subscription, and a connection that closes",
@@ -37,7 +37,7 @@
       "note": "With nothing on the take rail the take asks the anycastTakes probe on ctl.delivery, another no-mux request. Sent unbound, as requestDelivery sent it before requestBoundReply, it never settles once its connection closes, and every later read reuses the stuck take."
     },
     {
-      "name": "a copy refused as a mismatch on a recreated stream is nakked",
+      "name": "a copy refused as a mismatch on a recreated stream is forgotten without a nak",
       "file": "packages/core/src/endpoint.ts",
       "find": "      if (current !== undefined && current !== epoch) nak();\n",
       "replace": "",

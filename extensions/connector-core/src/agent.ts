@@ -512,9 +512,6 @@ export class MeshAgent extends EventEmitter {
   private heldTake?: { reason: string; detail: string; retryAt: number };
   /** Re-announces the held role requests once {@link heldTake} lets them be asked about again. */
   private takeRetry?: ReturnType<typeof setTimeout>;
-  /** Held role requests whose take ended in a link drop while the link was down, announced again
-   *  when it comes back up (see {@link runTake}). */
-  private retakes = new Set<Pending>();
   /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
    *  live↔durable transition window can deliver the two copies of one message far enough apart that the
    *  first is already drained (removed from {@link inbox}) when the second arrives; the pending-inbox
@@ -743,9 +740,12 @@ export class MeshAgent extends EventEmitter {
         // handed to a host is taken again before it is shown.
         for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);
       }
-      if (e.connected) {
-        for (const p of this.retakes) if (this.gated.includes(p)) this.emit("incoming", p.item);
-        this.retakes.clear();
+      // No take is asked while the link is down (see mayAskTakes), so a host that read then was offered
+      // none of the held requests. Each whose take is not out, and whose copy is still this reader's,
+      // is announced again now.
+      if (e.connected && this.mayAskTakes()) {
+        this.dropLapsedTakes();
+        for (const p of this.gated) if (p.taking === undefined) this.emit("incoming", p.item);
       }
       this.emit("transport", e);
       // A notice lost while the transport was down can only matter to a turn this seat holds: the
@@ -1653,9 +1653,10 @@ export class MeshAgent extends EventEmitter {
     return count && this.heldTake ? { count, detail: this.heldTake.detail } : { count };
   }
 
-  /** Whether a held role request may be asked about now, or must wait out {@link heldTake}. */
+  /** Whether a held role request may be asked about now: the link is up, and no take nobody could
+   *  decide is being waited out ({@link heldTake}). */
   private mayAskTakes(): boolean {
-    return !this.heldTake || Date.now() >= this.heldTake.retryAt;
+    return this._transportConnected && (!this.heldTake || Date.now() >= this.heldTake.retryAt);
   }
 
   private startTake(p: Pending): Promise<void> {
@@ -1686,12 +1687,11 @@ export class MeshAgent extends EventEmitter {
     // An answer that crossed a link drop is the old link's, so the request stays held and a read
     // waiting on this take shows nothing of it. Its host is told again once the link is up, so the
     // next read takes it on the new link. While the link is down a read could not take it, and the
-    // read that waited on this take may still be running, so the announcement waits for the link. A
-    // read that asked again on the new link owns the request now, so this take says nothing.
+    // read that waited on this take may still be running, so the reconnect announces it. A read
+    // that asked again on the new link owns the request now, so this take says nothing.
     if (this.transportDrops !== drops) {
       if (p.takingDrops !== drops) return;
       if (this._transportConnected) this.emit("incoming", p.item);
-      else this.retakes.add(p);
       return;
     }
     if (outcome.taken) {
@@ -2115,9 +2115,9 @@ export class MeshAgent extends EventEmitter {
    *  a turn it can never clear does not end every wait at once. */
   inboxWake(skip?: (item: InboxItem) => boolean): number {
     // A role request held for its take wakes when a read could take it: the read the wake leads to
-    // takes it. While a take nobody could decide is waited out none wakes, and each is announced
-    // again when the wait ends (see runTake). A copy whose ack wait ran out is dropped first, as a
-    // read drops it.
+    // takes it. While the link is down, or a take nobody could decide is waited out, none wakes, and
+    // each is announced again when the link is back or the wait ends (see runTake). A copy whose ack
+    // wait ran out is dropped first, as a read drops it.
     this.dropLapsedTakes();
     const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;
     return held + this.inbox.filter((p) => {

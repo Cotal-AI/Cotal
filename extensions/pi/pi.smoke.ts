@@ -343,27 +343,31 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
 {
   class TakingMesh extends FakeMesh {
     held: InboxItem[] = [];
-    /** Held back until its retry, the way a request whose take nothing answered is. */
-    backoff = new Set<string>();
-    outcome: (key: string) => "taken" | "refused" | "undecided" = () => "taken";
+    /** "out" is a take still waiting for its answer when the read's wait runs out: the request stays
+     *  held and offered, as the real agent's does. */
+    outcome: (key: string) => "taken" | "refused" | "out" = () => "taken";
+    /** How long a read waits on a take that is still out. */
+    waitMs = 10;
+    takes = 0;
     /** Role requests that arrive while a take is out. */
     arriving: InboxItem[] = [];
     /** Resolves when the take may answer. */
     answer: Promise<void> = Promise.resolve();
 
     override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
-      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.held.filter((value) => !this.backoff.has(value.recvKey)))];
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.held)];
     }
 
     override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      this.takes++;
       const picked = choose(this.inboxPreview(scope));
       await this.answer;
       for (const value of picked) {
         if (!this.held.includes(value)) continue;
         const how = this.outcome(value.recvKey);
-        if (how !== "undecided") this.held = this.held.filter((other) => other !== value);
+        if (how === "out") await new Promise((resolve) => setTimeout(resolve, this.waitMs));
+        if (how !== "out") this.held = this.held.filter((other) => other !== value);
         if (how === "taken") this.items.push(value);
-        if (how === "undecided") this.backoff.add(value.recvKey);
       }
       this.held.push(...this.arriving.splice(0));
       const showable = new Set(this.peekInbox(scope).map((value) => value.recvKey));
@@ -378,14 +382,15 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     mesh.attention = "dnd";
     mesh.items = [chatter];
     mesh.held = [request("r1")];
-    mesh.outcome = () => "undecided";
+    mesh.outcome = () => "out";
     const host = new FakeHost();
     const driver = new PiDriver(mesh as unknown as MeshAgent);
     driver.bind(host);
     driver.onSessionStart(context());
-    await tick();
-    await tick();
-    ok(host.sent.length === 0, "in dnd a batch whose role request's take is undecided does not go out with only chatter");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    driver.requestShutdown();
+    ok(host.sent.length === 0, "in dnd a batch whose role request's take is still out does not go out with only chatter");
+    ok(mesh.takes >= 2 && mesh.takes <= 12, "and the request is chosen again once each wait on its take runs out");
   }
   {
     const mesh = new TakingMesh();

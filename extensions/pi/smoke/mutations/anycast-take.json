@@ -6,7 +6,7 @@
   "command": "pnpm smoke:pi",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/anycast-take.json",
   "why": [
-    "PT1 sends whatever a take returned, so a dnd batch whose role request was refused or is undecided goes out with only chatter.",
+    "PT1 sends whatever a take returned, so a dnd batch whose role request was refused, or whose take is still out, goes out with only chatter.",
     "",
     "PT2 forgets a pump forced while a take is out, and PT3 drops it when the take's own pump runs, so a user turn that starts during a refused take carries none of the chatter waiting for it.",
     "",
@@ -22,8 +22,8 @@
       "file": "extensions/pi/src/driver.ts",
       "find": "    if (taken?.length && (force || turnPeek || taken.some((item) => wakeable(this.mesh, item)))) {",
       "replace": "    if (taken?.length) {",
-      "expectRed": "in dnd a batch whose role request's take is undecided does not go out with only chatter",
-      "cell": "in dnd a batch whose role request's take is undecided does not go out with only chatter"
+      "expectRed": "in dnd a batch whose role request's take is still out does not go out with only chatter",
+      "cell": "in dnd a batch whose role request's take is still out does not go out with only chatter"
     },
     {
       "name": "PT2 a pump forced during a take is forgotten",

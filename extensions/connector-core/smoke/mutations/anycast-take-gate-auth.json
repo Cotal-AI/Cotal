@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=83",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=86",
   "mutations": [
     {
       "name": "a role request skips its take and lands in the inbox at once",
@@ -200,7 +200,7 @@
       "cell": "16a a read that shows a DM names the request its take left held"
     },
     {
-      "name": "the focus read's empty answer uses the note read before the take",
+      "name": "the focus read's empty answer carries no connection note read after the take",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "        const connectionWarning = inboxConnectionWarning(agent);\n        const warning = focusWarning();",
       "replace": "        const connectionWarning = \"\";\n        const warning = focusWarning();",
@@ -270,6 +270,24 @@
       "expectRed": "17c a read whose take is undecided names nothing of the request behind it that it never asked",
       "note": "The read chose again from what needs no take after the first request's take stayed undecided, so the request behind it, never asked, is named as too large to carry.",
       "cell": "17c a read whose take is undecided names nothing of the request behind it that it never asked"
+    },
+    {
+      "name": "a held request is offered to a read while the link is down",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return this._transportConnected && (!this.heldTake || Date.now() >= this.heldTake.retryAt);",
+      "replace": "    return !this.heldTake || Date.now() >= this.heldTake.retryAt;",
+      "expectRed": "21a while the link is down a read is offered no held request, and none wakes",
+      "cell": "21a while the link is down a read is offered no held request, and none wakes",
+      "note": "A read during the drop chooses the request, its take returns at once without asking, and a host that reads whenever one is offered reads it again with no turn of the event loop between."
+    },
+    {
+      "name": "the reconnect announces no held request",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        for (const p of this.gated) if (p.taking === undefined) this.emit(\"incoming\", p.item);\n",
+      "replace": "",
+      "expectRed": "21b once the link is back the held request is announced again",
+      "cell": "21b once the link is back the held request is announced again",
+      "note": "A request a read could not be offered while the link was down is never announced, so a host that waits for an announcement never reads it."
     }
   ]
 }

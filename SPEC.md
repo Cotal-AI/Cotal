@@ -828,7 +828,8 @@ wait that has not run out, and no reconnect since it asked. Otherwise it takes t
 request taken and not yet shown when the holder's connection drops is taken again before it is
 shown, and so is one whose take is still waiting for its answer then. A read after the drop asks
 again on the new link rather than waiting on that take, and a take whose connection closes ends with
-it.
+it. A holder asks for no take while its connection is down, so a read then is offered none of its
+held requests, and once the connection is back the holder tells its host about each one again.
 
 **Record.** The daemon keeps one row per request in `cotal_anycast_<space>` (history 1, no TTL)
 under the key `r.<epoch>.<seq>`, where `<epoch>` is the `TASK_<space>` stream's creation time

@@ -14,7 +14,8 @@
  * takes left held and carries what needs no take when a take is undecided, naming nothing of a
  * request it never asked, a read after a reconnect on the same connection asks again, a copy from a recreated stream is delivered again at once, and a
  * gateway read that waits on a take leaves its reader's wake latch neither set over an empty inbox
- * nor unsignalled for a message that arrived during it.
+ * nor unsignalled for a message that arrived during it. While the link is down a held request is
+ * offered to no read and wakes nothing, and it is announced again once the link is back.
  *
  * Run: pnpm smoke:anycast-take-gate:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -780,6 +781,32 @@ try {
     signalsDuringRead === 1 && lateSignals.length === 2 && !lateShown.text.includes("a DM after the read chose") && buffered(late, "a DM after the read chose"),
     { signalsDuringRead, signals: lateSignals.length, shown: lateShown.text.slice(0, 160) },
   );
+
+  // ── 21. a held request while the link is down ─────────────────────────────────────────────
+  // No take is asked while the link is down, so a read then is offered no held request. A host that
+  // reads whenever one is offered would otherwise read it, take nothing, and read it again at once.
+  console.log("[21] while the link is down a held request is offered to no read, and is announced once the link is back");
+  const down = await holderOf("down_holder", "downrole");
+  const sent21 = await sender.agent.ep.anycastAttributed("downrole", "held across a drop it was never asked in");
+  await until(() => down.agent.inboxKeys().includes(sent21.msg.id));
+  const announced21 = () => down.incoming.filter((i) => i.recvKey === sent21.msg.id).length;
+  const before21 = announced21();
+  let offered21: boolean | undefined;
+  let wake21: number | undefined;
+  const onDrop21 = (e: { connected: boolean }) => {
+    if (e.connected || offered21 !== undefined) return;
+    offered21 = down.agent.inboxPreview().some((i) => i.recvKey === sent21.msg.id);
+    wake21 = down.agent.inboxWake();
+  };
+  down.agent.on("transport", onDrop21);
+  await down.agent.reconnect();
+  down.agent.off("transport", onDrop21);
+  check("21a while the link is down a read is offered no held request, and none wakes", offered21 === false && wake21 === 0, { offered21, wake21 });
+  await until(() => down.agent.connected || undefined, 10_000);
+  const again21 = await until(() => announced21() === before21 + 1 || undefined, 3000);
+  check("21b once the link is back the held request is announced again", again21 === true, { before21, after: announced21() });
+  const read21 = await down.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent21.msg.id));
+  check("21c and the next read takes it and shows it", read21.some((i) => i.recvKey === sent21.msg.id), { shown: read21.length });
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {
