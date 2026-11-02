@@ -459,52 +459,60 @@ interface TakenReply {
 }
 
 /** How many times one read chooses its reply again after a take of a request it chose is refused. */
-const READ_TAKE_ROUNDS = 8;
+export const READ_TAKE_ROUNDS = 8;
 
 /**
  * Render one reply over the inbox preview, take the held role requests it carries (or the one it
  * carries part of), then render it again over what may be shown now (SPEC §8.1). The second pass
  * shows only what the first chose, so a reply never takes a request it does not show. It renders a
  * subset of the first pass's items in the same order, so it fits wherever the first did. `extra`
- * rides after the buffer and needs no take, such as focus recall.
+ * rides after the buffer and needs no take, such as focus recall. `warning` is read at each render,
+ * so the reply reports what the takes left held. A read whose caller is gone takes nothing.
  */
 async function takeForReply(
   agent: MeshAgent,
   scope: InboxScope,
-  opts: Omit<Parameters<typeof renderInbox>[0], "items" | "only">,
+  opts: Omit<Parameters<typeof renderInbox>[0], "items" | "only" | "warning"> & { warning: () => string; signal?: AbortSignal },
   extra: readonly InboxItem[] = [],
 ): Promise<TakenReply> {
+  const { warning, signal, ...render } = opts;
   let pending: Set<string> | undefined;
   let preview: InboxItem[] = [];
   let chosen = new Set<string>();
   let shown = new Set<string>();
   let part: InboxItem | undefined;
   let taken = new Set<string>();
-  for (let round = 0; round < READ_TAKE_ROUNDS; round++) {
+  let showable: Set<string> | undefined;
+  const undecided = new Set<string>();
+  for (let round = 0; round < READ_TAKE_ROUNDS && !signal?.aborted; round++) {
     const got = await agent.takeChosen(scope, (p) => {
       // A read carries only what was pending when it began, so mail arriving meanwhile cannot push
       // out a request an earlier round took.
       pending ??= new Set(p.map((i) => i.recvKey));
       preview = p.filter((i) => pending!.has(i.recvKey));
-      const first = renderInbox({ ...opts, items: [...preview, ...extra] });
+      const candidates = showable ? preview.filter((i) => showable!.has(i.recvKey)) : preview;
+      const first = renderInbox({ ...render, warning: warning(), items: [...candidates, ...extra] });
       shown = new Set(first.shown.map((i) => i.recvKey));
-      part = first.shown.length ? undefined : preview.find((i) => first.stuck.has(i.recvKey));
-      const picked = [...preview.filter((i) => shown.has(i.recvKey)), ...(part ? [part] : [])];
+      part = first.shown.length ? undefined : candidates.find((i) => first.stuck.has(i.recvKey));
+      const picked = [...candidates.filter((i) => shown.has(i.recvKey)), ...(part ? [part] : [])];
       chosen = new Set(picked.map((i) => i.recvKey));
       return picked;
     });
     taken = new Set(got.map((i) => i.recvKey));
     // A refused take leaves room another message can use, so the reply is chosen again without it. A
-    // take still undecided ends the choosing, since choosing it again only repeats the wait.
+    // take still undecided would only repeat its wait if chosen again, so the reply is chosen once
+    // more from what needs no take, and the undecided request waits for a later read.
     const missed = [...chosen].filter((k) => !taken.has(k));
+    if (!missed.length || showable) break;
     const open = new Set(agent.inboxPreview(scope).map((i) => i.recvKey));
-    if (!missed.length || missed.some((k) => open.has(k))) break;
+    for (const k of missed) if (open.has(k)) undecided.add(k);
+    if (undecided.size) showable = new Set(agent.peekInbox(scope).map((i) => i.recvKey));
   }
   // A chosen request whose take was refused or is still undecided leaves this reply entirely.
   const live = new Set(agent.inboxKeys(scope));
-  const offered = preview.filter((i) => live.has(i.recvKey) && (!chosen.has(i.recvKey) || taken.has(i.recvKey)));
+  const offered = preview.filter((i) => live.has(i.recvKey) && !undecided.has(i.recvKey) && (!chosen.has(i.recvKey) || taken.has(i.recvKey)));
   return {
-    reply: renderInbox({ ...opts, items: [...offered, ...extra], only: shown }),
+    reply: renderInbox({ ...render, warning: warning(), items: [...offered, ...extra], only: shown }),
     offered,
     buffered: agent.peekInbox(scope),
     part: part && taken.has(part.recvKey) ? part : undefined,
@@ -1132,20 +1140,20 @@ export function cotalToolSpecs(
         // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
-          const warning = inboxConnectionWarning(agent);
           // A peek shows bodies too, so a peek takes what it shows like any read.
           const { reply, offered, buffered, part: taken } = await takeForReply(agent, inboxScope, {
             peek,
-            warning,
+            warning: () => inboxConnectionWarning(agent),
+            signal: call?.signal,
             head: (s) =>
               scope
                 ? `${s.length} pull-only message${s.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
                 : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`,
           });
           const { text, shown, held, stuck } = reply;
+          // Asked after the takes: one this read asked for can have been held since.
+          const warning = inboxConnectionWarning(agent);
           if (!offered.length) {
-            // Asked again: a take this read asked for can have been held since.
-            const warning = inboxConnectionWarning(agent);
             return ok(
               [warning, scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
@@ -1222,14 +1230,14 @@ export function cotalToolSpecs(
         aheadFresh.sort(byTsThenId);
         const fresh = [...clocked, ...aheadFresh];
         const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
-        const connectionWarning = inboxConnectionWarning(agent);
-        const warning = [connectionWarning, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
+        const focusWarning = () => [inboxConnectionWarning(agent), droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
         // Taken after recall, which can hand an id-less message back into the buffer (#662).
         const { reply, offered, buffered, part: taken } = await takeForReply(agent, inboxScope, {
           peek,
-          warning,
+          warning: focusWarning,
+          signal: call?.signal,
           strictIds: new Set(clocked.map((i) => i.recvKey)),
           head: (s) =>
             scope
@@ -1238,6 +1246,9 @@ export function cotalToolSpecs(
         }, fresh);
         const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         const { text, shown: all, stuck } = reply;
+        // Asked after the takes: one this read asked for can have been held since.
+        const connectionWarning = inboxConnectionWarning(agent);
+        const warning = focusWarning();
         if (!offered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return ok(
             [connectionWarning, scope

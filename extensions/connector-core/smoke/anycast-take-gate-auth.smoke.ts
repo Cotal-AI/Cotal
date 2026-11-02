@@ -9,7 +9,10 @@
  * announces nothing more, so a gateway reader is woken once per request and again by the next DM,
  * and only a take that lands after its read stopped waiting is announced again. `cotal_anycast` is driven through its spec for the send, status and
  * cancel results and for the calls it must refuse, including a seq that names two of this session's
- * requests after the role queue was recreated.
+ * requests after the role queue was recreated. A held request wakes nothing while its retry is waited
+ * out or once its copy ran out, a read whose caller left takes nothing, a read reports what its own
+ * takes left held and carries what needs no take when a take is undecided, a read after a reconnect
+ * on the same connection asks again, and a copy from a recreated stream is delivered again at once.
  *
  * Run: pnpm smoke:anycast-take-gate:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -18,7 +21,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator, type Msg } from "@nats-io/transport-node";
+import { createServer, connect as netConnect, type Socket } from "node:net";
+import { connect, credsAuthenticator, nanos, type Msg } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -34,6 +38,7 @@ import {
   mintLifecycleUid,
   newIdentity,
   provisionAgent,
+  seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
   spacePrefix,
@@ -81,6 +86,7 @@ try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: provCreds });
+  await seedChannelRegistry({ servers, space, creds: provCreds, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   const mgr = new CotalEndpoint({ space, servers, creds: provCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
   mgr.on("error", () => {});
   await mgr.start();
@@ -99,11 +105,11 @@ try {
   };
   let daemon = await startDaemon();
 
-  const mkAgent = async (name: string, role?: string) => {
+  const mkAgent = async (name: string, role?: string, channels: string[] = [], via = servers) => {
     const ident = newIdentity();
     const uid = mintLifecycleUid();
-    const creds = await provisionAgent(mgr, auth, ident, { subscribe: [], allowSubscribe: [], allowPublish: [], role, lifecycleUid: uid });
-    const config: AgentConfig = { space, name, role, servers, creds, subscribe: [], allowSubscribe: [], allowPublish: [], kind: "agent", tls: false, id: ident.id, lifecycleUid: uid };
+    const creds = await provisionAgent(mgr, auth, ident, { subscribe: channels, allowSubscribe: channels, allowPublish: channels, role, lifecycleUid: uid });
+    const config: AgentConfig = { space, name, role, servers: via, creds, subscribe: channels, allowSubscribe: channels, allowPublish: channels, kind: "agent", tls: false, id: ident.id, lifecycleUid: uid };
     const agent = new MeshAgent(config);
     agent.on("error", () => {});
     const incoming: InboxItem[] = [];
@@ -466,7 +472,7 @@ try {
   );
 
   // ── 12. one seq naming two of this session's requests ─────────────────────────────────────
-  // Last, because it deletes and recreates the TASK stream.
+  // After every cell that uses the old stream, because it deletes and recreates the TASK stream.
   console.log("[12] a seq this session sent twice, across a queue recreation, is refused as ambiguous");
   const sent6 = await run({ role: "reviewer", text: "before the queue is recreated" });
   const seq6 = Number(/seq (\d+)/.exec(sent6.text)?.[1]);
@@ -490,6 +496,218 @@ try {
   );
   const ambiguousCancel = await run({ seq: seq6, cancel: true });
   check("12c and so is a cancel, which cancels nothing", ambiguousCancel.isError === true && ambiguousCancel.text.includes("nothing was asked or cancelled"), ambiguousCancel.text);
+
+  // The cells below run after the recreation above, each on a role of its own, so the TASK stream
+  // they bind is the new one. Cell 19 relies on reviewer_x still holding the old stream's creation
+  // time, so it runs last.
+  const gatewayFor = async (h: Awaited<ReturnType<typeof mkAgent>>) => {
+    const conn: GatewayConnection = { id: `conn-${h.config.name}`, agent: h.agent, config: h.config };
+    const server = new McpServer({ name: "gw", version: "0" });
+    registerCotalGatewayTools(server, {
+      account: () => "acc",
+      open: async () => conn,
+      find: async (_account, id) => (id === conn.id ? conn : undefined),
+      close: async () => true,
+    }, "gateway");
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "smoke", version: "0" });
+    await server.connect(serverSide);
+    await client.connect(clientSide);
+    stops.push(() => client.close());
+    await client.callTool({ name: "cotal_connect", arguments: { name: h.config.name } });
+    return async (tool: string, args: Record<string, unknown> = {}, signal?: AbortSignal) => {
+      const started = Date.now();
+      const r = await client.callTool({ name: tool, arguments: { connection_id: conn.id, ...args } }, undefined, signal ? { signal } : undefined);
+      return { ms: Date.now() - started, text: (r.content as { text?: string }[]).map((c) => c.text ?? "").join("\n") };
+    };
+  };
+  const holderOf = async (name: string, role: string, channels: string[] = [], via = servers) => {
+    const h = await mkAgent(name, role, channels, via);
+    await until(() => sender.agent.ep.getRoster().some((p) => p.card.id === h.id), 8000);
+    return h;
+  };
+
+  // ── 13. a held request waiting out its retry wakes nothing ────────────────────────────────
+  console.log("[13] a role request waiting out a take nobody could decide wakes nothing until the wait ends");
+  const backoff = await holderOf("backoff_holder", "backoffrole");
+  const backoffCall = await gatewayFor(backoff);
+  await stopDaemon();
+  const sent13 = await sender.agent.ep.anycastAttributed("backoffrole", "held through a retry wait");
+  await until(() => backoff.agent.inboxKeys().includes(sent13.msg.id));
+  const held13 = await backoffCall("cotal_inbox");
+  check("13a the read reports it held", held13.text.includes("1 role request is held and not shown"), held13.text);
+  check(
+    "13b while the retry is waited out it counts toward no wake",
+    backoff.agent.pendingWake() === 0 && backoff.agent.inboxWake() === 0,
+    { pending: backoff.agent.pendingWake(), wake: backoff.agent.inboxWake() },
+  );
+  const wait13 = await backoffCall("cotal_wait", { seconds: 2 });
+  check("13c a cotal_wait then runs its time instead of returning at once", wait13.ms >= 1900 && wait13.text.startsWith("No new messages in 2 seconds"), wait13);
+  daemon = await startDaemon();
+  const announced13 = await until(() => backoff.incoming.filter((i) => i.recvKey === sent13.msg.id).length === 2 || undefined, 12_000);
+  check(
+    "13d when the wait ends it is announced again and counts toward a wake",
+    announced13 === true && backoff.agent.inboxWake() === 1,
+    { announced: backoff.incoming.filter((i) => i.recvKey === sent13.msg.id).length, wake: backoff.agent.inboxWake() },
+  );
+  const read13 = await backoffCall("cotal_inbox");
+  check("13e and the next read shows it", read13.text.includes("held through a retry wait"), read13.text.slice(0, 300));
+
+  // ── 14. a held copy whose ack wait ran out ────────────────────────────────────────────────
+  // A short ack wait and one delivery on this role's queue, so the copy runs out within the cell and
+  // nothing redelivers it. The holder binds again to read the new ack wait.
+  console.log("[14] a held copy whose ack wait ran out wakes nothing and is named nowhere");
+  const lapse = await holderOf("lapse_holder", "lapserole");
+  const lapseCall = await gatewayFor(lapse);
+  const provIdent = newIdentity();
+  const provNc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, provIdent, "provisioner"))), inboxPrefix: `_INBOX_${provIdent.id}`, maxReconnectAttempts: 0 });
+  stops.push(() => provNc.close());
+  await (await jetstreamManager(provNc)).consumers.update(taskStream(space), "svc_lapserole", { ack_wait: nanos(2000), max_deliver: 1 });
+  await lapse.agent.reconnect();
+  await until(() => lapse.agent.connected || undefined, 10_000);
+  const sent14 = await sender.agent.ep.anycastAttributed("lapserole", "held past its ack wait");
+  await until(() => lapse.agent.inboxKeys().includes(sent14.msg.id));
+  await sleep(2500);
+  const notice14 = await lapseCall("cotal_connection_status");
+  check("14a once its ack wait ran out it counts toward no wake", lapse.agent.inboxWake() === 0, { wake: lapse.agent.inboxWake() });
+  check("14b another tool's reply says nothing is waiting", !notice14.text.includes("waiting. Read"), notice14.text.slice(-200));
+  const wait14 = await lapseCall("cotal_wait", { seconds: 2 });
+  check("14c and a cotal_wait runs its time", wait14.ms >= 1900 && wait14.text.startsWith("No new messages in 2 seconds"), wait14);
+
+  // ── 15. a read whose caller left ──────────────────────────────────────────────────────────
+  // The first read waits on a take nothing answers; the second queues behind it, and its caller
+  // leaves before it runs.
+  console.log("[15] a read whose caller left before it ran takes nothing");
+  const abandoned = await holderOf("abandon_holder", "abandonrole");
+  const abandonCall = await gatewayFor(abandoned);
+  await stopDaemon();
+  const rail15 = await silentResponder(takeServeFilter(space), TAKE_ROUTE, () => true);
+  const first15 = await sender.agent.ep.anycastAttributed("abandonrole", "its take hangs");
+  await until(() => abandoned.agent.inboxKeys().includes(first15.msg.id));
+  const readA15 = abandonCall("cotal_inbox");
+  await rail15.received;
+  await rail15.close();
+  daemon = await startDaemon();
+  const second15 = await sender.agent.ep.anycastAttributed("abandonrole", "asked by a read whose caller left");
+  await until(() => abandoned.agent.inboxKeys().includes(second15.msg.id));
+  const gone15 = new AbortController();
+  const readB15 = abandonCall("cotal_inbox", {}, gone15.signal).catch(() => undefined);
+  await sleep(100);
+  gone15.abort();
+  await readA15;
+  await readB15;
+  await sleep(1000);
+  const status15 = await sender.agent.ep.anycastStatus(second15.ack.seq);
+  check("15a the request that read would have shown still reads waiting", status15.state === "waiting", status15);
+  check("15b and its sender can still cancel it", (await sender.agent.ep.cancelAnycast(second15.ack.seq)).state === "cancelled");
+
+  // ── 16. the held note is read after the read's takes ──────────────────────────────────────
+  console.log("[16] a read reports the requests its own takes left held");
+  const noted = await holderOf("noted_holder", "notedrole");
+  const notedCall = await gatewayFor(noted);
+  await stopDaemon();
+  const sent16 = await sender.agent.ep.anycastAttributed("notedrole", "held beside a dm");
+  await until(() => noted.agent.inboxKeys().includes(sent16.msg.id));
+  await sender.agent.ep.unicastAttributed(noted.id, "a dm beside it");
+  await until(() => noted.agent.peekInbox().some((i) => i.text === "a dm beside it"));
+  const read16 = await notedCall("cotal_inbox");
+  check("16a a read that shows a DM names the request its take left held", read16.text.includes("a dm beside it") && read16.text.includes("1 role request is held and not shown"), read16.text);
+  const focused = await holderOf("focused_holder", "focusedrole");
+  const focusedCall = await gatewayFor(focused);
+  await focused.agent.setAttention("focus");
+  const sent16b = await sender.agent.ep.anycastAttributed("focusedrole", "held in focus");
+  await until(() => focused.agent.inboxKeys().includes(sent16b.msg.id));
+  const read16b = await focusedCall("cotal_inbox");
+  check("16b in focus mode a read whose take left it held says so, not that the inbox is empty", read16b.text.includes("1 role request is held and not shown") && !read16b.text.includes("Inbox empty"), read16b.text);
+  daemon = await startDaemon();
+
+  // ── 17. a take still undecided gives way to what needs none ───────────────────────────────
+  // A role request too big to share a reply with the channel post behind it, whose take nothing
+  // answers.
+  console.log("[17] a read whose take is still undecided carries what needs no take");
+  const slow = await holderOf("slow_holder", "slowrole", ["team"]);
+  const slowCall = await gatewayFor(slow);
+  const poster = await mkAgent("poster", undefined, ["team"]);
+  await stopDaemon();
+  const rail17 = await silentResponder(takeServeFilter(space), TAKE_ROUTE, () => true);
+  const sent17 = await sender.agent.ep.anycastAttributed("slowrole", `big role request ${"r".repeat(40_000)}`);
+  await until(() => slow.agent.inboxKeys().includes(sent17.msg.id));
+  await poster.agent.send(`channel post ${"c".repeat(20_000)}`, "team");
+  await until(() => slow.agent.peekInbox().some((i) => i.text.startsWith("channel post")));
+  const read17 = await slowCall("cotal_inbox");
+  check(
+    "17a the reply carries the channel post and not the request",
+    read17.text.includes("channel post") && !read17.text.includes("big role request"),
+    read17.text.slice(0, 300),
+  );
+  check("17b and clears the post", !slow.agent.peekInbox().some((i) => i.text.startsWith("channel post")));
+  await rail17.close();
+  daemon = await startDaemon();
+
+  // ── 18. a take in flight across a reconnect on the same connection ────────────────────────
+  // The holder reaches the broker through a proxy, so its link drops while the broker stays up and
+  // nats.js reconnects the same connection. The take the read asked for gets no answer on the old link.
+  console.log("[18] after a reconnect on the same connection a read asks again instead of waiting on the old take");
+  const proxyPort = await pickFreePort();
+  const proxied = new Set<Socket>();
+  const proxy = createServer((client) => {
+    const upstream = netConnect(PORT, "127.0.0.1");
+    proxied.add(client);
+    proxied.add(upstream);
+    client.pipe(upstream).pipe(client);
+    const end = () => { client.destroy(); upstream.destroy(); proxied.delete(client); proxied.delete(upstream); };
+    for (const s of [client, upstream]) { s.on("error", end); s.on("close", end); }
+  });
+  await new Promise<void>((resolve) => proxy.listen(proxyPort, "127.0.0.1", resolve));
+  stops.push(() => new Promise((resolve) => proxy.close(() => resolve(undefined))));
+  const inPlace = await holderOf("inplace_holder", "inplacerole", [], `nats://127.0.0.1:${proxyPort}`);
+  await stopDaemon();
+  // Takes reach a rail that never answers, so each one waits out its request timeout.
+  const railNc18 = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "delivery"))), maxReconnectAttempts: 0 });
+  stops.push(() => railNc18.close());
+  const asked18: number[] = [];
+  railNc18.subscribe(takeServeFilter(space), { queue: TAKE_ROUTE, callback: () => { asked18.push(Date.now()); } });
+  await railNc18.flush();
+  const sent18 = await sender.agent.ep.anycastAttributed("inplacerole", "asked across an in-place reconnect");
+  await until(() => inPlace.agent.inboxKeys().includes(sent18.msg.id));
+  const read18 = inPlace.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent18.msg.id), 1500);
+  await until(() => asked18.length === 1 || undefined, 5000);
+  for (const s of proxied) s.destroy();
+  await until(() => !inPlace.agent.connected || undefined, 3000);
+  await until(() => inPlace.agent.connected || undefined, 15_000);
+  await read18;
+  await inPlace.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent18.msg.id), 500);
+  check("18a a read after the reconnect asks for the take again rather than waiting on the old link's", asked18.length === 2, { asked: asked18.length });
+  // The old take ends at its request timeout, while the one asked on the new link still waits.
+  await sleep(Math.max(0, asked18[0]! + 5_500 - Date.now()));
+  check(
+    "18b the old take ending announces nothing while the new one is still asked",
+    inPlace.incoming.filter((i) => i.recvKey === sent18.msg.id).length === 1,
+    { announced: inPlace.incoming.filter((i) => i.recvKey === sent18.msg.id).length },
+  );
+  await inPlace.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent18.msg.id), 200);
+  check("18c and a read then waits on the new take rather than asking a third time", asked18.length === 2, { asked: asked18.length });
+  await railNc18.close();
+  daemon = await startDaemon();
+
+  // ── 19. a holder whose consumer resumed on the recreated stream ───────────────────────────
+  // reviewer_x bound before cell 12 recreated the stream. Once its consumer is back, nats.js resumes
+  // on the new stream, and the copies it delivers carry the old creation time.
+  console.log("[19] a copy from a recreated stream is delivered again at once with the new creation time");
+  await mgr.provisionTaskQueue("reviewer");
+  const sent19 = await sender.agent.ep.anycastAttributed("reviewer", "after the consumer resumed");
+  const arrived19 = await until(() => holder.agent.inboxKeys().includes(sent19.msg.id) || undefined, 90_000);
+  const started19 = Date.now();
+  let shown19 = false;
+  while (!shown19 && Date.now() - started19 < 15_000) {
+    shown19 = (await takeAll(holder.agent)).some((i) => i.recvKey === sent19.msg.id);
+    if (!shown19) await sleep(500);
+  }
+  check(
+    "19a its first take is refused as a mismatch, and the copy delivered again is taken and shown within seconds",
+    arrived19 === true && shown19 && Date.now() - started19 < 15_000,
+    { arrived: arrived19, shown: shown19, ms: Date.now() - started19 },
+  );
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {

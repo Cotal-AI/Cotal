@@ -4,7 +4,7 @@
   ],
   "guard": "A take still waiting when its connection closes ends with that connection, the probe it falls back to included, so a read waiting on it returns and the request can be taken again on the new link",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=62",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=80",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/anycast-take-gate-core.json",
   "why": [
     "nats.js settles a no-mux request only from its reply subscription, and a connection that closes",
@@ -29,12 +29,22 @@
     {
       "name": "the probe a take falls back to waits on the probe's reply only",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);\n    return m.json<ControlReply>();\n  }\n\n  /** Send a PRIVILEGED delivery-admin request",
-      "replace": "    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });\n    return m.json<ControlReply>();\n  }\n\n  /** Send a PRIVILEGED delivery-admin request",
+      "find": "      reply = await this.requestDelivery(ANYCAST_TAKES_OP, {}, ANYCAST_TAKE_TIMEOUT_MS);",
+      "replace": "      const probeSubject = controlServiceSubject(this.space, CONTROL_DELIVERY, this.owner, this.actor);\n      const probe = { op: ANYCAST_TAKES_OP, args: {}, from: this.ref() };\n      reply = (await this.nc!.request(probeSubject, JSON.stringify(probe), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${probeSubject}.reply.${randomUUID()}` })).json<ControlReply>();",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",
       "cell": "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",
-      "note": "With nothing on the take rail the take asks the anycastTakes probe on ctl.delivery through requestDelivery, another no-mux request. Unbound, it never settles once its connection closes, and every later read reuses the stuck take."
+      "note": "With nothing on the take rail the take asks the anycastTakes probe on ctl.delivery, another no-mux request. Sent unbound, as requestDelivery sent it before requestBoundReply, it never settles once its connection closes, and every later read reuses the stuck take."
+    },
+    {
+      "name": "a copy refused as a mismatch on a recreated stream is nakked",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (current !== undefined && current !== epoch) nak();\n",
+      "replace": "",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "19a its first take is refused as a mismatch, and the copy delivered again is taken and shown within seconds",
+      "note": "The copy is forgotten without a nak, so the broker delivers it again only after its ack wait, long after the holder read the new creation time.",
+      "cell": "19a its first take is refused as a mismatch, and the copy delivered again is taken and shown within seconds"
     }
   ]
 }

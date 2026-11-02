@@ -208,6 +208,9 @@ interface Pending {
    *  the copy it holds is recorded. */
   take?: Delivery["take"];
   taking?: Promise<void>;
+  /** The link drops counted when {@link taking} began. A take that began before the latest drop is
+   *  the old link's, so a read asks again instead of waiting on it. */
+  takingDrops?: number;
   takenCount?: number;
   /** A take was recorded for it once, so a host may have shown it. Only such an entry is acked from
    *  the held set by an exact drain. */
@@ -1614,7 +1617,7 @@ export class MeshAgent extends EventEmitter {
     const asked = scope === "pull-only" ? [] : this.gated
       .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()));
     for (const p of asked) p.awaited = (p.awaited ?? 0) + 1;
-    const runs = asked.map((p) => p.taking ?? this.startTake(p));
+    const runs = asked.map((p) => (p.taking !== undefined && p.takingDrops === this.transportDrops ? p.taking : this.startTake(p)));
     if (runs.length) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waited = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); timer.unref?.(); });
@@ -1638,8 +1641,11 @@ export class MeshAgent extends EventEmitter {
   }
 
   private startTake(p: Pending): Promise<void> {
-    const run = this.runTake(p).catch((e) => this.handleEndpointWarning(e as Error)).finally(() => { p.taking = undefined; });
+    const run: Promise<void> = this.runTake(p).catch((e) => this.handleEndpointWarning(e as Error)).finally(() => {
+      if (p.taking === run) p.taking = undefined;
+    });
     p.taking = run;
+    p.takingDrops = this.transportDrops;
     return run;
   }
 
@@ -1662,8 +1668,10 @@ export class MeshAgent extends EventEmitter {
     // An answer that crossed a link drop is the old link's, so the request stays held and a read
     // waiting on this take shows nothing of it. Its host is told again once the link is up, so the
     // next read takes it on the new link. While the link is down a read could not take it, and the
-    // read that waited on this take may still be running, so the announcement waits for the link.
+    // read that waited on this take may still be running, so the announcement waits for the link. A
+    // read that asked again on the new link owns the request now, so this take says nothing.
     if (this.transportDrops !== drops) {
+      if (p.takingDrops !== drops) return;
       if (this._transportConnected) this.emit("incoming", p.item);
       else this.retakes.add(p);
       return;
@@ -2088,8 +2096,13 @@ export class MeshAgent extends EventEmitter {
    *  turns. A surface that cannot surface a run turn, such as the remote gateway, waits on this, so
    *  a turn it can never clear does not end every wait at once. */
   inboxWake(skip?: (item: InboxItem) => boolean): number {
-    // A role request held for its take wakes like any other: the read the wake leads to takes it.
-    return this.gated.filter((p) => !skip?.(p.item)).length + this.inbox.filter((p) => {
+    // A role request held for its take wakes when a read could take it: the read the wake leads to
+    // takes it. While a take nobody could decide is waited out none wakes, and each is announced
+    // again when the wait ends (see runTake). A copy whose ack wait ran out is dropped first, as a
+    // read drops it.
+    this.dropLapsedTakes();
+    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;
+    return held + this.inbox.filter((p) => {
       const it = p.item;
       if (p.pullOnly || (it.kind === "channel" && it.historical) || skip?.(it)) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;

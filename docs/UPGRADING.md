@@ -102,7 +102,8 @@ the task stream, the `cotal_anycast_<space>` bucket and the notice publish.
   `incoming` fires once when a held request arrives, and again only if its take lands after
   `takeChosen` stopped waiting, or if a link drop ended its take, once the link is back up. A
   notice that counts waiting messages without showing them reads `inboxPending`, which includes
-  held requests.
+  held requests. `inboxWake` and `pendingWake` leave held requests out while a take the daemon
+  could not decide is waited out, and `incoming` announces them again when that wait ends.
 
 ## Channel posts expire at 30 days after 0.133.13
 

@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=62",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=80",
   "mutations": [
     {
       "file": "extensions/connector-core/src/agent.ts",
@@ -43,7 +43,7 @@
     },
     {
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (!missed.length || missed.some((k) => open.has(k))) break;",
+      "find": "    if (!missed.length || showable) break;",
       "replace": "    break;",
       "expectRed": "6e the next read carries the one still waiting and never the cancelled one",
       "cell": "6e the next read carries the one still waiting and never the cancelled one",
@@ -115,7 +115,7 @@
     },
     {
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this.transportDrops !== drops) {\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
+      "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
       "replace": "",
       "expectRed": "11c no held reason is reported for it",
       "cell": "11c no held reason is reported for it",
@@ -123,7 +123,7 @@
     },
     {
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this.transportDrops !== drops) {\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
+      "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
       "replace": "    if (this.transportDrops !== drops) {\n      return;\n    }\n",
       "expectRed": "11b the request is announced again, so its host reads it once more",
       "cell": "11b the request is announced again, so its host reads it once more",
@@ -131,8 +131,8 @@
     },
     {
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this.transportDrops !== drops) {\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
-      "replace": "    if (this.transportDrops !== drops) {\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      else this.retakes.add(p);\n      return;\n    }\n",
+      "replace": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
       "expectRed": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
       "cell": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
       "note": "The request is announced at once, while the link is still down and the read that waited on the take is still running. A host that reads one batch at a time drops that wake, its read returns nothing, and nothing announces the request again until the broker redelivers it."
@@ -144,6 +144,78 @@
       "expectRed": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
       "cell": "11g a host that drops a wake while it reads is woken once the link is back, and shows it with no other mail",
       "note": "A request whose take ended while the link was down is kept for the link's return, but the return announces nothing, so no host hears of it until the broker redelivers it."
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;",
+      "replace": "    const held = this.gated.filter((p) => !skip?.(p.item)).length;",
+      "expectRed": "13b while the retry is waited out it counts toward no wake",
+      "note": "A request held through the retry wait counts toward a wake, so a host is woken for a read that can take nothing until the wait ends.",
+      "cell": "13b while the retry is waited out it counts toward no wake"
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.dropLapsedTakes();\n    const held = this.mayAskTakes()",
+      "replace": "    const held = this.mayAskTakes()",
+      "expectRed": "14a once its ack wait ran out it counts toward no wake",
+      "note": "A copy whose ack wait ran out still counts toward a wake until a read drops it, so a host is woken for a request it no longer holds.",
+      "cell": "14a once its ack wait ran out it counts toward no wake"
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "round < READ_TAKE_ROUNDS && !signal?.aborted; round++",
+      "replace": "round < READ_TAKE_ROUNDS; round++",
+      "expectRed": "15a the request that read would have shown still reads waiting",
+      "note": "A read whose caller went away still takes what it chose, so a request is recorded as shown to nobody.",
+      "cell": "15a the request that read would have shown still reads waiting"
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const { warning, signal, ...render } = opts;",
+      "replace": "  const { signal, ...render } = opts;\n  const frozen = opts.warning();\n  const warning = () => frozen;",
+      "expectRed": "16a a read that shows a DM names the request its take left held",
+      "note": "The note is read before the take, when nothing was held yet, so a reply that shows a DM says nothing of the request the take left held.",
+      "cell": "16a a read that shows a DM names the request its take left held"
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const connectionWarning = inboxConnectionWarning(agent);\n        const warning = focusWarning();",
+      "replace": "        const connectionWarning = \"\";\n        const warning = focusWarning();",
+      "expectRed": "16b in focus mode a read whose take left it held says so, not that the inbox is empty",
+      "note": "The focus read's empty answer uses no note read after the take, as it did when the note was read before it, so a held request reads as an empty inbox.",
+      "cell": "16b in focus mode a read whose take left it held says so, not that the inbox is empty"
+    },
+    {
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (undecided.size) showable = new Set(agent.peekInbox(scope).map((i) => i.recvKey));",
+      "replace": "    if (undecided.size) break;",
+      "expectRed": "17a the reply carries the channel post and not the request",
+      "note": "A take left undecided ends the read with nothing chosen in its place, so the channel post that fits waits for another read.",
+      "cell": "17a the reply carries the channel post and not the request"
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "(p.taking !== undefined && p.takingDrops === this.transportDrops ? p.taking : this.startTake(p))",
+      "replace": "(p.taking ?? this.startTake(p))",
+      "expectRed": "18a a read after the reconnect asks for the take again rather than waiting on the old link's",
+      "note": "A read after an in-place reconnect waits on the take the old link sent, which the daemon may never answer, instead of asking again.",
+      "cell": "18a a read after the reconnect asks for the take again rather than waiting on the old link's"
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (p.takingDrops !== drops) return;\n",
+      "replace": "",
+      "expectRed": "18b the old take ending announces nothing while the new one is still asked",
+      "note": "The old link's take ending announces the request again while the take a later read asked for is still waiting, so a host is woken for it twice.",
+      "cell": "18b the old take ending announces nothing while the new one is still asked"
+    },
+    {
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (p.taking === run) p.taking = undefined;",
+      "replace": "      p.taking = undefined;",
+      "expectRed": "18c and a read then waits on the new take rather than asking a third time",
+      "note": "The old take ending clears the newer take a read started, so the next read asks a third time instead of waiting on it.",
+      "cell": "18c and a read then waits on the new take rather than asking a third time"
     }
   ]
 }
