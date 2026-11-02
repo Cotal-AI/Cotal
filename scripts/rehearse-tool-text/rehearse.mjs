@@ -52,6 +52,9 @@ function parseArgs(argv) {
   for (const p of ["bin/cotal.ts", "node_modules/.bin/tsx", "extensions/connector-claude-code/dist/mcp.cjs"])
     if (!existsSync(join(a.tree, p))) throw new Error(`--tree ${a.tree} has no ${p}: install and build it first`);
   a.jcodeConfig ??= join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "jcode");
+  // The sandbox TMPDIR is <work>/r-XXXXXX/tmp, and the manager's control socket under it needs the
+  // temp root to be at most 64 bytes.
+  if (Buffer.byteLength(join(a.work, "r-XXXXXX", "tmp")) > 64) throw new Error(`--work ${a.work} is too long: the sandbox TMPDIR under it must be at most 64 bytes`);
   return a;
 }
 
@@ -67,8 +70,10 @@ class Sandbox {
     this.scenario = scenario;
     mkdirSync(args.work, { recursive: true, mode: 0o700 });
     chmodSync(args.work, 0o700);
-    this.root = mkdtempSync(join(args.work, `${args.label}-${args.harness}-${scenario.id}-`).toLowerCase());
+    // A short name: the manager binds a Unix socket under TMPDIR, and sun_path caps the whole path.
+    this.root = mkdtempSync(join(args.work, "r-"));
     chmodSync(this.root, 0o700);
+    writeFileSync(join(this.root, "RUN"), `${args.label} ${args.harness} ${scenario.id}\n`);
     for (const d of ["home", "config", "proj", "work", "tmp", "seats"]) mkdirSync(join(this.root, d), { mode: 0o700 });
     this.proj = join(this.root, "proj");
     this.log = [];

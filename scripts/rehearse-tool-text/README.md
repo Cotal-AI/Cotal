@@ -24,9 +24,10 @@ A jcode run copies jcode's provider files from `--jcode-config` (default
 
 ## What one run does
 
-Each scenario gets its own sandbox under `--work` (default `$TMPDIR/rehearse-tool-text`), mode 700:
-its own `COTAL_HOME`, `XDG_CONFIG_HOME`, `TMPDIR` and project root, and a broker on a free loopback
-port. The CLI runs under a scrubbed environment, so it never reaches another mesh or the operator's
+Each scenario gets its own sandbox under `--work` (default `$TMPDIR/rehearse-tool-text`), mode 700.
+It holds its own `COTAL_HOME`, `XDG_CONFIG_HOME`, `TMPDIR` and project root, and a broker on a free
+loopback port. Keep `--work` short: the manager binds a Unix socket under the sandbox TMPDIR, so
+`<work>/r-XXXXXX/tmp` must fit in 64 bytes. The CLI runs under a scrubbed environment, so it never reaches another mesh or the operator's
 connector store. The tree's Claude Code and jcode connectors are added with `cotal ext add`.
 
 The run seeds the scenario's channels and posts, writes the personas in `personas/` and alice's
