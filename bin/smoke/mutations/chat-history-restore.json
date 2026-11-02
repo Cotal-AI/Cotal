@@ -6,13 +6,14 @@
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build && pnpm smoke:chat-history-restore:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 26,
+  "minTicks": 27,
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/chat-history-restore.json",
   "why": [
     "The suite drives `tsx bin/cotal.ts`, which loads core and the CLI from their built dist, so each mutation",
     "rebuilds both and `afterRestore` rebuilds them from the restored source. The aged-posts scenario backdates its",
     "posts in the stopped broker's store and then starts it with `cotal up`, so a start that moved the limit to an",
-    "age would watch the broker delete them. The recorded-age scenario's posts are older than the recorded age when",
+    "age would watch the broker delete them. The suite sets the old settings on the stream itself before that stop, so",
+    "the cell turns red only when the second up moves an existing stream. The recorded-age scenario's posts are older than the recorded age when",
     "the restore checks them, so a restore that set the age first would watch the broker delete them during its",
     "own checks."
   ],

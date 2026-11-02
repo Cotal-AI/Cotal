@@ -128,9 +128,14 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
     up = started.status === 0;
     check("control: the open stack starts", up, s.shown(started));
     const nc = await connect({ servers: server });
-    const created = (await (await jetstreamManager(nc)).streams.info(stream)).config;
+    const njsm = await jetstreamManager(nc);
+    const created = (await njsm.streams.info(stream)).config;
     // The literal pair, not the exported default, so a default that drifts to an age is caught here.
     check("a new space starts with no age limit and 1000 per sender", created.max_age === 0 && created.max_msgs_per_subject === 1000, limitOf(created));
+    // The suite puts the stream on the old settings itself, so the cells after the next up test what that
+    // up does to an existing stream on them, whatever this first up did.
+    const seeded = (await njsm.streams.update(stream, { max_age: 0, max_msgs_per_subject: 1000 })).config;
+    check("control: the stream is on the old settings, no age and 1000 per sender, before the next up", seeded.max_age === 0 && seeded.max_msgs_per_subject === 1000, limitOf(seeded));
     const js = jetstream(nc);
     const posts = ["general", "general", "ops", "ops"].map((channel, i) => ({ subject: `cotal.${space}.chat.o.a.${channel}`, data: JSON.stringify({ post: i + 1 }) }));
     const seqs: number[] = [];
