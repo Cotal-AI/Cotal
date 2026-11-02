@@ -14,6 +14,7 @@
 import type { PresenceCondition, PresenceConditionCode, PresenceStatus } from "@cotal-ai/core";
 import {
   formatInjection,
+  READ_TAKE_ROUNDS,
   fmtFrom,
   fmtChannel,
   fmtKind,
@@ -307,7 +308,17 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       }
       return items;
     };
-    const items = await agent.takeChosen("automatic", fitting);
+    // A refused take leaves room another message can use, so the frame is chosen again without it, as
+    // cotal_inbox chooses its reply. A take still undecided ends the choosing.
+    let items: InboxItem[] = [];
+    for (let round = 0; round < READ_TAKE_ROUNDS; round++) {
+      let chosen: InboxItem[] = [];
+      items = await agent.takeChosen("automatic", (pending) => (chosen = fitting(pending)));
+      const shown = new Set(items.map((i) => i.recvKey));
+      const missed = chosen.filter((i) => !shown.has(i.recvKey));
+      const open = new Set(agent.inboxPreview("automatic").map((i) => i.recvKey));
+      if (!missed.length || missed.some((i) => open.has(i.recvKey))) break;
+    }
     const remaining = agent.inboxCount("automatic") - items.length;
     if (!items.length && !remaining) return undefined;
     const waiting = remaining
@@ -371,8 +382,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     const reserved = extras.reduce((n, x) => n + (x?.length ?? 0) + 2, 0) + (peek && !peek.once ? peek.text.length + 2 : 0);
     const messages = await surfaceAutomatic(agent, ev, reserved);
     // The take above awaits, so the turns are read again: a once task that arrived meanwhile waits
-    // for the next frame, which claims it.
-    const parts = [...extras, messages, peek?.once || agent.peekPendingTurns()?.once ? undefined : surfaceTurns(agent, ev)].filter(Boolean);
+    // for the next frame, which claims it, and so does a turn that no longer fits beside the messages
+    // already taken.
+    const late = agent.peekPendingTurns();
+    const fits = late !== undefined && [...extras, messages, late.text].filter(Boolean).join("\n\n").length <= HOOK_CONTEXT_CHARS;
+    const parts = [...extras, messages, peek?.once || late?.once || !fits ? undefined : surfaceTurns(agent, ev)].filter(Boolean);
     return withContextFor(agent, ev, event, parts.length ? parts.join("\n\n") : undefined);
   };
 

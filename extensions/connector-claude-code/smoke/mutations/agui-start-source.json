@@ -97,8 +97,8 @@
     {
       "name": "S10 the hook batch takes every held request in the preview instead of the ones it carries",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "    const items = await agent.takeChosen(\"automatic\", fitting);",
-      "replace": "    const items = fitting(await agent.takeChosen(\"automatic\", (preview) => preview));",
+      "find": "      items = await agent.takeChosen(\"automatic\", (pending) => (chosen = fitting(pending)));",
+      "replace": "      items = fitting(await agent.takeChosen(\"automatic\", (pending) => (chosen = pending)));",
       "expectRed": "hook:the-batch-takes-only-the-requests-it-carries",
       "cell": "hook:the-batch-takes-only-the-requests-it-carries",
       "note": "The two requests too large for any hook are taken anyway, so their senders cannot cancel requests this session has not shown."
