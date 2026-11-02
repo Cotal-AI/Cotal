@@ -1,5 +1,15 @@
 # @cotal-ai/auth
 
+## 0.135.7
+
+### Patch Changes
+
+- 7b513e1: Refuse a hosted auth start when the stored and legacy instance identities have different public serve keys, even if their instance ids and seeds agree. Preserve both records on that refusal.
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+  - @cotal-ai/workspace@0.135.7
+  - @cotal-ai/lang@0.135.7
+
 ## 0.135.6
 
 ### Patch Changes
