@@ -339,6 +339,96 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   );
 }
 
+// A take that leaves a batch with nothing that wakes, and a user turn that starts during a take.
+{
+  class TakingMesh extends FakeMesh {
+    held: InboxItem[] = [];
+    /** Held back until its retry, the way a request whose take nothing answered is. */
+    backoff = new Set<string>();
+    outcome: (key: string) => "taken" | "refused" | "undecided" = () => "taken";
+    /** Role requests that arrive while a take is out. */
+    arriving: InboxItem[] = [];
+    /** Resolves when the take may answer. */
+    answer: Promise<void> = Promise.resolve();
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.held.filter((value) => !this.backoff.has(value.recvKey)))];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      const picked = choose(this.inboxPreview(scope));
+      await this.answer;
+      for (const value of picked) {
+        if (!this.held.includes(value)) continue;
+        const how = this.outcome(value.recvKey);
+        if (how !== "undecided") this.held = this.held.filter((other) => other !== value);
+        if (how === "taken") this.items.push(value);
+        if (how === "undecided") this.backoff.add(value.recvKey);
+      }
+      this.held.push(...this.arriving.splice(0));
+      const showable = new Set(this.peekInbox(scope).map((value) => value.recvKey));
+      return picked.filter((value) => showable.has(value.recvKey));
+    }
+  }
+  const chatter = item("c1", { kind: "channel", channel: "team" });
+  const request = (id: string) => item(id, { kind: "anycast", service: "worker" });
+
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.items = [chatter];
+    mesh.held = [request("r1")];
+    mesh.outcome = () => "undecided";
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await tick();
+    await tick();
+    ok(host.sent.length === 0, "in dnd a batch whose role request's take is undecided does not go out with only chatter");
+  }
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.items = [chatter];
+    mesh.held = [request("r1")];
+    mesh.outcome = (key) => (key === "r1" ? "refused" : "taken");
+    mesh.arriving = [request("r2")];
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "c1,r2",
+      "in dnd when a refused take leaves only chatter, the batch is chosen again with the request that arrived meanwhile",
+    );
+  }
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.held = [request("r1")];
+    mesh.outcome = () => "refused";
+    let answer!: () => void;
+    mesh.answer = new Promise((resolve) => { answer = resolve; });
+    const host = new FakeHost();
+    const ctx = context();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(ctx);
+    mesh.items.push(chatter);
+    driver.onAgentStart(ctx);
+    answer();
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "c1",
+      "a user turn that starts during a take still carries the chatter once the take is refused",
+    );
+  }
+}
+
 // A buried own echo cannot let older pull-only traffic block a later DM.
 {
   const mesh = new FakeMesh();

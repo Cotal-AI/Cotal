@@ -89,6 +89,8 @@ export class PiDriver {
   private heldReason?: string;
   /** A batch's role requests are being taken; the take's own pump dispatches it. */
   private taking = false;
+  /** A pump forced while a batch was being taken, so the take's own pump is forced too. */
+  private forcedDuringTake = false;
 
   constructor(
     private readonly mesh: MeshAgent,
@@ -311,7 +313,10 @@ export class PiDriver {
   private pump(force = false, taken?: InboxItem[]): void {
     if (!this.host || !this.context || this._state === "held" || this._state === "shuttingDown") return;
     if (this.batches.some((batch) => !batch.confirmed)) return;
-    if (this.taking && !taken) return;
+    if (this.taking && !taken) {
+      if (force) this.forcedDuringTake = true;
+      return;
+    }
 
     this.inbox.discardTombstoned();
     this.inbox.discardMatching((item) => ownChannelEcho(this.mesh, item));
@@ -326,7 +331,9 @@ export class PiDriver {
 
     let ids: string[] = [];
     let content: string | undefined;
-    if (taken?.length) {
+    // A taken batch whose takes left nothing that wakes goes out only when forced or with a run turn.
+    // Otherwise the next batch is chosen again.
+    if (taken?.length && (force || turnPeek || taken.some((item) => wakeable(this.mesh, item)))) {
       const live = new Set(available.map((item) => item.recvKey));
       const items = taken.filter((item) => live.has(item.recvKey));
       ids = items.map((item) => item.recvKey);
@@ -340,8 +347,10 @@ export class PiDriver {
       if (this.inbox.holdsUntaken(items)) {
         this.taking = true;
         void this.inbox.take(items).then((shown) => {
+          const forced = force || this.forcedDuringTake;
           this.taking = false;
-          this.pump(force, shown);
+          this.forcedDuringTake = false;
+          this.pump(forced, shown);
         });
         return;
       }
