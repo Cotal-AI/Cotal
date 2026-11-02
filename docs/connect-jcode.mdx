@@ -148,7 +148,8 @@ See [Event access](connect-claude.mdx#event-plane) for grants and [Jcode event b
 A model with a provider prefix is refused as `model_prefix_rejected`.
 `model_refused` means Jcode rejected the bare ID.
 `model_mismatch` means Cotal could not verify one provider route for the requested effort.
-Check the model declaration and provider configuration before trying again.
+The diagnostic names the requested model, reported runtime model and provider, matching-route count, and reason.
+The requested effort has not been applied. Check the model declaration and provider configuration before trying again.
 
 `private_state` names a problem preparing the private home, credentials, or socket alias.
 `cursor_state_unreadable` means the operator's Cursor state database could not be read.
