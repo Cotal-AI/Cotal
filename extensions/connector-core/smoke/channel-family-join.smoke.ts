@@ -68,6 +68,16 @@ const agentFor = (result: JoinResult): MeshAgent =>
   );
 }
 {
+  // A malformed pattern is no channel at all, so its info is a refusal, never a pattern's description.
+  const info = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_channel_info")!;
+  const r = await info.run(agentFor({ joined: false, backfilled: 0, durable: false }), cfg, { channel: "team.>.x" });
+  check(
+    "cotal_channel_info refuses a malformed pattern as no channel name",
+    r.isError === true && r.text.includes('"team.>.x" is not a channel name') && !r.text.includes("a pattern"),
+    r.text,
+  );
+}
+{
   const r = await join.run(agentFor({ joined: true, backfilled: 0, durable: false, reason: "durable backstop unavailable (no responders)" }), cfg, { channel: "team.ci.>" });
   check(
     "a family joined without its membership says live only and that offline posts are not kept",

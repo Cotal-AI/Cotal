@@ -21,7 +21,9 @@
     "",
     "J7 drops the family sentence from the cotal_join description.",
     "",
-    "NO BUILD STEP: the suite imports ../src."
+    "NO BUILD STEP: the suite imports ../src.",
+    "",
+    "J8 drops the name check from cotal_channel_info, so team.>.x is described as a pattern."
   ],
   "mutations": [
     {
@@ -86,6 +88,15 @@
       "expectRed": "the cotal_join description says what a family keeps",
       "cell": "the cotal_join description says what a family keeps",
       "note": "An agent reads the description before it joins."
+    },
+    {
+      "name": "J8 cotal_channel_info describes a malformed pattern as a pattern",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const notName = notAChannelName(channel, \"Nothing was looked up.\");\n        if (notName !== undefined) return err(`Couldn't look up the channel: ${notName}`);\n",
+      "replace": "",
+      "expectRed": "cotal_channel_info refuses a malformed pattern as no channel name",
+      "cell": "cotal_channel_info refuses a malformed pattern as no channel name",
+      "note": "team.>.x is no channel name, so describing it as a pattern misleads the agent."
     }
   ]
 }
