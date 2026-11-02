@@ -415,9 +415,10 @@ try {
   await until(() => prompts.length > beforeHold);
   check("2.x: a once task drives one submission that carries it", prompts.length === beforeHold + 1 && prompts.at(-1)!.includes("held on 2.x"), prompts.slice(beforeHold));
   check("2.x: the task is claimed while its submission is in flight", stateOf(uid2, "h2") === "claimed", stateOf(uid2, "h2"));
-  const promptHook = ctx.sessionHooks.get("prompt") as unknown as (e: { sessionID: string; prompt: { text: string } }) => void;
+  // OpenCode 2.x awaits its prompt hook before it stores the prompt, so the cells await it too.
+  const promptHook = ctx.sessionHooks.get("prompt") as unknown as (e: { sessionID: string; prompt: { text: string } }) => Promise<void>;
   const native = { sessionID: SID2, prompt: { text: "native prompt" } };
-  promptHook(native);
+  await promptHook(native);
   check("2.x: a native prompt meanwhile does not carry the claimed task", !native.prompt.text.includes(TASK), native.prompt.text);
   open();
   await until(() => stateOf(uid2, "h2") === "confirmed");
@@ -439,7 +440,7 @@ try {
   await sleep(500);
   check("2.x: a once task offered while a host turn runs is not driven", prompts.length === beforeHost, prompts.slice(beforeHost));
   const native2 = { sessionID: SID2, prompt: { text: "native prompt" } };
-  promptHook(native2);
+  await promptHook(native2);
   check("2.x: a native prompt queued meanwhile carries it", native2.prompt.text.includes("taken by a 2.x native prompt"), native2.prompt.text);
   check("2.x: ...and confirms the handoff", stateOf(uid2, "h3") === "confirmed", stateOf(uid2, "h3"));
   exec2("session.execution.succeeded");
