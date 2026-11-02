@@ -44,8 +44,10 @@
  * increasing matching CPU. This changes only the isolated smoke broker, not core defaults.
  *
  * `--trace-errors` emits at most 200 timestamped fixed-category error rows per seat child,
- * plus a final exact category/count summary. No error messages, subjects or credentials are emitted
- * by this observer. Diagnostic I/O adds overhead; it is off by default.
+ * plus category and context counts through shutdown. Context is `presence-write` only for the
+ * recognized stock timeout wrapper or stuck-write condition; all other errors are `unclassified`.
+ * No error messages, subjects or credentials are emitted by this observer. Diagnostic I/O adds
+ * overhead; it is off by default. Context identifies the recognized wrapper, not the timeout cause.
  *
  * `--go-trace` emits native broker GC/scavenger lines with parent receipt timestamps. It changes
  * no memory limit or GC policy; use it without `--ram` to avoid the profiler's forced collections.
