@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.135.2
+
+### Patch Changes
+
+- 8eebff8: `cotal ext add` no longer fails with `EEXIST` on `node_modules/.bin` when the new extension installs a bin link that the extensions prefix already has, for example a dependency shared with a seeded connector. Node's `fs.cpSync` refuses to copy a symlink onto an existing one, so the add now removes each link it is about to replace before it promotes the staged install.
+- Updated dependencies [8eebff8]
+  - @cotal-ai/cli@0.135.2
+  - @cotal-ai/connector-core@0.135.2
+  - @cotal-ai/auth@0.135.2
+  - @cotal-ai/delivery@0.135.2
+  - @cotal-ai/manager@0.135.2
+  - @cotal-ai/runtime@0.135.2
+  - @cotal-ai/core@0.135.2
+  - @cotal-ai/seat@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
 ## 0.135.1
 
 ### Patch Changes
