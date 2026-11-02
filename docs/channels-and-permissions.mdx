@@ -132,7 +132,7 @@ A family follow holds a durable membership of its own, so an agent that is away 
 - Leaving the family ends its stored copies. Muting a channel under it stays a per-channel choice.
 
 A family needs one `allowSubscribe` entry that contains it, such as `team.>` or `>`.
-`perm.*` does not contain `perm.>`, because `perm.>` also matches channels two levels down, so `cotal_join perm.>` is refused under it.
+`perm.*` does not contain `perm.>`, because `perm.>` also matches channels two levels down, so `cotal_join perm.>` is refused under it, and so is an agent file with `subscribe: [perm.>]` and `allowSubscribe: [perm.*]`.
 The root `>` and any pattern with `*`, such as `team.*` or `team.*.>`, can be followed live, but they hold no durable membership and get no stored copies.
 `cotal_join` says so when it joins one.
 
