@@ -30,8 +30,8 @@
     {
       "name": "C2 drop the inline persona from the tool's handoff",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "runtime, instance, join, persona });",
-      "replace": "runtime, instance, join });",
+      "find": "runtime, instance, join, persona, ...(onceArg",
+      "replace": "runtime, instance, join, ...(onceArg",
       "expectRed": "cotal_spawn tool forwards the inline persona whole, beside its first-turn prompt"
     },
     {
