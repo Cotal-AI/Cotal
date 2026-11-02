@@ -243,8 +243,8 @@ export function meshFile(space: string): string {
 /** Every PRE-HEX registry file (`<encodeURIComponent>.json` stems from older builds), by the space it
  *  records. Matched by each document's own `space` - never by decoding the filename, which would
  *  case-fold on this filesystem - so a legacy record can neither shadow nor resurrect a mesh the
- *  canonical file no longer records. A file that will not parse is left for {@link loadMeshes} to
- *  refuse by name. The scan reads every record, so a batch shares one. Only an absent registry
+ *  canonical file no longer records. A file that cannot be read or parsed is left for {@link loadMeshes}
+ *  to refuse by name. The scan reads every record, so a batch shares one. Only an absent registry
  *  directory has nothing to sweep: one that cannot be listed throws, because a skipped sweep would
  *  let a pre-hex record outlive the write or removal its caller just made. */
 function legacyMeshFiles(): Map<string, string[]> {
@@ -262,20 +262,22 @@ function legacyMeshFiles(): Map<string, string[]> {
       const { space } = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
       if (f !== meshFileName(space)) bySpace.set(space, [...(bySpace.get(space) ?? []), f]);
     } catch {
-      /* unparseable stray - not provably a record of any space, leave it */
+      /* unreadable or unparseable stray - not provably a record of any space, leave it */
     }
   }
   return bySpace;
 }
 
-/** Remove the {@link legacyMeshFiles} that record one of `spaces`. */
+/** Remove the {@link legacyMeshFiles} that record one of `spaces`. Each one parsed as a record of its
+ *  space, so one that cannot be unlinked throws: left in place, it would list a removed mesh again. */
 function removeLegacyMeshFiles(spaces: Iterable<string>, legacy: ReadonlyMap<string, readonly string[]>): void {
   for (const space of spaces) {
     for (const f of legacy.get(space) ?? []) {
+      const file = join(meshesDir(), f);
       try {
-        rmSync(join(meshesDir(), f), { force: true });
-      } catch {
-        /* left like an unparseable stray: whether a failed unlink should fail the write or removal is #3735 */
+        rmSync(file, { force: true });
+      } catch (e) {
+        throw new Error(`the pre-hex registry record ${file} still records ${space} and could not be removed: ${(e as Error).message}`, { cause: e });
       }
     }
   }

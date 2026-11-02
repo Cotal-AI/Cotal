@@ -5,7 +5,7 @@ worker reproduces it, fixes it and opens a PR, two reviewers from two different 
 grade the PR at an exact sha, and a merger merges that sha. Several lanes run at once, each in its
 own worktrees, and a lane that cannot reproduce its issue stops without a fix.
 
-The coordination is two [cotal-lang](../../docs/workflows.md) programs. The manager hosts them, so a
+The coordination is two [cotal-lang](../../docs/workflows.mdx) programs. The manager hosts them, so a
 run survives a closed terminal and a manager restart, and its step journal shows where every lane
 stands.
 
@@ -99,7 +99,7 @@ taking back the run, but it does not cancel it. These programs post nothing to a
 run keeps dispatching turns, and each `ask` it can no longer have answered fails at its 30-minute
 deadline. To stop the drive itself, restart the manager (`cotal service restart stack-manager
 --yes`, which stops every run it drives) or call the manager's `run-cancel` command
-([workflows](../../docs/workflows.md#operating-a-run)). A run stopped that way keeps the seats it
+([workflows](https://docs.cotal.ai/docs/workflow-operations/#operating-a-run)). A run stopped that way keeps the seats it
 spawned until you `cotal stop` them.
 
 ## How a lane runs
@@ -167,4 +167,4 @@ What only the personas promise:
 
 On a user-auth mesh, a registered participant manager hosts authorized runs for a managed agent
 whose grant and whose direct parent's grant both carry `run`. Local user-auth runs are unavailable
-([workflows](../../docs/workflows.md)). These steps cover a static-auth mesh only.
+([workflows](../../docs/workflows.mdx)). These steps cover a static-auth mesh only.

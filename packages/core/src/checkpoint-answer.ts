@@ -113,9 +113,12 @@ export function checkpointAnswerId(a: { token: string; by: string; value?: unkno
  * the third for a retry of the first: it succeeds, files nothing, and the listing ends on approve.
  * Nothing races an amendment and no settle names one, so it needs no retry identity; a filing
  * repeated after a lost reply lists the same position twice, which leaves the current one right.
+ *
+ * 32 random bytes encode to exactly 43 base64url characters, the same length as a
+ * {@link digestIdToken}, so the id fits the `<id>` token grammar whole and nothing is cut.
  */
 export function newAmendmentId(): string {
-  return randomBytes(32).toString("base64url").slice(0, 43);
+  return randomBytes(32).toString("base64url");
 }
 
 /**

@@ -388,10 +388,11 @@ if (process.argv[2] === "__daemon-auth-service") {
           host: [(await host(info(space)!.url, true)).status, (await host(`http://127.0.0.1:${port}`, false)).status],
         };
       };
-      /** A lane's long-lived connections with the space suffix removed, sorted. Service host effect
-       *  connections live for one operation, so they are left out of the shape. */
+      /** A lane's setup connections with the space suffix removed, sorted. Service host effects
+       *  live for one operation; the held issuer dials only after a client authenticates (B has,
+       *  C has not). Neither is part of the serviceEndpoints setting's connection shape. */
       const shapeOf = async (space: Space) => (await laneConnections(space.name)).map((c) => c.name!.slice(0, -(space.name.length + 1)))
-        .filter((n) => n !== "cotal:service-host-effect").sort();
+        .filter((n) => n !== "cotal:service-host-effect" && n !== "cotal:auth-issuer").sort();
       const ENDPOINT_CONNECTIONS = ["cotal:service-callout", "cotal:service-host-discovery"];
       /** How many `svchost.admission` writes the space's auth store holds, from the stream's own subject
        *  counts, read with the provisioner's stream info grant. */
@@ -418,7 +419,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       const shapeB = await shapeOf(B);
       const shapeC = await shapeOf(C);
       check("the lane with serviceEndpoints holds the plain lane's connections plus the discovery and service callout connections",
-        JSON.stringify(shapeC) === JSON.stringify([...shapeB, ...ENDPOINT_CONNECTIONS].sort()), { b: shapeB.length, c: shapeC.length });
+        JSON.stringify(shapeC) === JSON.stringify([...shapeB, ...ENDPOINT_CONNECTIONS].sort()), { b: shapeB, c: shapeC });
       check("the lane without serviceEndpoints holds no service connection", (await laneConnections(B.name)).every((c) => !c.name!.startsWith("cotal:service-")), shapeB);
       check("only the lane with serviceEndpoints wrote its admission record", await admissionWrites(C) === 1 && await admissionWrites(B) === 0 && await admissionWrites(A) === 0);
 

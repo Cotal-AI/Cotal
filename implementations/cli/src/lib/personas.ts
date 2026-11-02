@@ -1,6 +1,5 @@
-import { accessSync, constants, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { loadAgentFile, personaDir, utf16Problem, type AgentDef } from "@cotal-ai/core";
+import { lstatSync, statSync } from "node:fs";
+import { listPersonaCatalog, personaDir, personaLinkTarget, readPersonaCatalog, type AgentDef, type PersonaCatalogEntry } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, unsearchableFolder } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
 
@@ -27,23 +26,7 @@ import { shellWord } from "./endpoint-errors.js";
  * passing `cotalRoot()`; a caller acting on a mesh passes that mesh's `target.root`. This module
  * does not import `cotalRoot` at all, precisely so it cannot quietly reintroduce the fallback.
  */
-export interface PersonaEntry {
-  /** The filename stem (`.cotal/agents/<name>.md`), which is also the spawn name. */
-  name: string;
-  path: string;
-  /** Parsed definition, or undefined when the file failed to parse (see `error`). */
-  def?: AgentDef;
-  /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
-  error?: string;
-  /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
-   *  from the file, so a list that keeps `error` private can still name it. */
-  encoding?: string;
-  /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
-  notRegular?: true;
-  /** The file a persona that is a symbolic link names. `persona show`, `edit` and `remove` refuse
-   *  a link, so a listing warns about it. */
-  link?: string;
-}
+export type PersonaEntry = PersonaCatalogEntry;
 
 /** The refusal for a catalog folder `dir` that exists but is no folder, such as a file or a link that
  *  loops, which holds no personas. Undefined for a folder, or when nothing is there. */
@@ -81,53 +64,20 @@ export function catalogReadRefusal(dir: string, error: unknown): CommandFailure 
 /** The file `path` links to when it is a symbolic link: its resolved path, or the link's own text
  *  when that does not resolve. Undefined for anything else. */
 export function linkTarget(path: string): string | undefined {
-  try {
-    if (!lstatSync(path).isSymbolicLink()) return undefined;
-  } catch {
-    return undefined;
-  }
-  try { return realpathSync(path); } catch { /* a dangling link or a loop */ }
-  try { return readlinkSync(path); } catch { return undefined; }
+  return personaLinkTarget(path);
 }
 
 /** List the persona files, each parsed (a malformed file becomes an entry with `error`, not a
  *  throw). Returns `[]` when the directory is absent. Filesystem-only — no mesh, no network. */
 export function listPersonas(root: string): PersonaEntry[] {
-  try {
-    return readPersonas(root);
-  } catch {
-    return []; // absent, or unreadable: this caller lists either as an empty catalog
-  }
+  return listPersonaCatalog(root);
 }
 
 /** {@link listPersonas}, except that only an absent directory is an empty catalog: one that exists
  *  and cannot be read throws, for a report that must not show it as empty. So does one that lists
  *  but cannot be searched, such as mode 0600, whose files cannot be opened however they are written. */
 export function readPersonas(root: string): PersonaEntry[] {
-  const dir = personaDir(root);
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-    accessSync(dir, constants.X_OK);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw e;
-  }
-  return files.sort().map((f) => {
-    const name = f.slice(0, -3);
-    const path = join(dir, f);
-    const link = linkTarget(path);
-    try {
-      // A FIFO or a device would block the read, so only a regular file is opened. A link is
-      // followed, as the read follows it.
-      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
-      return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
-    } catch (e) {
-      let encoding: string | undefined;
-      try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
-      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
-    }
-  });
+  return readPersonaCatalog(root);
 }
 
 /** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas

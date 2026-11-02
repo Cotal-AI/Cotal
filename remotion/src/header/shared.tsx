@@ -1,9 +1,8 @@
 // Shared foundation for the four header-video variants (HeaderMorph,
 // HeaderModesReel, HeaderAssemble, HeaderBanner). Same cream/gold brand
-// language as the README connection-type cards (src/modes/scene.tsx), but:
-//   - a SOLID cream full-bleed background (1-bit GIF alpha looks rough), and
-//   - wire/beam primitives sized to the whole composition (scene.tsx's fill
-//     the card, which clips wide header layouts).
+// language and wire primitives as the README connection-type cards
+// (src/modes/scene.tsx), with a SOLID cream full-bleed background
+// (1-bit GIF alpha looks rough).
 // Each variant imports from here + ../modes/scene and authors in its own comp
 // coordinate space.
 
@@ -18,7 +17,7 @@ import {
 } from "remotion";
 import { loadFont as loadCotalSans } from "@remotion/google-fonts/Poppins";
 import { fontFamily } from "../_shared";
-import { GOLD, INK, NODE_R, type Pt } from "../modes/scene";
+import { Dot as GoldDot, GOLD, INK, NODE_R, type Pt } from "../modes/scene";
 
 // "Cotal" wordmark face: a geometric sans close to the brand wordmark.
 const { fontFamily: sansFamily } = loadCotalSans("normal", {
@@ -34,8 +33,11 @@ const LOGO_GOLD = "#E9C46A";
 export { fontFamily } from "../_shared";
 export {
   AgentNode,
+  Beam as BeamLine,
   ChannelPill,
   Dot,
+  Dot as GoldDot,
+  Wires as WireLines,
   Ripple,
   bez,
   lerp,
@@ -83,7 +85,7 @@ export const CreamStage: React.FC<{
   </AbsoluteFill>
 );
 
-// --- full-frame SVG layer + wire/beam/pulse (fills the frame) ------------------
+// --- full-frame SVG layer + pulse --------------------------------------------
 
 // An <svg> sized to the whole composition. Put <path>s for wires/beams inside.
 export const Field: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -92,52 +94,6 @@ export const Field: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     <svg style={{ position: "absolute", inset: 0 }} width={width} height={height}>
       {children}
     </svg>
-  );
-};
-
-// Resting hairlines + optional gold afterglow per path (glow 0..1). Mirrors
-// scene.tsx Wires but fills the frame.
-export const WireLines: React.FC<{ paths: string[]; glow?: number[] }> = ({
-  paths,
-  glow = [],
-}) => (
-  <Field>
-    {paths.map((d, i) => (
-      <path key={`r${i}`} d={d} stroke={INK.line} strokeOpacity={0.95} strokeWidth={2} fill="none" />
-    ))}
-    {paths.map((d, i) =>
-      (glow[i] ?? 0) > 0.01 ? (
-        <path
-          key={`g${i}`}
-          d={d}
-          stroke={GOLD}
-          strokeOpacity={0.55 * (glow[i] ?? 0)}
-          strokeWidth={2}
-          fill="none"
-        />
-      ) : null,
-    )}
-  </Field>
-);
-
-// Gold fiber-optic reveal of a message charging a wire (head Dot at pos(t)).
-// Mirrors scene.tsx Beam but fills the frame. `pos` maps t->point for the head.
-export const BeamLine: React.FC<{
-  d: string;
-  pos: (t: number) => Pt;
-  t: number;
-  visible: boolean;
-}> = ({ d, pos, t, visible }) => {
-  if (!visible) return null;
-  const head = pos(t);
-  return (
-    <>
-      <Field>
-        <path d={d} pathLength={1} stroke={GOLD} strokeOpacity={0.16} strokeWidth={6.5} strokeLinecap="round" strokeDasharray={`${t} 1`} fill="none" />
-        <path d={d} pathLength={1} stroke={GOLD} strokeOpacity={0.9} strokeWidth={2.6} strokeLinecap="round" strokeDasharray={`${t} 1`} fill="none" />
-      </Field>
-      <GoldDot at={head} />
-    </>
   );
 };
 
@@ -159,26 +115,6 @@ export const PulseLine: React.FC<{
       </Field>
       <GoldDot at={head} />
     </>
-  );
-};
-
-// Small gold dot (head of a beam/pulse or a parked message). Div-based, so it
-// is resolution-independent. Same look as scene.tsx Dot.
-export const GoldDot: React.FC<{ at: Pt; breath?: number }> = ({ at, breath = 0 }) => {
-  const r = 7 + 1.5 * breath;
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: at.x - r,
-        top: at.y - r,
-        width: r * 2,
-        height: r * 2,
-        borderRadius: "50%",
-        background: GOLD,
-        boxShadow: `0 0 ${10 + 4 * breath}px 1px rgba(199,154,74,0.45)`,
-      }}
-    />
   );
 };
 

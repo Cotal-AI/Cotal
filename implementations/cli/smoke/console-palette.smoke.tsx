@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 import React, { useState } from "react";
 import { render } from "ink";
-import type { MeshSnapshot } from "../src/view/mesh-view.js";
-import type { PsReply } from "../src/console/control.js";
+import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { runCommand, type CommandCtx } from "../src/console/commands.js";
 import { CommandPalette } from "../src/console/ui/CommandPalette.js";
+import type { PsReply } from "@cotal-ai/workspace/control";
 
 const snapshot = {
   agents: [

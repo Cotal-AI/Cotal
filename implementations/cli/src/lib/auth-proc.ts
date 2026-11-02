@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { openPrivateAppend, type AuthPrepared } from "@cotal-ai/core";
+import { EpEnvelopeError, openPrivateAppend, type AuthPrepared } from "@cotal-ai/core";
 import { AUTH_PIDFILE, spaceKey } from "@cotal-ai/workspace";
 import { parsePid, probeLiveness, readPidfile, writePidPair, type LocalProcess } from "@cotal-ai/workspace";
 import { stopLocalProcess } from "./local-process-stop.js";
@@ -227,7 +227,10 @@ export async function ensureAuthService(opts: {
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir, pid });
   } catch (e) {
-    throw new Error(`${e instanceof Error ? e.message : String(e)} - the daemon's pid is recorded at ${readPidPath(opts.space)}, its log is at ${LOG_PATH(opts.space)}`);
+    const where = ` - the daemon's pid is recorded at ${readPidPath(opts.space)}, its log is at ${LOG_PATH(opts.space)}`;
+    // A typed refusal stays typed, so the caller can tell its code and reason apart (#3947).
+    if (e instanceof EpEnvelopeError) throw new EpEnvelopeError(e.code, e.message + where, e.details, e.outcome);
+    throw new Error(`${e instanceof Error ? e.message : String(e)}${where}`);
   }
 }
 

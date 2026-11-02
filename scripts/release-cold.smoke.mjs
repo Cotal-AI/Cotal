@@ -19,9 +19,9 @@ check("matrix covers every native architecture and supported Node major", () => 
   assert.deepEqual(workflow.jobs.lifecycle.strategy.matrix.node, [22, 24, 26]);
   assert.equal(workflow.jobs.lifecycle.strategy["fail-fast"], false);
 });
-check("normal and snapshot publication consume sealed native qualification", () => {
-  assert.equal(release.jobs["cold-setup"], undefined, "publish-go must not start another native matrix");
-  assert.equal(release.jobs.snapshot, undefined, "snapshots use the same guarded publisher");
+check("optional cold qualification seals all native results independently of publication", () => {
+  assert.equal(release.jobs["cold-setup"], undefined, "publication must not start another native matrix");
+  assert.equal(release.jobs.snapshot, undefined);
   assert.deepEqual(workflow.jobs["cold-ok"].needs, ["native", "workspace-native", "candidate", "lifecycle"]);
   assert.equal(workflow.jobs["cold-ok"].if, "always()");
   const steps = workflow.jobs["cold-ok"].steps;
@@ -50,94 +50,63 @@ check("build provenance is pinned, retained and verified before native qualifica
     assert.equal(steps[index]["continue-on-error"], undefined);
   }
 });
-check("snapshot publication replays qualified versions without versioning after go", () => {
-  const steps = release.jobs.version.steps;
-  const replay = steps.findIndex((step) => step.run?.includes("apply-cold-versions.mjs"));
-  const verify = steps.findIndex((step) => step.run?.includes("release-qualification.mjs verify"));
-  const publish = steps.findIndex((step) => step.run?.includes("publish-cold-candidate.mjs"));
-  assert(verify >= 0 && replay > verify && publish > replay);
-  assert.equal(steps[replay].if, "inputs.snapshot != ''");
-  assert(!steps.some((step) => step.run?.includes("changeset version") || step.uses?.startsWith("changesets/action@")));
-  assert.equal(workflow.on.workflow_dispatch.inputs.snapshot.default, "");
-});
-const actionStep = (job) => {
-  const steps = release.jobs[job].steps.filter((step) => step.uses?.startsWith("changesets/action@"));
-  assert.equal(steps.length, 1, `${job} runs changesets/action exactly once`);
-  return steps[0];
-};
-check("version-only admission cannot publish", () => {
+check("version preparation cannot publish", () => {
   const job = release.jobs["version-pr"];
-  const step = actionStep("version-pr");
-  assert.equal(step.id, "changesets");
-  assert.equal(step.with.publish, undefined);
-  assert.equal(step.with.version, "pnpm ci:version");
-  assert.equal(step.env.COLD_CANDIDATE, undefined);
+  const steps = job.steps.filter((step) => step.uses?.startsWith("changesets/action/version@"));
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].with.script, "pnpm ci:version");
   assert.equal(job.permissions["id-token"], undefined);
-  assert.equal(job.environment, "npm-publish");
-  assert.equal(job.needs, undefined);
-  assert.equal(job.outputs["has-changesets"], "${{ steps.changesets.outputs.hasChangesets }}");
-  const steps = job.steps.map((step) => step.name);
-  const definite = job.steps.find((step) => step.name === "Require a definite changeset state");
-  assert(steps.indexOf("Require a definite changeset state") > steps.indexOf(step.name));
-  assert.equal(definite.run, 'test "$HAS_CHANGESETS" = true || test "$HAS_CHANGESETS" = false');
+  assert.equal(job.environment, undefined);
+  assert.equal(job.needs, "select");
+  assert.equal(job.if, "github.event_name == 'push' && needs.select.outputs.mode == 'version'");
+  assert.equal(job.outputs.sha, "${{ steps.head.outputs.sha }}");
+  assert(!job.steps.some((step) => step.uses?.startsWith("changesets/action/publish@")));
 });
-check("preparation cannot start publication or block its queue", () => {
-  assert.equal(release.jobs["version-pr"].if, "github.event_name == 'push'");
-  assert.equal(release.concurrency.group, "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}");
-  assert.equal(release.concurrency["cancel-in-progress"], false);
-  assert.equal(release.concurrency.queue, "max");
-});
-check("publication runtime paths use supported step context before admission", () => {
-  const job = release.jobs.version;
-  assert(!JSON.stringify(job.env).includes("runner."), "GitHub rejects runner context in job-level env");
-  const index = job.steps.findIndex((step) => step.name === "Set owned publication paths");
-  assert(index >= 0 && index < job.steps.findIndex((step) => step.id === "qualification"));
-  const step = job.steps[index];
-  assert.equal(step.if, undefined); assert.equal(step["continue-on-error"], undefined);
-  const directory = mkdtempSync(join(tmpdir(), "publication-runtime-env-"));
-  const runner = join(directory, "runner with spaces"), output = join(directory, "runtime.env");
-  const paths = { RELEASE_ROOT: "release-source", RELEASE_QUALIFICATION: "qualification-selection.json", COLD_CANDIDATE: "qualified/cold-candidate", COLD_RESULTS: "qualified", PUBLISH_RECEIPT: "publication.json" };
-  try {
-    const result = spawnSync("bash", ["-euo", "pipefail", "-c", step.run], { env: { PATH: process.env.PATH, RUNNER_TEMP: runner, GITHUB_ENV: output }, encoding: "utf8", timeout: 3_000 });
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map((line) => line.split("="))), Object.fromEntries(Object.entries(paths).map(([name, suffix]) => [name, `${runner}/${suffix}`])));
-    for (const name of Object.keys(paths)) assert.equal(job.env[name], undefined);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-check("main-only OIDC promotion pins the original clock and immutable cross-run inputs", () => {
-  const job = release.jobs.version;
-  assert.equal(job.needs, undefined);
-  assert.equal(job.if, "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'");
-  assert.equal(job.environment, "npm-publish");
-  assert.equal(job.permissions["id-token"], "write"); assert.equal(job.permissions.actions, "read");
-  for (const name of ["version", "qualification_run", "candidate_sha256", "source", "requested_at"]) assert.equal(release.on.workflow_dispatch.inputs[name].required, true);
-  assert.equal(release["run-name"], "${{ github.event_name == 'workflow_dispatch' && format('publication-v1 {0} {1} {2} {3} {4} {5}', inputs.version, inputs.candidate_sha256, inputs.source, inputs.qualification_run, inputs.snapshot || 'latest', inputs.requested_at) || 'Prepare release versions' }}");
-  assert.equal(job.env.RELEASE_VERSION, "${{ inputs.version }}");
-  assert.equal(job.env.RELEASE_REQUESTED_AT, "${{ inputs.requested_at }}");
-  assert.equal(job.env.RELEASE_SOURCE, "${{ inputs.source }}");
-  assert.equal(job.env.RELEASE_CANDIDATE_SHA256, "${{ inputs.candidate_sha256 }}");
-  const download = job.steps.find((step) => step.uses === "actions/download-artifact@v4");
-  assert.equal(download.with["artifact-ids"], "${{ steps.qualification.outputs.artifact-ids }}");
-  assert.equal(download.with["run-id"], "${{ inputs.qualification_run }}");
-  assert.equal(download.with["github-token"], "${{ github.token }}");
-  assert.equal(download.with.pattern, undefined); assert.equal(download.with["merge-multiple"], undefined);
-  const selection = job.steps.findIndex((step) => step.id === "qualification");
-  const checkout = job.steps.findIndex((step) => step.run?.includes("release-qualification.mjs checkout"));
-  const verify = job.steps.findIndex((step) => step.run?.includes("release-qualification.mjs verify"));
-  const publish = job.steps.findIndex((step) => step.run?.includes("publish-cold-candidate.mjs"));
-  const archives = job.steps.findIndex((step) => step.id === "archive-gate");
-  const install = job.steps.findIndex((step) => step.id === "install-gate");
-  const outcome = job.steps.findIndex((step) => step.run?.includes("record-publication-outcome.mjs"));
-  const releaseStep = job.steps.findIndex((step) => step.id === "release-step");
-  assert(selection >= 0 && checkout > selection && verify > checkout && publish > verify && archives > publish && install > archives && outcome > install && releaseStep > outcome);
-  for (const index of [selection, checkout, verify, publish, archives]) {
-    assert.equal(job.steps[index].if, undefined); assert.equal(job.steps[index]["continue-on-error"], undefined);
+check("preparation and publication have separate queues", () => {
+  assert.equal(release.concurrency, undefined);
+  for (const name of ["version-pr", "publish"]) {
+    const concurrency = release.jobs[name].concurrency;
+    assert.equal(concurrency.group, `\${{ github.workflow }}-${name}`);
+    assert.equal(concurrency["cancel-in-progress"], false);
+    assert.equal(concurrency.queue, "max");
   }
-  assert(job.steps[install].run.includes("--requested-at=$RELEASE_REQUESTED_AT"));
-  assert.equal(job.steps[outcome].if, "always()");
-  assert.equal(job.steps.at(-1).uses, "actions/upload-artifact@v4"); assert.equal(job.steps.at(-1).if, "always()");
-  assert(!job.steps.some((step) => step.run?.includes("pnpm build") || step.run?.includes("pack-cold-candidate.mjs")));
-  assert(workflow.jobs.candidate.steps.some((step) => step.run?.includes("post-publish-install-probe.mjs")));
+  assert.equal(release.jobs["verify-install"].concurrency, undefined);
+});
+check("preparation packs the version head with its native binaries", () => {
+  const job = release.jobs.pack, steps = job.steps;
+  assert.deepEqual(job.needs, ["select", "version-pr", "native", "workspace-native"]);
+  assert.equal(steps.find((step) => step.uses?.startsWith("actions/checkout@")).with.ref, "${{ needs.version-pr.outputs.sha }}");
+  assert(steps.some((step) => step.run === 'test "$(git rev-parse HEAD^)" = "$GITHUB_SHA"'));
+  const native = steps.findIndex((step) => step.run?.includes("workspace-assemble-natives.mjs"));
+  const pack = steps.findIndex((step) => step.uses?.startsWith("changesets/action/pack@"));
+  const record = steps.findIndex((step) => step.name === "Record the release candidate");
+  assert(native >= 0 && pack > native && record > pack);
+  assert(steps[record].run.includes("HEAD^{tree}"));
+  assert.equal(steps[record].env.PACK, "${{ steps.pack.outputs.pack-dir-artifact-id }}");
+});
+check("main publication consumes the matching tree's immutable pack without rebuilding", () => {
+  const selection = release.jobs.release;
+  assert.equal(selection.if, "github.ref == 'refs/heads/main'");
+  const find = selection.steps.find((step) => step.id === "find");
+  assert(find.run.includes('--workflow changesets.yml --event push --branch main --commit "$parent" --status success'));
+  assert(find.run.includes('[ "$(jq -r .tree "$candidate")" = "$tree" ]'));
+  assert.equal(selection.outputs.pack, "${{ steps.find.outputs.pack }}");
+  assert.equal(selection.outputs.run, "${{ steps.find.outputs.run }}");
+  const job = release.jobs.publish;
+  assert.equal(job.needs, "release");
+  assert.equal(job.if, "needs.release.outputs.pack != ''");
+  assert.equal(job.environment, "npm-publish");
+  assert.equal(job.permissions["id-token"], "write");
+  const download = job.steps.find((step) => step.uses === "actions/download-artifact@v4");
+  assert.equal(download.with["artifact-ids"], "${{ needs.release.outputs.pack }}");
+  assert.equal(download.with["run-id"], "${{ needs.release.outputs.run }}");
+  assert.equal(download.with.pattern, undefined);
+  const upload = job.steps.findIndex((step) => step.id === "packed");
+  const publish = job.steps.findIndex((step) => step.uses?.startsWith("changesets/action/publish@"));
+  assert(upload >= 0 && publish > upload);
+  assert.equal(job.steps[publish].with["pack-dir-artifact-id"], "${{ steps.packed.outputs.artifact-id }}");
+  assert(!job.steps.some((step) => step.run?.includes("pnpm build") || step.uses?.startsWith("changesets/action/pack@") || step.uses?.startsWith("changesets/action/version@")));
+  for (const value of Object.values(release.jobs)) assert(!JSON.stringify(value.env ?? {}).includes("runner."), "runner paths belong in step context");
 });
 const source = "a".repeat(40);
 const candidateBytes = JSON.stringify({ source, syntheticVerifierFixture: true });

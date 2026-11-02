@@ -13,7 +13,8 @@
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, MembershipChange, MembershipSnapshot, Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../src/console/mesh.js";
-import { MeshView, type MembershipView } from "../src/view/mesh-view.js";
+// By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
+import { MeshView, type MembershipView } from "../../../packages/workspace/dist/view/index.js";
 import { foldTopo, membershipFreshness } from "../src/console/ui/topo/model.js";
 
 let failures = 0;
@@ -65,6 +66,23 @@ check("bounded wildcard expands to both concretes (live)", (() => {
 const aliceNodes = g.nodes.filter((n) => n.key === "a:ID_alice");
 check("a member with traffic is one node, member:true", aliceNodes.length === 1 && aliceNodes[0].member === true);
 check("a member with traffic keeps its traffic edge", g.edges.some((e) => e.src === "a:ID_alice" && e.dst === "c:general"));
+
+console.log("1b. a durable family row expands over the durable-class channels under it");
+// fay follows team.> and is offline: her family row stores copies for team.build (durable) and none for
+// team.qa (live). gus reads team.qa live and also holds the family row.
+const famSnapshot: MembershipSnapshot = {
+  asOf: NOW,
+  members: [
+    { id: "ID_fay", live: [], durable: ["team.>"], observedAt: NOW },
+    { id: "ID_gus", live: ["team.qa"], durable: ["team.>"], observedAt: NOW },
+  ],
+};
+const fam = foldTopo([], [], { membership: { snapshot: famSnapshot }, knownChannels, durableChannels: ["backend", "team.build"], now: NOW, nameOf });
+const famLinks = (id: string) => fam.memberships.filter((m) => m.agent === "a:" + id).map((m) => `${m.channel}:${m.state}`).sort();
+check("an offline family follower gets a durable link to each durable-class channel under it, and none to a live one",
+  JSON.stringify(famLinks("ID_fay")) === JSON.stringify(["c:team.build:durable"]), famLinks("ID_fay"));
+check("a live read wins over the family row on its channel", JSON.stringify(famLinks("ID_gus")) === JSON.stringify(["c:team.build:durable", "c:team.qa:live"]), famLinks("ID_gus"));
+check("the family itself is not drawn as a channel hub", !fam.byKey.has("c:team.>"), [...fam.byKey.keys()]);
 
 console.log("2. same-name principals remain separate authoritative members");
 const sameNameAgents: Presence[] = [agent("ID_sam_1", "sam"), agent("ID_sam_2", "sam")];
@@ -131,8 +149,10 @@ class StubEndpoint extends EventEmitter {
   async stop() {}
   getRoster(): Presence[] { return []; }
   tap() {}
-  async listChannels() { return []; }
+  listChannels: () => Promise<{ channel: string; messages: number }[]> = async () => [];
+  channelDeliveryClass(channel: string) { return channel === "team.build" ? "durable" : "live"; }
   async dmHistory() { return []; }
+  async channelHistory() { return []; }
   ref() { return { id: "stub", name: "stub" }; }
   readMembership() { this.reads++; return this.readAnswer(); }
   watchMembership(cb: (change: MembershipChange) => void, onClosed?: (e: Error) => void) { return this.watchAnswer(cb, onClosed); }
@@ -158,6 +178,16 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   stub.onChange?.(heartbeat(NOW + 1));
   await wait(300);
   check("a heartbeat over a FAILED read is the retry: the reason clears and the snapshot is read", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
+  await view.stop();
+}
+{
+  // The channel rows carry each channel's class, which the topology lens hands foldTopo as the durable
+  // channels a family row expands over (#5404).
+  const stub = new StubEndpoint();
+  stub.listChannels = async () => [{ channel: "team.build", messages: 1 }, { channel: "team.chat", messages: 2 }];
+  const { view } = await viewOver(stub);
+  const rows = view.snapshot().channels.map((c) => `${c.channel}:${c.deliveryClass}`);
+  check("the channel rows carry each channel's class from the endpoint", JSON.stringify(rows) === JSON.stringify(["team.build:durable", "team.chat:live"]), rows);
   await view.stop();
 }
 {
@@ -213,6 +243,27 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   stub.readAnswer = () => Promise.resolve(snapshot);
   const { view, m } = await viewOver(stub);
   check("a readable feed is carried as the snapshot, no reason", m().unreadable === undefined && m().snapshot?.members.length === 5, m());
+  await view.stop();
+}
+
+console.log("6. A broker restart's presence error clears when the presence view is current again (AGENT-2889)");
+{
+  // The endpoint's real order across a broker restart, measured: the transport reconnects with no
+  // new `connection`, the view goes stale, `stream not found` arrives, and the view is current once
+  // the space is provisioned again.
+  const stub = new StubEndpoint();
+  const { view } = await viewOver(stub);
+  stub.emit("connection", { connected: true });
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("error", new Error("stream not found"));
+  check("the outage error is shown while the presence view is stale", view.snapshot().status.error === "stream not found", view.snapshot().status);
+  stub.emit("presence-view", { state: "current" });
+  check("the outage error clears once the presence view is current again", view.snapshot().status.error === undefined, view.snapshot().status);
+  // Control: an error raised while the view is current is not an outage's, so recovery never clears it.
+  stub.emit("error", new Error("permission denied"));
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("presence-view", { state: "current" });
+  check("an error raised while the view was current stays until a new connection", view.snapshot().status.error === "permission denied", view.snapshot().status);
   await view.stop();
 }
 

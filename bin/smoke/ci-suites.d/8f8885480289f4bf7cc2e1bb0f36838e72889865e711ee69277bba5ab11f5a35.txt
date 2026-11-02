@@ -1,0 +1,3 @@
+# A static agent mint's listing generation: fresh, reused only for the identical ceiling and
+# triple, never replaced, and consistent with its accepted row under a concurrent race.
+smoke:listing-issuance:live

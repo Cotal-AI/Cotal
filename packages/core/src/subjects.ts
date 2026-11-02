@@ -117,6 +117,22 @@ export function isConcreteChannel(channel: string): boolean {
   return !channel.split(".").some((s) => s.trim() === "*" || s.trim() === ">");
 }
 
+/** True if `channel` is a channel FAMILY: one or more NATS-safe segments and then a final `>`
+ *  (`review.>`, `team.backend.>`). A family is the one pattern that can hold a durable membership; the
+ *  root `>` and any pattern with `*` stay live only. It covers every channel under its segments, not
+ *  the bare prefix (`review.>` covers `review.a` and `review.a.b`, not `review`). */
+export function isChannelFamily(channel: string): boolean {
+  const segs = channel.split(".");
+  return channel.length <= MAX_CHANNEL_LENGTH && segs.length >= 2 && segs[segs.length - 1] === ">" &&
+    segs.slice(0, -1).every((s) => /^[A-Za-z0-9_-]+$/.test(s));
+}
+
+/** The families that cover concrete `channel`, nearest last: `a.>` and `a.b.>` for `a.b.c`. */
+export function familiesCovering(channel: string): string[] {
+  const segs = channel.split(".");
+  return segs.slice(1).map((_, i) => `${segs.slice(0, i + 1).join(".")}.>`);
+}
+
 /** Does NATS subject `pattern` (with `*`/`>`) match `subject`? Also reused for channel-level
  *  matching ("is a member on `team.>` a member of `team.backend`?") — channels are dotted
  *  token strings, same rules. */
@@ -296,8 +312,8 @@ export interface DeprovisionTarget {
   principal: string;
   /** The retired/target incarnation's lifecycle UID — the successor's differs by construction. */
   lifecycleUid: string;
-  /** Concrete channels whose durable membership rows (`memberKey(channel, principal, uid)`) this
-   *  teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
+  /** Concrete channels and families whose durable membership rows (`memberKey(channel, principal, uid)`)
+   *  this teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
   memberChannels?: readonly string[];
 }
 
@@ -307,7 +323,8 @@ export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: 
   const pr = parsePrincipalKey(target.principal) ?? { owner: DEV_OWNER, actor: target.principal };
   const memberChannels = [...new Set(target.memberChannels ?? [])].map((ch) => {
     assertValidChannel(ch);
-    if (!isConcreteChannel(ch)) throw new Error(`deprovision target: member channel "${ch}" must be concrete (membership rows are per concrete channel)`);
+    if (!isConcreteChannel(ch) && !isChannelFamily(ch))
+      throw new Error(`deprovision target: member channel "${ch}" must be concrete or a family such as review.> (membership rows are per concrete channel or family)`);
     return ch;
   });
   return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid), memberChannels };
@@ -512,13 +529,14 @@ export function channelInAllow(allow: string[], channel: string): boolean {
 }
 
 /** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
- *  `subscribe`. Throws when a subscription lies outside it. Every site that resolves an agent's
- *  read list calls this, so a launcher, the session it starts and the provisioner cannot disagree
- *  on the default. */
+ *  `subscribe`. Throws when a subscription lies outside it: a concrete channel must match an entry,
+ *  and a pattern must lie inside one entry ({@link patternInAllow}), as `cotal_join` checks it, so
+ *  `perm.>` is outside `perm.*`. Every site that resolves an agent's read list calls this, so a
+ *  launcher, the session it starts and the provisioner cannot disagree on the default. */
 export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
   const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
   for (const ch of subscribe)
-    if (!channelInAllow(allow, ch))
+    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch))
       throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
   return allow;
 }
@@ -553,6 +571,13 @@ export function patternCovers(cap: string, pattern: string): boolean {
  *  and keeps the refusal explainable ("name the entry that covers it, or widen the grant"). */
 export function patternInAllow(allow: string[], pattern: string): boolean {
   return allow.some((a) => patternCovers(a, pattern));
+}
+
+/** Does read ACL `allow` admit a durable membership on `channel`? A family must lie inside one entry
+ *  ({@link patternInAllow}), so every channel under it is readable; a concrete channel must be covered
+ *  ({@link channelInAllow}). */
+export function membershipInAllow(allow: string[], channel: string): boolean {
+  return isChannelFamily(channel) ? patternInAllow(allow, channel) : channelInAllow(allow, channel);
 }
 
 // ---- Principal-keyed channel grants ----
@@ -958,22 +983,34 @@ export function membersBucket(space: string): string {
 /** KV key for one membership record: `<channel>/<principal>.<lifecycleUid>`, where the tail is the
  *  member's lifecycle-scoped dot-form ({@link lifecycleSubjectKey}, SPEC §13.1: membership rows are
  *  lifecycle-keyed, so a same-alias successor starts unjoined and inherits no cursors — the
- *  join/leave cursors ride this row). The channel is concrete (no `*`/`>`, validated at the write
- *  path) so it is dotted-but-`/`-free, and the tail is `[A-Za-z0-9_.]` (also `/`-free), so the single
- *  `/` separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`, `.`, and
- *  `[A-Za-z0-9_]` are all legal KV-key chars (`/^[-/=.\w]+$/`), so no encoding is needed. */
+ *  join/leave cursors ride this row). The channel is a valid concrete channel or a family
+ *  ({@link isChannelFamily}); anything else throws. A family's final `>` is stored as `=`
+ *  (`review.=/…`): a raw `>` in this key would be a wildcard in every grant and purge built from it,
+ *  reaching every member row. `=` never occurs in a channel segment (`[A-Za-z0-9_-]`), so the two forms
+ *  cannot collide. The channel is `/`-free and the tail is `[A-Za-z0-9_.]`, so the single `/`
+ *  separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`, `.`, `=` and
+ *  `[A-Za-z0-9_-]` are all legal KV-key chars (`/^[-/=.\w]+$/`). */
 export function memberKey(channel: string, principal: string, lifecycleUid: string): string {
-  return `${channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;
+  const family = isChannelFamily(channel);
+  if (!family && !isConcreteChannel(assertValidChannel(channel)))
+    throw new Error(`member key: "${channel}" must be a concrete channel or a family such as review.>`);
+  return `${family ? `${channel.slice(0, -1)}=` : channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;
 }
 
 /** Inverse of {@link memberKey}: split a member key back into `{ channel, principal, lifecycleUid }`,
- *  or `null` if it isn't one (no `/`, or the tail is not a lifecycle-scoped dot-form). Splits on the
- *  single `/`, then peels the trailing `.<uid>` token — owner/actor tokens are dot-free, so the last
- *  dot separates the uid unambiguously. */
+ *  or `null` if it isn't one (no `/`, an `=` anywhere but a whole last channel segment, or the tail
+ *  is not a lifecycle-scoped dot-form). Splits on the single `/`, decodes a final `=` back to `>`,
+ *  then peels the trailing `.<uid>` token — owner/actor tokens are dot-free, so the last dot separates
+ *  the uid unambiguously. */
 export function parseMemberKey(key: string): { channel: string; principal: string; lifecycleUid: string } | null {
   const i = key.indexOf("/");
   if (i <= 0 || i >= key.length - 1) return null;
-  const channel = key.slice(0, i);
+  let channel = key.slice(0, i);
+  const eq = channel.indexOf("=");
+  if (eq !== -1) {
+    if (eq !== channel.length - 1 || !channel.endsWith(".=")) return null;
+    channel = `${channel.slice(0, -1)}>`;
+  }
   const tail = key.slice(i + 1);
   const dot = tail.lastIndexOf(".");
   if (dot <= 0 || dot >= tail.length - 1) return null;

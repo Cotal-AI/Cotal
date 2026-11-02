@@ -1,0 +1,39 @@
+{
+  "suite": [
+    "implementations/manager/smoke/persona-identity-acl.smoke.ts"
+  ],
+  "guard": "a persona that names no channel is scoped to its spawner's ACL, joins only what join names, never inherits the spawner's event channel, and a persona that names channels ignores callerAcl",
+  "command": "pnpm smoke:persona-acl",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-caller-acl.json",
+  "completionMarker": "PERSONA-IDENTITY/ACL SMOKE",
+  "why": [
+    "The peer door now sends the caller's own ACL and a join list. Three ways to get the rule wrong",
+    "each read as a product bug in a different place: the scoped ACL applied over a persona that",
+    "names its own (a helper wider or narrower than its file says), join dropped (the helper starts",
+    "on nothing and its first send is refused, the live defect), and the spawner's event channel",
+    "carried into the child (the launch refuses as asking for another agent's event plane)."
+  ],
+  "mutations": [
+    {
+      "name": "M1 scope to the caller even when the persona names channels",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const scoped = !personaNamesChannels && opts.callerAcl ? {",
+      "replace": "      const scoped = opts.callerAcl ? {",
+      "expectRed": "a persona naming only subscribe keeps its empty post ACL despite callerAcl"
+    },
+    {
+      "name": "M2 drop join from the joined set",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;",
+      "replace": "      subscribe = base;",
+      "expectRed": "the seat joins only what join named"
+    },
+    {
+      "name": "M3 carry the spawner's event channel into the child's read ACL",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        allowSubscribe: opts.callerAcl.allowSubscribe.filter((ch) => eventChannelPrincipal(ch) === null),",
+      "replace": "        allowSubscribe: opts.callerAcl.allowSubscribe,",
+      "expectRed": "a channel-less persona spawns under its spawner's ACL"
+    }
+  ]
+}

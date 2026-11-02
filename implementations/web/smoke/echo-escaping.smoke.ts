@@ -61,10 +61,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
-import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
-import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { quoteForOperator } from "../src/web.js";
+import { bootWeb } from "./boot-web.js";
 
 // The web child must not inherit a managed session's mesh identity from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
@@ -345,30 +345,16 @@ try {
   await setupSpaceStreams({ servers: SERVER, space: SPACE });
 
   let log = "";
-  let launchUrl: string | undefined;
-  const WEB_PORT = await onFreePort(async (port) => {
-    // Color decides the framing that cell 1.4 checks, and a piped child gets it only from
-    // FORCE_COLOR, which outranks NO_COLOR and a saved preference.
-    webChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FORCE_COLOR: "1" } });
-    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-    const taken = `Port ${port} is in use`;
-    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(250);
-    }
-    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
-    return port;
+  // Color decides the framing that cell 1.4 checks, and a piped child gets it only from
+  // FORCE_COLOR, which outranks NO_COLOR and a saved preference.
+  const web = await bootWeb({
+    server: SERVER, space: SPACE,
+    env: { ...process.env, FORCE_COLOR: "1" },
+    onSpawn: (child) => { webChild = child; }, onOutput: (text) => { log += text; },
   });
-  const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
-  const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
-  const authed = { cookie: `cotal_web_session=${session}` };
-  const ready = session === undefined ? undefined
-    : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
-  const served = exchange?.status === 302 && session !== undefined && ready?.status === 200;
+  const WEB_PORT = web.port;
+  const authed = { cookie: web.cookie ?? "" };
+  const served = web.served;
 
   console.log("1. the shipped routes echo the value, and what they echo is readable");
   ok("1.0 the shipped `web` entry point serves at all", served, log.slice(-300));

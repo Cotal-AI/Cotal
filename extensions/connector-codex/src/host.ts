@@ -56,15 +56,11 @@ import {
   configFromEnv,
   envFlag,
   eventPlaneArmed,
-  feedbackLine,
   formatInjection,
   fmtFrom,
   fmtChannel,
   startControlServer,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
   AguiEmitter,
   AguiEmitterHolder,
   eventPlaneStopped,
@@ -145,19 +141,7 @@ function feed(line: string): void {
  *  Codex's base instructions (never a replacement), mirroring the Claude connector's MCP
  *  server instructions + `--append-system-prompt` persona. */
 function developerInstructions(config: ReturnType<typeof configFromEnv>, persona: string | undefined): string {
-  const mesh =
-    `You are connected to the Cotal mesh as "${config.name}"` +
-    `${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
-    `${ORIENTATION_BOOTSTRAP} ` +
-    feedbackLine(config) +
-    `${MESH_FIRST_STEER} ` +
-    `${WORKFLOW_STEER} ` +
-    `${CHANNEL_GUIDANCE} ` +
-    `Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm ` +
-    `(privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); ` +
-    `use cotal_roster to see who is present and cotal_status to report what you are doing. ` +
-    `Reply only when a reply is actually needed — silent acknowledgement is correct, and ` +
-    `@-mention a peer only when you need THAT peer to act now.`;
+  const mesh = briefing(config, "codex");
   return persona ? `${persona}\n\n${mesh}` : mesh;
 }
 
@@ -197,7 +181,7 @@ function prepareCodexHome(space: string, name: string): string {
   // the next launch heals it. Absent auth.json is not fatal HERE: OPENAI_API_KEY is still a valid
   // way in, and codex stays the auth authority — the account probe after thread/start is what
   // refuses an unauthenticated launch. (A keyring-stored credential does NOT survive into the
-  // isolated home; managed agents need the file store or the env key. See docs/connect-codex.md.)
+  // isolated home; managed agents need the file store or the env key. See docs/connect-codex.mdx.)
   const operatorHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
   const operatorAuth = join(operatorHome, "auth.json");
   // ALWAYS clear the managed auth entry first: a codex rename-over can have turned the link
@@ -901,6 +885,8 @@ export async function runCodexHost(): Promise<void> {
     if (condition) void safeCondition(condition);
     void safeStatus("waiting", detail, detail === "item/tool/requestUserInput");
   });
+  // The request was declined in the same call; resume `working`, which also clears its condition.
+  driver.on("answered", () => void safeStatus("working"));
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);

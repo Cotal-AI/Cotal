@@ -112,6 +112,7 @@ for (const [label, text, reason] of [
   ["no frontmatter", "no frontmatter\n", 'missing "---" frontmatter block'],
   ["the legacy channels key", "---\nname: bad\nchannels: [general]\n---\n", '"channels" was renamed'],
   ["a read channel outside allowSubscribe", "---\nname: bad\nsubscribe: [ops]\nallowSubscribe: [general]\n---\n", 'subscribe "ops" is not within allowSubscribe [general]'],
+  ["a family wider than every read entry", "---\nname: bad\nsubscribe: [perm.>]\nallowSubscribe: [perm.*]\n---\n", 'subscribe "perm.>" is not within allowSubscribe [perm.*]'],
   ["a YAML error", "---\nname: bad\nrole: [secret-value\n---\n", "the frontmatter is not valid YAML at line 3"],
 ] as const) {
   const badFile = join(root, "bad.md");

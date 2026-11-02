@@ -1,0 +1,2 @@
+# A once seat its manager does not hold after a restart: the task ends without serving it, and every pull from the seat is answered stop while its debt stays.
+smoke:spawn-once-unheld

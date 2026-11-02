@@ -1,0 +1,27 @@
+{
+  "suite": [
+    "packages/core/smoke/agent-file.smoke.ts"
+  ],
+  "guard": "a persona definition that would not load back is refused before anything is written (#5404)",
+  "command": "pnpm smoke:agent-file",
+  "completionMarker": "agent-file yaml smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/persona-save-loads.json",
+  "why": [
+    "The suite calls saveAgentFile from ../src, so the refusal it checks is the writer's own.",
+    "",
+    "P1 writes the file without reading it back, so a subscribe entry outside allowSubscribe is saved and every later load of that name fails.",
+    "",
+    "smoke:manager-service-ops checks the same refusal end to end, through define-persona on a real manager that loads core from dist/."
+  ],
+  "mutations": [
+    {
+      "name": "P1 the writer saves without reading the file back",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    parseAgentFileSource(text, path);\n  } catch (e) {\n    throw new Error(`saveAgentFile: \"${def.name}\" was not saved",
+      "replace": "  } catch (e) {\n    throw new Error(`saveAgentFile: \"${def.name}\" was not saved",
+      "expectRed": "saveAgentFile refuses a family wider than every read entry and writes no file",
+      "cell": "saveAgentFile refuses a family wider than every read entry and writes no file",
+      "note": "A peer could then save a persona that no later load, spawn or redefine can read."
+    }
+  ]
+}

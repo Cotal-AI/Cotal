@@ -19,11 +19,12 @@
     {
       "name": "history drain returns the payload and discards SPEC §5 and the #1413 shape gate",
       "file": "packages/core/src/endpoint.ts",
-      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;\n  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isFromSubjectSender(raw, parsed)) return undefined;\n  return authenticatedMessage(raw, parsed);",
       "replace": "  return raw as HistoryMessage;",
       "expectRed": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
       "cell": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
-      "completionMarker": "dm-history-subject smoke:"
+      "completionMarker": "dm-history-subject smoke:",
+      "note": "Re-anchored for #3900: the drain's split owner and sender checks became one call to the shared isFromSubjectSender predicate, so the old anchor no longer matched. Same severing. Not re-measured."
     },
     {
       "name": "authenticatedMessage skips DM recipient rewrite",
@@ -37,11 +38,12 @@
     {
       "name": "history echo-drops the viewer's own send",
       "file": "packages/core/src/endpoint.ts",
-      "find": "  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
-      "replace": "  if (raw.from.id !== parsed.sender) return undefined;\n  if (raw.from.id === \"local.viewer\") return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "find": "  if (!parsed || !isFromSubjectSender(raw, parsed)) return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "replace": "  if (!parsed || !isFromSubjectSender(raw, parsed)) return undefined;\n  if (raw.from.id === \"local.viewer\") return undefined;\n  return authenticatedMessage(raw, parsed);",
       "expectRed": "history still includes a DM the viewer itself sent",
       "cell": "history still includes a DM the viewer itself sent",
-      "completionMarker": "dm-history-subject smoke:"
+      "completionMarker": "dm-history-subject smoke:",
+      "note": "Re-anchored for #3900: the drain's split owner and sender checks became one call to the shared isFromSubjectSender predicate, so the old anchor no longer matched. Same severing. Not re-measured."
     },
     {
       "name": "history drain uses full isCotalMessage and drops the pre-fix keyless data part",

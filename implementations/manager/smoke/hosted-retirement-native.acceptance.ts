@@ -216,6 +216,7 @@ import { registerRemoteManagerAuthority } from "../src/remote-register.js";
 import { managerClusterArtifacts } from "../src/manager-service-contract.js";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../auth/src/lifecycle-registry.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { approveDevice } from "../../auth/smoke/_device-approval.js";
 
 const self = process.argv[1]!;
 const participantHome = mkdtempSync(join(tmpdir(), "cotal-registered-manager-home-"));
@@ -673,20 +674,12 @@ try {
     returnHeaders: true,
   });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
-  const approve = async (userCode: string): Promise<void> => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-    const response = await fetch(`${idpUrl}/device/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie, origin },
-      body: JSON.stringify({ userCode }),
-    });
-    if (!response.ok) throw new Error(`device approval failed: HTTP ${response.status}`);
-  };
+  const approve = (userCode: string) => approveDevice({ base: idpUrl, cookie, origin }, userCode);
   const { sub } = await establishIdpSession({
     dir: participantHome,
     idpUrl,
     clientId,
-    onPrompt: (prompt: { userCode: string }) => void approve(prompt.userCode),
+    onPrompt: (prompt: { userCode: string }) => approve(prompt.userCode),
   });
   const owner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   check("participant login is established", typeof sub === "string" && sub.length > 0);
@@ -694,15 +687,17 @@ try {
 
   const callout = await loadCalloutAuth(hostStore, space);
   if (!callout) throw new Error("host callout material is missing after preparation");
+  const participantUserAuth = {
+    provider: "cotal",
+    idp: { url: idpUrl, issuer: origin, audience: origin },
+    endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(participantUserAuth);
   persistRemoteUserEntry(space, server, participantRoot, {
     space,
     server,
     tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal",
-      idp: { url: idpUrl, issuer: origin, audience: origin },
-      endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: participantUserAuth,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   check("participant registry entry is remote user mode", existsSync(participantDir));

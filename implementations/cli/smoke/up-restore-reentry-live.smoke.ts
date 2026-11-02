@@ -24,6 +24,8 @@
  *  3. CONTROL - that pass left `commit-intent` with a bound listener still ALIVE, the precondition
  *     for the re-entry to take the resume branch rather than start over.
  *  4. SUBJECT B - the restore re-entry completes (exit 0) under that same inherited lock.
+ *  5. SUBJECT C - the mesh record that re-entry writes for the listener it adopted keeps the attach
+ *     host, the session ceiling and the store cap the restored broker runs with (#3977).
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -49,6 +51,17 @@ const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const prepareIntentPath = join(root, ".cotal", "maintenance", "v1", "prepare-intent.json");
 const artifact = join(root, "registry-backup");
 const coreDist = join(WT, "packages", "core", "dist", "index.js");
+const openConfPath = join(root, ".cotal", "server-open.conf");
+// Roomy enough for the fixture's real writes; what is under test is that the record keeps it.
+const CAP = 17179869184;
+const recorded = (space: string): { attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown } | undefined => {
+  const dir = join(home, "meshes");
+  for (const f of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".json")) : []) {
+    const entry = JSON.parse(readFileSync(join(dir, f), "utf8")) as { space?: string; attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown };
+    if (entry.space === space) return entry;
+  }
+  return undefined;
+};
 
 // A bare unmanaged endpoint the manager did not spawn: the ten-line idle-endpoint shape from
 // console-control.smoke.ts (:68-78), copied because that suite does not export it. It registers
@@ -118,7 +131,7 @@ try {
   const space = "restore_alpha";
 
   console.log("1) CONTROL: a preserved mesh and an artifact to restore from");
-  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space]);
+  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space, "--host", "127.0.0.1", "--max-sessions", "7", "--max-file-store", String(CAP)]);
   ok("the ordinary boot exited 0", first.status === 0, tail(first).slice(-1200));
 
   // The cut describes the manager over the ep rails, so it must not be taken until the manager has
@@ -181,7 +194,7 @@ try {
 
   console.log("\n2) SUBJECT A: the first `up --restore` reaches the listener-bind boundary");
   const restore = runSync(
-    ["up", "--restore", artifact, "--detach", "--server", server, "--space", space],
+    ["up", "--restore", artifact, "--detach", "--server", server, "--space", space, "--max-file-store", String(CAP)],
     { COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_BIND: "1" },
   );
   const restoreLog = tail(restore);
@@ -197,6 +210,8 @@ try {
   ok("the journal is `commit-intent`", intent.state === "commit-intent", intent.state);
   const boundPid = intent.listenerProof?.processOwner?.pid;
   ok("…and its bound listener is ALIVE (the re-entry precondition)", alive(boundPid), { boundPid });
+  const jetstream = existsSync(openConfPath) ? readFileSync(openConfPath, "utf8").split("\n").filter((l) => l.startsWith("jetstream")).join("\n") : "";
+  ok("…and that listener runs with the restore's store cap", jetstream.includes(`max_file_store: ${CAP}`), jetstream);
 
   console.log("\n4) SUBJECT B: the restore RE-ENTRY completes under the inherited lock");
   const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
@@ -205,6 +220,12 @@ try {
     !/held by a live owner|holds this root|recovery is already in progress|maintenance lock/i.test(log),
     { status: recovered.status, log: log.slice(-2000) });
   ok("the restore re-entry exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
+
+  console.log("\n5) SUBJECT C: the adopted listener's mesh record keeps what that broker runs with");
+  const adopted = recorded(space);
+  ok("the adopted record keeps the attach host and the session ceiling",
+    adopted?.attachHost === "127.0.0.1" && adopted.maxSessions === 7, adopted);
+  ok("…and the store cap the restored broker runs with", adopted?.maxFileStore === CAP, adopted);
 
   runSync(["down"]);
   console.log(`\nUP RESTORE RE-ENTRY SMOKE OK ✅  (${pass} passed)`);

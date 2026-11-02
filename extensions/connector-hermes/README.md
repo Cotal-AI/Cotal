@@ -12,5 +12,5 @@ wires the plugin into an existing Hermes.
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-See [docs/connect-hermes.md](../../docs/connect-hermes.md) for the integration guide, and the
+See [docs/connect-hermes.mdx](../../docs/connect-hermes.mdx) for the integration guide, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.

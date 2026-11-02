@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSmokeSandboxDown, awaitBrokerReady, brokerHeap, emitSentinel, recordSmokeSandbox } from "../src/index.js";
+import { assertSmokeSandboxDown, awaitBrokerReady, brokerHeap, emitSentinel, highwayHash64, recordSmokeSandbox } from "../src/index.js";
 
 let checks = 0;
 const check = (name: string, run: () => void): void => {
@@ -26,6 +26,20 @@ try {
   check("non-destructive commands do not require the down guard", () => assertSmokeSandboxDown(anchor, ["status"], { cwd: root, env }));
 } finally {
   rmSync(base, { recursive: true, force: true });
+}
+
+{
+  // minio/highwayhash v1.0.4's 64-bit vectors: key 00..1f, input 00..n-1. These lengths reach every
+  // remainder path: none, under 4, under 16, from 16, and whole 32-byte packets.
+  const key = Uint8Array.from({ length: 32 }, (_, i) => i);
+  for (const [length, want] of [
+    [0, "536ec222de567a90"], [1, "78ddcdc7aa43ab7e"], [3, "803d468aabef6b5c"], [4, "da7e009368a405f2"],
+    [7, "8294f53817ae024d"], [15, "3bf349a4863f7940"], [16, "32b87ef98934abcf"], [17, "e2c0c5c8d267fe19"],
+    [31, "685a03cf7c00c79f"], [32, "fc80d5ecd964c9a0"], [33, "fc8131a03cf7902c"], [47, "081e916bc0ba2613"],
+    [63, "a03921bfe9eb8eab"], [64, "ffa6d24c5d2c5475"],
+  ] as const) assert.equal(Buffer.from(highwayHash64(key, Uint8Array.from({ length }, (_, i) => i))).toString("hex"), want, `HighwayHash-64 of ${length} bytes`);
+  checks++;
+  console.log("  ✓ highwayHash64 matches minio's HighwayHash-64 vectors, the checksum backdateMessages writes");
 }
 
 {

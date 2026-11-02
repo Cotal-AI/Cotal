@@ -513,7 +513,9 @@ registry.register(
   ok("supervise lazy-loads an installed runtime provider", supervise.status === 1 && existsSync(loaded) && /Can't reach NATS/.test(supervise.stderr) && !/unknown runtime/.test(supervise.stderr), supervise.stderr.slice(-400));
 
   const unavailableManifest = join(sandbox, "unavailable.yaml");
-  writeFileSync(unavailableManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: unavailable\nruntime: fixture-unavailable\nchannels: {}\n`);
+  // The sandbox is main's root, and a folder runs only its own space, so the manifest names main.
+  // It also names the fixture target, so the start never reaches the default 4222.
+  writeFileSync(unavailableManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: main\nbroker:\n  servers: nats://127.0.0.1:1\nruntime: fixture-unavailable\nchannels: {}\n`);
   const unavailable = cotal(["up", "-f", unavailableManifest]);
   ok("up -f rejects an unavailable extension runtime before starting the broker", unavailable.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(unavailable.stderr) && /not reachable/.test(unavailable.stderr) && !existsSync(join(sandbox, ".cotal", "nats.pid")), unavailable.stderr.slice(-400));
 

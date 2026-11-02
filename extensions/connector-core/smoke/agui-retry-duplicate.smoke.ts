@@ -57,7 +57,7 @@
  * Run: pnpm smoke:agui-retry-duplicate   (needs nats-server on PATH; starts its own brokers)
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -144,11 +144,14 @@ const startCluster = async (tag: string): Promise<string> => {
     routePorts.push(await freePort());
   }
   const routes = routePorts.map((p) => `"nats://127.0.0.1:${p}"`).join(",");
+  const nodes: Array<{ name: string; broker: ChildProcess; log: string }> = [];
   for (let i = 0; i < 3; i++) {
     const conf = join(root, `${tag}${i}.conf`);
+    const log = join(root, `${tag}${i}.log`);
     writeFileSync(conf, [
       `port: ${ports[i]}`,
       `server_name: ${tag}${i}`,
+      `log_file: "${log}"`,
       `jetstream { store_dir: "${join(root, `${tag}${i}`)}" }`,
       `cluster { name: ${tag.toUpperCase()}`,
       `  port: ${routePorts[i]}`,
@@ -157,6 +160,7 @@ const startCluster = async (tag: string): Promise<string> => {
     const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
     procs.push(broker);
     releases.push(teardownOnSignal(broker));
+    nodes.push({ name: `${tag}${i}`, broker, log });
   }
   const url = `nats://127.0.0.1:${ports[0]}`;
   let up = false;
@@ -173,6 +177,7 @@ const startCluster = async (tag: string): Promise<string> => {
   // only about dependencies: `start()` is what the emitter's own arms do, so "ready" here means the
   // exact operation those arms need rather than a proxy for it.
   let ready = false;
+  let lastProbe: string | undefined;
   for (let waited = 0; waited < 60_000 && !ready; waited += 500) {
     const probe = new CotalEndpoint({
       space: `ready${randomUUID().slice(0, 8).replace(/-/g, "")}`,
@@ -185,13 +190,23 @@ const startCluster = async (tag: string): Promise<string> => {
       await probe.start();
       await probe.listChannels();
       ready = true;
-    } catch {
+    } catch (e) {
+      lastProbe = e instanceof Error ? e.message : String(e);
       await wait(500);
     } finally {
       await probe.stop().catch(() => {});
     }
   }
-  if (!ready) throw new Error(`${tag}: JetStream never became usable — the cluster did not form`);
+  if (!ready) {
+    // Say what the probe and each node last reported, so a raft that never elected, a node that
+    // exited and a port that was taken read differently in a red run's log (#712).
+    const reports = nodes.map(({ name, broker, log }) => {
+      const state = broker.exitCode !== null ? `exited ${broker.exitCode}` : broker.signalCode !== null ? `killed by ${broker.signalCode}` : "running";
+      const tail = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").slice(-3).map((line) => line.slice(0, 200)).join(" | ") : "no log";
+      return `${name} ${state}: ${tail}`;
+    });
+    throw new Error(`${tag}: JetStream never became usable — the cluster did not form. Last probe: ${lastProbe ?? "none"}. ${reports.join("; ")}`);
+  }
   return url;
 };
 

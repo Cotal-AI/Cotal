@@ -209,7 +209,7 @@ try {
   // The premise "the daemon names one store, so at most one manager can match it" is false.
   // `sameSecretStoreIdentity` is pure equality with no holder and no tiebreak, so both managers
   // below pass the identity challenge, and without a lease BOTH remint into the daemon's store.
-  // That is the composition docs/embedding.md tells hosted operators to build (one injected
+  // That is the composition docs/embedding.mdx tells hosted operators to build (one injected
   // coordinate on both processes), and it reintroduces the #773 adoption refusal: two owners on
   // independent timers have no ordering, so one's write lands between the other's re-sign and its
   // fingerprint-only reloadCreds. Reviewer-reproduced, and asserted nowhere before this cell.

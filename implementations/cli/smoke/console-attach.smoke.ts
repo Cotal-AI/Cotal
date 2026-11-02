@@ -144,7 +144,7 @@ try {
   check("bad key: the console still quits cleanly on q", await session.quit(), session.exited);
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
 } finally {
   try { await session?.close(); } catch { /* down */ }
   try { await mgr.stop({ withAgents: true }); } catch { /* down */ }

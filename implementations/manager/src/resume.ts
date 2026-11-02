@@ -35,7 +35,9 @@ const identity = z.discriminatedUnion("mode", [
     credential: fileRef,
     // The SPEC 13.15 issuance the credential was minted under; a resumed static agent renews
     // under this generation, and a pre-issuance inventory carries none (its renewal refuses).
-    issued: z.strictObject({ generation: z.string().regex(/^[a-f0-9]{32}$/), acceptedToken: z.string().regex(/^[a-f0-9]{32}$/) }).optional(),
+    // `listing` records that the ceiling carries the registry's endpoints row, so the renewal
+    // mints that same ceiling; an incarnation spawned before the registry has none.
+    issued: z.strictObject({ generation: z.string().regex(/^[a-f0-9]{32}$/), acceptedToken: z.string().regex(/^[a-f0-9]{32}$/), listing: z.literal(true).optional() }).optional(),
   }),
   z.strictObject({
     mode: z.literal("user"),
@@ -177,6 +179,10 @@ export function parseResumeFinalizeArgs(value: unknown): { attemptId: string; du
   return parseBounded("finalizeResume", MAX_RESUME_COMMIT_BYTES, finalizeArgsSchema, value);
 }
 
+/** A spawn's `supervise` restart budget. Admission and the seat record read this one rule, so a
+ *  policy the record would refuse is never admitted and launched first. */
+export const supervisePolicy = z.strictObject({ restarts: z.number().int().min(1), windowMs: z.number().int().min(1) });
+
 /** What a successor manager needs to take back one seat this manager runs, should this manager's
  *  process end without stopping it: the seat's resume entry, and for a supervised seat the restart
  *  policy its spawn carried and the deaths already counted against it (#4094). One file per seat,
@@ -185,7 +191,7 @@ export function parseResumeFinalizeArgs(value: unknown): { attemptId: string; du
 const seatRecord = z.strictObject({
   version: z.literal("cotal-seat-record/v1"),
   instanceId: z.string().min(1).max(256),
-  supervise: z.strictObject({ restarts: z.number().int().min(1), windowMs: z.number().int().min(1) }).optional(),
+  supervise: supervisePolicy.optional(),
   crashes: z.array(z.number().int().nonnegative()).max(1024),
   agent,
 });

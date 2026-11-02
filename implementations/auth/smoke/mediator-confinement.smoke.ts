@@ -369,7 +369,7 @@ try {
   await nc.drain().catch(() => {});
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
 } finally {
   try { await medNc?.close(); } catch { /* closed */ }
   try { await clnNc?.close(); } catch { /* closed */ }

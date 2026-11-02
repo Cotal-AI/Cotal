@@ -8,7 +8,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -261,7 +261,7 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
     console.error(c.dim('e.g. --subscribe general   or   --subscribe "" for an agent reachable only by direct message'));
     process.exit(1);
   }
-  const subscribe = v.subscribe.split(",").map((s) => s.trim()).filter(Boolean);
+  const subscribe = parseCommaList(v.subscribe);
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
   commitPersona(path, expected, bytes);

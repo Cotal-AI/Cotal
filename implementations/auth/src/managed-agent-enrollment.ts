@@ -18,7 +18,7 @@ import {
   parseRemoteManagedAgentPrepareRetirementRequest,
   parseRemoteManagedAgentRuntimeCreateRequest,
   parseRemoteManagedAgentRuntimeStatusRequest,
-  remoteManagerActors,
+  remoteManagerServePrincipal,
   type EpGateState,
   type RemoteManagedAgentEnrollmentRequest,
   type RemoteManagedAgentPrepareRetirementRequest,
@@ -42,7 +42,7 @@ async function assertCurrentManagerRegistration(
   const gate = await args.observeManagerGate(r.instanceId);
   if (!gate || gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${r.instanceId}`);
-  const servePrincipal = `${args.owner}.${remoteManagerActors(r.instanceId).serve}`;
+  const servePrincipal = remoteManagerServePrincipal(args.owner, r.instanceId);
   if (gate.principal !== servePrincipal)
     throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
   if (gate.processEpoch !== r.serveEpoch)

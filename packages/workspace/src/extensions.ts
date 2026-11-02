@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -281,11 +281,14 @@ export function hostPackageDir(name: string): string {
   }
 }
 
-/** Bind installed extensions' shared peers to the current host. Callers must hold the extension lock. */
+/** Bind installed extensions' shared peers to the current host. Callers must hold the extension lock.
+ *  `onAbsent` receives another owner whose package directory does not exist, which has no links to
+ *  keep, instead of the bind failing on it. Without it, or for `operationPkg` itself, an absent
+ *  package throws like any other unreadable one. */
 export function bindExtensionPeers(
   owners: readonly string[],
   operationPkg: string,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; onAbsent?: (owner: string) => void } = {},
 ): readonly BoundExtensionPeer[] {
   const planned: BoundExtensionPeer[] = [];
   for (const owner of owners) {
@@ -293,6 +296,12 @@ export function bindExtensionPeers(
     try {
       meta = JSON.parse(readFileSync(join(extensionPackageDir(owner), "package.json"), "utf8"));
     } catch (e) {
+      // Only a directory that does not exist is absent. A dangling link, or a directory left without
+      // its package.json, is a damaged install and still fails.
+      if (opts.onAbsent && owner !== operationPkg && (e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(extensionPackageDir(owner), { throwIfNoEntry: false })) {
+        opts.onAbsent(owner);
+        continue;
+      }
       throw new Error(`${operationPkg} cannot preserve installed extension ${owner}'s shared peers: ${(e as Error).message}`);
     }
     for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {

@@ -36,8 +36,9 @@ import {
   epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, recordStatusKey, RECORD_KINDS,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
   type EpCommandDef, type DescribeAnswer, type EpServeGrant, type CompiledContract,
-  mintLifecycleUid, type EpIssuanceBarrier, type EpGateState, type EpVerbOp,
+  type EpIssuanceBarrier, type EpVerbOp,
 } from "../src/index.js";
+import { makeIssuanceGate, type IssuanceGate } from "./_issuance-gate.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -172,19 +173,12 @@ const authority: ServiceNameAuthority = {
 // instanceId) gate. This smoke exercises the registry/serve/describe SURFACE; the fence internals
 // (revision-pinned CAS, freeze token, verified evict, drift) are proven in endpoint-serve-auth.smoke.ts.
 // Here the barrier only needs to be a faithful freeze->(spec write)->reopen writer.
-const gateStates = new Map<string, EpGateState>();
+const gateStates = new Map<string, IssuanceGate>();
 function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
   const key = `${endpoint}/${instanceId}`;
-  if (!gateStates.has(key)) gateStates.set(key, { space: SPACE, endpoint, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
-  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
-  return {
-    observe: () => ({ ...gateStates.get(key)! }),
-    freeze: (rev) => { const g = gateStates.get(key)!; if (g.state !== "open" || g.revision !== rev) return null; gateStates.set(key, { ...g, state: "frozen", op, revision: rev + 1 }); return rev + 1; },
-    enumerate: () => [],
-    revoke: () => {},
-    evict: (holderPrincipals) => holderPrincipals.map(() => true),
-    reopen: (token, succ) => { const { op: _op, ...g } = gateStates.get(key)!; if (g.state !== "frozen" || g.revision !== token) return false; gateStates.set(key, { ...g, state: "open", generation: succ.generation, processEpoch: succ.processEpoch, registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision, revision: token + 1 }); return true; },
-  };
+  let gate = gateStates.get(key);
+  if (!gate) gateStates.set(key, gate = makeIssuanceGate({ space: SPACE, endpoint, lifecycleUid: instanceId }));
+  return gate.barrier;
 }
 /** register-with-barrier: thread the per-instance barrier so the registration runs its §13.1 protocol. */
 const reg = (kvArg: KV, args: { spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority }) =>
@@ -295,7 +289,7 @@ try {
   // (the empty-family stub here is exactly the open-mesh path: nothing to evict, the advance still
   // rides the completing reopen).
   c("re-registration ADVANCES the gate processEpoch (a restarted incarnation fences the predecessor's epoch)",
-    gateStates.get(`manager/${IID_A}`)!.processEpoch === 1);
+    gateStates.get(`manager/${IID_A}`)!.coord().processEpoch === 1);
   await rejects("a registration whose authenticated caller is not the descriptor owner refuses (impersonation)",
     () => reg(kv, { spec, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
   await rejects("a registration under an unauthorized claimed owner refuses",
@@ -332,7 +326,7 @@ try {
   // ---- the hardened freeze ----
   const regB = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
   c("a FIRST registration of a fresh instanceId keeps epoch 0 (a never-restarted single manager)",
-    gateStates.get(`manager/${IID_B}`)!.processEpoch === 0);
+    gateStates.get(`manager/${IID_B}`)!.coord().processEpoch === 0);
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regB.registrationRevision } });
   const frozen = await freezeExpectedSet(jsm, SPACE, "manager");
   c("the frozen expected set carries (instanceId, registrationRevision, epoch) per live instance",
@@ -344,7 +338,7 @@ try {
   // would combine a registration with liveness it never had.
   const regB2 = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
   c("each restart advances the gate epoch monotonically (B: first 0 -> restart 1)",
-    gateStates.get(`manager/${IID_B}`)!.processEpoch === 1);
+    gateStates.get(`manager/${IID_B}`)!.coord().processEpoch === 1);
   c("a stale projection (status behind the CURRENT registration) leaves the frozen set",
     regB2.registrationRevision > regB.registrationRevision
     && (await freezeExpectedSet(jsm, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
@@ -549,7 +543,11 @@ try {
     } }),
     def("inspect", { handler: () => ({ which }) }),
     def("badout", { handler: () => ({ wrong: true }) }),
-    def("cyclic", { handler: () => { const o: Record<string, unknown> = { which }; o.self = o; return o; } }),
+    // The value validates (its own properties are `{ which }`) and only its JSON form is cyclic, so
+    // the reply reaches the serialize step. A plain `o.self = o` is refused by the output schema first.
+    def("cyclic", { handler: () => Object.assign(Object.create(Object.defineProperty({}, "toJSON", {
+      value: () => { const o: Record<string, unknown> = { which }; o.self = o; return o; },
+    })), { which }) }),
     def("poke", { handler: () => { castRuns++; throw new Error("cast handlers may fail; nobody hears it"); } }),
     def("slow", { contract: { input: argsContract, output: slowContract }, handler: () => slowPayload }),
     def("ping", { contract: { input: voidContract, output: outContract }, handler: () => ({ which }) }),
@@ -627,9 +625,16 @@ try {
   const r3c = await send(oneSubj("badout"), req({ op: { endpoint: "manager", command: "badout", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("handler output violating the output schema is internal, never published as success",
     r3c !== undefined && r3c.reply.ok === false && r3c.reply.error?.code === "internal");
+  // §13.3: each refusal below is raised AFTER the handler returned, so the effect landed and the
+  // reply MUST say `executed`; an omitted outcome reads as `unknown` (#3397).
+  c("the output-schema refusal states `executed`: the handler ran to completion",
+    r3c?.reply.error?.outcome === "executed", JSON.stringify(r3c?.reply.error));
   const r3d = await send(oneSubj("cyclic"), req({ op: { endpoint: "manager", command: "cyclic", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a non-serializable reply is replaced by a structured internal error, never dropped",
-    r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal");
+    r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal"
+      && (r3d.reply.error?.message ?? "").includes("does not serialize"), JSON.stringify(r3d?.reply.error));
+  c("the non-serializable replacement states `executed`: it replaces a success",
+    r3d?.reply.error?.outcome === "executed", JSON.stringify(r3d?.reply.error));
   // Tee console.error: the demoted budget's ONLY observable is its report, and asserting the reply
   // alone would pass just as well if the validation had never been over budget. Tee rather than
   // swallow, so the serve side's diagnostics still reach the log.
@@ -652,6 +657,8 @@ try {
   c("a reply too large to publish is answered `resource-exhausted`, never silently dropped",
     r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "resource-exhausted",
     r3e === undefined ? "NO REPLY - the caller was left with silence" : JSON.stringify(r3e.reply).slice(0, 220));
+  c("the unpublishable replacement states `executed`: it replaces a success",
+    r3e?.reply.error?.outcome === "executed", JSON.stringify(r3e?.reply.error).slice(0, 220));
 
   // §13.7 canonical void: absent OR explicit null args both validate on a void-input command
   const pingOp = { endpoint: "manager", command: "ping", inputDigest: D_VOID, outputDigest: D_OUT };

@@ -454,6 +454,12 @@ registry.register(preserveAuth as unknown as AuthProvider);
   check("partial stop names the failed child", result.failures.length === 1 && result.failures[0]?.name === "bad", result.failures);
   check("partial stop retains the full pre-stop inventory", result.inventory.agents.length === 2, result.inventory.agents);
   check("partial stop performs no deprovision", deprovisions === 0, deprovisions);
+  // Shutdown after the failed cut reports the refused hard stop once and does not wait for that
+  // seat's exit: the stop never reached the child, so the wait could only time out and restate it.
+  let shutdown: string | undefined;
+  try { await manager.stop(); } catch (e) { shutdown = (e as Error).message; }
+  check("shutdown after a partial cut reports a refused stop once, with no exit wait",
+    shutdown === "manager preservation shutdown incomplete: bad: stop failed: simulated stop failure", shutdown);
 }
 
 // A runtime without an authoritative wait contract is never accepted as a completed cut, even if

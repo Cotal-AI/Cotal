@@ -32,6 +32,9 @@
           "405": {
             "$ref": "#/components/responses/RequestError"
           },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -66,6 +69,9 @@
           "405": {
             "$ref": "#/components/responses/RequestError"
           },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -91,6 +97,9 @@
           },
           "405": {
             "$ref": "#/components/responses/RequestError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -120,6 +129,26 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ExchangeRequest"
+              },
+              "examples": {
+                "human": {
+                  "summary": "Human identity",
+                  "description": "Replace the placeholder with a fresh proof from the configured identity provider.",
+                  "value": {
+                    "actor": "worker",
+                    "idpToken": "<idp-token>"
+                  }
+                },
+                "managed": {
+                  "summary": "Managed agent",
+                  "description": "Replace the owner and secret with the managed agent grant.",
+                  "value": {
+                    "owner": "<owner>",
+                    "actor": "worker",
+                    "actorToken": "<managed-agent-secret>",
+                    "view": "manager-caller"
+                  }
+                }
               }
             }
           },
@@ -146,6 +175,9 @@
           },
           "405": {
             "$ref": "#/components/responses/RequestError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -201,6 +233,9 @@
           },
           "405": {
             "$ref": "#/components/responses/RequestError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -265,6 +300,9 @@
           "405": {
             "$ref": "#/components/responses/RequestError"
           },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           },
@@ -307,6 +345,9 @@
           },
           "405": {
             "$ref": "#/components/responses/RequestError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -436,7 +477,7 @@
             "$ref": "#/components/responses/RequestError"
           },
           "500": {
-            "$ref": "#/components/responses/RequestError"
+            "$ref": "#/components/responses/InternalServerError"
           }
         },
         "requestBody": {
@@ -503,7 +544,7 @@
             "$ref": "#/components/responses/ChatRefusal"
           },
           "500": {
-            "$ref": "#/components/responses/ChatRefusal"
+            "$ref": "#/components/responses/ChatServerError"
           },
           "501": {
             "$ref": "#/components/responses/ChatRefusal"
@@ -573,7 +614,7 @@
             "$ref": "#/components/responses/ChatRefusal"
           },
           "500": {
-            "$ref": "#/components/responses/ChatRefusal"
+            "$ref": "#/components/responses/ChatServerError"
           },
           "501": {
             "$ref": "#/components/responses/ChatRefusal"
@@ -643,7 +684,7 @@
             "$ref": "#/components/responses/ChatRefusal"
           },
           "500": {
-            "$ref": "#/components/responses/ChatRefusal"
+            "$ref": "#/components/responses/ChatServerError"
           },
           "501": {
             "$ref": "#/components/responses/ChatRefusal"
@@ -681,6 +722,9 @@
           },
           "405": {
             "$ref": "#/components/responses/RequestError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -1119,7 +1163,8 @@
               "required": [
                 "actorToken"
               ]
-            }
+            },
+            "title": "Human identity"
           },
           {
             "required": [
@@ -1130,7 +1175,8 @@
               "required": [
                 "idpToken"
               ]
-            }
+            },
+            "title": "Managed agent"
           }
         ]
       },
@@ -2243,7 +2289,7 @@
     },
     "responses": {
       "RequestError": {
-        "description": "JSON error. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413. An unexpected failure is 400 unless a route handles it separately.",
+        "description": "JSON error from a named request refusal. Route guards run before proof evaluation; parser failures are 400 and byte overflow is 413.",
         "content": {
           "application/json": {
             "schema": {
@@ -2268,6 +2314,32 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/ChatError"
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Server failure. An unexpected failure reaching the listener boundary returns only {\"error\":\"internal server error\"}; details are logged server-side. A route's named server failure may include its error code and outcome.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "internal server error"
+            }
+          }
+        }
+      },
+      "ChatServerError": {
+        "description": "Native chat failure with its supplied code and outcome, or an unexpected handler failure with only {\"error\":\"internal server error\"}. Unexpected failure details are logged server-side.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ChatError"
+            },
+            "example": {
+              "error": "internal server error"
             }
           }
         }

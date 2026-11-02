@@ -28,8 +28,8 @@
  * The same resume carries the broker's JetStream store cap (`--max-file-store`, #1888): the fresh
  * boot renders it and nats-server applies it, the cut journals it, a resume asking for a different
  * cap is refused CONFLICT before anything starts, naming both caps and the way to change it, the bare
- * resume re-renders it, and the adopted mesh record keeps it. A resume asking for another `--server`
- * is refused the same way.
+ * resume re-renders it, and the adopted mesh record keeps it, with the attach host and the session
+ * ceiling. A resume asking for another `--server` is refused the same way.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -61,14 +61,15 @@ const CAP = 17179869184;
 const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(".cotal", "nats"))}, max_file_store: ${CAP} }`;
 const openConfJetStream = (): string =>
   existsSync(openConfPath) ? readFileSync(openConfPath, "utf8").split("\n").filter((l) => l.startsWith("jetstream")).join("\n") : "";
-const recordedCap = (space: string): unknown => {
+const recorded = (space: string): { attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown } | undefined => {
   const dir = join(home, "meshes");
   for (const f of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".json")) : []) {
-    const entry = JSON.parse(readFileSync(join(dir, f), "utf8")) as { space?: string; maxFileStore?: unknown };
-    if (entry.space === space) return entry.maxFileStore;
+    const entry = JSON.parse(readFileSync(join(dir, f), "utf8")) as { space?: string; attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown };
+    if (entry.space === space) return entry;
   }
   return undefined;
 };
+const recordedCap = (space: string): unknown => recorded(space)?.maxFileStore;
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -110,6 +111,7 @@ type Journal = {
   state?: string;
   listenerProof?: { processOwner?: { pid?: number } };
   managerCommit?: { state?: string };
+  ordinaryResume?: { attemptId?: string };
 };
 const journal = (): Journal =>
   existsSync(journalPath) ? (JSON.parse(readFileSync(journalPath, "utf8")) as Journal) : {};
@@ -128,7 +130,7 @@ try {
   const space = "adopt_alpha";
 
   console.log("1) CONTROL: an interrupted resume leaves a committed journal and a LIVE listener");
-  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space, "--max-file-store", String(CAP)]);
+  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space, "--host", "127.0.0.1", "--max-sessions", "7", "--max-file-store", String(CAP)]);
   ok("the ordinary boot exited 0", first.status === 0, `${first.stdout ?? ""}${first.stderr ?? ""}`.slice(-1200));
   ok("the fresh boot renders --max-file-store into the jetstream block", openConfJetStream() === cappedBlock, openConfJetStream());
   const natsLog = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
@@ -190,6 +192,28 @@ try {
   ok("…and its bound listener is ALIVE (the adopt precondition)", alive(boundPid), { boundPid });
   ok("the bare resume re-renders the preserved store cap", openConfJetStream() === cappedBlock, openConfJetStream());
 
+  const attemptId = committed.ordinaryResume?.attemptId;
+  let pausedLog: string | undefined;
+  if (process.platform === "win32") {
+    console.log("  SKIP: the listener INFO timeout control needs POSIX SIGSTOP/SIGCONT");
+  } else {
+    ok("the journal holds an ordinary attempt and no restore", typeof attemptId === "string" && !("restore" in committed));
+    // Pause only the listener this interrupted resume owns. Restore it before any assertion or
+    // teardown, then use the existing successful recovery below as the positive control.
+    process.kill(boundPid!, "SIGSTOP");
+    let paused: ReturnType<typeof runSync>;
+    try {
+      paused = runSync(["up", "--detach", "--server", server, "--space", space]);
+    } finally {
+      process.kill(boundPid!, "SIGCONT");
+    }
+    pausedLog = `${paused.stdout ?? ""}${paused.stderr ?? ""}`;
+    ok("the paused listener refuses at its INFO timeout with outcome unknown",
+      paused.status === 3 && pausedLog.includes("OPERATION_UNKNOWN") && pausedLog.includes("listener INFO timed out"),
+      { status: paused.status, log: pausedLog });
+    ok("the failed read leaves the ordinary journal committed", journal().state === "resume-committed");
+  }
+
   console.log("\n2) SUBJECT: the recovering `cotal up` ADOPTS that live listener under the inherited lock");
   const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
   const log = `${recovered.stdout ?? ""}${recovered.stderr ?? ""}`;
@@ -201,7 +225,13 @@ try {
   ok("the adopting resume exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
   ok("…and the finalized resume consumed its maintenance journal", !existsSync(journalPath), journal());
   ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
+  ok("…and the attach host and the session ceiling", recorded(space)?.attachHost === "127.0.0.1" && recorded(space)?.maxSessions === 7, recorded(space));
 
+  if (pausedLog !== undefined) {
+    ok("the INFO failure names the ordinary resume attempt, not a restore",
+      pausedLog.includes(`resume attempt ${attemptId} listener INFO timed out`) && !pausedLog.includes("restore listener"),
+      pausedLog);
+  }
   runSync(["down"]);
   console.log(`\nUP ADOPT RESUME LOCK SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

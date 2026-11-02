@@ -43,6 +43,7 @@ import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { readGeneratedDocsBundle } from "./read-generated-docs-bundle.mjs";
 
 export const UPGRADING_PATH = join("docs", "UPGRADING.md");
 
@@ -814,13 +815,13 @@ if (process.argv.includes("--self-test")) {
     // checking the shipped copy, which is the same class of quiet false promise the cell exists
     // to catch. A generator that cannot run is now a failed cell.
     const bundleDir = mkdtempSync(join(tmpdir(), "upgrade-gate-docsbundle-"));
-    const bundle = join(bundleDir, "docs-bundle.generated.ts");
+    const bundle = join(bundleDir, "docs-bundle.generated.mts");
     try {
       let generated = null;
       try {
         execFileSync("node", [join(repoRootForDocs(), "scripts", "generate-docs-bundle.mjs"), "--out", bundle],
           { cwd: repoRootForDocs(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-        generated = readFileSync(bundle, "utf8");
+        generated = JSON.stringify(readGeneratedDocsBundle(bundle));
       } catch (error) {
         generated = null;
         cell("the docs bundle the release would ship can be generated from the sources", false,
@@ -872,8 +873,8 @@ if (process.argv.includes("--self-test")) {
     (() => { try { staleJobClaims("the gate runs in the `unit` job", "attribution", []); return false; }
              catch { return true; } })());
 
-  // THE SHIPPED COPY IS A SEPARATE ARTEFACT AND NEEDS ITS OWN PROOF. The bundle stores each page
-  // as one escaped JSON string, so backticks survive but newlines become literal `\n`. A reader
+  // THE DECODED PAYLOAD NEEDS ITS OWN PROOF. The reader serializes each page body
+  // as an escaped JSON string, so backticks survive but newlines become literal `\n`. A reader
   // written for the markdown can therefore pass on the source and miss the generated copy, which
   // is the half that reaches users. This cell drives the detector with a bundle-shaped line.
   cell("ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED",

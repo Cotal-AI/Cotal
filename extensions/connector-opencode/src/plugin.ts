@@ -46,10 +46,7 @@ import {
   formatInjection,
   fmtFrom,
   fmtChannel,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
   AguiEmitter,
   AguiEmitterHolder,
   eventPlaneStopped,
@@ -61,6 +58,7 @@ import {
   resolveEventsStateRoot,
   controlFromEnv,
   scrubLaunchMaterial,
+  registerOnceExit,
   type InboxItem,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
@@ -177,10 +175,8 @@ async function settleWithin(work: Promise<unknown> | undefined, ms: number, what
 export { settleWithin };
 
 /**
- * The buffered-inbox + pending-run-turn composition that goes out ahead of a native prompt. Shared
- * by the 1.x text-part mutator (`injectIntoPrompt` below) and the 2.x `session.hook("prompt")`
- * mutator, so the two callers cannot drift on what "inject" means. Returns `undefined` when there is
- * nothing to prepend.
+ * The buffered-inbox + pending-run-turn composition that goes out ahead of a native prompt, read by
+ * {@link SurfacedBatch.inject}. Returns `undefined` when there is nothing to prepend.
  */
 export function computeInjection(agent: MeshAgent): {
   prefix: string;
@@ -194,6 +190,73 @@ export function computeInjection(agent: MeshAgent): {
   if (!inj && !turnPeek) return undefined;
   const prefix = [inj, turnPeek?.text].filter(Boolean).join("\n\n");
   return { prefix, surfacedIds: inj ? items.map((i) => i.recvKey) : [], turnIds: turnPeek?.goalIds ?? [] };
+}
+
+/**
+ * The inbox batch a turn carries, by receive key: THE SEAT'S ACK BOUNDARY, defined here once and
+ * driven by both adapters (the 1.x hooks below and `plugin2.ts`), so they cannot drift on what is
+ * acked when a turn ends and what is left to redeliver. A batch is surfaced into a turn and held in
+ * flight while it runs; the turn's end acks it when the turn finished or was stopped, and releases
+ * it when the turn failed. It is OPEN from the surface until that end, and a native prompt carries
+ * nothing while it is: its deliveries are still in the inbox, so a second batch would carry them
+ * again and settle them with a turn that never ran them.
+ */
+export class SurfacedBatch {
+  private carried: string[] = [];
+  private inTurn = false;
+
+  constructor(private readonly agent: MeshAgent) {}
+
+  /** A surfaced batch's turn has not ended yet. */
+  get open(): boolean {
+    return this.inTurn;
+  }
+
+  /** The receive keys the batch carries. */
+  get keys(): readonly string[] {
+    return this.carried;
+  }
+
+  /** Make `keys` the batch, HELD IN FLIGHT for as long as its turn runs. A turn outlasting the
+   *  consumer's ack wait is ordinary, and while the batch is held the agent restarts that wait, so
+   *  the broker does not hand a role request this seat is still working on to another reader of its
+   *  role. Refused at the hold ceiling, and then nothing may be surfaced. */
+  surface(keys: string[]): boolean {
+    if (!this.agent.holdInFlight(keys)) return false;
+    this.agent.releaseInFlight(this.carried);
+    this.carried = keys;
+    this.inTurn = true;
+    return true;
+  }
+
+  /** Carry the buffered inbox and pending run turns into a native prompt, returning the prefix that
+   *  goes ahead of its text, or `undefined` when there is nothing to carry or a batch is open. The
+   *  inbox keys it carries become the open batch; run turns alone open none, having nothing to ack.
+   *  The prompt running with the prefix in place IS the delivery, so the run turns commit here. */
+  inject(): string | undefined {
+    if (this.inTurn) return undefined;
+    const computed = computeInjection(this.agent);
+    if (!computed) return undefined;
+    if (computed.surfacedIds.length > 0 && !this.surface(computed.surfacedIds)) return undefined;
+    if (computed.turnIds.length) this.agent.commitSurfacedTurns(computed.turnIds);
+    return computed.prefix;
+  }
+
+  /** Ack exactly the surfaced deliveries by their receive keys (#624: an id-less item's wire id
+   *  would be "", unaddressable). Overflow may already have removed some; MeshAgent marks every
+   *  confirmed delivery handled while only acking entries still present. */
+  ack(): void {
+    if (this.carried.length > 0) this.agent.drainInboxDeliveries(this.carried);
+    this.abandon();
+  }
+
+  /** Stop holding the batch: its deliveries are no longer renewed, so whatever is still unacked
+   *  redelivers once its ack wait runs out. */
+  abandon(): void {
+    this.agent.releaseInFlight(this.carried);
+    this.carried = [];
+    this.inTurn = false;
+  }
 }
 
 export const cotal: Plugin = async () => {
@@ -505,8 +568,18 @@ export const cotal: Plugin = async () => {
   // Set on the first connector-submitted turn whether or not there was a briefing to send: the flag
   // records that the attempt was made, so an empty briefing is not retried on every later turn.
   let briefed = false;
-  let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion (per delivery, not count)
-  let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
+  // The batch the current turn carries, acked on completion (per delivery, not count). Open while
+  // our turn is in flight → ignore a duplicate idle that isn't its end.
+  const batch = new SurfacedBatch(agent);
+  // Every turn end this session reports (an idle, an idle status, an error), counted when its event
+  // arrives and before any await. A submission compares the count across its send, because a turn can
+  // end before the answer arrives. 1.x events carry no log position, and OpenCode can report an idle
+  // with no busy before it (a cancel while idle, a run that fails before its first step), so every
+  // end after the send counts and none before it does.
+  let turnEndsSeen = 0;
+  const noteTurnEnd = (): void => {
+    turnEndsSeen += 1;
+  };
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let interruptIntent: { sessionID?: string; expires: number } | undefined;
@@ -733,6 +806,9 @@ export const cotal: Plugin = async () => {
       process.exit(code);
     }
   };
+  // A once seat that must end itself, because its task's handoff could not be reported, leaves
+  // through the same teardown as every other stop.
+  registerOnceExit(() => void shutdown(1));
   if (control) {
     const handle = async (): Promise<Record<string, unknown>> => ({
       ok: false,
@@ -755,7 +831,7 @@ export const cotal: Plugin = async () => {
   }
 
   function markInterruptIntent(sessionID?: string): void {
-    if (!busy && !awaitingTurnEnd) return;
+    if (!busy && !batch.open) return;
     interruptIntent = { sessionID, expires: Date.now() + INTERRUPT_INTENT_TTL_MS };
   }
 
@@ -864,8 +940,7 @@ export const cotal: Plugin = async () => {
     driving = false;
     primed = false;
     briefed = false;
-    abandonSurfaced();
-    awaitingTurnEnd = false;
+    batch.abandon();
     clearInterruptIntent();
     clearErrorRetry(true);
     if (previous) {
@@ -932,7 +1007,7 @@ export const cotal: Plugin = async () => {
   /** Drive a turn carrying the current inbox batch (and the boot briefing once) into the visible
    *  session via the server API — server-side, so it can't race like the TUI input box, and the TUI
    *  renders it live (it subscribes to that session's events). Surfaces the items but does NOT ack
-   *  them — ackSurfaced runs on turn completion, so a crash/error redelivers. A pending wake
+   *  them — the batch is acked on turn completion, so a crash/error redelivers. A pending wake
    *  (`pendingWake`, a bare nudge for a focus @mention pull) replaces the body and surfaces nothing
    *  to ack; it is read here and cleared only once its submission lands. Self-guards re-entrancy and
    *  never prompts into a running turn (opencode would COALESCE onto it). */
@@ -979,6 +1054,8 @@ export const cotal: Plugin = async () => {
     // preconditions are met, and a pending wake waits in its slot until then.
     if (bootPrompt !== undefined && boot === undefined) return;
     driving = true;
+    // The turns this submission carries under a claim, released if it fails.
+    let turnIds: string[] = [];
     try {
       const id = await ensureSession();
       if (!id) return; // no visible session yet, retry on the next event/wake
@@ -988,7 +1065,7 @@ export const cotal: Plugin = async () => {
       // then is the defect this change exists to stop, arriving through the one door that was
       // already past the check rather than through a door that was never guarded. A reviewer
       // reproduced it live by holding POST /session and disposing while a real DM was parked here.
-      // Nothing has been consumed at this point: `peekInbox` has not run and `surfaced` is unset, so
+      // Nothing has been consumed at this point: `peekInbox` has not run and nothing is surfaced, so
       // returning leaves the batch in the inbox for a later wake IN THIS PROCESS. That is the whole
       // of the promise. A batch still held when the seat tears down does not survive the process:
       // measured, by restarting the identity on a fresh uid and then on the same one and finding the
@@ -1004,7 +1081,6 @@ export const cotal: Plugin = async () => {
       const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
       // Run turns ride the same composed submission; their ids commit as surfaced only once the
       // submission lands below (two-phase — a failed submit re-surfaces them, never a lie).
-      let turnIds: string[] = [];
       const turnPeek = agent.peekPendingTurns();
       if (text) {
         parts.push({ type: "text", text });
@@ -1017,25 +1093,35 @@ export const cotal: Plugin = async () => {
           if (inj) parts.push({ type: "text", text: inj });
         }
       }
-      if (turnPeek) {
-        turnIds = turnPeek.goalIds;
-        parts.push({ type: "text", text: turnPeek.text });
-      }
       // NOT marked consumed here. Setting the flag before the submission meant a throw below cost
       // the briefing permanently, on this turn and every later one.
       const brief = briefed ? undefined : agent.channelBriefing();
       if (brief) parts.unshift({ type: "text", text: brief });
-      if (parts.length === 0) return;
+      if (parts.length === 0 && !turnPeek) return;
       const body: { parts: typeof parts; system?: string } = { parts };
-      // persona once, as system (no --append-system-prompt). Append the orientation bootstrap so the
-      // agent is told to orient first — gated on persona so we never replace OpenCode's default system.
-      if (!primed && persona) body.system = `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${CHANNEL_GUIDANCE}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}`;
-      if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+      // persona once, as system (no --append-system-prompt), with the shared briefing after it —
+      // gated on persona so we never replace OpenCode's default system.
+      if (!primed && persona) body.system = `${persona}\n\n${briefing(config, "opencode")}`;
+      // The surface opens the batch, which arms the turn end BEFORE the await: a turn-end signal can
+      // land before the server request resolves, and completeTurn bails unless armed — arming after
+      // would drop it and wedge the agent.
+      if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
+      // The turns' permit, after the last gate and right before the send with no await between: a
+      // once task another dispatch already took is left out, and a submission left with nothing to
+      // say is not sent.
+      if (turnPeek && agent.claimTurns(turnPeek.goalIds)) {
+        turnIds = turnPeek.goalIds;
+        parts.push({ type: "text", text: turnPeek.text });
+      }
+      if (!text && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return; }
       busy = true;
-      // Arm BEFORE the await: a turn-end signal can land before the server request resolves, and
-      // completeTurn bails unless armed — arming after would drop it and wedge the agent.
-      awaitingTurnEnd = true;
+      const endsAtSend = turnEndsSeen;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
+      // A turn that ended before this answer may be the once task's own turn, already over, or one
+      // the host ran meanwhile, and nothing here tells which; a session replaced meanwhile (`/new`)
+      // hides the old one's end. Either way the task is sealed and reported rather than confirmed,
+      // so a later turn's end cannot yield it.
+      if (turnIds.length && (turnEndsSeen !== endsAtSend || sessionID !== id)) agent.releaseTurns(turnIds);
       // The submission landed with the run turns in its prompt — they are surfaced.
       if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // WHAT THIS TURN CARRIED, so the `session.error` arm can re-arm it if this turn fails instead
@@ -1065,9 +1151,11 @@ export const cotal: Plugin = async () => {
       briefed = true;
       primed = true;
     } catch (e) {
+      // First, before any retry is scheduled: a once task in a submission that failed after it may
+      // have reached the server is sealed and reported, never sent again.
+      agent.releaseTurns(turnIds);
       busy = false;
-      abandonSurfaced();
-      awaitingTurnEnd = false;
+      batch.abandon();
       // NOTHING TO PUT BACK. A failed submission did not land, so the wake it carried, and any wake
       // that arrived while it was in flight, is still in `pendingWake`, and `workPending()` gives the
       // retry below something to carry.
@@ -1110,33 +1198,6 @@ export const cotal: Plugin = async () => {
     await drive();
   })();
 
-  /** Ack exactly the surfaced deliveries by their receive keys (#624: an id-less item's wire id
-   *  would be "", unaddressable). Overflow may already have removed some; MeshAgent marks every
-   *  confirmed delivery handled while only acking entries still present. */
-  function ackSurfaced(): void {
-    if (surfaced.length === 0) return;
-    agent.drainInboxDeliveries(surfaced);
-    abandonSurfaced();
-  }
-
-  /** Stop holding the surfaced batch: its deliveries are no longer renewed, so whatever is still
-   *  unacked redelivers once its ack wait runs out. */
-  function abandonSurfaced(): void {
-    agent.releaseInFlight(surfaced);
-    surfaced = [];
-  }
-
-  /** Make `ids` the surfaced batch, HELD IN FLIGHT for as long as its turn runs. A turn outlasting
-   *  the consumer's ack wait is ordinary, and while the batch is held the agent restarts that wait,
-   *  so the broker does not hand a role request this seat is still working on to another reader of
-   *  its role. Refused at the hold ceiling, and then nothing may be surfaced. */
-  function surface(ids: string[]): boolean {
-    if (!agent.holdInFlight(ids)) return false;
-    agent.releaseInFlight(surfaced);
-    surfaced = ids;
-    return true;
-  }
-
   /**
    * The turn end a session is still settling: the close whose position read has not answered. A
    * next turn admitted before it answers puts the terminal after that turn's records, so every
@@ -1163,37 +1224,29 @@ export const cotal: Plugin = async () => {
    *  batch to the user's text, then ack it when the resulting turn ends. We only mutate an existing
    *  text part so we don't need to manufacture OpenCode's internal part IDs. */
   function injectIntoPrompt(output: { parts?: unknown[] }): void {
-    if (driving || awaitingTurnEnd) return; // drive() already injected, or one surfaced batch is open
-    const computed = computeInjection(agent);
-    if (!computed) return;
+    if (driving) return; // drive() is submitting the batch itself; an open batch is refused by `inject`
     const textPart = output.parts?.find(
       (p): p is { type: "text"; text: string } =>
         typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string",
     );
-    if (!textPart || !surface(computed.surfacedIds)) return;
-    textPart.text = `${computed.prefix}\n\n${textPart.text}`;
-    // The mutation IS the delivery here — the human's prompt runs with the prefix in place.
-    if (computed.turnIds.length) agent.commitSurfacedTurns(computed.turnIds);
-    if (computed.surfacedIds.length) {
-      awaitingTurnEnd = true;
-      busy = true;
-    }
+    if (!textPart) return;
+    const prefix = batch.inject();
+    if (prefix === undefined) return;
+    textPart.text = `${prefix}\n\n${textPart.text}`;
+    if (batch.open) busy = true; // it carried inbox keys, which this turn's end acks
   }
 
   /** A turn ended — ANY turn, ours (a driven inbox batch) OR the human's (typing into the attached
    *  TUI, a `/reconnect`, etc). Clear `busy` regardless of who drove it: it's the COALESCE guard, so
    *  a turn the connector didn't drive must still release it or every later push wedges behind a
-   *  finished turn. Ack only what WE surfaced (gated on awaitingTurnEnd — a human turn surfaced
+   *  finished turn. Ack only what WE surfaced (gated on the open batch — a human turn surfaced
     *  nothing), then flush the next buffered batch — mode-aware, so bare ambient (dnd/focus) doesn't
     *  self-wake. A truly stray idle (nothing was running and
    *  we drove nothing) is ignored, so it can't mis-ack or empty-drive. */
   function completeTurn(): void {
-    if (!busy && !awaitingTurnEnd) return; // stray/duplicate idle — no turn to close
+    if (!busy && !batch.open) return; // stray/duplicate idle — no turn to close
     busy = false;
-    if (awaitingTurnEnd) {
-      awaitingTurnEnd = false;
-      ackSurfaced(); // our driven turn: ack the surfaced batch (the sole ack site)
-    }
+    if (batch.open) batch.ack(); // our driven turn: ack the surfaced batch (the sole ack site)
     submittedWake = undefined; // the turn delivered — nothing left to re-arm (#715)
     clearInterruptIntent();
     clearErrorRetry(true);
@@ -1391,6 +1444,7 @@ export const cotal: Plugin = async () => {
         case "session.idle": {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;
+          noteTurnEnd();
           // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
@@ -1413,6 +1467,7 @@ export const cotal: Plugin = async () => {
             busy = true;
             await safeStatus("working");
           } else if (s.type === "idle") {
+            noteTurnEnd();
             await safeStatus("idle");
           } else if (s.type === "retry") {
             await safeStatus("working", `retrying: ${s.message}`);
@@ -1424,7 +1479,8 @@ export const cotal: Plugin = async () => {
           // session-less one (id undefined) during an in-flight turn must still close it, else
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
-          if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error
+          noteTurnEnd();
+          if (!busy && !batch.open) return; // no turn to fail — stray error
           // WHICH `session.error`s ARE FAILED TURNS, decided here and stated rather than left to be
           // inferred, because that judgment is the whole of #596. Every error that reaches this line
           // ended a turn before it finished — the ack path one block below has always treated it
@@ -1453,13 +1509,12 @@ export const cotal: Plugin = async () => {
           // Awaited for its position read, as the idle arm does, before the next turn is admitted.
           await turnEnded(sessionID, eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error)));
           busy = false;
-          if (awaitingTurnEnd) {
-            awaitingTurnEnd = false;
+          if (batch.open) {
             if (interrupted) {
-              ackSurfaced(); // explicit user Stop/Cancel: treat the surfaced batch as dismissed, not failed
+              batch.ack(); // explicit user Stop/Cancel: treat the surfaced batch as dismissed, not failed
               submittedWake = undefined; // dismissed the same way as the batch it rode with, not re-armed
             } else {
-              abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
+              batch.abandon(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
               // RE-ARM THE WAKE (#715): a landed submission clears `pendingWake`, so a turn that
               // then fails would leave `workPending()` false and the retry below a no-op, unlike a
               // submission that never lands, which leaves the wake pending. Only into an empty slot:
@@ -1473,7 +1528,12 @@ export const cotal: Plugin = async () => {
           }
           await safeStatus("idle");
           if (!interrupted) scheduleErrorRetry();
-          else clearErrorRetry(true);
+          else {
+            clearErrorRetry(true);
+            // The stop ended the turn, and the `session.idle` after it finds no turn to close, so
+            // drive here what arrived during it, as completeTurn would have (#3839).
+            if (workPending()) void drive();
+          }
           break;
         case "message.part.updated": {
           // NEAR-LIVE. The bus is the wake signal and never the data path: this says "look now", and

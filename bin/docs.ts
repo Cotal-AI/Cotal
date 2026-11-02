@@ -98,10 +98,10 @@ function pageView(r: DocsPageResult, presentation: Presentation): Report {
   return { sections: [{ blocks: [{ kind: "lines", lines: [note] }] }, ...body] };
 }
 
-/** Markdown inline text as read in a terminal: a link is its text, with the address when it leaves
- *  the docs, and bold markers are dropped. Code keeps its backticks. */
+/** Markdown inline text as read in a terminal: links keep their destinations and bold markers are
+ *  dropped. Code keeps its backticks. */
 const inline = (text: string): string =>
-  text.replace(/!?\[([^\]]*)\]\(([^)\s]*)\)/g, (_, label: string, url: string) => (/^https?:/.test(url) ? `${label} <${url}>` : label)).replace(/\*\*/g, "");
+  text.replace(/!?\[([^\]]*)\]\(([^)\s]*)\)/g, (_, label: string, url: string) => (url ? `${label} <${url}>` : label)).replace(/\*\*/g, "");
 
 /** A table row's cells; a `\|` inside a cell is a pipe, not a column break. */
 const cellsOf = (row: string): string[] => row.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((cell) => inline(cell.trim().replace(/\\\|/g, "|")));

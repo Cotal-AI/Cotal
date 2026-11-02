@@ -54,8 +54,9 @@ import {
   isReachable, openRecordsBucket, registerServiceInstance, deregisterServiceInstance, writeServiceStatus,
   freezeExpectedSet, readRecord, deleteRecordEntry, recordSpecKey, recordStatusKey, RECORD_KINDS,
   SERVICE_READY, EpEnvelopeError, compileContract, contractDigest, VOID_SCHEMA,
-  mintLifecycleUid, type EpIssuanceBarrier, type EpGateState, type ServiceNameAuthority, type ServiceSpec,
+  type EpIssuanceBarrier, type ServiceNameAuthority, type ServiceSpec,
 } from "../src/index.js";
+import { makeIssuanceGate, type IssuanceGate } from "./_issuance-gate.js";
 import { pickFreePort } from "./_free-port.js";
 
 const EXPECTED_CELLS = 21;
@@ -96,30 +97,23 @@ const CLOSURE = contractDigest(MANIFEST);
 const artifacts = new Map<string, unknown>([[contractDigest(DOC), DOC], [CLOSURE, MANIFEST], [D_VOID, VOID_SCHEMA]]);
 const spec: ServiceSpec = { endpoint: ENDPOINT, owner: "u_op", clusterDigests: [CLOSURE], protocol: { v: 1 } };
 const authority: ServiceNameAuthority = { authorize: (name, owner) => ({ authorized: name === ENDPOINT && owner === "u_op", revision: 0 }) };
-const gates = new Map<string, EpGateState>();
+const gates = new Map<string, IssuanceGate>();
 function barrierFor(instanceId: string): EpIssuanceBarrier {
   const key = `${ENDPOINT}/${instanceId}`;
-  if (!gates.has(key)) gates.set(key, { space: SPACE, endpoint: ENDPOINT, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
-  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
-  return {
-    observe: () => ({ ...gates.get(key)! }),
-    freeze: (rev) => { const g = gates.get(key)!; if (g.state !== "open" || g.revision !== rev) return null; gates.set(key, { ...g, state: "frozen", op, revision: rev + 1 }); return rev + 1; },
-    enumerate: () => [],
-    revoke: () => {},
-    evict: (holderPrincipals) => holderPrincipals.map(() => true),
-    reopen: (token, succ) => { const { op: _op, ...g } = gates.get(key)!; if (g.state !== "frozen" || g.revision !== token) return false; gates.set(key, { ...g, state: "open", generation: succ.generation, processEpoch: succ.processEpoch, registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision, revision: token + 1 }); return true; },
-  };
+  let gate = gates.get(key);
+  if (!gate) gates.set(key, gate = makeIssuanceGate({ space: SPACE, endpoint: ENDPOINT, lifecycleUid: instanceId }));
+  return gate.barrier;
 }
 const register = (kv: KV, instanceId: string) =>
   registerServiceInstance(kv, { space: SPACE, spec, instanceId, registrant: { owner: "u_op" }, authority, barrier: barrierFor(instanceId), readClusterArtifact: (d: string) => artifacts.get(d) });
-const observeGeneration = (instanceId: string) => () => gates.get(`${ENDPOINT}/${instanceId}`)!.generation;
+const observeGeneration = (instanceId: string) => () => gates.get(`${ENDPOINT}/${instanceId}`)!.coord().generation;
 const deregister = (kv: KV, instanceId: string) =>
   deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId, observeGeneration: observeGeneration(instanceId) });
 /** Converge an instance so the freeze counts it: `ready` at the current registration + gate epoch. */
 const converge = async (kv: KV, instanceId: string, registrationRevision: number) => {
-  const epoch = gates.get(`${ENDPOINT}/${instanceId}`)!.processEpoch;
+  const epoch = gates.get(`${ENDPOINT}/${instanceId}`)!.coord().processEpoch;
   await writeServiceStatus(kv, {
-    endpoint: ENDPOINT, instanceId, epoch, readProcessEpoch: () => gates.get(`${ENDPOINT}/${instanceId}`)!.processEpoch,
+    endpoint: ENDPOINT, instanceId, epoch, readProcessEpoch: () => gates.get(`${ENDPOINT}/${instanceId}`)!.coord().processEpoch,
     status: { state: SERVICE_READY, epoch, observedSpecRevision: registrationRevision },
   });
 };
@@ -212,14 +206,14 @@ try {
   // answers nothing. Each is caught rather than awaited bare, so a regression names its own cell.
   const after = await deregister(kv, IID_PIN);
   c("the instance is deregistered again (setting up the tombstone)", after.removed === true, after);
-  const epochBefore = gates.get(`${ENDPOINT}/${IID_PIN}`)!.processEpoch;
+  const epochBefore = gates.get(`${ENDPOINT}/${IID_PIN}`)!.coord().processEpoch;
   let reborn: { registrationRevision: number } | undefined;
   const rebirth = await errOf(async () => { reborn = await register(kv, IID_PIN); });
   c("THE RECOVERY: the same instance id registers again OVER the deletion marker",
     rebirth.message === "NO THROW" && (reborn?.registrationRevision ?? 0) > 0, rebirth);
   c("...and its epoch ADVANCED, so a predecessor that outlived its own deregistration is fenced",
-    gates.get(`${ENDPOINT}/${IID_PIN}`)!.processEpoch === epochBefore + 1,
-    { epochBefore, now: gates.get(`${ENDPOINT}/${IID_PIN}`)!.processEpoch });
+    gates.get(`${ENDPOINT}/${IID_PIN}`)!.coord().processEpoch === epochBefore + 1,
+    { epochBefore, now: gates.get(`${ENDPOINT}/${IID_PIN}`)!.coord().processEpoch });
   const reconverged = await errOf(() => converge(kv, IID_PIN, reborn?.registrationRevision ?? 0));
   c("...and its STATUS converges again over the status tombstone, the other half of the same cliff",
     reconverged.message === "NO THROW", reconverged);

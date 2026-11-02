@@ -11,6 +11,7 @@ const root = mkdtempSync(join(tmpdir(), "doc-comments-"));
 const checker = fileURLToPath(new URL("./check-doc-comments.mjs", import.meta.url));
 const input = "packages/probe/src/example.tsx";
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
+for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete env[key];
 let passed = 0;
 let failed = 0;

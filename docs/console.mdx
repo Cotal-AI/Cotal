@@ -1,0 +1,156 @@
+---
+title: "Use the console"
+description: "Inspect a mesh from the terminal and use authorized operator controls."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Inspect agents, messages, and channels from a terminal.
+First [start a mesh](run-a-mesh.mdx). Use [Watch a mesh](watch-a-mesh.mdx) to compare the terminal and browser displays.
+
+## Open the console [#terminal-console]
+
+```bash
+cotal console --space main       # the TUI for one space
+cotal console --plain            # the passive line stream (also the default when piped)
+cotal console                    # no --space on an open mesh → the admin overview first
+```
+
+A real terminal opens the interactive console. A pipe or `--plain` selects the timestamped line stream.
+The stream contains presence changes and chat messages, without the console's signal tiles.
+
+![The Cotal console shows a live roster and activity feed](../assets/quickstart.gif)
+
+### Select a space
+
+On an open mesh, omit `--space` to open the admin overview.
+It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
+Select a space to open its console. Press `b` to return to the overview.
+Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
+This scopes the view; one broker can host several accounts and spaces.
+
+<Callout type="warn" title="The console includes operator controls">
+
+Observation does not change the mesh, but authorized console actions can stop agents or delete data.
+In the overview, `D` deletes the selected space after you type its name.
+In an agent roster, `D` opens the agent stop confirmation instead.
+
+</Callout>
+
+For a static-auth space registered on this host, space deletion uses a teardown credential minted from that space's trust material.
+It includes the space's current resume-transfer buckets.
+Other space deletions use the console's connection, either open or supplied with `--creds`.
+
+### Inspect activity
+
+The console has a roster, live feed, channel tabs, signal tiles, and optional views:
+
+| Key | Action |
+| --- | --- |
+| `1`–`9`, `[` and `]` | Select a channel tab. |
+| `n` | Show agents that are blocked or waiting in the NEEDS-YOU view. |
+| `d` | Open direct-message summaries and threads. Chat-only credentials show `DMs hidden`. |
+| `t`, then `v` or `1`–`3` | Open topology as a swimlane, heat matrix, or ring map. |
+| `/` | Search or filter the feed. |
+| `Ctrl-P` | Open the modal command palette. |
+| Arrows, `h`, or `l` | Move focus and select a detail card. |
+| `?`, `b`, or `q` | Open help, return to the overview, or quit. |
+
+The roster and DM list sit beside content on wide terminals and above it below 80 columns.
+Enter opens a selected agent or message detail card. A short terminal clips the bottom; enlarge the terminal or press a key to close it.
+Selections stay within the current rows when lists shrink or empty. The topology swimlane follows traffic at the final row; moving up pauses it.
+
+Topology includes broker-reported channel membership when the delivery daemon serves it.
+Its header marks that feed as `live`, `stale`, `traffic-only`, or `unreadable`.
+
+### Use operator actions
+
+Console control uses the same per-action authority as `cotal stop`, `cotal ps`, and `cotal spawn --detach`.
+The observer connection itself carries no control authority.
+Each action resolves the mesh and obtains a one-use caller through a minted credential, an open connection, or a user-auth bearer.
+It retains no caller between actions.
+
+The `canControl` permission is separate from `canWrite`, which permits chat.
+An explicit raw `--creds` file cannot provide the control caller.
+A broker, manager, or login refusal appears on the status line.
+
+Available controls include:
+
+| Action | Result |
+| --- | --- |
+| `D` on an agent | Confirm with `y` for graceful stop or `f` for force-kill. |
+| `spawn <persona> [name]` | Launch an agent and wait for it to join, as `cotal spawn --detach` does. |
+| `status <agent>` | Inspect that agent's manager status. |
+| `ps` | Inspect managed agents. |
+| `purge` | Purge the space after you type its name to confirm. |
+| `delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
+
+Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry entry.
+It acquires a one-use `channel-purger` credential on a static mesh, a `channel-purger` view on a user-auth mesh, or an open connection.
+It does not call a manager.
+
+With several managers, agent stop, `status`, and attach target the manager that hosts the seat.
+On static-auth and open meshes, `ps` combines their rows. A silent manager keeps its last-known rows and is named as silent.
+A manager that returns an error is named, and its old rows are withheld.
+`:spawn` and `purge` use the class queue, as their CLI commands do without `--on`.
+
+### Launch from the palette
+
+Open Ctrl-P and choose **Spawn agent**. Search for `spawn` or `new agent` to find it.
+Choose an application, persona, model, name, and optional first request, then choose **Launch agent**.
+Empty application, model, and name fields keep native CLI defaults.
+Events are off by default in the form; a space requiring events refuses that explicit opt-out.
+The form uses `spawn --detach` and reports its joined receipt or failure. Inspect an unconfirmed outcome before launching again.
+Use the roster's attach action where supported. Esc returns to the palette.
+
+The modal palette replaces the `:` shortcut. Complete typed commands remain supported.
+`dm` and `call` list agents and endpoints; `attach` and `status` list manager seats, including those missing from presence.
+`msg` and `delchan` list channels, while `ask` lists advertised roles.
+Use arrows and Enter to choose, then enter message text. Tab completes `@agent` and `#channel` tokens.
+Empty results and manager read failures remain visible. A `read-only` or `no control path` action reports its refusal when selected.
+
+### Attach to an agent
+
+Press `a` on a roster agent, or run `attach <agent>`.
+The console pauses its display and runs `cotal attach` in the same terminal.
+The observer continues in the background.
+
+Press `Ctrl-]`, or the configured `COTAL_DETACH_KEY`, to return to the console.
+The status line reports whether you detached, the seat ended, or attach was refused.
+An invalid detach key is refused before the console hands over the terminal.
+
+Attach uses the same one-use, holder-bound mesh session, reconnect behavior, and end reasons as the CLI.
+It requires `canControl` and a `pty` seat.
+Static authentication requires the space's local signing seed to redeem the session grant.
+An open mesh attaches without minting a credential.
+User authentication redeems the session through the identity plane's session-bearer exchange.
+
+### Receive replies to operator messages
+
+On an open mesh, your first send registers the operator in presence.
+This applies to `dm`, `call`, `ask`, `msg`, or a composed message, and requires `canWrite`.
+A watch-only session stays invisible.
+
+The console starts a presence-only endpoint with the observer's id, name, and `operator` role.
+The status bar shows `on roster`, and replies appear in the existing DM view.
+The heartbeat survives broker reconnects. Quitting leaves an offline presence record.
+
+If registration is refused, the send is blocked and the status line explains why.
+Concurrent sends wait for the same registration result. A later send retries after refusal.
+
+Authenticated sessions do not gain this participant behavior.
+The default observer cannot send. An agent-grade `--creds` file may permit sends, but the observer does not consume that agent's durable DM inbox.
+Those sends are one-way, and the status line says so once.
+A supported authenticated participant profile with presence, chat, and inbox access is not available yet.
+
+## Check visibility limits
+
+The console requests admin observer access by default on an authenticated mesh.
+Both the TUI and line stream select only the chat subtree whenever credentials or a user bearer are present, including with admin grants.
+An explicit `--creds` file can restrict reads further to its grants.
+
+On an open mesh without credentials or a user bearer, both displays use a whole-space tap that can include DMs and anycast.
+A restricted read does not prove that hidden peers or DMs are absent.
+See [Identity](identity-and-auth.mdx) for observer and admin scopes and [MeshView](mesh-view.mdx) for the console and stream model.

@@ -408,15 +408,27 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   /** An arm, as the scope machinery calls one. A non-function is passed through so the engine fails where the walker fails. */
   const asArm = (v: unknown): unknown => (typeof v === "function" ? toWalker(v as (...a: unknown[]) => unknown) : v);
 
-  /** `parallel`/`race` take a record or an array OF ARMS; the other two take data in that position. */
-  const branchesOf = (name: string, first: unknown): unknown => {
-    if (name === "once") return asArm(first);
-    if (name !== "parallel" && name !== "race") return first;
-    if (Array.isArray(first)) return first.map(asArm);
-    if (first === null || typeof first !== "object") return first;
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(first as Record<string, unknown>)) setOwn(out, k, asArm(v));
-    return out;
+  /** `parallel`/`race` take a record or an array OF ARMS and `once` takes one; `fanOut` and `conclave` take data in that position. */
+  const branchesOf = (scopeKind: ScopeKind, first: unknown): unknown => {
+    switch (scopeKind) {
+      case "fanOut":
+      case "conclave":
+        return first;
+      case "once":
+        return asArm(first);
+      case "parallel":
+      case "race": {
+        if (Array.isArray(first)) return first.map(asArm);
+        if (first === null || typeof first !== "object") return first;
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(first as Record<string, unknown>)) setOwn(out, k, asArm(v));
+        return out;
+      }
+      default: {
+        const unhandled: never = scopeKind;
+        throw new EngineFault(`the scope ${unhandled} has no calling convention for its first argument`);
+      }
+    }
   };
 
   /** `fanOut`'s `key` is called by the scope machinery too. The copy never reaches the program. */
@@ -442,14 +454,14 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    * journalled its effects in the wrong place, and a resume would replay a step the walker's run
    * never recorded. `parallel` and `race` have no deferred argument - their second is the bag.
    */
-  const deferredBody = (name: string, args: unknown[]): (() => Promise<unknown>) => async () => {
-    if (name === "parallel" || name === "race") {
-      throw new EngineFault(`\`${name}\` has no deferred argument; asking for one is an emitter mistake`);
+  const deferredBody = (scopeKind: ScopeKind, args: unknown[]): (() => Promise<unknown>) => async () => {
+    if (scopeKind === "parallel" || scopeKind === "race") {
+      throw new EngineFault(`\`${scopeKind}\` has no deferred argument; asking for one is an emitter mistake`);
     }
     const thunk = args[1];
     if (typeof thunk !== "function") {
       throw new EngineFault(
-        `\`${name}\` takes its body UNEVALUATED, as a thunk: the walker evaluates it AFTER the scope's entry has begun (measured: an effect in that position journals inside the scope, one in the options bag journals before it), so a body handed over already evaluated has journalled its effects in the wrong place.`,
+        `\`${scopeKind}\` takes its body UNEVALUATED, as a thunk: the walker evaluates it AFTER the scope's entry has begun (measured: an effect in that position journals inside the scope, one in the options bag journals before it), so a body handed over already evaluated has journalled its effects in the wrong place.`,
       );
     }
     return asArm(await (thunk as () => unknown)());
@@ -476,7 +488,6 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   };
 
   const openScope = async (
-    name: string,
     scopeKind: ScopeKind,
     spec: NonNullable<(typeof PRIMITIVES)[string]>,
     args: unknown[],
@@ -484,7 +495,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   ): Promise<unknown> => {
     const frame = currentFrame();
     const first = args[0];
-    if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
+    if (scopeKind === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bag = args[spec.optionsAt];
     const scopeName = (option(bag, "name") as string | undefined) ?? null;
     // Allocated HERE, synchronously, exactly as the walker allocates it: the occurrence is what
@@ -509,12 +520,11 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       async (ctx, only) =>
         await runScope(
           host,
-          name,
           scopeKind,
           scopeName,
           occurrence,
-          branchesOf(name, first),
-          deferredBody(name, args),
+          branchesOf(scopeKind, first),
+          deferredBody(scopeKind, args),
           bagWithKey(bag),
           frame as ScopeFrame,
           ctx,
@@ -523,7 +533,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       subject,
       // `race` alone, as on the walker: `parallel` and `fanOut` have no losers, and a `conclave`
       // cannot be walked into at all.
-      name === "race" ? digesterFor(site) : undefined,
+      scopeKind === "race" ? digesterFor(site) : undefined,
     );
   };
 
@@ -808,7 +818,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     async effect(name, args, site) {
       const spec = PRIMITIVES[name];
       if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
-      if (spec.scope !== null) return await openScope(name, spec.scope, spec, args, site);
+      if (spec.scope !== null) return await openScope(spec.scope, spec, args, site);
       // A PROBE ARRIVES AS THE PROGRAM'S OWN CLOSURE and the shared seam calls it `(frame, args)`,
       // exactly as it calls a scope's arms, so it is adapted here for the same reason `asArm`
       // exists: the engine's closures speak the program's convention and the scope machinery speaks
