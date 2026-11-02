@@ -64,6 +64,20 @@
       "find": "hubs.get(k)?.deliveryClass === \"durable\" && ",
       "replace": "",
       "expectRed": "6.1 an offline team.> follower gets a durable spoke to team.build only, and no hub named team.>"
+    },
+    {
+      "name": "G-F3 the channel read stops drawing the last snapshot again, so a family row that landed before the classes reaches no hub",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "      if (lastMembers) drawMembers(lastMembers);\n    } };",
+      "replace": "    } };",
+      "expectRed": "7.2 F's team.> row reaches #team.build when /api/channels answers after the snapshot"
+    },
+    {
+      "name": "G-F4 a hub first seen in a message no longer reads the channels again, so it never gets a class",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "      if (!hubs.has(msg.channel)) rereadChannels();\n",
+      "replace": "",
+      "expectRed": "7.4 a durable channel first seen in a message gets F's spoke once its class is read"
     }
   ],
   "suite": [

@@ -81,6 +81,8 @@ DM threads use authenticated ids, and names, roles, and statuses come from the r
 Graph membership comes from the delivery daemon's broker connection view combined with the durable-members registry.
 Silent subscribers therefore appear too. The feed starts as the page loads.
 Live updates take precedence over older startup reads, including older reads that later fail.
+A member following a channel family such as `team.>` links to each durable channel under it, the channels its stored copies cover.
+The graph draws those links once it has read each channel's delivery class, including for a channel that appears after the page loads.
 Use **hide-offline** to hide durable members that are away.
 
 | Feed state | Meaning |

@@ -216,6 +216,7 @@
     const animate = !filter.paused && filter[mode] && tabVisible();
     let toName = null;
     if (mode === "chat" && msg.channel) {
+      if (!hubs.has(msg.channel)) rereadChannels();
       const h = ensureHub(msg.channel);
       if (from) chatHit(from, msg.channel, now()).heat = 1;
       // inbound: sender → hub, then the hub flashes and fans the post back out to every other member on
@@ -303,9 +304,18 @@
     feed.asOf = snap.asOf;
     feed.available = snap.asOf !== undefined || (Array.isArray(snap.members) && snap.members.length > 0);
     setFeed();
+    lastMembers = snap.members || [];
+    drawMembers(lastMembers);
+  }
+  // A durable family row reaches only the hubs whose class is durable (`memberChannels`), and a class can
+  // land after the snapshot naming the family: the feed's first snapshot comes before `/api/channels`
+  // answers, and a channel first seen in a message has no class until that read runs again. So the last
+  // snapshot's members are kept and drawn again whenever classes land.
+  let lastMembers = null;
+  function drawMembers(members) {
     const known = [...hubs.keys()];
     const present = new Set();
-    for (const m of snap.members || []) {
+    for (const m of members) {
       const a = ensureAgent({ id: m.id });
       present.add(a.id);
       a.live = m.live || []; a.durable = m.durable || [];
@@ -741,6 +751,22 @@
   }
 
   // ── boot ──
+  const channelsSource = { name: "channels", read: async () => window.COTAL_SNAPSHOT.readJson(await fetch("/api/channels"), "channels"),
+    apply: (chans) => {
+      for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; }
+      if (lastMembers) drawMembers(lastMembers);
+    } };
+  // A hub first seen in a message reads `/api/channels` again for its class. One read answers for every
+  // hub that appears within the wait.
+  let channelsReread = 0;
+  function rereadChannels() {
+    if (channelsReread) return;
+    channelsReread = setTimeout(async () => {
+      channelsReread = 0;
+      const stale = await window.COTAL_SNAPSHOT.refreshAll([channelsSource]);
+      markStale("channels", stale[0] || null);
+    }, 250);
+  }
   async function load() {
     // ── ONE REFUSED READ MUST NOT EMPTY THE PAGE ────────────────────────────────────────────────
     //
@@ -760,8 +786,7 @@
     const stale = await SNAP.refreshAll([
       { name: "space", read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
         apply: (meta) => { $("space").textContent = "· " + meta.space; } },
-      { name: "channels", read: async () => SNAP.readJson(await fetch("/api/channels"), "channels"),
-        apply: (chans) => { for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; } } },
+      channelsSource,
       { name: "peers", read: async () => SNAP.readJson(await fetch("/api/roster"), "peers"),
         apply: supersededByFeed("peers", (roster) => updateRoster(roster)) },
       // `.catch(() => ({members: []}))` here turned a failed fetch into an empty snapshot, which the
