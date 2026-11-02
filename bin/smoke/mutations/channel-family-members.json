@@ -65,6 +65,7 @@
       "find": "row === channel || (familyStores && isChannelFamily(row) && subjectMatches(row, channel))",
       "replace": "row === channel",
       "expectRed": "durableCovers: a channel's own row, and a family row above it, cover the channel",
+      "cell": "durableCovers: a channel's own row, and a family row above it, cover the channel",
       "note": "A removal safeguard would let an operator remove a channel an offline family follower still covers."
     },
     {
@@ -73,6 +74,7 @@
       "find": "(familyStores && isChannelFamily(row) && subjectMatches(row, channel))",
       "replace": "(isChannelFamily(row) && subjectMatches(row, channel))",
       "expectRed": "durableCovers: with familyStores false, only the channel's own row covers it",
+      "cell": "durableCovers: with familyStores false, only the channel's own row covers it",
       "note": "A display would call a family follower a durable member of a live-class channel, where it stores nothing."
     }
   ]

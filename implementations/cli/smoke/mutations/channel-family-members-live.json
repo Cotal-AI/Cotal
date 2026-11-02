@@ -22,6 +22,7 @@
       "find": "durableCovers(member.durable, channel, stored)",
       "replace": "durableCovers(member.durable, channel, false)",
       "expectRed": "while connected, fern is a live and durable member of #team.build",
+      "cell": "while connected, fern is a live and durable member of #team.build",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
@@ -30,6 +31,7 @@
       "find": "durableCovers(member.durable, channel, stored)",
       "replace": "durableCovers(member.durable, channel, true)",
       "expectRed": "while connected, fern is a live member of #team.chat with no stored copies",
+      "cell": "while connected, fern is a live member of #team.chat with no stored copies",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
@@ -38,6 +40,7 @@
       "find": " && !reading && ep.channelDeliveryClass(channel) === readClass) {",
       "replace": " && !reading) {",
       "expectRed": "the follow drops fern once #team.build turns live, with no membership change",
+      "cell": "the follow drops fern once #team.build turns live, with no membership change",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

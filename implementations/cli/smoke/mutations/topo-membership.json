@@ -61,6 +61,7 @@
       "find": "        else for (const c of durable) if (!chans.has(c) && subjectMatches(ch, c)) chans.set(c, \"durable\");",
       "replace": "        else if (!chans.has(ch)) chans.set(ch, \"durable\");",
       "expectRed": "an offline family follower gets a durable link to each durable-class channel under it, and none to a live one",
+      "cell": "an offline family follower gets a durable link to each durable-class channel under it, and none to a live one",
       "note": "The lens would draw a channel named team.> and no link to the channels the follower stores copies for."
     },
     {
@@ -69,6 +70,7 @@
       "find": "        else for (const c of durable) if",
       "replace": "        else for (const c of known) if",
       "expectRed": "an offline family follower gets a durable link to each durable-class channel under it, and none to a live one",
+      "cell": "an offline family follower gets a durable link to each durable-class channel under it, and none to a live one",
       "note": "An offline follower would show a durable link to team.qa, a live-class channel where it stores nothing."
     },
     {
@@ -77,6 +79,7 @@
       "find": "deliveryClass: this.ep.channelDeliveryClass(channel) }))",
       "replace": "deliveryClass: \"live\" as const }))",
       "expectRed": "the channel rows carry each channel's class from the endpoint",
+      "cell": "the channel rows carry each channel's class from the endpoint",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm exec tsx implementations/cli/smoke/topo-membership.smoke.ts",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "The lens would hand foldTopo no durable channels, so no family row would expand."

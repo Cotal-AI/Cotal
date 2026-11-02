@@ -20,6 +20,7 @@
       "find": "(isConcreteChannel(c) || isChannelFamily(c))",
       "replace": "isConcreteChannel(c)",
       "expectRed": "FAMILY: the retirement listed the family row and the channel row, and the deprovisioner purged both",
+      "cell": "FAMILY: the retirement listed the family row and the channel row, and the deprovisioner purged both",
       "note": "A retired family follower's row would stay until a post reached the reader."
     },
     {
@@ -28,6 +29,7 @@
       "find": "          ...(rec.channel !== channel ? { row: rec.channel } : {}),\n",
       "replace": "",
       "expectRed": "FAMILY-LEFT: the post fanned out against the family row, and the reader that dropped its entry removed it: 0 rows remain",
+      "cell": "FAMILY-LEFT: the post fanned out against the family row, and the reader that dropped its entry removed it: 0 rows remain",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "note": "A family row a concrete-only retirement leaves would keep taking a copy of every post under it."
     }
