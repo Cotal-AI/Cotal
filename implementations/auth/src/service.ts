@@ -1729,6 +1729,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           // none, or with another, is never upgraded or adopted here.
           if (held !== undefined && (held.custody === undefined || !sameManagedGrantCustody(held.custody, custody)))
             throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is held at lifecycle ${held.lifecycleUid} under another custody; it was not adopted by this enrollment`);
+          // A retry provisions the read this request resolves to, so it is this enrollment only if
+          // that read is the one its grant records. A grant an older host wrote for a target that
+          // named only a subscribe set records no read.
+          if (held !== undefined && !(new Set(held.allowSubscribe).size === new Set(allowSubscribe).size && held.allowSubscribe.every((ch) => allowSubscribe.includes(ch))))
+            throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid} to read [${held.allowSubscribe.join(", ")}], and this retry reads [${allowSubscribe.join(", ")}]; prepare that lifecycle's retirement and enroll it again`);
           // A retry walks the held grant again: its spawner chain may have narrowed since the
           // first answer, and provisioning would restore what it took away.
           if (held !== undefined) {
@@ -1778,7 +1783,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           });
           await provisioner.start();
           try {
-            await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe: row.allowSubscribe, role: row.role });
+            await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe, role: row.role });
           } finally {
             await provisioner.stop();
           }
@@ -1813,7 +1818,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           lifecycleUid,
           sentinelCreds,
           subscribe,
-          allowSubscribe: row.allowSubscribe,
+          allowSubscribe,
           allowPublish: row.allowPublish,
           agentBearerExchangeUrl,
         },

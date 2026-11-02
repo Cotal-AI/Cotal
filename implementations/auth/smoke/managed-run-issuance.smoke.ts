@@ -78,6 +78,8 @@ const names = [
   "U1 same nonce renews a generation issued before the listing row existed",
   "U1 a served spawn whose subscribe set reads past its caller is refused by the host",
   "U1 the verify door refuses a served spawn whose subscribe set reads past its caller",
+  "U1 a retried enrollment whose grant records no read set is refused before its subscribe set becomes the read",
+  "U1 a no-read enrollment retried with a subscribe set is refused before that set becomes the read",
 ];
 let pass = 0, fail = 0;
 async function cell(index: number, fn: () => Promise<void>) {
@@ -521,6 +523,34 @@ try {
     const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
       { actor: "verifysub", tokenHash: newActorToken().tokenHash, label: "verifysub", subscribe: ["secret"], allowSubscribe: [] }, { served });
     await assert.rejects(verify(request), (error: Error) => /would exceed its spawner's grant/.test(error.message) && /read \[secret\]/.test(error.message));
+  });
+  // A retry provisions the read it resolves to. A grant an older host wrote for a target that named
+  // only a subscribe set records no read, so a retry naming that set is refused.
+  await cell(26, async () => {
+    assert.ok(caller);
+    const secret = newActorToken(), lifecycleUid = mintLifecycleUid();
+    grantManagedActor(a.stateDir, { custody: { kind: "remote-manager", instanceId: state.instanceId }, owner, actor: "legacyread", scope: [],
+      allowSubscribe: [], allowPublish: [], parent: `${owner}.runner`, lifecycleUid, tokenHash: secret.tokenHash });
+    const served = epRequestSubject(a.space, { route: { mode: "inst", instanceId: state.instanceId }, endpoint: "manager", command: "spawn", caller, nonce: `legacyread${mintLifecycleUid()}` });
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "legacyread", tokenHash: secret.tokenHash, label: "legacyread", subscribe: ["secret"] }, { served });
+    const outcome = await post("/manager-service-authority", { idpToken, request }).then(() => "enrolled", (error: Error) => error.message);
+    assert.match(outcome, /to read \[\], and this retry reads \[secret\]/);
+    assert.match(outcome, /enroll it again/);
+    assert.deepEqual(findManagedActor(a.stateDir, owner, "legacyread")?.allowSubscribe, []);
+  });
+  // A grant this host wrote for a no-read helper records no read either.
+  await cell(27, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `noread${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "noread", tokenHash: newActorToken().tokenHash, label: "noread", allowSubscribe: [] }, { served });
+    await post("/manager-service-authority", { idpToken, request });
+    assert.deepEqual(findManagedActor(a.stateDir, owner, "noread")?.allowSubscribe, []);
+    const retry = { ...request, target: { ...request.target, subscribe: ["secret"] } };
+    const outcome = await post("/manager-service-authority", { idpToken, request: retry }).then(() => "enrolled", (error: Error) => error.message);
+    assert.match(outcome, /to read \[\], and this retry reads \[secret\]/);
+    assert.match(outcome, /enroll it again/);
   });
   await cell(5, async () => {
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["admin", "spawn"], allowSubscribe: [], allowPublish: [] });

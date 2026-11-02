@@ -120,7 +120,9 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   its parent, so the helper is bounded by that agent's grant instead of the manager's. A run's
   helper is parented to the run's starter and also stays within what the starter held when the run
   was admitted. Upgrade the issuing host before its participant managers: an older host refuses the
-  new field on an enrollment.
+  new field on an enrollment. A grant enrolled before the upgrade for a helper that named a
+  subscribe set and no read list records no read, so a retry of that enrollment is refused. Retire
+  that lifecycle and enroll the helper again.
 - A host platform that writes its own managed-agent grants after asking the `verify-enrollment`
   door now gets `parent` in the answer, and the door refuses a helper wider than that parent. Record
   `parent` on the grant you write, and fill a list the request leaves out from the parent's grant at

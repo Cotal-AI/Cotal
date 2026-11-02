@@ -15,4 +15,4 @@ A helper never gets more than its spawner holds. On a static mesh every spawn is
 
 A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
 
-Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, and an older reader refuses an admission carrying `spawnExempt` or `delegation`. See UPGRADING.
+Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
