@@ -123,6 +123,7 @@ A complete agent file in `prompt` is merged into one frontmatter block.
 For a new definition, its grants, role, and agent survive unless an explicit tool argument overrides them.
 On redefinition, existing fields remain unless an explicit tool argument changes them; the prompt replaces the body.
 Malformed leading frontmatter is refused with `prompt-frontmatter`.
+A definition the manager could not load back is refused and nothing is written, for example one whose `subscribe` names a channel or family that no `allowSubscribe` entry contains.
 `capabilities` and `owner` remain policy and have no tool argument; prompt frontmatter cannot grant capabilities or claim ownership.
 A new definition records a signed-in creator or one of the manager's own seats as owner. Other static-space definitions remain operator-owned.
 

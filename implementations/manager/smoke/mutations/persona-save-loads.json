@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "implementations/manager/smoke/manager-service-ops.smoke.ts"
+  ],
+  "guard": "a persona definition the manager could not load back is refused before anything is written (#5404)",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-service-ops",
+  "progressPattern": "✓",
+  "minTicks": 4,
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/persona-save-loads.json",
+  "why": [
+    "The suite calls define-persona on a real manager through its ep door, so the refusal comes from the shipped writer.",
+    "",
+    "P1 writes the file without reading it back, so a subscribe entry outside allowSubscribe is saved and every later load of that name fails.",
+    "",
+    "The command builds core, which the manager imports from dist/, so P1's afterRestore rebuilds it, leaving no dist/ compiled from the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "P1 the writer saves without reading the file back",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    parseAgentFileSource(text, path);\n  } catch (e) {\n    throw new Error(`saveAgentFile: \"${def.name}\" was not saved",
+      "replace": "  } catch (e) {\n    throw new Error(`saveAgentFile: \"${def.name}\" was not saved",
+      "expectRed": "a definition whose family is wider than every read entry is refused and nothing is written",
+      "cell": "a definition whose family is wider than every read entry is refused and nothing is written",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "A peer could then save a persona that no later load, spawn or redefine can read."
+    }
+  ]
+}
