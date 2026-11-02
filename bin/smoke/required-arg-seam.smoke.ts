@@ -510,7 +510,10 @@ const SEAMS: Seam[] = [
   // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
   // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
   // starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 364, untypecheckedSites: 282 },
+  // 364/282 -> 371/289: the once-task smokes add two Jcode calls (df46417125), two manager
+  // restart calls (d9776d84b1), and three manager spawn calls (048d2cb41e). Each dials its suite's
+  // plaintext loopback broker and states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 371, untypecheckedSites: 289 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
