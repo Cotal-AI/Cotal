@@ -3218,70 +3218,70 @@
       "rationale": "Chat session interface signature: excludes offline from the statuses the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "mintControlInstrument(mesh, \"privileged\", instanceId)",
       "class": "non-render/control",
       "rationale": "Static chat control path: mints the manager control instrument for the pinned space record (mesh); no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "preflightOrThrow(mesh, undefined, true)",
       "class": "non-render/control",
       "rationale": "Static chat control path: runs the broker preflight for the pinned space record after a failed call; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askPinned(mesh, \"chatSessionOpen\", {\n      subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,\n    }, options.instanceId, \"admit a chat session\")",
+      "anchor": "askPinned(control, mesh, \"chatSessionOpen\", {\n      subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,\n    }, options.instanceId, \"admit a chat session\")",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned manager to open the chat session; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "managerFailure(reply, \"chat-session-open\", { space: mesh.space })",
       "class": "non-render/control",
       "rationale": "Static chat control path: turns a refused session-open reply into a command failure; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askPinned(mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS)",
+      "anchor": "askPinned(control, mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned manager to retire the chat session; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "retireReport(answer, managerInstanceId, slot.expiresAt)",
       "class": "non-render/control",
       "rationale": "Static chat control path: shapes the manager's retire answer into the close report; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "return session;",
       "class": "non-render/control",
       "rationale": "Static chat control path: returns the opened session to the caller; nothing is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "refuseWithoutLiveManager(mesh.space, mesh.server, auth, { space: mesh.space }, purpose)",
       "class": "non-render/control",
       "rationale": "Static chat control path: refuses before asking when no live manager answers for the pinned space record (mesh); no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askManager(cliControl, mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
+      "anchor": "askManager(control, mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned space's manager; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "`chat-session-open was not sent: ${reply.error}`",
       "class": "non-render/control",

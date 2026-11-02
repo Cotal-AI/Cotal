@@ -16,11 +16,11 @@ import { completingFlagValue, positionalsForCompletion } from "../lib/completion
 import { listDeclaredChannels } from "../lib/personas.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { cliControl } from "../lib/control.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
-import { openStaticChatSession } from "../chat/static-session.js";
 import { closeSummary, type Recipient } from "../chat/view.js";
-import { openRoutingChatSession, openUserChatSession, type AdmittedChatSession, type CloseReport, type RosterView } from "@cotal-ai/workspace/chat";
+import { openRoutingChatSession, openStaticChatSession, openUserChatSession, type AdmittedChatSession, type CloseReport, type RosterView } from "@cotal-ai/workspace/chat";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,
@@ -97,7 +97,7 @@ export function chatAdmission(mode: MeshTarget["mode"], label: string, channel: 
 function admit(target: MeshTarget, admission: ChatAdmission, reopen: (channel: string) => string): Promise<AdmittedChatSession> {
   switch (admission.mode) {
     case "open": return openRoutingChatSession(target, { ...admission, reopen });
-    case "auth": return openStaticChatSession(target, { ...admission, reopen });
+    case "auth": return openStaticChatSession(target, { ...admission, reopen, control: cliControl });
     case "user": return openUserChatSession(target, { ...admission, reopen });
   }
 }
