@@ -1,0 +1,3 @@
+# The Codex host's drive and steer make their turn checks again after a role request's take, so a
+# turn the attached TUI starts meanwhile gets no turn/start or steer, and the request goes out once.
+smoke:codex-anycast-take-host:auth
