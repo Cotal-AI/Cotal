@@ -28,16 +28,16 @@
     {
       "name": "K1 the session start drops the card",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "return injectFrame(agent, ev, event, [card, agent.channelBriefing()]);",
-      "replace": "return injectFrame(agent, ev, event, [agent.channelBriefing()]);",
+      "find": "return await injectFrame(agent, ev, event, [card, agent.channelBriefing()]);",
+      "replace": "return await injectFrame(agent, ev, event, [agent.channelBriefing()]);",
       "expectRed": "a bound session start hands over the orientation card",
       "cell": "a bound session start hands over the orientation card"
     },
     {
       "name": "K2 an owed card is never delivered",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "return injectFrame(agent, ev, event, [card]);",
-      "replace": "return injectFrame(agent, ev, event, []);",
+      "find": "return await injectFrame(agent, ev, event, [card]);",
+      "replace": "return await injectFrame(agent, ev, event, []);",
       "expectRed": "an unbound session start owes the card to the next prompt",
       "cell": "an unbound session start owes the card to the next prompt"
     },
