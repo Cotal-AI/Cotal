@@ -17,7 +17,7 @@
  *    through a transport-agnostic mock — the teardown is identical over the mesh §13.6 session.
  */
 import assert from "node:assert";
-import { attachClient, type TerminalTransport } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
+import { attachClient, type TerminalTransport } from "../../../packages/workspace/src/attach/attach-client.js"; // dev-only cross-impl smoke import
 import { PtyRuntime } from "../src/runtime/pty.js";
 import type { LaunchSpec } from "@cotal-ai/core";
 

@@ -363,10 +363,6 @@
     "sha256": "d7b91115b7a62b71451f447310d8032f0ee28cec202b45598b907212cc7fdb3c",
     "refusal": "mutation \"W1 seed history with a provisioner credential that cannot publish chat\" is missing \"cell\""
   },
-  "implementations/cli/smoke/mutations/console-attach.json": {
-    "sha256": "6e5beccfd444e2d71f73213a9f104036e2b5ed28e486cbd45636fddf4bd04470",
-    "refusal": "mutation \"A1 compare the detach key on the raw stream\" targets implementations/cli/src/lib/attach-client.ts, which none of [implementations/cli/smoke/console-attach.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/cli/smoke/mutations/console-gaps.json": {
     "sha256": "087ec5c20b17d140dc799641874ee9801a0112deb64ae79ef528af55a91ce199",
     "refusal": "mutation \"G1 viewing a channel does not pin its watermark\" targets implementations/cli/src/console/app.tsx, which none of [implementations/cli/smoke/console-gaps.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."

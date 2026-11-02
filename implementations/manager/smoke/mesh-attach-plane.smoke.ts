@@ -47,7 +47,7 @@ import {
 } from "../src/session/index.js";
 // dev-only smoke import: the CLI's mesh transport is the real caller consumer; implementations do
 // not import each other in production, but a cross-impl integration smoke may (like attach.smoke.ts).
-import { meshSessionTransport } from "../../cli/src/lib/attach-client.js";
+import { meshSessionTransport } from "../../../packages/workspace/src/attach/attach-client.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 

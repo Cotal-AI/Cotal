@@ -3,19 +3,19 @@
     "implementations/manager/smoke/attach-reconnect.smoke.ts"
   ],
   "guard": "`cotal attach` re-establishes its session when the LINK dies, and stops, saying why, when re-establishing cannot help",
-  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-reconnect",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-reconnect",
   "executes": ["bin/cotal.ts"],
   "completionMarker": "F. the four classifications the loop turns on",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-reconnect.json",
   "why": [
     "SPECIFIER BOUNDARY, and it is the reason every command here builds first. The suite reads the",
     "code under test through TWO different paths on purpose. Cell F imports `attachRefusal`,",
-    "`isTransportEnd` and `reconnectNotice` from `implementations/cli/src` directly, so a mutation lands on the bytes it",
+    "`isTransportEnd` and `reconnectNotice` from their `src` directly, so a mutation lands on the bytes it",
     "grades with no build at all. Cells A to E run the real binary, `tsx bin/cotal.ts`, and",
-    "`@cotal-ai/cli` resolves to `dist/` -- so those cells audit the last BUILD. Without a build in",
+    "`@cotal-ai/cli` and `@cotal-ai/workspace` resolve to `dist/` -- so those cells audit the last BUILD. Without a build in",
     "the command a mutation would kill the hand-built cell and leave every end-to-end cell green,",
     "which reads as `the classifier matters` when what was actually measured is `the suite imports",
-    "the classifier`. Each mutation therefore builds the CLI first and rebuilds it in afterRestore,",
+    "the classifier`. Each mutation therefore builds first and rebuilds its package in afterRestore,",
     "because `dist/` is gitignored and git cannot be the recovery for it.",
     "",
     "THE PAIRING IS THE POINT, not the count. Cell F builds its inputs by hand, so on its own it",
@@ -98,23 +98,23 @@
   "mutations": [
     {
       "name": "`connection-closed` is dropped from the transport-class set, so the link dying is treated as the session finishing",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "  \"peer-closed\", \"closed\", \"connection-closed\",",
       "replace": "  \"peer-closed\", \"closed\",",
       "expectRed": "the link dying is announced on the terminal",
       "cell": "the link dying is announced on the terminal",
       "note": "The defect as shipped, in one list entry. Without this member the attach reads a dead link as a finished session, prints `detached from` and exits, which is the behaviour the whole change exists to remove. It is aimed at the end-to-end cell rather than at cell F deliberately: cell F would redden too, and a kill there alone would not show that the real binary travels this path.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "`detached` joins the transport-class set, so pressing the detach key starts a reconnect instead of ending the attach",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "  \"peer-closed\", \"closed\", \"connection-closed\",",
       "replace": "  \"peer-closed\", \"closed\", \"connection-closed\", \"detached\",",
       "expectRed": "the detach key still detaches after a reconnect",
       "cell": "the detach key still detaches after a reconnect",
       "note": "The opposite error, and the more dangerous one, because it is invisible until someone tries to leave: an operator who presses Ctrl-] gets `[cotal: connection lost, reconnecting]` and a terminal that will not give itself back. The set has to be wrong in BOTH directions to be worth asserting, so this is the pair to mutation 1.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "a durable static slot whose live seat is gone is classified as worth retrying",
@@ -208,13 +208,13 @@
     },
     {
       "name": "the session's own reader is never handed the stream, so the loop's reader is left over a stream the session paused",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "      if (takeStdin?.()) {\n        transport.close();\n        return;\n      }\n",
       "replace": "",
       "expectRed": "the detach key ends the attach mid-reconnect",
       "cell": "the detach key ends the attach mid-reconnect",
       "note": "Deleting the handoff leaves BOTH readers installed for the whole session, which is why the sibling suite `smoke:attach-stdin` cannot see it: with both live a lone detach byte still ends the attach, and a chunk carrying the byte alongside other input is still refused by the same exact-match test on either side. What it loses is the release. `ownStdin` is `idle ??= watchDetachKey(...)`, so with the loop's watcher never stopped it neither reinstalls nor RESUMES, while `cleanup` pauses the stream the session did take: the operator's next press lands on a paused stream and is read by nobody. Measured on this suite at f345809a against a green baseline of 72: 67 passed, 5 failed, first red here, then `...exiting clean` and the held-session line, then cell J's two, `reconnectsAtPress 0` against `now 1` and `pressToExitMs 27172` against a boundary 26826ms away, spare -346ms. Registered on the FIRST of those reds. Found by review as a survivor of the sibling suite's set and recorded there as unreachable prose; it is reachable, it is graded here, and the sibling config now says so.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }
   ],
   "unkillable": [

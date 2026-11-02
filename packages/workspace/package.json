@@ -31,6 +31,10 @@
     "./launch": {
       "types": "./dist/launch.d.ts",
       "import": "./dist/launch.js"
+    },
+    "./attach": {
+      "types": "./dist/attach/index.d.ts",
+      "import": "./dist/attach/index.js"
     }
   },
   "scripts": {

@@ -57,7 +57,7 @@ import {
   type TerminalFrame,
 } from "../src/session/index.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
-import { meshSessionTransport } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import: the real CLI caller consumer
+import { meshSessionTransport } from "../../../packages/workspace/src/attach/attach-client.js"; // dev-only cross-impl smoke import: the real CLI caller consumer
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // A portable pty echo child: it pipes stdin straight back to stdout, so a keystroke the caller

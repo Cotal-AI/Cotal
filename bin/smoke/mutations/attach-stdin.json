@@ -3,13 +3,13 @@
     "implementations/manager/smoke/attach-stdin.smoke.ts"
   ],
   "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
-  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
   "executes": ["bin/cotal.ts"],
   "completionMarker": "O: the manager is back on the session count it started with",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-stdin.json",
   "why": [
     "EVERY CELL HERE RUNS THE BINARY, so every command builds first. The suite drives `tsx",
-    "bin/cotal.ts`, and `@cotal-ai/cli` resolves to `dist/`, so a mutation on `src` that is not built",
+    "bin/cotal.ts`, and `@cotal-ai/cli` and `@cotal-ai/workspace` resolve to `dist/`, so a mutation on `src` that is not built",
     "is a mutation the run never sees: it would come back SURVIVED and read as `this line does not",
     "matter` when what was measured is `this line was not in the artifact`. `dist/` is gitignored, so",
     "git cannot be the recovery for it either, hence the rebuild in every `afterRestore`.",
@@ -216,43 +216,43 @@
     },
     {
       "name": "the session's own reader SCANS for the detach byte instead of matching one alone",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "      if (isDetachPress(d, detach.byte)) {",
       "replace": "      if (d.includes(detach.byte)) {",
       "expectRed": "...and the attach is still up",
       "cell": "G. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach",
       "note": "The same decision on the other side of the handoff, and the cost of it: in a LIVE session a chunk containing 0x1d is DATA and goes to the agent with the byte in it. Widening the test here turns that paste into a detach. Both readers are mutated separately on purpose: one test passing is not evidence about the other, and they are in different packages.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "isDetachPress loses its kitty and xterm CSI arms, back to the legacy one-byte match only",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  if (d.length === 0) return false;\n  if (d.length === 1 && d[0] === byte) return true;\n  const s = d.toString(\"latin1\");\n  const codepoints = byte >= 0x01 && byte <= 0x1a ? [byte | 0x40, byte | 0x60] : [byte | 0x40];\n  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;\n  const kitty = /^\\x1b\\[(\\d+)(?::\\d+(?::\\d+)?)?;(\\d+)u$/.exec(s);\n  if (kitty) {\n    const cp = Number(kitty[1]);\n    const mods = Number(kitty[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  const xterm = /^\\x1b\\[27;(\\d+);(\\d+)~$/.exec(s);\n  if (xterm) {\n    const mods = Number(xterm[1]);\n    const cp = Number(xterm[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  return false;\n}",
       "replace": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  return d.length === 1 && d[0] === byte;\n}",
       "expectRed": "the attach detaches and exits clean",
       "cell": "G2. the kitty encoding of the detach key ends a LIVE session",
       "note": "Losing the kitty/xterm CSI arms is exactly the regression #598 reports: a terminal with either protocol enabled sends a multi-byte sequence for Ctrl-], the one-byte-only test never matches it, and the key does nothing. G2 catches it directly on the kitty form.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
         "name": "the Ctrl test loses its modifier floor, so a modifier field of 0 reads as Ctrl again",
-        "file": "implementations/cli/src/lib/attach-client.ts",
+        "file": "packages/workspace/src/attach/attach-client.ts",
         "find": "  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;",
         "replace": "  const hasCtrl = (mods: number) => ((mods - 1) & 4) !== 0;",
         "expectRed": "the attach is still up after a kitty chunk with modifier 0 (not a press)",
         "cell": "G5. an encoded detach key whose modifier field is 0 is data, forwarded, and not a detach",
         "note": "Found by review of #598: `(0 - 1) & 4` is 4 in ToInt32 arithmetic, so without the `mods >= 1` floor a kitty or xterm chunk carrying modifier 0 (a value neither protocol emits) detaches instead of being forwarded as data. Cell G5 writes each encoding with modifier 0 as a whole chunk of its own and asserts the attach stays up (the first check to red under this mutant, because the chunk is taken as a press and the attach exits) and that the bytes reach the agent once a CR flushes the cooked pty.",
-        "afterRestore": "pnpm --filter @cotal-ai/cli build"
+        "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "the handoff swallows a press that landed while the session was opening",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "      if (takeStdin?.()) {\n        transport.close();\n        return;\n      }",
       "replace": "      takeStdin?.();",
       "expectRed": "the press ends the attach, though it landed while the session was opening",
       "cell": "H. the detach key pressed while the new session is OPENING still detaches",
       "note": "Restores the swallow review found: the caller's reader owns stdin until the handoff, the handoff runs when the session is READY, and a press in between is seen by that reader and awaited by nobody. This mutation is also cell H's PREMISE CHECK: with the swallow back, the cell can only pass if the press landed after ready, which is not the window it is aiming at, so the kill is what proves the aim. It needs the suite's slow link to be reachable at all: on loopback the window is under a millisecond wide.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
       "name": "the first attach does not own the keyboard, so what is typed before it comes up is flushed into the seat",
@@ -319,13 +319,13 @@
     },
     {
       "name": "a session that never took the stream pauses it anyway on the way out",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "else if (tookStdin) stdin.pause();",
       "replace": "else stdin.pause();",
       "expectRed": "...and the seat read nothing of what was typed after a session died before it was ready",
       "cell": "O. a session that dies BEFORE it is READY leaves the keyboard where it was",
       "note": "The shipped defect in one word, and it restores the code exactly as it was before this round: `cleanup` pauses the stream whether or not this session ever resumed it. A session that ends before its `ready` fires never ran the handoff, so the loop's own watcher is still installed, and pausing under it leaves a reader that reads nothing for the whole backoff and every attempt after it; the bytes come back in the next session's `resume` and go to the agent. Measured on this exact code before the fix line existed: 76 passed, 1 failed, the red on this assertion with the nonce in the payload and `sessionsSinceTheCut: 1`.",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }
   ]
 }

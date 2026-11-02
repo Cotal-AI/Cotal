@@ -1,7 +1,7 @@
 import type { NatsConnection } from "@nats-io/transport-node";
 import { openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, type SessionGrant } from "@cotal-ai/core";
-import { cachedPreferences, describeLayer, parseDetachKey, resolvePreference } from "@cotal-ai/workspace";
-import { c, stderrLine } from "../ui.js";
+import { c } from "../colors.js";
+import { cachedPreferences, describeLayer, parseDetachKey, resolvePreference } from "../preferences.js";
 
 /**
  * The detach key — Ctrl-] (0x1d) by default, as in telnet/ssh escape conventions. The `detach-key`
@@ -261,15 +261,9 @@ export function isTransportEnd(reason: string): boolean {
  * mesh §13.6 session.
  */
 export function attachClient(transport: TerminalTransport, hold?: TerminalHold, takeStdin?: () => boolean): Promise<AttachOutcome> {
-  // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
-  // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
-  let detach: ReturnType<typeof detachKey>;
-  try {
-    detach = detachKey();
-  } catch (e) {
-    stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    process.exit(1);
-  }
+  // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY throws up front instead of
+  // after an attach we'd only tear down.
+  const detach = detachKey();
   // A caller that reconnects owns the terminal across attempts and undoes it once at the end;
   // without a hold this session owns it, which is the one-shot behaviour.
   const ownsTerminal = hold === undefined;

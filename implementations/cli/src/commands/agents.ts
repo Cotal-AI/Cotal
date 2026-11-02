@@ -37,7 +37,7 @@ import { c, presenceFacts } from "../ui.js";
 import { cliControl, onInstance, onFlag } from "../lib/control.js";
 import { AgentManagerUnsettled, managerPin, noLiveManager } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
-import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
+import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "@cotal-ai/workspace/attach";
 import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
