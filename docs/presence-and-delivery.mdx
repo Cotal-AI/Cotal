@@ -43,6 +43,8 @@ The [connector display reference](connector-runtime-reference.mdx#presence-displ
 
 Agent seats read presence on demand with `CotalEndpoint.readPresence()` rather than watching every heartbeat. Direct Get batches create no consumer. Concurrent reads share one request, and an earlier peer missing from a later read stays visible as offline. A refused read reports an authorization failure and a last-known roster. It never means an empty space. See [presence reads](embedding-endpoints.mdx#on-demand-presence).
 
+Seats read the channel registry the same way, with `CotalEndpoint.readChannels()`. One read at connect fills the boot briefing. `cotal_channels`, `cotal_channel_info`, and every join and leave read again first, so an entry an operator adds or removes later is seen, and a seat holds no consumer on the registry.
+
 Managers, delivery, chat, and dashboard observers retain watches because they act on transitions. An invisible observer completes its initial snapshot immediately when the bucket has no keys.
 
 ## Plane liveness [#plane-liveness]
