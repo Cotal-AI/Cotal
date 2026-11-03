@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, PLANE3_MAX_MSGS_PER_SUBJECT, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -583,7 +583,7 @@ function droppedNote(channels: readonly string[]): string {
 
 /** Said once after this session's stored copies reached their limit (#5404). NATS reports no discard,
  *  so it says "may". */
-const STORED_COPIES_NOTE = `⚠ Your stored copies reached their limit of ${PLANE3_MAX_MSGS_PER_SUBJECT}, so earlier channel posts may have been dropped before they reached you. Channel history may still hold them: \`cotal history <channel>\` reads it, within the space's history limit.`;
+const storedCopiesNote = (limit: number): string => `⚠ Your stored copies reached their limit of ${limit}, so earlier channel posts may have been dropped before they reached you. Channel history may still hold them: \`cotal history <channel>\` reads it, within the space's history limit.`;
 
 /** How many channels the recall warning names before it starts counting them instead. */
 const NAMED_DROPPED = 5;
@@ -1036,7 +1036,7 @@ export function cotalToolSpecs(
       description:
         "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
         "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed. " +
-        "If your stored copies reached their limit of 1000, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
+        "If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
@@ -1061,7 +1061,7 @@ export function cotalToolSpecs(
         // Every reply below carries the stored-copy notice, and it clears as the messages do: once the
         // reply exists and its caller is still there. A recall that throws or a caller that goes keeps it.
         const storedSeen = agent.storedCopiesFull;
-        const storedNote = storedSeen ? STORED_COPIES_NOTE : "";
+        const storedNote = storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : "";
         const reply = (text: string): ToolResult => {
           if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);
           return ok(text);

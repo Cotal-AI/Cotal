@@ -231,16 +231,17 @@ per-message metadata (`MessageMeta` need not carry it); it MUST NOT assume one c
   that member's next connection or turn, remaining pending until acked. A crash or `ack_wait` expiry
   redelivers the durable copy. At-least-once is bounded by the space's chat history limit (§8): a
   message the chat stream removes before its durable copy is taken may be lost, and the guarantee is
-  not unbounded. A durable copy already taken is not removed by that limit.
+  not unbounded. A durable copy already taken is not removed by that limit; the backstop's own limit
+  bounds it (§8).
 
-Unicast (`to`) and anycast (`toService`) are at-least-once via their own DM/TASK consumers (§8);
-they have no channel membership and are not subject to the per-channel delivery-class mechanism. An
-`@mention` (§5) on a `live` channel additionally writes a durable copy to each mentioned target
-**authorized to read that channel** (its `allowSubscribe` covers the channel), so an authorized but
-offline target still receives it; an `@mention` MUST NOT deliver channel content to a target outside
-its read ACL. Durable mention routing resolves each lowercased name to a unique current instance id
-from presence at publish time; an ambiguous (multiple live matches) or unresolvable name yields no
-durable copy, and authorization is checked against the resolved id's current `allowSubscribe`. A
+Unicast (`to`) and anycast (`toService`) are at-least-once via their own DM/TASK consumers (§8),
+unicast within the space's DM history limit (§8). They have no channel membership and are not subject
+to the per-channel delivery-class mechanism. An `@mention` (§5) on a `live` channel additionally
+writes a durable copy to each mentioned target **authorized to read that channel** (its
+`allowSubscribe` covers the channel), so an authorized but offline target still receives it; an
+`@mention` MUST NOT deliver channel content to a target outside its read ACL. Durable mention
+routing resolves each lowercased name to a unique current instance id from presence at publish time;
+an ambiguous (multiple live matches) or unresolvable name yields no durable copy, and authorization is checked against the resolved id's current `allowSubscribe`. A
 target authorized for a channel is **mention-reachable** there whether or not it is currently joined; this is intentional (an `@mention` can pull an authorized peer in) and is distinct
 from membership; a client SHOULD distinguish "joined" (actively subscribed) from "readable /
 mention-reachable" (in `allowSubscribe`) so an unjoined channel is not treated as "cannot reach me
@@ -631,20 +632,24 @@ mode.
 | Stream | Captures | Retention | Required config |
 | --- | --- | --- | --- |
 | `CHAT_<space>` | `cotal.<space>.chat.>` | Limits | file storage, `max_age` and `max_msgs_per_subject` from the chat history limit below, `discard=Old`, `allow_msg_ttl=false`, `allow_direct=true` |
-| `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
+| `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, `max_age` and `max_msgs_per_subject` from the DM history limit below, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
-**Chat history limit.** One limit per space sets how long `CHAT_<space>` keeps a channel post: until
-its sender has posted the limit's count (`max_msgs_per_subject`) newer ones on that channel, or, when
-the limit has an age (`max_age`), until the post is older than that age, whichever comes first. A
-chat subject is one sender on one channel, so the count holds per sender per channel. The broker
-removes a post past either bound, and lowering the limit on a live stream removes the posts past the
-new one at once. A new space starts with no age limit and 1000 per sender, and setting up an
-existing space MUST NOT change its limit. An operator MAY set an age from 2 minutes (the stream's
-duplicate window) to 3650 days in whole seconds, and a count of at least 1. A reader MUST accept no
-age with any count. `allow_msg_ttl` stays false on the stream: once on it cannot be turned off, and a
-per-message TTL of `never` escapes `max_age`. Copies the Plane 3 backstop already took into its own
-streams are bounded by those streams, not by this limit.
+**History limits.** A space has one history limit for `CHAT_<space>` and one for `DM_<space>`. Each
+keeps an entry until the limit's count (`max_msgs_per_subject`) of newer entries share its subject,
+or, when the limit has an age (`max_age`), until the entry is older than that age, whichever comes
+first. A chat subject is one sender on one channel, so the chat count holds per sender per channel. A
+DM subject is one sender to one recipient, so the DM count holds per sender per recipient. Either part
+may be none: no age is `max_age` 0 and no count is `max_msgs_per_subject` -1. With none for both, only
+the server's storage limit bounds the stream, and a full store refuses new messages. The broker
+removes an entry past either bound, and lowering a limit on a live stream removes the entries past
+the new one at once, read or not. A new space's chat stream starts with no age limit and 1000 per
+sender, and its DM stream with no age limit and no count limit. Setting up an existing space MUST NOT
+change either limit. An operator MAY set an age from 2 minutes (the stream's duplicate window) to 3650
+days in whole seconds, or none, and a count of at least 1, or none. A reader MUST accept any limit an
+operator may set. `allow_msg_ttl` stays false on the chat stream: once on it cannot be turned off, and
+a per-message TTL of `never` escapes `max_age`. Copies the Plane 3 backstop already took into its own
+streams are bounded by those streams' limit, not by the chat limit.
 
 **Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
 JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
@@ -726,11 +731,21 @@ differently as long as the §4 guarantee and the §9 checks hold.
 
 In the reference, fan-out writes a post on a concrete channel for every member whose row is that
 channel or a family covering it, and each copy's `Nats-Msg-Id` is `<id>:<principal>:<lifecycleUid>`,
-so the covering rows of one member collapse into one copy within the duplicate window. A member's
-`dlv` subject keeps its newest 1000 copies (`max_msgs_per_subject=1000`, `discard=Old`), and the broker
-reports no discard. A client that receives a backstop copy with 999 or more copies still pending
-behind it SHOULD tell the member that earlier copies may have been dropped, and that ACL-bounded
-history may still hold them.
+so the covering rows of one member collapse into one copy within the duplicate window. The
+reference's INBOX and DLV streams share one operator-set limit, with the parts and bounds of the
+history limits above, except that an age is at least 2 hours, their duplicate window. A subject there
+is one member lifecycle. A new space starts with no age limit and 1000 copies per lifecycle, and setting
+up an existing space leaves the limit as it is. They are two streams, so a change that stops partway can leave them on different limits. A member's `dlv`
+subject keeps its newest copies up to that count (`discard=Old`), delivered ones included, and the
+broker reports no discard. The trusted writer stamps each copy with the DLV count in force when it
+wrote the copy, in a `Cotal-Delivery-Limit` header holding a whole number or `none`; the reference
+reads the count at most 5 seconds before the write. A copy without the header comes from a writer that
+predates it, whose count was always 1000, so its count is 1000. A client that receives a backstop copy
+with its stamped count minus one, or more, copies still pending behind it SHOULD tell the member that
+earlier copies may have been dropped, and that ACL-bounded history may still hold them; a copy stamped
+`none` never does. The stamp is the count when the copy was written, so the notice covers evictions
+under that count. Lowering the count, or an age expiring copies, removes copies without a notice to
+the member; the reference shows the operator what such a change removes before it is made.
 
 The absence of a usable receiver dedup key does not relax acknowledgement ownership: a
 JetStream-consumed copy with `id: ""` that is surfaced or handled MUST be acknowledged
@@ -6939,6 +6954,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-03 | **History limits for DMs and the backstop, and none (§4, §8).** `DM_<space>` gets a history limit like the chat stream's, with no age limit and no count limit by default, and unicast is at-least-once within it. Either part of a limit may be none (`max_age` 0, `max_msgs_per_subject` -1), and a reader MUST accept any limit an operator may set. In the reference the INBOX and DLV streams share an operator-set limit with a 2-hour age floor and 1000 per lifecycle by default, the trusted writer stamps each DLV copy with the count it wrote under (`Cotal-Delivery-Limit`, 1000 when absent), and the stored-copies notice compares against that stamp. |
 | 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |
 | 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
 | 2026-11-01 | **Durable membership of a channel family (§7, §8, §9, Appendix B), additive except one refusal.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join, and any pattern in `subscribe`, lies within one `allowSubscribe` entry, so an agent definition whose `subscribe` pattern only matches an entry, such as `perm.>` under `perm.*`, is now refused. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
