@@ -55,6 +55,12 @@ boundary. The Pi-local ledger commits those IDs through `MeshAgent.drainInboxIds
 only exact matches even when quiet ambient is physically interleaved or older IDs were overflow-
 evicted. Missing confirmed IDs are marked handled and tombstoned so late copies cannot resurface.
 
+A dispatched batch stays in flight from dispatch until that commit, including while the driver holds
+it for a continuation. The mesh agent renews its durable ack wait, so a long turn keeps a role request
+and the broker never hands it to another holder of the role. The overflow valve also never evicts a
+batch in flight. At the in-flight ceiling, a new batch waits for a commit instead of going out
+unprotected.
+
 A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
 request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi
 runs a tool from the answer or reaches the clean terminal boundary. The seat can therefore
