@@ -381,7 +381,7 @@ try {
   check("...and it names the subject the credential lacked, so the remedy is readable off the error",
     (noPin.detail ?? "").includes(`.ep.inst.manager.${IID1}.describe.`), noPin.detail?.slice(0, 260));
   check("...and says the responder may be healthy (the wrong conclusion is the expensive one)",
-    /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /grant is what is missing/.test(noPin.detail ?? ""),
+    /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /no grant covers it, or it was granted after this connection authenticated/.test(noPin.detail ?? ""),
     noPin.detail?.slice(0, 260));
 
   // ---- 5. THE WATCH RELEASES ITSELF ------------------------------------------------------------
