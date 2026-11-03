@@ -33,7 +33,6 @@ import {
   type PresenceView,
 } from "@cotal-ai/core";
 import type { RefusalCode } from "../output.js";
-import { codeSpan } from "../text-wrap.js";
 import { mentionsName } from "./compose.js";
 import { ParticipantEngine } from "./engine.js";
 import type {
@@ -53,6 +52,7 @@ import type {
   SessionIdentity,
   SessionMessage,
 } from "./session.js";
+import type { ChatWords } from "./words.js";
 
 /** Native codes that mean "refused before any effect". Anything else from a call is unknown. */
 const PRE_EFFECT: Readonly<Record<string, RefusalCode>> = {
@@ -86,13 +86,13 @@ const GAP_COALESCE_MS = 1_000;
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
  * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
- * and the refusal names `reopen`'s command, which opens one that does. The broker remains the
+ * and the refusal ends with the front end's way to open one that does. The broker remains the
  * enforcement point.
  */
-export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", reopen: (channel: string) => string): Refused | undefined {
+export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", words: ChatWords): Refused | undefined {
   if (channelInAllow([...grant], channel)) return undefined;
   const message = grant.length === 0
-    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run ${codeSpan(reopen(channel))} to open a session on it`
+    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. ${words.reopen(channel)}`
     : `#${channel} is outside this session's ${use} grant`;
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
@@ -111,16 +111,15 @@ export function resolveDmTarget(
   roster: readonly Presence[],
   rosterState: PresenceView["state"],
   engine: ParticipantEngine,
-  selfPrincipal: string,
-  selfName?: string,
+  self: { readonly principal: string; readonly name?: string; readonly answerOne: string },
 ): { readonly id: string; readonly name: string } | Refused {
   if (typeof to !== "string" || parsePrincipalKey(to)) {
     const principal = typeof to === "string" ? to : to.principal;
     if (!parsePrincipalKey(principal)) return refusedUsage(`"${principal}" is not a principal <owner>.<actor>`);
-    if (principal === selfPrincipal) return refusedUsage("a direct message needs a principal other than this session");
+    if (principal === self.principal) return refusedUsage("a direct message needs a principal other than this session");
     return { id: principal, name: roster.find((p) => p.card.id === principal)?.card.name ?? engine.senderName(principal) ?? principal };
   }
-  const peers = roster.filter((p) => p.card.id !== selfPrincipal);
+  const peers = roster.filter((p) => p.card.id !== self.principal);
   let peer: Presence | undefined;
   try {
     peer = resolvePeer(peers, to);
@@ -137,12 +136,12 @@ export function resolveDmTarget(
     // reply by its name can reach none of them.
     const present = new Set(roster.filter((p) => p.status !== "offline").map((p) => p.card.id));
     if (rosterState === "current" && !ids.some((id) => present.has(id)))
-      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot \`cotal send\` commands, which exit once they have sent; answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id` };
+      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot \`cotal send\` commands, which exit once they have sent; ${self.answerOne}` };
     return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${ids.join(", ")}); use the full principal` };
   }
   const only = [...named.values()][0];
   if (only) return only;
-  if (selfName !== undefined && to.trim().toLowerCase() === selfName.trim().toLowerCase())
+  if (self.name !== undefined && to.trim().toLowerCase() === self.name.trim().toLowerCase())
     return refusedUsage(`"${to}" is this session's own name; a direct message needs another participant`);
   if (rosterState !== "current") return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: `cannot verify "${to}": the roster is ${rosterState}` };
   return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space` };
@@ -154,8 +153,8 @@ export interface NativeSessionInputs {
   readonly identity: SessionIdentity;
   /** The admission adapter's own retirement call. This module only invokes it. */
   readonly retire: () => Promise<CloseReport>;
-  /** The command that opens a session on a channel with the flags this one was started with. */
-  readonly reopen: (channel: string) => string;
+  /** The front end's clauses that end this session's refusals. */
+  readonly words: ChatWords;
 }
 
 export class NativeChatSession implements AdmittedChatSession {
@@ -214,6 +213,11 @@ export class NativeChatSession implements AdmittedChatSession {
     return this.inputs.identity;
   }
 
+  /** This session as {@link resolveDmTarget} reads it. */
+  private self(): { readonly principal: string; readonly name: string; readonly answerOne: string } {
+    return { principal: this.inputs.identity.principal, name: this.inputs.identity.label, answerOne: this.inputs.words.answerOne };
+  }
+
   subscribe(listener: (event: SessionEvent) => void): () => void {
     this.listeners.add(listener);
     // Drops so far, such as a replay's past the inbox bound, are reported with the early events.
@@ -269,7 +273,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.reopen);
+    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words);
     if (outside) return outside;
     let registered: boolean;
     try {
@@ -284,13 +288,13 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async resolveDm(to: DmTarget): Promise<Result<{ readonly id: string; readonly name: string }>> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.self());
     return "outcome" in recipient ? recipient : { outcome: "ok", value: recipient };
   }
 
   async dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal, this.inputs.identity.label);
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.self());
     if ("outcome" in recipient) return recipient;
     const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {
@@ -334,7 +338,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async setChannelMode(channel: string, mode: "quiet" | "muted" | "normal"): Promise<Result<void>> {
     if (!isConcreteChannel(channel)) return refusedUsage("a channel mode needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words);
     if (outside) return outside;
     // Local first, as for attention; the presence mirror is advisory (endpoint.ts:2874-2877).
     this.engine.setChannelMode(channel, mode);
@@ -342,7 +346,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.reopen);
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words);
     if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
   }

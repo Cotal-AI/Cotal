@@ -25,6 +25,7 @@ import type { MeshTarget } from "../mesh-target.js";
 import { CommandFailure } from "../output.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
+import type { ChatWords } from "./words.js";
 
 /** The leaf's whole life. The manager caps `ttl` here and never renews it. */
 export const STATIC_CHAT_TTL_SEC = 900;
@@ -140,7 +141,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   readonly allowSubscribe?: readonly string[];
   readonly allowPublish?: readonly string[];
   readonly instanceId?: string;
-  readonly reopen: (channel: string) => string;
+  readonly words: ChatWords;
   readonly control: ControlClient;
 }): Promise<NativeChatSession> {
   if (target.mode !== "auth" || !target.auth)
@@ -220,7 +221,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     channels: [...subscribe],
   });
   // The participant listeners are installed here, before the endpoint starts.
-  const session = new NativeChatSession({ endpoint, identity, retire, reopen: options.reopen });
+  const session = new NativeChatSession({ endpoint, identity, retire, words: options.words });
   if (slot.expiresAt <= Date.now()) {
     const close = await session.close();
     throw new CommandFailure("failed", "OPERATION_FAILED", "the admitted session had already expired when its reply arrived, so it was closed without connecting", {
