@@ -116,6 +116,7 @@ try {
 }
 
 // The public embedder lifetime cells share this already fragment-registered CI entrypoint.
+await import("./hosted-auth-start-close.smoke.js");
 await import("./auth-public-closure.smoke.js");
 await import("./plane-claim-public.smoke.js");
 await import("./account-liveness-public.smoke.js");
