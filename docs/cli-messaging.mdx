@@ -542,9 +542,10 @@ text and `--plain` reports, so a message cannot clear the screen or start a row 
 A row shows the first 500 characters of a longer message and marks the cut with the message's size.
 `--json` carries the text as it was sent, in `result.items[].text`.
 
-Retained history is not every message sent. The chat stream keeps a post until it is older than the
-space's age limit, or until its sender has posted the space's per-sender count of newer ones on that
-channel. A new space keeps posts for 30 days and 1000 per sender, and `history limit` changes both.
+Retained history is not every message sent. The chat stream keeps a post until its sender has posted
+the space's per-sender count of newer ones on that channel, or until it is older than the space's age
+limit when one is set. A new space keeps each sender's newest 1000 posts on each channel with no age
+limit, and `history limit` changes both.
 Past the count a busy sender's oldest posts are deleted while other senders' posts from the same time
 remain. `result.retention` names both limits, `oldestAt` (the time of the oldest post the stream
 still holds), and each sender at the count on the channels read. The report prints that time and a
@@ -556,8 +557,8 @@ channel registry. DM gaps are not reported.
 older than the age, and `--per-sender` keeps that many of each sender's newest posts on each channel.
 One limit holds for every channel in the space. Give either flag or both, and the other part keeps
 its current value. An age is a whole number of `s`, `m`, `h` or `d` from `2m`, the chat stream's
-duplicate window, to `3650d`. A stream with no age limit, from before the limit was configurable,
-needs `--max-age` as well. A bad value is a `USAGE_INVALID` refusal before connecting.
+duplicate window, to `3650d`. A space has no age limit until one is set, and `history limit` does
+not set no age, so on such a space `--per-sender` needs `--max-age` as well. A bad value is a `USAGE_INVALID` refusal before connecting.
 Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
 root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
 space with no chat stream is refused with `TARGET_NOT_FOUND`; `cotal up` creates the stream.

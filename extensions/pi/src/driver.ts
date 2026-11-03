@@ -327,6 +327,9 @@ export class PiDriver {
       const items = this.inbox.select(reserved, BATCH_LIMIT);
       if (items.length === 0 && !turnPeek) return;
       ids = items.map((item) => item.recvKey);
+      // The batch stays this seat's until its turn commits it: unheld, a role request's ack wait runs
+      // out mid-turn and the broker hands it to another holder (#5637). At the hold ceiling, defer.
+      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;
       content = items.length > 0 ? formatInjection(items) : undefined;
     }
     // The turns' permit, right before the dispatch with no await between. Without it, a once task
@@ -380,6 +383,7 @@ export class PiDriver {
     const confirmed = this.batches.filter((batch) => batch.confirmed);
     const ids = confirmed.flatMap((batch) => batch.ids);
     this.inbox.commitConfirmed(ids);
+    this.mesh.releaseInFlight(ids);
     this.batches = this.batches.filter((batch) => !batch.confirmed);
 
     if (this.batches.length > 0) {

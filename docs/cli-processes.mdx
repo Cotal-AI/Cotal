@@ -126,7 +126,10 @@ records that result in the lifecycle's caller-readable audit detail, reaps the p
 process through any runtime custody reference recorded on the slot, and only then retires the
 lifecycle and frees the alias. A seat whose spawn carried `supervise` with restarts left is restarted
 instead of retired: the successor reaps any seat the slot still names, relaunches it under the same
-name, lifecycle uid, credential, persona and cwd, and counts the restart against the policy. New
+name, lifecycle uid, credential, persona and cwd, and counts the restart against the policy. The
+seat record counts that restart as soon as the replacement launches, and a replacement that joins
+after its readiness window is still restarted in place on its next crash, like one that joined in
+time. New
 built-in `pty` seats have no custody reference. Their supervised recovery validates the runtime
 saved in the seat record; a custodial runtime still requires its matching slot reference. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
 starts is adopted in place: the successor checks that the recorded tmux server, window and pane are

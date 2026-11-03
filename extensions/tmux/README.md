@@ -15,11 +15,13 @@ import.
   (`env -i`) so the tmux server's environment doesn't reach agents. That env is written to an
   owner-only launch script, which keeps it off tmux's command line, and the script removes its
   directory before it starts the agent. When it cannot remove the directory, the agent does not start.
-  Graceful stop types `/exit`
-  then kills the window; hard stop kills immediately. A close reads a window as already closed only
-  from tmux's own `can't find window` or `can't find session` report and throws on any other
-  failure, such as a missing socket. Exit waits poll the stable pane id and honor
-  tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the wait closed.
+  Graceful stop types `/exit` then closes the seat's pane; hard stop closes that pane immediately.
+  Stop and interrupt follow the pane when it moves between windows. Their tmux commands check the
+  opening server's identity, including the delayed graceful close, so a replacement server cannot
+  receive an old handle's input or close. Status and exit waits bind the pane to that server too.
+  A dead server proves exit; an unreachable recorded server that still runs remains unknown.
+  Exit waits honor tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the
+  wait closed. Direct window closes still accept only tmux's own gone-window/session reports.
   Each handle carries a reference to its tmux server, window and pane, so a later manager can reap
   the seat after the one that spawned it is gone. The reap closes the window while the session
   still holds it, even when the agent's pane already exited. It refuses a pane that has moved out of

@@ -1,5 +1,278 @@
 # @cotal-ai/auth
 
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+  - @cotal-ai/lang@0.136.8
+  - @cotal-ai/workspace@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+  - @cotal-ai/lang@0.136.7
+  - @cotal-ai/workspace@0.136.7
+
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+  - @cotal-ai/lang@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+  - @cotal-ai/workspace@0.136.5
+  - @cotal-ai/lang@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- 5da69bf: The manager-service `retire` arm now checks the manager gate with the same shared check as every other manager door. It refuses with the same codes in the same order, and its message for a gate held by another principal now uses the same wording as the other doors.
+- @cotal-ai/core@0.136.4
+  - @cotal-ai/lang@0.136.4
+  - @cotal-ai/workspace@0.136.4
+
+## 0.136.3
+
+### Patch Changes
+
+- 3bbf33c: Every manager door now refuses a manager gate through one current-registration check, so it uses the same order and codes everywhere. Before, the delegated user intent doors checked the gate's principal before its open state, so a frozen gate held by another owner was refused there as `permission-denied` and as `failed-precondition` at every other door. The manager-service `renew` arm now compares the registration proof in constant time. The refusal messages now name each door the same way.
+- @cotal-ai/core@0.136.3
+  - @cotal-ai/lang@0.136.3
+  - @cotal-ai/workspace@0.136.3
+
+## 0.136.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.2
+  - @cotal-ai/lang@0.136.2
+  - @cotal-ai/workspace@0.136.2
+
+## 0.136.1
+
+### Patch Changes
+
+- Updated dependencies [102c2aa]
+  - @cotal-ai/lang@0.136.1
+  - @cotal-ai/core@0.136.1
+  - @cotal-ai/workspace@0.136.1
+
+## 0.136.0
+
+### Patch Changes
+
+- Updated dependencies [f5251ae]
+  - @cotal-ai/core@0.136.0
+  - @cotal-ai/workspace@0.136.0
+  - @cotal-ai/lang@0.136.0
+
+## 0.135.21
+
+### Patch Changes
+
+- Updated dependencies [a259571]
+  - @cotal-ai/core@0.135.21
+  - @cotal-ai/workspace@0.135.21
+  - @cotal-ai/lang@0.135.21
+
+## 0.135.20
+
+### Patch Changes
+
+- Updated dependencies [d90d949]
+  - @cotal-ai/lang@0.135.20
+  - @cotal-ai/core@0.135.20
+  - @cotal-ai/workspace@0.135.20
+
+## 0.135.19
+
+### Patch Changes
+
+- Updated dependencies [0fa57f9]
+  - @cotal-ai/lang@0.135.19
+  - @cotal-ai/core@0.135.19
+  - @cotal-ai/workspace@0.135.19
+
+## 0.135.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.18
+  - @cotal-ai/lang@0.135.18
+  - @cotal-ai/workspace@0.135.18
+
+## 0.135.17
+
+### Patch Changes
+
+- Updated dependencies [55e8d0b]
+  - @cotal-ai/workspace@0.135.17
+  - @cotal-ai/core@0.135.17
+  - @cotal-ai/lang@0.135.17
+
+## 0.135.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.16
+  - @cotal-ai/lang@0.135.16
+  - @cotal-ai/workspace@0.135.16
+
+## 0.135.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.15
+  - @cotal-ai/lang@0.135.15
+  - @cotal-ai/workspace@0.135.15
+
+## 0.135.14
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.14
+  - @cotal-ai/lang@0.135.14
+  - @cotal-ai/workspace@0.135.14
+
+## 0.135.13
+
+### Patch Changes
+
+- 6eed69f: Retiring a chat session or preparing a managed agent's retirement now removes every durable membership row of that lifecycle. Previously only rows on concrete channel names in the grant were removed. A row on a channel family (`review.>`), or on a channel that only a wildcard grants, stayed until a later post reached the delivery reader. The auth service now does what the manager's teardown does: it narrows the lifecycle's read-ACL row to no reads, reads the delivery daemon's `lifecycleMemberships` inventory, and deletes those rows along with the granted ones. If the inventory cannot be read, the named rows are still removed and the step fails, so its retry removes the rest. A chat session's retirement still completes and leaves the remainder to compaction. A managed agent's prepare-retirement keeps its grant until a retry succeeds.
+- @cotal-ai/core@0.135.13
+  - @cotal-ai/lang@0.135.13
+  - @cotal-ai/workspace@0.135.13
+
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.12
+  - @cotal-ai/lang@0.135.12
+  - @cotal-ai/workspace@0.135.12
+
+## 0.135.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.11
+  - @cotal-ai/lang@0.135.11
+  - @cotal-ai/workspace@0.135.11
+
+## 0.135.10
+
+### Patch Changes
+
+- 985dbc5: A broker refusal of an endpoint call no longer tells a caller that was just granted that it holds no grant. The broker fixes a connection's permissions when it authenticates, so a grant made while the caller is connected reaches only its next connection. Every refusal (describe, call, cast and liveness probe) now says either no grant covers the call, or it was granted after the connection authenticated and the caller should reconnect and retry. `cotal service-endpoint grant` also says that a connection the grantee opened before the grant must reconnect before it can use the new commands.
+- Updated dependencies [985dbc5]
+  - @cotal-ai/core@0.135.10
+  - @cotal-ai/workspace@0.135.10
+  - @cotal-ai/lang@0.135.10
+
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+  - @cotal-ai/lang@0.135.9
+  - @cotal-ai/workspace@0.135.9
+
+## 0.135.8
+
+### Patch Changes
+
+- Updated dependencies [0c09e47]
+  - @cotal-ai/core@0.135.8
+  - @cotal-ai/workspace@0.135.8
+  - @cotal-ai/lang@0.135.8
+
+## 0.135.7
+
+### Patch Changes
+
+- 7b513e1: Refuse a hosted auth start when the stored and legacy instance identities have different public serve keys, even if their instance ids and seeds agree. Preserve both records on that refusal.
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+  - @cotal-ai/workspace@0.135.7
+  - @cotal-ai/lang@0.135.7
+
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+  - @cotal-ai/lang@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/lang@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/lang@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/lang@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/lang@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+  - @cotal-ai/lang@0.135.1
+
+## 0.135.0
+
+### Patch Changes
+
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+  - @cotal-ai/workspace@0.135.0
+  - @cotal-ai/lang@0.135.0
+
 ## 0.134.0
 
 ### Minor Changes

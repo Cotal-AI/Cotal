@@ -427,7 +427,7 @@ export const cotalLangRunHost: RunHost = {
     // which every run has exactly once. A consumer-free walk: the records bucket is an authority
     // stream whose consumer surface is an exact audited list (SPEC 13.9).
     const seen = new Set<string>();
-    const rows: RunListRow[] = [];
+    const runs: { endpoint: string; runId: string }[] = [];
     for (const e of await walkKvEntries(planes.kv, "run.*.*.spec")) {
       const parts = e.key.split(".");
       if (parts.length !== 4 || parts[3] !== "spec") continue;
@@ -437,33 +437,55 @@ export const cotalLangRunHost: RunHost = {
       if (seen.has(dedupe)) continue;
       seen.add(dedupe);
       if (req.endpoint !== undefined && endpoint !== req.endpoint) continue;
-      const record = await readRunRecord(planes.kv, endpoint, runId);
-      if (record === undefined) continue;
-      const st = record.status?.value;
-      const lineage = record.spec.value.forkedFrom;
-      // The revocation marker beside the record, as `run ps --local` reads it. Only a driver writes
-      // the record, so a run whose driver died keeps `running` there after a revoke. A marker read
-      // that fails is carried as such: "no marker" and "could not look" are different answers.
-      let revocation: Pick<RunListRow, "revoked" | "revocationUnreadable"> = {};
-      try {
-        const r = await readRunRevocation(planes.jsm, planes.space, endpoint, runId);
-        if (r !== undefined) revocation = { revoked: { by: r.by, reason: r.reason } };
-      } catch (err) {
-        revocation = { revocationUnreadable: (err as Error).message };
-      }
-      // The run's identity as its program's `run()` reports it: the pinned epoch, and the language's
-      // hash of the recorded source, which is what every resume runs (other source is a fork).
-      const program = await readRunProgram(planes.kv, endpoint, runId);
-      rows.push({
-        runId,
-        endpoint,
-        ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh, ...(st.failure !== undefined ? { failure: st.failure } : {}) } : {}),
-        ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
-        startedAt: record.spec.value.pins.startedAt,
-        ...(program !== undefined ? { programHash: programHashOf(program.source) } : {}),
-        ...revocation,
-      });
+      runs.push({ endpoint, runId });
     }
-    return rows;
+    // Every read is a broker round trip, so a manager on another host pays one per read (#5672): rows
+    // are read LIST_READ_CONCURRENCY at a time and kept in walk order. The first row that fails fails
+    // the list, as it did read one at a time, and no further row is started after it.
+    const rows: (RunListRow | undefined)[] = new Array(runs.length);
+    let next = 0, failed = false;
+    await Promise.all(Array.from({ length: Math.min(LIST_READ_CONCURRENCY, runs.length) }, async () => {
+      while (!failed && next < runs.length) {
+        const i = next++;
+        try {
+          rows[i] = await listRow(planes, runs[i]!);
+        } catch (e) {
+          failed = true;
+          throw e;
+        }
+      }
+    }));
+    return rows.filter((row): row is RunListRow => row !== undefined);
   },
 };
+
+/** Runs whose rows {@link cotalLangRunHost}'s `list` reads at once. */
+const LIST_READ_CONCURRENCY = 8;
+
+/** One run's `run-ps` row, or `undefined` for a run that has never been started. */
+async function listRow(planes: RunHostPlanes, { endpoint, runId }: { endpoint: string; runId: string }): Promise<RunListRow | undefined> {
+  const record = await readRunRecord(planes.kv, endpoint, runId);
+  if (record === undefined) return undefined;
+  const st = record.status?.value;
+  const lineage = record.spec.value.forkedFrom;
+  const [revocation, program] = await Promise.all([
+    // The revocation marker beside the record, as `run ps --local` reads it. Only a driver writes
+    // the record, so a run whose driver died keeps `running` there after a revoke. A marker read
+    // that fails is carried as such: "no marker" and "could not look" are different answers.
+    readRunRevocation(planes.jsm, planes.space, endpoint, runId).then(
+      (r): Pick<RunListRow, "revoked" | "revocationUnreadable"> => (r !== undefined ? { revoked: { by: r.by, reason: r.reason } } : {}),
+      (err: unknown) => ({ revocationUnreadable: (err as Error).message })),
+    // The run's identity as its program's `run()` reports it: the pinned epoch, and the language's
+    // hash of the recorded source, which is what every resume runs (other source is a fork).
+    readRunProgram(planes.kv, endpoint, runId),
+  ]);
+  return {
+    runId,
+    endpoint,
+    ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh, ...(st.failure !== undefined ? { failure: st.failure } : {}) } : {}),
+    ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
+    startedAt: record.spec.value.pins.startedAt,
+    ...(program !== undefined ? { programHash: programHashOf(program.source) } : {}),
+    ...revocation,
+  };
+}

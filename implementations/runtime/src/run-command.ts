@@ -85,6 +85,7 @@ import {
   endpointAuth,
   resolveControlTarget,
   resolveSeatControlTarget,
+  sweepForSeatResolve,
   type ConnectOpts,
   type Connection,
   type ControlAuth,
@@ -874,11 +875,12 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: 
  *  holds the run capability's full answer reach. Outside a managed seat, keep the ordinary operator
  *  target resolution unchanged. `--on` reaches the mint on every path and becomes the instance the
  *  call addresses; a user-mode view already carries the instance its issuer bound. `seat` says the
- *  target is the seat's own. */
+ *  target is the seat's own. Both resolves read one registry sweep ({@link sweepForSeatResolve}). */
 async function resolveRunControlTarget(values: RunValues): Promise<{ target: ControlTarget; seat: boolean }> {
   const on = values.on;
-  const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
-  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on, { onRefusal: "throw" });
+  const flags = values.creds === undefined ? await sweepForSeatResolve(values) : values;
+  const seat = values.creds === undefined ? await resolveSeatControlTarget(flags, on) : undefined;
+  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
   recordOperationSpace(target.space);
   const resolved = { target, seat: target === seat };
   if (on === undefined) return resolved;

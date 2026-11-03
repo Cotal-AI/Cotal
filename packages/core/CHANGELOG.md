@@ -1,5 +1,172 @@
 # @cotal-ai/core
 
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+### Patch Changes
+
+- e8003ed: Seats see the channel registry again. Since seats stopped watching presence, they had also stopped
+  watching the channel registry: `cotal_channels` and `cotal_channel_info` showed no registered
+  channel and no description, the boot briefing carried no channel notes, and a join treated every
+  channel as durable. A seat now reads the registry on demand with `CotalEndpoint.readChannels()`, a
+  batched Direct Get that binds no consumer: once at connect, and again before it lists channels,
+  looks one up, joins or leaves.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+### Minor Changes
+
+- f5251ae: An OpenCode agent name now has one launcher at a time. Two launches that overlapped both passed the server-record check, which runs before the version probe and the spawn, so both started a server on the agent's SQLite database. The launcher now first claims the name with core's advisory lock, `launch.lock` in the agent's directory, and holds it until it exits. A second launch is refused as already running, and a claim left by a launcher that died is reclaimed. `@cotal-ai/core` exports the lock as `@cotal-ai/core/advisory-lock`, so the bundled launcher can use it without the barrel.
+
+## 0.135.21
+
+### Patch Changes
+
+- a259571: `acquireLock` now honors its `waitMs` while another live process is reclaiming a stale lock, as `acquireLockAsync` already did. Before, the synchronous acquirer retried the reclaim with no deadline check. A zero-wait acquisition then blocked its event loop until the reclaimer finished, and never returned when the reclaimer was its own process.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+### Patch Changes
+
+- 985dbc5: A broker refusal of an endpoint call no longer tells a caller that was just granted that it holds no grant. The broker fixes a connection's permissions when it authenticates, so a grant made while the caller is connected reaches only its next connection. Every refusal (describe, call, cast and liveness probe) now says either no grant covers the call, or it was granted after the connection authenticated and the caller should reconnect and retry. `cotal service-endpoint grant` also says that a connection the grantee opened before the grant must reconnect before it can use the new commands.
+
+## 0.135.9
+
+No changes in this release.
+
+## 0.135.8
+
+### Patch Changes
+
+- 0c09e47: Keep each endpoint's presence heartbeat on its own phase. Repeating timers that Node re-arms in one pass stay bunched after a loop stall, so one process holding many endpoints put every heartbeat into the same tick. The heartbeat now re-arms from its own start instant, so stalls no longer bunch heartbeats and the interval and TTL are unchanged.
+
+## 0.135.7
+
+### Patch Changes
+
+- bb263b1: Preserve effect outcomes when converting native endpoint replies and envelope errors to ControlReply.
+
+## 0.135.6
+
+### Patch Changes
+
+- 65311dd: Derive a creds file's identity with Node's Ed25519 instead of the nkeys library's JavaScript curve. `identityFromCreds` runs on every endpoint construction and took about 8 ms per call; it now takes about 0.2 ms, which a process constructing thousands of endpoints paid per endpoint.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
+## 0.135.0
+
+### Minor Changes
+
+- a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
+  
+  `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
+  
+  An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
+  
+  `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+- 21f937e: Channel history has no age limit by default again. A space keeps a channel post until its sender has posted 1000 newer ones on that channel, as it did up to 0.133.13, and an age applies only when an operator sets one with `cotal history limit`.
+  
+  An upgrade no longer moves or deletes posts. 0.134.0 moved every existing space to a 30-day limit at its first `cotal up`, which deleted every channel post older than 30 days. That move is gone: `cotal up` changes no space's limit, and a space that 0.134.0 already moved keeps its 30-day limit until an operator changes it. `cotal up`, `team boot` and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`. `@cotal-ai/core` no longer exports `LEGACY_CHAT_HISTORY`, `isLegacyChatHistory` or `reconcileChatHistory`, and `setupSpaceStreams` returns nothing; it still refuses a chat stream whose settings other than the limit are not canonical.
+- 1d8d6c5: `liveKvEntries` and `liveKvValues` now declare separate `(kv, options?)` and `(kv, filter, options?)` overloads (and the matching `decode` pair on `liveKvValues`), and refuse a call that passes options in the filter slot followed by a second options argument instead of dropping the trailing options. This is a breaking call-shape restriction: combine the signal and callbacks into one options object.
+- e7fbeb8: `cotal_spawn` takes `once: true` with a `prompt` to start a helper for one task. The manager relays the prompt to the helper as its only turn and stops the helper when that turn ends or when the deadline passes. The deadline is one hour unless `deadline` sets another, and `-1` sets none. A spawn that succeeds names the task's goal in its result, and `goal-result` reads how it ended. A task that ends without the helper ending its turn may have run in part or in full, and nothing runs it again. A once spawn needs no `run` capability.
+  
+  The manager's `spawn` command takes `once: { deadlineMs }`, and the manager contract revision is 44. The task is served only after the spawn's succeeded terminal is written, so a manager that restarts before then cancels the task as never served. A seat hands a once task to its harness at most once. When it cannot confirm the harness took the task, it reports that with the new self-mode `turn-unconfirmed` command, which fails the task with `delivery-unconfirmed` and stops the seat. A manager that inherits a once seat it cannot hold ends the task without serving it, says so in the outcome, and answers that seat's every `turn-pending` with `stop` while its debt stays recorded.
+  
+  A connector declares `supportsTurnRelay` to take a once task: Jcode, OpenCode, pi and Claude Code do. A connector whose seat needs a confirmed startup declares `onceNeedsConfirmed`, and the manager serves its task only when the runtime reports the startup watch ended `confirmed`. Claude Code needs it: a once launch waits for Claude's development-channels prompt and then its `confirmNotice`, the line saying `server:cotal` messages reach the session. A runtime declares `reportsStartupOutcome` and its handles report `startupOutcome()`; the built-in pty runtime, tmux, cmux, herdr and orca do. A connector may declare `turnFrameLimit`, and a once prompt whose task does not fit it is refused at admission. A once exit registered with `registerOnceExit` may answer false to decline, and the seat then keeps reporting instead of exiting. A connector whose seat launches processes outside its own implements `retireAfterExit`, and the manager keeps the task's debt until that hook proves them gone. Jcode records each native launch of a once seat under the seat's uid for that proof, and a Jcode once seat always starts a fresh session, never one an earlier seat of the same name left in its home.
+
+### Patch Changes
+
+- 67e439b: `registerServiceInstance` distinguishes a reopen that lost its compare-and-set from one whose outcome is unknown. Both its Phase-4 and abort refusals tell the caller to re-read the gate rather than asserting it stayed frozen when the write may have committed. Both remain `unavailable`, and the abort refusal retains its original cause.
+- e56dc31: Freeze lazy service contract tables and their input/output pairs so callers cannot replace a command's validators. This also makes the exported registry contract table immutable. Commands still compile only on first access.
+- a1e7bc6: Release each completed batched KV read's native reply subscription immediately through the native callback API, instead of retaining it until its five-second timeout. Paging, empty reads, tombstones and permission refusals remain unchanged.
+- b1462d3: Settle pending named-reply control, delivery and delivery-admin requests when their connection closes instead of leaving their promises pending after the reply subscription disappears. Interrupted liveness probes return unknown. Keep native reply subjects, timeout and no-responder handling, and do not replay requests on a replacement connection.
+
 ## 0.134.0
 
 ### Minor Changes

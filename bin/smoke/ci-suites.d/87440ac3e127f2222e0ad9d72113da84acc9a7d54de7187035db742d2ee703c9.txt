@@ -1,0 +1,2 @@
+# OpenCode setup retries, concurrent ownership, and teardown (#3329).
+smoke:opencode-setup-guard

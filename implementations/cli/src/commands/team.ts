@@ -1,5 +1,5 @@
 import { basename, join, resolve } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
@@ -393,7 +393,7 @@ async function nativeRemovalImpact(root: string, ledger: MeshLedger) {
     try { members = await ep.readMembership(); }
     catch { membershipWarning = "The derived membership feed could not be read; channel observers and live readers are unknown."; }
     const ownedIds = new Set(ledger.created.agents.map((agent) => agent.id));
-    const channels = revisions.map(({ name, revision }) => ({ name, observedRevision: revision, otherMembersObserved: members ? members.members.filter((row) => !ownedIds.has(row.id) && (row.durable.includes(name) || row.live.some((pattern) => subjectMatches(pattern, name)))).map((row) => row.id) : null }));
+    const channels = revisions.map(({ name, revision }) => ({ name, observedRevision: revision, otherMembersObserved: members ? members.members.filter((row) => !ownedIds.has(row.id) && (durableCovers(row.durable, name) || row.live.some((pattern) => subjectMatches(pattern, name)))).map((row) => row.id) : null }));
     return { managerPs: "answered" as const, agents, channels, channelRegistry: ledger.created.channels.length ? "scoped-native-read" as const : "no-owned-channels" as const, membershipFeed: members ? "display-only-observed" as const : "unavailable" as const, membershipObservedAt: members?.asOf ?? null, membershipWarning };
   } catch (error) {
     if (error instanceof CommandFailure) throw error;

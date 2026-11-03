@@ -289,6 +289,10 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   for (const tool of ["cotal_channels", "cotal_join", "cotal_send", "cotal_dm", "cotal_anycast"])
     assert.ok(CHANNEL_GUIDANCE.includes(tool), `channel guidance names ${tool}`);
   assert.match(CHANNEL_GUIDANCE, /#announce/, "channel guidance says when #announce is appropriate");
+  assert.ok(
+    CHANNEL_GUIDANCE.includes("join a family such as team.>: posts on its durable channels are kept for you while you are away, from the join on."),
+    "channel guidance says a family follow keeps stored copies from the join on",
+  );
 }
 
 // 6 — the identity-plane gate (#740). `canSpawn` used to read "no static creds" as open mode, so a

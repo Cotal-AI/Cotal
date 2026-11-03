@@ -1550,6 +1550,11 @@ export async function performScope(
     // ran out of stack is a fact about the host, so recording it would replay as a catchable
     // `L4000` on a host with more stack, where the same branch succeeds.
     if (isStackExhaustion(reason)) throw reason;
+    // NOR IS THE COMPILED ENGINE'S OWN FAULT (#3215). An `EngineFault` is an emitter mistake the
+    // engine refuses uncatchably, so recording it would hand a resume a catchable failure where the
+    // live run unwound. Matched by name, as the engine's own uncatchable check matches it, because
+    // the class lives on the engine's side of this module.
+    if (reason instanceof Error && reason.name === "EngineFault") throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1576,16 +1581,20 @@ export async function performScope(
     // A VALUE THE PROGRAM THREW IS RECORDED WHOLE (#2845). A replay delivers nothing but this
     // record, and it used to deliver the generic fault where the live run had rethrown the value, so
     // a resumed `catch` bound `{ code: "L4000", ... }` where the live one bound `"failure"`, and a
-    // program branching on it diverged. An `Error` is never the program's (it cannot construct one)
-    // and is still rethrown as itself: some classes that reach here unwind the run (the compiled
-    // engine's `EngineFault`), and an `EffectError` built from the record would make them catchable.
+    // program branching on it diverged.
+    //
+    // ANY OTHER `Error` IS RECORDED AS THE `host` FAULT A `catch` BINDS FOR IT LIVE (#3215). It is
+    // never the program's (it cannot construct one), so it is rethrown as itself and both engines'
+    // `toProgramError` deliver it as `{ code: "L4000", kind: "host", message }`. Recorded as
+    // `scope-fault`, the replay bound a different kind than the live run had, and a program
+    // branching on it diverged on the resume of unchanged source.
     const err: EntryError =
       reason instanceof EffectError
         ? recordableError(reason, "scope-fault").error
         : reason instanceof RuntimeFault
           ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
           : reason instanceof Error
-            ? { code: "L4000", kind: "scope-fault", message: messageOf(reason) }
+            ? { code: "L4000", kind: "host", message: messageOf(reason) }
             : thrownError(reason);
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too, and a conclave that closed says so even when its body failed.
@@ -1619,29 +1628,34 @@ export async function performScope(
   // branches already ran has done work the world can see, and leaving its entry pending invites a
   // resume to run those branches a second time. The facts the success settle would have carried
   // travel with the failure, because a cancel intent this scope issued is owed whether or not its
-  // value could be written.
+  // value could be written. The kind is `host`, the one a `catch` binds for the `NotCrossable` live.
   try {
     assertScopeValueCrossable(outcome.value, `the value of ${stepKeyString(scopeKey)}`, scopeKey.kind);
   } catch (e) {
     if (!(e instanceof NotCrossable)) throw e;
     await host.journal.settle(
       scopeKey,
-      { status: "failed", error: { code: "L4000", kind: "scope-fault", message: e.message } },
+      { status: "failed", error: { code: "L4000", kind: "host", message: e.message } },
       frame.clock.now(),
       settledFacts,
     );
     throw e;
   }
 
+  // A COPY, for the thrown value's reason (`thrownError`): freezing the value itself would freeze a
+  // record a branch returned from outside the scope for the rest of the live run, where a resume,
+  // which never runs the branch, leaves it writable (#3224). The live run gets the copy its record
+  // carries, in the journal's own encoding, so it reads exactly what a replay hands back.
+  const value = outcome.value === undefined ? undefined : deepFreeze(JSON.parse(JSON.stringify(outcome.value)));
   await host.journal.settle(
     scopeKey,
-    { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+    { status: "ok", result: { branches: outcome.branches, value } },
     // The joined branch clock, for the same reason as the failure path above: this is the value
     // `now()` answers after the scope, and the stamp replay hands back must be that value.
     frame.clock.now(),
     settledFacts,
   );
-  return outcome.value;
+  return value;
 }
 
 /**

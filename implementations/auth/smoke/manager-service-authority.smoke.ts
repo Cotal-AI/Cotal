@@ -93,11 +93,11 @@ const verifyRenewal = (candidate: typeof renewWithProof | typeof runWithProof, o
 });
 await cell("current registration allows the five-identity renewal request", () => verifyRenewal(renewWithProof));
 await rejects("foreign account refuses before signing", () => verifyRenewal(renewWithProof, { accountPublicKey: `A${"B".repeat(55)}` }), /account/);
-await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /processEpoch/);
-await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /owner/);
+await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /serve epoch 3 is stale; current is 4/);
+await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /not serve principal/);
 await rejects("malformed renewal owner uses the principal token validator", () =>
   verifyRenewal(renewWithProof, { owner: "u_bad-owner" }), /invalid owner\/actor token/);
-await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /open registration gate/);
+await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /no current open manager gate/);
 await cell("activated run allows same takeover and write fence", () => verifyRenewal(runWithProof));
 await rejects("superseded run holder refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, holder: "successor" } }), /activated run/);
 await rejects("superseded run fencing token refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, fencingToken: 4 } }), /activated run/);
@@ -277,25 +277,25 @@ await cell("the closed public mint issues only the typed retirement-requester pr
 const serveActor = remoteManagerActors(instanceId).serve;
 const currentGate = { state: "open" as const, principal: `${retirementTarget.owner}.${serveActor}`, processEpoch: retirement.serveEpoch };
 await cell("current server-derived manager gate authorizes retirement requester issuance", () => {
-  authorizeRemoteManagerRetirement({ owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: currentGate });
+  authorizeRemoteManagerRetirement({ owner: retirementTarget.owner, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: currentGate });
 });
 await rejects("a foreign target owner is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb", serveEpoch: retirement.serveEpoch, gate: currentGate,
+  owner: retirementTarget.owner, instanceId, targetOwner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb", serveEpoch: retirement.serveEpoch, gate: currentGate,
 }), /authenticated owner/);
 await rejects("an absent manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: null,
+  owner: retirementTarget.owner, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: null,
 }), /no current open manager gate/);
 await rejects("a retired manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, state: "retired" },
+  owner: retirementTarget.owner, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, state: "retired" },
 }), /no current open manager gate/);
 await rejects("a frozen manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, state: "frozen" },
+  owner: retirementTarget.owner, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, state: "frozen" },
 }), /no current open manager gate/);
 await rejects("a foreign-principal manager gate is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, principal: `${retirementTarget.owner}.manager_serve_foreign` },
-}), /server-derived serve principal/);
+  owner: retirementTarget.owner, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch, gate: { ...currentGate, principal: `${retirementTarget.owner}.manager_serve_foreign` },
+}), /not serve principal/);
 await rejects("a stale manager serve epoch is refused", () => authorizeRemoteManagerRetirement({
-  owner: retirementTarget.owner, serveActor, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch - 1, gate: currentGate,
+  owner: retirementTarget.owner, instanceId, targetOwner: retirementTarget.owner, serveEpoch: retirement.serveEpoch - 1, gate: currentGate,
 }), /serve epoch .* is stale/);
 await cell("supervise authority carries no admin messaging god-view", () => {
   const perms = permissionsFor("remote-manager", "demo", {

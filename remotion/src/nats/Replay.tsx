@@ -97,7 +97,7 @@ export const NatsReplay: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[PATH_BOB, PATH_DAVE]} glow={[bobFlash, daveFlash]} />
+      <Wires wires={[{ d: PATH_BOB, glow: bobFlash }, { d: PATH_DAVE, glow: daveFlash }]} />
 
       {/* the durable stream: messages stay stored after anyone reads them */}
       <div
