@@ -1,5 +1,14 @@
 # @cotal-ai/workspace
 
+## 0.138.2
+
+### Patch Changes
+
+- a2fba68: `controlPs` and `resolveControlTarget` take a `readOnly` option. A read-only call resolves and connects
+  without the liveness sweep and never prunes a registry entry, so a client that polls its managers
+  leaves the registry as it found it.
+- @cotal-ai/core@0.138.2
+
 ## 0.138.1
 
 ### Patch Changes
