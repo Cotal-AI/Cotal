@@ -1,5 +1,24 @@
 # cotal-ai
 
+## 0.137.0
+
+### Minor Changes
+
+- d02b40c: Add the desktop daemon app with a tray, device-approval onboarding, daemon-owned space discovery and connection controls. Package the stock CLI with the app, keep login credentials out of the renderer, and refuse npm self-update of a bundled runtime. Add native desktop service and local-control support while preserving Linux ownership and lifetime checks.
+
+### Patch Changes
+
+- Updated dependencies [d02b40c]
+  - @cotal-ai/cli@0.137.0
+  - @cotal-ai/seat@0.137.0
+  - @cotal-ai/manager@0.137.0
+  - @cotal-ai/connector-core@0.137.0
+  - @cotal-ai/auth@0.137.0
+  - @cotal-ai/delivery@0.137.0
+  - @cotal-ai/runtime@0.137.0
+  - @cotal-ai/core@0.137.0
+  - @cotal-ai/workspace@0.137.0
+
 ## 0.136.8
 
 ### Patch Changes
