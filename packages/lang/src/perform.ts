@@ -1633,15 +1633,20 @@ export async function performScope(
     throw e;
   }
 
+  // A COPY, for the thrown value's reason (`thrownError`): freezing the value itself would freeze a
+  // record a branch returned from outside the scope for the rest of the live run, where a resume,
+  // which never runs the branch, leaves it writable (#3224). The live run gets the copy its record
+  // carries, in the journal's own encoding, so it reads exactly what a replay hands back.
+  const value = outcome.value === undefined ? undefined : deepFreeze(JSON.parse(JSON.stringify(outcome.value)));
   await host.journal.settle(
     scopeKey,
-    { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+    { status: "ok", result: { branches: outcome.branches, value } },
     // The joined branch clock, for the same reason as the failure path above: this is the value
     // `now()` answers after the scope, and the stamp replay hands back must be that value.
     frame.clock.now(),
     settledFacts,
   );
-  return outcome.value;
+  return value;
 }
 
 /**
