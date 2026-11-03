@@ -32,7 +32,8 @@ A watch that has not completed its initial snapshot is also incomplete. A missin
 A frozen agent can keep that status and a fresh heartbeat.
 Reported work events, activity ages, and conditions such as `rate_limit` provide separate evidence about its work.
 They remain absent when the agent application supplies no observation.
-Operator displays use `progress unknown` when they lack an outside progress observation.
+Operator displays use `progress unknown` when they lack an outside progress observation. The web
+dashboard shows `Working` alone: no surface can observe progress yet, so it adds no progress text.
 The workstation classifier can identify a stale outside observation, but current console and web roster paths supply no such observation.
 
 Presence can also describe the process holding the connection, an opaque environment reference, and the peer's attention preferences.

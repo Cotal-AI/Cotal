@@ -52,6 +52,12 @@ export function normalizeMentions(mentions?: string[]): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** The `@name` mentions inside a message body, as bare names, for a multicast's `mentions` (a
+ *  priority/wake hint). Every surface that posts typed text derives them the same way. */
+export function mentionsIn(text: string): string[] {
+  return [...text.matchAll(/@([A-Za-z0-9_.-]+)/g)].map((m) => m[1]);
+}
+
 /**
  * Build the channel portion of a chat subject, preserving NATS hierarchy: split on
  * `.`, sanitize each segment to a safe token, but keep whole-segment wildcards

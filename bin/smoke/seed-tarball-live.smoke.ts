@@ -18,7 +18,6 @@
  * Run: pnpm smoke:seed-tarball:live
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -91,10 +90,10 @@ try {
   const listing = execFileSync("tar", ["tzf", cotalTgz], { encoding: "utf8" });
   check("cotal-ai tarball ships seeded-connectors/ payloads", listing.includes("package/seeded-connectors/hermes/package.json"));
   check("cotal-ai tarball bundles the web dashboard payload", listing.includes("package/seeded-connectors/web/package.json"));
+  const webBase = "package/seeded-connectors/web/dist/web";
   check(
-    "bundled web payload is self-contained (marked/dompurify shipped in dist, no runtime deps)",
-    listing.includes("package/seeded-connectors/web/dist/web/vendor/marked.umd.js") &&
-      listing.includes("package/seeded-connectors/web/dist/web/vendor/purify.min.js"),
+    "bundled web payload ships the client page and its bundle manifest in dist",
+    listing.includes(`${webBase}/index.html`) && listing.includes(`${webBase}/bundle-licenses.json`),
   );
   // Every connector bundle reads the same docs data from beside itself; the tarball carries it once.
   const docsEntries = listing.split("\n").filter((line) => /\/docs-(bundle|index)\.bin$/.test(line)).sort();
@@ -118,28 +117,45 @@ try {
     check(`bundled ${n} payload is version-locked to the umbrella (${umbrellaVersion})`, seededPkg.version === umbrellaVersion, seededPkg.version);
   }
 
-  // The web dashboard ships marked/DOMPurify as opaque browser bytes in dist (not runtime deps), so
-  // its vendor-manifest.json is the auditable SBOM surface. Assert it lists both libs with a concrete
-  // version + license + sha512, and that each recorded hash matches the ACTUAL shipped bytes (F2) — so
-  // a drifted or tampered vendored lib can never pass unnoticed into a published binary.
-  const vendorBase = "package/seeded-connectors/web/dist/web/vendor";
-  const vendorManifest = JSON.parse(
-    execFileSync("tar", ["xzf", cotalTgz, "-O", `${vendorBase}/vendor-manifest.json`], { encoding: "utf8" }),
-  ) as { vendored: { file: string; package: string; version: string; license: string; sha512: string }[] };
-  const libs = new Map(vendorManifest.vendored.map((e) => [e.package, e]));
+  // The web dashboard's client is one Vite build: third-party code is compiled into its hashed
+  // assets rather than shipped as runtime deps, so bundle-licenses.json is the auditable SBOM
+  // surface. Assert that every bundled package carries a concrete version and license, that it names
+  // the React runtime the page is built on, and that every file the shipped page references is in
+  // the tarball, so a payload whose page points at a missing asset cannot pass into a published
+  // binary. marked and DOMPurify are bundled too, because the message rows render bodies as
+  // sanitized Markdown, and d3-force, d3-selection and d3-zoom lay out and pan the topology graph.
+  const licenses = JSON.parse(
+    execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }),
+  ) as { bundled: { package: string; version: string; license: string }[] };
+  const libs = new Map(licenses.bundled.map((e) => [e.package, e]));
   check(
-    "web vendor manifest lists marked + dompurify with version, license and sha512",
-    ["marked", "dompurify"].every((p) => {
-      const e = libs.get(p);
-      return Boolean(e && e.version && e.license && /^[0-9a-f]{128}$/.test(e.sha512));
-    }),
-    [...libs.keys()].join(","),
+    "web bundle-licenses.json gives every bundled package a version and a license",
+    licenses.bundled.length > 0 && licenses.bundled.every((e) => Boolean(e.version && e.license)),
+    licenses.bundled,
   );
-  for (const e of vendorManifest.vendored) {
-    const bytes = execFileSync("tar", ["xzf", cotalTgz, "-O", `${vendorBase}/${e.file}`], { maxBuffer: 1 << 26 });
-    const actual = createHash("sha512").update(bytes).digest("hex");
-    check(`vendor manifest sha512 matches the shipped ${e.file}`, actual === e.sha512, `${actual.slice(0, 12)} vs ${e.sha512.slice(0, 12)}`);
-  }
+  check("web bundle-licenses.json names react and react-dom", ["react", "react-dom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
+  check("web bundle-licenses.json names marked and dompurify", ["marked", "dompurify"].every((p) => libs.has(p)), [...libs.keys()].join(","));
+  check("web bundle-licenses.json names d3-force, d3-selection and d3-zoom", ["d3-force", "d3-selection", "d3-zoom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
+  const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { encoding: "utf8" });
+  const refs = [...page.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
+  check("the shipped web page references its script and stylesheet", refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
+  for (const r of refs) check(`the shipped web page's reference /${r} is in the tarball`, listing.includes(`${webBase}/${r}`));
+  // The same payload, packed from the web package directly, the way prepack packs it and the way
+  // `@cotal-ai/web` publishes on its own: the umbrella must carry that package's manifest byte for
+  // byte, not a copy from some other build.
+  //
+  // This pack is also what gives the mutation coverage gate its reach into the web package: the
+  // gate cannot follow the umbrella's prepack, but it can follow an `npm pack` this suite runs over
+  // `implementations/web`. It is NOT the witness for the fixture's mutation. That mutation (the
+  // build stops recording bundled packages) is killed by the "names react and react-dom" cell
+  // above, which reads the umbrella's own tarball.
+  const webTgzDir = join(base, "web-tgz");
+  mkdirSync(webTgzDir, { recursive: true });
+  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { stdio: ["ignore", "ignore", "inherit"] });
+  const webTgz = join(webTgzDir, readdirSync(webTgzDir).find((f) => f.endsWith(".tgz")) ?? "");
+  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { encoding: "utf8" });
+  check("the umbrella's web manifest is the one the web package itself packs",
+    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }));
 
   console.log("installing the tarball closure into a clean prefix …");
   writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "tb-host", private: true }));

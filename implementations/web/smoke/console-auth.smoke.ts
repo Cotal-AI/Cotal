@@ -24,7 +24,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,7 @@ import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, PAGE, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
+import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, clientAssets, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
 import { bootWeb, startWeb } from "./boot-web.js";
 
 let pass = 0;
@@ -301,7 +301,7 @@ const gateInit = stmts[2] !== undefined && ts.isVariableStatement(stmts[2])
 // STRUCTURAL, not an enumeration of route syntax. Two earlier versions of this cell were beaten by
 // the same move: the first compared the gate against ONE named route (`/feed`), and the second
 // against every `if (path === "` / `if (path.startsWith("` dispatch — which silently omitted the
-// SHIPPED STATIC DISPATCH (`PAGE[path]` then `if (file)`), so moving that block above the gate left
+// SHIPPED STATIC DISPATCH (`client.get(path)` then `if (file)`), so moving that block above the gate left
 // `/`, `/graph` and every asset unauthenticated with all 68 cells green.
 //
 // A list of route shapes can always omit one, and the omission is invisible. So this asserts the
@@ -420,7 +420,7 @@ check("…and EXECUTION STOPS for the replayed link as well", rp.routeReached ==
 // `path === "/graph"` therefore stayed green while the ACTUAL printed launch URL is `/`, which would
 // have burned the token, served the page, and never set a session cookie. The one path that matters
 // most was the one path not driven.
-for (const exPath of ["/", "/graph", "/app.js"]) {
+for (const exPath of ["/", "/graph", "/assets/index.js"]) {
   const e = runGateBlock({ exchange: "SESSIONVALUE" }, exPath);
   check(`an exchange on ${exPath} sets the cookie and redirects THERE (the printed launch URL is "/")`,
     e.status === 302 && (e.headers["set-cookie"] ?? "").includes("SESSIONVALUE") && e.headers.location === exPath,
@@ -450,7 +450,7 @@ check("…and EXECUTION STOPS after the redirect (the exchange answers; it does 
 // predicate with `path === "/api/roster"` therefore refused exactly the cases the suite drove and
 // let `/feed`, the static assets and the channel-delete POST fall straight through, surviving 49/49.
 // A gate is worthless if it is a gate for one path.
-const ROUTE_PATHS = ["/", "/feed", "/app.js", "/api/meta", "/api/roster", "/api/channel/delete"];
+const ROUTE_PATHS = ["/", "/feed", "/assets/index.js", "/api/meta", "/api/roster", "/api/channel/delete"];
 check("NON-VACUITY: the refusal sweep covers several paths INCLUDING the destructive one",
   ROUTE_PATHS.length > 1 && ROUTE_PATHS.includes("/api/channel/delete"), ROUTE_PATHS);
 // STRUCTURAL INDEPENDENCE, because a sweep is a SAMPLE and a sample can always be evaded — the path
@@ -778,18 +778,26 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
 
     // 8b. A STATIC ROW PAST THE GATE ANSWERS WITH ITS FILE OR WITH THE CATCH'S 500 NAMING THE READ.
     // The route wrote its 200 before reading, so a failed read reached the catch with the status
-    // already sent and the browser ran an empty script as a success (#3417). The vendor rows name
-    // copies the build makes under `dist/web/vendor`, so in this run from source they are real rows
-    // whose file is absent.
-    const absent = PAGE["/vendor/marked.umd.js"];
-    check("STATIC FIXTURE: in a run from source the vendor row names a file that does not exist",
-      absent !== undefined && !existsSync(absent.path), absent);
-    const served = await fetch(`http://127.0.0.1:${webPort}/app.js`, { headers: { cookie } });
+    // already sent and the browser ran an empty script as a success (#3417). The client build is
+    // an allow-list read at startup, so a row whose file is gone is made here: the page's script is
+    // moved aside after the server has listed it, fetched, and put back.
+    const assets = clientAssets(fileURLToPath(new URL("../dist/web", import.meta.url)));
+    const script = [...assets.keys()].find((route) => route.startsWith("/assets/") && route.endsWith(".js"));
+    check("STATIC FIXTURE: the client build lists the page's script", script !== undefined, [...assets.keys()]);
+    const scriptFile = assets.get(script!)!.path;
+    const served = await fetch(`http://127.0.0.1:${webPort}${script}`, { headers: { cookie } });
     const servedBody = Buffer.from(await served.arrayBuffer());
     check("STATIC CONTROL: a row whose file reads is served whole, so the refusal below is about the read",
-      served.status === 200 && servedBody.equals(readFileSync(PAGE["/app.js"].path)), { status: served.status, bytes: servedBody.length });
-    const failed = await fetch(`http://127.0.0.1:${webPort}/vendor/marked.umd.js`, { headers: { cookie } });
-    const failedBody = await failed.text();
+      served.status === 200 && servedBody.equals(readFileSync(scriptFile)), { status: served.status, bytes: servedBody.length });
+    renameSync(scriptFile, `${scriptFile}.aside`);
+    let failed: Response;
+    let failedBody: string;
+    try {
+      failed = await fetch(`http://127.0.0.1:${webPort}${script}`, { headers: { cookie } });
+      failedBody = await failed.text();
+    } finally {
+      renameSync(`${scriptFile}.aside`, scriptFile);
+    }
     check("a static row whose file cannot be read answers 500 naming the failed read, never an empty 200",
       failed.status === 500 && failed.headers.get("content-type") === "application/json" && failedBody.includes("ENOENT"),
       { status: failed.status, body: failedBody });

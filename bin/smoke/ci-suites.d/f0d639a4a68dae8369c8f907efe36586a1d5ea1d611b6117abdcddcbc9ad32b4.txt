@@ -1,0 +1,2 @@
+# The sidebar: the space name, Needs you, the message rate, channels with unread counts, direct message rows and the connection pill.
+smoke:web-sidebar

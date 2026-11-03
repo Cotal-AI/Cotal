@@ -396,6 +396,49 @@
           },
           "message": {
             "$ref": "#/components/schemas/LiveMessage"
+          },
+          "hello": {
+            "description": "The first event of a feed: its id, which every watch request names. Sent before the roster so a browser can watch an agent at once.",
+            "type": "object",
+            "properties": {
+              "feed": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "feed"
+            ],
+            "additionalProperties": false
+          },
+          "agent-frame": {
+            "description": "A frame an agent published on its own event channel, sent only to the feeds watching that agent. `id` is the agent's roster id, the subject's verified publisher.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "msg": {
+                "description": "The frame as the agent published it, unvalidated publisher JSON forwarded by the dashboard tap; consumers validate it before treating it as a wire message."
+              }
+            },
+            "required": [
+              "id",
+              "msg"
+            ],
+            "additionalProperties": false
+          },
+          "overflow": {
+            "description": "The feed fell more than the server's buffer ceiling behind, so the server closed it; the browser reconnects to resume.",
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "additionalProperties": false
           }
         }
       }
@@ -898,12 +941,56 @@
           },
           "channelDeleteSupported": {
             "type": "boolean"
+          },
+          "post": {
+            "description": "Whether this dashboard can post as the operator. `participant` posts as one operator for the life of the process; `off` says why posting is unavailable.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "participant"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "off"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "operatorId": {
+            "type": "string",
+            "description": "The operator's own roster id once the dashboard has posted, so the browser can tell its own messages apart."
           }
         },
         "required": [
           "space",
           "pid",
-          "channelDeleteSupported"
+          "channelDeleteSupported",
+          "post"
         ],
         "additionalProperties": false
       },
