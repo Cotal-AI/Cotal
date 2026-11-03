@@ -1,44 +1,37 @@
-import { readFileSync, readdirSync, join, REPO, check, cotal, freshCfg, seedDir, readJson, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { readFileSync, readdirSync, join, REPO, boot, check, cotal, freshCfg, seedDir, readJson, writeJson, listNames, manifestPath, track, finishScenario } from "./harness.js";
 
 try {
-  // ── an OLDER binary must refuse a store stamped NEWER, and write nothing ─────────────────────────
-  // Without the refusal an older cotal misses the stamp fast path, refreshes nothing (the refresh
-  // fires only when the running binary is strictly newer), and then writes its own older generation
-  // over the stamp at the commit. The store ends up claiming a generation whose payloads are not the
-  // ones installed, and the next command from the newer binary reinstalls every connector to stamp it
-  // back, so two binaries alternating flap the store and pay a full reseed each way.
-  //
-  // The store is stamped 99.0.0 rather than running an actually-old build: a released older binary
-  // does not carry this guard and never will, so pointing one at a newer store proves nothing about
-  // the fix. 99.0.0 is newer than any binary that will ever run this suite, which is the same
-  // comparison from the side the guard can actually defend.
-  {
-    const cfg = track(freshCfg());
-    cotal(cfg, ["ext", "list"]); // seed it normally first
-    const stamp = join(seedDir(cfg), "stamp.json");
-    writeJson(stamp, { generation: "99.0.0" });
-    const before = readFileSync(stamp);
-    const storeBefore = readdirSync(join(seedDir(cfg), "store")).sort().join(",");
+  // This binary can protect its own writes, not change a pre-guard released executable.
+  const cfg = track(freshCfg());
+  boot(cfg);
+  const stamp = join(seedDir(cfg), "stamp.json");
+  const currentStamp = readFileSync(stamp);
+  writeJson(stamp, { generation: "99.0.0" });
+  const before = readFileSync(stamp);
+  const manifestBefore = readFileSync(manifestPath(cfg));
+  const storeBefore = readdirSync(join(seedDir(cfg), "store")).sort().join(",");
 
-    const r = cotal(cfg, ["ext", "list"]);
-    const said = `${r.stdout}${r.stderr}`;
-    check("downgrade: an older binary REFUSES a store stamped newer", r.status !== 0, r.status);
-    check("downgrade: the refusal names both generations", /is older than the seed store's generation 99\.0\.0/.test(said), said.slice(0, 300));
-    check(
-      "downgrade: the refusal names the way out",
-      /ext seed --force/.test(said) && !/ext seed --reset/.test(said),
-      said.slice(0, 300),
-    );
-    // The point of the guard is that it writes NOTHING, so assert the bytes, not just the exit code.
-    check("downgrade: stamp.json is byte-identical after the refusal", readFileSync(stamp).equals(before));
-    check("downgrade: no store generation added or removed", readdirSync(join(seedDir(cfg), "store")).sort().join(",") === storeBefore, storeBefore);
+  const r = boot(cfg);
+  const said = `${r.stdout}${r.stderr}`;
+  check("downgrade: an older binary REFUSES a store stamped newer", r.status !== 0, r.status);
+  check("downgrade: the refusal names the store and both generations", said.includes(`connector seed store ${seedDir(cfg)} is at generation 99.0.0`) && /this cotal \d+\.\d+\.\d+\S* does not move it back to an older one/.test(said), said.slice(0, 300));
+  check("downgrade: the refusal names the way out", said.includes(`restore that store and the extensions folder ${join(cfg, "cotal", "extensions")} from a backup taken before the store moved to 99.0.0`) && !/ext seed --(?:force|reset)/.test(said), said.slice(0, 300));
+  check("downgrade: stamp.json is byte-identical after the refusal", readFileSync(stamp).equals(before));
+  check("downgrade: no store generation added or removed", readdirSync(join(seedDir(cfg), "store")).sort().join(",") === storeBefore, storeBefore);
 
-    // A refusal that prescribes a fix has to have a working fix, or it is a wedge with instructions.
-    const force = cotal(cfg, ["ext", "seed", "--force"]);
-    check("downgrade: `ext seed --force` recovers the store", force.status === 0, force.stderr.slice(0, 300));
-    check("downgrade: the stamp is this binary's generation again", readJson(stamp).generation === readJson(join(REPO, "bin", "package.json")).version);
-    check("downgrade: ordinary commands work after the force rebuild", listNames(cfg).length === 6);
+  for (const mode of ["--force", "--reset", "--repair"]) {
+    const refused = cotal(cfg, ["ext", "seed", mode]);
+    check(`downgrade: ${mode} cannot replace a newer shared generation`, refused.status !== 0 && /is at generation 99\.0\.0, .* does not move it back to an older one/.test(refused.stderr), refused.stderr.slice(0, 300));
+    check(`downgrade: ${mode} preserves the stamp and extension manifest`, readFileSync(stamp).equals(before) && readFileSync(manifestPath(cfg)).equals(manifestBefore));
+    check(`downgrade: ${mode} preserves every store generation`, readdirSync(join(seedDir(cfg), "store")).sort().join(",") === storeBefore);
   }
+
+  // Put back this fixture's actual stamp, then retain same-generation maintenance controls.
+  writeJson(stamp, JSON.parse(currentStamp.toString()));
+  const force = cotal(cfg, ["ext", "seed", "--force"]);
+  check("downgrade: same-generation force remains supported", force.status === 0, force.stderr.slice(0, 300));
+  check("downgrade: same-generation maintenance keeps this binary's generation", readJson(stamp).generation === readJson(join(REPO, "bin", "package.json")).version);
+  check("downgrade: ordinary commands work after same-generation maintenance", listNames(cfg).length === 6);
 } finally {
   finishScenario();
 }

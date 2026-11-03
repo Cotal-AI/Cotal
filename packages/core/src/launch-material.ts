@@ -33,8 +33,12 @@
  * there is no later reader, so that session calls {@link discardLaunchMaterial} at startup and the
  * file and its private directory cease to exist. Where readers start LATER (the Claude connector's
  * MCP server and its one-process-per-hook relays, the Hermes launcher's gateway child) the file has
- * to outlive startup, so it lives as long as the seat and the OS temp reaper is what removes it. A
- * launch that dies before its session starts leaves its file to that same reaper.
+ * to outlive startup. For every connector the launch also lists the private directory on
+ * `LaunchSpec.artifacts` (see `materialEnv` in the connector runtime), so the launcher that spawns
+ * the spec removes it once the child has exited, as it does a persona carrier (core
+ * launch-artifacts). The second file the Hermes launcher writes for its gateway child is not on that
+ * list. A file whose launcher and watcher were both killed, or whose spawn failed before any child
+ * started, is left to the OS temp reaper.
  */
 import { mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";

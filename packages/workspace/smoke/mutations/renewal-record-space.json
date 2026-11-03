@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "the renewal record path drops the space and returns to the root-only file",
-      "file": "packages/workspace/src/renewal.ts",
+      "file": "packages/workspace/src/renewal-path.ts",
       "find": "  return join(root, \".cotal\", RENEWAL_RECORD_FILE.replaceAll(\"{space}\", spaceKey(space)));",
       "replace": "  return join(root, \".cotal\", LEGACY_RENEWAL_RECORD_FILE);",
       "expectRed": "#1850: two spaces at one root keep two renewal records",

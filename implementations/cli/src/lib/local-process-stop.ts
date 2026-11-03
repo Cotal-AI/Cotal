@@ -4,21 +4,46 @@
 import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
-  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
-  readPidfile, readProcessCommand, removePidPair, stopReservationPath, verifyIdentityPin,
+  CommandFailure, commandIsCotalServiceManager, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
+  readPidfile, readProcessCommand, removePidPair, requestLocalStop, stopReservationPath, verifyIdentityPin,
   type LocalProcess, type LocalProcessContext,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
+import { shellWord } from "./endpoint-errors.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let signalled: LocalProcess | undefined;
+
+/** The component this process has signalled to stop and not yet seen exit, while its stop waits. */
+export function stopInFlight(): LocalProcess | undefined {
+  return signalled;
+}
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
   return existsSync(localProcessPath(component.pidFile, context)) || (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context)).some(existsSync);
 }
 
+/** The refusal of a pidfile whose content is not a pid. It names no process, so nothing is signalled
+ *  and the record is kept: no lookup can show that no process stands behind it. */
+export class UnattributableRecord extends Error {
+  constructor(readonly label: string, readonly path: string, content: string) {
+    super(`the ${label} pidfile at ${path} holds content that is not a pid (${JSON.stringify(content)}), so it names no process and cotal cannot tell whether a ${label} still runs; refusing to remove it or report a clean stop`);
+  }
+}
+
+/** The steps a Next names for a pidfile that names no process: first the check only the operator can
+ *  make, because no answer or registration on the mesh shows that the process exited, then the removal. */
+export function unattributableRecordSteps(label: string, path: string): { check: string; removal: { command: string; description: string } } {
+  return {
+    check: `The ${label} pidfile names no process, so cotal cannot check whether a ${label} still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file.`,
+    removal: { command: `rm ${shellWord(path)}`, description: `Remove it once no ${label} runs for this folder` },
+  };
+}
+
 export interface StopLocalProcessOptions {
   /** Runs while this caller holds the `.stopping` reservation, after exact target verification and
-   * immediately before SIGTERM. Throwing aborts without signalling and preserves the pid record. */
+   * immediately before the stop request. Throwing aborts without signalling and preserves the pid record. */
   beforeSignal?: (attempt: {
     target: { pid: number; token: string } | { pid: number; token?: undefined };
     stopper: { pid: number; marker: string };
@@ -27,11 +52,8 @@ export interface StopLocalProcessOptions {
    * confirmed stop. It undoes what `beforeSignal` published: done after the reservation is released,
    * the undo could remove what the next stop to take the reservation published. */
   afterFailedSignal?: () => void;
-  /** Whether a live process's command line is this component's. Consulted only for a record with no
-   *  identity pin, where the command line is the only evidence of what the pid now runs. */
-  owns?: (command: string) => boolean;
-  /** The pid the caller decided to stop. A record naming another pid was published by a successor
-   *  after that decision, so the stop leaves it untouched and returns false. */
+  /** The pid the caller decided to stop. A record naming another pid, an absent record or an empty
+   *  husk cannot confirm that target stopped. Leave those records and artifacts untouched and return false. */
   pid?: number;
 }
 
@@ -91,14 +113,22 @@ export async function stopLocalProcess(
   const pidPath = localProcessPath(component.pidFile, context);
   const found = processRecorded(component, context);
   const rawPid = readPidfile(pidPath);
+  // Artifact-only and empty-husk cleanup is valid for an unbound stop, but says nothing about a
+  // process a caller already judged live. A pid-bound stop must not report that cleanup as its stop.
+  if (options.pid !== undefined && (rawPid === undefined || rawPid === "")) return false;
   if (rawPid === undefined) return found;
 
   if (rawPid.startsWith("removing:")) {
+    // A live `ext remove` always records its own positive pid, so only a dead pid or a non-pid owner
+    // is stale; an owner whose liveness the kernel will not confirm may still be removing the extension.
     const owner = parsePid(rawPid.slice("removing:".length));
+    const liveness = owner === undefined ? "dead" : probeLiveness(owner);
     throw new Error(
-      owner && probeLiveness(owner) === "alive"
+      liveness === "alive"
         ? `${component.name} extension removal is in progress (pid ${owner})`
-        : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
+        : liveness === "dead"
+          ? `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`
+          : `${component.name} has an extension-removal reservation at ${pidPath} (pid ${owner}) whose liveness could not be confirmed; its pidfile was preserved`,
     );
   }
   const pid = parsePid(rawPid);
@@ -108,6 +138,8 @@ export async function stopLocalProcess(
 
   let stopped = false;
   let authorized = false;
+  const cooperative = process.platform === "win32" && component.cooperativeStop === true;
+  let cleanupRequest: ((gone: boolean) => void) | undefined;
   try {
     if (pid === undefined) {
       // An EMPTY pidfile is a pre-protocol husk (no process behind it) and is safe to clear. Any
@@ -120,37 +152,36 @@ export async function stopLocalProcess(
         stopped = true; // husk cleared in `finally`
         return true;
       }
-      throw new Error(
-        `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
-      );
-    }
-    // Attribution before the pin (#1528): it also catches a reused pid behind a legacy record, which
-    // the pin would let through to the signal. A command that cannot be read proves nothing.
-    if (component.isOwnCommand) {
-      const command = readProcessCommand(pid);
-      if (command.kind === "command" && !component.isOwnCommand(command.command)) {
-        console.error(`! recorded ${component.label} pid ${pid} is alive but is running \`${command.command}\`, which is not a ${component.label} - not signalling it; removing the stale record instead.`);
-        stopped = true;
-        return true;
-      }
+      throw new UnattributableRecord(component.label, pidPath, rawPid);
     }
     // #969 OPEN-VERIFY-TERMINATE: identity before signal. This is the path every manager, delivery
     // and user-auth stop takes, and the one `cotal down` uses for the BROKER, the web dashboard and
-    // every extension component, so all of them share one identity rule.
+    // every extension component, so all of them share one identity rule. A pin that names another
+    // start refuses before anything else is read: the recorded process is gone and the live one is
+    // not signalled, whichever component the record belongs to.
     const identity = verifyIdentityPin(pidPath);
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
-    if (identity.kind === "legacy" && options.owns) {
-      // A readable command that is not this component's means the record outlived its process and
-      // the pid was reused. Signalling it would kill an unrelated process; the stale record goes.
-      const cmd = readProcessCommand(pid);
-      if (cmd.kind === "command" && !options.owns(cmd.command)) {
-        console.error(`! ${component.label} pid ${pid} is alive but is running \`${cmd.command}\`, which is not the ${component.label} - not signalling it; removing the stale record instead.`);
+    // One attribution, from the descriptor, and only where the pin has nothing to say (#1528, #3701).
+    // A readable command that is not this component's means a legacy record outlived its process and
+    // the pid was reused. Signalling it would kill an unrelated process; the stale record goes. A
+    // command that cannot be read proves nothing.
+    if (identity.kind === "legacy" && component.isOwnCommand) {
+      const command = readProcessCommand(pid);
+      if (command.kind === "command" && !component.isOwnCommand(command.command)) {
+        console.error(`! ${component.label} pid ${pid} is alive but is running \`${command.command}\`, which is not the ${component.label} - not signalling it; removing the stale record instead.`);
         stopped = true;
         return true;
       }
     }
-    if (identity.kind === "legacy") console.error(identityLegacyWarning(component.label, pidPath));
-    else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
+    if (identity.kind === "legacy") {
+      if (cooperative) throw new Error(`${component.label} has no creation identity for cooperative shutdown; stop it with its original supervisor`);
+      console.error(identityLegacyWarning(component.label, pidPath));
+    } else if (identity.kind === "no-pid") {
+      // verifyIdentityPin rereads the pidfile. A record removed, emptied or replaced after the first
+      // read is no longer the pid this stop parsed, so that cached pid is not signalled and the
+      // record that remains is kept for the next attempt.
+      throw new Error(`${component.label} pidfile at ${pidPath} no longer holds the pid this stop read - refusing to signal it or remove the record. Rerun this command.`);
+    } else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal(component.label, pidPath, identity);
     // The beforeSignal hook authorizes an action against a LIVE exact process. A pinned record whose
     // process is already ESRCH-gone needs no spare capability or destructive intent because no signal
     // will be sent. Clear that stale record directly, preserving the hook's documented placement
@@ -160,28 +191,38 @@ export async function stopLocalProcess(
       stopped = true;
       return true;
     }
+    // Native manager service custody exists only on Linux. win32 has no argv source, so its
+    // cooperative stop of a pinned legacy manager is not an unreadable-role ambiguity.
+    const role = readProcessCommand(pid);
+    const windowsCooperative = cooperative && role.kind === "unreadable";
+    if (role.kind === "command" && commandIsCotalServiceManager(role.command) || component.name === "manager" && role.kind !== "command" && !windowsCooperative) throw new CommandFailure("refused", "UNSUPPORTED", "legacy shutdown cannot control a native manager service or an unreadable manager role; use service stop with its exact owned instance and native impact review. No signal was sent");
     authorized = true;
-    options.beforeSignal?.({
+    const attempt = {
       target: identity.kind === "match" ? identity.record : { pid },
       stopper: { pid: process.pid, marker },
-    });
+    };
+    options.beforeSignal?.(attempt);
     try {
-      process.kill(pid, "SIGTERM");
+      if (cooperative) cleanupRequest = requestLocalStop(pidPath, attempt);
+      else process.kill(pid, "SIGTERM");
     } catch (e) {
       // ONLY an ESRCH proves the process is already gone (safe to clear). EPERM (exists, another
       // user's) or any other errno (EIO, argument errors, unknown) means we could NOT confirm death
       // - reporting it stopped and removing its record would orphan a live process. Fail loud, keep
       // the record. A two-state "not alive => gone" is exactly the bug: `unknown` is not `dead`.
-      if ((e as NodeJS.ErrnoException).code === "ESRCH") {
+      if ((e as NodeJS.ErrnoException).code === "ESRCH" || (cooperative && probeLiveness(pid) === "dead")) {
         console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
         stopped = true;
         return true;
       }
-      throw new Error(`could not signal ${component.label} (pid ${pid}) (${(e as NodeJS.ErrnoException).code ?? "unknown error"}) - refusing to report it stopped or remove its record; stop it manually`);
+      throw new Error(`could not ${cooperative ? "request cooperative shutdown for" : "signal"} ${component.label} (pid ${pid}) (${(e as NodeJS.ErrnoException).code ?? (cooperative ? (e as Error).message : "unknown error")}) - refusing to report it stopped or remove its record; stop it manually`);
     }
+    signalled = component;
     // Wait for CONFIRMED death (ESRCH), escalating to SIGKILL; `unknown`/`alive` both keep us
     // waiting, and if death is never confirmed the record is preserved (never deleted on a guess).
-    const graceDeadline = Date.now() + 15_000;
+    // Cooperative authentication can spend fifteen seconds reading the stopper's native identity;
+    // allow that bound and the daemon's cleanup before escalation, without waiting for a lease TTL.
+    const graceDeadline = Date.now() + (cooperative ? 20_000 : 15_000);
     while (probeLiveness(pid) !== "dead" && Date.now() < graceDeadline) await sleep(100);
     if (probeLiveness(pid) !== "dead") {
       try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
@@ -194,6 +235,7 @@ export async function stopLocalProcess(
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {
+    signalled = undefined;
     // Remove the pidfile ONLY when we confirmed a clean stop: `stopped` is set exclusively on an
     // ESRCH-proven death (already-gone, or a confirmed exit). Every other exit from the try above is
     // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
@@ -205,9 +247,9 @@ export async function stopLocalProcess(
       if (stopped) removePidPair(pidPath, rawPid);
       else if (authorized) options.afterFailedSignal?.();
     } finally {
-      // A cleanup that throws still ends this stop: a reservation left behind refuses every other
-      // stop of this component for as long as this process lives.
-      rmSync(marker, { force: true });
+      // Both cleanups stay under this attempt's reservation, even when either one throws.
+      try { cleanupRequest?.(stopped); }
+      finally { rmSync(marker, { force: true }); }
     }
   }
 }

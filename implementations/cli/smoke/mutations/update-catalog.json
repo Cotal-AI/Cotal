@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts"
+  ],
+  "guard": "software updates reach their own continuity checks without refreshing account catalogues",
+  "command": "pnpm -s smoke:cli-kernel",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/update-catalog.json",
+  "why": [
+    "The real registered update metadata passes through the dispatcher against an expired selected account. Reverting only the opt-out must fail the named routing assertion before the updater observer runs. This regression is a routing check; full-update terminal replays are separate."
+  ],
+  "mutations": [
+    {
+      "name": "restore account catalogue preparation before update",
+      "file": "implementations/cli/src/index.ts",
+      "find": "    flags: updateFlags,\n    prepareMeshTarget: false,\n",
+      "replace": "    flags: updateFlags,\n",
+      "expectRed": "update dispatch reaches its own continuity checks without catalogue authentication",
+      "cell": "update dispatch reaches its own continuity checks without catalogue authentication"
+    }
+  ]
+}

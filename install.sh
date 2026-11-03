@@ -9,7 +9,7 @@
 #
 # WHAT IT DOES
 #   1. Works out your platform, and refuses to guess if it is one we do not ship for.
-#   2. Finds a Node >= 22. If your machine has one, it uses it. If not, it downloads the
+#   2. Finds a Node >= 22.10. If your machine has one, it uses it. If not, it downloads the
 #      official Node LTS build into Cotal's own directory and verifies it against the
 #      SHASUMS256.txt published beside it on nodejs.org.
 #   3. Installs the `cotal-ai` package from npm into a prefix Cotal owns.
@@ -45,7 +45,8 @@ set -eu
 # ---------------------------------------------------------------------------------------
 
 COTAL_PKG="cotal-ai"
-NODE_MIN_MAJOR=22               # cotal-ai's engines floor
+NODE_MIN="22.10"                # cotal-ai's engines floor
+NODE_MIN_RANK=22010             # the same floor as major*1000+minor, for one integer compare
 NODE_PIN="v24.18.0"             # Node LTS ("Krypton"), vendored only when the box has none
 NODE_DIST="https://nodejs.org/dist"
 DOCS_URL="https://docs.cotal.ai"
@@ -353,7 +354,7 @@ require_unprivileged() {
 require_download_tools() {
   have curl || have wget ||
     die "Need curl or wget to download the Node runtime." \
-      "This machine has no Node $NODE_MIN_MAJOR+, so one has to be fetched." \
+      "This machine has no Node $NODE_MIN+, so one has to be fetched." \
       "Install curl or wget and run this again."
   have tar || die "Need tar to unpack the Node runtime." "Install tar and run this again."
   have mktemp || die "Need mktemp to stage the download safely." \
@@ -421,14 +422,14 @@ detect_platform() {
     Linux) OS="linux" ;;
     MINGW* | MSYS* | CYGWIN*)
       die "Windows shells are not supported by this installer." \
-        "On Windows, install Node 22+ from https://nodejs.org and then run:" \
+        "On Windows, install Node 22.10+ from https://nodejs.org and then run:" \
         "  npm install -g cotal-ai" \
         "Cotal itself runs fine on Windows; only this shell installer does not."
       ;;
     *)
       die "Unsupported operating system: $_uname_s" \
         "Cotal ships builds for macOS and Linux." \
-        "If you have Node 22+ already: npm install -g cotal-ai"
+        "If you have Node 22.10+ already: npm install -g cotal-ai"
       ;;
   esac
 
@@ -438,7 +439,7 @@ detect_platform() {
     *)
       die "Unsupported CPU architecture: $_uname_m" \
         "Cotal ships x86_64 and arm64 builds." \
-        "If you have Node 22+ already: npm install -g cotal-ai"
+        "If you have Node 22.10+ already: npm install -g cotal-ai"
       ;;
   esac
 
@@ -555,15 +556,16 @@ canonical_file() {
 NODE_BIN="" NPM_BIN="" NODE_LABEL="" NODE_VENDORED=0
 LOG=""
 
-node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
+# `22.10.0` ranks 22010 and `22.9.0` ranks 22009, so the floor's minor is part of the compare.
+node_rank() { "$1" -p 'const [m,n]=process.versions.node.split(".");m*1000+ +n' 2>/dev/null || echo 0; }
 
 # Prefer a Node already on the box: it is instant, and it is the Node the user maintains.
 # Fall through to a vendored runtime only when there is nothing here good enough.
 resolve_node() {
   if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm; then
     _sys_node=$(canonical_file "$(command -v node)")
-    _sys_major=$(node_major "$_sys_node")
-    if [ "$_sys_major" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null; then
+    _sys_rank=$(node_rank "$_sys_node")
+    if [ "$_sys_rank" -ge "$NODE_MIN_RANK" ] 2>/dev/null; then
       NODE_BIN="$_sys_node"
       NPM_BIN=$(canonical_file "$(command -v npm)")
       NODE_LABEL="$("$NODE_BIN" -v) $S_SEP already on this machine"
@@ -597,7 +599,7 @@ vendor_node() {
     if [ "$OPT_VENDOR_NODE" = 1 ]; then
       _why="--vendor-node"
     else
-      _why="this machine has no Node $NODE_MIN_MAJOR+"
+      _why="this machine has no Node $NODE_MIN+"
     fi
     printf '  %s%s%s Downloading Node %s (%s)\n' \
       "$C_BRAND" "$S_DOT" "$C_OFF" "$NODE_PIN" "$_why"
@@ -641,7 +643,7 @@ vendor_node() {
       "Looked in: $_dir/bin"
   fi
 
-  # A correct checksum says the bytes are authentic, not that they run here. Official Node 22+
+  # A correct checksum says the bytes are authentic, not that they run here. Official Node 22.10+
   # is built against glibc 2.28, so on an older distribution the download and the checksum both
   # succeed and npm then dies with "version GLIBC_2.28 not found" several steps later, after we
   # have already announced the runtime as good. Ask the binary itself, now.
@@ -650,10 +652,10 @@ vendor_node() {
     die "Node $NODE_PIN downloaded and verified, but it cannot run on this system." \
       "$(printf '%s' "$_node_check" | head -1)" \
       "" \
-      "Official Node $NODE_MIN_MAJOR+ builds require glibc 2.28 or newer (Debian 10," \
+      "Official Node $NODE_MIN+ builds require glibc 2.28 or newer (Debian 10," \
       "Ubuntu 18.10, RHEL 8 and later). This machine is older than that." \
       "" \
-      "Install a Node $NODE_MIN_MAJOR+ built for this distribution, then run this again;" \
+      "Install a Node $NODE_MIN+ built for this distribution, then run this again;" \
       "it will use yours instead of downloading one."
   fi
 
@@ -661,6 +663,16 @@ vendor_node() {
   NPM_BIN="$_dir/bin/npm"
   NODE_LABEL="$NODE_PIN $S_SEP downloaded and verified against nodejs.org"
   NODE_VENDORED=1
+}
+
+# An installer from before the umask in main, run under a umask of 0002, left the install
+# group-writable, and a folder another account can write makes Cotal refuse the Node runtime in
+# it as an endpoint handler. Remove that write from this account's own entries; links are not
+# followed.
+repair_install_modes() {
+  find "$INSTALL_DIR" \( -type d -o -type f \) -user "$(id -u)" \( -perm -020 -o -perm -002 \) \
+    -exec chmod go-w {} + ||
+    warn_line "could not remove group and other write from everything in $(tildify "$INSTALL_DIR")"
 }
 
 # A directory holding node, npm and npx and nothing else. The launcher puts this on PATH,
@@ -937,6 +949,21 @@ setup_path() {
   export PATH
 }
 
+# The child shell can inspect PATH, but cannot clear its parent's command cache or aliases.
+report_path_selection() {
+  _selected=$(command -v cotal 2>/dev/null || true)
+  _selected_target=""
+  case "$_selected" in
+    /*) _selected_target=$(resolved_target "$_selected") || _selected_target="" ;;
+  esac
+  _installed_target=$(resolved_target "$BIN_DIR/cotal") || _installed_target=""
+  if [ -z "$_selected_target" ] || [ "$_selected_target" != "$_installed_target" ]; then
+    warn_line "Your PATH does not select the Cotal just installed."
+    dim_line "Use $(shquote "$BIN_DIR/cotal") instead of plain cotal."
+  fi
+  dim_line "Check \`type -a cotal\` in your shell; this installer cannot change its cached commands, aliases or functions."
+}
+
 # ---------------------------------------------------------------------------------------
 # What is already on this machine
 #
@@ -1013,26 +1040,27 @@ summary() {
 }
 
 next_steps() {
+  _cotal=$(shquote "$BIN_DIR/cotal")
   blank
   head_line "Next"
   case "$PATH_STATE" in
     added:*)
       _rc=${PATH_STATE#added:}
       printf '    %s%s%s   %sreload your shell, once%s\n' "$C_BRAND" "exec $(basename "${SHELL:-sh}")" "$C_OFF" "$C_DIM" "$C_OFF"
-      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
+      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       blank
       dim_line "PATH updated in $(tildify "$_rc")"
       ;;
     manual)
       printf '    %s%s%s\n' "$C_BRAND" "export PATH=\"$BIN_DIR:\$PATH\"" "$C_OFF"
-      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
+      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       blank
       dim_line "Add that export to your shell rc to make it permanent."
       ;;
     *)
-      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
-      printf '    %s%s%s     %s%s%s\n' "$C_BRAND" "cotal up --detach" "$C_OFF" "$C_DIM" "start your mesh" "$C_OFF"
-      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "cotal spawn" "$C_OFF" "$C_DIM" "put an agent on it" "$C_OFF"
+      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
+      printf '    %s%s%s     %s%s%s\n' "$C_BRAND" "$_cotal up --detach" "$C_OFF" "$C_DIM" "start your mesh" "$C_OFF"
+      printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal spawn" "$C_OFF" "$C_DIM" "put an agent on it" "$C_OFF"
       ;;
   esac
   blank
@@ -1051,7 +1079,7 @@ hand_off_to_setup() {
   [ "$TTY" = 1 ] || return 1
 
   blank
-  dim_line "Starting guided setup. Ctrl-C to stop; run \`cotal setup\` whenever you like."
+  dim_line "Starting guided setup. Ctrl-C to stop; run $(shquote "$BIN_DIR/cotal") setup whenever you like."
   blank
   "$BIN_DIR/cotal" setup </dev/tty || return 1
   return 0
@@ -1110,6 +1138,9 @@ dry_run_report() {
 ELAPSED=0
 
 main() {
+  # Nothing this installer creates is writable by group or others, even under a umask of 0002.
+  # Without a user private group, a group-writable install tree is one other accounts can change.
+  umask 022
   init_term
   parse_args "$@"
   trap 'cleanup' EXIT
@@ -1129,7 +1160,7 @@ main() {
   if [ "$OPT_DRY_RUN" = 1 ]; then
     # Report the runtime decision without acting on it: probe the system Node only.
     if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm &&
-      [ "$(node_major "$(command -v node)")" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null; then
+      [ "$(node_rank "$(command -v node)")" -ge "$NODE_MIN_RANK" ] 2>/dev/null; then
       NODE_LABEL="$(node -v) $S_SEP already on this machine"
     else
       NODE_VENDORED=1
@@ -1150,6 +1181,7 @@ main() {
       "  curl -fsSL https://get.cotal.ai | COTAL_INSTALL_DIR=/path/you/own sh"
   fi
   acquire_install_lock
+  repair_install_modes
   LOG="$INSTALL_DIR/install.log"
   : >"$LOG" 2>/dev/null || die "Cannot write $(tildify "$LOG")." \
     "The install directory exists but is not writable by you."
@@ -1172,6 +1204,7 @@ main() {
     manual) warn_line "$(tildify "$BIN_DIR") is not on your PATH yet" ;;
   esac
 
+  report_path_selection
   ELAPSED=$(($(date +%s) - _t0))
 
   summary

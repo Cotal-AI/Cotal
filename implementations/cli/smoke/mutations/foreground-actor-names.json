@@ -1,0 +1,36 @@
+{
+  "suite": ["implementations/cli/smoke/foreground-actor-names.smoke.ts"],
+  "guard": "Implicit foreground actors allocate without replacing held material, while explicit identities and non-collision failures remain pinned",
+  "command": "pnpm exec tsx implementations/cli/smoke/foreground-actor-names.smoke.ts",
+  "why": ["The real-process suite uses fail-fast assertions with dependent lifecycle steps. A named assertion failure intentionally stops later steps, while finally reaps every owned process. Do not require the success-only completion line on an expected red."],
+  "mutations": [
+    {
+      "name": "disable implicit foreground collision allocation",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
+      "replace": "      if (!autoName || process.pid > 0 || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
+      "expectRed": "implicit foreground launch allocates a fresh actor while prior material is held"
+    },
+    {
+      "name": "ignore an explicit actor pin on collision",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
+      "replace": "      if (!(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
+      "expectRed": "explicit held identity never launches a replacement"
+    },
+    {
+      "name": "treat an ordinary authorization failure as name occupancy",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
+      "replace": "      if (!autoName || !(e instanceof Error)) throw e;",
+      "expectRed": "ordinary authorization refusal never launches"
+    },
+    {
+      "name": "refuse an implicit launch instead of skipping an existing remote grant",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "    if (checked.exists && \"provisioningUrl\" in source) throw new ForegroundActorCollision(checked.message);",
+      "replace": "    if (process.pid < 0 && checked.exists && \"provisioningUrl\" in source) throw new ForegroundActorCollision(checked.message);",
+      "expectRed": "implicit launch skips an existing remote grant as well as a local held name"
+    }
+  ]
+}

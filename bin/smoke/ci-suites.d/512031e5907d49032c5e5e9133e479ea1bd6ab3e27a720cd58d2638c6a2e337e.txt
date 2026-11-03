@@ -1,0 +1,2 @@
+# Delegated runtimes refuse caller-selected host persona config paths.
+smoke:manager-delegated-config

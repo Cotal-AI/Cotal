@@ -4,7 +4,7 @@
 // so the fold is deterministic and the recency kernel needs no stored EWMA state.
 
 import type { Presence, PresenceStatus } from "@cotal-ai/core";
-import { subjectMatches } from "@cotal-ai/core";
+import { isChannelFamily, peerLabel, subjectMatches } from "@cotal-ai/core";
 import type { FeedDelivery, FeedEntry, MembershipView } from "../../mesh.js";
 
 export type TopoNodeKind = "agent" | "channel" | "service";
@@ -98,6 +98,9 @@ export function foldTopo(
     membership?: MembershipView;
     /** Channel registry names, for expanding bounded wildcard subscriptions. */
     knownChannels?: string[];
+    /** The known channels whose class is durable: a durable family row (`team.>`) stores copies only
+     *  for those, so it expands over them alone. */
+    durableChannels?: string[];
     /** id → display name (defaults to the roster, then an 8-char id prefix). */
     nameOf?: (id: string) => string;
   },
@@ -168,6 +171,7 @@ export function foldTopo(
       ...[...byKey.values()].filter((n) => n.kind === "channel").map((n) => n.name),
       ...(opts?.knownChannels ?? []),
     ]);
+    const durable = opts?.durableChannels ?? [];
     for (const m of membership.members) {
       const node = touch("a:" + m.id, "agent", nameFor(m.id), 0);
       node.id = m.id;
@@ -180,7 +184,10 @@ export function foldTopo(
         else if (isWild(pat)) for (const ch of known) { if (subjectMatches(pat, ch)) chans.set(ch, "live"); }
         else chans.set(pat, "live");
       }
-      for (const ch of m.durable ?? []) if (!chans.has(ch)) chans.set(ch, "durable");
+      for (const ch of m.durable ?? []) {
+        if (!isChannelFamily(ch)) { if (!chans.has(ch)) chans.set(ch, "durable"); }
+        else for (const c of durable) if (!chans.has(c) && subjectMatches(ch, c)) chans.set(c, "durable");
+      }
       if (wide) node.wide = true;
       for (const [ch, state] of chans) {
         touch("c:" + ch, "channel", ch, 0); // materialize a hub even if silent
@@ -242,9 +249,10 @@ export function heatLevel(rate: number): 0 | 1 | 2 | 3 | 4 {
   return 4;
 }
 
-/** Display label for a node — the renderers' single prefix rule. */
+/** Display label for a node — the renderers' single label rule: an agent prints its shared
+ *  {@link peerLabel}, a channel or service its #/@ prefix. */
 export function nodeLabel(n: TopoNode): string {
-  return n.kind === "channel" ? "#" + n.name : n.kind === "service" ? "@" + n.name : n.name;
+  return n.kind === "channel" ? "#" + n.name : n.kind === "service" ? "@" + n.name : peerLabel(n);
 }
 
 /** The feed entries that flow over one edge, oldest-first (for inspectors/detail). */

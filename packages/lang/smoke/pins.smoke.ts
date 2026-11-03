@@ -370,6 +370,17 @@ await sleep("1s", { name: "s" })
     draws[0] === stated("run-1", "", 0) && draws[1] === stated("run-1", "", 1), { draws, stated: [stated("run-1", "", 0), stated("run-1", "", 1)] });
   ok("and a space in place of U+0000 is a different stream, so the separator is part of the contract",
     createHash("sha256").update("run-1  0", "utf8").digest("hex") !== createHash("sha256").update(`run-1\u0000\u00000`, "utf8").digest("hex"));
+
+  // The workflows guide states `randomInt(n)` as `floor(random() * n)` and says a builtin ignores
+  // arguments past the ones it takes, so there is no range form: `randomInt(1, 1000)` is
+  // `randomInt(1)`. Hold the code to those sentences over the same draws.
+  const ints: number[] = [];
+  await run(`log(randomInt(10), randomInt(1, 1000), randomInt(1, 1000))`, {
+    runId: "r-11", seed: "run-1", handler: new SimHandler({}),
+    onLog: (l) => ints.push(...(l.values as number[])),
+  });
+  ok("randomInt(n) is floor(random() * n) over the same draw, and randomInt(1, 1000) is randomInt(1), so always 0",
+    ints[0] === Math.floor(stated("run-1", "", 0) * 10) && ints[1] === 0 && ints[2] === 0, ints);
 }
 
 console.log(`pins.smoke: ${pass} checks passed`);

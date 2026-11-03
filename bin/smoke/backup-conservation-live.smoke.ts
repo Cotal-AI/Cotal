@@ -145,7 +145,7 @@ interface Sampler {
 }
 
 /** A read-only view of the live space through the exact credential `backup create` inspects with:
- *  STREAM.INFO + CONSUMER.LIST over the eight backed-up streams and nothing else — no body read, no
+ *  STREAM.INFO + CONSUMER.LIST over the backed-up streams and nothing else — no body read, no
  *  mutation verb, no consumer of its own to perturb what it measures. */
 async function openSampler(mesh: Mesh, auth: SpaceAuth): Promise<Sampler> {
   const creds = await mintCreds(auth, newIdentity(), "backup", {
@@ -349,7 +349,7 @@ async function conservationScenario(): Promise<void> {
   const artifact = join(mesh.root, "full-backup");
   try {
     must("up", run("up", "--detach", "--server", mesh.server, "--space", mesh.space));
-    must("seed registry", run("channels", "set", CHANNEL, "--desc", "conserved", "--space", mesh.space));
+    must("seed registry", run("channel", "set", CHANNEL, "--desc", "conserved", "--space", mesh.space));
     const auth = loadSoleSpaceAuth(authDir(mesh.root));
     assert.ok(auth, "an auth mesh retains its SpaceAuth");
 
@@ -406,7 +406,10 @@ async function conservationScenario(): Promise<void> {
       [...spaceBackupInventory(mesh.space).full].sort(),
       "the artifact covers every backed-up stream",
     );
-    for (const record of manifest.streams) {
+    // The workflow stores are left out of this check: the cut itself writes to the records store, so
+    // that store moves between the pre-cut sample and the artifact.
+    const workflow = new Set(spaceBackupInventory(mesh.space).backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name));
+    for (const record of manifest.streams.filter((entry) => !workflow.has(entry.stream))) {
       const live = preCut.streams[record.stream];
       assert.ok(live, `${record.stream} was sampled before the cut`);
       assert.equal(record.state.messages, live.messages, `${record.stream} conserved its message count`);
@@ -451,7 +454,7 @@ async function restoredMeshWorksScenario(): Promise<void> {
   const artifact = join(mesh.root, "full-backup");
   try {
     must("up", run("up", "--detach", "--server", mesh.server, "--space", mesh.space));
-    must("seed registry", run("channels", "set", CHANNEL, "--desc", "restored", "--space", mesh.space));
+    must("seed registry", run("channel", "set", CHANNEL, "--desc", "restored", "--space", mesh.space));
     const auth = loadSoleSpaceAuth(authDir(mesh.root));
     assert.ok(auth, "an auth mesh retains its SpaceAuth");
 
@@ -473,7 +476,7 @@ async function restoredMeshWorksScenario(): Promise<void> {
     assert.equal(restored.state, "active");
 
     // The restored registry is the one that was backed up.
-    const listed = run("channels", "list", "--space", mesh.space);
+    const listed = run("channel", "--space", mesh.space);
     must("list restored registry", listed);
     assert.match(listed.stdout, new RegExp(`#${CHANNEL}`));
 

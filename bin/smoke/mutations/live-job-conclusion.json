@@ -42,18 +42,34 @@
     {
       "name": "ci-ok drops the ARM load leaf from needs",
       "file": ".github/workflows/ci.yml",
-      "find": "    needs: [unit, smoke, live, seat-pack, seat-linux-arm64]\n",
-      "replace": "    needs: [unit, smoke, live, seat-pack]\n",
-      "expectRed": "ci-ok needs include unit, smoke, live, and the ARM validation leaves",
-      "cell": "ci-ok needs include unit, smoke, live, and the ARM validation leaves"
+      "find": "    needs: [unit, smoke, live, platforms, seat-pack, seat-linux-arm64]\n",
+      "replace": "    needs: [unit, smoke, live, platforms, seat-pack]\n",
+      "expectRed": "ci-ok needs include unit, smoke, live, platforms, and the ARM validation leaves",
+      "cell": "ci-ok needs include unit, smoke, live, platforms, and the ARM validation leaves"
+    },
+    {
+      "name": "ci-ok drops the platforms job from needs",
+      "file": ".github/workflows/ci.yml",
+      "find": "    needs: [unit, smoke, live, platforms, seat-pack, seat-linux-arm64]\n",
+      "replace": "    needs: [unit, smoke, live, seat-pack, seat-linux-arm64]\n",
+      "expectRed": "ci-ok needs include unit, smoke, live, platforms, and the ARM validation leaves",
+      "cell": "ci-ok needs include unit, smoke, live, platforms, and the ARM validation leaves"
     },
     {
       "name": "Gate stops requiring the ARM load leaf",
       "file": ".github/workflows/ci.yml",
-      "find": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ] && [ \"${{ needs.seat-linux-arm64.result }}\" = \"success\" ]\n",
-      "replace": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ]\n",
-      "expectRed": "Gate fails unless all five direct needs succeed",
-      "cell": "Gate fails unless all five direct needs succeed"
+      "find": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.platforms.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ] && [ \"${{ needs.seat-linux-arm64.result }}\" = \"success\" ]\n",
+      "replace": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.platforms.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ]\n",
+      "expectRed": "Gate fails unless all six direct needs succeed",
+      "cell": "Gate fails unless all six direct needs succeed"
+    },
+    {
+      "name": "Gate stops requiring the platforms job",
+      "file": ".github/workflows/ci.yml",
+      "find": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.platforms.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ] && [ \"${{ needs.seat-linux-arm64.result }}\" = \"success\" ]\n",
+      "replace": "          [ \"${{ needs.unit.result }}\" = \"success\" ] && [ \"${{ needs.smoke.result }}\" = \"success\" ] && [ \"${{ needs.live.result }}\" = \"success\" ] && [ \"${{ needs.seat-pack.result }}\" = \"success\" ] && [ \"${{ needs.seat-linux-arm64.result }}\" = \"success\" ]\n",
+      "expectRed": "Gate fails unless all six direct needs succeed",
+      "cell": "Gate fails unless all six direct needs succeed"
     }
   ]
 }

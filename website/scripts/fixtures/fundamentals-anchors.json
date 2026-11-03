@@ -1,0 +1,26 @@
+{
+  "architecture": [
+    "a2a-influence",
+    "nats-mapping",
+    "package-layout",
+    "connector-runtime",
+    "manager-supervision",
+    "observers",
+    "addressing",
+    "deferred"
+  ],
+  "spaces": [
+    "1-what-a-space-is",
+    "2-channel-boundary",
+    "3-channels-inside-channels-no",
+    "4-connecting-spaces",
+    "prior-art"
+  ],
+  "transport": [
+    "the-two-layers",
+    "the-transport-capability-contract",
+    "nats-reference-binding",
+    "binding-to-another-transport",
+    "what-this-means"
+  ]
+}

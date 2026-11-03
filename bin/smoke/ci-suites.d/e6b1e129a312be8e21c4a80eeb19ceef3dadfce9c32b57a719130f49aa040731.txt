@@ -1,0 +1,1 @@
+smoke:connector-bundle-text

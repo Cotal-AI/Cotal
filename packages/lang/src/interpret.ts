@@ -54,6 +54,7 @@ import {
   applyCheckpointPolicy,
   type AgentHandleValue,
   type CancelSignal,
+  type RootCancellationSource,
   type ChannelHandleValue,
   type ConclaveRequest,
   type EffectContext,
@@ -266,16 +267,18 @@ class Frame {
     readonly keys: KeyScope,
     readonly clock: RunClock,
     readonly signal: Signal,
-    /** How many CONCURRENT scopes deep. See {@link Env.depth}: this is L2032's runtime half. */
-    readonly depth: number = 0,
   ) {}
+
+  /** How many CONCURRENT scopes deep. See {@link Env.depth}: this is L2032's runtime half. */
+  get depth(): number {
+    return this.keys.path.length;
+  }
 
   branch(kind: PathKind, name: string | null, occurrence: number, branchKey: string): Frame {
     return new Frame(
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
       this.signal.child(),
-      this.depth + 1,
     );
   }
 }
@@ -319,6 +322,8 @@ export interface RunOptions {
    * where its journal says it is and the next driver resumes from there.
    */
   readonly shouldStop?: () => string | undefined;
+  /** Cooperative root cancellation, distinct from a next-boundary host release. */
+  readonly cancellation?: RootCancellationSource;
   /**
    * This walk is a MIGRATION's dry replay, not a resume.
    *
@@ -1026,7 +1031,7 @@ class Interpreter {
     if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
 
     const first = await this.evaluate(argNodes[0] as AnyNode, env, frame);
-    if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
+    if (scopeKind === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bagNode = argNodes[spec.optionsAt];
     const bag = bagNode === undefined ? undefined : await this.evaluate(bagNode, env, frame);
     const scopeName = (this.option(bag, "name") as string | undefined) ?? null;
@@ -1050,7 +1055,6 @@ class Interpreter {
       async (ctx, only) =>
         await runScope(
           this.effects,
-          name,
           scopeKind,
           scopeName,
           occurrence,
@@ -1067,7 +1071,7 @@ class Interpreter {
       // `race` alone. `parallel` and `fanOut` have no losers — every branch is a winner and the
       // walk enters all of them — and a `conclave` cannot be walked into at all, so a digest there
       // would bind arms nothing was ever going to miss.
-      name === "race" ? this.branchDigester(argNodes[0]) : undefined,
+      scopeKind === "race" ? this.branchDigester(argNodes[0]) : undefined,
     );
   }
 
@@ -1505,14 +1509,19 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
   const env = new Env(null);
   installGlobals(env, interp);
 
-  const completion = await interp.executeBlock(ast as AnyNode, env, frame);
-  return {
-    value: completion.type === "return" ? completion.value : undefined,
-    journal: interp.journal,
-    programHash,
-    pins,
-    steps: interp.stepCount,
-  };
+  const unsubscribe = options.cancellation?.subscribe((reason) => frame.signal.cancel(reason));
+  try {
+    const completion = await interp.executeBlock(ast as AnyNode, env, frame);
+    return {
+      value: completion.type === "return" ? completion.value : undefined,
+      journal: interp.journal,
+      programHash,
+      pins,
+      steps: interp.stepCount,
+    };
+  } finally {
+    unsubscribe?.();
+  }
 }
 
 /** Re-run a program against an existing journal. Journalled effects return recorded results. */

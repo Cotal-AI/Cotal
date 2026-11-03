@@ -218,9 +218,18 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
 
   const expiredContext = { ...ctx("c3775_expired_checkpoint").ctx as object, bind: async () => {} } as never;
   const expiry = await live.checkpoint({ prompt: "keep checkpoint expiry", timeout: "1ms" }, expiredContext)
-    .then(() => undefined, error => error as Error);
-  c("S3775 checkpoint pre-mint expiry is not swallowed by relative sleep handling",
-    expiry?.constructor.name === "PauseOverdue", expiry);
+    .then(value => value, error => error as Error);
+  c("S3775 a checkpoint whose timeout passed before its mint reports expired, for its onExpiry to decide",
+    !(expiry instanceof Error) && expiry.outcome === "expired", expiry);
+  c("S3775 that checkpoint mints no pause",
+    await readCheckpointSpec(kv, { endpoint: EP, token: "c3775_expired_checkpoint" }) === undefined);
+  // A waitUntil cadence of 1ms has passed before its pause can be minted, too.
+  const cadence = await live.observe({ name: "w", every: "1ms", deadline: "1m", deadlineAt: Date.now() + 60_000, attempt: 1 } as never, ctx("c3775_observe").ctx)
+    .then(value => value, error => error as Error);
+  c("S3775 a waitUntil cadence that passed before its mint observes again while its deadline allows", cadence === true, cadence);
+  const late = await live.observe({ name: "w", every: "1ms", deadline: "10ms", deadlineAt: Date.now() + 10, attempt: 1 } as never, ctx("c3775_observe_late").ctx)
+    .then(value => value, error => error as Error);
+  c("S3775 one whose deadline passed with it answers no time left, which fails the wait L4023", late === false, late);
 
   const now = Date.now();
   const futureOnly = await mintCheckpoint(kv, js, SPACE, {

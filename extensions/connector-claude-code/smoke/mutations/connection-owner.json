@@ -1,0 +1,110 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/connection-owner.smoke.ts"
+  ],
+  "guard": "a hosted Cotal connection stays with the Claude Code session that opened it: a fork is refused the id, while the opener, its subagents, a resume and an unseen id pass",
+  "command": "pnpm smoke:claude-connection-owner",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/connection-owner.json",
+  "why": [
+    "Reproduced live on Claude Code 2.1.295: a session connected through a hosted gateway stand-in as fork_parent, and `claude --resume <id> --fork-session` reused its connection_id and acted as fork_parent from a new session id.",
+    "The suite runs dist/hook.cjs, the file hooks.json runs, and records the real gateway's cotal_connect answer, so every mutation rebuilds before the run and after the restore.",
+    "C1 and C6 cut recording; C2 is the liveness arm (refusing the opener too); C3 drops the refusal; C4 drops the file-name check; C5 keeps a disconnected record; C7 narrows the hooks.json matcher; C8 records in a launched session; C9 refuses only the tools the earlier cells named; C10 lets any session's disconnect release the record."
+  ],
+  "mutations": [
+    {
+      "name": "C1 the opener's connect is never recorded",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "      writeFileSync(join(dir, opened), sessionId, { mode: 0o600 });\n",
+      "replace": "",
+      "expectRed": "the opening session's PostToolUse records it as the owner",
+      "cell": "the opening session's PostToolUse records it as the owner",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "C2 the owner check ignores which session asks",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "    if (recorded === undefined || recorded === sessionId) return undefined;",
+      "replace": "    if (recorded === undefined) return undefined;",
+      "expectRed": "the opener passes",
+      "cell": "the opener passes",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "Liveness: every refusal cell stays green; only the opener's pass catches a guard that refuses everyone."
+    },
+    {
+      "name": "C3 a recorded owner is never enforced",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "    if (recorded === undefined || recorded === sessionId) return undefined;",
+      "replace": "    return undefined;",
+      "expectRed": "another session (a fork) is refused the opener's connection_id",
+      "cell": "another session (a fork) is refused the opener's connection_id",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "The pre-fix behavior: the fork acts under the opener's name."
+    },
+    {
+      "name": "C4 any id the gateway text carries becomes a file name",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "    if (id !== undefined) return SAFE_ID.test(id) ? id : undefined;",
+      "replace": "    if (id !== undefined) return id;",
+      "expectRed": "an id that is not a plain token is never written",
+      "cell": "an id that is not a plain token is never written",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "C5 disconnect keeps the record",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "      if (owner() === sessionId) rmSync(join(dir, id), { force: true });\n",
+      "replace": "",
+      "expectRed": "the opener's disconnect releases the record",
+      "cell": "the opener's disconnect releases the record",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "C6 the hook does not run the owner answer",
+      "file": "extensions/connector-claude-code/src/hook.ts",
+      "find": "otherCotalPath(event, session) ?? owner(event, session)",
+      "replace": "otherCotalPath(event, session)",
+      "expectRed": "the opening session's PostToolUse records it as the owner",
+      "cell": "the opening session's PostToolUse records it as the owner",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "C7 hooks.json stops running the hook for cotal_disconnect",
+      "file": "extensions/connector-claude-code/hooks/hooks.json",
+      "find": "\"matcher\": \"^mcp__.+__cotal_(connect|disconnect)$\"",
+      "replace": "\"matcher\": \"^mcp__.+__cotal_connect$\"",
+      "expectRed": "hooks.json runs the hook on PostToolUse for a hosted cotal_connect and cotal_disconnect",
+      "cell": "hooks.json runs the hook on PostToolUse for a hosted cotal_connect and cotal_disconnect, and not for other tools",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "The bundle cells call the hook directly, so only this cell sees what Claude Code would actually run it for."
+    },
+    {
+      "name": "C8 a launched session records hosted connects",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "    if (session.managed || !dir) return undefined;",
+      "replace": "    if (!dir) return undefined;",
+      "expectRed": "a launched session records nothing",
+      "cell": "a launched session records nothing (its hosted calls are refused before use)",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "C9 the refusal covers only cotal_roster and cotal_disconnect",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "    if (ev?.hook_event_name !== \"PreToolUse\") return undefined;",
+      "replace": "    if (ev?.hook_event_name !== \"PreToolUse\" || (tool !== \"cotal_roster\" && tool !== \"cotal_disconnect\")) return undefined;",
+      "expectRed": "another session is refused cotal_send on it, as every hosted tool",
+      "cell": "another session is refused cotal_send on it, as every hosted tool",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "A review found this survived when only roster and disconnect were checked from a fork."
+    },
+    {
+      "name": "C10 any session's disconnect releases the record",
+      "file": "extensions/connector-claude-code/src/connection-owner.ts",
+      "find": "      if (owner() === sessionId) rmSync(join(dir, id), { force: true });",
+      "replace": "      rmSync(join(dir, id), { force: true });",
+      "expectRed": "another session's disconnect leaves the opener's record",
+      "cell": "another session's disconnect leaves the opener's record",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "A review found this survived when only the opener disconnected."
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+# #5214: separately hosted stock account authority activation, including the genuine scanner fence. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:managed-activate-door:auth

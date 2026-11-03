@@ -1,0 +1,2 @@
+# The browser Manager caller in a real headless Chromium under a strict CSP.
+smoke:browser-manager-caller

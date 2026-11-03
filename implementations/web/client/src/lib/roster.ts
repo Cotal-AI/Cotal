@@ -21,6 +21,11 @@ export interface RosterRow {
   /** Last heartbeat (Presence.ts), not work progress and not status-entered-at. */
   ts: number;
   statusSince?: number;
+  /** The reported condition (`rate_limit`, `approval`, …) and when it began, as presence states it. */
+  condition?: RosterEntry["condition"];
+  /** When the activity text was set, and when the agent last reported work; both optional stamps. */
+  activitySince?: number;
+  activeAt?: number;
   /** The card's `ai.cotal.events`: "on" or "off" when it says, absent when it does not. */
   events?: "on" | "off";
 }
@@ -63,6 +68,9 @@ export function rosterRows(roster: RosterEntry[], opts: { includeOffline?: boole
       model: metaText(p.card.meta, "model"),
       ts: p.ts,
       statusSince: p.statusSince,
+      condition: p.condition,
+      activitySince: p.activitySince,
+      activeAt: p.activeAt,
       ...eventsFlag(p.card.meta),
     }));
 }

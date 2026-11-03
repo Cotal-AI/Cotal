@@ -152,7 +152,7 @@ try {
       // dispatch the unrelated message as its OWN turn while the swallowed handover is still
       // reserved, and that only happens at an idle boundary the fixture chooses.
       FAKE_JCODE_BUSY_RELEASE_FILE: busyReleaseFile,
-      FAKE_JCODE_STEER_BLACKHOLE: "1",
+      FAKE_JCODE_STEER_REFUSE: "1",
       // THE FIXTURE'S WHOLE POINT: the queued send carrying this marker is taken and never
       // acknowledged. Scoped by content so the host's own readiness traffic still works and the seat
       // reaches the mesh; otherwise this would grade a boot failure instead of the loss.

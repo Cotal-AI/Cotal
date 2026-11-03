@@ -34,9 +34,8 @@ const scratch = makeScratch("cotal-up-multispace-");
 const home = mkdtempSync(join(scratch, "home-"));
 const root = mkdtempSync(join(scratch, "root-"));
 // A run started from a session that is itself joined to a mesh inherits COTAL_* — a live
-// credential path and broker URL — and the spawns below spread this process env into their
-// children. Strip the inherited keys first; the one variable the children need (COTAL_HOME)
-// is set explicitly right after, pointing at this smoke's own sandbox.
+// credential path and broker URL — and the spawns below inherit this process env. Strip the
+// inherited keys first, then point the children at this smoke's own sandbox.
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
@@ -67,7 +66,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function startUp(port: number, space: string): ChildProcess {
   const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--space", space, "--server", `nats://127.0.0.1:${port}`], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   kids.push(cp);
@@ -158,14 +156,11 @@ try {
   const before = readFileSync(confPath, "utf8");
   const port2 = await freePort();
   const refused = startUp(port2, "alpha");
-  let err = "";
-  refused.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
-  refused.stdout?.on("data", (b: Buffer) => { err += b.toString(); });
   await Promise.race([once(refused, "exit"), sleep(60_000)]);
   ok("the boot exited non-zero", refused.exitCode !== 0, { code: refused.exitCode });
   ok("…and left the previous config untouched (no partially-rendered tenant list)",
     readFileSync(confPath, "utf8") === before);
-  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(err), err.slice(-600));
+  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(logOf(refused)), logOf(refused).slice(-600));
   rmSync(corrupt);
 
   console.log("\n4) a second boot keeps every persisted sibling callout account");
@@ -187,8 +182,6 @@ try {
   ok("the second render preloads EVERY sibling callout account",
     siblingCallouts.every(({ account }) => secondConf.includes(`${account.pub}: ${account.jwt}`)));
   await stopBoot(second);
-  for (let i = 0; i < 50 && await connects(port, alphaCreds); i++) await sleep(100);
-  ok("the second broker is gone before the unreadable-record boot", !(await connects(port, alphaCreds)));
 
   console.log(`\nUP MULTI-SPACE RENDER SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

@@ -13,6 +13,7 @@
  *
  * Run: `pnpm smoke:send-channel-receipt`
  */
+import { MAX_CHANNEL_LENGTH } from "@cotal-ai/core";
 import { closeChannelNames, MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
@@ -48,34 +49,40 @@ function stubAgent(opts: {
     },
     getChannelConfig: (channel: string) => (registered.has(channel) ? { description: "from registry" } : undefined),
   };
-  return { ep, joinedChannels: () => opts.joined, connected: true } as unknown as MeshAgentType;
+  return {
+    ep,
+    joinedChannels: () => opts.joined,
+    readChannels: async () => {},
+    connected: true,
+    channelInfo: (channel: string) => ({ replay: true, registered: registered.has(channel) }),
+  } as unknown as MeshAgentType;
 }
 
+type Receipt = { known: boolean; hints: string[] };
 const proto = MeshAgent.prototype as unknown as {
-  describeSendChannel: (this: MeshAgentType, c: string) => Promise<string>;
+  describeSendChannel: (this: MeshAgentType, c: string) => Promise<Receipt>;
 };
 
 {
   const agent = stubAgent({ joined: ["lane.ci"], listed: [{ channel: "lane.ci" }, { channel: "ops" }] });
   const existing = await proto.describeSendChannel.call(agent, "lane.ci");
   const invented = await proto.describeSendChannel.call(agent, "lane.cj");
-  check("send to a joined name reports existing", existing === "existing channel");
+  check("send to a joined name reports existing", existing.known && existing.hints.length === 0, existing);
   check(
     "send to a one-edit typo reports new and names the close match",
-    invented.includes("new channel") && invented.includes("#lane.ci"),
+    !invented.known && invented.hints.includes("lane.ci"),
     invented,
   );
-  check("the typo receipt is not identical to the existing receipt", existing !== invented);
 }
 
 {
   const agent = stubAgent({ joined: [], listed: [], listThrows: true, registered: ["ops"] });
   const fromRegistry = await proto.describeSendChannel.call(agent, "ops");
   const invented = await proto.describeSendChannel.call(agent, "zzz-typo-probe-4471");
-  check("a registry entry still counts as existing when listChannels throws", fromRegistry === "existing channel");
+  check("a registry entry still counts as existing when listChannels throws", fromRegistry.known, fromRegistry);
   check(
     "an unknown name with no list still reports new (create is not refused)",
-    invented.includes("new channel") && !invented.includes("did you mean"),
+    !invented.known && invented.hints.length === 0,
     invented,
   );
 }
@@ -96,7 +103,7 @@ const proto = MeshAgent.prototype as unknown as {
   const info = specs.find((s) => s.name === "cotal_channel_info")!;
   const agent = stubAgent({ joined: ["lane.ci"], listed: [{ channel: "lane.ci" }] });
   (agent as unknown as { send: MeshAgentType["send"]; describeSendChannel: MeshAgentType["describeSendChannel"]; channelInfo: MeshAgentType["channelInfo"] }).send =
-    async (_t, channel) =>
+    async (_t, channel, mentions) =>
       ({
         id: "m",
         ts: 1,
@@ -104,11 +111,13 @@ const proto = MeshAgent.prototype as unknown as {
         from: { id: "a", name: "alice", kind: "agent" },
         channel: channel ?? "lane.ci",
         parts: [],
+        ...(mentions?.length ? { mentions } : {}),
       }) as never;
   (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = (c) =>
     proto.describeSendChannel.call(agent, c);
+  let replays = true;
   (agent as unknown as { channelInfo: MeshAgentType["channelInfo"] }).channelInfo = (channel) => ({
-    replay: true,
+    replay: replays,
     registered: channel === "lane.ci",
   });
 
@@ -117,7 +126,42 @@ const proto = MeshAgent.prototype as unknown as {
   check("cotal_send still succeeds on a new name (create is allowed)", !typo.isError, typo.text);
   check("cotal_send on a known name does not say new channel", !known.text.includes("new channel"), known.text);
   check("cotal_send on a typo says new channel so the caller can TELL", typo.text.includes("new channel"), typo.text);
-  check("cotal_send on a known name says existing channel", known.text.includes("existing channel"), known.text);
+  // #5490: the result says where the post went and the next move, and claims nothing about who woke.
+  check(
+    "cotal_send on a known channel says who sees it and how to make one act",
+    known.text === "Posted to #lane.ci. Agents on it see it; mention one to make it act.",
+    known.text,
+  );
+  check(
+    "cotal_send on a typo names the close match and tells the sender to point others at it",
+    typo.text === "Posted to #lane.cj, a new channel. Did you mean #lane.ci? Others see it once they join; tell them where it is.",
+    typo.text,
+  );
+  replays = false;
+  const unreplayed = await send.run(agent, cfg, { text: "hi", channel: "lane.cj" });
+  replays = true;
+  const mentioned = await send.run(agent, cfg, { text: "hi", channel: "lane.ci", mentions: ["bob"] });
+  const mentionedNew = await send.run(agent, cfg, { text: "hi", channel: "lane.cj", mentions: ["bob"] });
+  check(
+    "cotal_send with a mention names it and says the channel sees the post too",
+    mentioned.text === "Posted to #lane.ci and mentioned @bob. Agents on it see it too.",
+    mentioned.text,
+  );
+  check(
+    "cotal_send with a mention on a new channel keeps the new-channel guidance",
+    mentionedNew.text === "Posted to #lane.cj, a new channel, and mentioned @bob. Did you mean #lane.ci? Others see it once they join; tell them where it is.",
+    mentionedNew.text,
+  );
+  check(
+    "cotal_send claims nothing about waking or counts",
+    [known, typo, unreplayed, mentioned, mentionedNew].every((r) => !/\bwok(e|en)\b|\bwake\b|\d+ (agents|peers|members)/.test(r.text)),
+    [known.text, mentioned.text],
+  );
+  check(
+    "cotal_send on a new channel that does not replay says a later joiner won't see the post",
+    unreplayed.text.includes("doesn't replay history, so agents who join later won't see this post") && !unreplayed.text.includes("Others see it once they join"),
+    unreplayed.text,
+  );
 
   const knownInfo = await Promise.resolve(info.run(agent, cfg, { channel: "lane.ci" }));
   const inventedInfo = await Promise.resolve(info.run(agent, cfg, { channel: "lane.cj" }));
@@ -129,8 +173,8 @@ const proto = MeshAgent.prototype as unknown as {
   );
 }
 
-// ── #1229: send/dm consult the roster's TRUST state, not just the roster. A real MeshAgent over
-//    a stub endpoint, so the guard runs through the shipped send()/dm() paths. ──
+// ── #1229: send/dm consult whether the roster READ succeeded, not just the roster. A real
+//    MeshAgent over a stub endpoint, so the guard runs through the shipped send()/dm() paths. ──
 {
   const cfg1229 = {
     space: "demo",
@@ -146,6 +190,9 @@ const proto = MeshAgent.prototype as unknown as {
     ({ id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel, parts: [] }) as never;
   const OTTO = { card: { id: "OTTOID0000000000000000000000000000000000000", name: "otto", role: "worker" }, status: "idle" };
 
+  /** A presence read that fails the way an old credential does: the broker refuses the Direct Get. */
+  const refused = () => Promise.reject(new Error("presence read refused for alice: this credential may not publish $JS.API.DIRECT.GET.KV_cotal_presence_demo"));
+
   function agentOverEp(ep: Record<string, unknown>): MeshAgentType {
     const a = new MeshAgent({ ...cfg1229 });
     a.on("error", () => {});
@@ -154,21 +201,14 @@ const proto = MeshAgent.prototype as unknown as {
     return a;
   }
 
-  // (d) unpopulated view, empty roster; the snapshot wait populates the roster — the send goes out.
+  // (d) the read returns the peer: the send goes out, after exactly one read.
   {
-    const roster: unknown[] = [];
-    const view: { state: string; fresh: boolean; staleSince?: number } = { state: "unpopulated", fresh: false };
+    let reads = 0;
     const multicast: { text: string; opts: { channel?: string; mentions?: string[] } }[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
-      getRoster: () => roster,
-      presenceView: () => view,
-      waitForPresenceSnapshot: async () => {
-        view.state = "current";
-        view.fresh = true;
-        roster.push(OTTO);
-        return "snapshot";
-      },
+      getRoster: () => [OTTO],
+      readPresence: async () => { reads++; return [OTTO]; },
       multicast: async (text: string, opts: { channel?: string; mentions?: string[] }) => {
         multicast.push({ text, opts });
         return mkMsg(opts?.channel);
@@ -178,20 +218,19 @@ const proto = MeshAgent.prototype as unknown as {
     });
     const msg = await agent.send("hi", "ch", ["otto"]);
     check(
-      "1229:d send waits for the presence snapshot and then publishes the mention",
-      multicast.length === 1 && multicast[0]!.opts.mentions?.[0] === "otto" && msg.channel === "ch",
-      multicast,
+      "1229:d send reads the roster once and then publishes the mention",
+      reads === 1 && multicast.length === 1 && multicast[0]!.opts.mentions?.[0] === "otto" && msg.channel === "ch",
+      { reads, multicast },
     );
   }
 
-  // (e) unpopulated view that never populates: the refusal names the view, never "unknown mention".
+  // (e) a failed read and an empty roster: the refusal names the read's error, never "unknown mention".
   {
     const multicast: unknown[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [],
-      presenceView: () => ({ state: "unpopulated", fresh: false }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: refused,
       multicast: async () => {
         multicast.push("called");
         return mkMsg();
@@ -206,21 +245,20 @@ const proto = MeshAgent.prototype as unknown as {
       threw = e instanceof Error ? e.message : String(e);
     }
     check(
-      "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
-      threw.includes("initial snapshot") && !threw.includes("unknown mention") && threw.includes("otto"),
+      "1229:e send under a failed read refuses naming the read's error and the missing grant, not \"unknown mention\"",
+      threw.includes("presence read failed") && threw.includes("DIRECT.GET.KV_cotal_presence_demo") && !threw.includes("unknown mention") && threw.includes("otto"),
       threw,
     );
     check("1229:e the refused send never reached multicast", multicast.length === 0, multicast);
   }
 
-  // (f) stale view, empty roster: dm refuses naming the stale view, never "no peer", and never sends.
+  // (f) a failed read and an empty roster: dm refuses naming the read's error, never "no peer", and never sends.
   {
     const unicast: unknown[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [],
-      presenceView: () => ({ state: "stale", fresh: false, staleSince: 1_700_000_000_000 }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: refused,
       multicast: async () => mkMsg(),
       unicast: async () => {
         unicast.push("called");
@@ -235,20 +273,19 @@ const proto = MeshAgent.prototype as unknown as {
       threw = e instanceof Error ? e.message : String(e);
     }
     check(
-      "1229:f dm under a stale view refuses naming the stale view, not \"no peer\"",
-      threw.includes("silent since") && !threw.includes("no peer") && threw.includes("otto"),
+      "1229:f dm under a failed read refuses naming the read's error, not \"no peer\"",
+      threw.includes("presence read failed") && !threw.includes("no peer") && threw.includes("otto"),
       threw,
     );
     check("1229:f the refused dm never reached unicast", unicast.length === 0, unicast);
   }
 
-  // (g) control: a current view keeps the existing refusal — the guard added no permissiveness.
+  // (g) control: a read that succeeded keeps the existing refusal — the guard added no permissiveness.
   {
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [],
-      presenceView: () => ({ state: "current", fresh: true }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: async () => [],
       multicast: async () => mkMsg(),
       unicast: async () => mkMsg("dm"),
       unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
@@ -259,18 +296,17 @@ const proto = MeshAgent.prototype as unknown as {
     } catch (e) {
       threw = e instanceof Error ? e.message : String(e);
     }
-    check("1229:g a current view still refuses an unobserved mention with the existing sentence", threw.includes("unknown mention"), threw);
+    check("1229:g a read that succeeded still refuses an unobserved mention with the existing sentence", threw.includes("unknown mention"), threw);
   }
 
-  // (h) stale view with the peer present: presence in a partial/last-known roster is still an
-  //     observation, so the DM goes out rather than being refused over view hygiene.
+  // (h) a failed read with the peer in the last roster: an earlier read's row is still an
+  //     observation, so the DM goes out rather than being refused over the failed read.
   {
     const unicast: { to: string; text: string }[] = [];
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [OTTO],
-      presenceView: () => ({ state: "stale", fresh: false, staleSince: 1_700_000_000_000 }),
-      waitForPresenceSnapshot: async () => "timeout",
+      readPresence: refused,
       multicast: async () => mkMsg(),
       unicast: async (to: string, text: string) => {
         unicast.push({ to, text });
@@ -282,20 +318,19 @@ const proto = MeshAgent.prototype as unknown as {
       },
     });
     const { peer, ack } = await agent.dm("otto", "x");
-    check("1229:h dm to a peer present in a stale-view roster still publishes", unicast.length === 1 && peer?.card.name === "otto", unicast);
+    check("1229:h dm to a peer in the last roster still publishes under a failed read", unicast.length === 1 && peer?.card.name === "otto", unicast);
     check("1229:h dm passes through the attributed ack sequence", ack.seq === 7, ack);
   }
 
   // (i) M3 proof: recipientStatusAtSend reflects the roster snapshot at send for both an offline
-  //     and an idle card, the ack sequence passes through, and the cotal_dm tool text says
-  //     "stored as seq 7" and "delivery not confirmed" for both.
+  //     and an idle card, the ack sequence passes through, and the cotal_dm tool text says where the
+  //     DM went for both.
   for (const status of ["offline", "idle"] as const) {
     const peerCard = { card: { id: "OTTOID0000000000000000000000000000000000000", name: "otto", role: "worker" }, status };
     const agent = agentOverEp({
       card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
       getRoster: () => [peerCard],
-      presenceView: () => ({ state: "current", fresh: true }),
-      waitForPresenceSnapshot: async () => "snapshot",
+      readPresence: async () => [peerCard],
       multicast: async () => mkMsg(),
       unicast: async () => mkMsg("dm"),
       unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
@@ -311,12 +346,272 @@ const proto = MeshAgent.prototype as unknown as {
     const dmTool = specsDm.find((s) => s.name === "cotal_dm")!;
     (agent as unknown as { dm: MeshAgentType["dm"] }).dm = async () => dmResult;
     const dmText = await Promise.resolve(dmTool.run(agent, cfgDm, { to: "otto", text: "x" }));
+    // #5490: where the DM went, who can't read it, and when the channel is the better place.
     check(
-      `1229:i cotal_dm text for a ${status} recipient says stored seq and delivery not confirmed`,
-      dmText.text.includes("stored as seq 7") && dmText.text.includes("delivery not confirmed"),
+      `1229:i cotal_dm text for a ${status} recipient says where it went and points shared facts at the channel`,
+      dmText.text.startsWith("Sent to otto.") &&
+        dmText.text.endsWith("Other agents can't read it. If others could use it, post it on the task's channel."),
+      dmText.text,
+    );
+    // Only an offline recipient gets the notice of what happens to the stored DM.
+    const notice = "otto is offline: the DM is delivered when otto reconnects, and a new agent spawned as otto does not receive it.";
+    check(
+      `1229:i cotal_dm text for a ${status} recipient ${status === "offline" ? "says" : "does not say"} otto is offline and when the DM arrives`,
+      status === "offline" ? dmText.text.includes(notice) : !dmText.text.includes("is offline"),
       dmText.text,
     );
   }
+}
+
+// The default for a send with no channel. On a mesh that enforces ACLs it is the first channel the
+// agent reads and may post to, so a read-only announcements channel listed first is skipped. Live
+// repro: a Cloud agent reading [announce, team.rocket] defaulted to #announce and was refused.
+{
+  const userAuth = { owner: "u_x", actor: "alice", sentinelCreds: "creds", bearerCmd: ["true"] };
+  const base = { space: "demo", name: "alice", servers: "nats://127.0.0.1:4222", kind: "agent", tls: false } as const;
+  const run = async (cfg: AgentConfig, joined: string[]) => {
+    const sent: (string | undefined)[] = [];
+    const agent = stubAgent({ joined, listed: joined.map((channel) => ({ channel })) });
+    (agent as unknown as { send: MeshAgentType["send"] }).send = async (_t, channel) => {
+      sent.push(channel);
+      return { id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel: channel ?? joined[0], parts: [] } as never;
+    };
+    (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async () => ({ known: true, hints: [] });
+    const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
+    const result = await send.run(agent, cfg, { text: "hi" });
+    const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
+    return { result, sent, described };
+  };
+
+  const authed = { ...base, subscribe: ["announce", "team.rocket"], allowSubscribe: ["announce", "team.rocket"], allowPublish: ["team.rocket", "team.rocket.>"], userAuth } as AgentConfig;
+  const skip = await run(authed, ["announce", "team.rocket"]);
+  check("an omitted channel goes to the first channel the agent may post to", !skip.result.isError && skip.sent[0] === "team.rocket", skip);
+  check("the advertised default is the first channel the agent may post to", skip.described.includes("default: team.rocket"), skip.described);
+
+  const readOnly = { ...base, subscribe: ["announce"], allowSubscribe: ["announce"], allowPublish: [], userAuth } as AgentConfig;
+  const none = await run(readOnly, ["announce"]);
+  check("with no channel it may post to, an omitted channel is refused before sending", none.result.isError === true && none.sent.length === 0 && none.result.text.includes("post to none"), none);
+  check("the advertised text says there is no default to post to", none.described.includes("post to none"), none.described);
+  check(
+    "with nowhere to post, the refusal says an operator widens the grant and names cotal_dm meanwhile",
+    none.result.text.includes("ask an operator to widen it") && none.result.text.includes("cotal_dm"),
+    none.result.text,
+  );
+
+  // A seat on no channel at all (the fresh-helper case) is told the channels it may post to and the
+  // exact next call, so the first send does not have to bounce through the orientation card.
+  const nowhere = { ...base, subscribe: [], allowSubscribe: ["team.rocket"], allowPublish: ["team.rocket"], userAuth } as AgentConfig;
+  const fresh = await run(nowhere, []);
+  check(
+    "on no channel, the refusal names the postable channel and the exact next call",
+    fresh.result.isError === true && fresh.sent.length === 0 && fresh.result.text.includes("you are on no channel")
+      && fresh.result.text.includes('cotal_send with channel: "team.rocket"') && fresh.result.text.includes("cotal_join team.rocket"),
+    fresh.result.text,
+  );
+  check("the advertised text carries the same next call", fresh.described.includes('cotal_send with channel: "team.rocket"'), fresh.described);
+
+  const elsewhere = { ...base, subscribe: ["announce"], allowSubscribe: ["announce", "team.rocket"], allowPublish: ["team.rocket"], userAuth } as AgentConfig;
+  const other = await run(elsewhere, ["announce"]);
+  check(
+    "reading only a channel it may not post to, the refusal names what it reads and where it may post",
+    other.result.isError === true && other.sent.length === 0 && other.result.text.includes("post to none of the channels you read (#announce)")
+      && other.result.text.includes('cotal_send with channel: "team.rocket"'),
+    other.result.text,
+  );
+
+  const open = { ...base, subscribe: ["announce", "lobby"], allowSubscribe: ["announce", "lobby"], allowPublish: [] } as AgentConfig;
+  const unchanged = await run(open, ["announce", "lobby"]);
+  check("an open mesh, which enforces no post ACL, keeps the first channel read", !unchanged.result.isError && unchanged.sent[0] === "announce", unchanged);
+}
+
+// A pattern as the channel is refused before any read or publish, and the refusal names the two ways
+// to reach a channel family: one post to a channel the pattern matches, or a post to each by name.
+{
+  const cfg = {
+    space: "demo",
+    name: "alice",
+    servers: "nats://127.0.0.1:4222",
+    subscribe: ["team.>"],
+    allowSubscribe: ["team.>"],
+    allowPublish: ["team.>"],
+    kind: "agent",
+    tls: false,
+  } as AgentConfig;
+  const calls: string[] = [];
+  const agent = stubAgent({ joined: ["team.>"], listed: [] });
+  (agent as unknown as { joinedChannels: MeshAgentType["joinedChannels"] }).joinedChannels = () => {
+    calls.push("joined");
+    return ["team.>"];
+  };
+  (agent as unknown as { send: MeshAgentType["send"] }).send = async (_t, channel) => {
+    calls.push(`send ${channel}`);
+    return { id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel, parts: [] } as never;
+  };
+  (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async (c) => {
+    calls.push(`describe ${c}`);
+    return { known: true, hints: [] };
+  };
+  const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
+  for (const pattern of ["team.>", "ops.ci.>", "team.*.ci", ">", "*"]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: pattern });
+    check(
+      `cotal_send refuses the pattern ${pattern} before reading or sending`,
+      refused.isError === true && calls.length === 0 && refused.text.includes("Nothing was sent."),
+      { refused, calls },
+    );
+    check(
+      `the refusal for ${pattern} says to post to each channel by name and where to list them`,
+      refused.text.includes("To reach several channels, post to each by name; cotal_channels lists the existing ones."),
+      refused.text,
+    );
+  }
+  // A family's followers that are away get stored copies on its durable channels (#5404), so its
+  // refusal says one post reaches them. Any other pattern's followers get a post only while connected.
+  for (const family of ["team.>", "ops.ci.>"]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: family });
+    check(
+      `the refusal for the family ${family} says one post to a channel it matches reaches its followers, away ones by stored copy`,
+      refused.text.includes(
+        `To reach the agents following ${family}, post once to one channel it matches: those connected then get it, and one that is away gets a stored copy if that channel is durable.`,
+      ) && !refused.text.includes("no stored copies"),
+      refused.text,
+    );
+  }
+  for (const pattern of ["team.*.ci", ">", "*"]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: pattern });
+    check(
+      `the refusal for ${pattern} says one post to a channel it matches reaches its connected followers`,
+      refused.text.includes(`To reach the agents connected and following ${pattern} now, post once to one channel it matches.`),
+      refused.text,
+    );
+    check(
+      `the refusal for ${pattern} says such a pattern has no stored copies`,
+      refused.text.includes("A pattern with * or the root > has no stored copies, so a follower that is offline then may miss it."),
+      refused.text,
+    );
+  }
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.>" });
+    check(
+      "the whole refusal for team.> reads as written",
+      refused.text ===
+        `Couldn't send: "team.>" is a pattern, and a post goes to one concrete channel. To reach the agents following team.>, post once to one channel it matches: those connected then get it, and one that is away gets a stored copy if that channel is durable. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`,
+      refused.text,
+    );
+  }
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.*" });
+    check(
+      "the whole refusal for team.* reads as written",
+      refused.text ===
+        `Couldn't send: "team.*" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following team.* now, post once to one channel it matches. A pattern with * or the root > has no stored copies, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`,
+      refused.text,
+    );
+  }
+  // A name that is not a channel name is refused too, with the send's own rule. The endpoint would
+  // otherwise rewrite its characters onto a different subject than the receipt names (team.** goes
+  // out as team.__), and the policy grammar's message would offer * and > as valid segments.
+  for (const bad of ["team.>.x", "team. >", "team.**", "team.a*", "team.>>", "#*", "#team", "team..announce", "team/announce", "team.announce ", " team.announce", ""]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: bad });
+    check(
+      `${JSON.stringify(bad)} is refused as no channel name before reading or sending`,
+      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(bad)} is not a channel name.`) &&
+        refused.text.includes("Nothing was sent.") && !refused.text.includes("is a pattern") && !/'[*>]'/.test(refused.text),
+      { refused, calls },
+    );
+  }
+  // The refusal says what a channel name is, with core's own length limit, and cuts a long name to
+  // its first 64 characters.
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.**" });
+    check(
+      "the no-channel-name refusal states the channel grammar",
+      refused.text.includes("A channel name is segments of letters, digits, _ and - joined by dots, such as team.announce,"),
+      refused.text,
+    );
+    check(
+      `the no-channel-name refusal states core's limit of ${MAX_CHANNEL_LENGTH} characters`,
+      refused.text.includes(`at most ${MAX_CHANNEL_LENGTH} characters. Nothing was sent.`),
+      refused.text,
+    );
+  }
+  // 64 different characters, taken in turn by index, so a cut in the wrong place shows.
+  const symbols = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-";
+  const counted = (start: number, length: number): string =>
+    Array.from({ length }, (_, i) => symbols[(start + i) % symbols.length]).join("");
+  // `team.**.` and then counted characters: a name that is no channel name, of the given length (over 8).
+  const badName = (length: number): string => `team.**.${counted(8, length - 8)}`;
+  {
+    const whole = badName(64);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: whole });
+    check(
+      "a 64-character name that is no channel name is shown whole",
+      refused.isError === true && calls.length === 0 && refused.text.includes(`${JSON.stringify(whole)} is not a channel name.`),
+      refused.text,
+    );
+  }
+  {
+    const long = badName(65);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: long });
+    check(
+      "a 65-character name that is no channel name is shown cut to its first 64 characters",
+      refused.isError === true && calls.length === 0 &&
+        refused.text.includes(`${JSON.stringify(`${long.slice(0, 64)}…`)} is not a channel name.`) && !refused.text.includes(long),
+      refused.text,
+    );
+  }
+  {
+    const over = counted(0, MAX_CHANNEL_LENGTH + 1);
+    const refused = await send.run(agent, cfg, { text: "hi", channel: over });
+    check(
+      `a name one character over the ${MAX_CHANNEL_LENGTH}-character limit is refused as no channel name`,
+      refused.isError === true && calls.length === 0 &&
+        refused.text.includes(`${JSON.stringify(`${over.slice(0, 64)}…`)} is not a channel name.`) && !refused.text.includes(over),
+      refused.text,
+    );
+  }
+  const sent = await send.run(agent, cfg, { text: "hi", channel: "team.announce" });
+  check("a channel the pattern matches still sends", !sent.isError && calls.includes("send team.announce"), { sent, calls });
+  {
+    const max = `team.${counted(5, MAX_CHANNEL_LENGTH - 5)}`;
+    const at = await send.run(agent, cfg, { text: "hi", channel: max });
+    check(`a name of ${MAX_CHANNEL_LENGTH} characters is sent`, !at.isError && calls.includes(`send ${max}`), at.text.slice(0, 200));
+  }
+  const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
+  check(
+    "the advertised channel text names both ways to reach a family",
+    described.includes(
+      "A pattern such as team.> is refused. To reach the agents following team.>, post once to one channel it matches, such as team.announce: those connected then get it, and one that is away gets a stored copy if that channel is durable. To reach several channels, post to each by name (cotal_channels lists the existing ones).",
+    ),
+    described,
+  );
+  check(
+    "the cotal_send description says it posts to one channel and a pattern is refused",
+    send.description.startsWith("Post to a channel.") && send.description.includes("You can't post to a pattern such as review.>. To reach several channels, post to each one by name"),
+    send.description,
+  );
+  // The rehearsal's "Tell bob the build is green" went to a DM on both harnesses until this sentence.
+  const dm = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_dm")!;
+  check(
+    "the cotal_dm description sends a status for a peer to the task's channel with a mention",
+    dm.description.includes("To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there."),
+    dm.description,
+  );
+  // SPEC §4: a live post is at-most-once, so only a durable channel reaches every member, except that a
+  // mention keeps a copy for a mentioned agent allowed to read the channel whose name is its own.
+  check(
+    "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+    send.description.includes("On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name.") &&
+      !send.description.includes("Every agent on the channel receives the post"),
+    send.description,
+  );
+  // The manager refuses once for a connector without supportsTurnRelay.
+  const spawn = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_spawn")!;
+  check(
+    "the cotal_spawn description names the harnesses once works on",
+    spawn.description.includes("For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true"),
+    spawn.description,
+  );
 }
 
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);

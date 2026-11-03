@@ -415,13 +415,13 @@ export class Journal {
       // THE BINDING IS THE FIELD WITH NO WRITE-SIDE HISTORY. `result` crossed `assertCrossable` when
       // it settled and the arguments crossed it when they dispatched; `external` reached the record
       // through {@link Journal.bind} with nothing between it and the store until the guards in
-      // `performEffect` and `performScope`. Those fence every shipped caller, exactly two of them,
-      // both in perform.ts, but they fence it by ENUMERATION, and a record already written is behind
-      // them either way. This door is the one a loaded journal cannot go around.
+      // `enterStep` and `performScope`. The effect fence in `enterStep` covers both `performEffect`
+      // and `performWaitUntil`. These two bind sites in perform.ts fence writes by ENUMERATION;
+      // an already-written record is behind them either way. A loaded journal must pass this check.
       // THREE FIELDS, ONE RULE. `external` is what a resume re-binds to; `error.detail` is what a
-      // failed step reports itself with. Both are values a handler chose and both reached the record
-      // with no domain check until the guards in `performEffect` and `performScope`. `detail` is the
-      // second one and it is not hypothetical: a program that CATCHES an effect failure succeeds,
+      // failed step reports itself with. Both are values a handler chose: the bind-site guards check
+      // `external`, and `recordableError` checks `error.detail` for effect and scope failure records.
+      // `detail` is not hypothetical: a program that CATCHES an effect failure succeeds,
       // so a run can complete with an unreadable value sitting in a settled entry. Measured, and
       // through the worker that run dies on a structured-clone error naming a host algorithm.
       // `error.thrown` is the third, the program's own value, which a resume hands to its `catch`.

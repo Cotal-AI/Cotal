@@ -1,0 +1,143 @@
+/** The desktop shell's bounded stdio adapter. It holds no login session or broker credentials. */
+import { randomUUID } from "node:crypto";
+import { arch, hostname, platform, release, totalmem } from "node:os";
+import type { Readable, Writable } from "node:stream";
+import { CommandFailure } from "@cotal-ai/workspace";
+import { normalizeIdpUrl } from "@cotal-ai/auth";
+import { loginViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
+import { applyInstall, planUninstall, startInstalled } from "./install.js";
+import { encode, type DaemonResponse } from "./protocol.js";
+
+export type DesktopRequest =
+  | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
+  | { readonly op: "spaces"; readonly refresh?: boolean }
+  | { readonly op: "login"; readonly idp: string }
+  | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string };
+
+/** No renderer-supplied command, path, credentials or arbitrary arguments cross this boundary. */
+export function parseDesktopRequest(value: unknown): DesktopRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
+  const o = value as Record<string, unknown>;
+  const simple = ["about", "status", "install"].includes(String(o.op));
+  const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
+  const fields = simple ? ["op"] : scoped ? ["op", "space"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
+  if (simple) return { op: o.op as "about" | "status" | "install" };
+  if (scoped) {
+    if (typeof o.space !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(o.space)) throw new Error("invalid space");
+    return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
+  }
+  if (o.op === "spaces") {
+    if (o.refresh !== undefined && typeof o.refresh !== "boolean") throw new Error("invalid refresh");
+    return { op: "spaces", ...(o.refresh !== undefined ? { refresh: o.refresh } : {}) };
+  }
+  if (typeof o.idp !== "string" || o.idp.length > 2048) throw new Error("invalid provider");
+  return { op: "login", idp: normalizeIdpUrl(o.idp) };
+}
+
+export async function readDesktopRequest(input: Readable): Promise<DesktopRequest> {
+  let bytes = Buffer.alloc(0);
+  const timer = setTimeout(() => input.destroy(new Error("request timed out")), 10_000);
+  try {
+    for await (const chunk of input) {
+      bytes = Buffer.concat([bytes, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      if (bytes.length > MAX_LINE_BYTES) throw new Error("request too large");
+      const newline = bytes.indexOf(10);
+      if (newline < 0) continue;
+      if (bytes.subarray(newline + 1).toString().trim()) throw new Error("only one request is accepted");
+      return parseDesktopRequest(JSON.parse(bytes.subarray(0, newline).toString("utf8")));
+    }
+    throw new Error("incomplete request");
+  } finally { clearTimeout(timer); }
+}
+
+export interface DesktopBridgeOptions extends Pick<QueryOptions, "paths" | "peerUid" | "peerPid"> {
+  readonly version: string;
+  readonly daemonHome?: string;
+  readonly input?: Readable;
+  readonly output?: Writable;
+}
+
+/** Run one app operation through the stock local client. Closing the UI never stops the service. */
+export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void> {
+  const output = opts.output ?? process.stdout;
+  const emit = (frame: unknown) => output.write(`${JSON.stringify(frame)}\n`);
+  let req: DesktopRequest;
+  try { req = await readDesktopRequest(opts.input ?? process.stdin); }
+  catch {
+    emit({ v: 1, event: "result", ok: false, error: { code: "BAD_REQUEST", message: "The app request was incomplete, oversized or unsupported." } });
+    return;
+  }
+  try {
+    if (req.op === "about") {
+      emit({ v: 1, event: "result", ok: true, result: { version: opts.version, machine: hostname(), platform: platform(), arch: arch(), release: release(), memoryBytes: totalmem() } });
+      return;
+    }
+    if (req.op === "install") {
+      let existing = false;
+      try { planUninstall(opts.paths); existing = true; }
+      catch (e) { if (!(e instanceof CommandFailure) || e.code !== "TARGET_NOT_FOUND") throw e; }
+      let answering: Awaited<ReturnType<typeof queryDaemon>> | undefined;
+      try { answering = await queryDaemon(opts); }
+      catch (e) { if (!(e instanceof EndpointRefusal) || e.code !== "NOT_RUNNING") throw e; }
+      if (answering !== undefined) {
+        if (!existing) throw new CommandFailure("refused", "CONFLICT", "an unowned daemon is already running; no service was installed");
+        if (!answering.ok || answering.result.version !== opts.version) throw new CommandFailure("refused", "CONFLICT", "the installed daemon does not match this app; no service was started");
+        emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result } });
+        return;
+      }
+      if (existing) startInstalled(opts.paths);
+      else applyInstall(opts.paths, opts.daemonHome);
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        try {
+          const status = await queryDaemon(opts);
+          if (!status.ok) throw new Error("daemon refused status");
+          if (status.result.version !== opts.version) throw new Error("daemon version mismatch");
+          emit({ v: 1, event: "result", ok: true, result: { installed: true, status: status.result } });
+          return;
+        } catch (e) {
+          if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code) || Date.now() >= deadline) throw e;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    const status = await queryDaemon(opts);
+    if (!status.ok) { emit({ ...status, event: "result" }); return; }
+    if (req.op === "status") { emit({ ...status, event: "result" }); return; }
+    if (status.result.version !== opts.version) {
+      emit({ v: 1, event: "result", ok: false, error: { code: "VERSION_MISMATCH", message: "The running daemon and this app have different versions. Update them together before making changes." } });
+      return;
+    }
+    if (req.op === "login") {
+      const result = await loginViaDaemon({ ...opts, idp: req.idp, onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }) });
+      emit({ v: 1, event: "result", ...result });
+      return;
+    }
+    const reply = await exchangeDesktopRequest(opts, req);
+    emit({ ...reply, event: "result" });
+  } catch (e) {
+    const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
+    const message = code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
+      : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
+      : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
+      : "The operation could not be completed. Use the matching cotal daemon command for diagnostics; no success is assumed.";
+    emit({ v: 1, event: "result", ok: false, error: { code, message } });
+  }
+}
+
+/** Shared by the app adapter and the ordinary daemon CLI commands. */
+export async function exchangeDesktopRequest(
+  opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
+  request: Extract<DesktopRequest, { readonly op: "spaces" } | { readonly space: string }>,
+): Promise<DaemonResponse> {
+  const sock = await openVerified({ ...opts, timeoutMs: 5000 });
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request }));
+    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw new Error("mismatched daemon reply");
+    return reply;
+  } finally { sock.destroy(); }
+}

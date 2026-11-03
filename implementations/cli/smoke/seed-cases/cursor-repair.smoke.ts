@@ -1,4 +1,4 @@
-import { existsSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { boot, existsSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 5. crash cursor → auto fails loud → --repair re-installs ──────────────────────────────────────
@@ -7,7 +7,7 @@ try {
     listNames(cfg);
     cotal(cfg, ["ext", "remove", "@cotal-ai/connector-hermes"]);
     writeJson(join(seedDir(cfg), "reconcile.cursor.json"), { nonce: "deadbeef", package: "hermes", phase: "add" });
-    const auto = cotal(cfg, ["ext", "list"]);
+    const auto = boot(cfg);
     check("crash cursor: auto boot fails loud (interrupted)", auto.status !== 0 && /interrupted/i.test(auto.stderr), auto.stderr);
     const rep = cotal(cfg, ["ext", "seed", "--repair"]);
     check("crash cursor: --repair exits 0", rep.status === 0, rep.stderr);

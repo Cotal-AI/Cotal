@@ -20,8 +20,8 @@
  * cluster bundles are D8 contract-tooling scope.
  */
 import { contractDigest } from "./canonical.js";
-import { parseClosureManifest } from "./contract-manifest.js";
-import { ContractInvalidError } from "./schema-profile.js";
+import { parseClosureManifest, type ContractClosureManifest } from "./contract-manifest.js";
+import { ContractInvalidError, singleDocumentClosure } from "./schema-profile.js";
 import { endpointToken, assertCommandToken, assertBoundedOwner, isEpAuthzMode, type EpAuthzMode } from "./endpoint-subjects.js";
 import type { EpClass } from "./endpoint-envelope.js";
 
@@ -100,6 +100,49 @@ export interface ClusterDocument {
   attributes: unknown[];
   commands: ClusterCommand[];
   events: unknown[];
+}
+
+/** Build a §13.7 cluster document from a service's ephemeral command rows, deriving each command's
+ *  input and output closure digests with {@link singleDocumentClosure} without compiling the schemas. */
+export function buildClusterDocument(
+  urn: string,
+  revision: number,
+  rows: ReadonlyArray<{
+    name: string;
+    targeted: boolean;
+    modes?: ReadonlyArray<EpAuthzMode>;
+    capability: string;
+    input: unknown;
+    output: unknown;
+  }>,
+): ClusterDocument {
+  return {
+    urn,
+    revision,
+    attributes: [],
+    events: [],
+    commands: rows.map((r) => ({
+      name: r.name,
+      class: "ephemeral" as const,
+      targeted: r.targeted,
+      ...(r.modes ? { modes: [...r.modes] } : {}),
+      capability: r.capability,
+      inputDigest: singleDocumentClosure(r.input).closureDigest,
+      outputDigest: singleDocumentClosure(r.output).closureDigest,
+    })),
+  };
+}
+
+/** The two-digest §13.7 content addressing for a single-document cluster: the document, its root
+ *  artifact digest, its closure manifest and the manifest's closure digest. */
+export function buildClusterArtifacts<T extends ClusterDocument = ClusterDocument>(document: T): {
+  document: T;
+  rootDigest: string;
+  manifest: ContractClosureManifest;
+  closureDigest: string;
+} {
+  const { manifest, closureDigest } = singleDocumentClosure(document);
+  return { document, rootDigest: manifest.root, manifest, closureDigest };
 }
 
 /** Parse a cluster document at its consuming boundary. Violations are `contract-invalid`

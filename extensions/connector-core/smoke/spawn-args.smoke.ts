@@ -10,11 +10,20 @@
  * #972: a requested `model` that the manager does not record is a refusal, not a successful spawn on
  * the harness default. The mock inspect is the attestation; a spawn that never inspects cannot tell
  * a landed pin from a dropped one.
+ *
+ * A launch that stands while only its pin read fails is a partial outcome: the seat, its id, its
+ * manager and runtime, the unaudited pin and `cotal ps --on <manager>`, in the text and in the
+ * structured content the MCP renderer sends. A refusal there read as "nothing was spawned", and the
+ * caller's retry started a second seat on the same work.
  */
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
+import { registerCotalTools } from "../src/tools.js";
 import type { AgentConfig } from "../src/config.js";
-import { describeEndpoint } from "@cotal-ai/core";
+import { describeEndpoint, EpEnvelopeError, EP_UNANSWERED } from "@cotal-ai/core";
 
 let failures = 0, checks = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -110,6 +119,7 @@ check("name-only: model key absent", !("model" in (recPlain?.args ?? {})));
 check("name-only: variant key absent", !("variant" in (recPlain?.args ?? {})));
 check("name-only: role key absent", !("role" in (recPlain?.args ?? {})));
 check("name-only: prompt key absent", !("prompt" in (recPlain?.args ?? {})));
+check("name-only: once key absent", !("once" in (recPlain?.args ?? {})));
 check("name-only: invokeService stays unpinned", recPlain?.opts?.instanceId === undefined, recPlain?.opts);
 check("name-only: inspect is not required when no model was requested", !callsPlain.some((c) => c.command === "inspect"));
 
@@ -120,15 +130,52 @@ const spawnTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_spawn") as
   | undefined;
 check("cotal_spawn schema exposes the kickoff prompt", spawnTool !== undefined && "prompt" in spawnTool.schema.shape);
 check("cotal_spawn schema exposes the manager instance pin", spawnTool !== undefined && "instance" in spawnTool.schema.shape);
+check("cotal_spawn schema exposes the seat runtime", spawnTool !== undefined && "runtime" in spawnTool.schema.shape);
 const toolAgent = new MeshAgent(cfg);
 const callsTool = record(toolAgent);
 await spawnTool?.run(toolAgent, cfg, { name: "tool-rev", prompt: "Start the review now." });
 check("cotal_spawn tool forwards the kickoff prompt", spawnCall(callsTool)?.args?.prompt === "Start the review now.", spawnCall(callsTool)?.args?.prompt);
 
+// `once` and its `deadline`: the tool folds the duration into the op's `once.deadlineMs`, leaves the
+// default to the manager, and refuses a malformed or orphaned deadline before anything is sent.
+const onceSpawn = async (args: Record<string, unknown>) => {
+  const agent = new MeshAgent(cfg);
+  const calls = record(agent);
+  const reply = await spawnTool!.run(agent, cfg, { name: "helper", prompt: "Do one thing.", ...args });
+  return { reply, sent: spawnCall(calls)?.args };
+};
+const onceDefault = await onceSpawn({ once: true });
+check("once with no deadline sends an empty once, so the manager applies its default", JSON.stringify(onceDefault.sent?.once) === "{}", onceDefault.sent);
+const onceTimed = await onceSpawn({ once: true, deadline: "30m" });
+check("a deadline duration reaches the manager as milliseconds", (onceTimed.sent?.once as { deadlineMs?: number } | undefined)?.deadlineMs === 1_800_000, onceTimed.sent);
+const onceOpen = await onceSpawn({ once: true, deadline: "-1" });
+check("-1 reaches the manager as no deadline", (onceOpen.sent?.once as { deadlineMs?: number } | undefined)?.deadlineMs === -1, onceOpen.sent);
+const orphan = await onceSpawn({ deadline: "30m" });
+check("a deadline without once is refused and nothing is sent", orphan.reply.isError === true && /only to a once spawn/.test(orphan.reply.text) && orphan.sent === undefined, orphan);
+const malformed = await Promise.all(["0s", "abc", "-2", "99999999999999999999d"].map((deadline) => onceSpawn({ once: true, deadline })));
+check("a deadline that is not a positive duration or -1 is refused and nothing is sent", malformed.every((m) => m.reply.isError === true && m.sent === undefined), malformed.map((m) => m.reply.text));
+const taskAgent = new MeshAgent(cfg);
+(taskAgent as unknown as InvokeEp).ep = {
+  invokeService: (endpoint) => Promise.resolve({ reply: { ok: true, data: { name: "helper", mode: "pty", once: { goalId: "task-goal", deadlineAt: Date.UTC(2030, 0, 1) } } }, responder: { endpoint, instanceId: "i", epoch: 0 } }),
+  principal: { owner: "local", actor: "caller" },
+};
+(taskAgent as unknown as { _connected: boolean })._connected = true;
+const taskReply = await spawnTool!.run(taskAgent, cfg, { name: "helper", prompt: "Do one thing.", once: true });
+check("a once spawn's result names its task goal, its deadline and how to read the outcome",
+  /Its task is goal "task-goal", with a deadline of 2030-01-01T00:00:00.000Z/.test(taskReply.text) && /command="goal-result", args=\{"goalId":"task-goal"\}/.test(taskReply.text), taskReply.text);
+
 const pinToolAgent = new MeshAgent(cfg);
 const callsPinTool = record(pinToolAgent);
 await spawnTool?.run(pinToolAgent, cfg, { name: "tool-pin", instance: INSTANCE });
 check("cotal_spawn tool forwards the manager instance pin", spawnCall(callsPinTool)?.opts?.instanceId === INSTANCE, spawnCall(callsPinTool)?.opts);
+
+const runtimeAgent = new MeshAgent(cfg);
+const callsRuntime = record(runtimeAgent);
+await spawnTool?.run(runtimeAgent, cfg, { name: "tool-runtime", runtime: "tmux" });
+check("cotal_spawn tool forwards the seat runtime", spawnCall(callsRuntime)?.args?.runtime === "tmux", spawnCall(callsRuntime)?.args);
+check("name-only runtime stays absent", !("runtime" in (recPlain?.args ?? {})));
+const blankRuntime = spawnTool?.schema.shape.runtime as { safeParse: (value: unknown) => { success: boolean } } | undefined;
+check("cotal_spawn schema refuses a blank runtime", blankRuntime?.safeParse("  ").success === false, blankRuntime?.safeParse("  "));
 
 const malformedAgent = new MeshAgent(cfg);
 const callsMalformed = record(malformedAgent);
@@ -203,7 +250,184 @@ check(
   toolReply,
 );
 
-const EXPECTED_CHECKS = 33;
+// A launch that stands with only its pin read failed. Static mode, so the real managerInvoke turns
+// each thrown failure into the reply the audit reads, and the answering manager rides the reply.
+const MANAGER = "mmmmmmmmmmmmmmmmmmmmmmmmmm";
+const PIN = "grok-4.6";
+const launched = { ok: true, data: { name: "rev", id: "u_x.rev", agent: "claude", mode: "orca", lifecycleUid: "llllllllllllllllllllllllll" } };
+type Structured = {
+  status?: string; name?: string; id?: string; manager?: string; runtime?: string; joined?: boolean; next?: string; message?: string;
+  model?: { requested?: string; audited?: boolean; reported?: boolean; error?: string };
+};
+type Result = { text: string; isError?: boolean; structured?: Structured };
+
+/** `spawn` answers `spawned` from MANAGER; `inspect` throws `failure`. */
+function auditFails(agent: MeshAgent, failure: unknown, spawned: Record<string, unknown> = launched): MeshAgent {
+  (agent as unknown as InvokeEp).ep = {
+    invokeService: (endpoint, command) => command === "inspect"
+      ? Promise.reject(failure)
+      : Promise.resolve({ reply: spawned, responder: { endpoint, instanceId: MANAGER, epoch: 0 } }),
+    principal: { owner: "local", actor: "caller" },
+  };
+  (agent as unknown as { _connected: boolean })._connected = true;
+  return agent;
+}
+const spawnWith = async (failure: unknown, spawned?: Record<string, unknown>) =>
+  await spawnTool!.run(auditFails(new MeshAgent(cfg), failure, spawned), cfg, { name: "rev", model: PIN }) as Result;
+const silence = new EpEnvelopeError("deadline-exceeded", "no reply to manager.inspect within the 10000ms budget (SPEC 13.5)", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "inspect" }]);
+
+// The hosted failure: the pin read's own connection timed out, and the transport said only "timeout".
+const timedOut = await auditFails(new MeshAgent(cfg), new Error("timeout")).spawn("rev", "reviewer", { model: PIN });
+const timedOutData = timedOut.data as { model?: string; pinAudit?: { requested?: string; error?: string; unreported?: true } } | undefined;
+check(
+  "a launch whose pin read timed out stands, with the failed audit beside it and no pin in its place",
+  timedOut.ok === true && timedOutData?.pinAudit?.requested === PIN && timedOutData.pinAudit.error === "timeout" && timedOutData.pinAudit.unreported === undefined && timedOutData.model === undefined,
+  timedOut,
+);
+
+const partial = await spawnWith(new Error("timeout"));
+check(
+  "cotal_spawn reports it as a partial outcome naming the seat, its id, manager and runtime, and the next step",
+  partial.isError !== true && !/Couldn't spawn/.test(partial.text) && /it joined the mesh/.test(partial.text) && partial.text.includes("(id u_x.rev, manager " + MANAGER + ", runtime orca)")
+    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`) && /Do not spawn it again/.test(partial.text) && partial.text.includes("Next: `cotal ps --on " + MANAGER + "`"),
+  partial,
+);
+const st = partial.structured;
+check(
+  "the partial's structured payload carries the same facts and the whole message",
+  st?.status === "partial" && st.name === "rev" && st.id === "u_x.rev" && st.manager === MANAGER && st.runtime === "orca" && st.joined === true
+    && st.model?.requested === PIN && st.model.audited === false && st.model.reported === true && st.model.error === "timeout"
+    && st.next === `cotal ps --on ${MANAGER}` && st.message === partial.text,
+  st,
+);
+
+const silent = await spawnWith(silence);
+check(
+  "a manager that did not answer the pin read within its budget leaves the pin unaudited",
+  silent.isError !== true && /could not be audited \(no reply to manager\.inspect within the 10000ms budget/.test(silent.text) && silent.structured?.model?.reported === true,
+  silent,
+);
+
+const unserved = await spawnWith(new EpEnvelopeError("not-found", `command "inspect" is not in manager's visible surface; describe lists spawn`));
+check(
+  "a manager with no inspect for this caller did not report the pin, and the result says so",
+  unserved.isError !== true && unserved.text.includes(`model pin "${PIN}" was not reported by this manager (not-found: command "inspect"`) && unserved.structured?.model?.reported === false,
+  unserved,
+);
+
+const unanswered = await spawnWith(new EpEnvelopeError("unavailable", "no responder for manager.inspect (SPEC 13.5)", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "inspect" }], "not-executed"));
+check(
+  "a pin read no responder took is not reported by this manager either",
+  unanswered.isError !== true && /was not reported by this manager/.test(unanswered.text) && unanswered.structured?.model?.reported === false,
+  unanswered,
+);
+
+const accepted = { name: "rev", owner: "u_x", actor: "rev", uid: "uuuuuuuuuuuuuuuuuuuuuuuuuu", goalId: "g", fingerprint: "f", executor: { lifecycleUid: MANAGER, epoch: 0 } };
+const booting = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "uncertain", message: "rev did not join within its readiness window" }, data: accepted });
+check(
+  "a launch still booting with its pin unaudited is the same partial, marked as not joined",
+  booting.isError !== true && /has not joined the mesh within its readiness window/.test(booting.text) && booting.text.includes(`(id rev, manager ${MANAGER})`)
+    && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured),
+  booting,
+);
+
+const refused = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "failed-precondition", message: `no persona "rev"` } });
+check(
+  "a launch the manager refused keeps the refusal shape even when the pin read also fails",
+  refused.isError === true && /^Couldn't spawn rev: no persona "rev"/.test(refused.text) && refused.structured === undefined,
+  refused,
+);
+check("a spawn whose pin was audited carries no structured payload", toolReply?.isError !== true && (toolReply as Result | undefined)?.structured === undefined, toolReply);
+
+// The Claude Code renderer: hosts that show structured content see the partial there.
+const mcp = new McpServer({ name: "spawn-args", version: "0.0.0" });
+registerCotalTools(mcp, auditFails(new MeshAgent(cfg), new Error("timeout")), cfg, "smoke");
+const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+const client = new Client({ name: "spawn-args-client", version: "0.0.0" });
+await Promise.all([client.connect(clientTransport), mcp.connect(serverTransport)]);
+const viaMcp = await client.callTool({ name: "cotal_spawn", arguments: { name: "rev", model: PIN } });
+const mcpStructured = viaMcp.structuredContent as Structured | undefined;
+const mcpText = viaMcp.content as Array<{ type: string; text: string }>;
+check(
+  "the MCP renderer sends the partial as structured content, with its JSON as text too",
+  viaMcp.isError !== true && mcpStructured?.status === "partial" && mcpStructured.message === mcpText[0]?.text && mcpText[1]?.text === JSON.stringify(mcpStructured),
+  viaMcp,
+);
+await client.close();
+
+// Channels on the peer door. `join` rides to the manager and is bounded HERE by the caller's read
+// ACL, before anything is sent; the caller's own ACL rides as `callerAcl`, which the manager uses
+// only for a persona that names no channel. A helper spawned from a seat on #general used to start
+// on no channel with no way to say otherwise, and its first cotal_send was refused.
+const reader: AgentConfig = { ...cfg, subscribe: ["general"], allowSubscribe: ["general", "review"], allowPublish: ["general"] };
+check("cotal_spawn schema exposes join", spawnTool !== undefined && "join" in spawnTool.schema.shape);
+const joinAgent = new MeshAgent(reader);
+const callsJoin = record(joinAgent);
+await spawnTool?.run(joinAgent, reader, { name: "helper", join: ["review"] });
+check("cotal_spawn tool forwards join", JSON.stringify(spawnCall(callsJoin)?.args?.join) === JSON.stringify(["review"]), spawnCall(callsJoin)?.args);
+check(
+  "the spawn carries the caller's own ACL as callerAcl",
+  JSON.stringify(spawnCall(callsJoin)?.args?.callerAcl) === JSON.stringify({ allowSubscribe: ["general", "review"], allowPublish: ["general"] }),
+  spawnCall(callsJoin)?.args?.callerAcl,
+);
+const direct = new MeshAgent(reader);
+const callsDirect = record(direct);
+await direct.spawn("helper", undefined, { join: ["general"] });
+check("MeshAgent.spawn forwards join", JSON.stringify(spawnCall(callsDirect)?.args?.join) === JSON.stringify(["general"]), spawnCall(callsDirect)?.args);
+check("name-only join stays absent", spawnCall(callsA)?.args?.join === undefined, spawnCall(callsA)?.args);
+const outside = new MeshAgent(reader);
+const callsOutside = record(outside);
+const outsideReply = await outside.spawn("helper", undefined, { join: ["ops"] });
+check(
+  "a join outside the caller's read ACL is refused before invoke",
+  outsideReply.ok === false && /join: "ops" is not within your read ACL/.test(outsideReply.error ?? "") && callsOutside.length === 0,
+  outsideReply,
+);
+const wild = new MeshAgent(reader);
+const callsWild = record(wild);
+const wildReply = await wild.spawn("helper", undefined, { join: ["team.>"] });
+check("a wildcard join is refused before invoke", wildReply.ok === false && /concrete channel/.test(wildReply.error ?? "") && callsWild.length === 0, wildReply);
+
+// #5490: the result of a started seat says where it is and the next move. It names only the join the
+// caller passed: the reply carries no channel list, and a persona may list channels the caller
+// cannot read. The run path is the tool's own, over a manager reply shaped as the manager sends it.
+const startedWith = async (args: Record<string, unknown>, data: Record<string, unknown>) => {
+  const agent = new MeshAgent(reader);
+  (agent as unknown as InvokeEp).ep = {
+    invokeService: (endpoint) => Promise.resolve({ reply: { ok: true, data }, responder: { endpoint, instanceId: "i", epoch: 0 } }),
+    principal: { owner: "local", actor: "caller" },
+  };
+  (agent as unknown as { _connected: boolean })._connected = true;
+  return spawnTool!.run(agent, reader, args);
+};
+const onChannel = await startedWith({ name: "helper", join: ["review"] }, { name: "helper", mode: "tmux" });
+check(
+  "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",
+  onChannel.text === "Started helper on #review (tmux). Post the brief there, and mention it only when it must act. Despawn it when its job is done.",
+  onChannel.text,
+);
+const noJoin = await startedWith({ name: "helper" }, { name: "helper", mode: "tmux" });
+check(
+  "a spawn without join says the seat has only its persona's channels and names join",
+  noJoin.text === "Started helper (tmux) without join, so it starts only on the channels its persona lists, which may be none. Pass join to put it on the task's channel.",
+  noJoin.text,
+);
+const renamed = await startedWith({ name: "helper", join: ["review"] }, { name: "helper_2", mode: "tmux" });
+check("a renamed seat leads with the name it got and the name that was taken", renamed.text.startsWith('Started helper_2 ("helper" was taken) on #review (tmux).'), renamed.text);
+const waiting = await startedWith({ name: "helper", join: ["review"] }, { name: "helper", mode: "tmux", waitingFor: "Claude's session picker" });
+check(
+  "a seat waiting for the operator says it has not joined the mesh yet",
+  waiting.text === "Started helper (tmux), but it is waiting for the operator at Claude's session picker and joins the mesh after that. It starts on #review.",
+  waiting.text,
+);
+const onceOn = await startedWith({ name: "helper", join: ["review"], prompt: "Do one thing.", once: true }, { name: "helper", mode: "tmux", once: { goalId: "g1" } });
+check(
+  "a once seat is not told to be despawned, since its manager stops it",
+  onceOn.text.startsWith('Started helper on #review (tmux). Post the brief there, and mention it only when it must act. Its task is goal "g1"') && !onceOn.text.includes("Despawn it"),
+  onceOn.text,
+);
+
+const EXPECTED_CHECKS = 66;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

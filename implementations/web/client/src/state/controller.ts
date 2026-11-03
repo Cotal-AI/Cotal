@@ -98,6 +98,8 @@ type Entry = ActivityEntry | FeedMessage;
 type Wire = { id?: string; channel?: string };
 
 const ACTIVITY_CAP = 500;
+/** How long the page waits for more unknown hubs before it reads the channel list for their class. */
+const CHANNEL_CLASS_READ_MS = 250;
 const NOTES_CAP = 50;
 /** The frames a session's first read asks for, and how many more each Load earlier adds. */
 export const SESSION_PAGE = 200;
@@ -562,6 +564,23 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     }
   }
 
+  // A hub the page first meets in a post or in a member's row has no delivery class until the next
+  // channel read answers, and a family link waits on that class. One read, a short wait after the
+  // first such hub, answers for every hub that appears within the wait; a channel the list never
+  // names is read for once, not once per post.
+  const classAsked = new Set<string>();
+  let classRead: ReturnType<typeof setTimeout> | undefined;
+  function readClassOf(channel: string): void {
+    if (classAsked.has(channel) || store.get().channels.some((c) => c.channel === channel && c.deliveryClass !== undefined)) return;
+    classAsked.add(channel);
+    if (classRead !== undefined) return;
+    classRead = setTimeout(() => {
+      classRead = undefined;
+      void refreshAll([{ name: "channels", read: () => api.channels(), apply: (channels: ChannelInfo[]) => store.set({ channels }) }])
+        .then((refused) => { for (const m of refused) markStale(m.name, m); });
+    }, CHANNEL_CLASS_READ_MS);
+  }
+
   function onMessage(e: FeedMessage): void {
     const msg = e.msg as Wire;
     // Stamped on arrival, before the order machine can hold the frame, so a held frame keeps the time it came.
@@ -609,6 +628,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       else channels[i] = { ...channels[i], messages: (channels[i].messages ?? 0) + 1 };
       return { channels };
     });
+    readClassOf(channel);
     if (store.get().open?.channel === channel) {
       // The open channel runs the same race: its history read is issued with the feed already open.
       // Ordered as a stored message, so the verified sender travels with it through the machine.
@@ -651,6 +671,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     onMembership(m) {
       liveApplied.add("membership");
       store.set({ membership: { snapshot: m } });
+      for (const member of m.members) for (const ch of [...(member.live ?? []), ...(member.durable ?? [])]) if (!/[*>]/.test(ch)) readClassOf(ch);
     },
     onMembershipFailed(reason) {
       liveApplied.add("membership");

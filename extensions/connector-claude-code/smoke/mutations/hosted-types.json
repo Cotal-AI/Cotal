@@ -1,0 +1,16 @@
+{
+  "command": "pnpm smoke:claude-hosted-types",
+  "progressPattern": "^(?:PASS|FAIL) ",
+  "minTicks": 1,
+  "suite": ["extensions/connector-claude-code/smoke/hosted-types.smoke.ts"],
+  "mutations": [
+    {
+      "name": "mark the CommonJS implementation's declarations as ESM",
+      "file": "extensions/connector-claude-code/package.json",
+      "find": "      \"types\": \"./dist/mcp.d.cts\",",
+      "replace": "      \"types\": \"./dist/mcp.d.ts\",",
+      "expectRed": "public_subpath_types_cjs-node16",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    }
+  ]
+}

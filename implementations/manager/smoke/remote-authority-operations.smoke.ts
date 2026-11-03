@@ -1,7 +1,7 @@
 /** Broker-free routing checks for authenticated remote manager maintenance operations. */
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { mintLifecycleUid, newIdentity, remoteManagerActors } from "@cotal-ai/core";
+import { EpEnvelopeError, mintLifecycleUid, newIdentity, parseGoalIndexEntry, remoteManagerActors } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult } from "../src/remote-authority.js";
 const counted = countedAssert(nodeAssert);
@@ -106,7 +106,12 @@ assert.deepEqual(remoteManagerGoalIndexEntries(result, request, owner), [entry])
 assert.throws(() => remoteManagerGoalIndexEntries({ ...result, extra: true } as never, request, owner), /non-closed result/);
 assert.throws(() => remoteManagerGoalIndexEntries({ ...result, actor: "other" }, request, owner), /different lifecycle coordinates/);
 assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, owner: `u_${"b".repeat(26)}` }] }, request, owner), /invalid entry 0/);
-assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, extra: true } as never] }, request, owner), /invalid entry 0/);
+assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, extra: true } as never] }, request, owner),
+  (e: unknown) => e instanceof EpEnvelopeError && /goal-index entry 0 of the manager goal-index scan carries unknown field "extra"/.test(e.message));
+for (const coordinate of ["actor", "uid", "goalId", "iid"] as const) {
+  assert.throws(() => parseGoalIndexEntry({ ...entry, [coordinate]: "" }, "k"), /goal-index entry k is malformed/);
+  assert.throws(() => remoteManagerGoalIndexEntries({ ...result, entries: [{ ...entry, [coordinate]: "" }] }, request, owner), /goal-index entry 0 of the manager goal-index scan is malformed/);
+}
 
 const state = { v: 1 as const, space: "demo", instanceId, lifecycleUid: request.managerLifecycleUid, identities };
 const caller = { owner, actor: "operator", lifecycleUid: mintLifecycleUid() };
@@ -126,7 +131,7 @@ const maintenanceResult = {
   evictions: [{ principal: maintenanceRequest.principals![0], kicked: 1, remaining: 0, verifiedGone: true, scanComplete: true }],
 };
 assert.deepEqual(remoteManagerMaintenanceResult(maintenanceResult, maintenanceRequest, owner).evictions, maintenanceResult.evictions);
-assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, extra: true } as never, maintenanceRequest, owner), /different lifecycle|closed matching/);
+assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, extra: true } as never, maintenanceRequest, owner), /non-closed result/);
 assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, evictions: [{ ...maintenanceResult.evictions[0], verifiedGone: true, remaining: 1 }] }, maintenanceRequest, owner), /contradictory/);
 
 let remoteChecks = 0;

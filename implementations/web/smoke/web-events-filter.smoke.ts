@@ -171,16 +171,21 @@ console.log("web-events-filter smoke");
 // a request. 5.4 calls the tap's classifier.
 {
   const src = readFileSync(join(here, "..", "src", "web.ts"), "utf8");
-  // Two call sites: the channel list and the activity backfill. The declaration carries a type
-  // parameter (`chatOnly<T extends ...>`) so it does not match this pattern and is not counted. A
-  // third call site is a behaviour change this cell should force someone to look at.
-  const calls = src.split("chatOnly(").length - 1;
-  ok("5.1 SOURCE-SHAPE: chatOnly has exactly two call sites", calls === 2, calls);
+  // The declaration plus two call sites: the channel list and the activity backfill. Every mention
+  // of the name is counted, so a third use moves the count however it is spelled, an alias
+  // included. A third call site is a behaviour change this cell should force someone to look at.
+  const mentions = src.split("chatOnly").length - 1;
+  ok("5.1 SOURCE-SHAPE: chatOnly has exactly two call sites", mentions === 3, mentions);
 
+  // The route runs to its own closing brace at the guard's indentation. Both cells require the
+  // window to reach the page the route returns, so a restructured route fails them instead of
+  // shrinking what they read.
   const byName = src.slice(src.indexOf('path.startsWith("/api/channels/")'));
-  const routeBody = byName.slice(0, byName.indexOf("}"));
-  ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", !routeBody.includes("chatOnly"), routeBody.slice(0, 200));
-  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", routeBody.includes("channelHistory"));
+  const routeEnd = byName.indexOf("\n    }\n");
+  const routeBody = routeEnd < 0 ? "" : byName.slice(0, routeEnd);
+  const returnsPage = routeBody.includes("json(res, page)");
+  ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", returnsPage && !routeBody.includes("chatOnly"), routeBody.slice(-300));
+  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", returnsPage && routeBody.includes("channelHistory("));
 
   // Every channel in the fixture, as the live tap would receive it on the chat plane. An event
   // channel is published by its own principal, since the tap drops a frame from anyone else; a

@@ -1,11 +1,21 @@
 # Signer isolation
 
-> **Design** (non-normative, not shipped) · Closes [embedding](../embedding.md) remaining gap
+> **Design** (non-normative, not shipped) · Closes [embedding](../embedding.mdx) remaining gap
 > ("The remaining hosted gap is signer isolation"). Wire contract unchanged: no new subject, no new
 > stream, no new message type. This is a composition-root and OS-custody seam.
 
-**Status:** design. Nothing here is implemented. Review gate: this doc is approved before any code
-lands.
+Review gate: this doc is approved before any code lands.
+
+**Status on 26 October 2026.** Not implemented. No signer process, `sign-user` or `mac` socket,
+`cotal-seat-launch` helper or `adopterUid` exists, and `runCustodian` still `chmod`s its socket
+`0600` and requires a peer uid equal to its own. Two things in the tree have moved since
+`c5c462886`. The CLI redesign in 0.91.0 renamed `cotal mint` to `cotal auth mint`, and
+`cotal mint --signer` became `cotal auth signer --out <file>`, which still exports the stripped
+signer with its signing seed. Since 0.59.0 the default `pty` runtime spawns seats in-process on
+every platform, and on Linux `CustodialPtyRuntime` only adopts and reaps seats an earlier manager
+left under a custodian, so section 2.1's "production Linux goes through `CustodialPtyRuntime.spawn`"
+and the `defaultCustodyRoot` name (now `custodyRoot`) describe the tree at the citation head. The
+seat-launch design below still assumes a custodial spawn path.
 
 **Citations.** Every `file` / function below was read in this worktree at `c5c462886`. No seed, key,
 or credential value is reproduced.
@@ -66,7 +76,7 @@ sign/mint seam would be a separate capability. Isolation is that seam.
   for the process lifetime.
 - **Hold.** `this.auth.account.signingSeed` is then in the manager's address space. Injecting
   KMS/Vault through `secretStore` changes where the bytes are stored at rest. It does not stop
-  `getSpaceAuth` from decrypting them into `this.auth`. `docs/embedding.md` already names this:
+  `getSpaceAuth` from decrypting them into `this.auth`. `docs/embedding.mdx` already names this:
   custody is resolved, isolation is not.
 - **Use.** Every mint in this process calls `mintCreds` / `provisionAgent` with `this.auth` (or a
   closed-over `auth` from `runStart`). `mintCreds` (`provision.ts`) does
@@ -133,8 +143,8 @@ offline caller.
 (`implementations/cli/src/commands/mint.ts`); `up` (provisioner, membership-rw, control-caller-admin);
 `spawn` (operator, provisioner, deprovisioner); `join` (provisioner); `status` (observer, deployer);
 `agents` (session-caller); `down-manifest` (`teardown`); `backup` / restore; `delivery-proc`
-(`delivery`); `spawn-manifest` (`channel-writer`); attach scatter probe
-(`implementations/cli/src/lib/control.ts`, `control-caller-privileged`). They run as a uid on the
+(`delivery`); `team-deploy-apply` and `team-agent-apply` (`channel-writer`); attach scatter probe
+(`packages/workspace/src/control/manager.ts`, `control-caller-privileged`). They run as a uid on the
 signer allowlist after §6, never as `cotal-agent`.
 
 `connect.ts` (`packages/workspace/src/connect.ts`) mints `control-caller-privileged`,
@@ -161,7 +171,7 @@ are not only JWT minting:
 |---|---|---|
 | JWT `encodeUser` | `startAuthCallout` (`callout.ts`) `fromSeed(opts.dataAccount.signingSeed)` as `userSigner` | connect-time user JWTs |
 | JWT `encodeUser` | `openAuthorityClient` (`authority-client.ts`) `fromSeed(opts.dataAccount.signingSeed)` | self-minted infra connections |
-| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) mints `supervisor` or `endpoint-evictor` from `dataAccountAuth` (`store.ts`), the same stripped `SpaceAuth` the plane signs with | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`) |
+| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) mints `supervisor` or `endpoint-evictor` from `dataAccountAuth` (`store.ts`), the same stripped `SpaceAuth` the plane signs with | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`), and `cotal actor revoke` eviction (`commands.ts`) |
 | JWT `openAuthorityClient` | `makeDrainRepairers` (`drain-repair.ts`) | per-repair applier credential |
 | JWT `mintPublicUserJwt` | `openAuthAuthorityPlane` (`service.ts`) `issueManagerServiceAuthority` | remote-manager user JWTs |
 | HMAC-SHA256 | `remoteManagerCurrentRegistrationProof` (`retained-manager-validation.ts`) `createHmac("sha256", secret)` | registration proof over a domain-separated payload |
@@ -255,7 +265,7 @@ Two attackers, same missing boundary:
 
 1. **Agent child (or a tool it shells out to).** Same uid, same mounts, `HOME` set. It reads the
    account record and now mints any profile `permissionsFor` will encode, including `admin` /
-   `provisioner` / `purger`. `docs/embedding.md` ("Hazardous provisioning primitives") already
+   `provisioner` / `purger`. `docs/embedding.mdx` ("Hazardous provisioning primitives") already
    warns against co-locating signer access with an untrusted connector at the same OS uid.
 2. **Code running as the manager after the agent-facing surface is compromised.** `this.auth` is
    already in memory; `FsSecretStore.get` still works. Isolation cannot stop that process from
@@ -1099,7 +1109,7 @@ account signing seed on a path the manager can `get`.
 1. **Mint-while-compromised.** A live manager that can dial the socket can still issue JWTs.
    Isolation is seed-theft resistance plus agent-uid confinement, not an HSM policy engine
    inside the signer. Narrowing which profiles the signer will encode is a later policy, not
-   required to close the gap `docs/embedding.md` names.
+   required to close the gap `docs/embedding.mdx` names.
 2. **Operator/account seeds.** Still on the operator path for rotation and for
    `createBrokerAuth` / `createSpaceAccountAuth`. A host that also wants those off the manager
    disk already has that as a separate custody problem.

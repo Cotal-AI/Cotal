@@ -1,0 +1,3 @@
+# The manager service launches under a maintenance journal only for its attempt's own journaled
+# start, or under a settled active controller restore of the same stack.
+smoke:manager-launch-admission

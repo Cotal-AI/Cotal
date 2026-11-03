@@ -15,6 +15,7 @@ import {
   Labels,
   lerp,
   prog,
+  straightWire,
   wirePath,
   Wires,
   type Pt,
@@ -96,7 +97,7 @@ export const NatsReplay: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[PATH_BOB, PATH_DAVE]} glow={[bobFlash, daveFlash]} />
+      <Wires wires={[{ d: PATH_BOB, glow: bobFlash }, { d: PATH_DAVE, glow: daveFlash }]} />
 
       {/* the durable stream: messages stay stored after anyone reads them */}
       <div
@@ -184,7 +185,7 @@ export const NatsReplay: React.FC = () => {
         return (
           <Beam
             key={i}
-            d={wirePath(START, lerp(START, end, 0.4), lerp(START, end, 0.6), end)}
+            d={straightWire(START, end)}
             pos={(u) => lerp(START, end, u)}
             t={t}
             visible={t > 0 && t < 1}

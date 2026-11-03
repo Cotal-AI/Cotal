@@ -5,6 +5,7 @@ import {
   currentPhase,
   fontFamily,
   gridLine,
+  horizontalPath,
   pick,
   spliceWordmark,
   WM_WIDTH,
@@ -47,12 +48,7 @@ const down = (col: number): Cell[] => [
   { row: 3, col },
   { row: 4, col },
 ];
-const busRun = (c1: number, c2: number): Cell[] => {
-  const step = c2 >= c1 ? 1 : -1;
-  const out: Cell[] = [];
-  for (let c = c1; c !== c2 + step; c += step) out.push({ row: 4, col: c });
-  return out;
-};
+const busRun = (c1: number, c2: number) => horizontalPath(4, c1, c2);
 
 function dotsFor(mode: string, t: number): Dot[] {
   if (mode === "multicast") {

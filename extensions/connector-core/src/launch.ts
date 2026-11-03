@@ -26,6 +26,7 @@ import {
   type LaunchMaterial,
   type McpServerSpec,
 } from "@cotal-ai/core";
+import { dirname } from "node:path";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -58,6 +59,10 @@ const OS_ENV_ALLOW = [
   "TEMP",
   "TMPDIR",
   "TMP",
+  // Trust-store paths, not credentials or TLS verification overrides. Node reads the extra CA
+  // at process startup, so a seat must receive it before its connector first dials the broker.
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
@@ -65,6 +70,10 @@ const OS_ENV_ALLOW = [
   "APPDATA",
   "LOCALAPPDATA",
   "XDG_RUNTIME_DIR",
+  // The usage opt-out and the CI marker other tools read too: a seat's own `cotal` commands then
+  // report, or stay silent, as the run that launched it does (docs/telemetry.mdx).
+  "DO_NOT_TRACK",
+  "CI",
   // Windows system env. SystemRoot is mandatory: without it a spawned process aborts at startup
   // (node `InitializeOnce`, winsock/ICU can't load) — and a `pty`-runtime (ConPTY) child does NOT
   // inherit it the way a plain child_process does, so a manager-spawned agent dies before its first
@@ -124,6 +133,9 @@ export const OPERATOR_ENV_KEEP = [
   "COTAL_CODEX_BIN",
   "COTAL_OPENCODE_BIN",
   "COTAL_ORCA_BIN",
+  "COTAL_TELEMETRY",
+  "COTAL_TELEMETRY_DISABLED",
+  "COTAL_TELEMETRY_URL",
 ] as const;
 
 /** Build the base env a spawned agent runs with.
@@ -241,17 +253,25 @@ export function connectorLaunchOptions(
  * stays in the environment where the launcher's contract has always put it, because a descendant
  * learning the seat's name is not the failure.
  *
+ * The file's private directory is appended to `artifacts`, the launch's artifact list (core
+ * launch-artifacts), so the launcher that spawns the spec removes it once the child has exited, the
+ * same way it removes a persona carrier. Call it after the connector's last refusal: a launch that
+ * throws returns no spec, and then nothing owns the directory.
+ *
  * Refuses a creds+userAuth combination here (one launch, one identity plane - U10), which is where
  * `userAuthEnv` refused it.
  */
-export function materialEnv(opts: {
-  creds?: string;
-  servers?: string;
-  token?: string;
-  controlToken?: string;
-  eventsRequired?: boolean;
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
-}): Record<string, string> {
+export function materialEnv(
+  opts: {
+    creds?: string;
+    servers?: string;
+    token?: string;
+    controlToken?: string;
+    eventsRequired?: boolean;
+    userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  },
+  artifacts: string[],
+): Record<string, string> {
   if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
   const material: LaunchMaterial = {};
@@ -265,7 +285,9 @@ export function materialEnv(opts: {
   // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;
   // this is the caller-side half of the same rule.
   if (Object.keys(material).length === 0) return {};
-  return { [LAUNCH_MATERIAL_ENV]: writeLaunchMaterial(material) };
+  const path = writeLaunchMaterial(material);
+  artifacts.push(dirname(path));
+  return { [LAUNCH_MATERIAL_ENV]: path };
 }
 
 /** Whether a launch arms the event plane. `events: false` opts out only when the registration

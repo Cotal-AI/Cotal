@@ -2,232 +2,182 @@
 
 > **Project** (non-normative maintainer notes) · **For:** maintainers shipping Cotal
 
-Cotal uses [Changesets](https://github.com/changesets/changesets) to version and publish the
-workspace packages under `packages/*`, `extensions/*`, and `implementations/*` to npm.
-`examples/**` is ignored, since it is not published.
+Cotal uses pnpm, Changesets and one GitHub Actions workflow. The fixed group in
+[`.changeset/config.json`](../.changeset/config.json) versions the public packages together.
+Examples are private.
 
-## 0.11 runtime migration
+## Prepare the version
 
-The published binary no longer bundles the optional tmux and cmux runtimes. Existing operators
-must run `cotal ext add <runtime-package>` once after upgrading,
-before using `runtime: tmux|cmux` in a manifest or passing `--runtime tmux|cmux`. Missing runtimes
-fail loudly with the matching install command; they never fall back to pty.
+Add a changeset for each package change. Breaking changes in these 0.x packages use a minor bump.
+Every push to `main` that leaves changesets there runs the Changesets workflow. It opens or updates
+the version PR, builds the native binaries and packs the version PR head with them. That pack is the
+release; it is ready about four minutes after the merge.
 
-## Trusted publishing
+Keep builds and focused upgrade checks ready before the publish command. A successful fresh install
+does not prove an upgrade from an existing installation. CI, review rounds and the broad native test
+matrix are not publication prerequisites unless the operator requests them.
 
-Trusted publishing replaces the long-lived `NPM_TOKEN` secret with short-lived OIDC tokens
-issued by GitHub Actions. Each published package must be configured once on npmjs.com.
+## Publish
 
-The `fixed` group in [`.changeset/config.json`](../.changeset/config.json) gets versioned together.
-The preflight checks that it matches the publishable workspace census.
-
-### Deployment Environment setup
-
-Both publishing jobs (`version` and `snapshot`) reference a GitHub Environment named
-`npm-publish`. The OIDC assertion rejects tokens that do not carry this environment claim,
-so the Environment must exist and must protect the release ref before the first publish.
-
-1. Go to **Settings > Environments** in the repository.
-2. Create a new Environment named **`npm-publish`**.
-3. Under **Deployment branches and tags**, select **Selected branches and tags** and add
-   `main` as the only allowed branch. This restricts OIDC token issuance to runs on `main`.
-4. Optionally add required reviewers if your team wants a manual gate before each release.
-
-The Environment name is embedded in the workflow, in the OIDC identity assertion, and in
-every npm trusted-publisher record. All three must use the exact string `npm-publish`.
-
-> **Snapshot releases:** the snapshot job is also bound to the `npm-publish` Environment.
-> If the deployment branch policy allows only `main`, snapshot releases from other branches
-> are refused by the Environment gate before the OIDC exchange. To allow snapshots from
-> additional branches, add those branches to the Environment's deployment policy.
-
-### Per-package trusted publisher configuration
-
-Configure every workspace package that is not `private: true`. The preflight selects them
-from `pnpm list -r --depth -1 --json` and prints the package/version census with:
+Publish with one command that names the `main` commit the release must include:
 
 ```bash
-node scripts/preflight-npm-publish.mjs
+pnpm release:cut <main-sha>
 ```
 
-Without the GitHub OIDC requester, this prints the census and refuses before publishing.
-Use that census for the following steps:
+It refuses a commit that is not on `main` or carries no changeset. It waits until the version PR
+carries the commit, sits on the head of `main` and has its pack, then merges the version PR by its
+head commit. Merging the version PR publishes it. The push run of that merge looks up the push run
+of the merge's parent commit, checks that its pack was made from the same tree, and uploads that
+pack. Nothing is built after the command. A merge of the version PR by any other means publishes in
+the same way. A run that finds unpublished versions on `main` but no pack for its tree fails and
+publishes nothing.
 
-1. Go to `https://www.npmjs.com/package/<name>/access` (e.g.
-   `https://www.npmjs.com/package/@cotal-ai/core/access`).
-2. Scroll to **Trusted publishing** > **Add a trusted publisher**.
-3. Pick **GitHub Actions**.
-4. Fill in:
-   - **Organization or user:** the GitHub owner (your org or user).
-   - **Repository:** `Cotal`.
-   - **Workflow filename:** `changesets.yml`.
-   - **Environment name:** `npm-publish`.
-5. Save. Repeat for every package.
+The command prints one UTC line per step: `command`, `ready`, `merged`, `run`, `published`,
+`visible` and `run rc`. The budget is ten minutes from `command` to `visible`, the moment
+`npm view cotal-ai@<version> version` answers. The upload ends about two minutes after the merge,
+and npm has then taken four to seven minutes to serve the new `cotal-ai` version. A command given
+after the pack is ready therefore fits the budget. A command given right after a merge also waits
+for that pack.
 
-> **Migration from blank Environment:** if packages were previously configured with a blank
-> Environment name, each must be updated to `npm-publish`. Delete the old trusted publisher
-> record and re-create it with the Environment name filled in. The preflight will refuse any
-> package whose trusted-publisher record does not carry the `npm-publish` environment.
+The workflow uses the maintained Changesets actions to select the release, pack its public packages
+and publish the packed artifacts directly to `latest` using the existing publishing authority.
+GitHub Actions pins each run to one commit. One upload runs at a time. Direct-mode verification
+runs in the following job outside the publisher queue, so its wait does not hold later uploads.
+There is no separate qualification or promotion workflow. The optional staging mode below is off
+unless the repository variable `COTAL_STAGED_RELEASE` is set to `true`. The preparing run freezes
+that mode and records it with the pack, so a later variable edit does not change a prepared release.
 
-### Adding a publishable package
+Native build jobs produce Cotal's native binaries: the seat binding on Linux x64 and arm64, and the
+workspace binding on Windows and macOS, each for x64 and arm64. The pack job assembles those
+binaries and builds the packages without npm publishing authority. Only the publish job has the npm trusted
+publishing permission. It consumes the packed output rather than rebuilding it. pnpm caches its
+lockfile-keyed package store, not built output. The publisher installs only the root tooling.
 
-A PR that adds a publishable package must have its npm record and trusted publisher created
-before the next release cut.
+npm holds an accepted version as staged for several minutes before it serves it, and refuses a
+second upload of that version. The patch in `patches/` makes Changesets treat that refusal like an
+already published version, so a re-run of a failed publish job skips what npm already holds and
+publishes the rest. A transparency-log conflict (`TLOG_CREATE_ENTRY_ERROR`, 409) fails an upload and
+passes on a re-run. `pnpm release:cut` therefore re-runs a failed publish job up to twice. If it still
+fails, inspect the registry before another retry. A dispatch with
+`gh workflow run changesets.yml --ref main` publishes again only while the head of `main` is the
+version PR merge. A dispatch while unreleased changesets remain on `main` fails with
+`Merge the Changesets version PR before publishing.` and publishes nothing.
 
-1. A package owner publishes the first version with `npm publish --access=public` and an npm
-   token. OIDC cannot create a package. This manual publish is separate from `ci:publish`, which
-   refuses npm tokens.
-2. Add the trusted publisher for `changesets.yml` with environment `npm-publish`, using the
-   [per-package setup](#per-package-trusted-publisher-configuration).
-3. Check that the new package appears in the preflight census before the next cut. Re-run a cut
-   that was blocked by the missing npm record after completing the setup.
+The root `ci:publish` command is the standard `pnpm changeset publish`. Maintainers normally use the
+workflow so publication has the configured identity and the native binaries are included.
 
-## Day-to-day flow
+## Verify the result
 
-1. Open a PR that changes code in a publishable package.
-2. Add a changeset describing the change:
+The publish action reports the packages published and pushes one git tag per package. Direct-mode
+verification then checks every exact package version, installs the fixed closure into an isolated
+prefix from npm, and runs the CLI in the following job. Default direct publishing updates `latest` during upload, before these checks.
+A verification failure stops the GitHub Release but cannot undo those tag updates.
 
-   ```bash
-   pnpm changeset
-   ```
+With staging enabled, the complete fixed group is validated and packed under `cotal-staged` using
+the standard Changesets plan. Only after successful closure and install checks do ordinary
+`npm dist-tag add` commands promote packages in dependency order, with `cotal-ai` last. Failed
+verification changes no `latest` tags. A failed promotion stops before later packages and creates
+no GitHub Release. Tags are separate registry writes, not an atomic transaction.
 
-   Pick the affected packages plus the semver bump (patch / minor / major), and write a
-   one-line summary. Commit the generated `.changeset/<name>.md` file alongside your code
-   change. On a branch that has been open for a long time, check that `main` has not already
-   shipped the change before you trust its changeset. Merge conflicts in the code the changeset
-   describes are the usual sign that it has.
-3. Merge to `main`. The only status check `main` requires is `attribution`. The CI aggregate
-   jobs `ci-ok`, `windows-ok` and `installer-ok` are advisory: a red one reports and does not
-   block the merge, so read them before you merge. `attribution` also refuses the PR until a
-   paragraph `Approved-at: <sha>` in its body names the PR's current head by its full sha. Add it
-   after you review that head, with a blank line before and after. A line in a code block or an
-   HTML comment does not count. A push moves the head, so review the new head and update the line.
-   Editing the body re-runs the check. Re-running the job does not, because it replays the old event.
-4. The `Changesets` workflow runs:
-   - If there are pending changesets, it opens (or updates) a PR titled `chore(release):
-     version packages` that bumps versions and updates `CHANGELOG.md` files. The same step
-     (`pnpm ci:version`) rebuilds the Claude connector and runs
-     `scripts/materialize-claude-plugin.mjs`, which rewrites the committed Claude Code plugin tree
-     under `claude-plugin/` with the new bundles and stamps both plugin manifests with the new
-     version. Claude Code updates an installed plugin only when that version changes, so a release
-     is what delivers a new plugin to installs from the repo's marketplace or a pinned commit.
-     Only `dist/mcp.cjs` carries the docs, so `scripts/operator-literal-allowlist.json` lists it
-     with the same example counts as `docs/cli.md` and `docs/run-a-mesh.md`. A release that changes
-     those counts updates its entries in the release PR.
-     The workflow rewrites the PR body each time it updates the PR, so add its `Approved-at` line
-     after the last update, just before you merge.
-   - When **that** PR is merged, the same workflow detects the bumped versions, runs `pnpm
-     build`, and `pnpm publish`es each changed package to npm with provenance.
+The following job cuts one GitHub Release for the version, tagged `v<version>`. Its notes open with
+the install command, continue with the changeset summaries, and end with the merged pull requests
+since the previous release. If a version has no changelog section or no summaries, the detail
+script fails with a diagnostic. The job keeps that stderr, emits a warning, and creates the release
+without the optional summaries. Other detail-script failures follow the same non-blocking path.
+The Discord announcement follows that release. Check the relevant existing-installation upgrade
+before reporting a fix delivered.
 
-## Correcting a released changelog entry
+An accepted upload and a successful install are separate observations. npm may temporarily return
+cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to
+twenty minutes to become installable, so the install job waits up to twenty-five minutes for that
+install. The closure census before it waits as long, so a late `cotal-ai` does not fail the job and
+skip the Release. The install check uses a fresh cache and `--prefer-online` to request metadata revalidation.
+That does not force npm's upstream caches to converge. Only staged-mode verification keeps the
+publisher queue through installation and promotion, so an older delayed staged release cannot
+overwrite a newer release's tags. Direct-mode verification stays outside that queue.
+If an observation fails, inspect the registry and
+the published-package output before retrying. Apart from the re-runs of a failed publish job above,
+never repeat an upload whose outcome is unknown.
 
-Changesets only prepends new `## <version>` sections, so an entry in a released section stays as
-written unless someone edits it. When a released entry is wrong, add a `**Correction:**` paragraph
-under the same bullet, indented two spaces, in every `CHANGELOG.md` that carries the bullet. Keep the
-original text, since the GitHub Release for that version already published it. Use the same
-wording in each file, because `scripts/release-notes-detail.mjs` dedupes summaries by their text.
+Keep the original publish-command time. The target is verified availability within ten minutes;
+report a missed target rather than resetting the clock or calling a queued job published.
 
-## Publication workflow
+## Configure npm
 
-`ci:publish` in the root `package.json` is:
+Every public npm package needs this trusted publisher:
 
-- an exact-version census of every package in the Changesets fixed group against the registry;
-- a check that the public recursive workspace set is the complete Changesets fixed group;
-- one GitHub OIDC exchange per package when the release job exposes the OIDC requester;
-- a GET of each package's trusted-publisher document with that exchanged token, which must list
-  a direct `npm publish` Allowed action on THIS repository's `changesets.yml` publisher;
-- only after those checks, the workspace build, native assembly, and recursive publish.
+- Repository owner and repository: this repository.
+- Workflow filename: `changesets.yml`.
+- Environment: `npm-publish`, allowing `main`.
+- Allowed action: direct `npm publish`. The default workflow requires no dist-tag management grant.
 
-The preflight first refuses npm access-token environment variables, before invoking pnpm to
-enumerate workspace packages. The registry census prints each package, version, OIDC result and
-direct-publish result. If every exact version already exists, the preflight reports a no-op before
-OIDC requests. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only package
-exits before `pnpm publish`.
+Staging is not enabled or operationally qualified. Before setting `COTAL_STAGED_RELEASE=true`, the
+publisher owner must establish `manageDistTags` for every package's trusted publisher. This is
+independent of `createPackage` for direct publication, as npm's
+[allowed-action documentation](https://docs.npmjs.com/trusted-publishers/#configuring-allowed-actions)
+explains. The registry enforces that authority on each native tag command. No extra trust-settings
+read is required: HTTP 401 on a settings read establishes neither write permission nor write denial.
+Do not enable the variable until the owner has established the required grant.
 
-The post-publish closure gate checks every package in the fixed group. Registry observations cannot
-distinguish a partial publish from slow propagation: clean 404s and repeated non-404 failures both
-lack evidence that a package will never appear. The census therefore reports an incomplete or
-errored closure as `UNSETTLED` and never fails the job on its own. Exit 1 remains reserved for future
-positive publisher evidence.
+npm's separate [staged publishing](https://docs.npmjs.com/staged-publishing/) feature does not replace
+this opt-in flow. Its staged contents are unavailable publicly until approval, so they cannot pass
+the public-registry closure install check first. `npm stage approve` requires maintainer 2FA and is
+not available to an OIDC exchange token, as the
+[npm stage command reference](https://docs.npmjs.com/cli/v12/commands/npm-stage) documents.
 
-Presence on the per-version endpoint does not prove a version installs: `npm install` resolves
-through the packument, which can lag that endpoint. Before the GitHub Release is cut, the install
-gate installs `cotal-ai@<version>` from the registry into a scratch prefix with a fresh cache and
-runs `cotal --version`. A failed attempt before the deadline counts as unknown and is retried every
-15 seconds. Once less than two intervals remain, the gate waits half of the remaining time instead,
-so the last failed attempt is still retried before the deadline. A version that does not install
-and run within 10 minutes fails the job, and no Release is cut:
+The workflow uses GitHub OIDC and does not fall back to a long-lived npm token. A missing package or
+publisher authorization is an access problem, not permission to borrow credentials.
 
-```bash
-node scripts/verify-release-installable.mjs 0.52.0
-```
+## Correct release notes
 
-The window in which npm's `latest` tag points at a version whose pinned siblings are not yet
-installable opens at publish time, so neither gate can close it. They only keep the announcement
-out of it.
+Add a `**Correction:**` paragraph under the affected changelog bullet. Preserve the original text
+and use the same correction wording in each affected package so release notes can deduplicate it.
 
-When both gates pass, the job cuts the GitHub Release and tag for that version. The Release
-targets the oldest commit on `main` whose `bin/package.json` carries the version, which is the
-tree the packages were built from. A version that was reverted and carried again keeps that first
-commit. A publishing run whose closure gate ends `UNSETTLED` skips the Release, and the next push
-that passes both gates cuts it with that same target. The step fails if it cannot read that history
-or cannot find that commit.
+## Earlier section links
 
-After the `version` job, the `install-probe` job packs `cotal-ai` and each runtime sibling (every
-`workspace:` dependency of `cotal-ai`) and checks that each tarball contains its declared `main` and
-string `exports` targets. It then extracts the `cotal-ai` tarball and runs `cotal --version` and
-`cotal --help`. The binary runs against the workspace copies of its siblings, so the probe checks
-package shape only. It does not cover registry propagation or native assets. Nothing depends on the
-job, so a failure reds the workflow without gating the Release:
+These links lead to the current guidance for sections renamed in earlier versions.
 
-```bash
-node scripts/post-publish-install-probe.mjs
-```
+### Publication deadline [#publication-deadline]
 
-Re-check a version that already shipped without publishing, tagging, or changing git:
+See [Publish](#publish).
 
-```bash
-node scripts/verify-publish-closure.mjs 0.52.0 --recheck
-```
+### CI policy [#ci-policy]
 
-The publish job refuses an npm access token in its environment and publishes through OIDC only.
-This prevents pnpm from falling back to a classic token when an OIDC exchange fails.
+See [Prepare the version](#prepare-the-version).
 
-HTTP 201 from the OIDC exchange is identity only. npm's trusted-publisher Allowed actions always
-permit `npm stage publish`; configurations created after 2026-09-03 default to stage and may omit
-direct `npm publish`. Both paths use the same successful exchange, so the preflight never treats
-that 201 as proof that sequential `pnpm publish -r` can write. Binding those Allowed actions to a
-GitHub Environment is done: the `version` and `snapshot` jobs reference `environment:
-npm-publish`, and the OIDC identity assertion rejects tokens without the matching
-environment claim.
+### Trusted publishing [#trusted-publishing]
 
-pnpm's `--batch` option was evaluated. It exists from pnpm 11.7 and is all-or-nothing only on a
-registry implementing `PUT /-/pnpm/v1/publish` (pnpr does). npm's registry returns 404 for read-only
-`GET` and `OPTIONS` probes of that endpoint, and its published Registry API does not document it.
-pnpm batch publishing also rejects provenance and requires one shared credential for the batch
-instead of the per-package OIDC exchanges used here. The repository stays on the normal npm publish
-protocol and treats the preflight as the fail-before-first-write control.
+See [Configure npm](#configure-npm).
 
-```bash
-node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
-```
+### Adding a publishable package [#adding-a-publishable-package]
 
-- `preflight-npm-publish.mjs`: derive and print the full fixed-group package/version census. In
-  addition to each exact version, it reads every package record before any OIDC exchange. A
-  missing record refuses the run with the [new-package setup](#adding-a-publishable-package).
-  An exchange 404 for an existing package names the missing trusted publisher for this workflow
-  and environment. In GitHub Actions it exchanges a package-specific OIDC token, then GETs `/-/package/<name>/trust`
-  and refuses unless THIS repository's `changesets.yml` publisher lists a direct-publish Allowed
-  action. npm documents that identity on GET `/-/package/<name>/trust` as `claims.repository` and
-  `claims.workflow_ref.file` with a `permissions` array. Other GitHub publishers on the same package
-  are not proof that this job can publish. It refuses npm access-token environment variables before
-  the census or OIDC exchange, so `ci:publish` cannot be used with a classic token.
-- `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
-  when a partial retry publishes only the packages still missing.
-- `seat-assemble-natives.mjs`: assemble the downloaded native seat artifacts before publication.
-- Seat's pack and publish hooks assert both native artifacts and compile its JavaScript and type
-  entrypoints without rebuilding the native helpers.
-- `-r`: recursively publish all workspace packages.
-- `--provenance`: emit SLSA provenance attestations (a no-op without OIDC, automatic with it).
-- `--access=public`: required for scoped packages on first publish.
-- `--no-git-checks`: skip pnpm's branch / clean-tree guard, since CI does not need it.
+See [Configure npm](#configure-npm).
+
+### Preparing a release [#preparing-a-release]
+
+See [Prepare the version](#prepare-the-version).
+
+### Publishing the prepared candidate [#publishing-the-prepared-candidate]
+
+See [Publish](#publish).
+
+### Publication controls [#publication-controls]
+
+See [Publish](#publish).
+
+### Verifying availability [#verifying-availability]
+
+See [Verify the result](#verify-the-result).
+
+### Recovering late registry visibility [#recovering-late-registry-visibility]
+
+See [Verify the result](#verify-the-result).
+
+### Correcting a released changelog entry [#correcting-a-released-changelog-entry]
+
+See [Correct release notes](#correct-release-notes).
+
+### 0.11 runtime migration [#011-runtime-migration]
+
+See [Prepare the version](#prepare-the-version).

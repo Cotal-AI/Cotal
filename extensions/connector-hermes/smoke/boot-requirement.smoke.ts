@@ -67,19 +67,19 @@ try {
     managers.push(manager);
     await manager.start();
     const status = (manager as unknown as {
-      managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; reason?: string }> };
+      managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }> };
     }).managerStatusData().connectors.find((row) => row.agent === "hermes");
     if (label === "uv-only") {
       const expected = join(binDir, process.platform === "win32" ? "uv.cmd" : "uv");
       check(
         "Hermes is available when uv is the only harness executable",
-        status?.state === "available" && status.binaries.uv === expected && !("hermes" in status.binaries),
+        status?.state === "available" && status.eventPlane === false && status.binaries.uv === expected && !("hermes" in status.binaries),
         status,
       );
     } else {
       check(
         "Hermes is unavailable when only the project command is on PATH",
-        status?.state === "unavailable" && status.reason?.includes("needs uv on PATH") === true && Object.keys(status.binaries).length === 0,
+        status?.state === "unavailable" && status.eventPlane === false && status.reason?.includes("needs uv on PATH") === true && Object.keys(status.binaries).length === 0,
         status,
       );
     }

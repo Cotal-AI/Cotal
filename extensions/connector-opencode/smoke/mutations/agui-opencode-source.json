@@ -41,8 +41,8 @@
     {
       "name": "S2 the read no longer stops at the first unsettled part and emits around it instead",
       "file": "extensions/connector-opencode/src/agui-source.ts",
-      "find": "      if (!isSettled(r)) break;",
-      "replace": "      if (!isSettled(r)) continue;",
+      "find": "      if (!this.settled(r)) break;",
+      "replace": "      if (!this.settled(r)) continue;",
       "expectRed": "settle:the read STOPS at the first unsettled part"
     },
     {

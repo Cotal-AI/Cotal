@@ -103,7 +103,7 @@
     {
       "name": "signal a record that belongs to another boot",
       "file": "packages/seat/src/reap.ts",
-      "find": "  return boot !== undefined && rec.bootId !== boot;\n",
+      "find": "  return rec.bootId !== boot;\n",
       "replace": "  return false;\n",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "a record from another boot reaps as gone without signalling",

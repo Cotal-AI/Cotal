@@ -4,7 +4,7 @@
  * which exposes run-bound operations and never hands this credential to the driver.
  */
 import { createHash } from "node:crypto";
-import { spacePrefix, chatStream, presenceBucket, channelBucket, membersBucket, assertInboxConnId, assertPrincipalOwnerToken, DEV_OWNER } from "./subjects.js";
+import { spacePrefix, chatStream, presenceBucket, channelBucket, membersBucket, aclBucket, assertInboxConnId, assertPrincipalOwnerToken, DEV_OWNER } from "./subjects.js";
 import { endpointToken, assertIdToken, assertLifecycleToken, epCallerReplyFilter, type EpCaller } from "./endpoint-subjects.js";
 import { recordsBucket } from "./endpoint-records.js";
 import { admissionBucket } from "./run-admission.js";
@@ -75,6 +75,12 @@ export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId:
  *  baseline describe row is class-rail only, so a PINNED resolve is broker-refused without it. */
 export const PLACEMENT_COMMANDS: readonly string[] = Object.freeze(["describe", "resolve-cwd", "spawn"]);
 
+/** The owner-mode lifecycle commands a placed run addresses on its placement instance. A seat placed
+ *  there is mapped only by that instance's resolver, so on the class rail every other member refuses
+ *  its turn as unmapped and a turn to a live seat can run out of re-issues. Same target bound as the
+ *  class row (the caller's owner), on the one placed instance only. */
+export const PLACED_LIFECYCLE_COMMANDS: readonly string[] = Object.freeze(["turn"]);
+
 /** Trusted, per-run host connection. The endpoint-wide checkpoint writes and body-selected
  *  records/fact/timer/chat reads are its residual authority. The runtime confines those verbs
  *  behind journal-checked operations; this profile must never be given to the run driver.
@@ -126,6 +132,9 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
     `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`,
     `$KV.${membersBucket(space)}.>`,
     `$JS.API.STREAM.MSG.GET.KV_${membersBucket(space)}`,
+    // The member lifecycle's exact read-ACL row a conclave reads around each membership row it
+    // writes (#4995): a read only, keyed by the row the write names.
+    `$JS.API.STREAM.MSG.GET.KV_${aclBucket(space)}`,
     // The manager's lifecycle commands, as the run's own caller: describe (the resolve), spawn
     // (untargeted creation), inspect (whether a seat whose presence lapsed is still running), turn
     // and despawn (owner mode, pinned to the caller's owner), and the reserved goal cancel that
@@ -137,16 +146,23 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "cancel" }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "despawn", target: { mode: "owner", tOwner: caller.owner } }, caller),
     // #1616 TARGET-BOUND PLACEMENT REACH. Minted ONLY when the program named an explicit target,
-    // and then only for that ONE validated instance and only these three operations. `routes: []`
+    // and then only for that ONE validated instance: the three placement operations, and `turn` on
+    // the seats placed there, owner-pinned exactly as the class row. `routes: []`
     // suppresses the class `one` row entirely, so this adds NO anycast fallback and no wildcard:
     // `epRequestGrantRows` emits the single `ep.inst.<endpoint>.<iid>.<command>` row per command.
     // Issuance stays inside the delegating caller's authority — the rows are stamped with the run's
     // own caller block, so naming a target in a program grants nothing the caller could not do.
     ...(args.placement === undefined
       ? []
-      : PLACEMENT_COMMANDS.flatMap((command) => epRequestGrantRows(space, {
-          endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [], instanceId: args.placement!.instanceId,
-        }, caller))),
+      : [
+          ...PLACEMENT_COMMANDS.flatMap((command) => epRequestGrantRows(space, {
+            endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [], instanceId: args.placement!.instanceId,
+          }, caller)),
+          ...PLACED_LIFECYCLE_COMMANDS.flatMap((command) => epRequestGrantRows(space, {
+            endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [], instanceId: args.placement!.instanceId,
+            target: { mode: "owner", tOwner: caller.owner },
+          }, caller)),
+        ]),
     // The contract store fetch a resolve performs (the subject-scoped form every agent holds).
     `$JS.API.DIRECT.GET.${epcStreamName(space)}.${p}.epc.>`,
     // The run's admission and revocation rows (SPEC 14.8): a leader-served read before every

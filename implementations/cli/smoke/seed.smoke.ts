@@ -5,6 +5,9 @@
  *
  *  - first-run auto-seed of the seven first-party exts (six connectors + the web dashboard) + idempotent no-op + removability (removed stays removed)
  *  - crash cursor → auto fails loud → `--repair` re-installs the interrupted connector
+ *  - a seed that fails reports its reason; the next boot says it failed, not that it was interrupted
+ *  - a recorded third-party package whose directory is gone (never there, or pruned by npm) is
+ *    reported by reset and repair, which still succeed, and `ext remove` then drops its entry
  *  - corrupt manifest → `--reset` quarantines + rebuilds; connectors still on disk → `--repair` rebuilds
  *  - truncated authority never resurrects a removed connector (backup union)
  *  - operator-pinned official entry not auto-refreshed on upgrade (source-aware); semver fail-loud
@@ -13,6 +16,8 @@
  *  - concurrent first boots do not collide or falsely report "interrupted"
  *  - the binary invoked through a bin SYMLINK (how every global install runs) still resolves its
  *    generation and payloads
+ *  - `cotal update` removes group write from a config folder an earlier seed left group-writable, and
+ *    the web seed still refuses a group-writable folder above it
  *
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:seed` does that first.
  * Run: pnpm smoke:seed
@@ -97,6 +102,8 @@ const files = [
   "supervise.smoke.ts",
   "removal.smoke.ts",
   "cursor-repair.smoke.ts",
+  "failed-seed.smoke.ts",
+  "absent-extension.smoke.ts",
   "manifest-reset.smoke.ts",
   "manifest-repair.smoke.ts",
   "invalid-stamp.smoke.ts",
@@ -113,7 +120,8 @@ const files = [
   "parallel-boots.smoke.ts",
   "symlinked-bin.smoke.ts",
   "downgrade.smoke.ts",
-  "downgrade-hint.smoke.ts"
+  "downgrade-hint.smoke.ts",
+  "config-modes.smoke.ts"
 ];
 const excluded: Record<string, string> = {};
 if (process.platform === "win32") {
@@ -121,6 +129,12 @@ if (process.platform === "win32") {
     files.splice(files.indexOf(file), 1);
     excluded[file] = "Unix executable/symlink scenario; unchanged Windows exclusion";
   }
+  files.splice(files.indexOf("failed-seed.smoke.ts"), 1);
+  excluded["failed-seed.smoke.ts"] = "its PATH holds only a symlink to node, which needs a privilege on Windows";
+  files.splice(files.indexOf("absent-extension.smoke.ts"), 1);
+  excluded["absent-extension.smoke.ts"] = "its failed-seed PATH and dangling package link are symlinks, which need a privilege on Windows";
+  files.splice(files.indexOf("config-modes.smoke.ts"), 1);
+  excluded["config-modes.smoke.ts"] = "POSIX folder modes; Windows has no group write to repair";
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));
@@ -148,7 +162,7 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
-    const expected = process.platform === "win32" ? 73 : 80;
+    const expected = process.platform === "win32" ? 84 : 130;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });

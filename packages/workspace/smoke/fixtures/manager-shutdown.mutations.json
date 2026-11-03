@@ -49,6 +49,22 @@
       "replace": "      void reservationOwner;",
       "expectRed": "a no-token platform cannot replay destructive policy into another stop reservation",
       "cell": "a no-token platform cannot replay destructive policy into another stop reservation"
+    },
+    {
+      "name": "spaced process tokens are rejected by the shutdown handoff again",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "    const parsed = parseRecord(`${process.pid} ${process.token}`);",
+      "replace": "    const parsed = parseRecord(/\\s/.test(process.token) ? \"\" : `${process.pid} ${process.token}`);",
+      "expectRed": "S1 spaced target and stopper tokens select with-agents",
+      "cell": "S1 spaced target and stopper tokens select with-agents"
+    },
+    {
+      "name": "the shutdown handoff accepts a normalized token instead of its exact bytes",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "    return parsed.kind === \"record\" && parsed.record.token === process.token ? parsed.record : undefined;",
+      "replace": "    return parsed.kind === \"record\" ? parsed.record : undefined;",
+      "expectRed": "S4 malformed target token \"trailing \" spares agents",
+      "cell": "S4 malformed target token \"trailing \" spares agents"
     }
   ]
 }

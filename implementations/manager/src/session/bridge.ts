@@ -24,6 +24,7 @@ import {
   EpEnvelopeError, openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame,
   type SessionGrant, type SessionRail, type AttachSession, type TerminalFrame,
 } from "@cotal-ai/core";
+import { rejectionText } from "../rejection-text.js";
 
 /** The reference manager's terminal-cause vocabulary (the `end.reason` tokens it surfaces — a
  *  bounded subset of the generic §13.6 terminal-session `end` reason). `process-exit` = the child
@@ -259,7 +260,7 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
       p = decodeTerminalFrame(data);
     } catch (e) {
       droppedFrames++;
-      console.error(`! session ${opts.grant.sessionId}: dropped an undecodable caller frame #${droppedFrames} (${(e as Error).message})`);
+      console.error(`! session ${opts.grant.sessionId}: dropped an undecodable caller frame #${droppedFrames} (${rejectionText(e)})`);
       return;
     }
     switch (p.k) {

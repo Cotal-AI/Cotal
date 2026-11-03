@@ -3,7 +3,7 @@
     "packages/workspace/smoke/pid-identity.smoke.ts"
   ],
   "guard": "pinned teardown refuses reused pids and torn pins; win32 launches write a creation-time pin; a legacy live record warns and remains signalable only when no sibling pin exists",
-  "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+  "command": "pnpm --filter @cotal-ai/workspace... build > /dev/null && pnpm exec tsx packages/workspace/smoke/pid-identity.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/pid-identity.json",
   "why": [
     "M1 breaks the shared verdict (the mismatch comparison in verifyIdentityPin) and must redden",
@@ -24,20 +24,20 @@
     "M4 RESTORES THE WRITE SKIP: writeIdentityPin returns without creating a sibling even when a",
     "token exists. That is the Windows steady state the issue named. F2 must red.",
     "",
-    "ALL OF THEM RUN THE CLI-LIB-BACKED SUITE, so they build first (implementations/cli resolves to dist/)",
-    "and rebuild in afterRestore - git cannot recover a gitignored dist compiled from the mutant."
+    "Each proof command builds workspace and its dependencies, including on a clean checkout.",
+    "Invoke the suite directly: smoke:pid-identity also builds and would repeat that work.",
+    "afterRestore rebuilds workspace because git cannot recover a compiled mutant in ignored dist."
   ],
   "mutations": [
     {
       "name": "M1 the shared verdict stops reporting mismatch (verifyIdentityPin folded to match)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  return live === record.token ? { kind: \"match\" } : { kind: \"mismatch\", liveToken: live };",
-      "replace": "  return { kind: \"match\" };",
+      "find": "  if (live !== record.token) return { kind: \"mismatch\", liveToken: live };\n",
+      "replace": "",
       "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "cell": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "note": "The one comparison the whole design turns on. Folding it to match makes every pinned record pass verification, which is precisely the bare-pid behaviour the issue forbids; A1 goes red the moment the signal is sent.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M3 win32 identity token is undefined again (the #1437 reader defect)",
@@ -47,30 +47,27 @@
       "expectRed": "F1 win32 identity uses the creation-time reader, not undefined",
       "cell": "F1 win32 identity uses the creation-time reader, not undefined",
       "note": "The Windows reader branch must not fold to undefined. F1 injects a FILETIME reader and names win32; returning undefined is the pre-fix processStartToken behaviour.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M4 writeIdentityPin never writes a sibling (the #1437 pin-absent defect)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));",
+      "find": "  writePrivateRecord(identityPinPath(pidfilePath), formatRecord(rec));",
       "replace": "  return;",
       "expectRed": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
       "cell": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
       "note": "Restores the write skip that made every Windows record unpinned. F2 reds when the sibling is absent after a win32-capable launch.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M5 the bridge pin never reaches the pin path (the #1238 bridge-pin step removed)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "      renameSync(bridgeTemp, pinPath);\n      onStep(\"bridge-pin\");\n",
+      "find": "      replace(bridgeTemp, pinPath);\n      onStep(\"bridge-pin\");\n",
       "replace": "      onStep(\"bridge-pin\");\n",
       "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "note": "Without the bridge, the crash planted at bridge-pin leaves the OLD single-line pin, so G2's two-line check fails. The same mutant would commit the NEW pid beside the OLD pin, a torn pairing, which is what G3 would read next.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M6 the bridge pin drops the old record's line (#1238)",
@@ -80,19 +77,163 @@
       "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "note": "With only the NEW line in the bridge, the OLD pid the pidfile still names has no line of its own, so G2 reads torn-pairing instead of match: the old record would lose its check for the length of the window.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M7 the pidfile is written in place during temporaries, never to a temporary (#1238)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "    writeFileSync(pidTemp, String(pid));\n",
-      "replace": "    writeFileSync(pidfilePath, String(pid));\n",
+      "find": "    create(pidTemp, String(pid));\n",
+      "replace": "    writePrivateRecord(pidfilePath, String(pid));\n",
       "expectRed": "G0 a first publish with no injection leaves a complete, matching record",
       "cell": "G0 a first publish with no injection leaves a complete, matching record",
-      "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then renameSync(pidTemp, pidfilePath) throws ENOENT since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then the pidfile rename (replace(pidTemp, pidfilePath)) throws ENOENT, which it never retries, since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M8 a token with spaces is refused again (the #3924 two-field parse)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const token = trimmed.slice(gap + 1);\n",
+      "replace": "  const token = /\\s/.test(trimmed.slice(gap + 1)) ? \"\" : trimmed.slice(gap + 1);\n",
+      "expectRed": "P1 a start token with spaces (macOS lstart) reads back as a record",
+      "cell": "P1 a start token with spaces (macOS lstart) reads back as a record",
+      "note": "Restores the pre-fix rule that a record is exactly two whitespace-separated fields: a macOS lstart token reads as unattributable, which is what made the manager fail its own pin at boot and cotal down refuse every component on a Mac. P3 also reds on macOS; P1 is named because it reds on every platform.",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M9 the token's own spacing is collapsed (a padded day no longer matches the live token)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const token = trimmed.slice(gap + 1);\n",
+      "replace": "  const token = trimmed.slice(gap + 1).replace(/\\s+/g, \" \");\n",
+      "expectRed": "P2 a padded one-digit day keeps its double space byte for byte",
+      "cell": "P2 a padded one-digit day keeps its double space byte for byte",
+      "note": "The live token from ps keeps the double space before a one-digit day, so a parser that normalises spacing would read a pin that never matches its own process for the first nine days of every month.",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M10 the single-record parser accepts multiple pin lines",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  if (/[\\r\\n]/.test(trimmed)) return { kind: \"unattributable\", raw: trimmed };\n",
+      "replace": "",
+      "expectRed": "P4 multiple pin lines are not a single identity record",
+      "cell": "P4 multiple pin lines are not a single identity record",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M11 the Windows reader stops reaching its native binding",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const out = read(pid);",
+      "replace": "  const out = undefined;",
+      "expectRed": "F7 win32 creation preserves every FILETIME digit through its reader",
+      "cell": "F7 win32 creation preserves every FILETIME digit through its reader",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M12 invalid Windows pids reach the native binding",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return undefined;",
+      "replace": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n",
+      "expectRed": "F8 invalid Windows pids never reach the native reader",
+      "cell": "F8 invalid Windows pids never reach the native reader",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M13 Windows creation FILETIME is rounded through Number",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const out = read(pid);",
+      "replace": "  const raw = read(pid);\n  const out = raw === undefined ? undefined : String(Number(raw));",
+      "expectRed": "F7 win32 creation preserves every FILETIME digit through its reader",
+      "cell": "F7 win32 creation preserves every FILETIME digit through its reader",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M14 a broken Windows binding is silently treated as an unreadable pid",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const out = read(pid);",
+      "replace": "  let out: string | undefined;\n  try { out = read(pid); } catch { return undefined; }",
+      "expectRed": "F10 a broken Windows binding throws without retry",
+      "cell": "F10 a broken Windows binding throws without retry",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M15 an unavailable Windows identity is retried",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  const out = read(pid);",
+      "replace": "  const out = read(pid) ?? read(pid);",
+      "expectRed": "F9 an unavailable Windows identity stays unverified without retry",
+      "cell": "F9 an unavailable Windows identity stays unverified without retry",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M16 oversized Windows pids reach the native binding",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return undefined;",
+      "replace": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n  if (!Number.isInteger(pid) || pid <= 0) return undefined;",
+      "expectRed": "F12 an oversized Windows pid never reaches the native reader",
+      "cell": "F12 an oversized Windows pid never reaches the native reader",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M17 malformed Windows native output becomes a pin token",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  return typeof out === \"string\" ? parseWin32CreationToken(out) : undefined;",
+      "replace": "  return out;",
+      "expectRed": "F11 malformed Windows native output is not a token",
+      "cell": "F11 malformed Windows native output is not a token",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M18 local stop accepts a request without the private nonce",
+      "file": "packages/workspace/src/local-stop.ts",
+      "find": "!timingSafeEqual(Buffer.from(row.token, \"hex\"), Buffer.from(secret, \"hex\")) || ",
+      "replace": "",
+      "expectRed": "H1 a local stop without its private nonce cannot invoke cleanup",
+      "cell": "H1 a local stop without its private nonce cannot invoke cleanup",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M19 local stop ignores its target generation",
+      "file": "packages/workspace/src/local-stop.ts",
+      "find": "row.target !== formatRecord(target) || typeof row.token",
+      "replace": "typeof row.token",
+      "expectRed": "H2 a local stop for another process generation cannot invoke cleanup",
+      "cell": "H2 a local stop for another process generation cannot invoke cleanup",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M20 local stop ignores the reservation inode",
+      "file": "packages/workspace/src/local-stop.ts",
+      "find": "reservation(marker) !== row.reservation || ",
+      "replace": "",
+      "expectRed": "H3 a local stop with a replaced reservation cannot invoke cleanup",
+      "cell": "H3 a local stop with a replaced reservation cannot invoke cleanup",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M21 local stop accepts a stale stopper identity",
+      "file": "packages/workspace/src/local-stop.ts",
+      "find": "stopper.kind !== \"record\" || assertRecordIdentity(stopper.record).kind !== \"match\"",
+      "replace": "stopper.kind !== \"record\"",
+      "expectRed": "H4 a local stop with a stale stopper identity cannot invoke cleanup",
+      "cell": "H4 a local stop with a stale stopper identity cannot invoke cleanup",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M22 local stop accepts oversized metadata",
+      "file": "packages/workspace/src/local-stop.ts",
+      "find": "    if (length > 4096) throw new Error(\"local stop metadata exceeds 4096 bytes\");\n",
+      "replace": "",
+      "expectRed": "H5 oversized local stop metadata cannot invoke cleanup",
+      "cell": "H5 oversized local stop metadata cannot invoke cleanup",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
+    },
+    {
+      "name": "M23 local cleanup exits before consuming its request",
+      "file": "packages/workspace/src/local-stop.ts",
+      "find": "      verified = true;\n",
+      "replace": "      onStop();\n      verified = true;\n",
+      "expectRed": "H8 a synchronous cleanup consumes its one-shot request before exiting",
+      "cell": "H8 a synchronous cleanup consumes its one-shot request before exiting",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     }
   ]
 }

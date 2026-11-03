@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import ts from "typescript";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
   chatStream, dmStream, dlvStream, inboxStream, taskStream,
@@ -58,7 +59,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     restore: () => one("restore", { restore: { operation: "initiate", stream: `CHAT_${space}` } }),
     delivery: () => one("delivery"), "membership-rw": () => one("membership-rw"),
     probe: () => one("probe"), "channel-writer": () => one("channel-writer"), "channel-purger": () => one("channel-purger"),
-    teardown: () => one("teardown"),
+    teardown: () => one("teardown"), "issued-store-recreate": () => one("issued-store-recreate"),
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
@@ -76,6 +77,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     },
     "goal-writer": () => one("goal-writer", { goalWriter: { endpoint: "manager" } }),
     "session-caller": () => one("session-caller", { sessionCaller: { endpoint: "manager", sessionId: session, epoch: 1 } }),
+    "dm-reader": () => one("dm-reader"),
     "session-serving": () => one("session-serving", { sessionServing: { endpoint: "manager", sessionId: session, epoch: 1 } }),
     "session-ledger": () => one("session-ledger"),
     "run-driver": () => one("run-driver", { runDriver: run }),
@@ -83,6 +85,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "run-operator": () => one("run-operator", { runOperator: { endpoint: "manager", takeoverId: "take0001" } }),
     "endpoint-evictor": () => one("endpoint-evictor"),
     issuer: () => one("issuer"),
+    "registry-reader": () => one("registry-reader"),
     "run-admitter": () => one("run-admitter", { runAdmitter: { endpoint: "manager", runId: "census-run" } }),
     "transfer-writer": () => one("transfer-writer", { transferWriter: { instanceId: instance, hex: "0".repeat(64) } }),
     "transfer-reader": () => one("transfer-reader", { transferReader: { instanceId: instance } }),
@@ -96,7 +99,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "environment-manager-executor": () => environment("environment-manager-executor", `manager_exec_${instance}`),
     "environment-manager-goal-writer": () => environment("environment-manager-goal-writer", `manager_goal_${instance}`),
   };
-  const nonProfiles = ["membership-observer", "connection-evictor"];
+  const nonProfiles = ["membership-observer", "account-census", "connection-evictor"];
   assert.deepEqual(Object.keys(producers).sort(), Object.keys(CREDENTIAL_LIFETIMES).filter((kind) => !nonProfiles.includes(kind)).sort(), "every Profile must have a producer");
   for (const produce of Object.values(producers)) produce();
   const owner = deriveOwnerToken("census-prototype-secret".repeat(2), "view-owner");
@@ -119,14 +122,18 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         return sessionClaim;
       },
     );
+    if (view === "service-endpoint") {
+      assert.throws(() => produce(token, principal.connId, `N${"A".repeat(55)}_1`), /native service authorization/);
+      continue; // Service authority never becomes an ordinary core Profile.
+    }
     if (view === "manager-service") {
-      assert.throws(() => produce(token, principal.connId), /typed material exchange/);
+      assert.throws(() => produce(token, principal.connId, `N${"A".repeat(55)}_1`), /typed material exchange/);
       continue; // Explicit refused view, represented separately from Profile in the report.
     }
-    rows.push({ profile: view, variant: `callout-view:${view}`, permissions: await produce(token, principal.connId), producer: "calloutPermissions" });
+    rows.push({ profile: view, variant: `callout-view:${view}`, permissions: await produce(token, principal.connId, `N${"A".repeat(55)}_1`), producer: "calloutPermissions" });
   }
   assert.deepEqual(rows.filter((row) => row.producer === "calloutPermissions").map((row) => row.variant).sort(),
-    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service").map((view) => `callout-view:${view}`).sort(),
+    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service" && view !== "service-endpoint").map((view) => `callout-view:${view}`).sort(),
     "every generic callout view must have a producer");
   return rows;
 }
@@ -237,7 +244,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller"]);
+export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "dm-reader"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a
@@ -247,11 +254,13 @@ export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "o
  */
 export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "supervisor", "operator", "provisioner", "deprovisioner", "admin", "purger", "probe", "delivery",
-  "teardown", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
+  "teardown", "issued-store-recreate", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
+  // The registry's reads: the evidence store stream-wide, so never a peer's.
+  "registry-reader",
   // Manager-only infrastructure duties, like remote-manager. This classification is not
   // an isolation proof; host admission and the child UID boundary remain separate requirements.
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
@@ -281,6 +290,35 @@ export function shippedSources(root: string): string[] {
   walk(join(root, "bin"));
   if (found.length === 0) throw new Error("the shipped-source scan found no files; the corpus is wrong");
   return found;
+}
+
+/** Detect literal rail spelling in executable syntax, not comments or JSDoc. Parsed string and
+ *  template text also catches escaped characters without mistaking comment-like string content
+ *  for actual comments. This remains a literal census, not a data-flow proof. */
+export function hasIssuedRailLiteral(source: string): boolean {
+  const file = ts.createSourceFile("rail.ts", source, ts.ScriptTarget.Latest, true);
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if ((ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node) || ts.isRegularExpressionLiteral(node))
+      && /ep\.v1/.test(node.text)) found = true;
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+/** The same closed shipped-source inventory used by the full census and its focused gate. */
+export function issuedRailSourceCensus(root: string): { files: string[]; unexpected: string[] } {
+  const builders = new Set(["packages/core/src/endpoint-subjects.ts", "packages/core/src/endpoint-grants.ts",
+    "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts",
+    // The registry's coverage projection labels the issued rail but builds its requests through
+    // epRequestSubject; its output schema names the same rail in an enum. Neither builds a grant.
+    "packages/core/src/endpoint-coverage.ts", "packages/core/src/registry-contract.ts"]);
+  const files = shippedSources(root);
+  const unexpected = files.filter((file) => relative(root, file).split("\\").join("/") !== "extensions/connector-core/src/docs-bundle.generated.ts"
+    && hasIssuedRailLiteral(readFileSync(file, "utf8")))
+    .map((file) => relative(root, file).split("\\").join("/")).filter((file) => !builders.has(file)).sort();
+  return { files, unexpected };
 }
 
 /** Whether a permission set lets its holder request `$SYS.REQ.USER.INFO`, the server's own view

@@ -1,0 +1,3 @@
+# A root whose stack journal recorded a broker, with no registration, is refused as not started
+# by whoami, ps, who, endpoints and status instead of being given the default broker address.
+smoke:target-recorded-stack

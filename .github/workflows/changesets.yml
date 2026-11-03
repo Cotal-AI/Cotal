@@ -1,320 +1,371 @@
 name: Changesets
+run-name: "${{ (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'chore(release): version packages')) && 'Publish packages' || 'Prepare release versions' }}"
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      snapshot:
-        description: "Snapshot release: publish <version>-<tag>-<datetime> under this npm dist-tag (e.g. next). Leave empty for the normal release flow."
-        type: string
-        default: ""
 
-# The release path, so a run is never superseded: a cancelled version run is a merge that silently
-# staged nothing, badged the same as a run somebody tidied up. The short form used here before was
-# not neutral, it selected `queue: single`, which holds ONE pending run and evicts it when the next
-# merge arrives. That is the #976 defect on the workflow that publishes.
-#
-# Neither key is conditional because there is no `pull_request` trigger to distinguish: an
-# expression here would carry a branch no event can reach.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-  queue: max
+permissions:
+  contents: read
+
+# A push that leaves changesets on main refreshes the version PR and packs its head with the native
+# binaries, so the release is ready before anyone asks for it. Merging the version PR publishes:
+# that push finds the pack made from the same tree and only uploads it.
+# Version preparation has its own queue. Only staged releases hold the publisher through
+# installation and latest promotion. Direct verification runs outside that queue.
+
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+# DO_NOT_TRACK also reaches the suites that drop every COTAL_ variable from a child's env.
+env:
+  DO_NOT_TRACK: 1
 
 jobs:
-  seat-native-linux-x64:
-    name: seat native (linux-x64)
-    timeout-minutes: 15
+  select:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      staged: ${{ steps.release-mode.outputs.staged }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Build host native
-        run: pnpm --filter @cotal-ai/seat build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: seat-native-linux-x64
-          path: packages/seat/build/Release/linux-x64/peercred.node
-          if-no-files-found: error
-          retention-days: 7
+          node-version: 24
+      - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
+      - name: Freeze release mode
+        id: release-mode
+        env:
+          STAGED_RELEASE: ${{ vars.COTAL_STAGED_RELEASE == 'true' }}
+        run: printf 'staged=%s\n' "$STAGED_RELEASE" >> "$GITHUB_OUTPUT"
+      - uses: changesets/action/select-mode@v2.1.2
+        id: select
+      - name: Require versioned packages before publication
+        if: github.event_name == 'workflow_dispatch' && steps.select.outputs.mode == 'version'
+        run: |
+          printf '%s\n' 'Merge the Changesets version PR before publishing.'
+          exit 1
 
-  seat-native-linux-arm64:
-    name: seat native (linux-arm64)
-    timeout-minutes: 15
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Build host native
-        run: pnpm --filter @cotal-ai/seat build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: seat-native-linux-arm64
-          path: packages/seat/build/Release/linux-arm64/peercred.node
-          if-no-files-found: error
-          retention-days: 7
-
-  version:
-    if: github.event_name == 'push' || inputs.snapshot == ''
-    needs: [seat-native-linux-x64, seat-native-linux-arm64]
-    timeout-minutes: 35
+  version-pr:
+    needs: select
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
     runs-on: ubuntu-latest
-    environment: npm-publish
+    concurrency:
+      group: ${{ github.workflow }}-version-pr
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
       pull-requests: write
-      id-token: write
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
         with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - uses: actions/download-artifact@v4
+          cache: true
+      - uses: actions/setup-node@v6
         with:
-          name: seat-native-linux-x64
-          path: ${{ runner.temp }}/seat-native-linux-x64
-      - uses: actions/download-artifact@v4
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: changesets/action/version@v2.1.2
         with:
-          name: seat-native-linux-arm64
-          path: ${{ runner.temp }}/seat-native-linux-arm64
+          github-token: ${{ secrets.GH_PAT }}
+          script: pnpm ci:version
+          pr-title: 'chore(release): version packages'
+          commit-message: 'chore(release): version packages'
+      # The action reports only the PR number. This job's queue keeps the branch still until it is read.
+      - name: Read the version PR head
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf 'sha=%s\n' "$(gh api "repos/$GITHUB_REPOSITORY/commits/changeset-release/main" --jq .sha)" >> "$GITHUB_OUTPUT"
 
-      - name: Create versions and publish
-        id: changesets
-        uses: changesets/action@v1
+  # Built from the pushed commit while the version PR is written. Versioning changes no native source.
+  native:
+    needs: select
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
         with:
-          publish: pnpm ci:publish
-          version: pnpm ci:version
-          title: "chore(release): version packages"
-          commit: "chore(release): version packages"
-          setupGitUser: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
-          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --filter @cotal-ai/seat build:native
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-${{ matrix.arch }}
+          path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
 
-      # Keep the "version packages" PR out of the generated release notes (excluded via .github/release.yml).
-      - name: Label the release PR
-        if: steps.changesets.outputs.pullRequestNumber
-        run: gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --add-label skip-changelog
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+  workspace-native:
+    needs: select
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
 
-      # Gate: verify that EVERY package in the lockstep group reached the registry before cutting
-      # a Release. The old check asked only about `cotal-ai`; if that single package published and
-      # a sibling did not, the Release was cut and the announcement went out for a version a consumer
-      # could not resolve. The closure gate polls the whole fixed group and distinguishes registry
-      # propagation lag from a genuine partial publish (#1286).
-      - name: Verify publish closure
-        id: closure-gate
-        if: success() && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          version=$(git show "$GITHUB_SHA:bin/package.json" | jq -r .version)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          set +e
-          node scripts/verify-publish-closure.mjs "$version"
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
-            echo "closure_ok=true" >> "$GITHUB_OUTPUT"
-          elif [ "$rc" -eq 1 ]; then
-            echo "PARTIAL PUBLISH — failing the job."
-            exit 1
-          elif [ "$rc" -eq 2 ]; then
-            # The quiet skips end the step here rather than falling out of the `fi`. A version-PR
-            # push that publishes nothing must not red the job, and leaving that outcome to be
-            # decided by whatever follows made it a property of the whole script instead of the
-            # arm: a later line, or a trap installed above, silently turned the skip into a
-            # failure with the branch itself still reading as correct (#1518).
-            echo "UNSETTLED — the registry has not converged. Skipping the Release."
-            exit 0
-          elif [ "$rc" -eq 3 ]; then
-            echo "NONE — this push published nothing. Skipping the Release."
-            exit 0
-          else
-            echo "Unexpected exit code $rc from verify-publish-closure.mjs — failing the job."
-            exit 1
-          fi
-
-      # Presence is not installability: npm install reads the packument, which can lag the
-      # per-version endpoint the closure gate reads, so a closed closure can still fail
-      # `npm i -g cotal-ai@<version>` with ETARGET on a pinned sibling (#1412). Install the version
-      # from the registry into a scratch prefix and run the binary, polling until a deadline, before
-      # anything is announced. A version that never installs reds the job and cuts no Release.
-      - name: Verify the release installs
-        id: install-gate
-        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'
-        run: |
-          node scripts/verify-release-installable.mjs "${{ steps.closure-gate.outputs.version }}"
-          echo "install_ok=true" >> "$GITHUB_OUTPUT"
-
-      # Cut the GitHub Release only after the full closure gate passed and that version installed
-      # from the registry and ran. The closure gate exits non-zero on a partial publish, an unsettled
-      # registry, or a version nothing serves; the install gate fails when `cotal-ai@<version>` does
-      # not install and run before its deadline.
-      # Neither gate can tell which push published that version: a publishing run that ends UNSETTLED,
-      # or whose install gate fails, leaves the Release to a later push that published nothing. So the
-      # Release never targets $GITHUB_SHA. It targets the oldest commit on main's first-parent line
-      # whose bin/package.json carries the version, which is the tree the packages were built from,
-      # even when the version was reverted and carried again later. It refuses when that commit cannot
-      # be found or when any part of the history cannot be read (#1820).
-      - name: Tag and cut the GitHub Release on publish
-        id: release-step
-        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          version="${{ steps.closure-gate.outputs.version }}"
-          tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists — nothing to do."
-            exit 0
-          fi
-          # Each read is its own assignment so `bash -e` fails the step on a failed traversal or
-          # manifest read. Inside `git show | jq` a failed read gives jq empty input and passes as a
-          # different version.
-          commits=$(git log --first-parent --reverse --format=%H "$GITHUB_SHA" -- bin/package.json)
-          target=""
-          for c in $commits; do
-            manifest=$(git show "$c:bin/package.json")
-            carried=$(printf '%s\n' "$manifest" | jq -r .version)
-            if [ "$carried" = "$version" ]; then
-              target=$c
-              break
-            fi
-          done
-          if [ -z "$target" ]; then
-            echo "Cannot resolve the commit that first carried $version: refusing to cut the Release."
-            exit 1
-          fi
-          echo "Release $tag targets $target, the commit that first carried $version."
-          notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f tag_name="$tag" -f target_commitish="$target" --jq .body)
-          # The generated notes are merged-PR *titles* only. Prepend the changeset summaries (the actual
-          # per-change descriptions changesets wrote into the package CHANGELOGs) so a release reads as
-          # more than a list of one-liners. Best-effort: the package is already published, so a hiccup in
-          # this cosmetic step must never block cutting the Release (|| true).
-          detail=$(node scripts/release-notes-detail.mjs "$version" 2>/dev/null || true)
-          {
-            printf '**Cotal %s is out!**\n\nGrab it: `npm i cotal-ai@%s`\n\n' "$version" "$version"
-            if [ -n "$detail" ]; then printf '%s\n\n' "$detail"; fi
-            printf '%s\n' "$notes"
-          } > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$tag" \
-            --target "$target" \
-            --title "$tag" \
-            --latest \
-            --notes-file "$RUNNER_TEMP/release-notes.md"
-          echo "Created GitHub Release $tag."
-
-  # Post-publish installability probe (#1412). Pack the workspace cotal-ai package, extract the
-  # tarball, verify the bin entry exists, and run the binary (`--version`, `--help`). A broken
-  # tarball or a version mismatch reds this job. The probe is a LEAF job: it runs after `version`
-  # completes, so `gh release create` has already run, and nothing depends on this job. It reds the
-  # overall workflow but does NOT gate the GitHub Release (which is gated by the closure gate from
-  # #1502 and the registry install gate). It validates the SHAPE of cotal-ai's packed artifact
-  # (structure, binary presence, startup) and each runtime sibling's own tarball entry points. The
-  # binary still runs against workspace-resolved siblings, and the probe does not cover registry
-  # propagation or native assets.
-  install-probe:
-    if: github.event_name == 'push' || inputs.snapshot == ''
-    needs: [version]
-    timeout-minutes: 10
+  # Packs the version PR head. The publish job of the version PR's merge consumes this pack.
+  pack:
+    needs: [select, version-pr, native, workspace-native]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
         with:
-          node-version: 22
-          cache: pnpm
+          ref: ${{ needs.version-pr.outputs.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Require the version PR head made from this commit
+        run: test "$(git rev-parse HEAD^)" = "$GITHUB_SHA"
+      - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: changesets/action/select-mode@v2.1.2
+        id: plan
+      - name: Require a complete publish plan
+        if: steps.plan.outputs.mode != 'publish'
+        run: exit 1
+      # Direct publication is the default. Enable only after the publisher owner confirms
+      # independent dist-tag authority. v2.1.2 carries staging tags in its versioned plan schema.
+      - uses: actions/download-artifact@v4
+        if: needs.select.outputs.staged == 'true'
+        with:
+          artifact-ids: ${{ steps.plan.outputs.publish-plan-artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/selected-plan
+      - name: Stage the complete publish plan
+        if: needs.select.outputs.staged == 'true'
+        run: node scripts/stage-release-plan.mjs stage "$RUNNER_TEMP/selected-plan/publish-plan.json" "$RUNNER_TEMP/publish-plan.json"
+      - uses: actions/upload-artifact@v4
+        id: staged-plan
+        if: needs.select.outputs.staged == 'true'
+        with:
+          name: staged-publish-plan
+          path: ${{ runner.temp }}/publish-plan.json
+          if-no-files-found: error
+      - run: pnpm --filter '!./examples/**' -r build
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-native-*'
+          path: ${{ runner.temp }}/native
+      - name: Assemble Cotal's native binaries
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+        env:
+          NATIVE_SOURCE: ${{ github.sha }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/native/seat-native-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/native/seat-native-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/native/seat-native-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native/workspace-native-darwin-arm64
+      - uses: changesets/action/pack@v2.1.2
+        id: pack
+        with:
+          publish-plan-artifact-id: ${{ steps.staged-plan.outputs.artifact-id || steps.plan.outputs.publish-plan-artifact-id }}
+      # The staging mode travels with the pack, so the publishing run cannot read a later variable edit.
+      - name: Record the release candidate
+        env:
+          PACK: ${{ steps.pack.outputs.pack-dir-artifact-id }}
+          STAGED: ${{ needs.select.outputs.staged }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/candidate"
+          printf '{"tree":"%s","pack":"%s","staged":"%s"}\n' "$(git rev-parse 'HEAD^{tree}')" "$PACK" "$STAGED" > "$RUNNER_TEMP/candidate/candidate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/candidate/candidate.json
+          if-no-files-found: error
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
-
-      - name: Run install probe
-        run: node scripts/post-publish-install-probe.mjs
-
-  # Snapshot release — publishes <version>-<tag>-<datetime> under the given npm dist-tag.
-  # Bound to the npm-publish Environment; the operator's deployment branch policy controls
-  # which refs can request an OIDC token. If the policy allows only main, snapshots from
-  # other branches are refused by the Environment gate before the OIDC exchange.
-  snapshot:
-    if: github.event_name == 'workflow_dispatch' && inputs.snapshot != ''
-    needs: [seat-native-linux-x64, seat-native-linux-arm64]
-    timeout-minutes: 20
+  # A merge of the version PR has the main commit whose push run packed the version PR head as its
+  # parent. A commit publishes only if this workflow's push run on main for its parent packed this
+  # commit's tree. Every other push finds nothing here and publishes nothing.
+  release:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: npm-publish
     permissions:
       contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.find.outputs.run }}
+      pack: ${{ steps.find.outputs.pack }}
+      staged: ${{ steps.find.outputs.staged }}
+    steps:
+      - name: Find the pack made from this tree
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          commit=$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA" --jq '"\(.parents[0].sha) \(.commit.tree.sha)"')
+          parent=${commit% *}
+          tree=${commit#* }
+          run=$(gh run list --workflow changesets.yml --event push --branch main --commit "$parent" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          candidate="$RUNNER_TEMP/candidate/candidate.json"
+          if [ -n "$run" ] && gh run download "$run" --name release-candidate --dir "$RUNNER_TEMP/candidate" && [ "$(jq -r .tree "$candidate")" = "$tree" ]; then
+            jq -r --arg run "$run" '"run=\($run)", "pack=\(.pack)", "staged=\(.staged)"' "$candidate" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            printf 'No push run on main packed the tree of %s.\n' "$GITHUB_SHA"
+            exit 1
+          fi
+
+  # Select sees unpublished versions on main, but no pack matches this tree. Say so instead of
+  # publishing nothing quietly.
+  unprepared:
+    needs: [select, release]
+    if: needs.select.outputs.mode == 'publish' && needs.release.outputs.pack == ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a pack for unpublished versions
+        run: |
+          printf '%s\n' 'Main holds unpublished versions, but no push run packed this tree. Merge the version PR after its push run finishes, or re-run the failed jobs of the run that published it.'
+          exit 1
+
+  publish:
+    needs: release
+    if: needs.release.outputs.pack != ''
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    concurrency:
+      group: ${{ github.workflow }}-publish
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      staged: ${{ needs.release.outputs.staged }}
+    permissions:
+      contents: write
+      actions: read
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
         with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: seat-native-linux-x64
-          path: ${{ runner.temp }}/seat-native-linux-x64
-      - uses: actions/download-artifact@v4
+          artifact-ids: ${{ needs.release.outputs.pack }}
+          run-id: ${{ needs.release.outputs.run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/packed
+      # The publish action reads its pack from this run.
+      - uses: actions/upload-artifact@v4
+        id: packed
         with:
-          name: seat-native-linux-arm64
-          path: ${{ runner.temp }}/seat-native-linux-arm64
+          name: changeset-pack
+          path: ${{ runner.temp }}/packed
+          if-no-files-found: error
+      - name: Validate the packed closure and promotion order
+        if: needs.release.outputs.staged == 'true'
+        run: node scripts/stage-release-plan.mjs check "$RUNNER_TEMP/packed/publish-plan.json" > "$RUNNER_TEMP/promote-specs.txt"
+      # One GitHub Release per version, not one per package: the fixed group publishes every package
+      # at the same version, so per-package releases are the same change listed many times over.
+      - uses: changesets/action/publish@v2.1.2
+        id: publish
+        with:
+          pack-dir-artifact-id: ${{ steps.packed.outputs.artifact-id }}
+          create-github-releases: false
+          push-git-tags: true
 
-      - name: Version snapshot
-        run: pnpm changeset version --snapshot ${{ inputs.snapshot }}
-
-      - name: Preflight, build, assemble natives, and publish
-        env:
-          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
-          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+      - name: Verify published closure and registry installation
+        if: steps.publish.outputs.published == 'true' && needs.release.outputs.staged == 'true'
         run: |
-          node scripts/preflight-npm-publish.mjs
-          pnpm build
-          node scripts/seat-assemble-natives.mjs
-          pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}
+          version=$(node --print "require('./bin/package.json').version")
+          node scripts/verify-publish-closure.mjs "$version" --deadline-ms=1500000
+          node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
+      - name: Promote verified packages to latest
+        if: steps.publish.outputs.published == 'true' && needs.release.outputs.staged == 'true'
+        run: |
+          while IFS= read -r spec; do
+            npm dist-tag add "$spec" latest
+          done < "$RUNNER_TEMP/promote-specs.txt"
+
+  verify-install:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      # The census waits as long as the install check after it. npm has taken over twenty minutes
+      # to serve an accepted cotal-ai, and a census that gave up at its ten-minute default failed
+      # this job and skipped the Release for a version that was only late (#3285).
+      - name: Verify direct closure and registry installation
+        if: needs.publish.outputs.staged != 'true'
+        run: |
+          version=$(node --print "require('./bin/package.json').version")
+          node scripts/verify-publish-closure.mjs "$version" --deadline-ms=1500000
+          node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
+      # The notes lead with the changeset summaries (what changed, as written in the package
+      # changelogs) and end with GitHub's generated list of merged PRs since the previous version
+      # release, which .github/release.yml keeps the version PR out of. GH_PAT rather than the job
+      # token, so the Release fires the release-published workflows (the Discord announcement).
+      - name: Cut the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          version=$(node --print "require('./bin/package.json').version")
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+          previous=$(gh release list --limit 200 --json tagName --jq 'map(select(.tagName | startswith("v")))[0].tagName // empty')
+          notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" ${previous:+-f previous_tag_name="$previous"} --jq .body)
+          # GitHub refuses a release body over 125000 characters (0.101.0 hit it with 266 merged
+          # PRs); the changeset detail gets what the generated PR list leaves, minus a margin.
+          budget=$((120000 - $(printf '%s' "$notes" | wc -c)))
+          # Summary failures stay visible but do not block the generated release notes.
+          if ! detail=$(node scripts/release-notes-detail.mjs "$version" "--max-bytes=$budget"); then
+            echo "::warning::Changeset summaries could not be generated for $version; publishing generated release notes only."
+            detail=""
+          fi
+          {
+            printf 'Install or update: `npm i -g cotal-ai@%s`\n\n' "$version"
+            if [ -n "$detail" ]; then printf '%s\n' "$detail"; fi
+            printf '\n%s\n' "$notes"
+          } > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --latest --notes-file "$RUNNER_TEMP/release-notes.md"

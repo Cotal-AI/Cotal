@@ -1,0 +1,2 @@
+# A provisioned `cotal join` printed each channel post twice, once per delivery path (#4090).
+smoke:join-durable-dedup:live

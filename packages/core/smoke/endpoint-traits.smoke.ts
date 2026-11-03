@@ -40,8 +40,9 @@ import {
   type SignerAnchor, type AnchorResolver, type TraitDefinition,
   type GuardCallSeam, type EpTraitEnforcement, type EpGovernedSurface,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
-  type EpCommandDef, type EpServeGrant, mintLifecycleUid, type EpIssuanceBarrier, type EpGateState, type EpServeContext,
+  type EpCommandDef, type EpServeGrant, type EpIssuanceBarrier, type EpServeContext,
 } from "../src/index.js";
+import { makeIssuanceGate, type IssuanceGate } from "./_issuance-gate.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -295,19 +296,12 @@ try {
   const kv = await openRecordsBucket(nc, SPACE, { create: true });
 
   const authority: ServiceNameAuthority = { authorize: (_n, owner) => ({ authorized: owner === "u_op", revision: 0 }) };
-  const gateStates = new Map<string, EpGateState>();
+  const gateStates = new Map<string, IssuanceGate>();
   const barrierFor = (endpoint: string, instanceId: string): EpIssuanceBarrier => {
     const key = `${endpoint}/${instanceId}`;
-    if (!gateStates.has(key)) gateStates.set(key, { space: SPACE, endpoint, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
-    const op = { opId: mintLifecycleUid(), kind: "registration" as const };
-    return {
-      observe: () => ({ ...gateStates.get(key)! }),
-      freeze: (rev) => { const g = gateStates.get(key)!; if (g.state !== "open" || g.revision !== rev) return null; gateStates.set(key, { ...g, state: "frozen", op, revision: rev + 1 }); return rev + 1; },
-      enumerate: () => [],
-      revoke: () => {},
-      evict: (holderPrincipals) => holderPrincipals.map(() => true),
-      reopen: (token, succ) => { const { op: _op, ...g } = gateStates.get(key)!; if (g.state !== "frozen" || g.revision !== token) return false; gateStates.set(key, { ...g, state: "open", generation: succ.generation, processEpoch: succ.processEpoch, registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision, revision: token + 1 }); return true; },
-    };
+    let gate = gateStates.get(key);
+    if (!gate) gateStates.set(key, gate = makeIssuanceGate({ space: SPACE, endpoint, lifecycleUid: instanceId }));
+    return gate.barrier;
   };
   // The trusted registrar wires the content-store reader; the governed set is pinned internally
   // to the canonical constant (no wiring argument to omit or narrow). A registration that strips
@@ -709,7 +703,7 @@ try {
       if (k !== "govern.whold" || duringHold !== undefined) return;
       const spec = await kv.get(`svc.whold.${IID_A}.spec`);
       if (!spec || spec.operation !== "PUT") return; // slot-take precedes the spec; wait for the promote
-      const g = gateStates.get(`whold/${IID_A}`)!;
+      const g = gateStates.get(`whold/${IID_A}`)!.coord();
       duringHold = await deregisterServiceInstance(kv, {
         endpoint: "whold", instanceId: IID_A, observeGeneration: () => g.generation,
       });
@@ -730,7 +724,7 @@ try {
       head.provisional = { instanceId: IID_A, generation: 0, commands: { work: [TRAIT_GUARDED] } };
       await kv.put("govern.wbehind", new TextEncoder().encode(JSON.stringify(head)));
     }
-    const liveGen = gateStates.get(`wbehind/${IID_A}`)!.generation;
+    const liveGen = gateStates.get(`wbehind/${IID_A}`)!.coord().generation;
     const behind = await deregisterServiceInstance(kv, {
       endpoint: "wbehind", instanceId: IID_A, observeGeneration: () => liveGen,
     });
@@ -787,7 +781,7 @@ try {
     const DC_AHEAD = register({ urn: "ai.cotal.wahead", revision: 1, attributes: [], events: [], commands: W_GOV.map((m) => ({ ...m })) });
     const aheadSpec: ServiceSpec = { endpoint: "wahead", owner: "u_op", clusterDigests: [DC_AHEAD], protocol: { v: 1 } };
     await regOn(kv, aheadSpec, IID_A);
-    const aheadLive = gateStates.get(`wahead/${IID_A}`)!.generation;
+    const aheadLive = gateStates.get(`wahead/${IID_A}`)!.coord().generation;
     {
       const head = await readHead("wahead");
       head.provisional = { instanceId: IID_A, generation: aheadLive + 1, commands: { work: [TRAIT_GUARDED] } };
@@ -821,7 +815,7 @@ try {
   await rejects("a governance slot-take that loses its CAS to a concurrent head write is a loud CONFLICT (definite no-write), never mislabeled unavailable",
     () => regOn(kvBump, w2Spec, IID_A), "conflict");
   c("the lost slot-take reopened the instance gate at its original coordinate (definite no-write abort)",
-    gateStates.get(`wpool2/${IID_A}`)!.state === "open");
+    gateStates.get(`wpool2/${IID_A}`)!.coord().state === "open");
   await regOn(kv, w2Spec, IID_A); // the retry re-reads the moved head and completes
   c("the conflicted registration's plain retry completes against the moved head", true);
 
@@ -834,7 +828,7 @@ try {
   const kvSpecFail = hookedKv({ beforeWrite: (k) => { if (k.startsWith("svc.wpool3.")) throw new Error("staged publish outage"); } });
   await rejects("a spec publish failure AFTER a governed slot-take aborts `unavailable` and leaves the gate frozen for reconciliation",
     () => regOn(kvSpecFail, { endpoint: "wpool3", owner: "u_op", clusterDigests: [DC_W3], protocol: { v: 1 } }, IID_A), "unavailable");
-  c("the failed registration's gate is FROZEN, not reopened", gateStates.get(`wpool3/${IID_A}`)!.state === "frozen");
+  c("the failed registration's gate is FROZEN, not reopened", gateStates.get(`wpool3/${IID_A}`)!.coord().state === "frozen");
   {
     const head = await readHead("wpool3");
     c("the failed registration's imposition stayed PROVISIONAL: no binding for a descriptor that never published (no phantom obligation)",

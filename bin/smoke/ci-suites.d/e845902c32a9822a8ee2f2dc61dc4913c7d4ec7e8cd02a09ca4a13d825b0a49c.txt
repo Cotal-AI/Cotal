@@ -1,0 +1,2 @@
+# A connected endpoint whose own DM inbox the broker lost stopped receiving DMs and never said why.
+smoke:dm-inbox-missing

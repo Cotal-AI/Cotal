@@ -1,15 +1,62 @@
-/** Whether operator output gets ANSI color. A set `FORCE_COLOR` is checked first, the order Node
- *  uses: `0` or `false` turns color off and any other value turns it on. Otherwise a non-empty
- *  `NO_COLOR` turns it off (no-color.org), and color follows whether stdout is a terminal. Read on
- *  every call, so a process that sets these after import is still honoured. */
-export function colorEnabled(): boolean {
-  const force = process.env.FORCE_COLOR;
-  if (force !== undefined) return force !== "0" && force !== "false";
-  if (process.env.NO_COLOR) return false;
-  return Boolean(process.stdout.isTTY);
+import { cachedPreferences, resolvePreference, type Preferences } from "./preferences.js";
+
+let colorDisabled = false;
+
+/** `--no-color`: no ANSI color for the rest of this process, whatever the environment says. It sets
+ *  no `NO_COLOR`, so the children a command starts keep their own color. Libraries that color
+ *  through `node:util` (the prompts) ask the terminal stream, or a set `FORCE_COLOR` before it, so
+ *  the streams report no color and `FORCE_COLOR` is dropped: a child is no longer forced into color. */
+export function disableColor(): void {
+  colorDisabled = true;
+  delete process.env.FORCE_COLOR;
+  for (const stream of [process.stdout, process.stderr]) {
+    if (!stream.isTTY) continue;
+    stream.getColorDepth = () => 1;
+    stream.hasColors = () => false;
+  }
 }
 
-const sgr = (code: string) => (s: string) => (colorEnabled() ? `\x1b[${code}m${s}\x1b[0m` : s);
+/** Whether operator output written to `stream` gets ANSI color. `--no-color` wins. Then the `color`
+ *  preference decides, through the one resolver `cotal config` shows: a set `FORCE_COLOR` (`0` or
+ *  `false` in any case is off, any other value on), a non-empty `NO_COLOR` (off), the saved
+ *  preference, and `auto`, where color follows whether `stream` is a terminal that is not
+ *  `TERM=dumb`, which terminfo defines as one without color. Read on every call, so a process that
+ *  sets these after import is still honoured. */
+export function colorEnabled(stream: NodeJS.WriteStream = process.stdout): boolean {
+  if (colorDisabled) return false;
+  const mode = resolvePreference("color", { preferences: savedOrNone() }).value;
+  return mode === "always" || (mode === "auto" && Boolean(stream.isTTY) && process.env.TERM !== "dumb");
+}
+
+/** The stream the helpers in {@link c} paint for while {@link paintFor} runs. */
+let painting: NodeJS.WriteStream | undefined;
+
+/** `draw()` with the helpers in {@link c} painting for `stream`, so its text is colored only when
+ *  that stream is. `draw` must be synchronous: the stream is held only while it runs. Outside it a
+ *  helper cannot tell where its text goes, so it colors only when stdout and stderr both would. */
+export function paintFor<T>(stream: NodeJS.WriteStream, draw: () => T): T {
+  const outer = painting;
+  painting = stream;
+  try {
+    return draw();
+  } finally {
+    painting = outer;
+  }
+}
+
+/** The saved preferences for the color decision. An invalid file stops every command before it runs
+ *  (the kernel reads it first), so the only output in that state is that refusal and help, which
+ *  are colored as if nothing were saved. */
+function savedOrNone(): Preferences {
+  try {
+    return cachedPreferences();
+  } catch {
+    return { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} };
+  }
+}
+
+const colored = (): boolean => (painting ? colorEnabled(painting) : colorEnabled(process.stdout) && colorEnabled(process.stderr));
+const sgr = (code: string) => (s: string) => (colored() ? `\x1b[${code}m${s}\x1b[0m` : s);
 
 /** ANSI color helpers for operator-facing terminal output — shared by every command surface
  *  (@cotal-ai/cli, @cotal-ai/web, the manager, the delivery daemon) so they render identically
@@ -17,6 +64,7 @@ const sgr = (code: string) => (s: string) => (colorEnabled() ? `\x1b[${code}m${s
 export const c = {
   dim: sgr("2"),
   bold: sgr("1"),
+  blue: sgr("34"),
   green: sgr("32"),
   cyan: sgr("36"),
   yellow: sgr("33"),

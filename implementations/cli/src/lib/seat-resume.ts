@@ -57,6 +57,9 @@ export function admitAndRestoreSeatCheckpoints(
   attemptId: string,
   values: { "accept-stale-checkpoint"?: boolean },
   inventory: unknown,
+  /** Where the progress lines go. `up` keeps them on stdout; `backup restore` owns stdout for its one
+   *  receipt and passes stderr. */
+  progress: (line: string) => void = (line) => console.log(line),
 ): StaleCheckpointConsent[] {
   // The checkpoints of the CUT this resume is consuming, named by that cut's attempt id. A resume
   // must not admit an older cut's artifacts: they describe a tree and a transcript this inventory
@@ -125,16 +128,16 @@ export function admitAndRestoreSeatCheckpoints(
           };
         }),
         onPromoted: (seat) => {
-          console.log(c.dim(`  restored working tree: ${seat.name} -> ${seat.cwd}${seat.superseded ? ` (previous tree kept at ${seat.superseded})` : ""}`));
+          progress(c.dim(`  restored working tree: ${seat.name} -> ${seat.cwd}${seat.superseded ? ` (previous tree kept at ${seat.superseded})` : ""}`));
         },
       });
     },
   });
 
   for (const seat of admitted) {
-    console.log(c.dim(`  admitted checkpoint: ${seat.checkpoint.name} (${seat.checkpoint.session.continuity}) at generation ${seat.generation}`));
+    progress(c.dim(`  admitted checkpoint: ${seat.checkpoint.name} (${seat.checkpoint.session.continuity}) at generation ${seat.generation}`));
     if (seat.staleOverrideAgeMs !== undefined)
-      console.log(c.yellow(`  stale checkpoint admitted by --accept-stale-checkpoint: ${seat.checkpoint.name} is ${seat.staleOverrideAgeMs}ms past capture, horizon ${seat.checkpoint.recencyHorizonMs}ms`));
+      progress(c.yellow(`  stale checkpoint admitted by --accept-stale-checkpoint: ${seat.checkpoint.name} is ${seat.staleOverrideAgeMs}ms past capture, horizon ${seat.checkpoint.recencyHorizonMs}ms`));
   }
   return admitted
     .filter((seat) => seat.staleOverrideAgeMs !== undefined)

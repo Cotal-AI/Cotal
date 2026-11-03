@@ -1,0 +1,8 @@
+{
+  "version": "22.23.3",
+  "headers": "eff1a7e67736bdf25db421ddaa613ed605f751a7b9fe07fb473ea880d1348987",
+  "libraries": {
+    "x64": "c243185f2347870cadb637c909bf123fc703dc65dbfa769b17ec45a4b661d782",
+    "arm64": "5378f5bad777b4929d1cd4f58974e0ef03815ce5c159863f1875c4b434460c27"
+  }
+}

@@ -1,0 +1,2 @@
+# A closed or failing stdout exits through the binary's listener unless a command owns it, and an owner finishes its own shutdown and sets the status. Child processes, no broker.
+smoke:stdout-owner

@@ -1,0 +1,3 @@
+# The shared terminal presentation: display width, escaping of untrusted text, tables that become
+# labeled records when narrow, and rich and plain styles of one report.
+smoke:present

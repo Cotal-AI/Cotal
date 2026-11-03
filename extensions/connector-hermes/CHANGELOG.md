@@ -1,5 +1,969 @@
 # @cotal-ai/connector-hermes
 
+## 0.138.0
+
+No changes in this release.
+
+## 0.137.0
+
+No changes in this release.
+
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+No changes in this release.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+No changes in this release.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+### Patch Changes
+
+- 3db141d: Keep Hermes tool arguments out of shared presence activity while retaining the tool name and status transitions.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
+## 0.135.0
+
+No changes in this release.
+
+## 0.134.0
+
+### Minor Changes
+
+- 8b80ca6: Every connector now hands its agent the same briefing, composed once in `@cotal-ai/connector-core` (`briefing(config, harness)`): identity, orient first, feedback, mesh-first delegation, durable workflow runs, where to talk, how a peer message arrives, how to reply, attention modes and reply etiquette. Codex, Jcode, OpenCode, Hermes and pi used to carry their own shorter copies and drifted; each now adds only the sentence that says how a peer message appears in its context. `docs/agent-briefing.mdx` is generated from the module (`pnpm gen:briefingdoc`) so a wording change shows as a diff of what each harness reads, and `pnpm check:docsbundle` fails when it drifts.
+  
+  A conversation that joins through `cotal_connect` (the Claude Code plugin in a session you opened, Claude Desktop, a hosted connector) used to be told only how to connect and listen; the connect result now carries its orientation card and the briefing. The Claude Code session-start hook hands the orientation card over at startup, resume, fork, clear and compaction, or with the next prompt when the seat was not bound yet, so the model has its bearings without asking. `orientationCard()` is the one rendering the `cotal_orientation` tool, the connect result and the hook share. Hermes' `setupProfile` takes the seat's `config` to render the briefing into `SOUL.md`.
+
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+No changes in this release.
+
+## 0.133.11
+
+### Patch Changes
+
+- 9182cfc: Restore the tool specs' and gateway's zod namespace import. The by-name imports released in 0.133.9 made the bundled claude, codex, hermes, jcode and opencode connectors throw `Class2 is not a constructor` when imported, so a fresh `cotal setup` failed its first connector seed.
+
+## 0.133.10
+
+No changes in this release.
+
+## 0.133.9
+
+No changes in this release.
+
+## 0.133.8
+
+No changes in this release.
+
+## 0.133.7
+
+No changes in this release.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+No changes in this release.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+No changes in this release.
+
+## 0.127.1
+
+No changes in this release.
+
+## 0.127.0
+
+No changes in this release.
+
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+No changes in this release.
+
+## 0.121.2
+
+No changes in this release.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+No changes in this release.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+No changes in this release.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+No changes in this release.
+
+## 0.116.0
+
+### Minor Changes
+
+- 50ee624: Cut what an idle seat costs its host, with stock build and runtime mechanisms.
+  
+  Every connector bundle that loads into a long-running process now ships as one-byte text. V8 holds a
+  string at one byte per character only while every character is Latin-1, and a single character above
+  U+00FF made each 5 MB bundle two-byte for the life of the process. The characters were em dashes and
+  arrows in comments, so the bundles are built with esbuild's `--minify-whitespace`, which drops
+  comments and the parentheses around a single arrow parameter, and keeps every identifier. Anything
+  matching text in a built bundle sees the second part: `(e) => f(e)` now reads `e=>f(e)`. `pnpm smoke:connector-bundle-text` reads the 19 built bundles
+  and fails on any character above U+00FF. Stack-trace frames keep their function names and their line
+  and column numbers move, because the bundle is now fewer, longer lines.
+  
+  The Claude Code connector's seat is launched through a new entry, `dist/seat.cjs`, which enables
+  Node's module compile cache in `~/.cotal/compile-cache` and then loads `dist/mcp.cjs`. Node's cache
+  covers modules compiled after it is enabled, so the entry has to sit in front of the bundle. The
+  directory is created 0700 like the rest of `~/.cotal`, whatever the launching umask was. A cache
+  that cannot be opened prints one line and the seat serves without it,
+  `NODE_DISABLE_COMPILE_CACHE=1` turns it off, and `NODE_COMPILE_CACHE` takes precedence and is left
+  alone. `dist/mcp.cjs` remains the library entry (`@cotal-ai/connector-claude-code/mcp`) and still
+  serves when run directly.
+  
+  The declared Node floor rises from 22 to 22.10, which is where `module.flushCompileCache()` lands,
+  and every package's `engines.node` now says so. The `cotal` binary checks it at its front door and
+  refuses an older runtime with the floor, the running version and the repair for how it was
+  installed; the seat entry refuses before its first cache call, so an old Node gets one sentence
+  rather than a `TypeError`; and the installer compares the minor version, so a host whose own Node is
+  22.9 gets the pinned Node downloaded and verified instead. `node dist/mcp.cjs` still serves on an
+  older runtime. Operators moving a host read
+  [the upgrade note](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
+  
+  Measured on one idle seat per arm, Node v22.23.2, paired and read at 160 s and 600 s: 41.9 MiB USS
+  on the stock bundle, 35.2 with one-byte text, 26.3 with the seat entry's compile cache as well.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
+## 0.109.17
+
+No changes in this release.
+
+## 0.109.16
+
+No changes in this release.
+
+## 0.109.15
+
+No changes in this release.
+
+## 0.109.14
+
+No changes in this release.
+
+## 0.109.13
+
+No changes in this release.
+
+## 0.109.12
+
+No changes in this release.
+
+## 0.109.11
+
+No changes in this release.
+
+## 0.109.10
+
+No changes in this release.
+
+## 0.109.9
+
+No changes in this release.
+
+## 0.109.8
+
+No changes in this release.
+
+## 0.109.7
+
+No changes in this release.
+
+## 0.109.6
+
+No changes in this release.
+
+## 0.109.5
+
+No changes in this release.
+
+## 0.109.4
+
+No changes in this release.
+
+## 0.109.3
+
+No changes in this release.
+
+## 0.109.2
+
+No changes in this release.
+
+## 0.109.1
+
+No changes in this release.
+
+## 0.109.0
+
+No changes in this release.
+
+## 0.108.1
+
+No changes in this release.
+
+## 0.108.0
+
+No changes in this release.
+
+## 0.107.0
+
+No changes in this release.
+
+## 0.106.1
+
+No changes in this release.
+
+## 0.106.0
+
+No changes in this release.
+
+## 0.105.1
+
+No changes in this release.
+
+## 0.105.0
+
+No changes in this release.
+
+## 0.104.2
+
+No changes in this release.
+
+## 0.104.1
+
+No changes in this release.
+
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+
+## 0.103.4
+
+No changes in this release.
+
+## 0.103.3
+
+No changes in this release.
+
+## 0.103.2
+
+No changes in this release.
+
+## 0.103.1
+
+No changes in this release.
+
+## 0.103.0
+
+No changes in this release.
+
+## 0.102.0
+
+No changes in this release.
+
+## 0.101.7
+
+No changes in this release.
+
+## 0.101.6
+
+No changes in this release.
+
+## 0.101.5
+
+No changes in this release.
+
+## 0.101.4
+
+No changes in this release.
+
+## 0.101.3
+
+No changes in this release.
+
+## 0.101.2
+
+No changes in this release.
+
+## 0.101.1
+
+No changes in this release.
+
+## 0.101.0
+
+No changes in this release.
+
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Patch Changes
+
+- ab2acc8: Tell every agent where to talk when it joins. A fresh agent can start on no channel, so the Claude Code, Codex, Jcode, OpenCode and Hermes startup text now says how to find its team's channel with `cotal_channels` and `cotal_join`, to use `cotal_dm` for one peer and `cotal_anycast` for a role, and to post on `#announce` only for a deliberate space-wide notice. OpenCode and Hermes previously carried no channel guidance at all. This is guidance only: no grant, subscription, mention or wake behaviour changes.
+
+## 0.91.0
+
+## 0.90.1
+
+## 0.90.0
+
+## 0.89.0
+
+## 0.88.0
+
+## 0.87.0
+
+### Patch Changes
+
+- af82e8d: A seat's launch-material directory (`cotal-launch-*` in the OS temp dir, holding the broker URL, the creds path and the control token) is now removed when the seat's process exits. Before this change a Claude seat left it behind after `cotal stop`, while the persona file and control socket of the same launch were removed. `materialEnv` in `@cotal-ai/connector-core` now takes the launch's artifact array as a second, required argument and appends the material's private directory to it, and every connector returns that array on `LaunchSpec.artifacts`, so the manager, the pty runtime and the foreground `cotal spawn` remove it the way they remove a persona file. Each connector now writes the material after its last refusal, so a refused launch leaves no material file behind. The second material file the Hermes launcher writes for its gateway child is not covered by this change.
+
+## 0.86.0
+
+## 0.85.0
+
+## 0.84.0
+
+## 0.83.0
+
+## 0.82.2
+
+## 0.82.1
+
+## 0.82.0
+
 ## 0.81.1
 
 ## 0.81.0

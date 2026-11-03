@@ -17,7 +17,6 @@
  * Run: pnpm smoke:runtime-mesh-checkpoint   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +24,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  digestIdToken,
   isReachable,
   createEndpointStreams,
   openRecordsBucket,
@@ -39,6 +39,8 @@ import {
   resumeCheckpoint,
   mintCheckpoint,
   activateRun,
+  createRunSpec,
+  readRunRecord,
   checkpointAnswerId,
   eptReqStreamName,
   eptStreamName,
@@ -49,12 +51,14 @@ import {
   EpfSettleWatcher,
   CheckpointAnswerMissing,
   resolveCheckpoint,
+  answerOpenCheckpoint,
   openCheckpointToken,
   CheckpointNotOpen,
   outstandingPauseTokens,
   rearmOutstandingPauses,
   startRun,
 } from "../src/index.js";
+import { resolvePins, WALKER_LANGUAGE_VERSION } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -346,6 +350,9 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
 // step still pending while its checkpoint is already settled — closes the moment a live driver
 // notices, so a cell that raced for it would be flaky about the thing it is trying to prove.
 // That `openCheckpointToken` is reached through a real replay is proven by every other cell here.
+// In that window the locate half reads the pause's status and refuses the answer as settled, as a
+// later answer is refused, filing nothing. A pause that settles between the two halves reaches the
+// presentation, so that order is driven through the write half directly.
 {
   const RUN = "cp-6b";
   const TOKEN = "cnRlc3RfcHJlc2VudGF0aW9uX29yZGVy";
@@ -366,10 +373,32 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   // presentation this resolver is about to make cannot win.
   await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: TOKEN }, presenter: HOLDER, now: NOW + 500 });
 
+  let early: unknown;
+  try {
+    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "dave", value: "again", now: NOW + 1_050 });
+  } catch (e) { early = e; }
+  c("the built journal without a run record is refused as no-run",
+    early instanceof CheckpointNotOpen && early.why === "no-run", early);
+  c("and the no-run refusal files no answer record",
+    (await readCheckpointAnswer(kv, EP, TOKEN, checkpointAnswerId({ token: TOKEN, by: "dave", value: "again" }))) === undefined);
+  // A real driver creates this record before the pending entry. Build that prerequisite too.
+  await createRunSpec(kv, EP, RUN, {
+    pins: resolvePins({ runId: RUN }, NOW, WALKER_LANGUAGE_VERSION), createdAt: NOW,
+  });
+  c("the settled-window fixture has a durable run record", (await readRunRecord(kv, EP, RUN)) !== undefined);
+  early = undefined;
+  try {
+    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "dave", value: "again", now: NOW + 1_050 });
+  } catch (e) { early = e; }
+  c("an answer to a pause that settled before its step was recorded is refused as settled",
+    early instanceof CheckpointNotOpen && early.why === "settled", early);
+  c("and it files no answer record",
+    (await readCheckpointAnswer(kv, EP, TOKEN, checkpointAnswerId({ token: TOKEN, by: "dave", value: "again" }))) === undefined);
+
   const lateId = checkpointAnswerId({ token: TOKEN, by: "carol", value: "mine" });
   let refused: unknown;
   try {
-    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "carol", value: "mine", now: NOW + 1_100 });
+    await answerOpenCheckpoint(deps, { open: { runId: RUN, token: TOKEN, holder: HOLDER }, by: "carol", value: "mine", now: NOW + 1_100 });
   } catch (e) { refused = e; }
   c("a resolver whose presentation is refused is told so, not told it succeeded",
     (refused as { code?: string })?.code === "conflict", (refused as Error)?.message?.slice(0, 60));
@@ -422,7 +451,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
       open.includes(waitTok), open.join(","));
     // The IDLE wait's second deadline. It is derived rather than recorded, so the repair has to
     // derive it too — a wait that had to remember it would carry state its own key determines.
-    const derived = createHash("sha256").update(`${waitTok}:wait-timeout`, "utf8").digest("base64url").slice(0, 43);
+    const derived = digestIdToken(`${waitTok}:wait-timeout`);
     c("...including the outer timeout an idle wait arms, re-derived rather than remembered",
       open.includes(derived), open.join(","));
     // NARROWNESS, both directions. Emitting a derived token for a wait that never armed an outer

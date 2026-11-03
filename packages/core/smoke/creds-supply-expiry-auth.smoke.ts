@@ -297,10 +297,10 @@ try {
     // registerPresence:false, so `publishPresence` returns at its first line (`!this.doRegister`)
     // without touching the wire, and the call therefore CANNOT throw whether or not a connection
     // exists. An earlier version of the cell below looped on it and would have gone green against
-    // an endpoint that never reconnected at all. Count successful binds instead: endpoint.ts:1304
-    // emits `connection {connected:true}` at the end of every successful bind, on the initial
-    // start and on each self-heal rebuild alike, so a SECOND one is positive evidence that
-    // `reestablishLoop` re-fetched from the recovered source and re-bound a real wire.
+    // an endpoint that never reconnected at all. Count successful binds instead: endpoint.ts
+    // bindConnection emits `connection {connected:true}` at the end of every successful bind, on
+    // the initial start and on each self-heal rebuild alike, so a SECOND one is positive evidence
+    // that `reestablishLoop` re-fetched from the recovered source and re-bound a real wire.
     let successfulBinds = 0;
     ep.on("connection", (s: { connected: boolean }) => { if (s.connected) successfulBinds++; });
     const t0 = Date.now();

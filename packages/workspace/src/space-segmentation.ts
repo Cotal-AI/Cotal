@@ -8,11 +8,11 @@
  * both series: what happens to the roots that already exist.
  *
  * The answer is MOVE ON FIRST TOUCH at a single choke point, not read-fallback, for the reason
- * `migrateLegacyUserAuthState` (`auth-paths.ts:131`) already records: a fallback leaves flows able to
+ * `migrateLegacyUserAuthState` (`auth-paths.ts`) already records: a fallback leaves flows able to
  * read, or worse to `ensure*`-REGENERATE, beside material the old layout still holds. That hazard is
- * sharper here, because this material has absent-means-mint writers (`up.ts:2885`, `up.ts:2889`) — a
- * canonical read on an unmigrated root reads absent and mints a SECOND live cred beside the one the
- * daemons are using.
+ * sharper here, because this material has absent-means-mint writers (the rw-cred and config writes
+ * in `healMembershipDataCreds`, the CLI's `up`) — a canonical read on an unmigrated root reads absent
+ * and mints a SECOND live cred beside the one the daemons are using.
  *
  * The choke point is {@link migrateLegacyMaterialIn}; the per-kind resolvers built on it are at
  * the bottom of this file, and they are what every consumer of the five P7 kinds calls. Series P1
@@ -20,9 +20,12 @@
  * directory differs, because §3 places P7's segment under `.cotal/` and P1's under `.cotal/auth/creds/`.
  */
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { mkSecretDir, type SecretStore } from "@cotal-ai/core";
 import { accountInventory, authDir, spaceSegment } from "./auth-paths.js";
+import { NATS_PIDFILE } from "./local-process.js";
+import { CommandFailure } from "./output.js";
+import { renewalRecordPath } from "./renewal-path.js";
 
 /** `<root>/.cotal` — the dir whose children the segment must never collide with. */
 export function cotalDir(root: string): string {
@@ -47,13 +50,14 @@ export function cotalDir(root: string): string {
  * sweepers take them from.
  *
  * Keep in sync with the writers of `.cotal/` children (`cotalPath(...)` in `up.ts`, the raw removal
- * list at `clean.ts:272-279`). A name added here that starts with `space.` is a real collision and
- * the guard suite fails rather than the layout silently aliasing a tenant's segment.
+ * list in `clean.ts`'s `localIdentityCleanupTargets`). A name added here that starts with `space.` is
+ * a real collision and the guard suite fails rather than the layout silently aliasing a tenant's
+ * segment.
  */
 export const RESERVED_COTAL_CHILDREN: readonly string[] = [
   "agents", "auth", "auth-service.json", "broker-policy.json", "channels.json", "config.json",
   "connection-evictor.creds", "delivery.creds", "maintenance", "manifests", "membership.json",
-  "membership-observer.creds", "membership-rw.creds", "meshes", "nats", "nats.log", "nats.pid",
+  "membership-observer.creds", "membership-rw.creds", "meshes", "nats", "nats.log", NATS_PIDFILE,
   "setup.log",
 ];
 
@@ -150,6 +154,18 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
   return undefined;
 }
 
+export interface MaterialMigrationReceipt {
+  readonly space: string;
+  readonly kind: string;
+  readonly from: string;
+  readonly to: string;
+}
+export interface MaterialPathOptions {
+  readonly readOnly?: boolean;
+  /** Called only after the native rename returns. Contents never cross this observation seam. */
+  readonly onMigrated?: (receipt: MaterialMigrationReceipt) => void;
+}
+
 /**
  * THE CHOKE POINT (§2 rules 1-4): resolve one kind's per-space location, migrating a legacy
  * root-scoped copy into it on first touch, or REFUSING when the move cannot be made honestly.
@@ -165,7 +181,7 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
  * atomicity across the three. That is not a gap: a hosted composition provisions these keys
  * externally and re-keys by the coordinated change of §3.1, never by migrating in place. Taking no
  * store makes the unsound call impossible to express, the same reason `rotateSystemCreds` takes none
- * (`system-rotation.ts:88-95`).
+ * (the comment on its broker-wide guard in `system-rotation.ts` says why).
  *
  * `parent` is the directory the legacy copy sits DIRECTLY in and under which the segment is created.
  * It is a parameter rather than `cotalDir(root)` because §3 settled two different placements for the
@@ -175,7 +191,7 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
  * rules 2-4 is the second idiom §4 forbids. `root` stays alongside it because rule 4's tenant count
  * is a property of the ROOT's account records, not of whichever directory the material sits in.
  */
-export function migrateLegacyMaterialIn(parent: string, root: string, space: string, kind: string): string {
+export function migrateLegacyMaterialIn(parent: string, root: string, space: string, kind: string, options: MaterialPathOptions = {}): string {
   const dir = parent;
   const canonical = join(dir, spaceSegment(space), kind);
   const legacyPath = join(dir, kind);
@@ -196,6 +212,7 @@ export function migrateLegacyMaterialIn(parent: string, root: string, space: str
     throw e;
   }
   if (!entries.some((e) => e.name === kind)) return canonical;
+  if (options.readOnly) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this credential observation requires a legacy material migration; no file was moved and no canonical absence was inferred", { target: { space }, remedy: "use the explicit supported mutation/update path for this root before retrying the observation" });
 
   // RULE 4 — refuse to migrate on a root holding more than one space.
   //
@@ -231,18 +248,19 @@ export function migrateLegacyMaterialIn(parent: string, root: string, space: str
   //
   // The segment dir is created FIRST and hardened, not merely `mkdir`ed: it holds `.creds` material,
   // so it must be born under a private ACL rather than widened afterwards (the same reason
-  // `provisionMembershipCreds` hardens `.cotal/` before the creds land, `up.ts:2913`). This is the
+  // `provisionMembershipCreds` hardens the per-space dir before its creds land). This is the
   // one way this differs from the prior art it generalizes — `migrateLegacyUserAuthState` renames a
   // dir to a SIBLING dir, so it never has to materialize a parent.
   mkSecretDir(join(dir, spaceSegment(space)));
   renameSync(legacyPath, canonical);
+  options.onMigrated?.({ space, kind, from: legacyPath, to: canonical });
   return canonical;
 }
 
 /** {@link migrateLegacyMaterialIn} at P7's placement — a legacy copy sitting directly under
  *  `<root>/.cotal/`. The five P7 resolvers' one entry point. */
-export function migrateLegacyCotalMaterial(root: string, space: string, kind: string): string {
-  return migrateLegacyMaterialIn(cotalDir(root), root, space, kind);
+export function migrateLegacyCotalMaterial(root: string, space: string, kind: string, options: MaterialPathOptions = {}): string {
+  return migrateLegacyMaterialIn(cotalDir(root), root, space, kind, options);
 }
 
 /**
@@ -251,9 +269,9 @@ export function migrateLegacyCotalMaterial(root: string, space: string, kind: st
  *
  * Adding a tenant to such a root creates the one state segmentation cannot resolve — legacy material
  * whose owner is unrecorded — and it is the only door that creates it, because `up` cannot mint a
- * second tenant on an established root (`ensureRootForSpace` refuses at `up.ts:2233`). Checking here
- * costs one inventory read in a verb that is already taking the lock and reading the inventory
- * (`per-space-lifecycle.md` §2.1 step 1).
+ * second tenant on an established root (`ensureRootForSpace` in the CLI's `up` command refuses).
+ * Checking here costs one inventory read in a verb that is already taking the lock and reading the
+ * inventory (`per-space-lifecycle.md` §2.1 step 1).
  *
  * This keeps that state from being CREATED. It does not keep it from being ENCOUNTERED — roots
  * already multi-tenant when this series lands, and backups of them, bypass the door entirely. Rule 4
@@ -307,10 +325,11 @@ function migrationRemedy(root: string): string {
  * arms answer differently and the workstation arm cannot do its job without a root. Rule 2's
  * migration is FILESYSTEM-ONLY, so a hosted caller must get the canonical key and no rename; a
  * workstation caller must get the migration, because skipping it is not a cosmetic miss — the kinds
- * have absent-means-mint writers (`up.ts:2885`, `up.ts:2889`), so a canonical read on an unmigrated
- * root reads ABSENT and mints a SECOND live cred beside the one the daemons are using. An optional
- * root would let a workstation caller silently take the hosted answer and land in exactly that
- * state. Requiring the root on that arm makes the unsound call impossible to express instead.
+ * have absent-means-mint writers (`healMembershipDataCreds` in the CLI's `up`), so a canonical read
+ * on an unmigrated root reads ABSENT and mints a SECOND live cred beside the one the daemons are
+ * using. An optional root would let a workstation caller silently take the hosted answer and land in
+ * exactly that state. Requiring the root on that arm makes the unsound call impossible to express
+ * instead.
  *
  * `injected` is always the composition root's own fact — never inferred by probing the store or
  * sniffing `.cotal/`, both of which report "workstation" for a hosted daemon.
@@ -332,9 +351,9 @@ export type SpaceMaterialComposition =
  *  - THE RENEWAL OWNER. {@link REMINTABLE_DAEMON_CREDS}'s `(space) => key` builders (§3.1) feed
  *    `remintDaemonCreds`, which has NO absent-means-mint path — its absence case is a loud
  *    `skipped: "missing-file"`, never a second cred — and which may hold an INJECTED store while
- *    still being handed a workstation `root` it does not own (`manager.ts:870` defaults the store,
- *    so `store !== undefined` is not the hosted fact there). The hazard rule 1 exists to stop is not
- *    reachable from it, and `up`'s provisioners migrate before any daemon exists to renew.
+ *    still being handed a workstation `root` it does not own (the `Manager` constructor defaults the
+ *    store, so `store !== undefined` is not the hosted fact there). The hazard rule 1 exists to stop
+ *    is not reachable from it, and `up`'s provisioners migrate before any daemon exists to renew.
  *
  * Every other caller wants {@link spaceMaterialKey}: reaching for this one to skip a migration is
  * the read-fallback the design forbids.
@@ -382,7 +401,8 @@ export function connectionEvictorCredsKey(space: string, composition: SpaceMater
  *
  *  A path and not a key, and it takes a bare `root` rather than a {@link SpaceMaterialComposition},
  *  because this kind has no hosted arm to choose between: it is read raw by the eviction path's
- *  workstation-only cross-check (`evict-exec.ts:76`) and a hosted composition never has one. */
+ *  workstation-only cross-check (`validateScanTarget` in `evict-exec.ts`) and a hosted composition
+ *  never has one. */
 export function membershipConfigPath(root: string, space: string): string {
   return migrateLegacyCotalMaterial(root, space, MEMBERSHIP_CONFIG_KIND);
 }
@@ -436,8 +456,9 @@ export function assertSpaceMaterialReapable(root: string, space: string, operati
 }
 
 /**
- * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's segmented material — the
- * `$SYS` pair that step names, plus the rest of that tenant's segment, which P7 keyed alongside it.
+ * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's material — its
+ * root-level renewal audit record and segmented `$SYS` pair, plus the rest of that tenant's segment,
+ * which P7 keyed alongside it.
  *
  * IT CANNOT REFUSE, and that is a contract, not an omission. It runs past step 5's point of no
  * return, where a throw would strand the journal entry that gates every other verb on the root; §2.2
@@ -453,9 +474,11 @@ export function assertSpaceMaterialReapable(root: string, space: string, operati
  * a raw sweep of `.cotal/` to fall back on and this is not: for an INJECTED store the segment removal
  * below reaches nothing, so a kind missing from the seam loop would outlive its tenant.
  *
- * It removes only THIS space's segment. A reap spelled `.cotal/space.*` is the shape a reader reaches
- * for after seeing a directory removal, and on the multi-tenant root that is the only root this verb
- * runs on it would take every surviving tenant's live material and report success.
+ * It removes only THIS space's segment and renewal record. A reap spelled `.cotal/space.*` is the
+ * shape a reader reaches for after seeing a directory removal, and on the multi-tenant root that is
+ * the only root this verb runs on it would take every surviving tenant's live material and report
+ * success. The renewal filename is obtained from the same dependency-neutral path primitive as its
+ * writer and readers, never reconstructed here.
  */
 export async function reapSpaceMaterial(
   root: string,
@@ -476,6 +499,14 @@ export async function reapSpaceMaterial(
     } catch (e) {
       failed.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+  const renewal = renewalRecordPath(root, space);
+  try {
+    rmSync(renewal);
+    removed.push(`.cotal/${basename(renewal)}`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+      failed.push(`${basename(renewal)}: ${e instanceof Error ? e.message : String(e)}`);
   }
   const dir = spaceMaterialDir(root, space);
   try {

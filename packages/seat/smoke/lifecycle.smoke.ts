@@ -619,6 +619,193 @@ await h.waitForExit();
     check("graceful stop: waitForExit resolves", h.status() === "exited");
     h.close();
   }
+
+  {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const dist = join(here, "..", "dist");
+    const distFiles = ["record.js", "reap.js", "launcher.js", "custodian.js", "index.js"] as const;
+    const statReads = Object.fromEntries(
+      distFiles.map((f) => [f, (readFileSync(join(dist, f), "utf8").match(/\/proc\/\$\{[^}]+\}\/stat/g) ?? []).length]),
+    );
+    const terminators = Object.fromEntries(
+      distFiles.map((f) => [f, (readFileSync(join(dist, f), "utf8").match(/lastIndexOf\("\) "\)/g) ?? []).length]),
+    );
+    check(
+      "stat parser: only record.js reads /proc/<pid>/stat and locates the comm terminator",
+      JSON.stringify(statReads) === JSON.stringify({ "record.js": 1, "reap.js": 0, "launcher.js": 0, "custodian.js": 0, "index.js": 0 }) &&
+        JSON.stringify(terminators) === JSON.stringify({ "record.js": 1, "reap.js": 0, "launcher.js": 0, "custodian.js": 0, "index.js": 0 }),
+      { statReads, terminators },
+    );
+
+    const probeDir = mkdtempSync(join(root, "stat-probe-"));
+    const probeScript = join(probeDir, "probe.mjs");
+    writeFileSync(
+      probeScript,
+      `import assert from "node:assert/strict";
+import cp from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import path from "node:path";
+import * as seat from ${JSON.stringify(join(dist, "index.js"))};
+
+assert.equal(typeof seat.processStatFields, "function");
+assert.equal(process.env.COTAL_RUN, "probe-3152-real");
+delete process.env.COTAL_RUN;
+
+const sleepBin = cp.execFileSync("sh", ["-c", "command -v sleep"], { encoding: "utf8" }).trim();
+const commBin = path.join(${JSON.stringify(probeDir)}, "x) y (z");
+fs.copyFileSync(sleepBin, commBin);
+fs.chmodSync(commBin, 0o755);
+
+const decoy = cp.spawn(sleepBin, ["300"], { stdio: "ignore", env: { PATH: process.env.PATH ?? "", COTAL_RUN: "probe-3152-decoy" } });
+const real = cp.spawn(commBin, ["300"], { stdio: "ignore", env: { PATH: process.env.PATH ?? "" } });
+const P = real.pid;
+const Q = decoy.pid;
+assert.ok(P && Q);
+
+try {
+  await new Promise((r) => setTimeout(r, 200));
+  const rawStat = fs.readFileSync(\`/proc/\${P}/stat\`, "utf8");
+  assert.ok(rawStat.includes("(x) y (z)"), rawStat);
+  const expectedToken = rawStat.slice(rawStat.lastIndexOf(") ") + 2).trim().split(/\\s+/)[19];
+
+  const observe = () => ({
+    fields: seat.processStatFields(P),
+    token: seat.processStartToken(P),
+    verdict: seat.identityVerdict(P, expectedToken),
+    runMarker: seat.runMarker(process.env, P),
+  });
+
+  const before = observe();
+  assert.ok(Array.isArray(before.fields) && before.fields.length >= 20);
+  assert.equal(before.fields[1], String(process.pid));
+  assert.equal(before.token, expectedToken);
+  assert.equal(before.verdict, "live");
+  assert.equal(before.runMarker, "probe-3152-real");
+
+  const origRead = fs.readFileSync;
+  const malformedLines = [
+    \`\${P} \${Q} S\`,
+    \`\${P} ) \${Q} S 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 99\`,
+    \`\${Q} (x) y (z) S \${Q} \${Q} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 99\`,
+    \`\${P} (x) y (z) S \${Q} \${Q}\`,
+    \`\${P} (x) y (z) \`,
+    \`\${P} (x) y (z) S \${Q} \${Q} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 99\\ninjected\`,
+  ];
+  const reapRoot = fs.mkdtempSync(path.join(${JSON.stringify(probeDir)}, "reap-"));
+  try {
+    for (const line of malformedLines) {
+      fs.readFileSync = function (file, ...args) {
+        if (String(file) === \`/proc/\${P}/stat\`) return line;
+        return origRead.call(this, file, ...args);
+      };
+      syncBuiltinESMExports();
+      const got = observe();
+      assert.deepEqual(got, {
+        fields: undefined,
+        token: undefined,
+        verdict: "gone",
+        runMarker: \`pid-\${P}\`,
+      }, \`malformed stat line failed: \${JSON.stringify(line)}\`);
+    }
+
+    const absentLeader = 999999;
+    const reapId = "b".repeat(32);
+    const reapRecPath = seat.recordPath(reapRoot, reapId);
+    fs.mkdirSync(path.dirname(reapRecPath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(reapRecPath, JSON.stringify({
+      version: 1,
+      id: reapId,
+      name: "malformed-group-probe",
+      socket: seat.socketPath(reapRoot, reapId),
+      token: "fixture",
+      custodianPid: absentLeader,
+      custodianStart: "1",
+      childPid: absentLeader,
+      childStart: "1",
+      bootId: seat.bootToken(),
+    }) + "\\n", { mode: 0o600 });
+    fs.readFileSync = function (file, ...args) {
+      if (String(file) === \`/proc/\${P}/stat\`) return \`\${P} (x) y (z) S 1 \${absentLeader}\`;
+      return origRead.call(this, file, ...args);
+    };
+    syncBuiltinESMExports();
+    const reaped = await seat.reapSeat(reapRoot, reapId, { graceMs: 200 });
+    assert.equal(reaped.outcome, "reaped");
+
+    const launchRoot = ${JSON.stringify(root)};
+    const launchId = "c".repeat(32);
+    const launchRecFile = seat.recordPath(launchRoot, launchId);
+    let launchStatPolls = 0;
+    let launchedCustodianPid = 0;
+    process.env.COTAL_RUN = "probe-3152-real";
+    fs.readFileSync = function (file, ...args) {
+      const s = String(file);
+      if (s === launchRecFile) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      const m = /^\\/proc\\/(\\d+)\\/stat$/.exec(s);
+      if (m && Number(m[1]) !== P && Number(m[1]) !== Q && Number(m[1]) !== process.pid) {
+        launchedCustodianPid = Number(m[1]);
+        launchStatPolls++;
+        return \`\${launchedCustodianPid} \${Q} S\`;
+      }
+      return origRead.call(this, file, ...args);
+    };
+    syncBuiltinESMExports();
+    let launchErr = "";
+    try {
+      seat.launchSeat({
+        root: launchRoot,
+        id: launchId,
+        name: "malformed-pidlive",
+        spec: { command: process.execPath, args: ["-e", "process.exit(0)"], env: { PATH: process.env.PATH ?? "" } },
+        cwd: process.cwd(),
+      });
+    } catch (e) {
+      launchErr = e.message;
+    } finally {
+      delete process.env.COTAL_RUN;
+      fs.readFileSync = origRead;
+      syncBuiltinESMExports();
+      if (launchedCustodianPid > 0) {
+        try { process.kill(-launchedCustodianPid, "SIGKILL"); } catch {}
+        try { process.kill(launchedCustodianPid, "SIGKILL"); } catch {}
+        try {
+          const rec = JSON.parse(fs.readFileSync(launchRecFile, "utf8"));
+          if (rec.childPid > 0) try { process.kill(-rec.childPid, "SIGKILL"); } catch {}
+        } catch {}
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      fs.rmSync(path.dirname(launchRecFile), { recursive: true, force: true });
+    }
+    assert.equal(launchStatPolls, 1);
+    assert.match(launchErr, /custodian exited before ready/);
+  } finally {
+    fs.readFileSync = origRead;
+    syncBuiltinESMExports();
+    fs.rmSync(reapRoot, { recursive: true, force: true });
+  }
+
+  const after = observe();
+  assert.equal(after.token, expectedToken);
+  assert.equal(after.verdict, "live");
+  assert.equal(after.runMarker, "probe-3152-real");
+} finally {
+  try { real.kill("SIGKILL"); } catch {}
+  try { decoy.kill("SIGKILL"); } catch {}
+}
+`,
+    );
+    const probeRun = spawnSync(process.execPath, [probeScript], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: { PATH: process.env.PATH ?? "", COTAL_RUN: "probe-3152-real" },
+    });
+    check(
+      "stat parser: comm with ') ' parses cleanly and malformed stat lines never shift into a decoy pid",
+      probeRun.status === 0 && probeRun.signal === null,
+      { status: probeRun.status, signal: probeRun.signal, stderr: probeRun.stderr },
+    );
+  }
 } finally {
   for (const h of handles) {
     try {

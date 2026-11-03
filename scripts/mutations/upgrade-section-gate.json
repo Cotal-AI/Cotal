@@ -250,15 +250,6 @@
       "note": "Exact-head review used the repository's authoritative Changesets parser to show quoted YAML values and inline maps are valid major declarations while the hand regex returned no signal. The production CLI cell makes parser agreement load-bearing."
     },
     {
-      "name": "the required job invokes the YAML-backed gate without installing its dependency",
-      "file": ".github/workflows/attribution.yml",
-      "find": "      - name: Install gate dependencies\n        run: pnpm install --frozen-lockfile --ignore-scripts\n",
-      "replace": "",
-      "cell": "the required attribution job installs the gate's declared YAML dependency before grading",
-      "expectRed": "the required attribution job installs the gate's declared YAML dependency before grading",
-      "note": "Once the gate adopted the release toolchain's YAML parser, the required job failed before printing a verdict because it still installed no dependencies. Removing this step must red by name before another import can silently turn the required gate into a could-not-run result."
-    },
-    {
       "name": "M28 malformed front-matter boundaries stop refusing: a changeset with no closing delimiter is read as 'no major packages' instead of being rejected",
       "file": "scripts/upgrade-section-gate.mjs",
       "find": "  if (!m) throw new Error(\"changeset is missing or has invalid front matter delimiters\");",

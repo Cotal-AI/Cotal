@@ -1,0 +1,3 @@
+# A controller stack whose manager or delivery process died: status, ps, chat and up.
+# Added with the suite, which defined the script but not this fragment, so nothing ran it.
+smoke:stack-member-crash:live

@@ -45,11 +45,13 @@
  *    op-pinned CAS plus the caller's own authenticated authority is what advances the gate),
  *    and a stranger can neither reopen nor terminalize another operation's freeze.
  */
+import { assertAuthorityStreamShape, type AuthorityStreamCfg } from "@cotal-ai/core";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   EpEnvelopeError,
+  assertOrdinaryNativeMutation,
   recordsBucket as coreRecordsBucket,
   lifecycleHeadKey as headKey,
   parseLifecycleHead as parseMapping,
@@ -106,6 +108,10 @@ interface RegistryInternals {
   jsm: JetStreamManager;
   js: JetStreamClient;
   work: WorkPoolContext;
+  /** The connection's current `max_payload` from the server INFO it last received; undefined when absent. */
+  maxPayload(): number | undefined;
+  /** Live broker incarnation used by a payload assertion, never an argv-derived identity. */
+  serverId(): string | undefined;
   /** The SEALED auth-ledger scanner (SPEC 13.9): the ONLY holder of `CONSUMER.CREATE` on the auth
    *  stream, on its own dedicated credential+connection ({@link openAuthLedgerScanner}). The
    *  barrier reaches enumeration through its CLOSED ops only ({@link registryScanner}); the raw
@@ -136,56 +142,9 @@ function readerInternals(rd: LifecycleMappingReader): { space: string; jsm: JetS
   return i;
 }
 
-/** The bucket-config fields the shape proofs inspect (wire names, per the JetStream API).
- *  PACKAGE-INTERNAL (with {@link assertAuthorityStreamShape}) for the sibling trusted-path
- *  modules; never re-exported from the package index. */
-export interface AuthorityStreamCfg {
-  allow_direct?: boolean;
-  retention?: string;
-  max_age?: number;
-  max_msgs?: number;
-  max_bytes?: number;
-  mirror?: unknown;
-  sources?: unknown;
-  subjects?: unknown;
-  storage?: string;
-}
-
-/** Prove an authority store's stream shape at bind (SPEC 13.12): PRIMARY (never a
- *  mirror/sourced copy), LIMITS retention (an Interest/WorkQueue stream deletes a message once
- *  consumers have interest/ack it — an authority row would silently vanish after a barrier's
- *  point-in-time enumeration reads it), and NO silent-eviction limit — no age retention and no
- *  finite global message/byte cap (under DiscardOld a finite global limit evicts a PRIOR
- *  authority key's latest row the moment an unrelated key is written). A store that cannot be
- *  proved never serves. (A per-subject cap is NOT a vector: NATS keeps at least the latest value
- *  per subject for any cap ≥ 1, and 0/-1 mean unlimited, so no setting drops a key's own row.) */
-export function assertAuthorityStreamShape(cfg: AuthorityStreamCfg, bucket: string): void {
-  if (cfg.mirror !== undefined || (Array.isArray(cfg.sources) && cfg.sources.length > 0))
-    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} is a mirror/sourced stream; a follower copy cannot serve authority reads or CAS (SPEC 13.12); bind the primary`);
-  // A KV bucket is Limits-retention by construction, but the backing stream config is what
-  // actually governs eviction, so prove it (a stream reprovisioned as Interest/WorkQueue under
-  // the KV_ name would delete authority rows on consumer interest/ack — the barrier's throwaway
-  // enumeration consumer would itself trigger the deletion).
-  if (typeof cfg.retention === "string" && cfg.retention !== "limits")
-    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} has ${cfg.retention} retention, not limits; a non-Limits stream deletes authority rows on consumer interest/ack (SPEC 13.12); reprovision as a KV bucket`);
-  if (typeof cfg.max_age === "number" && cfg.max_age > 0)
-    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries bucket-wide age eviction (max_age ${cfg.max_age}); an age-evicted authority row silently drops a fence (SPEC 13.12); reprovision`);
-  if (typeof cfg.max_msgs === "number" && cfg.max_msgs >= 0)
-    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries a finite global message cap (max_msgs ${cfg.max_msgs}); under discard-old it silently evicts never-deleted authority keys (SPEC 13.12); reprovision`);
-  if (typeof cfg.max_bytes === "number" && cfg.max_bytes >= 0)
-    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} carries a finite global byte cap (max_bytes ${cfg.max_bytes}); under discard-old it silently evicts never-deleted authority keys (SPEC 13.12); reprovision`);
-  // STORE-BINDING (SPEC 13.12): the stream must BE the claimed KV bucket, not merely wear its
-  // name — exactly the one `$KV.<bucket>.>` subject (an extra captured subject would put foreign
-  // bodies inside every body-selected MSG.GET grant on this stream, breaking the metadata-only
-  // residual claim) and durable file storage (a memory authority store forgets every fence and
-  // revocation on broker restart). Both are REQUIRED, not skipped-when-absent: every caller
-  // proves a real `streams.info` config, and an absent field here is an unproved store.
-  const expectedSubject = `$KV.${bucket}.>`;
-  if (!Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== expectedSubject)
-    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} does not carry exactly the subject ${expectedSubject} (got ${JSON.stringify(cfg.subjects)}); a stream that captures anything else is not this KV bucket, and its body-selected reads are not bounded to authority metadata (SPEC 13.12); reprovision`);
-  if (cfg.storage !== "file")
-    throw new EpEnvelopeError("failed-precondition", `the store ${bucket} has storage ${JSON.stringify(cfg.storage)}, not file; a non-durable authority store forgets fences and revocations on restart (SPEC 13.12); reprovision`);
-}
+// Keep the trusted-path module's internal import surface while sharing the pure wire-store
+// check with core schema inspection. No lifecycle/gate operation is exported through core.
+export { assertAuthorityStreamShape, type AuthorityStreamCfg } from "@cotal-ai/core";
 
 /** Open the minting authority's sealed lifecycle registry: binds the space's primary records
  *  bucket AND its auth bucket. BOTH are shape-proved at bind (SPEC 13.12): primary, un-aged,
@@ -227,7 +186,7 @@ export async function openLifecycleRegistry(nc: NatsConnection, space: string, s
   // declare quiescence over live obligations it never read.
   if (recordsScanner !== undefined) assertRecordsScannerSpace(recordsScanner, space);
   const reg: LifecycleRegistry = Object.freeze({ space });
-  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), scanner, recordsScanner });
+  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), maxPayload: () => nc.info?.max_payload, serverId: () => nc.info?.server_id, scanner, recordsScanner });
   return reg;
 }
 
@@ -253,6 +212,14 @@ export async function openLifecycleMappingReader(nc: NatsConnection, space: stri
   const rd: LifecycleMappingReader = Object.freeze({ space });
   READERS.set(rd, { space, jsm });
   return rd;
+}
+
+/** Package-internal guard over this registry's bound stores, before ordinary executor work. */
+export async function assertOrdinaryRegistryMutation(
+  reg: LifecycleRegistry,
+  target: { lifecycleUid?: string; owner?: string; actor?: string },
+): Promise<void> {
+  await assertOrdinaryNativeMutation(transportOf(reg), target);
 }
 
 // ---- the head (records store) ---------------------------------------------------------------
@@ -285,6 +252,15 @@ function transportOf(reg: LifecycleRegistry): LifecycleStateTransport {
  *  never re-exported from the package index: a sealed registry stays the only door. */
 export function registryStores(reg: LifecycleRegistry): { space: string; recordsKv: KV; authKv: KV; jsm: JetStreamManager; js: JetStreamClient; work: WorkPoolContext } {
   return internals(reg);
+}
+
+/** PACKAGE-INTERNAL: the registry connection's current broker incarnation. */
+export function registryServerId(reg: LifecycleRegistry): string | undefined { return internals(reg).serverId(); }
+
+/** PACKAGE-INTERNAL: the registry connection's live `max_payload`. One connection's INFO describes
+ *  one server only; it never stands in for a cluster-wide assertion. */
+export function registryMaxPayload(reg: LifecycleRegistry): number | undefined {
+  return internals(reg).maxPayload();
 }
 
 /** PACKAGE-INTERNAL: the barrier's CLOSED enumeration seam (SPEC 13.9). Returns the sealed
@@ -556,6 +532,14 @@ export async function readLifecycleMappingLeader(
     throw new EpEnvelopeError("unavailable", `the leader-served lifecycle-head read for "${owner}/${actor}" failed; an authority read fails closed, never open (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
   }
   if (entry === undefined) return undefined;
+  await assertOrdinaryNativeMutation({
+    async getRecord(recordKey) {
+      const row = await readRecordLeader(jsm, space, recordKey);
+      return row === undefined ? undefined : {
+        value: enc.encode(JSON.stringify(row.value)), revision: row.revision, operation: "PUT",
+      };
+    },
+  }, { owner, actor });
   return { mapping: parseMapping(enc.encode(JSON.stringify(entry.value)), key, owner, actor), revision: entry.revision };
 }
 

@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "implementations/cli/smoke/up-control-plane-guidance.smoke.ts"
+  ],
+  "guard": "A retained cotal up reports the control-plane cause and its own next step without appending a generic supervise remedy, and states the spawn and retirement consequence.",
+  "command": "pnpm smoke:up-control-plane-guidance:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/up-control-plane-guidance.json",
+  "why": [
+    "The smoke invokes the built shipped CLI against owned ephemeral brokers. Its malformed canonical manager record reaches the cutover preflight and the real startup catch; a clean broker-only boot is the positive control."
+  ],
+  "mutations": [
+    {
+      "name": "restore the catch-owned generic supervise remedy",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "\"Spawn and retirement require a functioning control plane.\"]) stderrLine(\"  \", line, c.dim);",
+      "replace": "\"start one with: cotal supervise\"]) stderrLine(\"  \", line, c.dim);",
+      "expectRed": "control-plane refusal never appends the fixed supervise remedy",
+      "cell": "control-plane refusal never appends the fixed supervise remedy",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:up-control-plane-guidance:live",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

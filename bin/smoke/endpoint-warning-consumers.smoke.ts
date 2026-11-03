@@ -66,10 +66,10 @@ const sites: Site[] = [
     disposition: "surface",
     source: "implementations/web/src/web.ts",
     dist: "implementations/web/dist/web.js",
-    sourceNeedle: 'ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));',
-    distNeedle: 'ep.on("warning",(e)=>console.error(c.yellow("! "+e.message)));',
+    sourceNeedle: 'ep.on("warning", (e: Error) => console.error(c.yellow(lifecycle ? `! native dashboard endpoint reported a warning (${errorClassForLog(e)}); diagnostic body omitted` : "! " + e.message)));',
+    distNeedle: 'ep.on("warning",(e)=>console.error(c.yellow(lifecycle?`! native dashboard endpoint reported a warning (${errorClassForLog(e)}); diagnostic body omitted`:"! "+e.message)));',
     proof: "structural",
-    limit: "the shipped registration is proven; the colored stderr handler is not executed by this suite",
+    limit: "the shipped registration is proven; the colored stderr handler, including the service preset's redacted line, is not executed by this suite",
   },
   {
     cell: "feedback intake surfaces endpoint warnings through daemon stderr",
@@ -77,10 +77,10 @@ const sites: Site[] = [
     disposition: "surface",
     source: "implementations/delivery/src/feedback-intake.ts",
     dist: "implementations/delivery/dist/feedback-intake.js",
-    sourceNeedle: 'ep.on("warning", (e: Error) => console.error(c.red("! " + e.message)));',
-    distNeedle: 'ep.on("warning",(e)=>console.error(c.red("! "+e.message)));',
+    sourceNeedle: 'ep.on("warning", (e: Error) => console.error(c.red(hooks ? "! Native intake transport reported a warning; secret-bearing diagnostics are omitted." : "! " + e.message)));',
+    distNeedle: 'ep.on("warning",(e)=>console.error(c.red(hooks?"! Native intake transport reported a warning; secret-bearing diagnostics are omitted.":"! "+e.message)));',
     proof: "structural",
-    limit: "the shipped registration is proven; the stderr handler is not executed by this suite",
+    limit: "the shipped registration is proven; the stderr handler, including its redacted native line, is not executed by this suite",
   },
   {
     cell: "transient CLI commands surface endpoint warnings",
@@ -88,10 +88,32 @@ const sites: Site[] = [
     disposition: "surface",
     source: "implementations/cli/src/lib/transient.ts",
     dist: "implementations/cli/dist/lib/transient.js",
-    sourceNeedle: 'ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));',
-    distNeedle: 'ep.on("warning",(e)=>console.error(c.yellow("! "+e.message)));',
+    sourceNeedle: 'attempt.on("warning", (e: Error) => { if (opened) report("warning", e); else held.push(["warning", e]); });',
+    distNeedle: 'attempt.on("warning",(e)=>{if(opened)report("warning",e);elseheld.push(["warning",e]);});',
     proof: "structural",
     limit: "the shipped registration is proven; individual send/endpoints/personas commands are not spawned",
+  },
+  {
+    cell: "transient stream probe deliberately ignores recoverable side-channel warnings",
+    consumer: "CLI transient stream probe",
+    disposition: "ignore",
+    source: "implementations/cli/src/lib/transient.ts",
+    dist: "implementations/cli/dist/lib/transient.js",
+    sourceNeedle: 'probe.on("warning", () => {});',
+    distNeedle: 'probe.on("warning",()=>{});',
+    proof: "structural",
+    limit: "the explicit ignore is proven; the awaited stream-info result owns the probe verdict",
+  },
+  {
+    cell: "broker store probe deliberately ignores recoverable side-channel warnings",
+    consumer: "CLI broker stored-bytes probe",
+    disposition: "ignore",
+    source: "implementations/cli/src/lib/broker-store-health.ts",
+    dist: "implementations/cli/dist/lib/broker-store-health.js",
+    sourceNeedle: 'ep.on("warning", () => {});',
+    distNeedle: 'ep.on("warning",()=>{});',
+    proof: "structural",
+    limit: "the explicit ignore is proven; the awaited stored-bytes read owns the probe verdict",
   },
   {
     cell: "spawn manifest probe surfaces recoverable warnings without blocking deploy",
@@ -121,10 +143,10 @@ const sites: Site[] = [
     disposition: "surface",
     source: "implementations/cli/src/commands/join.ts",
     dist: "implementations/cli/dist/commands/join.js",
-    sourceNeedle: 'ep.on("warning", (e: Error) => print(c.yellow(`! ${e.message}`)));',
-    distNeedle: 'ep.on("warning",(e)=>print(c.yellow(`!${e.message}`)));',
+    sourceNeedle: 'ep.on("warning", (e: Error) => {',
+    distNeedle: 'ep.on("warning",(e)=>{',
     proof: "structural",
-    limit: "the shipped registration is proven; an interactive readline session is not started",
+    limit: "the shipped registration is proven; its prompt-safe printer and conditional inbox refusal are not executed by this suite",
   },
   {
     cell: "status snapshot deliberately ignores recoverable side-channel warnings",
@@ -160,15 +182,26 @@ const sites: Site[] = [
     limit: "the explicit ignore is proven; the awaited manager reply owns behavioral coverage",
   },
   {
-    cell: "spawn naming probe deliberately ignores recoverable advisory warnings",
-    consumer: "CLI spawn naming probe",
+    cell: "mesh naming probe deliberately ignores recoverable advisory warnings",
+    consumer: "CLI mesh naming probe (spawn, app-identity)",
     disposition: "ignore",
-    source: "implementations/cli/src/commands/spawn.ts",
-    dist: "implementations/cli/dist/commands/spawn.js",
+    source: "implementations/cli/src/lib/live-names.ts",
+    dist: "implementations/cli/dist/lib/live-names.js",
     sourceNeedle: 'ep.on("warning", ignoreNameProbeWarning);',
     distNeedle: 'ep.on("warning",ignoreNameProbeWarning);',
     proof: "structural",
     limit: "the explicit ignore is proven; the advisory roster settle is not run",
+  },
+  {
+    cell: "app identity provisioner deliberately ignores recoverable side-channel warnings",
+    consumer: "CLI app-identity provisioner",
+    disposition: "ignore",
+    source: "implementations/cli/src/lib/app-user-identity.ts",
+    dist: "implementations/cli/dist/lib/app-user-identity.js",
+    sourceNeedle: 'provisioner.on("warning", () => {});',
+    distNeedle: 'provisioner.on("warning",()=>{});',
+    proof: "structural",
+    limit: "the explicit ignore is proven; the awaited provisioning calls own the verdict",
   },
   {
     cell: "static spawn provisioner surfaces recoverable warnings",
@@ -194,14 +227,25 @@ const sites: Site[] = [
   },
   {
     cell: "MeshView consumes endpoint warnings into its shared operator model",
-    consumer: "CLI MeshView",
+    consumer: "workspace MeshView",
     disposition: "surface",
-    source: "implementations/cli/src/view/mesh-view.ts",
-    dist: "implementations/cli/dist/view/mesh-view.js",
+    source: "packages/workspace/src/view/mesh-view.ts",
+    dist: "packages/workspace/dist/view/mesh-view.js",
     sourceNeedle: 'this.ep.on("warning", this.onWarning);',
     distNeedle: 'this.ep.on("warning",this.onWarning);',
     proof: "behavioral",
     limit: "view.smoke drives this registration and checks both the snapshot and stream event",
+  },
+  {
+    cell: "native chat session ends itself when a reconnect finds its consumer gone",
+    consumer: "workspace native chat session",
+    disposition: "surface",
+    source: "packages/workspace/src/chat/native-session.ts",
+    dist: "packages/workspace/dist/chat/native-session.js",
+    sourceNeedle: 'ep.on("warning", this.onWarning);',
+    distNeedle: 'ep.on("warning",this.onWarning);',
+    proof: "behavioral",
+    limit: "chat-stand-in drives this registration over a stand-in endpoint and checks the end reason and exit 5",
   },
   {
     cell: "plain console renders MeshView warnings",
@@ -209,8 +253,8 @@ const sites: Site[] = [
     disposition: "surface",
     source: "implementations/cli/src/render.ts",
     dist: "implementations/cli/dist/render.js",
-    sourceNeedle: 'view.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));',
-    distNeedle: 'view.on("warning",(e)=>console.error(c.yellow("! "+e.message)));',
+    sourceNeedle: 'view.on("warning", (e: Error) => report(c.yellow("! " + oneLine(e.message))));',
+    distNeedle: 'view.on("warning",(e)=>report(c.yellow("! "+oneLine(e.message))));',
     proof: "structural",
     limit: "the shipped registration is proven; console stderr is not captured by this suite",
   },
@@ -224,6 +268,17 @@ const sites: Site[] = [
     distNeedle: 'ep.on("warning",say);',
     proof: "structural",
     limit: "delivery-renewal owns the daemon behavior; this census keeps the shipped registration in the full closure",
+  },
+  {
+    cell: "Linear user-auth serve deliberately ignores recoverable side-channel warnings",
+    consumer: "Linear user-auth serve endpoint",
+    disposition: "ignore",
+    source: "implementations/linear/src/user-auth-serve.ts",
+    dist: "implementations/linear/dist/user-auth-serve.js",
+    sourceNeedle: 'ep.on("warning", () => {});',
+    distNeedle: 'ep.on("warning",()=>{});',
+    proof: "structural",
+    limit: "the explicit ignore is proven; the awaited ready confirmation and the connection handler own the serve verdict",
   },
 ];
 
@@ -254,16 +309,20 @@ assert.equal(distPopulation, sites.length, "the published-artifact census has no
 assert.ok(sites.some((site) => site.disposition === "ignore"), "the census cannot silently erase all deliberate ignores");
 assert.ok(sites.some((site) => site.proof === "behavioral"), "the census names its behavioral companions");
 
+// These are esbuild bundles built with `--minify-whitespace`, which also drops the parentheses
+// around a single arrow parameter, so the registration reads `e=>` here and `(e) =>` in the tsc
+// output the rows above name. Both spellings are the same registration; each side is matched
+// against what its own builder emits.
 for (const path of BUNDLED_MESH_AGENT_ARTIFACTS) {
   const body = compact(readFileSync(join(root, path), "utf8"));
   assert.equal(
-    occurrences(body, 'this.ep.on("warning",(e)=>this.handleEndpointWarning(e));'),
+    occurrences(body, 'this.ep.on("warning",e=>this.handleEndpointWarning(e));'),
     1,
     `${path} carries the MeshAgent warning registration in the actual customer-loaded bundle`,
   );
 }
 
-const builtRoots = [join(root, "extensions"), join(root, "implementations")];
+const builtRoots = [join(root, "extensions"), join(root, "implementations"), join(root, "packages")];
 const discovered = new Set<string>();
 const walkBuilt = (path: string): void => {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
@@ -271,7 +330,7 @@ const walkBuilt = (path: string): void => {
     const child = join(path, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === "dist" || entry.name === "plugin" || path.includes("/dist") || path.includes("/plugin")) walkBuilt(child);
-      else if (path === join(root, "extensions") || path === join(root, "implementations")) walkBuilt(child);
+      else if (builtRoots.includes(path)) walkBuilt(child);
       continue;
     }
     if (!/\.(?:js|cjs)$/.test(entry.name) || statSync(child).size > 8_000_000) continue;

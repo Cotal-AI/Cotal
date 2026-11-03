@@ -141,7 +141,7 @@ export interface ClaudeEntry {
 }
 
 /**
- * (A) RUN-OPENING and (B) ATTRIBUTION in one table, because they are one enumeration read two ways:
+ * RUN-OPENING and ATTRIBUTION in one table, because they are one enumeration read two ways:
  * a `null` means "known, and NOT a turn"; a string means "a turn, attributed thus".
  *
  * **ENUMERATED, NEVER INFERRED.** Every key here was read off a real session or off
@@ -186,9 +186,8 @@ const ORIGIN_RULE: Record<string, "human" | "channel" | "auto-continuation" | nu
  *
  * **THIS IS NOT `promptSource`-PRESENCE.** That predicate asks "is the field there?", and the field
  * is there on task-notifications and caveats as `"system"`, so it would open runs on harness
- * plumbing. This asks "is the value exactly `sdk`?", in a branch that only runs when `origin` is
- * absent, against a two-value measured population. Different predicate, different position,
- * measured rather than inferred from a partition of three captures.
+ * plumbing. When `origin` is absent, `ABSENT_ORIGIN_RULE` enumerates the accepted `promptSource`
+ * values and their attribution. Field presence alone does not decide whether a record opens a run.
  */
 const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
   sdk: "sdk",
@@ -218,7 +217,7 @@ const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
 };
 
 /**
- * (A) run-opening and (B) attribution, read off whichever of the two tables above applies.
+ * Run-opening and attribution, read off whichever of the two tables above applies.
  *
  * **DELIBERATELY NOT KEYED ON `entrypoint`**, which is the session-level marker a reader would
  * reach for first. It is real — 88 sessions, exactly two values (`cli` × 69, `sdk-cli` × 19), no
@@ -399,7 +398,7 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // picks it up. Naming it is what stops it being "the one that got through".
       if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) return null;
 
-      // (A) RUN-OPENING — "did a turn begin?" — an ENUMERATION, never an inference.
+      // RUN-OPENING — "did a turn begin?" — an ENUMERATION, never an inference.
       //
       // A turn-initiating input opens a run whatever authored it: an external observer asks what
       // work this agent did and what triggered it, not whether a person typed it. So `"channel"` —

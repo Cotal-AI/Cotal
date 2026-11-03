@@ -126,6 +126,18 @@ export interface PlaneClaimHold {
   release(): Promise<void>;
 }
 
+/** The frozen provenance of one acquired hold: its space and the original held-check closure. */
+export interface GenuinePlaneHold { readonly space: string; readonly assertHeld: ScanGuard["assertHeld"] }
+/** Every hold `acquirePlaneClaim` returned. A structural object with the same fields is not a hold,
+ *  and replacing a hold's `guard` later does not change the check its provenance carries. */
+const GENUINE_HOLDS = new WeakMap<PlaneClaimHold, GenuinePlaneHold>();
+
+/** The provenance captured when this module returned `hold`, or `undefined` for any other object.
+ *  Package-internal consumers that act under the claim call its `assertHeld`, never `hold.guard`. */
+export function genuinePlaneHold(hold: unknown): GenuinePlaneHold | undefined {
+  return typeof hold === "object" && hold !== null ? GENUINE_HOLDS.get(hold as PlaneClaimHold) : undefined;
+}
+
 /** `details[].kind` on every plane-claim refusal (SPEC 13.13). The copy is written for an
  *  operator and the codes pair unlike cases, so a host that retries contention without masking
  *  corruption keys on `reason`. */
@@ -313,7 +325,7 @@ export async function acquirePlaneClaim(opts: {
         `the plane claim for space "${space}" is no longer held by this process (${row === undefined ? "row missing or unparseable" : row.state !== "held" || row.claimId !== claimId || row.generation !== gen ? `now ${row.state} under claim ${row.claimId} generation ${row.generation}` : "the row's scanner tuples no longer match this plane's connections"}, expected held under ${claimId} generation ${gen}); ${what} - a successor plane may own the sealed scanners (SPEC 13.13, fail-closed)`);
     }
   };
-  return {
+  const hold: PlaneClaimHold = {
     claimId,
     generation: gen,
     guard: { assertHeld },
@@ -351,6 +363,8 @@ export async function acquirePlaneClaim(opts: {
       return flight;
     },
   };
+  GENUINE_HOLDS.set(hold, Object.freeze({ space, assertHeld }));
+  return hold;
 }
 
 /**

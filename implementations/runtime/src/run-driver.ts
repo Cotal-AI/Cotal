@@ -36,6 +36,8 @@ import {
   assertJournalTailIntact,
   RunJournalTailTruncated,
   type RunStatusValue,
+  type RunFailure,
+  runFailureOf,
   RunSuperseded,
   RunJournalStalled,
   StaleLeaseToken,
@@ -53,6 +55,8 @@ import {
   resume as resumeProgram,
   RunReleased,
   RunHeld,
+  Cancelled,
+  type RootCancellationSource,
   resolvePins,
   RuntimeFault,
   ENGINE_LANGUAGE_VERSION,
@@ -85,11 +89,13 @@ interface HostedEngineRequest {
     readonly runId: string;
     readonly handler: EffectHandler;
     readonly shouldStop: () => string | undefined;
+    readonly cancellation?: RootCancellationSource;
     readonly pins: RunPins;
     readonly seed?: string;
     readonly file?: string;
     readonly effectCeiling?: number;
     readonly stepBudget?: number;
+    readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
   };
 }
 
@@ -111,10 +117,12 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     entries: r.entries,
     ...(r.resultBytes !== undefined ? { resultBytes: r.resultBytes } : {}),
     shouldStop: r.options.shouldStop,
+    ...(r.options.cancellation !== undefined ? { cancellation: r.options.cancellation } : {}),
     ...(r.options.file !== undefined ? { file: r.options.file } : {}),
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
     ...(r.options.effectCeiling !== undefined ? { effectCeiling: r.options.effectCeiling } : {}),
     ...(r.options.stepBudget !== undefined ? { stepBudget: r.options.stepBudget } : {}),
+    ...(r.options.onLog !== undefined ? { onLog: r.options.onLog } : {}),
   });
 
 /**
@@ -297,6 +305,12 @@ export interface DriveRequest {
   readonly workExpiry?: number;
   /** An operator's pause, honoured at the next effect boundary. */
   readonly pause?: PauseToken;
+  /** Where the program's `log(...)` lines go. They are not journalled. */
+  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
+  /** Root cancellation established by the hosting manager after observing its durable marker. */
+  readonly cancellation?: RootCancellationSource;
+  /** Shared host observation for classifying a revoked channel effect before root signalling. */
+  readonly cancellationObserved?: () => string | undefined;
   /**
    * Repair external state bound to the PREVIOUS holder, once this driver holds the run and before
    * the program is resumed.
@@ -632,11 +646,13 @@ async function drive(
     runId: req.runId,
     handler: req.handler,
     shouldStop,
+    ...(req.cancellation !== undefined ? { cancellation: req.cancellation } : {}),
     pins,
     ...(req.seed !== undefined ? { seed: req.seed } : {}),
     ...(req.file !== undefined ? { file: req.file } : {}),
     ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
     ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
+    ...(req.onLog !== undefined ? { onLog: req.onLog } : {}),
   };
 
   // The spec is created AFTER the activation, not before: until this driver holds the run it has
@@ -727,7 +743,8 @@ async function drive(
     }
     // The host stopping is the same kind of answer: this driver no longer holds the run, and the
     // program has neither failed nor finished.
-    if (e instanceof RunReleased) {
+    if (e instanceof RunReleased || (e instanceof Cancelled
+      && (req.cancellation?.reason !== undefined || req.cancellationObserved?.() !== undefined))) {
       await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
@@ -741,7 +758,7 @@ async function drive(
     // A program that FAILED is a fact about the program, and the run record is where a reader looks
     // for it. Recorded, then re-raised: swallowing it here would leave the caller believing the
     // driver finished normally.
-    await noteFinal(req, "failed", appender.journalHigh, specRevision, statusRevision);
+    await noteFinal(req, "failed", appender.journalHigh, specRevision, statusRevision, runFailureOf(e));
     throw e;
   }
 }
@@ -770,6 +787,7 @@ async function note(
   journalHigh: number,
   observedSpecRevision: number,
   expectedRevision: number | undefined,
+  failure?: RunFailure,
 ): Promise<number> {
   return await writeRunStatus(
     req.kv,
@@ -783,6 +801,7 @@ async function note(
       fencingToken: req.lease.fencingToken,
       journalHigh,
       at: req.handler.now(),
+      ...(failure !== undefined ? { failure } : {}),
     },
     expectedRevision,
   );
@@ -810,9 +829,10 @@ async function noteFinal(
   journalHigh: number,
   observedSpecRevision: number,
   expectedRevision: number | undefined,
+  failure?: RunFailure,
 ): Promise<void> {
   try {
-    await note(req, state, journalHigh, observedSpecRevision, expectedRevision);
+    await note(req, state, journalHigh, observedSpecRevision, expectedRevision, failure);
   } catch (e) {
     console.error(
       `run ${req.runId}: the "${state}" status write did not land (${(e as Error).message}); `

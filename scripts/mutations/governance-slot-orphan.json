@@ -9,8 +9,8 @@
     {
       "name": "RECOVERY SEVERED at the comparison: the in-flight arm swallows the orphan case",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "  if (observed === slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
-      "replace": "  if (observed >= slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
+      "find": "  if (observed === slot.generation)\n    throw refuse(\"conflict\", \"in-flight\", ",
+      "replace": "  if (observed >= slot.generation)\n    throw refuse(\"conflict\", \"in-flight\", ",
       "expectRed": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "cell": "B REGISTERS - the state the operator could not exit is now exited by B's ordinary start",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
@@ -31,8 +31,8 @@
     {
       "name": "GUARD SEVERED: `<` widened to `<=`, so the in-flight refusal answers the WRONG code and the wrong reason",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "  if (observed < slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}",
-      "replace": "  if (observed <= slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}",
+      "find": "  if (observed < slot.generation)\n    throw refuse(\"unavailable\", \"behind\", ",
+      "replace": "  if (observed <= slot.generation)\n    throw refuse(\"unavailable\", \"behind\", ",
       "expectRed": "B REFUSES while A's registration is genuinely in flight - a live slot is never stolen",
       "cell": "B REFUSES while A's registration is genuinely in flight - a live slot is never stolen",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
@@ -42,8 +42,8 @@
     {
       "name": "GUARD SEVERED: the in-flight equality arm can never fire, so a LIVE in-flight slot is stealable",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "  if (observed === slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
-      "replace": "  if (observed < slot.generation)\n    throw new EpEnvelopeError(\"conflict\", `${held}; its issuance gate is still at generation ${slot.generation}",
+      "find": "  if (observed === slot.generation)\n    throw refuse(\"conflict\", \"in-flight\", ",
+      "replace": "  if (observed < slot.generation)\n    throw refuse(\"conflict\", \"in-flight\", ",
       "expectRed": "B REFUSES while A's registration is genuinely in flight - a live slot is never stolen",
       "cell": "B REFUSES while A's registration is genuinely in flight - a live slot is never stolen",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
@@ -53,7 +53,7 @@
     {
       "name": "GUARD SEVERED: a throwing observation is treated as absence rather than a refusal",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "    observed = await observeHolderGeneration(slot.instanceId);\n  } catch (e) {\n    throw new EpEnvelopeError(\"unavailable\", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);\n  }",
+      "find": "    observed = await observeHolderGeneration(slot.instanceId);\n  } catch (e) {\n    throw refuse(\"unavailable\", \"unreadable\", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);\n  }",
       "replace": "    observed = await observeHolderGeneration(slot.instanceId);\n  } catch {\n    observed = Number.MAX_SAFE_INTEGER;\n  }",
       "expectRed": "the observation THROWS -> `unavailable`; unreadable is not absent",
       "cell": "the observation THROWS -> `unavailable`; unreadable is not absent",
@@ -64,8 +64,8 @@
     {
       "name": "GUARD SEVERED: a garbled observation is coerced to a number instead of refused",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "  if (!wireInt(observed))\n    throw new EpEnvelopeError(\"unavailable\", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);",
-      "replace": "  if (!wireInt(observed)) {\n    observed = Number(observed);\n    if (!wireInt(observed)) throw new EpEnvelopeError(\"unavailable\", `${held}: unobservable`);\n  }",
+      "find": "  if (!wireInt(observed))\n    throw refuse(\"unavailable\", \"garbled\", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);",
+      "replace": "  if (!wireInt(observed)) {\n    observed = Number(observed);\n    if (!wireInt(observed)) throw refuse(\"unavailable\", \"garbled\", `${held}: unobservable`);\n  }",
       "expectRed": "a non-integer observation -> `unavailable`; a garbled generation is never coerced",
       "cell": "a non-integer observation -> `unavailable`; a garbled generation is never coerced",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
@@ -75,7 +75,7 @@
     {
       "name": "GUARD SEVERED: the ahead-of-us refusal is dropped, so a stale read licenses a reclaim",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "  if (observed < slot.generation)\n    throw new EpEnvelopeError(\"unavailable\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);\n",
+      "find": "  if (observed < slot.generation)\n    throw refuse(\"unavailable\", \"behind\", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);\n",
       "replace": "",
       "expectRed": "an observation BEHIND the slot's stamp -> `unavailable`; ahead-or-garbled never licenses a reclaim",
       "cell": "an observation BEHIND the slot's stamp -> `unavailable`; ahead-or-garbled never licenses a reclaim",
@@ -86,7 +86,7 @@
     {
       "name": "SEAM OPTIONALITY SEVERED: an absent seam silently reclaims instead of refusing",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "  if (typeof observeHolderGeneration !== \"function\")\n    throw new EpEnvelopeError(\"conflict\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);",
+      "find": "  if (typeof observeHolderGeneration !== \"function\")\n    throw refuse(\"conflict\", \"no-seam\", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);",
       "replace": "  if (typeof observeHolderGeneration !== \"function\") return;",
       "expectRed": "NO SEAM wired -> refuses exactly as today, so no caller silently gains a reclaim it never asked for",
       "cell": "NO SEAM wired -> refuses exactly as today, so no caller silently gains a reclaim it never asked for",

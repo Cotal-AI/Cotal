@@ -26,7 +26,7 @@
  * Run: pnpm smoke:ep-serve-gate   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -35,9 +35,25 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError,
   createEndpointStreams,
+  createSpaceAuth,
+  newIdentity,
+  mintCreds,
+  credsClaims,
+  credentialIdOf,
+  DEV_OWNER,
+  principalKey,
+  compileContract,
+  contractDigest,
+  recordsBucket,
+  registerServingInstance,
   epAuthBucket,
   epgateKey,
+  epcredFamilyPrefix,
   epcredRowKey,
+  walkKvLatest,
+  markLedgerRowRevoked,
+  commitSiblingIssuance,
+  finalizeServeIssuance,
   parseEndpointGate,
   parseLedgerRow,
   mintLifecycleUid,
@@ -156,11 +172,198 @@ try {
   c("a reopen with a STALE token LOSES (only the holder of the current freeze reopens)", (await bar3.reopen(token3! - 1, { generation: 99, processEpoch: 0, registrationRevision: 9, nameAuthorityRevision: 0 })) === false);
   c("the rightful holder still reopens at its token", (await bar3.reopen(token3!, { generation: obs3!.generation + 1, processEpoch: obs3!.processEpoch, registrationRevision: 3, nameAuthorityRevision: obs3!.nameAuthorityRevision })) === true);
 
+  console.log("F. same-second serve retry, epoch-pinned takeover uniqueness, revoked-row conflict, and sibling issuance tags (#3856)");
+  const recordsKv = await new Kvm(nc).open(recordsBucket(SPACE));
+  const auth = await createSpaceAuth(SPACE);
+  const contract = compileContract({ root: { type: "object", properties: { n: { type: "number" } }, additionalProperties: false } });
+  const doc = {
+    urn: "ai.cotal.manager", revision: 1, attributes: [], events: [],
+    commands: [{ name: "status", class: "ephemeral" as const, targeted: false, capability: "manager.call", inputDigest: contract.closureDigest, outputDigest: contract.closureDigest }],
+  };
+  const docRoot = contractDigest(doc);
+  const manifest = { v: 1 as const, root: docRoot, members: [] as string[] };
+  const dc = contractDigest(manifest);
+  const artifacts = new Map<string, unknown>([[dc, manifest], [docRoot, doc]]);
+  const readClusterArtifact = (d: string) => artifacts.get(d);
+  const authority = { authorize: (name: string, owner: string) => ({ authorized: name === ENDPOINT && owner === DEV_OWNER, revision: 0 }) };
+  const familyFor = async (iid: string) =>
+    (await walkKvLatest(kv, `${epcredFamilyPrefix(ENDPOINT, iid)}.>`)).filter((e) => e.operation === "PUT").map((e) => parseLedgerRow(e.value, e.key));
+  const alignToSecond = () => wait(1000 - (Date.now() % 1000) + 5);
+
+  const serveId = newIdentity();
+  const iidF = mintLifecycleUid();
+  await provisionEndpointGateOpen(kv, { endpoint: ENDPOINT, instanceId: iidF, principal: principalKey(DEV_OWNER, serveId.id).key });
+  const reg1 = await registerServingInstance(recordsKv, {
+    space: SPACE,
+    spec: { endpoint: ENDPOINT, owner: DEV_OWNER, clusterDigests: [dc], protocol: { v: 1 } },
+    instanceId: iidF,
+    registrant: { owner: DEV_OWNER },
+    authority,
+    barrier: endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId: iidF, opId: mintLifecycleUid() }),
+    readClusterArtifact,
+  });
+  const fenceF = () => serveIssuanceGateKv(kv, SPACE, { endpoint: ENDPOINT, instanceId: iidF });
+
+  let sameSecondServe: { a: string; b: string; iat: number; exp: number } | undefined;
+  for (let attempt = 0; attempt < 10 && !sameSecondServe; attempt++) {
+    await alignToSecond();
+    const a = await mintCreds(auth, serveId, "endpoint-serve", { serveIssuance: fenceF(), endpointServe: reg1.grant });
+    const b = await mintCreds(auth, serveId, "endpoint-serve", { serveIssuance: fenceF(), endpointServe: reg1.grant });
+    const ca = credsClaims(a), cb = credsClaims(b);
+    if (ca.iat !== undefined && ca.iat === cb.iat && ca.exp !== undefined && ca.exp === cb.exp)
+      sameSecondServe = { a, b, iat: ca.iat, exp: ca.exp };
+  }
+  if (!sameSecondServe) throw new Error("could not land two endpoint-serve mints in one second");
+  const rowsSameSec = await familyFor(iidF);
+  c("two same-second endpoint-serve mints for the same nkey and epoch-pinned grant sign identical bytes and share credentialId",
+    sameSecondServe.a === sameSecondServe.b && credentialIdOf(sameSecondServe.a) === credentialIdOf(sameSecondServe.b));
+  c("same-second endpoint-serve re-mint at one epoch idempotently re-stages the single active epcred row and keeps the gate open",
+    rowsSameSec.length === 1 && rowsSameSec[0].state === "active"
+    && rowsSameSec[0].credentialId === credentialIdOf(sameSecondServe.a)
+    && (await fenceF().observe())?.state === "open",
+    rowsSameSec.map((r) => ({ id: r.credentialId, state: r.state })));
+
+  // Later-second renewal for the same nkey and grant gets a fresh iat/exp and writes a second active row.
+  while (Math.floor(Date.now() / 1000) <= sameSecondServe.iat) await wait(20);
+  const laterCred = await mintCreds(auth, serveId, "endpoint-serve", { serveIssuance: fenceF(), endpointServe: reg1.grant });
+  const rowsLater = await familyFor(iidF);
+  c("a later-second endpoint-serve renewal for the same nkey and grant writes a distinct active epcred row",
+    credsClaims(laterCred).iat! > sameSecondServe.iat
+    && credentialIdOf(laterCred) !== credentialIdOf(sameSecondServe.a)
+    && rowsLater.length === 2 && rowsLater.every((r) => r.state === "active"));
+
+  // Takeover re-registration within the same Unix second: the epoch-pinned grant distinguishes the
+  // successor credential from its revoked predecessor even when iat/exp and the nkey are identical.
+  let sameSecondEpoch: { pred: string; succ: string; iid: string; succExp: number; grant: typeof reg1.grant } | undefined;
+  for (let attempt = 0; attempt < 10 && !sameSecondEpoch; attempt++) {
+    const iidE = mintLifecycleUid();
+    await provisionEndpointGateOpen(kv, { endpoint: ENDPOINT, instanceId: iidE, principal: principalKey(DEV_OWNER, serveId.id).key });
+    const rA = await registerServingInstance(recordsKv, {
+      space: SPACE,
+      spec: { endpoint: ENDPOINT, owner: DEV_OWNER, clusterDigests: [dc], protocol: { v: 1 } },
+      instanceId: iidE,
+      registrant: { owner: DEV_OWNER },
+      authority,
+      barrier: endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId: iidE, opId: mintLifecycleUid() }),
+      readClusterArtifact,
+    });
+    const fenceE = () => serveIssuanceGateKv(kv, SPACE, { endpoint: ENDPOINT, instanceId: iidE });
+    await alignToSecond();
+    const pred = await mintCreds(auth, serveId, "endpoint-serve", { serveIssuance: fenceE(), endpointServe: rA.grant });
+    const rB = await registerServingInstance(recordsKv, {
+      space: SPACE,
+      spec: { endpoint: ENDPOINT, owner: DEV_OWNER, clusterDigests: [dc], protocol: { v: 1 } },
+      instanceId: iidE,
+      registrant: { owner: DEV_OWNER },
+      authority,
+      barrier: endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId: iidE, opId: mintLifecycleUid(), evict: (ps) => ps.map(() => true) }),
+      readClusterArtifact,
+    });
+    const succ = await mintCreds(auth, serveId, "endpoint-serve", { serveIssuance: fenceE(), endpointServe: rB.grant });
+    const cp = credsClaims(pred), cs = credsClaims(succ);
+    if (cp.iat !== undefined && cp.iat === cs.iat && cp.exp !== undefined && cp.exp === cs.exp && rB.grant.epoch > rA.grant.epoch)
+      sameSecondEpoch = { pred, succ, iid: iidE, succExp: cs.exp, grant: rB.grant };
+  }
+  if (!sameSecondEpoch) throw new Error("could not land predecessor and successor epoch serve mints in one second");
+  const rowsEpoch = await familyFor(sameSecondEpoch.iid);
+  c("the epoch-pinned serve grant gives a re-registered successor a distinct credentialId from its revoked predecessor within the same Unix second",
+    credentialIdOf(sameSecondEpoch.succ) !== credentialIdOf(sameSecondEpoch.pred)
+    && rowsEpoch.length === 2
+    && rowsEpoch.find((r) => r.credentialId === credentialIdOf(sameSecondEpoch.pred))?.state === "revoked"
+    && rowsEpoch.find((r) => r.credentialId === credentialIdOf(sameSecondEpoch.succ))?.state === "active");
+
+  // Revoked-row resurrection refusal: if an epcred row is revoked, re-staging the same credentialId
+  // conflicts and leaves the row revoked, never resurrecting it to active.
+  const succId = credentialIdOf(sameSecondEpoch.succ);
+  await markLedgerRowRevoked(kv, epcredRowKey(ENDPOINT, sameSecondEpoch.iid, succId));
+  await rejects("re-staging a revoked serve credentialId CONFLICTS and never resurrects the revoked row",
+    () => finalizeServeIssuance(
+      serveIssuanceGateKv(kv, SPACE, { endpoint: ENDPOINT, instanceId: sameSecondEpoch.iid }),
+      sameSecondEpoch.grant,
+      { credentialId: succId, credentialKey: serveId.id, holderActor: serveId.id, sourceChain: ["root"], exp: sameSecondEpoch.succExp },
+    ),
+    "conflict");
+  c("the conflicted row stays REVOKED after the refused re-stage",
+    parseLedgerRow((await kv.get(epcredRowKey(ENDPOINT, sameSecondEpoch.iid, succId)))!.value, epcredRowKey(ENDPOINT, sameSecondEpoch.iid, succId)).state === "revoked");
+
+  // Sibling controls: goal-writer and session-ledger carry no epoch-pinned grant, so userTags stamps
+  // a random issuance: tag that makes two same-second mints for one nkey distinct.
+  const gwId = newIdentity(), swId = newIdentity();
+  let sameSecondSiblings: { g1: string; g2: string; s1: string; s2: string; exp: number } | undefined;
+  for (let attempt = 0; attempt < 10 && !sameSecondSiblings; attempt++) {
+    await alignToSecond();
+    const g1 = await mintCreds(auth, gwId, "goal-writer", { goalWriter: { endpoint: ENDPOINT } });
+    const g2 = await mintCreds(auth, gwId, "goal-writer", { goalWriter: { endpoint: ENDPOINT } });
+    const s1 = await mintCreds(auth, swId, "session-ledger");
+    const s2 = await mintCreds(auth, swId, "session-ledger");
+    const cg1 = credsClaims(g1), cg2 = credsClaims(g2), cs1 = credsClaims(s1), cs2 = credsClaims(s2);
+    if (cg1.iat !== undefined && cg1.iat === cg2.iat && cg1.iat === cs1.iat && cg1.iat === cs2.iat && cg1.exp !== undefined)
+      sameSecondSiblings = { g1, g2, s1, s2, exp: cg1.exp };
+  }
+  if (!sameSecondSiblings) throw new Error("could not land same-second goal-writer and session-ledger mints");
+  for (const [cred, id] of [
+    [sameSecondSiblings.g1, gwId.id],
+    [sameSecondSiblings.g2, gwId.id],
+    [sameSecondSiblings.s1, swId.id],
+    [sameSecondSiblings.s2, swId.id],
+  ] as const) {
+    const obs = (await fenceF().observe())!;
+    await commitSiblingIssuance(fenceF(), obs, {
+      credentialId: credentialIdOf(cred), credentialKey: id, holderPrincipal: principalKey(DEV_OWNER, id).key,
+      endpoint: ENDPOINT, lifecycleUid: iidF, sourceChain: ["root"], state: "active", exp: sameSecondSiblings.exp,
+      generation: obs.generation, processEpoch: obs.processEpoch,
+      registrationRevision: obs.registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
+    });
+  }
+  const rowsWithSiblings = await familyFor(iidF);
+  c("two same-second goal-writer mints for one nkey get distinct credentialIds and stage two active epcred rows via userTags issuance:",
+    credentialIdOf(sameSecondSiblings.g1) !== credentialIdOf(sameSecondSiblings.g2)
+    && rowsWithSiblings.filter((r) => r.holderPrincipal === principalKey(DEV_OWNER, gwId.id).key && r.state === "active").length === 2);
+  c("two same-second session-ledger mints for one nkey get distinct credentialIds and stage two active epcred rows via userTags issuance:",
+    credentialIdOf(sameSecondSiblings.s1) !== credentialIdOf(sameSecondSiblings.s2)
+    && rowsWithSiblings.filter((r) => r.holderPrincipal === principalKey(DEV_OWNER, swId.id).key && r.state === "active").length === 2);
+
   await nc.drain();
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
+}
+
+// Shipped source and compiled dist comments state the real uniqueness and retry mechanisms (#3856).
+{
+  const coreRoot = join(import.meta.dirname, "..");
+  const repoRoot = join(coreRoot, "..", "..");
+  const provisionSurfaces = [
+    join(coreRoot, "src/provision.ts"),
+    ...(existsSync(join(coreRoot, "dist/provision.js")) ? [join(coreRoot, "dist/provision.js")] : []),
+  ].map((p) => readFileSync(p, "utf8"));
+  const serviceSurfaces = [
+    join(coreRoot, "src/endpoint-service.ts"),
+    ...(existsSync(join(coreRoot, "dist/endpoint-service.d.ts")) ? [join(coreRoot, "dist/endpoint-service.d.ts")] : []),
+  ].map((p) => readFileSync(p, "utf8"));
+  const managerSurfaces = [
+    join(repoRoot, "implementations/manager/src/manager.ts"),
+    ...(existsSync(join(repoRoot, "implementations/manager/dist/manager.js")) ? [join(repoRoot, "implementations/manager/dist/manager.js")] : []),
+  ].map((p) => readFileSync(p, "utf8"));
+
+  c("provision.ts and dist/provision.js omit the false fresh exp/iat per-issuance uniqueness claim and name the epoch-pinned grant and same-second active retry",
+    provisionSurfaces.every((t) =>
+      !t.includes("has distinct bytes (fresh exp/iat)")
+      && t.includes("epoch-pinned serve grant (`endpointServe.epoch` in the permission rows)")
+      && t.includes("a same-second renewal")
+      && t.includes("re-stages the same active row")));
+  c("endpoint-service.ts and dist surfaces describe distinct JWTs (new epoch or later second) vs byte-identical same-second active retries",
+    serviceSurfaces.every((t) =>
+      !t.includes("Because `credentialId` is a per-JWT digest, a re-mint is a new id, never an overwrite.")
+      && !t.includes("unique per JWT so a\n   *  standing renewal never overwrites the prior row.")
+      && t.includes("byte-identical same-second re-mint at one")));
+  c("manager.ts and dist/manager.js attribute goal-writer and session-ledger per-issuance uniqueness to the random issuance: tag in userTags",
+    managerSurfaces.every((t) =>
+      !t.includes("every renewal stages a distinct ledger")
+      && t.includes("`mintCreds` stamps a random `issuance:` tag on `goal-writer` (`userTags`)")
+      && t.includes("Because `mintCreds` stamps a random `issuance:` tag on")
+      && t.includes("`session-ledger` (`userTags`)")));
 }
 
 console.log(`\n${fail === 0 ? "ENDPOINT-SERVE GATE SMOKE OK ✅" : "ENDPOINT-SERVE GATE SMOKE FAILED"}  (${ok} passed, ${fail} failed)`);

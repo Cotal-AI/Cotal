@@ -34,7 +34,7 @@
  * Run: pnpm smoke:web-graph-boot
  */
 import { openFeed, type FeedHandlers, type FeedSource } from "../client/src/api/feed.js";
-import type { CotalMessage } from "../client/src/api/types.js";
+import type { ChannelInfo, CotalMessage } from "../client/src/api/types.js";
 import type { Api } from "../client/src/state/controller.js";
 import { pillState } from "../client/src/lib/membership.js";
 import { startDashboard } from "../client/src/state/boot.js";
@@ -75,7 +75,7 @@ const liveMembers = { asOf: NOW, members: [{ id: "local.X", live: ["general"], d
 /** A FRESH DASHBOARD: its own store, its own feed, its own held reads. A section that needs a
  *  different boot ordering than the section before it cannot reuse a settled one, and one that
  *  quietly did would be asserting about a dashboard whose bootstrap had already applied. */
-function newDashboard(opts: { refuseMembershipRead?: boolean } = {}) {
+function newDashboard(opts: { refuseMembershipRead?: boolean; channels?: () => ChannelInfo[] } = {}) {
   /** One log for everything that happens, in order: `openFeed`, then each read as it is ISSUED. */
   const log: string[] = [];
   const held = gate<void>();
@@ -89,7 +89,7 @@ function newDashboard(opts: { refuseMembershipRead?: boolean } = {}) {
   const api: Api = {
     meta: slow("meta", () => ({ space: "s", pid: 1, post: { mode: "participant" as const } })),
     roster: slow("roster", () => STALE_ROSTER),
-    channels: slow("channels", () => []),
+    channels: slow("channels", () => opts.channels?.() ?? []),
     activity: slow("activity", () => page()),
     dms: slow("dms", () => []),
     history: async () => { throw new Error("history not expected in this boot"); },
@@ -417,5 +417,33 @@ async function main() {
 }
 
 await main();
-console.log(failed === 0 ? `web graph boot: ${cells} cells OK` : `web graph boot: ${failed}/${cells} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+
+// ── 8. A HUB FIRST SEEN IN A POST OR A MEMBER'S ROW GETS ITS CLASS READ, ONCE ──────────────────
+// The feed's first snapshot lands before `/api/channels` answers, and a channel first seen in a post
+// has no class until that read runs again. A family link waits on the class, so the controller reads
+// the channel list again, a short wait after the first unknown hub, once for every hub in the wait.
+{
+  console.log("8. a hub first seen in a post or a member's row gets its class read, once");
+  const chans: ChannelInfo[] = [{ channel: "general", messages: 1, replay: true, deliveryClass: "durable" }];
+  const d = newDashboard({ channels: () => chans });
+  await d.release();
+  const reads = () => d.log.filter((e) => e === "read:channels").length;
+  const before = reads();
+  const post = (channel: string, id: string) =>
+    d.deliver("message", { mode: "chat" as const, channel, msg: { id, ts: 1, from: { id: "local.H", name: "hh" }, parts: [{ kind: "text", text: "first post" }] } as never });
+  post("general", "g1");
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.0 control: a post on a channel whose class is known reads nothing", reads() === before, { before, after: reads() });
+  post("team.new", "n1");
+  post("team.other", "n2");
+  ok("8.1 the read waits, so hubs that appear together share one read", reads() === before, { before, after: reads() });
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.2 a channel first seen in a post has the channel list read again, once for both hubs", reads() === before + 1, { before, after: reads() });
+  post("team.new", "n3");
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.3 a channel the list never names is read for once, not once per post", reads() === before + 1, { before, after: reads() });
+  d.deliver("membership", { asOf: NOW, members: [{ id: "local.Q", live: [], durable: ["team.quiet", "team.>"], observedAt: 1 }] });
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.4 a concrete channel first seen in a member's row is read for too, and a family pattern is not a hub", reads() === before + 2, { before, after: reads() });
+  d.dash.stop();
+}

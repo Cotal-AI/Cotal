@@ -1,0 +1,3 @@
+# A native conversation that selected run drives a sleep-only workflow to completion through the
+# native gateway on a real participant Manager registered through the stock auth service.
+smoke:native-conversation-run

@@ -99,8 +99,17 @@ check(
   /working[^\n]*progress unknown/.test(cliUi),
 );
 check(
-  "CLI status, join, endpoints, and plain stream all use the honest shared textual badge",
-  [cliStatus, cliJoin, cliEndpoints, cliPlain].every((source) => /statusBadge\(/.test(source)),
+  "CLI join and plain stream use the honest shared textual badge",
+  [cliJoin, cliPlain].every((source) => /statusBadge\(/.test(source)),
+);
+// Since the command-line redesign `cotal status` renders no roster, so it has no badge to share.
+check(
+  "CLI status renders no peer presence status",
+  !/statusBadge\(|presence\.status|\.status === "working"/.test(cliStatus),
+);
+check(
+  "CLI endpoints names unknown progress for a textual working endpoint",
+  /reportedStatus === "working" \? "working · progress unknown"/.test(cliEndpoints),
 );
 check(
   "cotal ps names unknown progress for a textual working manager row",
@@ -119,7 +128,7 @@ check(
   !/progress unknown/.test(webRoster) && /statusLabel = \(p: Pick<RosterRow, "status">\): string => p\.status;/.test(webRoster),
 );
 
-const EXPECTED = 22;
+const EXPECTED = 24;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`PRESENCE-PROGRESS SMOKE: ${pass} passed, ${fail} failed`);

@@ -1,6 +1,7 @@
 import { ComputerTerminal01Icon, StopCircleIcon } from "@hugeicons/core-free-icons";
 import { useEffect, useMemo, useReducer } from "react";
 import { ageText } from "../../lib/age.js";
+import { presenceFacts } from "../../lib/presence.js";
 import { shellArg } from "../../lib/compose.js";
 import { agentChannels } from "../../lib/members.js";
 import { rosterRows } from "../../lib/roster.js";
@@ -65,6 +66,7 @@ export function AgentProfile({ store, id, clock = Date.now }: { store: Store<Das
           <StatusWord row={row} />
           <span style={{ color: "var(--ink)" }}>{row.activity || "No current activity"}</span>
           {reported && <small>{reported}</small>}
+          {presenceFacts(row, clock()) && <small className="ui-facts">{presenceFacts(row, clock())}</small>}
         </div>
         <div className="ui-actions">
           <CopyCommand icon={ComputerTerminal01Icon} command={`cotal attach --name ${shellArg(row.name)}`} />

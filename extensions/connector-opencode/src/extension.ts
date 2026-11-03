@@ -1,14 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
- *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`,
- *  measured in `fx105/measurements.md`) but loads a directory whose `index.js` is the module, and
- *  1.x loads the same directory too — one bundle target serves both lines. `opencode serve` loads
+ *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`)
+ *  but loads a directory whose `index.js` is the module. 1.x loads the same directory too — one
+ *  bundle target serves both lines. `opencode serve` loads
  *  it by absolute path from the inline config, so it runs *inside* the server and shares its SDK
  *  client. Resolved relative to this module — beside the built `dist/extension.js`, so the
  *  connector must be built+bundled (`pnpm build`). */
@@ -76,25 +76,30 @@ function parseModels(stdout: string): ModelInfo[] {
   return models;
 }
 
-function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
+function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog {
   const env = discoveryEnv();
-  // Detect the line first (same rule launch.ts uses), on the same binary the discovery below would
-  // run, before running any 2.x-incompatible subcommand: `opencode models --pure --verbose` exits 1
-  // on 2.x with the help text (measured, fx105/measurements.md M4) rather than a real catalog.
-  const versionRaw = execFileSync("opencode", ["--version"], {
+  // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
+  // pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
+  // probe from looking like a managed seat. A later PATH change cannot pick a different file.
+  const bin = process.env.COTAL_OPENCODE_BIN?.trim() || opts.resolvedBinaries?.opencode || "opencode";
+  // Detect the line first (same rule launch.ts uses), on that file, before running any 2.x-incompatible
+  // subcommand: `opencode models --pure --verbose` exits 1 on 2.x with the help text rather than a
+  // real catalog.
+  const versionRaw = execFileSync(bin, ["--version"], {
     encoding: "utf8",
     env,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
   const line = opencodeLine(versionRaw, "opencode");
   if (line === 2)
-    throw new Error(
-      "opencode connector: 'cotal models' is not available for OpenCode 2.x (the catalog is served by a running opencode server, not the CLI); pass --model provider/model",
-    );
+    return {
+      models: [],
+      unavailable: "OpenCode 2.x serves its model catalog from a running opencode server, not the CLI; pass --model provider/model",
+    };
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {
-    const stdout = execFileSync("opencode", args, {
+    const stdout = execFileSync(bin, args, {
       encoding: "utf8",
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -130,6 +135,8 @@ export const opencodeConnector: Connector = {
   // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before
   // loading the plugin; readiness also checks that server's provider list before mesh presence.
   readinessTimeoutMs: 120_000,
+  // Both plugins wake the session for a run turn and hand a once task over at most once.
+  supportsTurnRelay: true,
   listModels: listOpenCodeModels,
   // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
   // launch whose connector does not implement it, before anything is provisioned, rather than mint a
@@ -171,15 +178,6 @@ export const opencodeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported.
-      //
-      // The plugin drops even that path once it has read it, and WHERE it does so is the part worth
-      // stating: this connector's seat process is a shim that starts `opencode serve` and a TUI
-      // attached to it, and the plugin runs inside the SERVER. The server is also the process that
-      // executes the session's tool calls, so a shell this seat runs inherits neither the material
-      // nor a reference to it. The shim itself keeps the reference, because the server it starts is
-      // the reader; it runs no tools of its own.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -298,12 +296,26 @@ export const opencodeConnector: Connector = {
     // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
     env.COTAL_CONTROL_SOCKET = control.path;
 
+    // Creds, broker URL and the control token ride a 0600 file; only its path is exported. It is
+    // written after every refusal above, and its directory is a launch artifact the launcher removes
+    // once the child has exited.
+    //
+    // The plugin drops even that path once it has read it, and WHERE it does so is the part worth
+    // stating: this connector's seat process is a shim that starts `opencode serve` and a TUI
+    // attached to it, and the plugin runs inside the SERVER. The server is also the process that
+    // executes the session's tool calls, so a shell this seat runs inherits neither the material
+    // nor a reference to it. The shim itself keeps the reference, because the server it starts is
+    // the reader; it runs no tools of its own.
+    const artifacts: string[] = [];
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {
       command: process.execPath,
       args: [SERVE_SHIM],
       env,
       control,
+      ...(artifacts.length > 0 ? { artifacts } : {}),
     };
   },
 };

@@ -1,0 +1,26 @@
+{
+  "suite": ["implementations/manager/smoke/resolve-rtt-probe.smoke.ts"],
+  "guard": "live CotalEndpoint invocations retain command-specific handles without truncating the full discovery surface",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:resolve-rtt",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/resolve-command-cache.json",
+  "mutations": [
+    {
+      "name": "narrow invoke handles overwrite the complete discovery cache",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        byCommand.set(cacheKey, svc);",
+      "replace": "        byCommand.set(cacheKey, svc);\n        this.resolvedServices.set(endpoint, svc);",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a prior narrowed invoke never truncates describeService's complete discovery surface",
+      "cell": "a prior narrowed invoke never truncates describeService's complete discovery surface"
+    },
+    {
+      "name": "narrow invoke handles are not retained by command set",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      const cached = commandCache?.get(cacheKey);",
+      "replace": "      const cached = undefined as ResolvedService | undefined;",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "alternating invokes retain each command handle instead of re-resolving the first command",
+      "cell": "alternating invokes retain each command handle instead of re-resolving the first command"
+    }
+  ]
+}

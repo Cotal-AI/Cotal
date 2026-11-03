@@ -1,0 +1,2 @@
+# Keyed run submission clients: broker denial for legacy-only issued rights, pinned helper errors and provider HTTP transport.
+smoke:keyed-review-client:auth

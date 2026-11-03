@@ -13,11 +13,11 @@
  * repo has catalogued a dozen times, so the witness here is a `send_message` frame carrying the
  * message text, logged by the fake at the moment the shipped host wrote it to the socket.
  *
- * The fake's `soft_interrupt` is told to NEVER reply (`FAKE_JCODE_STEER_BLACKHOLE=1`), which is the
- * measured failure exactly: not a refusal, not a close, silence. The SDK's 30s request timeout then
- * rejects the handoff. The host's readiness timeout and the SDK's request timeout are both pulled
- * in so the cell runs in seconds rather than minutes; the timeout VALUE is not what is under test,
- * the absence of a second path after it is.
+ * This suite uses a correlated refusal to exercise the fallback while the session stays busy.
+ * A timeout is an unanswered handover, so the host now reserves those keys until the native
+ * boundary. The separate jcode-steer-timeout suite covers that hold and its boundary release.
+ * The original timeout-drain cell names remain below for the existing read-only mutation anchors;
+ * the fallback's no-loss, exclusivity and acceptance-debt checks still grade the same path.
  *
  * THREE CELLS.
  *   A. the drain: a DM sent to a busy seat whose soft interrupt black-holes still reaches the
@@ -66,6 +66,10 @@ async function tryWaitFor<T>(read: () => T | undefined, timeoutMs: number): Prom
 type Entry = { ev: string; frame?: { req?: string; content?: string; no_reply?: boolean }; [key: string]: unknown };
 
 const root = mkdtempSync(join(tmpdir(), `cotal-jcode-queue-fallback-${SMOKE_BROKER_TOKEN}`));
+// The control socket gets a short directory of its own. Under the shard runner the broker token in
+// `root` carries the shard's scope, which pushes a socket there past the unix `sun_path` limit
+// (#5608).
+const controlDir = mkdtempSync(join(tmpdir(), "cjq-"));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -285,8 +289,9 @@ try {
       // Holds `message_accepted` open so the host's post-await window is observable (Cell B2). It
       // changes WHEN the acknowledgement lands, never whether the message is delivered.
       FAKE_JCODE_ACCEPT_DELAY_MS: String(acceptDelayMs),
-      // The measured failure: the bridge accepts the soft_interrupt frame and never answers it.
-      FAKE_JCODE_STEER_BLACKHOLE: "1",
+      // A correlated refusal permits fallback while a timeout leaves the native outcome unknown.
+      FAKE_JCODE_STEER_REFUSE: "1",
+      FAKE_JCODE_STEER_REFUSE_DELAY_MS: "2500",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodequeuefallback",
       COTAL_NAME: "jcodepeer",
@@ -304,7 +309,7 @@ try {
       // the fake refuses, not a driven turn it queues; see issue #2029.
       COTAL_JCODE_PROMPT: "FX26-KICKOFF-AFTER-BUSY-WINDOW-2029",
       COTAL_JCODE_REQUEST_TIMEOUT_MS: String(softInterruptTimeoutMs),
-      COTAL_CONTROL_SOCKET: join(root, "control.sock"),
+      COTAL_CONTROL_SOCKET: join(controlDir, "control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-queue-fallback-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -789,4 +794,5 @@ try {
   // acceptance window can be read. Never set in CI; the default remains a clean teardown.
   if (process.env.COTAL_JCODE_KEEP_FIXTURE_ROOT === "1") console.log(`FIXTURE ROOT KEPT: ${root}`);
   else rmSync(root, { recursive: true, force: true });
+  rmSync(controlDir, { recursive: true, force: true });
 }

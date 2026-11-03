@@ -1,0 +1,2 @@
+# Local setup chooses unreserved broker addresses and preserves classified child failures. Starts isolated stacks.
+smoke:setup-start:live

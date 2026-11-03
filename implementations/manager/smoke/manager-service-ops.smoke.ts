@@ -1,5 +1,5 @@
 /**
- * MANAGER SERVICE OPS smoke (control-surface P2 item 1, slice 1b) — the FULL typed-command
+ * MANAGER SERVICE OPS smoke — the FULL typed-command
  * fan-out over a REAL Manager + JWT broker + REAL agent processes (e2e-stub.mjs), proving:
  *
  *  1. The cluster document serves the shipped command set (describe lists them; targeted commands
@@ -15,10 +15,11 @@
  *     has no granted row (broker default-deny).
  *  4. BASELINE self-stop: the spawned agent's OWN minted cred (Appendix-B baseline rows) invokes
  *     `stop` with authz-mode `self` and halts itself.
- *  5. definePersona (content-only write, ownership-checked), models (normalized catalogs), purge,
- *     attach (ws url), launch/resume-family negatives (the shared cores answer with the exact
- *     shared-core refusals), and the preservation fence: after `preparePreservation` the ep door
- *     refuses ordinary ops (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
+ *  5. definePersona (content-only write, ownership-checked; on a static space only the manager's
+ *     own seats own what they define), models (normalized catalogs), purge, attach (ws url),
+ *     launch/resume-family negatives (the shared cores answer with the exact shared-core refusals),
+ *     and the preservation fence: after `preparePreservation` the ep door refuses ordinary ops
+ *     (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
  *  6. The ep door is the ONLY control door (1d): there is no legacy ctl rail to dual-serve.
  *  7. The 1c.2b operator instrument: a `control-caller-admin` one-shot resolves the surface over
  *     the GENERIC describe/store path (describe-BOUND default currency, no epoch stub) and tears
@@ -70,7 +71,7 @@ const PROJECTION_ONLY = process.env.COTAL_SMOKE_STATIC_SLOT_INSPECT_ONLY === "1"
 const retireOpId = (lifecycleUid: string): string =>
   createHash("sha256").update(`retire:${lifecycleUid}`).digest("hex").slice(0, 26);
 
-/** P2 item 2: spawn is an ACTION - its reply is the ACCEPTANCE, returned BEFORE the agent is live.
+/** Spawn is an ACTION - its reply is the ACCEPTANCE, returned BEFORE the agent is live.
  *  Poll `ps` until the named agent appears, returning the acceptance + its live ps row (id + uid, the
  *  targeting coordinates the pre-action reply used to carry). */
 const spawnLive = async (
@@ -243,11 +244,11 @@ try {
   const A = await instrument([
     { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "slots" }, { command: "models" },
     { command: "spawn" }, { command: "despawn", owner: true }, { command: "attach", owner: true },
-    { command: "define-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
+    { command: "define-persona" }, { command: "remove-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
     { command: "resume-preserved" }, { command: "commit-resume" }, { command: "finalize-resume" },
     { command: "prepare-preservation" }, { command: "commit-preservation" }, { command: "abort-preservation" },
   ]);
-  const B = await instrument([{ command: "despawn", owner: true }, { command: "define-persona" }]);
+  const B = await instrument([{ command: "despawn", owner: true }, { command: "define-persona" }, { command: "remove-persona" }]);
   const P = await instrument([
     { command: "describe", instanceId: M.managerInstanceId },
     { command: "resolve-cwd", instanceId: M.managerInstanceId },
@@ -288,7 +289,7 @@ try {
   {
     const captured: Array<{ opts: Record<string, unknown>; spawner?: string }> = [];
     const orig = M.startAgent.bind(mgr);
-    // P2 item 2: spawn is an ACTION - the ep handler drives the goal via the hooks. The mock must
+    // Spawn is an ACTION - the ep handler drives the goal via the hooks. The mock must
     // call onAccepted (so serveSpawnGoal binds the goal + replies the acceptance) and onOutcome (so
     // the goal terminalizes), then return the phantom reply. The fidelity oracle still captures opts.
     M.startAgent = async (opts, spawner, hooks) => {
@@ -600,11 +601,21 @@ try {
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
     check("a persona-file model surfaces in the ps row (no --model flag)", prow?.model === "persona-m", prow);
     // A whitespace-only persona model is refused at load: dropping it here while a foreground launch
-    // rendered it into the harness command made one persona launch two ways (#2862).
-    writeFileSync(join(workspaceRoot, ".cotal", "agents", "emodel.md"), `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
+    // rendered it into the harness command made one persona launch two ways (#2862). The launch loader
+    // reports any parser refusal without the file's contents, so the reply names only the file and the
+    // selector class; the native parser, run on the same bytes, shows the model rule is the refusal.
+    const emodelPath = join(workspaceRoot, ".cotal", "agents", "emodel.md");
+    writeFileSync(emodelPath, `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
+    let parserRefusal = "";
+    try { loadAgentFile(emodelPath); } catch (e) { parserRefusal = (e as Error).message; }
     const rE = await A.call("spawn", { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const refusal = String(rE.reply.error?.message ?? "");
+    const psE = await A.call("ps");
     check("a whitespace-only persona model is refused at load, not launched without a pin",
-      rE.reply.ok === false && String(rE.reply.error?.message ?? "").includes('"model" must not be empty'), rE.reply);
+      parserRefusal.includes('"model" must not be empty')
+      && rE.reply.ok === false && refusal.includes(`persona file ${emodelPath} has invalid native frontmatter`) && refusal.includes("selectors")
+      && psE.reply.ok === true && !((psE.reply.data as Array<{ name: string }>) ?? []).some((x) => x.name === "emodel"),
+      { parserRefusal, reply: rE.reply });
   }
   {
     const rB = await B.call("despawn", { graceful: true }, { actor: w1.id, lifecycleUid: w1.lifecycleUid });
@@ -677,6 +688,44 @@ try {
 
   console.log("5. definePersona / models / purge / attach / launch + resume negatives");
   {
+    // On a static space only the manager's own seats own what they define. A is a spawn-capable
+    // caller that is not one of them, so its file is operator-owned, as a local persona create is.
+    const rStatic = await A.call("define-persona", { name: "epstatic", persona: "Static body." });
+    const staticPath = join(workspaceRoot, ".cotal", "agents", "epstatic.md");
+    check("a static caller that is not one of the manager's seats defines an operator-owned file",
+      rStatic.reply.ok === true && existsSync(staticPath) && loadAgentFile(staticPath).owner === undefined, rStatic.reply);
+    const rStaticAgain = await A.call("define-persona", { name: "epstatic", persona: "Again." });
+    check("so the same caller's redefine refuses as operator-owned",
+      rStaticAgain.reply.ok === false && String(rStaticAgain.reply.error?.message ?? "").includes("operator-owned"), rStaticAgain.reply);
+    const rStaticShow = await A.call("show-persona", { name: "epstatic" });
+    check("and its show-persona is not-found", rStaticShow.reply.ok === false && rStaticShow.reply.error?.code === "not-found", rStaticShow.reply);
+
+    // One of the manager's own seats keeps its principal for its life, so what it defines is its own.
+    saveAgentFile(join(workspaceRoot, ".cotal", "agents", "seatdef.md"), { name: "seatdef", persona: "A seat that defines.", subscribe: [], capabilities: ["spawn"] });
+    await spawnLive(A.call, { name: "seatdef", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const seatdef = M.agents.get("seatdef")!;
+    const seatCreds = seatdef.secretPaths?.creds ?? agentLifecycleSecretFilePaths(workspaceRoot, space, "seatdef", String(seatdef.lifecycleUid)).creds;
+    const seatNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: readFileSync(seatCreds, "utf8"), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const seatRef = await readAcceptedRow(seatNc, space, seatdef.issued!.acceptedToken);
+      const seatCaller: EpCaller = { owner: DEV_OWNER, actor: seatdef.id, uid: seatdef.lifecycleUid, generation: seatRef.generation } as IssuedCaller;
+      const rSeat = await epCall(seatNc, space, { mode: "one" }, {
+        endpoint: MANAGER_ENDPOINT, command: "define-persona", contract: MANAGER_CONTRACTS["define-persona"], caller: seatCaller,
+        args: { name: "epseat", persona: "Defined by a seat." },
+      }, { deadlineMs: 15_000, currentEpoch: async () => 0 });
+      const seatPath = join(workspaceRoot, ".cotal", "agents", "epseat.md");
+      check("a managed seat's definition on a static space records the seat as its owner",
+        rSeat.reply.ok === true && existsSync(seatPath) && loadAgentFile(seatPath).owner === principalKey(DEV_OWNER, seatdef.id).key, rSeat.reply);
+    } finally {
+      await seatNc.drain().catch(() => seatNc.close());
+    }
+    const seatStopped = await A.call("despawn", { graceful: true }, { actor: seatdef.id, lifecycleUid: seatdef.lifecycleUid });
+    check("the defining seat is cleaned up", seatStopped.reply.ok === true, seatStopped.reply);
+
+    // The cells below grade a definer's ownership, so they run as a user-auth space would: there
+    // every caller's principal is stable, and what it defines is its own.
+    const staticUserMode = M.userMode;
+    M.userMode = true;
     const rDef = await A.call("define-persona", { name: "eppersona", persona: "You are the ep persona.", model: "m9" });
     check("definePersona creates the persona (content-only write)", rDef.reply.ok === true && existsSync(join(workspaceRoot, ".cotal", "agents", "eppersona.md")), rDef.reply);
     // The tool takes no scope argument by design, so a peer cannot name its own channels here. The
@@ -711,6 +760,22 @@ try {
     check("a malformed leading frontmatter block is refused by name",
       rBad.reply.ok === false && String(rBad.reply.error?.message ?? rBad.reply.error ?? "").includes("prompt-frontmatter")
       && !existsSync(join(workspaceRoot, ".cotal", "agents", "epbadfm.md")), rBad.reply);
+    // A persona that saves must load. The reader refuses a subscribe entry that no allowSubscribe entry
+    // contains, so the writer refuses it before anything reaches the disk.
+    const rWide = await A.call("define-persona", { name: "epwide", persona: "Reads a family.", subscribe: ["perm.>"], allowSubscribe: ["perm.*"] });
+    check("a definition whose family is wider than every read entry is refused and nothing is written",
+      rWide.reply.ok === false && String(rWide.reply.error?.message ?? "").includes('subscribe "perm.>" is not within allowSubscribe [perm.*]')
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epwide.md")), rWide.reply);
+    const rOutside = await A.call("define-persona", { name: "epoutside", persona: "Reads a channel.", subscribe: ["other"], allowSubscribe: ["perm.*"] });
+    check("so is one whose channel is outside every read entry",
+      rOutside.reply.ok === false && String(rOutside.reply.error?.message ?? "").includes('subscribe "other" is not within allowSubscribe [perm.*]')
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epoutside.md")), rOutside.reply);
+    const narrowPath = join(workspaceRoot, ".cotal", "agents", "epnarrow.md");
+    const rNarrow = await A.call("define-persona", { name: "epnarrow", persona: "Reads one level.", subscribe: ["perm.a"], allowSubscribe: ["perm.*"] });
+    const rWiden = await A.call("define-persona", { name: "epnarrow", persona: "Widened.", subscribe: ["perm.>"] });
+    const narrowLoad = (() => { try { return loadAgentFile(narrowPath).persona; } catch (e) { return (e as Error).message; } })();
+    check("a redefine that reads past the stored allowSubscribe is refused, and the file still loads as it was",
+      rNarrow.reply.ok === true && rWiden.reply.ok === false && narrowLoad === "Reads one level.", { rNarrow: rNarrow.reply, rWiden: rWiden.reply, narrowLoad });
 
     const rDefB = await B.call("define-persona", { name: "eppersona", persona: "takeover" });
     check("a FOREIGN redefine refuses (ownership preserved through the ep door)",
@@ -732,6 +797,7 @@ try {
     const rShow = await A.call("show-persona", { name: "eppersona" });
     check("show-persona returns the owned card body",
       rShow.reply.ok === true && (rShow.reply.data as { persona?: string }).persona?.includes("widened by the operator") === true, rShow.reply);
+    M.userMode = staticUserMode;
     const rShowMiss = await A.call("show-persona", { name: "ghost-persona" });
     check("show-persona of an unknown name is not-found",
       rShowMiss.reply.ok === false && rShowMiss.reply.error?.code === "not-found", rShowMiss.reply);
@@ -745,6 +811,32 @@ try {
       rShowB.reply.ok === false && rShowB.reply.error?.code === "not-found", rShowB.reply);
     check("and leaves the operator's read set alone", JSON.stringify(widened.subscribe) === '["general"]', widened.subscribe);
 
+    const rRemoveB = await B.call("remove-persona", { name: "eppersona" });
+    check("a foreign remove-persona refuses without deleting the definition",
+      rRemoveB.reply.ok === false && rRemoveB.reply.error?.code === "permission-denied" && existsSync(eppPath), rRemoveB.reply);
+    const { row: runningFromPersona } = await spawnLive(A.call, { name: "eppersona", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const rRemove = await A.call("remove-persona", { name: "eppersona" });
+    const rListAfterRemove = await A.call("list-personas");
+    const afterRemove = ((rListAfterRemove.reply.data as { personas?: Array<{ name: string }> })?.personas) ?? [];
+    check("the owner removes a persona and list-personas no longer shows it",
+      rRemove.reply.ok === true && !existsSync(eppPath) && !afterRemove.some((p) => p.name === "eppersona"),
+      { remove: rRemove.reply, afterRemove });
+    check("removing the definition leaves an agent already launched from it running",
+      M.agents.get(runningFromPersona.name)?.lifecycleUid === runningFromPersona.lifecycleUid, runningFromPersona);
+    const rStopRemovedPersonaAgent = await A.call("despawn", { graceful: true }, { actor: runningFromPersona.id, lifecycleUid: runningFromPersona.lifecycleUid });
+    check("the running agent from the removed definition is cleaned up explicitly",
+      rStopRemovedPersonaAgent.reply.ok === true, rStopRemovedPersonaAgent.reply);
+    const rRemoveMissing = await A.call("remove-persona", { name: "eppersona" });
+    check("remove-persona refuses an unknown name instead of silently succeeding",
+      rRemoveMissing.reply.ok === false && rRemoveMissing.reply.error?.code === "not-found", rRemoveMissing.reply);
+
+    const invalidName = "x".repeat(69);
+    const invalidPath = join(workspaceRoot, ".cotal", "agents", `${invalidName}.md`);
+    writeFileSync(invalidPath, `---\nname: ${invalidName}\nowner: ${A.principal}\nsubscribe: []\n---\n`);
+    const rRemoveInvalid = await A.call("remove-persona", { name: invalidName });
+    check("remove-persona deletes an owned 69-character legacy entry that cannot be spawned",
+      rRemoveInvalid.reply.ok === true && !existsSync(invalidPath), rRemoveInvalid.reply);
+
     const rModels = await A.call("models", {});
     const catalogs = (rModels.reply.data as { catalogs: Array<{ agent: string; supported: boolean }> })?.catalogs;
     check("models answers the NORMALIZED catalog list (stub connector: supported=false)",
@@ -754,17 +846,17 @@ try {
     const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot, events: false });
     check("w3 spawned for attach", acc3.name === "w3", acc3);
     const rAttach = await A.call("attach", undefined, { actor: w3.id, lifecycleUid: w3.lifecycleUid });
-    // P2 item 6: attach returns the holder-bound §13.6 session grant (no ws:// URL).
+    // Attach returns the holder-bound §13.6 session grant (no ws:// URL).
     const attachData = rAttach.reply.data as { grant?: { sessionId?: string }; ws?: string };
     check("targeted attach returns the holder-bound session grant (no ws url)", rAttach.reply.ok === true && typeof attachData.grant?.sessionId === "string" && attachData.ws === undefined, rAttach.reply);
     const rLaunch = await A.call("launch", { runId: "zzzz", name: "x" });
     check("launch with an unknown runId refuses through the shared core", rLaunch.reply.ok === false && rLaunch.reply.error?.code === "failed-precondition", rLaunch.reply);
 
-    // ── M6, BOTH ARMS OF THE DISJUNCTION, ADJACENT ────────────────────────────────────────────
+    // ── HARD-PINNED NAME COLLISION, BOTH ARMS OF THE DISJUNCTION, ADJACENT ────────────────────
     // The accept path's `hardPinned` is ONE boolean over TWO arms: `opts.identity` (a --name /
     // identity override) and `opts.resolved` (a MANIFEST-DECLARED name). They are reachable through
     // DIFFERENT doors — identity through `spawn`, resolved ONLY through `launch`, since
-    // `launchAgentToStartOpts` is the single place that sets it. spawn-action's M6 exercises the
+    // `launchAgentToStartOpts` is the single place that sets it. spawn-action's hard-pinned same-alias cell exercises the
     // identity arm, which makes the whole feature LOOK covered: a gated, correctly-layered,
     // honestly-passing test that says nothing whatever about the other half. And the manifest arm is
     // the one that BREAKS shipped behaviour — those names used to number — so the half that most
@@ -782,7 +874,7 @@ try {
       // look like a smell and isolating them reads as tidying — but isolation would convert a
       // coupled proof into two independent constants that can both drift green.
       const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
-      check("M6 setup: a live incarnation holds the name", held.name === "m6pin", held);
+      check("hard-pinned name collision, setup: a live incarnation holds the name", held.name === "m6pin", held);
 
       // THE BREAKING ARM: a manifest-declared name colliding with that live incarnation.
       const m6Run = "m6run00001";
@@ -795,20 +887,20 @@ try {
         }],
       }));
       const rPinned = await A.call("launch", { runId: m6Run, name: "m6pin" });
-      check("M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent auto-number (breaking vs shipped main, and the arm nothing covered)",
+      check("hard-pinned name collision, manifest-declared: a launch onto a LIVE name REFUSES, never a silent auto-number (breaking vs shipped main, and the arm nothing covered)",
         rPinned.reply.ok === false && /hard-pinned \(manifest-declared\)/.test(rPinned.reply.error?.message ?? ""), rPinned.reply);
 
       // THE CONTROL, so the refusal above is not just "launch is broken": a PERSONA-DERIVED spawn of
       // the same base name still numbers. Same live occupant, same base name, opposite outcome —
-      // that contrast is the whole content of M6.
+      // that contrast is the whole content of this block.
       const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
       // DERIVED from the shipped allocator, not spelled: this assertion previously hard-coded the
       // numbering separator, so changing the scheme failed here as a mystery rather than as a
       // deliberate update — and the literal was invisible to a search for the scheme itself.
       const expectNumbered = firstFreeName("m6pin", (n) => n === "m6pin");
-      check(`M6 control: the derived numbered name differs from the base (${expectNumbered})`,
+      check(`hard-pinned name collision, control: the derived numbered name differs from the base (${expectNumbered})`,
         expectNumbered !== "m6pin" && expectNumbered.startsWith("m6pin"), expectNumbered);
-      check("M6 persona-derived: the SAME base name against the SAME live occupant still NUMBERS",
+      check("hard-pinned name collision, persona-derived: the SAME base name against the SAME live occupant still NUMBERS",
         numbered.name === expectNumbered, { got: numbered.name, expected: expectNumbered });
     }
     const rRes = await A.call("resume-preserved", { attemptId: "nope", inventory: { version: "cotal-manager-resume/v1", space, createdAt: "x", agents: [] } });

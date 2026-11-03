@@ -1,8 +1,17 @@
 # Segmenting root-scoped material per space (P7, then P1)
 
 APPROVED as a plan. The questions the first draft left open are settled in §7. The probe of §6 has
-RUN and its finding is folded in below; series P7 commits 1 (the shared foundation) and 2
-(`repairAdvice` honesty) are implemented, and nothing else here is.
+RUN and its finding is recorded below.
+
+**Status.** Both series landed on 29 August 2026 and shipped in 0.36.0: P7 commits 1 to 5
+(`cbfbf1e06`, `05d2285c4`, `7108e402c`, `12dd6a287`, `a6a7381cc`) and P1 commits 1 and 2
+(`268625595`, `897f7c859`). The foundation and resolvers are in
+`packages/workspace/src/space-segmentation.ts`, the P1 key builders and reap in
+`packages/workspace/src/agent-secrets.ts`, and the guards run under `pnpm smoke:space-segmentation`
+and `pnpm smoke:sys-repair-honesty`. The reap and its step-1 precondition still have no caller,
+because `cotal space rm` is not built ([per-space-lifecycle](./per-space-lifecycle.md)). Line
+numbers below refer to the tree the plan was written against. The "implemented" and "not
+implemented" statements in the body record the plan's state before the later commits landed.
 
 P7 and P1 in [per-space-lifecycle](./per-space-lifecycle.md) §7 are one defect in two places: material
 that is per-tenant in MEANING sits at a root-scoped path or store key, so a root holds one tenant's
@@ -112,8 +121,8 @@ to whichever tenant booted first, which is P7's inheritance defect and is record
 would either hand tenant A's live observer to tenant B or strand it.
 
 So the migration is only sound while the root holds ONE space, and that is enforceable at the source
-rather than left as a hazard. `up` cannot create the second tenant (`ensureRootForSpace` refuses at
-`up.ts:2233`), so the only door is `space add`. The rule:
+rather than left as a hazard. `up` cannot create the second tenant (`ensureRootForSpace` in the
+CLI's `up` command refuses), so the only door is `space add`. The rule:
 
 > `space add` refuses on a root that still holds unmigrated legacy material for any segmented kind,
 > and names the remedy: run `cotal up` for the sole tenant once, which migrates it, then add.
@@ -322,8 +331,8 @@ fresh-space branch (`up.ts:2903`, called once at `up.ts:2692`), because the `$SY
 exists only there. `healMembershipDataCreds` (`up.ts:2881`) repairs the DATA half only, by
 construction and by its own comment. So a root whose first tenant was provisioned before the
 membership feature, or whose `$SYS` pair was swept by `clean`, has no minting path: the first tenant
-is not fresh so the provisioner never runs, the second tenant is refused by `up.ts:2233` before it
-could be fresh, and the documented repair `up --rotate-sys` is `assertSingleSpaceBroker`-guarded
+is not fresh so the provisioner never runs, the second tenant is refused by `ensureRootForSpace`
+before it could be fresh, and the documented repair `up --rotate-sys` is `assertSingleSpaceBroker`-guarded
 (`system-rotation.ts:96`) and refuses on a multi-tenant root, which is P8. The predicted state was
 BOTH tenants with no observer and no reachable repair.
 

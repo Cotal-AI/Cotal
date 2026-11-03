@@ -1,0 +1,3 @@
+# cotal service with no space to resolve names --space, a flag it accepts, in a remedy kept apart
+# from the message.
+smoke:service-target-hint

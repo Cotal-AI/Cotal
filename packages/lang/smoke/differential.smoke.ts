@@ -353,6 +353,7 @@ log("rounds", rounds, r.status);`,
   // or the comparison is over one shape. These four move the occurrence counter, the name, and the
   // scope path a nested call adds.
   ["the same effect twice, so occurrence counts", 'await sleep("1m", { name: "s" }); await sleep("2m", { name: "s" }); log(now());', {}],
+  ["a native participant and its turn", 'const a = await participant({ name: "caller" }); await turn(a, { name: "t" }); log(a.kind, a.agent);', { turns: { t: { status: "done" } } }],
   ["an effect in a loop", 'for (const n of ["a", "b", "c"]) { await sleep("1m", { name: n }); } log(now());', {}],
   ["an effect with no name of its own", 'await sleep("1m"); await sleep("2m"); log(now());', {}],
   ["an effect inside a function, called twice", 'const step = async (n) => { await sleep("1m", { name: n }); return now(); }; log(await step("one"), await step("two"));', {}],
@@ -1586,7 +1587,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const kinds = [...new Set([...EFFECT_KINDS, ...Object.entries(PRIMITIVES).filter(([, spec]) => spec.scope !== null).map(([n]) => n)])];
   const missingKinds = kinds.filter((k) => !reachedKinds.has(k));
   ok("and a corpus program journals every kind the engine can write", missingKinds.length === 0, missingKinds);
-  console.log(`  (${ADMITTED_NODES.size} admitted node types and ${kinds.length} journal kinds, each reached by a corpus program the engine ran)`);
+  console.log(`  (${ADMITTED_NODES.length} admitted node types and ${kinds.length} journal kinds, each reached by a corpus program the engine ran)`);
 }
 
 // ---- and the surface that holds the compartment closed, over THIS corpus ------------------------

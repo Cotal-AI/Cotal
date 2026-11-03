@@ -9,7 +9,10 @@
   "why": [
     "The restore path needs one STREAM.UPDATE for the freshly-created records KV hardening step.",
     "Giving every restored or excluded stream UPDATE would let the maintenance phase rewrite data-plane",
-    "configuration. The exact-subset guard and the emitted grant list are both independently mutated."
+    "configuration. The exact-subset guard and the emitted grant list are both independently mutated.",
+    "The isolated broker's reachability wait must end at the boot bound. A bound recomputed on every",
+    "pass never elapses, so a listener that never accepts held backup, restore and quarantine until the",
+    "30-minute operation deadline."
   ],
   "mutations": [
     {
@@ -35,6 +38,14 @@
       "replace": "",
       "expectRed": "an update stream outside create/info scope is rejected",
       "cell": "an update stream outside create/info scope is rejected"
+    },
+    {
+      "name": "the reachability bound is recomputed on every pass",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "find": "    const reachableDeadline = Math.min(options.deadline.getTime(), Date.now() + BOOT_TIMEOUT_MS);\n    while (Date.now() < reachableDeadline) {",
+      "replace": "    while (Date.now() < Math.min(options.deadline.getTime(), Date.now() + BOOT_TIMEOUT_MS)) {",
+      "expectRed": "an alive listener that never accepts is refused at the boot bound, before the operation deadline",
+      "cell": "an alive listener that never accepts is refused at the boot bound, before the operation deadline"
     }
   ]
 }

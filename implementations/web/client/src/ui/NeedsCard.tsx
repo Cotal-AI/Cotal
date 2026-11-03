@@ -4,6 +4,7 @@ import { Icon } from "../icons/Icon.tsx";
 import type { PostCapability } from "../api/types.js";
 import { messageRoute, sendCommand } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
+import { presenceFacts } from "../lib/presence.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
@@ -71,6 +72,13 @@ export function needsDetail(row: RosterRow): string {
   return parts.length ? `${parts.join(". ")}.` : "";
 }
 
+/** The reported condition under the detail, with how long it has held (`approval for 8m`). The
+ *  card already dates the status and names the activity, so this is the one presence fact it adds;
+ *  empty without a condition. */
+export function needsCondition(row: RosterRow, now = Date.now()): string {
+  return row.condition ? presenceFacts({ condition: row.condition }, now) : "";
+}
+
 /** The card for an agent whose status is waiting (mock section D, the dock). "Waiting" is all
  *  presence says, so the card names no one the agent waits for and no duration; "Reported" dates the
  *  report. View agent opens the Agent tab when the shell has one (`onViewAgent`) and is disabled
@@ -92,6 +100,7 @@ export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = n
       <div style={{ minWidth: 0 }}>
         <b>{`${row.name} is waiting`}</b>
         <span className="ui-nd">{needsDetail(row)}</span>
+        {needsCondition(row) && <span className="ui-nd ui-facts">{needsCondition(row)}</span>}
       </div>
       <div className="ui-btns">
         <button type="button" className="ui-btn" disabled={!onViewAgent} onClick={() => onViewAgent?.(row.id)}>View agent</button>

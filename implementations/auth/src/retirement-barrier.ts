@@ -78,6 +78,7 @@ import {
 } from "@cotal-ai/core";
 import {
   registryStores,
+  assertOrdinaryRegistryMutation,
   registryRecordsScanner,
   observeGate,
   freezeGate,
@@ -587,6 +588,7 @@ export async function runAgentRetirementBarrier(
   },
   deps: RetirementDeps,
 ): Promise<RetirementResult> {
+  await assertOrdinaryRegistryMutation(reg, args);
   const { space, authKv, recordsKv, jsm } = registryStores(reg);
   const opId = assertLifecycleToken(args.opId);
   assertLifecycleToken(args.lifecycleUid);

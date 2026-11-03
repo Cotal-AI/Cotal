@@ -81,6 +81,8 @@ export {
 
 export {
   Cancelled,
+  RootCancellation,
+  type RootCancellationSource,
   RunReleased,
   EffectRefused,
   RunHeld,
@@ -103,6 +105,7 @@ export {
   type NotifyFact,
   type NotifyRequest,
   type ObserveRequest,
+  type ParticipantRequest,
   type SleepRequest,
   type SpawnRequest,
   type TurnRequest,
@@ -120,7 +123,9 @@ export {
 export {
   RecordingHandler,
   dryRun,
+  dryRunOutcome,
   renderReport,
+  type DryRunFailure,
   type DryRunOptions,
   type DryRunReport,
   type PlannedAgent,

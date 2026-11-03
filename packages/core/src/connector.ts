@@ -1,6 +1,6 @@
 import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
-import type { StartupReply } from "./startup-confirm.js";
+import type { StartupBlocker, StartupReply } from "./startup-confirm.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
@@ -76,6 +76,10 @@ export interface LaunchOpts {
    *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
    *  refused before any provisioning. */
   prompt?: string;
+  /** This seat is started for one `once` task, which the manager relays to it as a turn. A
+   *  connector that launches processes outside the seat's own process records them from launch on,
+   *  so {@link Connector.retireAfterExit} can prove them gone. */
+  once?: boolean;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
    *  portable value like `model`: it only means something on the machine that produced it. A
@@ -118,14 +122,17 @@ export interface LaunchOpts {
   eventsRequired?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
-   *  secret refs intact. A connector renders them into its own host format; the default is none
-   *  (Claude launches isolated with `--strict-mcp-config`). Connectors that don't support sharing
-   *  throw on a non-empty map rather than silently dropping it. */
+   *  secret refs intact. A connector renders them into its own host format. Host-native discovery
+   *  remains the connector's default unless the caller requests an exclusive selection.
+   *  Connectors that don't support sharing throw on a non-empty map. */
   mcpServers?: Record<string, McpServerSpec>;
+  /** The caller explicitly narrowed MCP sharing, including an empty selection. A connector with
+   *  native discovery uses this intent to retain its host's per-spawn isolation policy. */
+  mcpServersExclusive?: boolean;
   /** Extra environment names an operator deliberately declared in `spawn.env`, resolved by the
    *  caller exactly as {@link mcpServers} is. The default supplies no extras: the child receives the
    *  fixed OS allow-list, the machine-wide `COTAL_*` operator knobs, and connector-declared inputs
-   *  only. Connectors never read config themselves. Host-session markers are not forwarded unless
+   *  only. Connectors never read Cotal config themselves. Host-session markers are not forwarded unless
    *  named here. */
   envAllow?: readonly string[];
   /** Absolute harness executable paths resolved by the manager during boot, keyed by the connector's
@@ -142,6 +149,16 @@ export interface LaunchOpts {
   cwd?: string;
 }
 
+/** The `once` seat a {@link Connector.retireAfterExit} call is about: the launch inputs that
+ *  locate what the connector recorded for it. */
+export interface OnceSeat {
+  space: string;
+  name: string;
+  lifecycleUid: string;
+  /** The manager's workspace root, as {@link LaunchOpts.workspaceRoot} carried it at launch. */
+  workspaceRoot: string;
+}
+
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
 export interface LaunchSpec {
   command: string;
@@ -153,9 +170,27 @@ export interface LaunchSpec {
    *  text with cursor moves, not spaces); a text with nothing left after stripping, `""` included,
    *  is refused before the seat starts. */
   confirm?: string;
-  /** Optional native startup choices, answered in order before confirm. Only the startup watch
-   * may answer them; ordinary tool permissions remain the harness's responsibility. */
+  /** Optional native startup choices, answered in order before confirm. A choice marked
+   * `optional` may be passed over for the next one. Only the startup watch may answer them;
+   * ordinary tool permissions remain the harness's responsibility. */
   confirmBefore?: readonly StartupReply[];
+  /** Optional texts that show the harness reached its input screen without showing confirm, for a
+   * harness that shows that prompt only in some setups. Each is matched within one visible line,
+   * normalized like confirm. Seen on two consecutive screen reads, it ends the startup watch with
+   * no key. Requires confirm. */
+  confirmReady?: readonly string[];
+  /** Optional native startup screens the watch never answers, such as a harness's first-run setup or
+   * a safety warning only its user may accept. Each is matched like a confirmBefore prompt. While one
+   * is on screen no key is sent, and when the startup bound ends with one on screen the failure names
+   * its reason. Requires confirm. */
+  confirmBlockers?: readonly StartupBlocker[];
+  /** A line the startup watch must see on a screen read after the Enter that answered
+   *  {@link confirm}, before it records `confirmed`. It is read across consecutive lines however a
+   *  narrow pane wraps it, ignoring whitespace and the box or bar marks at each line's edges. It has
+   *  a bound of its own, as long as the prompt's. Use it when answering the prompt does not by itself
+   *  show the state a launch needs, as Claude's registration notice shows its channel server was
+   *  admitted. */
+  confirmNotice?: string;
   /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
    *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
    *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY
@@ -202,10 +237,18 @@ export interface ModelInfo {
 export interface ModelCatalog {
   source?: string;
   models: ModelInfo[];
+  /** Set by a connector whose install exposes no catalog it can list, saying why and what to pass
+   *  instead. The manager reports that connector `supported: false` rather than as a failed read. */
+  unavailable?: string;
 }
 
 export interface ModelCatalogOpts {
   refresh?: boolean;
+  /** Absolute harness paths the manager resolved at boot, keyed by the connector's `requires` names.
+   *  The same record a managed launch receives as {@link LaunchOpts.resolvedBinaries}. A catalog reads
+   *  these files rather than resolving the bare name again, so it runs the binary a spawn will run.
+   *  Absent when no manager boot inventory exists, as for a standalone call. */
+  resolvedBinaries?: Readonly<Record<string, string>>;
 }
 
 /** Manager-facing wrapper for one connector's catalog lookup. */
@@ -298,6 +341,32 @@ export interface Connector extends Extension {
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** Whether a seat on this connector takes a relayed turn on an idle fresh session, hands it to
+   *  the harness at most once, and yields when the turn ends. A `once` spawn needs it. Declare it
+   *  only after a live check shows the harness doing all three; serving `turn-pending` is not
+   *  enough. Default-deny. */
+  readonly supportsTurnRelay?: boolean;
+  /** Why this connector cannot take a relayed turn, in a clause the manager appends to its
+   *  refusal of a `once` spawn. Only meaningful without {@link supportsTurnRelay}. */
+  readonly turnRelayRefusal?: string;
+  /** A `once` seat on this connector is served its task only when its startup watch ended
+   *  `confirmed` (the runtime's {@link AgentHandle.startupOutcome}). The value is the clause the
+   *  manager's failure gives for a `ready` outcome. A runtime that does not report the outcome
+   *  refuses such a spawn. */
+  readonly onceNeedsConfirmed?: string;
+  /** The most once task text one turn frame of this connector carries, in UTF-16 code units, as
+   *  {@link renderOnceTask} renders it. A `once` spawn whose rendered task is longer is refused at
+   *  admission. Absent means the connector's frames carry any length. */
+  readonly turnFrameLimit?: number;
+  /** For a `once` seat whose process has exited: prove that nothing the connector can tie to the
+   *  seat's launches is still running outside that process, stopping what it ties. Resolves only with
+   *  that proof, and again with the same proof when asked after it was given; throws whenever it
+   *  cannot prove it, and the manager keeps the task's debt and asks again. The manager calls
+   *  `discard` once the debt is cleared. The proof covers only what the connector can tie to a
+   *  launch, so its implementation states what that is and what falls outside, such as a process
+   *  that hides its environment and detaches from its parent and group. A connector whose seat
+   *  launches nothing outside its own process does not implement it. */
+  retireAfterExit?(seat: OnceSeat): Promise<{ discard(): Promise<void> }>;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *
@@ -313,6 +382,11 @@ export interface Connector extends Extension {
    *  one is worse than none: someone waits for a prompt that will never appear and reads the
    *  startup as hung. Omit when there is nothing specific to say. */
   readonly launchHint?: string;
+  /** The screen, named for the operator, at which a launch with these options waits for the
+   *  operator before its session joins the mesh, such as Claude's session picker for a resume with
+   *  no session id. Undefined when the launch joins on its own. The manager reports such a launch
+   *  ready once its process runs, without waiting for presence. */
+  waitsForOperator?(launchOptions: Record<string, unknown> | undefined): string | undefined;
 }
 
 /** Finds the transcript of a resumable session on this host. */

@@ -13,6 +13,8 @@
  *   C. a door refusal travels back as the host's HTTP status.
  *   D. `runtimeIntent` on the enrollment result: an older host omits it, a current host sends
  *      `{ state: "reserved" }`, and neither changes the material the manager launches against.
+ *   E. a host that grants other read or post channels than the enrollment asked for, as one that
+ *      narrows a request to the account's grant does, is reported with both lists.
  *
  * Run: pnpm smoke:managed-agent-runtime-client   (needs nats-server on PATH)
  */
@@ -36,7 +38,7 @@ import { deriveOwnerToken, grantActor, openAuthAuthorityPlane, remoteManagerCurr
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import {
-  remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest,
+  enrolledAcl, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest,
   remoteManagedAgentRuntimeRequest, remoteManagedAgentRuntimeState,
 } from "../src/remote-authority.js";
 
@@ -196,6 +198,18 @@ try {
     throws("a runtimeIntent carrying a provider handle is refused",
       () => remoteManagedAgentEnrollmentMaterial({ ...older, runtimeIntent: { state: "reserved", handle: "prov-123" } } as never, enroll), /runtimeIntent other than/);
   }
+
+  console.log("E. a host that grants other channels than the enrollment asked for is reported");
+  {
+    const events = `events.${OWNER}.worker`;
+    const enroll = remoteManagedAgentEnrollmentRequest(state, "cli", proof, EPOCH, { actor: "worker", tokenHash: "b".repeat(64), allowSubscribe: [">"], allowPublish: [">", events] });
+    const granted = { allowSubscribe: ["general"], allowPublish: ["general", events] };
+    const narrowed = enrolledAcl(enroll.target, granted);
+    check("a host that narrows the request to the account's grant reports what was asked and what was granted",
+      JSON.stringify(narrowed) === JSON.stringify({ requested: { allowSubscribe: [">"], allowPublish: [">", events] }, effective: granted }), narrowed);
+    const same = enrolledAcl(enroll.target, { allowSubscribe: [">"], allowPublish: [events, ">"] });
+    check("a host that grants what was asked, in any order, reports nothing", same === undefined, same);
+  }
 } catch (e) {
   fail++;
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
@@ -207,6 +221,6 @@ try {
   rmSync(tmp, { recursive: true, force: true });
   releaseBroker();
 }
-const EXPECTED = 10;
+const EXPECTED = 12;
 console.log(`\nMANAGED-AGENT-RUNTIME-CLIENT SMOKE ${fail === 0 && pass + fail === EXPECTED ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, expected ${EXPECTED})`);
 process.exit(fail === 0 && pass + fail === EXPECTED ? 0 : 1);

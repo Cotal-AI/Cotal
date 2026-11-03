@@ -9,7 +9,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { isNpx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
+import { daemonArgv, isNpx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
+import { renderSystemdServiceUnit } from "../src/lib/service-systemd-unit.js";
+import { renderLaunchdServiceUnit } from "../src/lib/service-launchd-unit.js";
 import { offerGlobalInstall } from "../src/commands/setup.js";
 
 let failures = 0;
@@ -210,6 +212,31 @@ if (process.platform !== "win32") {
     check("a `cotal` symlink that resolves to a foreign file is refused", argv(foreignLink) instanceof Error);
   }
   rmSync(fx, { recursive: true, force: true });
+}
+
+// 6) A daemon launcher runs the same verified entry under node --max-semi-space-size=1, and an
+//    ordinary re-exec from that daemon does not pass the flag on. The unit `service install` writes
+//    and the LaunchAgent preview put it between node and the entry.
+{
+  const entry = resolve(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
+  setArgv(entry);
+  const daemon = daemonArgv();
+  check("a daemon launch runs the verified entry under node --max-semi-space-size=1",
+    daemon[0] === process.execPath && daemon[1] === "--max-semi-space-size=1" && daemon.at(-1) === entry);
+  const inherited = [...process.execArgv];
+  process.execArgv.push("--max-semi-space-size=1");
+  try {
+    check("a daemon's ordinary re-exec does not pass the daemon flag on", !selfArgv().includes("--max-semi-space-size=1"));
+    check("a daemon's daemon launch carries the flag once", daemonArgv().filter((arg) => arg === "--max-semi-space-size=1").length === 1);
+  } finally { process.execArgv.splice(0, process.execArgv.length, ...inherited); }
+  const cli = ["/usr/bin/node", "/opt/cotal/dist/cotal.js"];
+  const unit = { space: "main", definition: "web", instanceId: "0b8c2a4e-1f3d-4c5b-9a6e-7d8f9a0b1c2d", controlHome: "/home/u/.cotal", workingDirectory: "/srv/app", cli };
+  const systemd = renderSystemdServiceUnit({ ...unit, environmentFile: "/home/u/.config/systemd/user/cotal-service/x/environment" });
+  check("the systemd unit runs its entry under node --max-semi-space-size=1",
+    /^ExecStart="\/usr\/bin\/node" "--max-semi-space-size=1" "\/opt\/cotal\/dist\/cotal\.js" "__service-unit" /m.test(systemd.bytes.toString()));
+  const launchd = renderLaunchdServiceUnit({ ...unit, privateHome: "/home/u/.cotal/service-launchd/x", searchPath: "/usr/bin:/bin" });
+  check("the LaunchAgent preview runs its entry under node --max-semi-space-size=1",
+    launchd.bytes.includes("<array><string>/usr/bin/node</string><string>--max-semi-space-size=1</string><string>/opt/cotal/dist/cotal.js</string><string>__service-unit</string>"));
 }
 
 process.argv[1] = realArgv1;

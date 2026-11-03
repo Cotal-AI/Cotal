@@ -36,8 +36,8 @@
     {
       "name": "the advice paraphrases the refusal instead of quoting it",
       "file": "implementations/delivery/src/sys-creds.ts",
-      "find": "    `${refusal}. There is no other command that mints ${named}: the $SYS signing seed is discarded at provisioning, ` +",
-      "replace": "    `this root hosts more than one space, so the rotation would refuse. There is no other command that mints ${named}: the $SYS signing seed is discarded at provisioning, ` +",
+      "find": "    `${refusal}. There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +",
+      "replace": "    `this root hosts more than one space, so the rotation would refuse. There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +",
       "expectRed": "the advice quotes the guard's reasoning verbatim, so the two can never disagree",
       "cell": "the operator reads the guard's own words, so a future refusal reason cannot go unreported"
     },

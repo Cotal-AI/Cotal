@@ -557,6 +557,7 @@ const H = (v: unknown) => digest(v);
   // so a spread wrapper is an object with none of them.
   const watched: EffectHandler = {
     now: () => sim.now(),
+    participant: (req, ctx) => sim.participant(req, ctx),
     spawn: (req, ctx) => sim.spawn(req, ctx),
     turn: async (req, ctx) => {
       order.push("handler:turn");
@@ -601,6 +602,7 @@ const H = (v: unknown) => digest(v);
 /** A handler built method by method, counting the dispatches the interpreter actually made. */
 const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
   now: () => sim.now(),
+  participant: (req, ctx) => sim.participant(req, ctx),
   spawn: (req, ctx) => sim.spawn(req, ctx),
   turn: (req, ctx) => sim.turn(req, ctx),
   ask: (req, ctx) => sim.ask(req, ctx),
@@ -1160,7 +1162,7 @@ await sleep("3h", { name: "after-the-catch" });
   const settled = journal.entries().find((e) => e.kind === "conclave");
   ok(
     "the scope wrapper is guarded too, on a real conclave, and the refusal is recorded against the scope",
-    settled?.status === "failed" && settled?.error?.code === "L4000" && settled?.error?.kind === "scope-fault",
+    settled?.status === "failed" && settled?.error?.code === "L4000" && settled?.error?.kind === "host",
     { status: settled?.status, error: settled?.error?.code, kind: settled?.error?.kind },
   );
   ok(
@@ -1477,10 +1479,10 @@ await sleep("3h", { name: "after-the-catch" });
 }
 
 {
-  // THE TWO CONTROLS beside it: the classes the ladder must keep recording as it did before.
-  // A plain non-EffectError throw from the handler stays the generic scope fault, and a handler's
-  // own coded EffectError keeps its code and kind through `recordableError`. Both are the same
-  // conclave shape the cells above use, so the only variable is the thrown class.
+  // THE TWO CONTROLS beside it: the classes the program-refusal rule must leave alone. A plain
+  // non-EffectError throw from the handler records the `host` fault its `catch` binds live (#3215),
+  // and a handler's own coded EffectError keeps its code and kind through `recordableError`. Both are
+  // the same conclave shape the cells above use, so the only variable is the thrown class.
   const sim = new SimHandler({});
   const plain = Object.create(sim) as EffectHandler;
   plain.openConclave = async () => {
@@ -1497,8 +1499,8 @@ await sleep("3h", { name: "after-the-catch" });
   }
   const plainEntry = journal.entries().find((e) => e.kind === "conclave");
   ok(
-    "a handler's plain throw inside a scope still settles as the generic L4000 scope-fault, unchanged by the program-refusal rule",
-    plainEntry?.status === "failed" && plainEntry?.error?.code === "L4000" && plainEntry?.error?.kind === "scope-fault",
+    "a handler's plain throw inside a scope settles as the L4000 host fault its catch binds, unchanged by the program-refusal rule",
+    plainEntry?.status === "failed" && plainEntry?.error?.code === "L4000" && plainEntry?.error?.kind === "host",
     { status: plainEntry?.status, error: plainEntry?.error?.code, kind: plainEntry?.error?.kind },
   );
 

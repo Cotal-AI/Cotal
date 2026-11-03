@@ -208,7 +208,7 @@ export const AGUI_PROTOCOL = "ag-ui/0.0.57";
  * exactly which ones adopted core's shared `partsToText`:
  *
  *   - **3 ADOPTED IT** — `connector-core/src/agent.ts`, `cli/src/commands/join.ts`,
- *     `cli/src/view/mesh-view.ts`. These now render a marker naming the kind.
+ *     `workspace/src/view/mesh-view.ts`. These now render a marker naming the kind.
  *   - **4 DID NOT**: the web dashboard's two plain-JS pages (since replaced by a client whose
  *     `implementations/web/client/src/lib/parts.ts` names the kind),
  *     `examples/02-self-improving-console/harness/observer.ts`,
@@ -399,9 +399,13 @@ export class AguiBrackets {
             `CUSTOM "${String(e.name)}" is not declared in COTAL_CUSTOM_EVENTS, the reviewed table of cotal.* names`,
           );
         // The result marker stands in for TOOL_CALL_RESULT, so it holds the same rule: it follows
-        // its call's END, and a marker for a call still open is refused.
+        // its call's END, and a marker for a call still open is refused. Its whole shape is checked
+        // here, before the emitter's probe lets the frame reach the WAL: a marker the closed schema
+        // would halt on must be refused as a vocabulary error, not frozen and republished forever.
         if (e.name === TOOL_RESULT_EVENT) {
-          const id = String((e.value as { toolCallId?: unknown } | null | undefined)?.toolCallId);
+          const defect = toolResultMarkerDefect(e as { value?: unknown; rawEvent?: unknown });
+          if (defect !== undefined) throw new AguiVocabularyError(`${TOOL_RESULT_EVENT} ${defect}`);
+          const id = (e.value as { toolCallId: string }).toolCallId;
           if (this.tools.has(id))
             throw new AguiVocabularyError(`${TOOL_RESULT_EVENT} for "${id}" while its call is still open`);
         }
@@ -1185,6 +1189,22 @@ function toolResultValueDefect(value: unknown): string | undefined {
 }
 
 /**
+ * Why a {@link TOOL_RESULT_EVENT} marker is not the content-free marker, as a sentence, or
+ * `undefined` when it is. `rawEvent` is an AG-UI schema key on every event, and on the marker it is
+ * the one place the suppressed tool result could ride onto the event plane, so the marker alone
+ * refuses it; the value is then held to {@link toolResultValueDefect}. The brackets gate, the
+ * closed schema and the frozen-body check all read the marker through this one rule.
+ */
+export function toolResultMarkerDefect(e: { value?: unknown; rawEvent?: unknown }): string | undefined {
+  if ("rawEvent" in e) return "carries rawEvent, which the content-free marker never does";
+  const defect = toolResultValueDefect(e.value);
+  if (defect === undefined) return undefined;
+  return defect === "value"
+    ? "value is not { toolCallId: string, isError: boolean }"
+    : `${defect} is not a key the marker's value carries`;
+}
+
+/**
  * A {@link TOOL_RESULT_EVENT} marker's `value` when it has the closed shape, or `undefined`. The
  * closed schema and the text renderer both read the marker through this one rule.
  */
@@ -1232,6 +1252,9 @@ export function extraPropertyPath(part: Record<string, unknown>): string | undef
       if (!allowed.has(key)) return `events[${i}].${key}`;
     }
     if (t === AGUI_EVENT_TYPE.CUSTOM && e.name === TOOL_RESULT_EVENT) {
+      // The marker is closed on its own terms: `rawEvent` is a schema key everywhere else, and an
+      // extra property here. A frozen pre-fix frame carrying one halts rather than republishing.
+      if ("rawEvent" in e) return `events[${i}].rawEvent`;
       const defect = toolResultValueDefect(e.value);
       if (defect !== undefined) return `events[${i}].${defect}`;
     }
@@ -1271,14 +1294,28 @@ function isEgressRunError(e: object): boolean {
   return (e as { message?: unknown }).message === RUN_ERROR_EGRESS_MESSAGE && !("code" in e) && !("rawEvent" in e);
 }
 
+/** Whether an event is the {@link TOOL_RESULT_EVENT} marker. */
+function isToolResultMarker(e: AguiEvent): e is WithCotal<CustomEvent> {
+  return e.type === AGUI_EVENT_TYPE.CUSTOM && (e as { name?: unknown }).name === TOOL_RESULT_EVENT;
+}
+
+/** The marker without `rawEvent`: the harness result object a producer attached there is the
+ *  content the marker exists to leave off the wire. Its value is not rewritten; a malformed one is
+ *  refused by the brackets gate before the frame is written. */
+function egressToolResultMarker(e: WithCotal<CustomEvent>): WithCotal<CustomEvent> {
+  if (!("rawEvent" in e)) return e;
+  const { rawEvent: _dropped, ...rest } = e;
+  return rest as WithCotal<CustomEvent>;
+}
+
 /**
- * Drop forbidden kinds from a mapped unit, and rebuild every `RUN_ERROR` as
- * {@link egressRunError}. Sibling lifecycle and text events stay.
+ * Drop forbidden kinds from a mapped unit, rebuild every `RUN_ERROR` as {@link egressRunError} and
+ * strip `rawEvent` from the tool result marker. Sibling lifecycle and text events stay.
  */
 export function applyAguiEgressPolicy(events: readonly AguiEvent[]): AguiEvent[] {
   return events
     .filter((e) => !isForbiddenEgressEventType((e as { type?: unknown }).type))
-    .map((e) => (e.type === AGUI_EVENT_TYPE.RUN_ERROR ? egressRunError(e as WithCotal<RunErrorEvent>) : e));
+    .map((e) => (e.type === AGUI_EVENT_TYPE.RUN_ERROR ? egressRunError(e as WithCotal<RunErrorEvent>) : isToolResultMarker(e) ? egressToolResultMarker(e) : e));
 }
 
 /** What a frozen body is, as far as the egress policy can tell. */

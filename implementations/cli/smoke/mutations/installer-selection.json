@@ -1,0 +1,22 @@
+{
+  "suite": ["implementations/cli/smoke/installer-selection.smoke.ts"],
+  "guard": "The installer reports actual PATH shadowing and prints its own absolute executable without pretending to modify the parent shell",
+  "command": "pnpm exec tsx implementations/cli/smoke/installer-selection.smoke.ts",
+  "why": ["The real-shell suite uses fail-fast assertions. An expected named assertion failure stops later cases and retains its fixture, so the success-only completion line is not a red-run requirement."],
+  "mutations": [
+    {
+      "name": "disconnect PATH-selection reporting from the actual installer main path",
+      "file": "install.sh",
+      "find": "  report_path_selection\n  ELAPSED=",
+      "replace": "  : # selection reporting disconnected\n  ELAPSED=",
+      "expectRed": "installer warns when the new directory is on PATH but an old executable wins"
+    },
+    {
+      "name": "print bare cotal next steps instead of the installed absolute launcher",
+      "file": "install.sh",
+      "find": "  _cotal=$(shquote \"$BIN_DIR/cotal\")\n",
+      "replace": "  _cotal=cotal\n",
+      "expectRed": "installer next step uses its absolute safely quoted executable: setup"
+    }
+  ]
+}

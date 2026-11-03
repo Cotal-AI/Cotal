@@ -1,0 +1,3 @@
+# The shared output contract: the outcome-to-exit table, the code each outcome may carry, and the
+# envelope and stream record shapes every structured command writes.
+smoke:output

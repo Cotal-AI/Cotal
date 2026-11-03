@@ -156,6 +156,28 @@ try {
   check("a crashed stopper cannot poison a later bare shutdown",
     deadStopper.withAgents === false && /stopper identity/.test(deadStopper.warning ?? ""), deadStopper);
 
+  const macToken = "Thu Oct  5 09:01:02 2026";
+  const macStopperToken = "Thu Oct 15 21:16:51 2026";
+  const macTokens = (pid: number): string | undefined => pid === process.pid ? macToken : pid === process.pid + 1 ? macStopperToken : undefined;
+  const macAttempt = { ...attempt, target: { pid: process.pid, token: macToken } };
+  writeFileSync(`${pidPath}.identity`, `${process.pid} ${macToken}`);
+  armManagerShutdownIntent(context, macAttempt, macTokens);
+  const macArmed = consumeManagerShutdownIntent(context, process.pid, macTokens);
+  check("S1 spaced target and stopper tokens select with-agents", macArmed.withAgents === true, macArmed);
+  check("S2 a spaced-token intent remains one-shot", consumeManagerShutdownIntent(context, process.pid, macTokens).withAgents === false);
+  armManagerShutdownIntent(context, macAttempt, macTokens);
+  const changedSpacing = consumeManagerShutdownIntent(context, process.pid, (pid) => macTokens(pid)?.replace(/  /g, " "));
+  check("S3 a changed token's own spacing refuses destructive policy", changedSpacing.withAgents === false && /target identity/.test(changedSpacing.warning ?? ""), changedSpacing);
+  for (const malformedToken of ["", " leading", "trailing ", "first\nsecond", "first\rsecond"]) {
+    for (const side of ["target", "stopper"] as const) {
+      const value = { version: 1, policy: "with-agents", target: { pid: process.pid, token: macToken }, stopper: { pid: process.pid + 1, token: macStopperToken } };
+      value[side].token = malformedToken;
+      writeFileSync(intentPath, JSON.stringify(value));
+      const decision = consumeManagerShutdownIntent(context, process.pid, (pid) => pid === process.pid ? value.target.token : value.stopper.token);
+      check(`S4 malformed ${side} token ${JSON.stringify(malformedToken)} spares agents`, decision.withAgents === false && /malformed/.test(decision.warning ?? ""), decision);
+    }
+  }
+
   console.log(`\nMANAGER SHUTDOWN INTENT OK (${pass} passed)`);
 } finally {
   rmSync(root, { recursive: true, force: true });

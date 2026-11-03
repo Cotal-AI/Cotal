@@ -67,11 +67,11 @@
     {
       "name": "the refusal fires with an empty payload, so it names no arm and no scope",
       "file": "packages/lang/src/perform.ts",
-      "find": "        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);",
-      "replace": "        throw new ScopeBranchMissing(\"\", name, [], [], []);",
+      "find": "        throw new ScopeBranchMissing(stepKeyString(ctx.key), scopeKind, missing, [...only], [...present]);",
+      "replace": "        throw new ScopeBranchMissing(\"\", scopeKind, [], [], []);",
       "expectRed": "the refusal names the missing arm, the scope, and what the source does declare",
       "cell": "the refusal names the missing arm, the scope, and what the source does declare",
-      "note": "The whole repair for this refusal is a NAME. An author told only 'this scope diverged' goes looking inside an arm's body, which is the one place nothing changed -- so the payload is the guard, not decoration on it."
+      "note": "The whole repair for this refusal is a NAME. An author told only 'this scope diverged' goes looking inside an arm's body, which is the one place nothing changed -- so the payload is the guard, not decoration on it. Re-anchored for #3648: `runScope` dropped its untyped `name` and passes `scopeKind`, the same string, so the old anchor no longer matched. Same severing: an empty key and empty arm lists. Not re-measured."
     }
   ]
 }

@@ -41,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { MeshAgent, startControlServer, type InboxItem } from "@cotal-ai/connector-core";
+import { MeshAgent, startControlServer, cotalToolSpecs, type InboxItem } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -117,6 +117,7 @@ const wake = createWakePolicy(
 // ---- the hook side: the SHIPPED handler behind the SHIPPED control server ---------------------
 // Wired to the wake policy as `mcp.ts` wires it: a frame that surfaces an item spends its nudge.
 const claude = createClaudeHandle({ surfaced: (items) => wake.surfaced(items) });
+const inboxSpec = cotalToolSpecs(agent.config, "claude-code", undefined, undefined, claude.inboxDeliveryNote).find((s) => s.name === "cotal_inbox")!;
 const controlServer = startControlServer(agent, { path: socketPath, token: TOKEN }, claude.handle, {
   onReply: claude.onReply,
 });
@@ -239,6 +240,50 @@ try {
   check("SessionStart injects the messages that arrived before the session was up", injected(boot).includes("pre-handshake dm"), injected(boot));
   check("a delivered SessionStart batch is committed", !stillPending("pre-handshake dm"));
 
+  // Real relay presence: permission waits name the tool, never its command or other input.
+  const presence = () => pub.getRoster().find((p) => p.card.id === ottoId);
+  await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" });
+  const privateCommand = "printf '%s\\n' private-command-marker";
+  await fireHookViaRealRelay({
+    hook_event_name: "PreToolUse", tool_name: "Bash",
+    tool_input: { command: privateCommand, description: "private-description-marker" },
+  });
+  const permission = await fireHookViaRealRelay({
+    hook_event_name: "Notification", notification_type: "permission_prompt", message: "Claude needs permission to use Bash",
+  });
+  check("the real permission hook exits cleanly", permission.code === 0);
+  await waitFor("the permission wait in the observer roster", () => presence()?.status === "waiting");
+  check("permission activity names only Bash and carries no command or description", presence()?.activity === "Bash");
+  const permissionRow = presence();
+  check("permission waiting retains the native approval condition",
+    permissionRow?.condition?.code === "approval" && permissionRow.condition.source === "permission_prompt" &&
+    permissionRow.condition.message === "Claude needs permission to use Bash");
+  await fireHookViaRealRelay({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "private-path-marker" } });
+  check("another tool in the open turn does not clear an unresolved permission wait", agent.status === "waiting");
+  await fireHook({ hook_event_name: "PostToolBatch" });
+  await fireHook({ hook_event_name: "Stop" });
+
+  // Channel work need not supply UserPromptSubmit. A real main-agent tool proves work began;
+  // neither a subagent nor a notification merely written to stdio proves that about the main turn.
+  const subagent = await fireHookViaRealRelay({
+    hook_event_name: "PreToolUse", agent_id: "child", tool_name: "Bash", tool_input: { command: "true" },
+  });
+  check("the subagent hook exits cleanly", subagent.code === 0);
+  check("a subagent tool does not open the main agent turn", agent.status === "idle");
+  const noPrompt = await fireHookViaRealRelay({ hook_event_name: "PreToolUse", tool_name: "mcp__cotal__cotal_inbox", tool_input: {} });
+  check("the main tool hook without UserPromptSubmit exits cleanly", noPrompt.code === 0);
+  await waitFor("working after the first main tool without a prompt", () => presence()?.status === "working");
+  check("the first main tool without UserPromptSubmit publishes working", presence()?.status === "working");
+  await fireHook({ hook_event_name: "SessionStart", source: "compact" });
+  check("compaction preserves a tool-started open turn", agent.status === "working");
+  await fireHookViaRealRelay({ hook_event_name: "Stop" });
+  await waitFor("idle after the tool-started turn stops", () => presence()?.status === "idle");
+  check("Stop closes the tool-started turn as idle", presence()?.status === "idle");
+  await fireHookViaRealRelay({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "true" } });
+  await fireHookViaRealRelay({ hook_event_name: "StopFailure", error: "rate_limit" });
+  await waitFor("the failed tool-started turn to stop", () => presence()?.status === "idle" && presence()?.condition?.code === "rate_limit");
+  check("StopFailure closes a tool-started turn and keeps its native failure condition", presence()?.status === "idle" && presence()?.condition?.code === "rate_limit");
+
   // ---- 1. a DM wakes an idle session -----------------------------------------------------------
   const nudgesBeforeFirstDm = nudges.length;
   await dmOtto("dm-one: wake me");
@@ -252,6 +297,19 @@ try {
 
   const beforeRepeat = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("a committed batch is not surfaced twice", !injected(beforeRepeat).includes("dm-one: wake me"), injected(beforeRepeat));
+
+  // A queued channel notice can accompany context the prompt hook already carried. An empty
+  // inbox must explain that confirmed handoff without replaying the peer's body as new mail.
+  const afterHook = await inboxSpec.run(agent, agent.config, {});
+  check("an empty inbox identifies the latest confirmed hook delivery without duplicating it",
+    afterHook.text.includes("most recent confirmed Claude Code hook handoff carried 1 message") &&
+    afterHook.text.includes("additionalContext (UserPromptSubmit)") &&
+    !afterHook.text.includes("dm-one: wake me"));
+  const freshHooks = createClaudeHandle();
+  check("a fresh hook handler invents no delivery receipt", freshHooks.inboxDeliveryNote() === undefined);
+  const plainInbox = cotalToolSpecs(agent.config).find((s) => s.name === "cotal_inbox")!;
+  check("a connector without hook receipts retains the ordinary empty answer",
+    (await plainInbox.run(agent, agent.config, {})).text === "Inbox empty, no new messages.");
   await fireHook({ hook_event_name: "Stop" });
 
   // ---- 2. THE BUG: a reply the runtime never receives must not consume the message --------------
@@ -267,6 +325,8 @@ try {
     stillPending("dm-two: reply is lost"),
     { inbox: agent.peekInbox("all").map((i) => i.text) },
   );
+  check("an unconfirmed hook reply does not update the delivery receipt",
+    claude.inboxDeliveryNote() === afterHook.text);
   // Un-acked means JetStream is still on the hook for it: the message comes back on its own.
   const nudgesBeforeRedelivery = nudges.length;
   await waitFor("JetStream to redeliver the abandoned DM", () => nudges.length > nudgesBeforeRedelivery, ACK_WAIT_MS * 3);
@@ -481,14 +541,9 @@ try {
     await rawNc.close();
   }
 
-  // ---- 6. the reply is too big to flush, and the relay's backstop kills it -----------------------
-  // Found by an independent tester, not by this suite. Writing the reply to the CONNECTOR'S socket
-  // is not the end of the journey: the hook process still has to push it out of its own stdout, and
-  // `runHookRelay`'s `done()` force-exits 1s later whether or not that flushed. A reply larger than
-  // the OS pipe buffer, into a runtime that is not reading, therefore vanished AFTER the connector
-  // had committed the batch — the exact permanent-silence state this whole fix exists to remove,
-  // reached through the stdout leg instead of the socket leg. The relay now sends its receipt from
-  // the flush callback only, and the connector waits for that receipt instead of its own write.
+  // ---- 6. oversized bodies stay for explicit inbox parts --------------------------------------
+  // Hook replies now fit below the host's inline cap, so large peer bodies cannot manufacture
+  // a huge stdout write. Neither an unread notice nor its successful write may ACK those bodies.
   const BIG = 64 * 1024; // > the 64 KiB pipe buffer once a few are batched; < the 1 MiB NATS payload cap
   const BIG_N = 20;
   for (let i = 0; i < BIG_N; i++) await dmOtto(`dm-six-${i}: ${"x".repeat(BIG)}`);
@@ -507,16 +562,53 @@ try {
     agent.inboxCount("automatic") >= BIG_N,
     { stillBuffered: agent.inboxCount("automatic"), expected: BIG_N },
   );
-  // The same batch, to a runtime that IS reading: it must get through and commit, or the fix above
-  // would "pass" by never delivering anything.
+  // A reader gets a bounded notice and any small complete body. Oversized bodies remain
+  // unacknowledged until explicit inbox reads have returned every part.
+  await dmOtto("small-behind-oversized: still fits inline");
+  await waitFor("the small body behind oversized messages", () => stillPending("small-behind-oversized"));
   const bigOk = await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" });
   await sleep(500);
-  check("the same batch DOES reach a runtime that is reading", injected(bigOk.stdout).includes("dm-six-0"), {
-    bytes: bigOk.stdout.length,
-  });
-  check("and only then is it committed", agent.inboxCount("automatic") === 0, {
-    stillBuffered: agent.inboxCount("automatic"),
-  });
+  check("oversized individual messages stay out of the bounded hook reply",
+    injected(bigOk.stdout).length <= 9_000 && !injected(bigOk.stdout).includes("dm-six-0"));
+  check("an oversized message does not prevent a complete smaller body from being handed off",
+    injected(bigOk.stdout).includes("small-behind-oversized") && !stillPending("small-behind-oversized"));
+  check("the hook names every message still waiting for an explicit read",
+    injected(bigOk.stdout).includes(`${BIG_N} Cotal messages are still waiting`) && agent.inboxCount("automatic") === BIG_N);
+  const oversizedReads: string[] = [];
+  while (agent.inboxCount("automatic")) oversizedReads.push((await inboxSpec.run(agent, agent.config, {})).text);
+  check("explicit inbox parts recover every oversized body before committing it",
+    Array.from({ length: BIG_N }, (_, n) => `dm-six-${n}:`).every((marker) => oversizedReads.some((text) => text.includes(marker))));
+  await fireHook({ hook_event_name: "Stop" });
+
+  // Real relay, same >10KB batch as the host reproduction. Each reply is bounded, and its
+  // own verdict clears only the complete bodies it carried. A late mention remains readable.
+  for (let n = 0; n < 12; n++) await dmOtto(`bounded-${String(n).padStart(2, "0")}: ${"z".repeat(1_000)}`);
+  await waitFor("the bounded batch to buffer", () => agent.inboxCount("automatic") === 12);
+  const firstBounded = injected((await fireHookViaRealRelay({ hook_event_name: "SessionStart", source: "compact" })).stdout);
+  await sleep(150);
+  const carried = Array.from({ length: 12 }, (_, n) => `bounded-${String(n).padStart(2, "0")}:`).filter((mark) => firstBounded.includes(mark));
+  check("one hook frame stays under the host limit and leaves exactly its omitted bodies pending",
+    firstBounded.length <= 9_000 && carried.length > 0 && carried.length < 12 &&
+    agent.inboxCount("automatic") === 12 - carried.length && firstBounded.includes("still waiting"));
+  const remainder = (await inboxSpec.run(agent, agent.config, {})).text;
+  check("the late body is readable by inbox and no inline body is duplicated there",
+    remainder.includes("bounded-11:") && carried.every((mark) => !remainder.includes(mark)) && agent.inboxCount("automatic") === 0);
+  await fireHook({ hook_event_name: "Stop" });
+
+  await dmOtto("briefing-overflow: must remain unread");
+  await waitFor("the briefing overflow body", () => stillPending("briefing-overflow"));
+  const realBriefing = agent.channelBriefing.bind(agent);
+  agent.channelBriefing = () => "large briefing ".repeat(800);
+  try {
+    const oversizedBriefing = injected((await fireHookViaRealRelay({ hook_event_name: "SessionStart", source: "compact" })).stdout);
+    await sleep(100);
+    check("an oversized combined session context falls back to a bounded notice without committing mail",
+      oversizedBriefing.length <= 9_000 && oversizedBriefing.includes("still waiting") && stillPending("briefing-overflow"));
+  } finally {
+    agent.channelBriefing = realBriefing;
+  }
+  const afterBriefing = injected((await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" })).stdout);
+  check("mail deferred by the session briefing is delivered once space is available", afterBriefing.includes("briefing-overflow"));
   await fireHook({ hook_event_name: "Stop" });
 
   // ---- 7. the capacity valve must not consume an in-flight batch --------------------------------
@@ -529,16 +621,18 @@ try {
   // marked handled, and already acked in JetStream. That is this branch's own loss class, re-entered
   // through the capacity valve.
   const FILL = 200; // MAX_INBOX
-  const BODY = 1024; // big enough that FILL of them outrun the pipe buffer and the handoff must fail
+  const BODY = 1024; // enough for only a subset of the full backlog to fit in one hook
   for (let i = 0; i < FILL; i++) await dmOtto(`dm-seven-${String(i).padStart(3, "0")}: ${"y".repeat(BODY)}`);
   await waitFor("the inbox to reach capacity", () => agent.inboxCount("automatic") >= FILL, 60_000);
   const oldest = "dm-seven-000";
   check("the inbox is at capacity with the oldest message pending", stillPending(oldest), {
     automatic: agent.inboxCount("automatic"),
   });
-  // Surface all of it into an in-flight batch whose handoff is guaranteed to fail...
+  // Hold a bounded frame open, then abandon it after the overflow arrives.
   const oldestId = agent.peekInbox("all").find((i) => i.text.includes(oldest))!.id;
-  const inFlightHandoff = fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" }, { starveStdout: true });
+  const heldFrame = { hook_event_name: "UserPromptSubmit" };
+  const heldReply = await claude.handle(agent, heldFrame);
+  check("the bounded frame carries the oldest body before the handoff verdict", injected(JSON.stringify(heldReply)).includes(oldest));
   // ...and push one more message through the capacity valve WHILE IT IS IN FLIGHT — which this must
   // WAIT for, not guess at. A fixed sleep here made the cell a race: the handoff runs through a real
   // relay process, and on a slower machine the hold was not yet taken when the overflow landed, so
@@ -547,10 +641,8 @@ try {
   // Measured on Linux: eviction 133ms BEFORE the hold. Wait for the property this cell is named for.
   await waitFor("the oldest message to be held in flight", () => agent.isInFlight(oldestId), 15_000);
   await dmOtto("dm-seven-overflow: arrives mid-handoff and evicts the oldest");
-  const starvedBig = await inFlightHandoff;
-  check("the in-flight handoff failed, as this check requires", starvedBig.stdout.length === 0, {
-    stdoutBytes: starvedBig.stdout.length,
-  });
+  claude.onReply(heldFrame, false);
+  check("the abandoned bounded frame releases its hold without committing the body", !agent.isInFlight(oldestId) && stillPending(oldest));
   await sleep(500);
   // The overflow landed while the oldest id was held mid-delivery, so the valve passed over it, and
   // nothing showed it to the model. The failed handoff must leave it pending, buffered or redelivered.
@@ -617,10 +709,14 @@ try {
   // would leak the hold into the groups below.
   claude.onReply(freeFrame, false);
 
+  // The new hook window deliberately leaves the rest for inbox instead of a huge stdout reply.
+  while (agent.inboxCount("automatic")) await inboxSpec.run(agent, agent.config, {});
+  check("explicit reads finish the overflow backlog before the next delivery cell", agent.inboxCount("automatic") === 0);
+
   // ---- 8. the stdout write FAILS — the receipt must not be sent -------------------------------
   // Found by review, reproduced independently by two seats. A failed write and a successful one both
   // invoke the same callback; the difference is only the error argument. Ignoring it meant the relay
-  // confirmed a handoff for a reply that got EPIPE — `delivered=true`, zero bytes at the runtime,
+  // confirmed a handoff for a reply that got EPIPE: `delivered=true`, zero bytes at the runtime,
   // batch committed. Group 6 starves the pipe (no error, just no flush); this is the other half.
   await dmOtto("dm-eight: the runtime's pipe is gone");
   await waitFor("the DM to buffer", () => stillPending("dm-eight"));

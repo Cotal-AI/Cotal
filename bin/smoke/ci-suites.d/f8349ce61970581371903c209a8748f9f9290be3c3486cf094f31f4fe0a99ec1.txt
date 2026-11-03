@@ -1,0 +1,2 @@
+# Broker preparation and the detached broker log open under umask 0002 leave .cotal, the store, the broker config and the log owner-private. No broker.
+smoke:up-private-paths

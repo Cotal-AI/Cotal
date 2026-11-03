@@ -1,0 +1,3 @@
+# npm children of update, ext add and setup start with 022 added to the umask, and the extension
+# prefix is created 0755, so a umask of 0002 leaves no group-writable install tree. Broker-free.
+smoke:npm-umask

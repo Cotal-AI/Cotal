@@ -1,0 +1,4 @@
+# Claude app identity plumbing: a live JWT-auth broker and a registered mesh. Provision answers taken for a
+# live name, keeps the credential in an owner-only file and off stdout; retire removes only what it made.
+# Mutation-proofed - implementations/cli/smoke/mutations/app-identity.json.
+smoke:app-identity:live

@@ -180,7 +180,9 @@ try {
   let reads = 0;             // times the source was read (0 after the initial connect's read)
   const source = async (): Promise<string> => { reads++; return served; };
 
-  feed = await startMembershipFeed({ servers: SERVERS, space, accountId, observerCreds, rwCreds: source, intervalMs: 60_000 });
+  const feedLog: string[] = [];
+  const log = (m: string): void => { feedLog.push(m); console.error(`! membership: ${m}`); };
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId, observerCreds, rwCreds: source, intervalMs: 60_000, log });
   let hb = await provesLive(feed, initial, 0);
   check("feed starts on the initial proven cred (source read exactly once)", reads === 1, reads);
   check("conn B is live (heartbeat stamped via a real broker round-trip)", hb > 0, hb);
@@ -190,10 +192,15 @@ try {
   const renewed = await mintCreds(auth, feedId, "membership-rw", { expiresInSeconds: 4200 });
   check("a valid re-sign has a DIFFERENT fingerprint (distinct generation)", credsFingerprint(renewed) !== credsFingerprint(initial));
   served = renewed;
+  const logBeforeAdopt = feedLog.length;
   const adopt = await feed.reloadRwCreds(credsFingerprint(renewed)).then((w) => ({ ok: true, w }), (e: Error) => ({ ok: false, e: e.message }));
   check("explicit reload ADOPTS a validly re-signed cred (broker-accepted window returned)", adopt.ok && (adopt as { w: { identity: string } }).w.identity === feedId.id, adopt);
   const afterAdopt = await provesLive(feed, renewed, hb);
   check("conn B works on the ADOPTED cred (heartbeat advanced, read back with the new generation)", afterAdopt > hb, { afterAdopt, hb });
+  // The adoption reconnects conn B in place, and the first poll above runs before the redial lands, so
+  // the broker has no conn B to report. That sweep keeps the last membership; it did not miss anything.
+  const adoptLog = feedLog.slice(logBeforeAdopt);
+  check("a sweep during conn B's own reconnect is not reported as one that omitted conn B", !adoptLog.some((l) => /omitted our own rw connection/.test(l)), adoptLog);
   hb = afterAdopt;
 
   // Case 3: the expected-generation fingerprint rejects a DIFFERENT candidate BEFORE the preflight. Source
@@ -577,10 +584,11 @@ try {
   //
   // My first attempt hand-rolled this cred with `pub: { deny: [">"] }`, which would have rejected at
   // THE WRONG SITE and still printed a passing-looking cell. Measured on the AST rather than assumed:
-  // TWO steps sit between the conn B record (:223) and the arm (:320), the feed KV open (:227) and
-  // the members registry open (:228), and a KV open is a JetStream API REQUEST, so a deny-all publish
-  // grant fails there FIRST. The cell would then have graded a KV failure while its name claimed the
-  // renewal arm, and the drain assertion under it would have passed for a reason the cell misnames.
+  // TWO steps in membership-feed.ts sit between the conn B record and the renewal arm, the feed KV
+  // open (`kvm.open(membershipBucket(space))`) and the members registry open (`openMembersRegistry`),
+  // and a KV open is a JetStream API REQUEST, so a deny-all publish grant fails there FIRST. The cell
+  // would then have graded a KV failure while its name claimed the renewal arm, and the drain
+  // assertion under it would have passed for a reason the cell misnames.
   //
   // So the cred is minted by the SAME `mintCreds(..., "membership-rw")` path as the live one above,
   // and its `exp` is stripped, re-signed on the same nkey. That makes the renewal-window

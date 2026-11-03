@@ -11,7 +11,7 @@
     "M1 removes authenticated-owner filtering, so the malformed foreign row reaches the scan and the own-row success assertion never completes.",
     "M2 removes key/body binding, so the deliberately mismatched own row is accepted instead of failing on the named qualifier assertion.",
     "M3 restores the shipped wildcard records consumer lifecycle to the executor; the real minted-credential probe observes enumeration, push export, and foreign deletion instead of three denials.",
-    "M4 removes the host scanner's unconditional final delete; the real broker retains the literal consumer and the named cleanup assertion fails."
+    "M4 removes the shared literal-consumer drain's unconditional final delete; the real broker retains the host scan's literal consumer and the named cleanup assertion fails."
   ],
   "mutations": [
     {
@@ -27,8 +27,8 @@
     {
       "name": "M2 remove exact key/body qualifier binding",
       "file": "implementations/auth/src/records-scanner.ts",
-      "find": "        if (JSON.stringify(parsedKey.qualifiers) !== JSON.stringify(bodyQualifiers))",
-      "replace": "        if (false)",
+      "find": "      if (JSON.stringify(parsedKey.qualifiers) !== JSON.stringify(bodyQualifiers))",
+      "replace": "      if (false)",
       "expectRed": "own key/body mismatch fails named",
       "cell": "own key/body mismatch fails named",
       "completionMarker": "manager goal-index scanner native:",
@@ -48,9 +48,9 @@
     },
     {
       "name": "M4 remove unconditional final deletion of the host scan consumer",
-      "file": "implementations/auth/src/records-scanner.ts",
-      "find": "      try { await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME); } catch { /* bounded inactivity is the orphan backstop */ }",
-      "replace": "      if (false) try { await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME); } catch { /* bounded inactivity is the orphan backstop */ }",
+      "file": "implementations/auth/src/literal-consumer.ts",
+      "find": "    try { await jsm.consumers.delete(stream, name); } catch { /* orphan collected by inactivity */ }",
+      "replace": "    if (false) try { await jsm.consumers.delete(stream, name); } catch { /* orphan collected by inactivity */ }",
       "expectRed": "host scan consumer is cleaned after the scan",
       "cell": "host scan consumer is cleaned after the scan",
       "completionMarker": "manager goal-index scanner native:",

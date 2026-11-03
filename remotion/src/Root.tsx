@@ -28,6 +28,7 @@ import { ExplainerCore, EXPLAINER_CORE_DURATION } from "./explainer/ExplainerCor
 import { ExplainerFull, EXPLAINER_FULL_DURATION } from "./explainer/ExplainerFull";
 import { HeaderCut, HEADER_CUT_DURATION } from "./explainer/HeaderCut";
 import { S0Headline, HEADLINE_DURATION } from "./explainer/S0Headline";
+import { ReadmeForumHero, README_HERO } from "./forum/ReadmeForumHero";
 import { S7Command, COMMAND_DURATION } from "./explainer/S7Command";
 import { DemoLoop, DEMO_LOOP_DURATION } from "./explainer/DemoLoop";
 import { DemoCommand, DEMO_COMMAND_DURATION } from "./explainer/DemoCommand";
@@ -104,6 +105,7 @@ export const Root: React.FC = () => {
       <Composition id="DemoCodexShuffle" component={DemoCodexShuffle} durationInFrames={DEMO_CODEX_SHUFFLE_DURATION} {...EXPL} />
       <Composition id="DemoReadme" component={DemoReadme} durationInFrames={DEMO_README_DURATION} {...EXPL} />
       <Composition id="ExplainerMerged" component={ExplainerMerged} durationInFrames={EXPLAINER_MERGED_DURATION} {...EXPL} />
+      <Composition id="ReadmeForumHero" component={ReadmeForumHero} {...README_HERO} />
     </>
   );
 };

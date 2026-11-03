@@ -258,6 +258,7 @@ try {
     dataAccount: { pub: accA.account.pub, signingSeed: accA.account.signingSeed },
     space: spaceA,
     token: { key: issuer.localKeySet(), issuer: ISS },
+    recordIssuance: async () => {},
     authorizeActor: ledgerAuthorizeConnect(ledgerDir),
     permissionsFor: calloutPermissions(ledgerAclResolver(ledgerDir)),
     log: () => {},
@@ -474,7 +475,7 @@ try {
 } catch (e) {
   untee();
   fail++;
-  realErr("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  realErr("  ✗ scenario threw:", e);
   realErr("  -- delivery daemon output tail (a thrown scenario otherwise hides the daemon's last words):\n", daemonLog.slice(-2000));
   process.exitCode = 1;
 } finally {

@@ -1,4 +1,4 @@
-import { readdirSync, writeFileSync, join, check, cotal, freshCfg, manifestPath, listNames, track, finishScenario } from "./harness.js";
+import { boot, readdirSync, writeFileSync, join, check, cotal, freshCfg, manifestPath, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 6. corrupt manifest → --reset quarantines + rebuilds ─────────────────────────────────────────
@@ -6,7 +6,7 @@ try {
     const cfg = track(freshCfg());
     listNames(cfg);
     writeFileSync(manifestPath(cfg), "{{ not json");
-    const auto = cotal(cfg, ["ext", "list"]);
+    const auto = boot(cfg);
     check("corrupt manifest: auto boot fails loud", auto.status !== 0);
     const reset = cotal(cfg, ["ext", "seed", "--reset"]);
     check("corrupt manifest: --reset exits 0 (does not wedge on the same read)", reset.status === 0, reset.stderr);

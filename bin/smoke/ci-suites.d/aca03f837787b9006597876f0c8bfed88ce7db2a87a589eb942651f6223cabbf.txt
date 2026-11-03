@@ -1,0 +1,3 @@
+# The manager service preset boots its roster and, in the foreground, stops through its native
+# stop when the CLI receives SIGINT.
+smoke:manager-preset:live

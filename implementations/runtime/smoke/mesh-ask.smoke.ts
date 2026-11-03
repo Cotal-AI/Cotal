@@ -17,7 +17,6 @@
  *
  * Run: pnpm smoke:runtime-mesh-ask   (needs nats-server on PATH)
  */
-import { createHash } from "node:crypto";
 import { spawn as spawnProc } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +25,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  digestIdToken,
   isReachable,
   createEndpointStreams,
   createSpaceStreams,
@@ -45,6 +45,8 @@ import {
   newTakeoverId,
   presenceBucket,
   compileContract,
+  TURN_INPUT_SCHEMA,
+  TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
   publishContractArtifact,
@@ -129,6 +131,7 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
   },
 } as const;
 const SPAWN_OUTPUT = {
@@ -137,26 +140,6 @@ const SPAWN_OUTPUT = {
   properties: {
     name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
     goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-const TURN_INPUT = {
-  type: "object", additionalProperties: false, required: ["payload", "deadlineAt"],
-  properties: {
-    payload: { type: "string", minLength: 1, maxLength: 65536 },
-    deadlineAt: { type: "integer", minimum: 1 },
-    handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
-  },
-} as const;
-const TURN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "deadlineAt", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, deadlineAt: { type: "integer", minimum: 1 },
     executor: {
       type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
       properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
@@ -182,7 +165,7 @@ const CANCEL_OUTPUT = {
 } as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
-  turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
+  turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
   cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
 };
@@ -204,7 +187,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -693,7 +676,7 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   const T3 = token("d3");
   const h5 = mk("ak-6c");
   const a6c = await spawnSeat(h5, "6c");
-  const attempt2 = createHash("sha256").update(`${T3}:ask-attempt-2`, "utf8").digest("base64url").slice(0, 43);
+  const attempt2 = digestIdToken(`${T3}:ask-attempt-2`);
   const s5 = stepCtx(T3, {
     attempt: 2, askToken: attempt2, deadlineAt: Date.now() + 600_000,
     refused: 'the reply\'s "estimate" wants number',
@@ -750,7 +733,7 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
 {
   console.log("• 8 — outstandingPauseTokens reads the current attempt off the entry");
   const bare = { kind: "ask", requestId: token("f"), state: "pending" } as unknown as JournalEntry;
-  const attempt2 = createHash("sha256").update(`${token("f")}:ask-attempt-2`, "utf8").digest("base64url").slice(0, 43);
+  const attempt2 = digestIdToken(`${token("f")}:ask-attempt-2`);
   const bound = {
     kind: "ask", requestId: token("f"), state: "pending",
     external: { attempt: 2, askToken: attempt2, deadlineAt: 1 },

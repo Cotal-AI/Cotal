@@ -22,8 +22,8 @@
     {
       "name": "the admission store keeps the three immutability flags but loses write-once (a plain second write lands)",
       "file": "packages/core/src/run-admission.ts",
-      "find": "  const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY };",
-      "replace": "  const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS };",
+      "find": "    hardenAfterCreate: { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY },",
+      "replace": "    hardenAfterCreate: { ...AUTHORITY_STORE_IMMUTABLE_FLAGS },",
       "expectRed": "a plain second write onto an admission key is refused by the broker (write-once per key)",
       "cell": "a plain second write onto an admission key is refused by the broker (write-once per key)",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
@@ -53,8 +53,8 @@
     {
       "name": "the accepted store is built without write-once (verify is what reddens: a drifted shape is never adopted)",
       "file": "packages/core/src/issued-authority.ts",
-      "find": "    const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? WRITE_ONCE_PER_KEY : APPEND_ONLY_PER_KEY) };",
-      "replace": "    const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? {} : APPEND_ONLY_PER_KEY) };",
+      "find": "    hardenAfterCreate: { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? WRITE_ONCE_PER_KEY : APPEND_ONLY_PER_KEY) },",
+      "replace": "    hardenAfterCreate: { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? {} : APPEND_ONLY_PER_KEY) },",
       "expectRed": "the accepted store is write-once per key at the broker (SPEC 13.15)",
       "cell": "the accepted store is write-once per key at the broker (SPEC 13.15)",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",

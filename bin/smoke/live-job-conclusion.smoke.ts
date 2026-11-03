@@ -85,8 +85,8 @@ const ciOk = jobs.find((j) => j.name === "ci-ok");
 const alwaysJobs = jobs.filter((j) => jobLevelAlways(j.body)).map((j) => j.name);
 const ciOkNeeds = ciOk?.body.match(/^\s+needs:\s*\[([^\]]+)\]/m)?.[1] ?? "";
 const needNames = ciOkNeeds.split(",").map((n) => n.trim()).filter(Boolean);
-const requiredNeeds = ["unit", "smoke", "live", "seat-pack", "seat-linux-arm64"];
-check("ci-ok needs include unit, smoke, live, and the ARM validation leaves",
+const requiredNeeds = ["unit", "smoke", "live", "platforms", "seat-pack", "seat-linux-arm64"];
+check("ci-ok needs include unit, smoke, live, platforms, and the ARM validation leaves",
   requiredNeeds.every((n) => needNames.includes(n)), needNames);
 check("the aggregate check name makes its live-outcome role visible",
   workflow.includes("name: ci-ok (live outcome classified)"));
@@ -102,7 +102,7 @@ check("the classifier is inside ci-ok and runs before the aggregate gate",
 check("ci-ok is the sole job-level always aggregate",
   alwaysJobs.length === 1 && alwaysJobs[0] === "ci-ok", alwaysJobs);
 const gateBody = ciOk?.body.slice(ciOk.body.indexOf("- name: Gate")) ?? "";
-check("Gate fails unless all five direct needs succeed",
+check("Gate fails unless all six direct needs succeed",
   requiredNeeds.every((n) => gateBody.includes(`[ "\${{ needs.${n}.result }}" = "success" ]`)),
   gateBody);
 

@@ -66,11 +66,7 @@ export async function readRecordLeader(
   const op = m.header?.get("KV-Operation");
   if (op)
     throw new EpEnvelopeError("failed-precondition", `the record ${key} carries a ${op} marker; a deletion is never absence - reconcile the store (SPEC 13.7)`);
-  try {
-    return { value: JSON.parse(new TextDecoder().decode(m.data)), revision: m.seq };
-  } catch (e) {
-    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(e as Error).message}`);
-  }
+  return { value: decodeRecordJson(m.data, key), revision: m.seq };
 }
 
 // ---- the kind registry (§13.7 "Record kinds and key grammar") -------------------------------
@@ -652,11 +648,25 @@ export interface MergedRecord<S = unknown, T = unknown> {
   staleProjection: boolean;
 }
 
+/** Decode one records-KV value from its stored bytes. Bytes that are not JSON are a permanent
+ *  `internal` refusal naming the key, the same refusal a garbled field gets, never a bare
+ *  `SyntaxError` a caller could retry as a transient store failure. Readers that hold a
+ *  {@link KvEntry} use {@link decodeEntry}, which decodes through the entry so the bucket codec
+ *  applies. Readers that hold raw bytes use this. `fatal` refuses invalid UTF-8 instead of
+ *  replacing it. The issued-authority read passes it, because that read already did. */
+export function decodeRecordJson(value: Uint8Array, key: string, fatal = false): unknown {
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal }).decode(value));
+  } catch (err) {
+    // Mediated-writer state that does not decode is a writer bug; readers fail loud (§13.9).
+    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(err as Error).message}`);
+  }
+}
+
 export function decodeEntry<T>(e: KvEntry, key: string): T {
   try {
     return e.json<T>();
   } catch (err) {
-    // Mediated-writer state that does not decode is a writer bug; readers fail loud (§13.9).
     throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(err as Error).message}`);
   }
 }

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { fmtCreds } from "@nats-io/jwt";
+import { decode, fmtCreds, Types } from "@nats-io/jwt";
+import { credsAuthenticator } from "@nats-io/nats-core";
 import { createUser, fromSeed } from "@nats-io/nkeys";
+import { nativeNkeySigner } from "./nkey-signer.js";
 
 /**
  * A locally-generated agent identity (an nkey user keypair).
@@ -19,9 +21,10 @@ export interface Identity {
 }
 
 /** Generate a fresh user nkey identity locally. The seed is derived here and never
- *  leaves the generating process except as a creds file handed to its own agent. */
+ *  leaves the generating process except as a creds file handed to its own agent. NATS generates
+ *  the seed; the existing native signer derives its public key. */
 export function newIdentity(): Identity {
-  const kp = createUser();
+  const kp = nativeNkeySigner(createUser().getSeed());
   const seed = new TextDecoder().decode(kp.getSeed());
   return { id: kp.getPublicKey(), seed };
 }
@@ -79,6 +82,29 @@ export function idFromCreds(creds: string): string {
  *  callers decide whether that is fatal. */
 export function jwtFromCreds(creds: string): string | undefined {
   return creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/)?.[1].trim();
+}
+
+/** What is wrong with a creds text the NATS client cannot present. */
+export interface CredsProblem {
+  code: "empty" | "no-jwt-block" | "no-seed-block" | "crlf" | "invalid-seed";
+  /** The likely cause, which never quotes the text. */
+  message: string;
+}
+
+/** Why the NATS client cannot present this creds text, or undefined when it can. The client's own
+ *  parser decides, so a check made before dialing agrees with the dial. {@link jwtFromCreds} is
+ *  more lenient, so it cannot decide this. */
+export function credsProblem(creds: string): CredsProblem | undefined {
+  if (!creds.trim()) return { code: "empty", message: "it is empty" };
+  try {
+    credsAuthenticator(new TextEncoder().encode(creds))(undefined);
+    return undefined;
+  } catch {
+    if (!jwtFromCreds(creds)) return { code: "no-jwt-block", message: "it has no complete NATS user JWT block" };
+    if (!/BEGIN USER NKEY SEED-----\s*\S[\s\S]*?------END USER NKEY SEED/.test(creds)) return { code: "no-seed-block", message: "it has no complete user nkey seed block" };
+    if (creds.includes("\r")) return { code: "crlf", message: "it has Windows (CRLF) line endings" };
+    return { code: "invalid-seed", message: "its user nkey seed is not valid" };
+  }
 }
 
 /** The ACCOUNT a creds file authenticates as.
@@ -161,6 +187,25 @@ export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: 
   }
 }
 
+/** Verify the native NATS signature, current window and matching user seed under supplied
+ *  public account/signing pins. The caller must obtain those pins from trusted space authority.
+ *  This does not prove revocation, broker admission or a lifecycle/generation's current state. */
+export function verifyStaticUserCredential(creds: string, expected: { accountPub: string; signingPub: string }) {
+  try {
+    if (typeof creds !== "string" || Buffer.byteLength(creds, "utf8") > 1_048_576 || !expected.accountPub.startsWith("A") || !expected.signingPub.startsWith("A")) throw new Error();
+    const jwt = jwtFromCreds(creds);
+    if (!jwt) throw new Error();
+    // decode verifies the nkey signature; it is not exhaustive NATS policy validation.
+    const claims = decode<Record<string, unknown>>(jwt), identity = identityFromCreds(creds).id;
+    const nats = claims.nats, now = Math.floor(Date.now() / 1000);
+    if (!nats || typeof nats !== "object" || Array.isArray(nats) || nats.type !== Types.User || !isUserNkey(identity) || claims.sub !== identity || claims.iss !== expected.signingPub) throw new Error();
+    if (expected.signingPub === expected.accountPub ? nats.issuer_account !== undefined && nats.issuer_account !== expected.accountPub : nats.issuer_account !== expected.accountPub) throw new Error();
+    if (claims.aud !== undefined && claims.aud !== "NATS" || !Number.isSafeInteger(claims.iat) || claims.iat < 0) throw new Error();
+    if (claims.exp !== undefined && (!Number.isSafeInteger(claims.exp) || claims.exp <= now) || claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || claims.nbf > now)) throw new Error();
+    return { identity, accountPub: expected.accountPub, expiresAt: claims.exp ?? null, permissionFields: { pub: nats.pub ?? null, sub: nats.sub ?? null, resp: nats.resp ?? null }, principalTags: nats.tags ?? [], brokerAdmitted: false as const };
+  } catch { throw new Error("verifyStaticUserCredential: no currently valid matching native user credential under the supplied account/signing pins"); }
+}
+
 /** Ms until a source-fed cred's RENEWAL point — 75% of its iat→exp lifetime (the cert-manager-style
  *  renew-early convention: the remaining 25% is the loud-failure window, wide for day-scale standing
  *  creds). Negative when already past it. A source-fed cred WITHOUT a numeric `exp` is fail-loud: the
@@ -196,7 +241,11 @@ export function identityFromCreds(creds: string): Identity {
   const seedM = creds.match(/BEGIN USER NKEY SEED-----\s*([\s\S]*?)\s*------END USER NKEY SEED/);
   if (!seedM) throw new Error("creds: no user nkey seed block found");
   const seed = seedM[1].trim();
-  const id = fromSeed(new TextEncoder().encode(seed)).getPublicKey();
+  // Node's Ed25519 derives the public key in well under a millisecond; the library's JavaScript
+  // curve takes milliseconds, which a process constructing thousands of endpoints pays per endpoint.
+  const signer = nativeNkeySigner(new TextEncoder().encode(seed));
+  const id = signer.getPublicKey();
+  signer.clear();
   const payload = jwtFromCreds(creds)?.split(".")[1];
   const sub = payload
     ? (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string }).sub

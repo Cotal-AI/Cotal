@@ -194,5 +194,24 @@ const ROSTER = [agent("A", "ana", "working", { meta: { connector: "claude" } }),
   ok("a concrete pattern matches only itself", patternMatches("alerts", "alerts") && !patternMatches("alerts", "alerts.x") && !patternMatches("alerts.x", "alerts"));
 }
 
+
+// 2b. a durable family row reaches the durable channels under it, and only those
+{
+  const durable = (channel: string): ChannelInfo => ({ ...chan(channel), deliveryClass: "durable" });
+  const m = model({ roster: ROSTER, channels: [durable("team.build"), chan("team.chat"), durable("ops")], membership: feed([entry("A", [], ["team.>"]), entry("B", [], ["ops"])]) });
+  const build = m.nodes.find((n) => n.kind === "channel" && n.label === "team.build")!;
+  const chatHub = m.nodes.find((n) => n.kind === "channel" && n.label === "team.chat")!;
+  ok("an offline team.> follower gets a durable link to team.build", link(m, "A", build.id)?.kind === "durable", m.links);
+  ok("and none to team.chat, whose class is live", link(m, "A", chatHub.id) === undefined, m.links);
+  ok("and no channel node named team.>", !m.nodes.some((n) => n.kind === "channel" && n.label === "team.>"), m.nodes);
+  const unread = model({ roster: ROSTER, channels: [chan("team.build"), chan("ops")].map((c) => ({ channel: c.channel })), membership: feed([entry("A", [], ["team.>"])]) });
+  ok("a family row draws no link while a channel's class is still unknown", !unread.links.some((l) => l.source === "A"), unread.links);
+  const both = model({ roster: ROSTER, channels: [durable("team.build"), chan("team.chat")], membership: feed([entry("A", ["team.chat"], ["team.>"])]) });
+  const bothChat = both.nodes.find((n) => n.kind === "channel" && n.label === "team.chat")!;
+  const bothBuild = both.nodes.find((n) => n.kind === "channel" && n.label === "team.build")!;
+  ok("a live read of team.chat sits beside the family's durable link to team.build",
+    link(both, "A", bothChat.id)?.kind === "member" && link(both, "A", bothBuild.id)?.kind === "durable", both.links);
+}
+
 console.log(`topology: ${cells - failed}/${cells} checks passed`);
 if (failed) process.exit(1);

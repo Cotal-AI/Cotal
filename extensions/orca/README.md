@@ -4,7 +4,7 @@ The Orca integration: a thin driver over the public `orca` CLI plus a self-regis
 `orca` `Runtime` provider. Importing it registers the runtime with the core `Registry`, so
 the manager can spawn agents into native Orca terminals.
 
-**Tier:** `extensions/`. Depends on [`@cotal-ai/core`](../../packages/core); self-registers on
+**Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
 ## What it does
@@ -52,3 +52,6 @@ The runtime can also be selected with `runtime: orca` in a mesh manifest.
 runs the complete operator journey against live Orca and Claude Code: install this package with
 `cotal ext`, launch a `runtime: orca` manifest, observe the agent through `cotal ps`, then shut down
 and remove the extension.
+
+The launcher contract checks in `package.smoke.ts` are POSIX-only. On Windows they use the
+shared `skipSuite` helper to report a skip with zero passing cells.

@@ -1,0 +1,3 @@
+# cotal manager start, stop, status and logs with no service add, every built-in preset listed
+# before it starts, and a program of your own added with --exec, started, read and stopped.
+smoke:service-commands:live

@@ -9,7 +9,7 @@ import {
   EpEnvelopeError,
   assertPlatformOwnerToken,
   isAccountNkey,
-  remoteManagerActors,
+  remoteManagerServePrincipal,
   type EpAttributedReply,
   type EpGateState,
   type PlatformControlAssignment,
@@ -44,6 +44,7 @@ const INNER_KINDS = new Set([
   "manager-goal-index-scan",
   "manager-admin-authorization",
   "manager-run-admission",
+  "manager-run-submission",
   "manager-run-attempt",
 ]);
 const MANAGED_AGENT_KINDS = new Set([
@@ -116,7 +117,7 @@ async function observeCurrentAssignment(deps: AssignmentDeps): Promise<PlatformC
  * never acts for an instance another owner registered. */
 async function requireOwnInstance(deps: AssignmentDeps, instanceId: string): Promise<void> {
   const own = await deps.observeManagerInstance(instanceId);
-  if (own.gate && own.gate.principal !== `${deps.owner}.${remoteManagerActors(instanceId).serve}`)
+  if (own.gate && own.gate.principal !== remoteManagerServePrincipal(deps.owner, instanceId))
     throw new EpEnvelopeError("permission-denied", `platform control instance ${instanceId} is registered to another principal`);
 }
 

@@ -11,6 +11,9 @@
  *     whom) across peers, and no agent-side caller needs it: DM and DLV are reached through a
  *     pre-created durable by name, EPC through a subject-scoped DIRECT.GET.
  *   - the consumer-create deny triple on DM/TASK/DLV survives all of it.
+ *   - the `teardown` credential reads run status records by a subject-confined direct get, so
+ *     space deletion can name the workflow runs it removes; it reads no other record, holds no
+ *     leader get on the bucket, writes none of it, and reads no other bucket.
  *
  * Run: pnpm smoke:provision-stream-info
  */
@@ -37,7 +40,8 @@ import {
   dlvStream,
   taskStream,
 } from "../src/index.js";
-import { epcStreamName, ensureContractStore } from "../src/endpoint-binding.js";
+import { epAuthBucket, epcStreamName, ensureContractStore } from "../src/endpoint-binding.js";
+import { recordsBucket } from "../src/endpoint-records.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -182,6 +186,34 @@ try {
     }
     check(`CONSUMER.CREATE ${label} still denied (the deny triple's intent survives)`, denied);
   }
+
+  // ---- the teardown credential reads run records, and reads and writes nothing else there ----
+  const tdId = newIdentity();
+  const tdCreds = await mintCreds(auth, tdId, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: [] });
+  const RECORDS = `KV_${recordsBucket(space)}`, recordKey = `$KV.${recordsBucket(space)}.run.manager.run-0.status`;
+  const otherKey = `$KV.${recordsBucket(space)}.lifecycle.local.worker`;
+  const tdRows = (JSON.parse(Buffer.from(jwtFromCreds(tdCreds)!.split(".")[1]!, "base64url").toString("utf8")) as { nats?: { pub?: { allow?: string[] } } }).nats?.pub?.allow ?? [];
+  const recordRows = tdRows.filter((row) => row.includes(recordsBucket(space))).sort();
+  check("on the records bucket the teardown JWT holds only its info, its delete and a direct get confined to run status keys",
+    JSON.stringify(recordRows) === JSON.stringify([`$JS.API.DIRECT.GET.${RECORDS}.$KV.${recordsBucket(space)}.run.*.*.status`, `$JS.API.STREAM.DELETE.${RECORDS}`, `$JS.API.STREAM.INFO.${RECORDS}`].sort()), recordRows);
+  const tdJsm = await open(tdCreds, tdId.id);
+  // An allowed get on a key never written reaches the stream and answers "no message"; a denied one
+  // is refused before it.
+  const get = async (read: () => Promise<unknown>): Promise<string> => {
+    try { return (await read()) === null ? "no message" : "message"; }
+    catch (e) {
+      const msg = (e as Error).message;
+      return /Permissions Violation/i.test(msg) ? "denied" : (e as { code?: unknown }).code === 10037 || /no message found/i.test(msg) ? "no message" : msg;
+    }
+  };
+  const direct = await get(() => tdJsm.direct.getMessage(RECORDS, { last_by_subj: recordKey }));
+  check("a direct get of a run status record reaches the stream for the teardown credential", direct === "no message", direct);
+  const otherRecord = await get(() => tdJsm.direct.getMessage(RECORDS, { last_by_subj: otherKey }));
+  check("a direct get of any other record stays denied to the teardown credential", otherRecord === "denied", otherRecord);
+  const leader = await get(() => tdJsm.streams.getMessage(RECORDS, { last_by_subj: recordKey }));
+  check("a leader get on the records bucket stays denied to the teardown credential", leader === "denied", leader);
+  const authBucket = await get(() => tdJsm.streams.getMessage(`KV_${epAuthBucket(space)}`, { last_by_subj: `$KV.${epAuthBucket(space)}.x` }));
+  check("a leader get on the auth bucket stays denied to the teardown credential", authBucket === "denied", authBucket);
 
   console.log(`\nPROVISION STREAM.INFO SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

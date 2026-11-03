@@ -41,8 +41,10 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { GOAL_TERMINAL_STATES, assertClosedKeys, assertGoalResultFactShape, goalOutcomeDigestMismatch } from "./goal-result-fact.js";
+import { withDeadline } from "./deadline.js";
 import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry, decodeRecordJson, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 import {
@@ -197,23 +199,6 @@ function assertSafeInt(v: unknown, what: string): number {
   return v;
 }
 
-function assertClosedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {
-  for (const k of Object.keys(o))
-    if (!allowed.includes(k))
-      throw new EpEnvelopeError("internal", `${what} carries unknown field ${JSON.stringify(k)}; a closed schema admits no extras - garbled state never authorizes (SPEC 13.4)`);
-}
-
-/** Bound an executor-epoch resolver await: past the budget the caller REFUSES `unavailable`
- *  (fail-closed, retryable) instead of hanging. Races `Promise.resolve` unconditionally so a
- *  non-native thenable cannot bypass the deadline. */
-async function resolveWithBudget(p: Promise<number | null> | number | null, budgetMs: number): Promise<number | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the executor-epoch resolver did not answer within ${budgetMs}ms; a stuck lifecycle authority is a bounded refusal, never a hung transition (SPEC 13.6)`)), budgetMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
-}
-
 // ---- the goal bind (§13.4 item 3, canonicalizer-owned) ---------------------------------------
 
 /** The bind fact: the goalId's accepted fingerprint, immutable for the goal's lifetime. */
@@ -263,8 +248,7 @@ async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Ui
     await js.publish(subject, bytes, { headers: h });
     return { won: true };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code === 10071 || code === 10164) return { won: false };
+    if (isCasLoss(e)) return { won: false };
     throw e;
   }
 }
@@ -314,8 +298,7 @@ export async function resolveGoalSubmission(
 /** The §13.6 single status vocabulary for every long-running surface. */
 export const GOAL_STATES = Object.freeze(["accepted", "running", "waiting", "cancelling", "succeeded", "failed", "cancelled", "expired", "uncertain"] as const);
 export type GoalState = (typeof GOAL_STATES)[number];
-/** All five are TERMINAL and immutable; first-terminal-fact-wins applies uniformly. */
-export const GOAL_TERMINAL_STATES: readonly GoalState[] = Object.freeze(["succeeded", "failed", "cancelled", "expired", "uncertain"]);
+export { GOAL_TERMINAL_STATES };
 
 /** The legal §13.6 transitions: `accepted → running ⇄ waiting`, `cancelling` between a cancel
  *  and its terminal, every non-terminal may project a terminal, a terminal absorbs. */
@@ -496,7 +479,7 @@ export async function readGoalStatus(ctx: ActionContext, ref: GoalRef): Promise<
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the goal status ${key} carries a ${entry.operation} marker; a deletion never erases a goal's projection - reconcile the store (SPEC 13.4)`);
-  return { value: parseStatus(JSON.parse(new TextDecoder().decode(entry.value)), key), revision: entry.revision };
+  return { value: parseStatus(decodeRecordJson(entry.value, key), key), revision: entry.revision };
 }
 
 /** LEADER-SERVED goal reads for the FENCING paths (the H2 epoch-CAS gap): the status read that
@@ -561,7 +544,8 @@ async function assertExecutorCurrency(
     throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is pinned to a target lifecycle; this requires a fresh-epoch resolver (SPEC 13.6: a superseded epoch cannot commit transitions)`);
   if (executor.lifecycleUid !== spec.target.lifecycleUid)
     throw new EpEnvelopeError("expired", `goal "${goalId}" was accepted against lifecycle ${spec.target.lifecycleUid} but the executor is ${executor.lifecycleUid}; a goal is never effectful against a same-name successor (SPEC 13.6)`);
-  const current = await resolveWithBudget(resolveCurrentEpoch(spec.target), budgetMs);
+  const current = await withDeadline(Promise.resolve(resolveCurrentEpoch(spec.target)), budgetMs,
+    () => new EpEnvelopeError("unavailable", `the executor-epoch resolver did not answer within ${budgetMs}ms; a stuck lifecycle authority is a bounded refusal, never a hung transition (SPEC 13.6)`));
   if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
     throw new EpEnvelopeError("internal", `the fresh-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.6)`);
   if (current === null)
@@ -792,28 +776,8 @@ function assertTerminalAttribution(fact: GoalResultFact, spec: GoalSpecValue, go
 
 /** Closed validation, IDENTITY-BOUND to the ref, with the tombstone digest RE-VERIFIED. */
 export function parseGoalResultFact(raw: unknown, subject: string, ref: GoalRef): GoalResultFact {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} is not an object; garbled state never authorizes (SPEC 13.6)`);
-  const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "goalId", "fingerprint", "state", "outcomeDigest", "data", "committer", "ts"], `goal result fact on ${subject}`);
-  if (o.committer !== undefined) {
-    const cm = o.committer as Record<string, unknown>;
-    if (cm === null || typeof cm !== "object" || Array.isArray(cm))
-      throw new EpEnvelopeError("internal", `goal result fact on ${subject} committer is not an object; garbled state never authorizes (SPEC 13.6)`);
-    assertClosedKeys(cm, ["instanceId", "epoch"], `goal result fact on ${subject} committer`);
-    if (typeof cm.instanceId !== "string" || cm.instanceId.length === 0
-      || typeof cm.epoch !== "number" || !Number.isSafeInteger(cm.epoch) || cm.epoch < 0)
-      throw new EpEnvelopeError("internal", `goal result fact on ${subject} carries a malformed committer; garbled state never authorizes (SPEC 13.6)`);
-  }
-  if (o.v !== 1 || typeof o.goalId !== "string" || typeof o.fingerprint !== "string" || o.fingerprint.length === 0
-    || typeof o.state !== "string" || !(GOAL_TERMINAL_STATES as readonly string[]).includes(o.state)
-    || typeof o.outcomeDigest !== "string" || o.outcomeDigest.length === 0
-    || typeof o.ts !== "number" || !Number.isSafeInteger(o.ts) || o.ts < 0)
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} is malformed; garbled state never authorizes (SPEC 13.6)`);
-  if (o.goalId !== ref.goalId)
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} names goalId ${JSON.stringify(o.goalId)}, not its subject's ${ref.goalId}; a mis-subjected fact never authorizes (SPEC 13.4)`);
-  if (contractDigest(o.data === undefined ? null : o.data) !== o.outcomeDigest)
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} carries an outcomeDigest that does not match its payload; a digest-inconsistent fact never authorizes (SPEC 13.6)`);
+  const o = assertGoalResultFactShape(raw, subject, ref);
+  if (contractDigest(o.data === undefined ? null : o.data) !== o.outcomeDigest) throw goalOutcomeDigestMismatch(subject);
   return o as unknown as GoalResultFact;
 }
 
@@ -1163,12 +1127,14 @@ export async function commitGoalResult(
   // guidance is the whole operational value of an `uncertain` terminal (#605): the generic line
   // below reads as a plain failure, which is exactly what teaches an operator to re-issue, and a
   // re-issue after a launch that actually succeeded mints a duplicate.
-  const suppliedReason = (data as { reason?: unknown } | undefined)?.reason;
+  // Its details say what it observed of the entity, such as GOAL_ENTITY_RUNNING_DETAIL_KIND.
+  const { reason: suppliedReason, details: suppliedDetails } = (data ?? {}) as { reason?: unknown; details?: unknown };
   return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", {
     reason: typeof suppliedReason === "string" && suppliedReason.length > 0
       ? suppliedReason
       : "the success signal did not arrive within the readiness deadline",
     readinessDeadlineMs: spec.value.readinessDeadlineMs,
+    ...(Array.isArray(suppliedDetails) && suppliedDetails.length > 0 ? { details: suppliedDetails } : {}),
   }, now, committer));
 }
 
@@ -1228,15 +1194,21 @@ export async function requestGoalCancel(
 
 // ---- bounded readiness (§13.6 item 6) ----------------------------------------------------------
 
+/** The reverse-DNS detail kind on an `uncertain` readiness terminal whose owner observed the
+ *  action's entity still running at the deadline (§13.6 item 6): the action is still starting. */
+export const GOAL_ENTITY_RUNNING_DETAIL_KIND = "ai.cotal.goal.entity-running";
+
 /** Settle a goal `uncertain` at its persisted acceptance-relative readiness deadline (the
  *  `readiness` cause). The bound is read from the PERSISTED spec; a target-pinned goal is
  *  REACHABLE (readiness is the owner's deadline, not an executor completion, so no executor is
- *  required). A racing late success that committed first wins and this returns the winner. */
+ *  required). A racing late success that committed first wins and this returns the winner.
+ *  `running` attaches a {@link GOAL_ENTITY_RUNNING_DETAIL_KIND} detail. */
 export async function settleGoalUncertain(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number; committer?: { instanceId: string; epoch: number }; reason?: string },
+  args: { ref: GoalRef; now: number; committer?: { instanceId: string; epoch: number }; reason?: string; running?: boolean },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
-  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(args.reason !== undefined ? { data: { reason: args.reason } } : {}), ...(args.committer !== undefined ? { committer: args.committer } : {}) });
+  const data = { ...(args.reason !== undefined ? { reason: args.reason } : {}), ...(args.running ? { details: [{ kind: GOAL_ENTITY_RUNNING_DETAIL_KIND }] } : {}) };
+  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(Object.keys(data).length ? { data } : {}), ...(args.committer !== undefined ? { committer: args.committer } : {}) });
 }
 
 // ---- the reconcile index (§13.6 crash recovery for the Model-B inline executor) ---------------
@@ -1261,8 +1233,8 @@ export interface GoalIndexEntry {
    *  the winner is still in flight, and the honest answers are only "here is what the winner
    *  allocated" or a refusal. OPTIONAL for read compatibility with entries written before this
    *  field existed; absent means the floor was never persisted and a reader must refuse rather
-   *  than invent one. `owner` is optional for the same reason, and because a turn's floor leaves
-   *  it to the note: a reader that has to name the owner refuses when the floor did not record it. */
+   *  than invent one. `owner` is optional for the same reason: a reader that has to name the owner
+   *  refuses when the floor did not record it. */
   allocated?: { name: string; owner?: string; actor: string; uid: string; readinessDeadlineMs?: number };
   /** An OPAQUE relay payload the accepting endpoint must be able to serve back after a restart —
    *  the durable half of a goal whose work is handed to another process (a seat's `turn` rides
@@ -1306,8 +1278,7 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is not an object; garbled reconcile state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
   assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated", "note"], `goal-index entry ${key}`);
-  if (o.v !== 1 || typeof o.endpoint !== "string" || typeof o.owner !== "string" || typeof o.actor !== "string"
-    || typeof o.uid !== "string" || typeof o.goalId !== "string" || typeof o.iid !== "string")
+  if (o.v !== 1 || ![o.endpoint, o.owner, o.actor, o.uid, o.goalId, o.iid].every((c) => typeof c === "string" && c.length > 0))
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is malformed; garbled reconcile state never authorizes (SPEC 13.6)`);
   if (o.allocated !== undefined) {
     const a = o.allocated as Record<string, unknown>;
@@ -1332,7 +1303,8 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
  *  of a crash — a crash AFTER this write and BEFORE the bind leaves an index entry whose goal
  *  status is absent (the sweep treats it as a no-goal and clears it); a crash BEFORE it leaves no
  *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
- *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). */
+ *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). A goal
+ *  whose entry {@link clearGoalIndex} already deleted is refused `failed-precondition`. */
 export async function recordGoalIndex(
   ctx: ActionContext, ref: GoalRef, iid: string, allocated?: GoalIndexEntry["allocated"], note?: string,
 ): Promise<{ recorded: true } | { recorded: false; existing: GoalIndexEntry }> {
@@ -1344,11 +1316,14 @@ export async function recordGoalIndex(
     return { recorded: true };
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-    // A non-PUT marker is corruption, never reusable absence.
     const existing = await ctx.kv.get(key);
+    // DEL is the normal end clearGoalIndex gives a settled or withdrawn goal's entry. Nothing in core
+    // purges a records key or leaves a lost CAS reading absent, so those two are store corruption.
+    if (existing?.operation === "DEL")
+      throw new EpEnvelopeError("failed-precondition", `goal-index entry ${key} was cleared when its goal settled or its acceptance was withdrawn; a cleared entry is never recorded again (SPEC 13.6)`);
     if (!existing || existing.operation !== "PUT")
-      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent/deleted; reconcile the store (SPEC 13.6)`);
-    const entry = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(existing.value)), key);
+      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent or purged; reconcile the store (SPEC 13.6)`);
+    const entry = parseGoalIndexEntry(decodeRecordJson(existing.value, key), key);
     // H2: the loss is only an IDEMPOTENT RETRY when the winner is the same incarnation. A FOREIGN
     // `iid` means another instance accepted this goalId, which this function must not silently
     // absorb: the caller was proceeding on the belief that the index points at ITS acceptance, and
@@ -1374,7 +1349,7 @@ export async function readGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<G
   const key = goalIndexKey(snapshotRef(ref));
   const e = await ctx.kv.get(key);
   if (!e || e.operation !== "PUT") return undefined;
-  return parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
+  return parseGoalIndexEntry(decodeRecordJson(e.value, key), key);
 }
 
 /** Enumerate the endpoint's in-flight reconcile index over a RAW records KV: a successor's boot
@@ -1388,7 +1363,7 @@ export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: Go
   for await (const key of await kv.keys(filter)) {
     const e = await kv.get(key);
     if (!e || e.operation !== "PUT") continue; // deleted/absent since the key listed: terminal already cleared
-    const v = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
+    const v = parseGoalIndexEntry(decodeRecordJson(e.value, key), key);
     out.push({
       ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId },
       iid: v.iid,

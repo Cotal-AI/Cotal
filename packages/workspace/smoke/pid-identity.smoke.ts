@@ -21,20 +21,25 @@
  * belongs to the dead process, the live process started later). The NATIVE WINDOWS launcher
  * (CreateProcess handle lifetime, DETACHED_PROCESS parent exit) is not exercised here. The win32
  * identity token IS: cell F drives the Windows reader/writer seam, including a mutation that
- * restores "write no pin on win32" and must red.
+ * restores "write no pin on win32" and must red. Cell W injects the refusal Windows gives a rename over
+ * a record another handle holds open into the real publish (#4168); the Windows file-sharing rule that
+ * causes it is not exercised here.
  *
  * Run: pnpm smoke:pid-identity
  */
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
-  parseWin32CreationToken, verifyIdentityPin, writeIdentityPin, writePidPair,
+  assertRecordIdentity, darwinProcessStartToken, defaultStartToken, formatRecord, identityPinPath, identityStartToken, identityUncertaintyRefusal, parsePid, parseRecord,
+  parseWin32CreationToken, removePidPair, startTokenReaderFor, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type PinVerdict, type RecordReplaceIo,
 } from "../src/pid.js";
+import { processStartToken as lstartReader } from "../src/advisory-lock.js";
+import { requestLocalStop } from "../src/local-stop.js";
 
 const prevCwd = process.cwd();
 const root = mkdtempSync(join(tmpdir(), "pid-identity-"));
@@ -71,6 +76,22 @@ const spawnForeign = (as?: "supervise" | "deliver"): { child: ReturnType<typeof 
 };
 
 const strays: ReturnType<typeof spawn>[] = [];
+const spawnLocalTarget = async (pidPath: string): Promise<ReturnType<typeof spawn>> => {
+  const code = `import { listenForLocalStop } from ${JSON.stringify(new URL("../src/local-stop.ts", import.meta.url).href)};
+    listenForLocalStop(${JSON.stringify(pidPath)}, () => process.exit(0));
+    process.on("message", (message) => { if (message === "probe") process.send("alive"); });
+    process.send("ready"); setInterval(() => {}, 1000);`;
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e", code, "deliver"], { cwd: prevCwd, stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  strays.push(child);
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("local stop child did not become ready")), 30_000);
+    child.once("message", () => { clearTimeout(timer); resolve(); });
+    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`local stop child exited before ready (${code})`)); });
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+  });
+  return child;
+};
+let suiteFailed = false;
 try {
   await wait(200); // let every child install its SIGTERM handler before any cell runs
 
@@ -80,6 +101,79 @@ try {
   check("parseRecord reads an empty file as a husk", parseRecord("  \n").kind === "husk");
   check("parseRecord refuses garbled content as unattributable", parseRecord("x y z").kind === "unattributable");
   check("formatRecord is the inverse of parseRecord", parseRecord(formatRecord({ pid: 4321, token: "t" })).kind === "record");
+  // The macOS start token is `ps -o lstart=` output, which has spaces. Every pin written on a Mac
+  // read back as unattributable, so the manager failed its own pin at boot and `cotal down` refused
+  // every component (#3924). The live cell P3 is the repro on a Mac; P1 and P2 hold the format on
+  // any platform, since a Linux token has no spaces to lose.
+  {
+    const roundTrip = (token: string) => {
+      const read = parseRecord(formatRecord({ pid: 4321, token }));
+      return read.kind === "record" && read.record.pid === 4321 && read.record.token === token;
+    };
+    check("P1 a start token with spaces (macOS lstart) reads back as a record", roundTrip("Thu Oct 15 21:16:51 2026"));
+    check("P2 a padded one-digit day keeps its double space byte for byte", roundTrip("Thu Oct  5 09:01:02 2026"));
+    // The pin line is written here from this process's live start token, so P3 reads what a launch
+    // on this platform writes without depending on writeIdentityPin, which M4 breaks on purpose.
+    const own = join(root, "own.pid");
+    writeFileSync(own, String(process.pid));
+    writeFileSync(identityPinPath(own), formatRecord({ pid: process.pid, token: defaultStartToken(process.pid)! }));
+    const verdict = verifyIdentityPin(own);
+    check("P3 this process's own pin verifies as a match on this platform", verdict.kind === "match", verdict);
+    check("P4 multiple pin lines are not a single identity record", parseRecord("4321 first\n4322 second").kind === "unattributable");
+    check("P5 a newline cannot separate a pid from its token", parseRecord("4321\n28870819").kind === "unattributable");
+    check("P6 a carriage return cannot occur inside a token", parseRecord("4321 first\rsecond").kind === "unattributable");
+  }
+
+  // ── N. A PIDFILE WITH NO PID: nothing to verify, which is not a legacy record (#3553) ───────
+  {
+    const husk = join(root, ".cotal", "husk.pid");
+    check("N1 a missing pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "");
+    check("N2 an empty pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    writeFileSync(husk, "not-a-pid\n");
+    check("N3 a garbled pidfile records no pid", verifyIdentityPin(husk).kind === "no-pid");
+    const unreadable = join(root, ".cotal", "dir.pid");
+    mkdirSync(unreadable);
+    let thrown: unknown;
+    try { verifyIdentityPin(unreadable); } catch (e) { thrown = e; }
+    check("N4 a pidfile that cannot be read throws, naming it", thrown instanceof Error && thrown.message.includes(unreadable), String(thrown));
+  }
+
+  // ── U. A PIN THAT EXISTS BUT CANNOT BE READ proves nothing about a live pid (#3136), and a
+  //      directory at the pin path is refused by name rather than removed (#3750). ───────────────
+  if (process.getuid?.() !== 0) {
+    const pinned = join(root, ".cotal", "unreadable-pin.pid");
+    writeFileSync(pinned, String(process.pid));
+    writeFileSync(identityPinPath(pinned), formatRecord({ pid: process.pid, token: defaultStartToken(process.pid)! }));
+    chmodSync(identityPinPath(pinned), 0o000);
+    const verdict = verifyIdentityPin(pinned);
+    check("U1 an unreadable pin on a live pid is the unreadable-pin verdict, never legacy", verdict.kind === "unreadable-pin" && (verdict as { why?: string }).why === "EACCES", verdict);
+    const refusal = identityUncertaintyRefusal("probe", pinned, verdict as Extract<PinVerdict, { kind: "unreadable-pin" }>);
+    check("U2 …and the shared refusal names the pin, the reason and the record's preservation",
+      refusal.message.includes(identityPinPath(pinned)) && refusal.message.includes("EACCES") && refusal.message.includes("preserved"), refusal.message);
+    chmodSync(identityPinPath(pinned), 0o600);
+    const dead = join(root, ".cotal", "unreadable-pin-dead.pid");
+    writeFileSync(dead, "999999");
+    writeFileSync(identityPinPath(dead), formatRecord({ pid: 999999, token: "t" }));
+    chmodSync(identityPinPath(dead), 0o000);
+    check("U3 an unreadable pin on a dead pid still reads gone, so the stale record clears", verifyIdentityPin(dead).kind === "gone");
+    chmodSync(identityPinPath(dead), 0o600);
+  } else {
+    console.log("  (U1-U3 skipped: root reads a mode-000 file)");
+  }
+  {
+    const dirPin = join(root, ".cotal", "dir-pin.pid");
+    writeFileSync(dirPin, "4321\n");
+    mkdirSync(identityPinPath(dirPin));
+    writeFileSync(join(identityPinPath(dirPin), "keep"), "not ours");
+    let thrown: unknown;
+    try { removePidPair(dirPin, "4321"); } catch (e) { thrown = e; }
+    // Node's own EISDIR also names the path, so the cell demands the module's refusal, not the raw error.
+    check("U4 a directory at the pin path refuses the removal by name, as the module's own refusal",
+      thrown instanceof Error && thrown.message.startsWith("refusing to remove the record at ") && thrown.message.includes(identityPinPath(dirPin)) && thrown.message.includes("is a directory"), String(thrown));
+    check("U5 …and keeps the record, the directory and what it holds",
+      existsSync(dirPin) && existsSync(join(identityPinPath(dirPin), "keep")));
+  }
 
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
   {
@@ -153,7 +247,7 @@ try {
         { root, space: "main" },
       );
     } catch (e) { refused = (e as Error).message; }
-    check("B5 a reused pid is REFUSED on the BROKER's stop path (cotal down nats)", refused !== undefined && foreign.child.exitCode === null, { head: refused?.split("\n")[0] });
+    check("B5 a reused pid is REFUSED on the BROKER's stop path (bare cotal down)", refused !== undefined && foreign.child.exitCode === null, { head: refused?.split("\n")[0] });
     check("B6 the broker record and pin are preserved", existsSync(pidPath) && existsSync(identityPinPath(pidPath)));
     reap(foreign.child);
   }
@@ -161,16 +255,18 @@ try {
   // ── C. THE HAPPY PATH still tears down: a MATCHING pin is signalled and its death confirmed ─
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-    const target = spawnTarget("deliver");
+    const target = process.platform === "win32"
+      ? await spawnLocalTarget(join(root, ".cotal", "delivery.pid")).then((child) => ({ child, pid: child.pid }))
+      : spawnTarget("deliver");
     strays.push(target.child);
     await wait(150);
     const token = defaultStartToken(target.pid!); // the REAL start token of the REAL process
-    assert.ok(token !== undefined, "this host must expose a start token for the happy-path cell (Linux/macOS do; a Windows run is the named gap)");
+    assert.ok(token !== undefined, "this host must expose a native start token for the happy-path cell");
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(target.pid));
     writeFileSync(join(root, ".cotal", "delivery.pid.identity"), formatRecord({ pid: target.pid!, token }));
     await stopDelivery();
     await wait(200);
-    check("C1 a MATCHING pin IS torn down (SIGTERM, death confirmed, record cleared)", target.child.exitCode === 0, { exitCode: target.child.exitCode });
+    check("C1 a MATCHING pin IS torn down (cleanup, death confirmed, record cleared)", target.child.exitCode === 0, { exitCode: target.child.exitCode });
     check("C2 a proven-death teardown clears the pidfile AND the pin", !existsSync(join(root, ".cotal", "delivery.pid")) && !existsSync(join(root, ".cotal", "delivery.pid.identity")));
   }
 
@@ -199,11 +295,20 @@ try {
     let warning = "";
     const originalError = console.error;
     console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
+    let legacyRefusal: string | undefined;
     try { await stopDelivery(); }
+    catch (error) { legacyRefusal = (error as Error).message; }
     finally { console.error = originalError; }
     await wait(200);
-    check("E1 a LEGACY (unpinned) live record is signalled with a loud reduced-guarantee warning", foreign.child.exitCode === 9 && /predates process identity pinning/.test(warning) && /without an identity check/.test(warning) && /relaunch will pin/.test(warning), { exitCode: foreign.child.exitCode, warning });
-    check("E2 the legacy record auto-clears after confirmed death", !existsSync(join(root, ".cotal", "delivery.pid")));
+    if (process.platform === "win32") {
+      check("E1 Windows cooperative teardown refuses a live legacy daemon", /no creation identity for cooperative shutdown/.test(legacyRefusal ?? "") && foreign.child.exitCode === null);
+      check("E2 Windows preserves the refused legacy record", existsSync(join(root, ".cotal", "delivery.pid")));
+      reap(foreign.child);
+    } else {
+      assert.equal(legacyRefusal, undefined);
+      check("E1 a LEGACY (unpinned) live record is signalled with a loud reduced-guarantee warning", foreign.child.exitCode === 9 && /predates process identity pinning/.test(warning) && /without an identity check/.test(warning) && /relaunch will pin/.test(warning), { exitCode: foreign.child.exitCode, warning });
+      check("E2 the legacy record auto-clears after confirmed death", !existsSync(join(root, ".cotal", "delivery.pid")));
+    }
     const torn = spawnForeign("deliver");
     strays.push(torn.child);
     await wait(150);
@@ -248,6 +353,61 @@ try {
     check("F6 a live record with no sibling pin is still legacy (upgrade path only)",
       verifyIdentityPin(legacyPath, () => win32Token).kind === "legacy");
     reap(liveLegacy.child);
+    // These controls exercise the reader boundary. The native suite reaches GetProcessTimes.
+    const exact = "133000000000000001";
+    let calledPid: number | undefined;
+    check("F7 win32 creation preserves every FILETIME digit through its reader",
+      win32ProcessCreationToken(4242, (pid) => { calledPid = pid; return exact; }) === exact && calledPid === 4242);
+    let calls = 0;
+    const counted = (): undefined => { calls++; return undefined; };
+    const invalid = [0, -1, 1.5, NaN, Infinity].map((pid) => win32ProcessCreationToken(pid, counted));
+    check("F8 invalid Windows pids never reach the native reader", invalid.every((token) => token === undefined) && calls === 0);
+    calls = 0;
+    const denied = win32ProcessCreationToken(4242, counted);
+    check("F9 an unavailable Windows identity stays unverified without retry", denied === undefined && calls === 1);
+    calls = 0;
+    const missing = new Error("synthetic missing native binding");
+    let failure: unknown;
+    try { win32ProcessCreationToken(4242, () => { calls++; throw missing; }); }
+    catch (error) { failure = error; }
+    check("F10 a broken Windows binding throws without retry", failure === missing && calls === 1);
+    calls = 0;
+    const malformed = win32ProcessCreationToken(4242, () => { calls++; return "not-a-filetime"; });
+    check("F11 malformed Windows native output is not a token", malformed === undefined && calls === 1);
+    calls = 0;
+    const oversized = win32ProcessCreationToken(0x80000000, counted);
+    check("F12 an oversized Windows pid never reaches the native reader", oversized === undefined && calls === 0);
+  }
+
+  // ── M. MACOS pins the microsecond start time through its native binding. These controls exercise
+  // the reader boundary on this host; the darwin-only native suite reaches sysctl.
+  {
+    const micro = "1729876543123456";
+    check("M1 macOS identity uses the native start-time reader, not ps",
+      identityStartToken(4242, "darwin", () => "win32", () => "Sat Oct 25 16:47:55 2026", () => micro) === micro);
+    let calls = 0;
+    const binding = (token: unknown) => () => ({ processInfo: (pid: number) => { calls++; return pid === 4242 ? { token: token as string, pgid: 4242, stopped: false } : undefined; } });
+    check("M2 the native reader keeps every microsecond digit", darwinProcessStartToken(4242, binding(micro)) === micro && calls === 1);
+    calls = 0;
+    check("M3 invalid macOS pids never reach the native reader",
+      [0, -1, 1.5, NaN, Infinity, 0x80000000].every((pid) => darwinProcessStartToken(pid, binding(micro)) === undefined) && calls === 0);
+    check("M4 an absent process and malformed native output are not tokens",
+      darwinProcessStartToken(4343, binding(micro)) === undefined && darwinProcessStartToken(4242, binding("Sat Oct 25 16:47:55 2026")) === undefined && darwinProcessStartToken(4242, binding(42)) === undefined);
+    const failing = () => ({ processInfo: (): undefined => { throw new Error("sysctl failed"); } });
+    check("M5 a failed macOS read is unverified, never a token", darwinProcessStartToken(4242, failing) === undefined);
+    const missing = new Error("synthetic missing native binding");
+    let failure: unknown;
+    try { darwinProcessStartToken(4242, () => { throw missing; }); } catch (error) { failure = error; }
+    check("M6 a broken macOS binding throws", failure === missing);
+    // A pin written before the native reader holds `ps -o lstart=` text. The default reader verifies it
+    // with that same reader on macOS; numeric pins, other platforms and passed readers are unchanged.
+    const lstart = "Sat Oct 25 16:47:55 2026", given = () => micro;
+    check("M7 a legacy macOS lstart pin is verified with the lstart reader", startTokenReaderFor(lstart, defaultStartToken, "darwin") === lstartReader);
+    check("M8 a microsecond macOS pin is verified with the native reader", startTokenReaderFor(micro, defaultStartToken, "darwin") === defaultStartToken);
+    check("M9 only macOS reads a non-numeric pin with the lstart reader", startTokenReaderFor(lstart, defaultStartToken, "linux") === defaultStartToken && startTokenReaderFor(lstart, defaultStartToken, "win32") === defaultStartToken);
+    check("M10 a reader the caller passes is used as given", startTokenReaderFor(lstart, given, "darwin") === given);
+    check("M11 an lstart pin compared with a microsecond reader is a mismatch, never a match",
+      assertRecordIdentity({ pid: process.pid, token: lstart }, given).kind === "mismatch");
   }
 
   // ── G. writePidPair (#1238): the WRITE side has no cell today; a crash mid-publish is planted
@@ -316,13 +476,226 @@ try {
       g5Threw && parsePid(readFileSync(firstPath, "utf8")) === firstTarget.pid && verifyIdentityPin(firstPath).kind === "match");
     reap(firstTarget.child);
 
-    check("G6 no `.publish.` temporary survives ANY of G1 through G5",
+    // A pidfile that exists but cannot be read is not a first start (#3575). A directory stands in
+    // for it, so the cell holds as root, where a mode 000 file still reads.
+    const unreadablePath = join(root, ".cotal", "g-unreadable.pid");
+    mkdirSync(unreadablePath);
+    writeIdentityPin(unreadablePath, process.pid);
+    const pinBefore = readFileSync(identityPinPath(unreadablePath), "utf8");
+    const unreadableTarget = spawnTarget();
+    strays.push(unreadableTarget.child);
+    await wait(150);
+    const g6Steps: string[] = [];
+    let g6Thrown: unknown;
+    try {
+      writePidPair(unreadablePath, unreadableTarget.pid!, { onStep: (step) => { g6Steps.push(step); if (step === "bridge-pin") throw new Error("planted crash after bridge-pin"); } });
+    } catch (e) { g6Thrown = e; }
+    check("G6 a pidfile that cannot be read throws, naming it, before the publish renames anything",
+      g6Thrown instanceof Error && g6Thrown.message.includes(unreadablePath) && g6Steps.length === 0
+        && readFileSync(identityPinPath(unreadablePath), "utf8") === pinBefore,
+      { thrown: String(g6Thrown), steps: g6Steps, pin: readFileSync(identityPinPath(unreadablePath), "utf8") });
+    reap(unreadableTarget.child);
+
+    check("G7 no `.publish.` temporary survives ANY of G1 through G6",
       !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
   }
+
+  // ── W. Windows refuses a rename over a record another handle holds open (#4168). The refusal is
+  // injected into the real writePidPair through `replaceIo`: the platform reads win32, the rename
+  // refuses one target a set number of times and then really renames, and the sleep records instead
+  // of waiting. Each cell reads the two files back.
+  {
+    const wPath = join(root, ".cotal", "w-held.pid");
+    const oldTarget = spawnTarget();
+    const newTarget = spawnTarget();
+    strays.push(oldTarget.child, newTarget.child);
+    await wait(150);
+    const refusing = (target: string, code: string, times: number, platform: NodeJS.Platform = "win32") => {
+      const seen = { attempts: 0, sleeps: [] as number[], error: Object.assign(new Error(`${code}: injected refusal, rename -> ${target}`), { code }) };
+      const replaceIo: RecordReplaceIo = {
+        platform,
+        sleep: (ms) => { seen.sleeps.push(ms); },
+        rename: (from, to) => {
+          if (to === target && ++seen.attempts <= times) throw seen.error;
+          renameSync(from, to);
+        },
+      };
+      return { seen, replaceIo };
+    };
+    const publish = (pid: number, replaceIo?: RecordReplaceIo): unknown => {
+      try { writePidPair(wPath, pid, replaceIo ? { replaceIo } : {}); return undefined; } catch (e) { return e; }
+    };
+    const state = () => ({ pidfile: readFileSync(wPath, "utf8"), pin: readFileSync(identityPinPath(wPath), "utf8"), verdict: verifyIdentityPin(wPath).kind });
+
+    for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(wPath, code, 3);
+      const thrown = publish(newTarget.pid!, replaceIo);
+      check(`W1 a pidfile commit refused three times with ${code} retries and publishes the NEW complete record`,
+        thrown === undefined && parsePid(readFileSync(wPath, "utf8")) === newTarget.pid && verifyIdentityPin(wPath).kind === "match"
+          && readFileSync(identityPinPath(wPath), "utf8").trim().split("\n").length === 1 && seen.attempts === 4 && seen.sleeps.length === 3,
+        { thrown: String(thrown), ...seen, ...state() });
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(identityPinPath(wPath), "EPERM", 2);
+      const thrown = publish(newTarget.pid!, replaceIo);
+      check("W2 a bridge pin rename refused twice retries, and the settled pin rename after it succeeds at once",
+        thrown === undefined && parsePid(readFileSync(wPath, "utf8")) === newTarget.pid && verifyIdentityPin(wPath).kind === "match"
+          && seen.attempts === 4 && seen.sleeps.length === 2,
+        { thrown: String(thrown), ...seen, ...state() });
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(wPath, "EPERM", Infinity);
+      const thrown = publish(newTarget.pid!, replaceIo);
+      const total = seen.sleeps.reduce((a, b) => a + b, 0);
+      check("W3 a refusal that never ends still throws that same error once the retry is spent",
+        thrown === seen.error && seen.attempts > 1 && seen.attempts === seen.sleeps.length + 1,
+        { thrown: String(thrown), attempts: seen.attempts, sleeps: seen.sleeps.length });
+      check("W3b its backoff grows by at most 10 ms a step to 100 ms, and its total stays inside the publish lock's 30 s wait",
+        seen.sleeps.every((ms, i) => ms <= 100 && (i === 0 || (ms >= seen.sleeps[i - 1]! && ms - seen.sleeps[i - 1]! <= 10))) && total > 0 && total < 30_000,
+        { first: seen.sleeps.slice(0, 12), total });
+      check("W3c the refused commit leaves the OLD pid checked against its own line of the bridge pin (match, never torn)",
+        parsePid(readFileSync(wPath, "utf8")) === oldTarget.pid && verifyIdentityPin(wPath).kind === "match"
+          && readFileSync(identityPinPath(wPath), "utf8").trim().split("\n").length === 2,
+        state());
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const linux = refusing(wPath, "EPERM", Infinity, "linux");
+      const offWindows = publish(newTarget.pid!, linux.replaceIo);
+      check("W4 off Windows the same EPERM throws at once, with no retry",
+        offWindows === linux.seen.error && linux.seen.attempts === 1 && linux.seen.sleeps.length === 0 && parsePid(readFileSync(wPath, "utf8")) === oldTarget.pid,
+        { thrown: String(offWindows), ...linux.seen });
+      const other = refusing(wPath, "EXDEV", Infinity);
+      const notHeld = publish(newTarget.pid!, other.replaceIo);
+      check("W4b on Windows a code that is not a held-file refusal (EXDEV) throws at once, with no retry",
+        notHeld === other.seen.error && other.seen.attempts === 1 && other.seen.sleeps.length === 0,
+        { thrown: String(notHeld), ...other.seen });
+    }
+
+    {
+      publish(oldTarget.pid!);
+      const { seen, replaceIo } = refusing(wPath, "EPERM", 2);
+      const thrown = publish(newTarget.pid!, { rename: replaceIo.rename, platform: replaceIo.platform });
+      check("W5 with the real sleep, a pidfile commit refused twice publishes the NEW complete record",
+        thrown === undefined && parsePid(readFileSync(wPath, "utf8")) === newTarget.pid && verifyIdentityPin(wPath).kind === "match" && seen.attempts === 3,
+        { thrown: String(thrown), attempts: seen.attempts, ...state() });
+    }
+
+    // #4175: one publish makes up to three renames, and they draw on ONE backoff budget. Each rename
+    // here is held until it has itself waited `holdMs` of backoff, so a budget per rename lets every
+    // rename through and the publish waits out all three holds in turn.
+    const holding = (holdMs: number) => {
+      const waited = new Map<string, number>();
+      let current = "";
+      const sleeps: number[] = [];
+      const error = Object.assign(new Error("EPERM: injected hold, rename"), { code: "EPERM" });
+      const replaceIo: RecordReplaceIo = {
+        platform: "win32",
+        sleep: (ms) => { sleeps.push(ms); waited.set(current, (waited.get(current) ?? 0) + ms); },
+        rename: (from, to) => {
+          current = from;
+          if ((waited.get(from) ?? 0) < holdMs) throw error;
+          renameSync(from, to);
+        },
+      };
+      return { error, replaceIo, total: () => sleeps.reduce((a, b) => a + b, 0) };
+    };
+    const held = [9_900, 2_900].map((holdMs) => {
+      publish(oldTarget.pid!);
+      const hold = holding(holdMs);
+      const thrown = publish(newTarget.pid!, hold.replaceIo);
+      return { holdMs, total: hold.total(), threwHold: thrown === hold.error, thrown: String(thrown), ...state() };
+    });
+    const [worst, spread] = held;
+    check("W7 a publish whose three renames are each held for 9.9 s of backoff waits under 7.5 s in all, not 29.85 s (#4175)",
+      worst!.total > 0 && worst!.total < 7_500, held.map(({ holdMs, total, thrown }) => ({ holdMs, total, thrown })));
+    check("W7b it then throws the held rename's refusal, leaving the OLD pid matching its record",
+      worst!.threwHold && parsePid(worst!.pidfile) === oldTarget.pid && worst!.verdict === "match", worst);
+    check("W8 holds of 2.9 s each, short enough for any one rename, still stop the publish under 7.5 s, because its renames share one budget",
+      spread!.total < 7_500 && spread!.threwHold && parsePid(spread!.pidfile) === oldTarget.pid && spread!.verdict === "match", spread);
+    reap(oldTarget.child);
+    reap(newTarget.child);
+
+    check("W6 no `.publish.` temporary survives ANY of W1 through W8",
+      !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
+  }
+
+  // The real local control channel runs on every host; Windows CLI routing is qualified natively.
+  {
+    const pidPath = join(root, ".cotal", "local-control.pid");
+    const child = await spawnLocalTarget(pidPath);
+    const target = { pid: child.pid!, token: defaultStartToken(child.pid!)! };
+    const prefix = join(root, ".cotal", "local-stop", `local-control.pid.${createHash("sha256").update(formatRecord(target)).digest("base64url")}`);
+    const capability = JSON.parse(readFileSync(`${prefix}.ready`, "utf8")) as { token: string };
+    const marker = `${pidPath}.stopping`;
+    writeFileSync(marker, String(process.pid));
+    const stat = lstatSync(marker);
+    const frame = { version: 1, target: formatRecord(target), token: capability.token,
+      stopper: formatRecord({ pid: process.pid, token: defaultStartToken(process.pid)! }), reservation: `${stat.dev}:${stat.ino}` };
+    const consuming = (): boolean => readdirSync(join(root, ".cotal", "local-stop")).some((name) => name.startsWith(`${basename(prefix)}.request.`) && name.endsWith(".consuming"));
+    const rejected = async (name: string, data: string): Promise<void> => {
+      writeFileSync(`${prefix}.request`, data);
+      const until = Date.now() + 20_000;
+      while (Date.now() < until && (existsSync(`${prefix}.request`) || consuming())) await wait(50);
+      // A reply proves the child's event loop got past the request callback; an exit cannot race a
+      // snapshot of exitCode and make an accepted request look refused.
+      const responsive = await new Promise<boolean>((resolve) => {
+        if (!child.connected) { resolve(false); return; }
+        const done = (alive: boolean): void => { clearTimeout(timer); child.off("message", onMessage); child.off("exit", onExit); resolve(alive); };
+        const onMessage = (message: unknown): void => { if (message === "alive") done(true); };
+        const onExit = (): void => done(false);
+        const timer = setTimeout(() => done(false), 5000);
+        child.on("message", onMessage); child.once("exit", onExit);
+        try { child.send("probe", (error) => { if (error) done(false); }); }
+        catch { done(false); }
+      });
+      check(name, responsive && child.exitCode === null && !existsSync(`${prefix}.request`) && !consuming());
+    };
+    await rejected("H1 a local stop without its private nonce cannot invoke cleanup", JSON.stringify({ ...frame, token: "0".repeat(64) }));
+    await rejected("H2 a local stop for another process generation cannot invoke cleanup", JSON.stringify({ ...frame, target: `${frame.target}other` }));
+    await rejected("H3 a local stop with a replaced reservation cannot invoke cleanup", JSON.stringify({ ...frame, reservation: "different-inode" }));
+    await rejected("H4 a local stop with a stale stopper identity cannot invoke cleanup", JSON.stringify({ ...frame, stopper: `${frame.stopper}other` }));
+    await rejected("H5 oversized local stop metadata cannot invoke cleanup", `${JSON.stringify(frame)}${" ".repeat(4097)}`);
+    const successor = join(root, ".cotal", "local-stop", `local-control.pid.${createHash("sha256").update(`${formatRecord(target)}other`).digest("base64url")}.ready`);
+    writeFileSync(successor, "successor capability");
+    const cleanup = requestLocalStop(pidPath, { target, stopper: { pid: process.pid, marker } });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("authenticated local stop did not complete")), 20_000);
+      child.once("exit", (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`local stop child exit ${code}`)); });
+    });
+    cleanup(true);
+    check("H6 an authenticated local stop reaches the real cleanup handler", child.exitCode === 0);
+    check("H7 a predecessor stop leaves a successor capability intact", existsSync(successor) && !existsSync(`${prefix}.ready`));
+    check("H8 a synchronous cleanup consumes its one-shot request before exiting", !consuming());
+    rmSync(marker);
+  }
+} catch (error) {
+  suiteFailed = true;
+  throw error;
 } finally {
   for (const s of strays) reap(s);
+  const exited = await Promise.all(strays.map((child) => new Promise<boolean>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) { resolve(true); return; }
+    const timer = setTimeout(() => resolve(false), 5000);
+    child.once("exit", () => { clearTimeout(timer); resolve(true); });
+  })));
   process.chdir(prevCwd);
-  rmSync(root, { recursive: true, force: true });
+  if (exited.some((gone) => !gone)) {
+    console.error(`! test state retained at ${root}: a child exit could not be confirmed`);
+    if (!suiteFailed) throw new Error("test cleanup could not confirm every child exit");
+  } else {
+    try { rmSync(root, { recursive: true, force: true }); }
+    catch (error) {
+      if (!suiteFailed) throw error;
+      console.error(`! test state retained at ${root}: cleanup ${(error as NodeJS.ErrnoException).code}; the original suite failure is preserved`);
+    }
+  }
 }
 
 console.log(`\nPID IDENTITY TESTS PASSED ✅  (${pass} checks)`);

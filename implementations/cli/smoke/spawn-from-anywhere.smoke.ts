@@ -52,7 +52,8 @@ let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
 let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
-let spawnPersonaRef!: typeof import("../src/commands/spawn.js").spawnPersonaRef;
+let spaceCompletion!: typeof import("../src/lib/completion.js").spaceCompletion;
+let spawnPersona!: typeof import("../src/commands/spawn.js").spawnPersona;
 let enrollmentInput!: typeof import("../src/commands/spawn.js").enrollmentInput;
 let scrubEnrollmentEnv!: typeof import("../src/commands/spawn.js").scrubEnrollmentEnv;
 let checkEnrollmentBundle!: typeof import("../src/commands/spawn.js").checkEnrollmentBundle;
@@ -74,8 +75,9 @@ try {
     saveSpaceAuth,
     setCurrent,
   } = await import("@cotal-ai/workspace"));
-  ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js"));
+  ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersona } = await import("../src/commands/spawn.js"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
+  ({ spaceCompletion } = await import("../src/lib/completion.js"));
   ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
 } catch (e) { cleanScratch(e); }
 
@@ -127,11 +129,19 @@ try {
 
   // 1 mesh → used automatically (source 'registry'), with its root + personas.
   recordMesh(entry("teamA", projA));
-  check("default persona: product fallback is default", spawnPersonaRef(undefined, [], {}) === "default");
-  check("default persona: blank env is ignored", spawnPersonaRef(undefined, [], { COTAL_DEFAULT_PERSONA: "  " }) === "default");
-  check("default persona: env overrides product fallback", spawnPersonaRef(undefined, [], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "reviewer");
-  check("default persona: positional wins over env", spawnPersonaRef(undefined, ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "researcher");
-  check("default persona: --config wins over positional/env", spawnPersonaRef("builder", ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "builder");
+  const none = { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} } as const;
+  const saved = { schemaVersion: 1, revision: 2, defaults: { persona: "mine" }, spaces: { demo: { persona: "demo-lead" } } } as const;
+  const ref = (config: string | undefined, positionals: string[], env: NodeJS.ProcessEnv, preferences: typeof none | typeof saved = none, space?: string) =>
+    spawnPersona(config, positionals, { env, preferences, space }).ref;
+  check("default persona: product fallback is default", ref(undefined, [], {}) === "default");
+  check("default persona: blank env is ignored", ref(undefined, [], { COTAL_DEFAULT_PERSONA: "  " }) === "default");
+  check("default persona: env overrides product fallback", ref(undefined, [], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "reviewer");
+  check("default persona: positional wins over env", ref(undefined, ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "researcher");
+  check("default persona: --config wins over positional/env", ref("builder", ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "builder");
+  check("default persona: the user preference beats the product fallback", ref(undefined, [], {}, saved) === "mine");
+  check("default persona: the space's preference beats the user's for that space", ref(undefined, [], {}, saved, "demo") === "demo-lead" && ref(undefined, [], {}, saved, "other") === "mine");
+  check("default persona: env beats both saved values", ref(undefined, [], { COTAL_DEFAULT_PERSONA: "reviewer" }, saved, "demo") === "reviewer");
+  check("default persona: an implicit choice names its source, an explicit one does not", spawnPersona(undefined, [], { env: {}, preferences: saved, space: "demo" }).from === "your preference for space demo" && spawnPersona("builder", [], { env: {}, preferences: saved }).from === undefined);
 
   const enrollmentFile = join(neutral, "enrollment.url");
   writeFileSync(enrollmentFile, "https://auth.example/enroll/secret\n", { mode: 0o600 });
@@ -189,13 +199,28 @@ try {
     listPersonas(one.root).map((p) => p.name),
   );
 
-  // `cotal use` is authoritative even with one recorded mesh and from inside another project.
+  // `cotal use` is authoritative even with one recorded mesh, and inside a project with no space of its own.
   setCurrent("teamA");
   const oneSelected = resolveMeshTarget(projB);
-  check("1 mesh + current: selection wins inside another project", oneSelected.source === "current" && oneSelected.root === projA, oneSelected);
+  check("1 mesh + current: selection wins inside a project with no space of its own", oneSelected.source === "current" && oneSelected.root === projA, oneSelected);
+  // A selected space whose broker the sweep found down is still the target, not another mesh.
+  const downSelected = resolveMeshTarget(projB, { offline: ["teamA"] });
+  check("an offline current stays the target", downSelected.source === "current" && downSelected.space === "teamA", downSelected);
   setCurrent("gone");
-  const danglingLocal = resolveMeshTarget(projA);
-  check("dangling current: local project remains the fallback", danglingLocal.source === "local-recorded" && danglingLocal.root === projA, danglingLocal);
+  let dangling: unknown;
+  try {
+    resolveMeshTarget(neutral);
+  } catch (e) {
+    dangling = e;
+  }
+  check(
+    "dangling current refuses outside a project rather than falling back to another mesh",
+    isWorkspaceTargetError(dangling) && dangling.code === "unknown-space" && dangling.details.requested === "gone" && dangling.details.selected === true,
+    String(dangling),
+  );
+  // Inside a project whose root has its own space, that space is the target over the selection.
+  const inOwn = resolveMeshTarget(projA);
+  check("inside a project with its own space, that space is the target over a dangling selection", inOwn.source === "local-recorded" && inOwn.space === "teamA", inOwn);
   clearCurrent();
 
   // 2 meshes, no current → ambiguous: error names both spaces AND their roots.
@@ -223,14 +248,14 @@ try {
   const cur = resolveMeshTarget(neutral);
   check("N meshes + current: source is 'current' on the chosen root", cur.source === "current" && cur.root === projB, cur);
 
-  // An explicit current selection must also win from inside another mesh's project. This is the
-  // contract exposed by `cotal use`: bare spawn no longer needs a matching `--space` flag.
+  // Inside another space's project, that folder's own space is the target over the selection, which
+  // applies outside it. `--space` still names any space from there.
   const sub = join(projA, "nested", "dir");
   mkdirSync(sub, { recursive: true });
   const selected = resolveMeshTarget(sub);
-  check("current selection wins inside another local project", selected.source === "current" && selected.root === projB, selected);
-  const explicitFromLocal = resolveMeshTarget(sub, { space: "teamA" });
-  check("--space overrides current inside another local project", explicitFromLocal.source === "flag-space" && explicitFromLocal.root === projA, explicitFromLocal);
+  check("inside another space's project, its own space wins over the selection", selected.source === "local-recorded" && selected.root === projA && selected.space === "teamA", selected);
+  const explicitFromLocal = resolveMeshTarget(sub, { space: "teamB" });
+  check("--space overrides inside another space's project", explicitFromLocal.source === "flag-space" && explicitFromLocal.root === projB, explicitFromLocal);
 
   // With no selected current mesh, a genuine local project remains the fallback.
   clearCurrent();
@@ -309,7 +334,8 @@ try {
     check("completion: lists the resolved mesh's personas (not cwd's)", personas.items.map((i) => i.value).join(",") === "builder", personas.items);
     const configFlag = spawnComplete(["--config", ""]);
     check("completion: --config lists the resolved mesh's personas", configFlag.items.map((i) => i.value).join(",") === "builder", configFlag.items);
-    const spaces = spawnComplete(["--space", ""]);
+    // `--space` is completed by the kernel's one rule for every command, not by spawn's own completer.
+    const spaces = spaceCompletion();
     check("completion: --space lists the running spaces", spaces.items.map((i) => i.value).sort().join(",") === "teamA,teamB", spaces.items);
   } finally {
     process.chdir(prevCwd);

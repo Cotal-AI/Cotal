@@ -356,11 +356,15 @@ try {
     const inFlight = await until(() => held.bound === 1 && held.release !== undefined, TTL_MS * 4);
     ok("6.1 SETUP: a rebind is in flight with its watch bound at the broker and not yet returned",
       inFlight === true, { bound: held.bound, view: ep.presenceView() });
-    await ep.stop();
+    // stop() waits for the in-flight bind so it can delete that watch's consumer on the live
+    // connection (#3914). The gate opens once stop resolves, or after a second if stop is the one
+    // waiting, so a stop that does not wait still lands its bind late every run.
+    const warningsAtStop = log.warnings.filter((w) => /rebound/.test(w)).length;
+    const stopping = ep.stop();
+    void Promise.race([stopping, wait(1_000)]).then(() => held.release!());
+    await stopping;
     ok("6.2 after stop() the endpoint holds no presence watch",
       iterOf(ep) === undefined);
-    const warningsAtStop = log.warnings.filter((w) => /rebound/.test(w)).length;
-    held.release!();
     await wait(TTL_MS);
     ok("6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)",
       iterOf(ep) === undefined, { iter: iterOf(ep) !== undefined });
@@ -368,6 +372,9 @@ try {
       log.warnings.filter((w) => /rebound/.test(w)).length === warningsAtStop, log.warnings);
     ok("6.5 and raises no error for the retired bind (its epoch is gone, not faulty)",
       log.errors.length === 0, log.errors);
+    const afterStop = await consumerNames();
+    ok("6.6 the late bind's consumer is deleted with its watch: only the survivors' consumers remain on the stream (#3914)",
+      afterStop.every((n) => survivors.includes(n)), { afterStop, survivors });
   }
 
   // 7. reconnect() during an in-flight rebind: the fresh epoch's watch must stand.
@@ -380,13 +387,16 @@ try {
     const inFlight = await until(() => held.bound === 1 && held.release !== undefined, TTL_MS * 4);
     ok("7.1 SETUP: a rebind is in flight with its watch bound and not yet returned",
       inFlight === true, { bound: held.bound, view: ep.presenceView() });
-    await ep.reconnect();
+    // Same release shape as section 6: a live reconnect waits for the in-flight bind before it
+    // closes the old connection, and the gate opens when it resolves or after a second.
+    const reboundBefore = log.warnings.filter((w) => /rebound/.test(w)).length;
+    const rebuilding = ep.reconnect();
+    void Promise.race([rebuilding, wait(1_000)]).then(() => held.release!());
+    await rebuilding;
     const freshCurrent = await until(() => ep.presenceView().state === "current" && live(ep).length >= PEERS + 1, TTL_MS * 3);
     const fresh = iterOf(ep);
     ok("7.2 after reconnect the fresh epoch's own watch is bound and current",
       freshCurrent === true && fresh !== undefined, { view: ep.presenceView(), roster: statusOf(ep) });
-    const reboundBefore = log.warnings.filter((w) => /rebound/.test(w)).length;
-    held.release!();
     await wait(TTL_MS * 2);
     ok("7.3 the old epoch's late bind does not overwrite the fresh watch",
       iterOf(ep) === fresh);
@@ -397,6 +407,9 @@ try {
       live(ep).filter((p) => p.card.name.startsWith("peer")).length === PEERS, statusOf(ep));
     ok("7.6 no error was raised for the retired bind",
       log.errors.length === 0, log.errors);
+    const afterRebuild = await consumerNames();
+    ok("7.7 the old epoch's late bind deleted its consumer: the stream holds the survivors' plus the fresh watch's one (#3914)",
+      afterRebuild.filter((n) => !survivors.includes(n)).length === 1, { afterRebuild, survivors });
     await ep.stop();
   }
 

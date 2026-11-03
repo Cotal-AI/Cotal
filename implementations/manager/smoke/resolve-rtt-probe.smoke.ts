@@ -25,7 +25,8 @@
  * than this box's per-request overhead). Occupancy of the synthetic waits still collapses when
  * those waits overlap, and still sums to ~count × inject when they queue. Revert the memo and
  * phase 1 goes red on the refetch count; revert the concurrency and phase 2 goes red on
- * max-in-flight; revert either and the occupancy cell goes red.
+ * max-in-flight; revert either and the occupancy cell goes red. Phase 6 fails one early closure
+ * read and goes red if the pool starts any walk after the resolve has rejected (#3449).
  *
  * `deadlineMs` bounds the whole resolve: each closure walk is budgeted with what remains of it.
  *
@@ -42,7 +43,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  resolveService,
+  CotalEndpoint, resolveService,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -80,9 +81,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 
-/** Wrap a connection so every `request` is COUNTED by subject, and optionally DELAYED by
- *  `delayMs` before it is issued — a synthetic caller->broker RTT. Concurrency is tracked so the
- *  sequential-vs-batched question is answered by observation, not by reading the source. */
+/** Request counts, ordering, concurrency and injected-delay occupancy for one metered run. */
 interface Meter {
   total: number;
   bySubject: Map<string, number>;
@@ -91,7 +90,12 @@ interface Meter {
   /** Wall time during which at least one injected wait is open. Host/broker work after the wait is excluded. */
   delayOccupancyMs: number;
 }
-function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number): NatsConnection {
+
+/** Wrap a connection so every `request` is COUNTED by subject, and optionally DELAYED by
+ *  `delayMs` before it is issued — a synthetic caller->broker RTT. Concurrency is tracked so the
+ *  sequential-vs-batched question is answered by observation, not by reading the source. A request
+ *  whose subject ends in `failHex` fails after 10ms instead, well before any delayed read answers. */
+function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number, failHex?: string): NatsConnection {
   let inFlight = 0;
   let delaying = 0;
   let delayOpenAt: number | null = null;
@@ -109,6 +113,10 @@ function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number): N
         inFlight++;
         if (inFlight > meter.maxInFlight) meter.maxInFlight = inFlight;
         try {
+          if (failHex !== undefined && subject.endsWith(failHex)) {
+            await wait(10);
+            throw new Error("injected contract-store read fault");
+          }
           if (delayMs > 0) {
             delaying++;
             if (delaying === 1) delayOpenAt = performance.now();
@@ -150,7 +158,7 @@ try {
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: id.id, uid };
-  const creds = await mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["spawn"] });
+  const creds = await mintCreds(auth, id, "control-caller-privileged", { lifecycleUid: uid });
   const rawNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
 
   // ---- 1. COUNT the round-trips one cold resolveService performs -------------------------------
@@ -187,6 +195,61 @@ try {
   // reverted behaviour.
   check("the reads are issued CONCURRENTLY — many overlap, not just a command's own input/output pair",
     m1.maxInFlight >= 8, `maxInFlight=${m1.maxInFlight}`);
+
+  // ---- 2b. ONE COMMAND: an invoke does not pay for the endpoint's whole surface -----------------
+  console.log("\n2b. one-command resolution reads only that command's cluster and schema closures");
+  const mOne = newMeter();
+  const one = await resolveService(meteredConnection(rawNc, mOne, 0), space, MANAGER_ENDPOINT, caller, {
+    deadlineMs: 10_000, commands: ["despawn"],
+  });
+  const oneDistinct = new Set(mOne.order).size;
+  console.log(`   commands resolved: ${one.commands.size}`);
+  console.log(`   reads: ${mOne.total} (${oneDistinct} distinct)`);
+  check("one-command resolution returns only the requested command",
+    one.commands.size === 1 && one.commands.has("despawn"), [...one.commands.keys()]);
+  check("one-command resolution avoids the other 39 commands' contracts",
+    mOne.total === oneDistinct && mOne.total <= 6 && mOne.total < m1.total / 10,
+    { oneReads: mOne.total, fullReads: m1.total, distinct: oneDistinct });
+  const missingMeter = newMeter();
+  let missing: unknown;
+  try {
+    await resolveService(meteredConnection(rawNc, missingMeter, 0), space, MANAGER_ENDPOINT, caller, {
+      deadlineMs: 10_000, commands: ["not-visible"],
+    });
+  } catch (error) { missing = error; }
+  check("an absent requested command fails after describe and before contract-store reads",
+    (missing as { code?: string } | undefined)?.code === "not-found" && missingMeter.total === 0,
+    { error: (missing as Error | undefined)?.message, reads: missingMeter.total });
+
+  // ---- 2c. ENDPOINT CACHE: partial invoke handles never truncate discovery or thrash -------------
+  // The core smoke covers this cache contract hermetically. This live cell proves the same public
+  // methods against a real manager, real describe, and real contract-store reads.
+  console.log("\n2c. command handles and the full describe surface use separate caches");
+  const client = new CotalEndpoint({
+    space, servers: SERVERS, creds, lifecycleUid: uid,
+    card: { id: id.id, name: "cache-probe", kind: "agent" }, channels: [],
+    consume: false, watchPresence: false, watchChannels: false, registerPresence: false,
+  });
+  await client.start();
+  const clientPriv = client as unknown as { nc: NatsConnection };
+  const cacheMeter = newMeter();
+  clientPriv.nc = meteredConnection(clientPriv.nc, cacheMeter, 0);
+  const ps = await client.invokeService(MANAGER_ENDPOINT, "ps", undefined, { deadlineMs: 10_000 });
+  const afterPs = cacheMeter.total;
+  const status = await client.invokeService(MANAGER_ENDPOINT, "status", undefined, { deadlineMs: 10_000 });
+  const afterStatus = cacheMeter.total;
+  await client.invokeService(MANAGER_ENDPOINT, "ps", undefined, { deadlineMs: 10_000 });
+  const afterRepeatedPs = cacheMeter.total;
+  const described = await client.describeService(MANAGER_ENDPOINT);
+  check("invokeService resolves and invokes two different manager commands",
+    ps.reply.ok === true && status.reply.ok === true && afterPs > 0 && afterStatus > afterPs,
+    { ps: ps.reply, status: status.reply, afterPs, afterStatus });
+  check("alternating invokes retain each command handle instead of re-resolving the first command",
+    afterRepeatedPs === afterStatus, { afterPs, afterStatus, afterRepeatedPs });
+  check("a prior narrowed invoke never truncates describeService's complete discovery surface",
+    described.commands.size === shipped.commandCount && described.commands.has("ps") && described.commands.has("status"),
+    { commands: [...described.commands.keys()], expected: shipped.commandCount });
+  await client.stop();
 
   // ---- 3. WAN RECONSTRUCTION: inject a synthetic RTT and check the arithmetic -------------------
   const INJECT_MS = 15; // a scaled-down stand-in for the reported ~150ms WAN RTT
@@ -243,6 +306,33 @@ try {
     m3.delayOccupancyMs < slowSerialInject * 0.5 && m3.maxInFlight >= 8,
     { serialInject: slowSerialInject, delayOccupancyMs: Math.round(m3.delayOccupancyMs), maxInFlight: m3.maxInFlight, wallObserved: Math.round(slowTotal) });
   check("...and still resolves the full shipped command surface", outcome === `RESOLVED ${shipped.commandCount} commands`, outcome);
+
+  // ---- 6. A FAILED WALK STOPS THE POOL FROM STARTING MORE ---------------------------------------
+  // The command stage walks 16 commands at a time, so the rest of the surface queues behind the
+  // first window. Fail the first command's input-closure read: the resolve rejects at once, and a
+  // closure first read after that is a walk the pool started for a call that had already failed.
+  console.log("\n6. a failed closure walk stops the pool from starting more walks (100ms/read, one read failed)");
+  const declared = [...service.commands.values()];
+  const closures = new Set(declared.flatMap((rc) => [rc.contract.input.closureDigest, rc.contract.output.closureDigest].map((d) => d.slice("sha256:".length))));
+  const failHex = declared[0].contract.input.closureDigest.slice("sha256:".length);
+  const m4 = newMeter();
+  let rejection: unknown;
+  try {
+    await resolveService(meteredConnection(rawNc, m4, 100, failHex), space, MANAGER_ENDPOINT, caller, { deadlineMs: 60_000 });
+  } catch (e) { rejection = e; }
+  const readsAtRejection = m4.order.length;
+  await wait(2_000); // late walks start as the first window's reads answer, ~100-300ms after the rejection
+  const hexOf = (subject: string) => subject.slice(-64);
+  const readBefore = new Set(m4.order.slice(0, readsAtRejection).map(hexOf));
+  const lateWalks = new Set(m4.order.slice(readsAtRejection).map(hexOf).filter((h) => closures.has(h) && !readBefore.has(h)));
+  console.log(`   rejected: ${(rejection as Error | undefined)?.message?.slice(0, 100)}`);
+  console.log(`   reads before the rejection: ${readsAtRejection}, after it: ${m4.order.length - readsAtRejection}, closure walks started after it: ${lateWalks.size}`);
+  check("the surface queues commands behind the 16-wide command pool, so a late walk is observable",
+    declared.length > 16, { commands: declared.length });
+  check("the failed closure read rejects the resolve as unavailable",
+    (rejection as { code?: string } | undefined)?.code === "unavailable" && (rejection as Error).message.includes(failHex), rejection);
+  check("no closure walk starts after the resolve has rejected",
+    lateWalks.size === 0, { lateWalks: lateWalks.size, readsAfter: m4.order.length - readsAtRejection });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   await rawNc.drain().catch(() => rawNc.close());

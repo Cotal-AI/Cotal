@@ -18,39 +18,17 @@ import {
   parseRemoteManagedAgentPrepareRetirementRequest,
   parseRemoteManagedAgentRuntimeCreateRequest,
   parseRemoteManagedAgentRuntimeStatusRequest,
-  remoteManagerActors,
   type EpGateState,
   type RemoteManagedAgentEnrollmentRequest,
   type RemoteManagedAgentPrepareRetirementRequest,
   type RemoteManagedAgentRuntimeCreateRequest,
   type RemoteManagedAgentRuntimeStatusRequest,
 } from "@cotal-ai/core";
-import { timingSafeEqual } from "node:crypto";
 import { ledgerAuthorizeGrant } from "./ledger.js";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 
 /** The live manager gate the host observes for itself. A null answer is an absent registration. */
 export type ObserveManagerGate = (instanceId: string) => Promise<Pick<EpGateState, "state" | "principal" | "processEpoch" | "registrationRevision"> | null>;
-
-/** Every door here runs this one check after its own scope and target checks, so a change to the
- *  gate, principal, epoch, or proof rule reaches all of them at once. */
-async function assertCurrentManagerRegistration(
-  r: RemoteManagedAgentEnrollmentRequest | RemoteManagedAgentPrepareRetirementRequest | RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest,
-  args: { owner: string; proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate },
-  what: string,
-): Promise<void> {
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${r.instanceId}`);
-  const servePrincipal = `${args.owner}.${remoteManagerActors(r.instanceId).serve}`;
-  if (gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
-  if (gate.processEpoch !== r.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);
-  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
-    throw new EpEnvelopeError("permission-denied", `manager ${what} proof does not match current host registration`);
-}
 
 export interface AuthorizeRemoteManagedAgentEnrollmentArgs {
   request: RemoteManagedAgentEnrollmentRequest;
@@ -71,7 +49,7 @@ export async function authorizeRemoteManagedAgentEnrollment(
     throw new EpEnvelopeError("permission-denied", `enrollment request names space ${r.space}, not host space ${args.space}`);
   if (!args.scope.includes("supervise"))
     throw new EpEnvelopeError("permission-denied", 'managed agent enrollment needs scope "supervise"; spawn/admin do not imply it');
-  await assertCurrentManagerRegistration(r, args, "enrollment");
+  await assertCurrentManagerRegistration(r, r.serveEpoch, args, "manager enrollment");
   return r;
 }
 
@@ -100,7 +78,7 @@ export async function authorizeRemoteManagedAgentPrepareRetirement(
   const expectedOpId = managedRetirementOpId(r.target.lifecycleUid);
   if (r.opId !== expectedOpId)
     throw new EpEnvelopeError("permission-denied", `prepare-retirement opId "${r.opId}" does not match derived terminal operation "${expectedOpId}" for uid ${r.target.lifecycleUid}`);
-  await assertCurrentManagerRegistration(r, args, "prepare-retirement");
+  await assertCurrentManagerRegistration(r, r.serveEpoch, args, "manager prepare-retirement");
   return r;
 }
 
@@ -144,7 +122,7 @@ async function authorizeRemoteManagedAgentRuntime(
   }
   if (!scope.includes("supervise"))
     throw new EpEnvelopeError("permission-denied", `${what} needs scope "supervise"; spawn/admin do not imply it`);
-  await assertCurrentManagerRegistration(r, args, what);
+  await assertCurrentManagerRegistration(r, r.serveEpoch, args, what);
   return { owner: args.owner, instanceId: r.instanceId, actor: r.actor, target: { ...r.target } };
 }
 

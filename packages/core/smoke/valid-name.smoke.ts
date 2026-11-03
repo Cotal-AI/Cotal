@@ -78,6 +78,15 @@ accepts("U+E000, immediately above it, is accepted", "");
 refuses("an empty name is refused", "", /non-empty/);
 refuses("a name with surrounding whitespace is refused", " ada ", /non-empty|whitespace/);
 refuses("a multi-line name is refused", "ada\nlovelace", /single line/);
+// ── #3970: the single-line rule is every line break a Unicode-aware splitter honours, not only CR
+//    and LF. These survive JSON transport intact and used to pass, so an endpoint published presence
+//    under a two-line name.
+refuses("a name holding U+2028 LINE SEPARATOR is refused as multi-line", "ada lovelace", /single line/);
+refuses("a name holding U+2029 PARAGRAPH SEPARATOR is refused as multi-line", "ada lovelace", /single line/);
+refuses("a name holding U+0085 NEL is refused as multi-line", "ada\u0085lovelace", /single line/);
+refuses("a name holding a vertical tab is refused as multi-line", "ada\vlovelace", /single line/);
+refuses("a name holding a form feed is refused as multi-line", "ada\flovelace", /single line/);
+refuses("a name holding a bare CR is refused as multi-line", "ada\rlovelace", /single line/);
 refuses("a name containing '/' is refused", "owner/name", /reserved/);
 refuses("a name containing a backslash is refused", "a\\b", /reserved/);
 
@@ -105,6 +114,15 @@ acceptsChannel(
   `a dotted channel at MAX_CHANNEL_LENGTH with interior dots is accepted`,
   `${"cc".repeat(MAX_CHANNEL_LENGTH / 2 - 1)}.x`,
 );
+
+// ── The segment rule names the wildcard segments only to a segment that holds `*` or `>`, so a name
+//    that never tried a wildcard is not offered one.
+refusesChannel("a segment with a space names the token rule without the wildcards", "gen eral", /^invalid channel "gen eral": segment "gen eral" must be a NATS-safe token \(\[A-Za-z0-9_-\]\) - /);
+refusesChannel("a segment with a non-ASCII letter names the token rule without the wildcards", "team.kanäle", /segment "kanäle" must be a NATS-safe token \(\[A-Za-z0-9_-\]\) - /);
+refusesChannel("a segment holding * names the whole-segment wildcards", "team.gen*", /segment "gen\*" must be a NATS-safe token \(\[A-Za-z0-9_-\]\), '\*', or '>' - /);
+refusesChannel("a segment holding > names the whole-segment wildcards", "team.ge>", /segment "ge>" must be a NATS-safe token \(\[A-Za-z0-9_-\]\), '\*', or '>' - /);
+acceptsChannel("a whole * segment and a final > segment stay valid", "team.*.x");
+acceptsChannel("a final > segment stays valid", "team.>");
 
 console.log(`valid-name smoke: ${ok} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

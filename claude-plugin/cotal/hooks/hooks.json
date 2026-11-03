@@ -1,4 +1,5 @@
 {
+  "modules": ["./native-wake.js"],
   "hooks": {
     "SessionStart": [
       {
@@ -22,6 +23,17 @@
     ],
     "PreToolUse": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__.+__cotal_(connect|disconnect)$",
         "hooks": [
           {
             "type": "command",

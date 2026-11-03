@@ -1,0 +1,2 @@
+# The membership feed renews its $SYS observer cred from a source and refuses a changed issuer or scope.
+smoke:membership-observer-renewal

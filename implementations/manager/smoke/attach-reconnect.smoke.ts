@@ -73,8 +73,8 @@ import {
   registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { attachRefusal, heldSessionNotice, reconnectNotice } from "../../cli/src/commands/agents.js"; // dev-only cross-impl smoke import
-import { isTransportEnd } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
+import { attachRefusal, heldSessionNotice, reconnectNotice } from "../../../packages/workspace/src/attach/attach-seat.js"; // dev-only cross-package smoke import
+import { isTransportEnd } from "../../../packages/workspace/src/attach/attach-client.js"; // dev-only cross-package smoke import
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
@@ -258,6 +258,10 @@ function attachUnderPty(root: string, extra: string[] = [], seat: string = SEAT)
   };
 }
 
+/** What the attach printed, without terminal styling or carriage returns, so its end report can be
+ *  matched line by line. */
+const shown = (a: Attached): string => a.seen().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
+
 /** A plain (non-terminal) `cotal` run, for the control-plane commands this suite drives itself. */
 const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<{ status: number | null; out: string }> =>
   new Promise((res) => {
@@ -341,7 +345,8 @@ try {
 
     a.write(DETACH_BYTE);
     check("the detach key still detaches after a reconnect", await a.waitExit(30_000), a.seen().slice(-300));
-    check("...cleanly, saying so", a.exit()?.code === 0 && /detached from rcseat/.test(a.seen()),
+    // The redesigned attach ends with a "Detached" report whose `Agent:` row names the seat.
+    check("...cleanly, saying so", a.exit()?.code === 0 && /Detached\n\s+Agent:\s+rcseat\n/.test(shown(a)),
       { exit: a.exit(), tail: a.seen().slice(-300) });
   }
 
@@ -450,8 +455,10 @@ try {
     await heal();
     check("the attach exits", await a.waitExit(90_000), a.seen().slice(-500));
     check("...clean, saying the seat is gone (not an infinite retry against something that is not there)",
-      a.exit()?.code === 0 && /seat rcseat is gone/.test(a.seen()), { exit: a.exit(), tail: a.seen().slice(-500) });
-    check("...and it does NOT claim a detach", !/detached from rcseat/.test(a.seen()), a.seen().slice(-500));
+      // The redesigned attach reports a gone seat as "Attach target no longer available" for that agent.
+      a.exit()?.code === 0 && /Attach target no longer available\n\s+Agent:\s+rcseat\n/.test(shown(a)), { exit: a.exit(), tail: a.seen().slice(-500) });
+    // Only the detached report says that detaching sent no stop request.
+    check("...and it does NOT claim a detach", !/Detaching did not send a stop request/.test(shown(a)), a.seen().slice(-500));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -473,7 +480,7 @@ try {
     const r = await cotal(["attach", "--name", SEAT, "--on", String(instance), "--space", space, "--server", PROXY], root, 60_000);
     await heal();
     check("it exits non-zero", r.status !== 0, { status: r.status, out: r.out.slice(-400) });
-    check("...saying the mesh is not there, in the CLI's own words", /no mesh running at/.test(r.out), r.out.slice(-400));
+    check("...saying the mesh is not there, in the CLI's own words", /nothing answered at /.test(r.out), r.out.slice(-400));
     check("...with ONE failure mark, not the doubled one a rethrown refusal renders",
       !/✗\s*✗/.test(r.out), r.out.slice(-400));
     check("...and it never announced a reconnect it was not going to make",

@@ -46,7 +46,7 @@ import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { GateReconcileRefused } from "../src/reconcile-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------
 // FIRST ACTION: scrub inherited COTAL_* and refuse the live host. This suite starts a manager
@@ -336,15 +336,14 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   console.log(`\nBOOT SELF-HEAL GATE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {
   await mgr?.stop({ withAgents: true }).catch(() => {});
   await daemon?.stop().catch(() => {});
   for (const c of holderConns) await c.close().catch(() => {});
-  srv.kill("SIGTERM");
-  await wait(200);
+  await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();
   delete process.env.COTAL_HOME;

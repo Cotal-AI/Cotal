@@ -179,7 +179,7 @@ export function cliPackageRoot(): string {
 /**
  * This `cotal-ai` binary's published version — the nearest `package.json` above the {@link entryScript}
  * (`cotal-ai` published, or `bin/package.json` in a dev `tsx bin/cotal.ts` run). Surfaced by
- * `cotal --version` / `cotal -v` and `cotal status`. Fails loud if unreadable.
+ * `cotal version` and `cotal status`. Fails loud if unreadable.
  */
 export function cliVersion(): string {
   const root = cliPackageRoot();
@@ -265,7 +265,7 @@ export function shippedSourceDir(name: string): string {
  *  the same durability `writeLaunchSpec`/manifest writes use. Creates the parent dir. */
 export function writeJsonAtomic(path: string, value: unknown, mode = 0o600): void {
   const dir = dirname(path);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tmp = join(dir, `.${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode, flag: "wx" });
   renameSync(tmp, path);

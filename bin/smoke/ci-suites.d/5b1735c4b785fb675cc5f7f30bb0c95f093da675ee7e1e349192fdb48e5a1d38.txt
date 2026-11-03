@@ -1,0 +1,3 @@
+# actor list and auth grants resolve and refuse alike: no space is TARGET_NOT_FOUND with no assumed
+# main, and a root without the user-auth ledger is UNSUPPORTED rather than an empty list. Broker-free.
+smoke:actor-target

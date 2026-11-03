@@ -45,7 +45,7 @@ export const channelNodeId = (channel: string): string => `#${channel}`;
  *  badges and no channels; the roster, chat and the channel list still draw. `recent` is the caller's bounded window of messages; each entry's `ts` is what `now` is measured against. */
 export function topologyModel(input: {
   roster: RosterEntry[];
-  channels: Pick<ChannelInfo, "channel">[];
+  channels: { channel: string; deliveryClass?: ChannelInfo["deliveryClass"] }[];
   membership: DashboardState["membership"];
   recent: { mode: string; channel?: string; senderId?: string; msg: CotalMessage; ts: number }[];
   hideOffline: boolean;
@@ -84,9 +84,10 @@ export function topologyModel(input: {
   const links = new Map<string, TopoLink>();
   const keyOf = (agent: string, channel: string) => `${agent}\u0000${channel}`;
   const known = [...hubs];
+  const durableKnown = channels.filter((c) => c.deliveryClass === "durable").map((c) => c.channel);
   for (const m of members) {
     if (!agents.has(m.id)) agents.set(m.id, { id: m.id, kind: "agent", label: displayNameOf(m.id, names), status: "offline" });
-    const mc = memberChannels(m.live ?? [], m.durable ?? [], known);
+    const mc = memberChannels(m.live ?? [], m.durable ?? [], known, durableKnown);
     if (mc.wide) wide.add(m.id);
     for (const [ch, how] of mc.channels) {
       links.set(keyOf(m.id, ch), { source: m.id, target: channelNodeId(ch), kind: how === "live" ? "member" : "durable", hot: false });

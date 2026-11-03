@@ -1,6 +1,7 @@
 import { inspectCredHealth, startMembershipFeed, type MembershipFeedHandle, type SecretStore } from "@cotal-ai/core";
 import { CONNECTION_EVICTOR_CREDS_KIND, membershipRwCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, workspaceSecretStore } from "@cotal-ai/workspace";
 import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem, type SysCredsSource } from "./sys-creds.js";
+import type { DeliveryLog } from "./delivery.js";
 
 /**
  * The delivery daemon's thin composition root for the broker-sourced graph-membership feed. Every
@@ -30,6 +31,7 @@ export type MembershipStart = { handle: MembershipFeedHandle; down?: undefined }
 export async function startMembership(
   opts: { space: string; server: string; accountId: string; root?: string },
   store?: SecretStore,
+  log: DeliveryLog = { out: (line) => console.log(line), err: (line) => console.error(line) },
 ): Promise<MembershipStart> {
   // `injected` is the composition root's own fact, decided here before any I/O — never inferred by
   // probing the store or sniffing `.cotal/`, which would report "workstation" for a hosted daemon
@@ -78,7 +80,7 @@ export async function startMembership(
                 : "run `cotal up` to provision the data-account half (no rotation needed)"
               : `the $SYS-signed creds can only be re-minted while the system account is being provisioned: ${repairAdvice(source, sysMissing)}`
           }`;
-    console.error(`• membership: ${down}. The graph falls back to traffic-only; delivery is unaffected.`);
+    log.err(`• membership: ${down}. The graph falls back to traffic-only; delivery is unaffected.`);
     return { down };
   }
   const obsCreds = sys.observer as string; // required above; absence already returned
@@ -89,7 +91,7 @@ export async function startMembership(
   // DIAGNOSIS (a line naming both accounts) rather than the guarantee.
   const tenancy = observerTenancyProblem(obsCreds, opts.accountId);
   if (tenancy) {
-    console.error(`! membership: ${tenancy}; graph membership degraded, delivery unaffected`);
+    log.err(`! membership: ${tenancy}; graph membership degraded, delivery unaffected`);
     return { down: tenancy };
   }
 
@@ -101,7 +103,7 @@ export async function startMembership(
   if (sys.evictor !== undefined) {
     const torn = tornRotationProblem(obsCreds, sys.evictor, () => repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
     if (torn) {
-      console.error(`! membership: ${torn}; graph membership degraded, delivery unaffected`);
+      log.err(`! membership: ${torn}; graph membership degraded, delivery unaffected`);
       return { down: torn };
     }
   }
@@ -117,17 +119,27 @@ export async function startMembership(
       obs.state === "expired"
         ? `the $SYS observer cred (kind "${MEMBERSHIP_OBSERVER_CREDS_KIND}") EXPIRED ${new Date((obs.exp ?? 0) * 1000).toISOString()} and the broker denies it - it is rotation-renewed, so nothing re-signs it: ${repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND])} (agents, creds and data are untouched)`
         : `the $SYS observer cred (kind "${MEMBERSHIP_OBSERVER_CREDS_KIND}") is unreadable (${obs.error})`;
-    console.error(`! membership: ${down}; graph membership degraded, delivery unaffected`);
+    log.err(`! membership: ${down}; graph membership degraded, delivery unaffected`);
     return { down };
   }
 
+  let obsFirstRead = false;
   const intervalMs = Number(process.env.COTAL_MEMBERSHIP_INTERVAL_MS) || undefined; // test/ops override
   const handle = await startMembershipFeed({
     servers: opts.server,
     space: opts.space,
     accountId: opts.accountId,
-    // Observer is rotation-renewed ($SYS): a static read — its renewal is a system rotation + restart.
-    observerCreds: obsCreds,
+    // Read through the store on each renewal: a host that keeps a registered system signer re-mints
+    // the observer there and the feed proves and adopts it. A workstation store never changes it, so
+    // its renewal stays a rotation + restart. The first read is the cred checked above, so the feed
+    // pins the issuer and scope that passed tenancy. A cred with no `exp` has nothing to renew.
+    observerCreds: typeof obs.exp !== "number" ? obsCreds : async () => {
+      if (!obsFirstRead) { obsFirstRead = true; return obsCreds; }
+      const cur = (await loadSysPair(source, "observer")).observer;
+      if (cur === undefined)
+        throw new Error(`membership: the $SYS observer cred is gone (kind "${MEMBERSHIP_OBSERVER_CREDS_KIND}") - ${repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND])}`);
+      return cur;
+    },
     // rw is class-2 standing-renewable: read through the store seam and renewed on a 75% timer that
     // preflight-proves each candidate the manager re-signs into the store (D5 slice 5). The daemon
     // never sees the signer; the manager owns the re-sign.
@@ -138,7 +150,8 @@ export async function startMembership(
       return cur;
     },
     intervalMs,
+    log: (m) => log.err(`! membership: ${m}`),
   });
-  console.log(`✓ membership feed up (broker-sourced channel membership) — space ${opts.space}`);
+  log.out(`✓ membership feed up (broker-sourced channel membership) — space ${opts.space}`);
   return { handle };
 }

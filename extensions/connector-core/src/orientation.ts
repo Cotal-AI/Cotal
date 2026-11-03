@@ -9,8 +9,8 @@
  * The typed {@link Orientation} object is the source of truth; {@link renderOrientation} is one view of
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
-import { peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
-import { presenceViewCondition, type MeshAgent } from "./agent.js";
+import { isConcreteChannel, parsePrincipalKey, peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
+import { presenceReadCondition, type MeshAgent, type RosterRead } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
 
@@ -26,10 +26,12 @@ export const ORIENTATION_BOOTSTRAP =
  *  visible to the user and addressable by peers. Unconditional (a read-only agent still delegates via
  *  DM/anycast rather than a private subagent); the spawn-specific detail lives on the cotal_spawn tool. */
 export const MESH_FIRST_STEER =
-  "Keep multi-agent work on the mesh. Before reaching for your harness's own subagents, Task tool, or " +
-  "any built-in parallel-agent feature, do it through Cotal instead: spawn or delegate to a real peer " +
-  "(cotal_spawn if you have it, otherwise cotal_dm or cotal_anycast to reach one) so the work stays " +
-  "visible to the user and addressable by peers rather than hidden inside a private subagent.";
+  "Keep multi-agent work on the mesh. Prefer it to your harness's own subagents, Task tool, or any " +
+  "built-in parallel-agent feature: spawn or delegate to a real peer (cotal_spawn if you have it, " +
+  "otherwise cotal_dm or cotal_anycast to reach one) so the work stays visible to the user and " +
+  "addressable by peers rather than hidden inside a private subagent. Use a harness subagent only for " +
+  "a self-contained job nobody else needs to follow. For a single task, cotal_spawn with once: true " +
+  "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.";
 
 /** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
  *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is
@@ -39,6 +41,33 @@ export const WORKFLOW_STEER =
   "fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with " +
   "`cotal run start`, resumable on any host from its step journal. Read the `workflows` page via " +
   "cotal_docs before improvising such a loop in your own context.";
+
+/** Where to talk, folded in beside {@link ORIENTATION_BOOTSTRAP} for every connector. Leads with
+ *  the model (information moves through channels), then the rule (channel for work, a mention to
+ *  make one peer act, a DM for what one peer alone needs), then the mechanics. A fresh seat may
+ *  start on no channel, so it is told how to find and join one, and how a helper it spawns gets
+ *  one. Guidance only: it grants nothing and changes no subscription. */
+export const CHANNEL_GUIDANCE =
+  "Information moves through channels. Subscribe to the channel where what you need is published, " +
+  "and publish what others may need on the channel where they will look for it. The channel you work " +
+  "on is where your work happens: post plans, status, results and decisions there with cotal_send. " +
+  "On a durable channel, the usual kind, every agent on it gets the post unless it muted the channel, " +
+  "and one that is offline gets it when it comes back; on a live channel, one that is disconnected or " +
+  "busy then misses it, unless the post mentions it by a name only it has and it may read the channel. " +
+  "On a channel that replays history, agents who join later are shown it. A post " +
+  "wakes an idle agent unless it set dnd or focus or made the channel quiet. @mention a peer only when " +
+  "that peer must act now, since a mention wakes it even in dnd, and a mention in an acknowledgement " +
+  "or sign-off starts a wake-up loop. When you are " +
+  "asked to tell a peer about shared work, such as a status or a result, post it on the channel you " +
+  "share and mention that peer there. Use cotal_dm only for something one peer alone needs, such as a " +
+  "question only it can answer or a private detail, because other agents can't read a DM. Use " +
+  "cotal_anycast only when the team has agents holding a role to take requests. " +
+  "A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and " +
+  "cotal_join adds one within your read allowance. To follow every channel under a prefix, join a " +
+  "family such as team.>: posts on its durable channels are kept for you while you are away, from the " +
+  "join on. A helper you spawn starts only on the channels its persona lists, which may be none, so " +
+  "pass join with the channel you are working on. Post on #announce only for a deliberate notice " +
+  "to the whole space.";
 
 /** A tool the agent can actually call (already gated), as it appears in the card. */
 export interface OrientationTool {
@@ -52,7 +81,28 @@ export interface Orientation {
   /** Snapshot stamp. The live fields below (peers / status / attention / unread) are as of this time;
    *  the identity/access/capabilities/tools fields are static for the session. */
   generatedAt: number;
-  identity: { name: string; role?: string; space: string; id: string; cotalVersion: string; model?: string };
+  identity: {
+    /** Whether this endpoint has completed its mesh bind. Configured labels are not a bound identity. */
+    state: "bound" | "unbound";
+    /** Human-facing label. It is deliberately separate from the wire principal. */
+    display: { name: string; role: string };
+    /** Broker-routed owner+actor identity, or explicit unknowns when no principal can be established. */
+    principal: { owner: string; actor: string };
+    /** This incarnation's lifecycle identity. Open/legacy callers that do not expose it report unknown. */
+    lifecycleUid: string;
+    /** Replacement evidence available to this connector. A predecessor UID is never inferred. */
+    replacement: {
+      state: "replacement" | "unknown";
+      predecessorLifecycleUid: string;
+    };
+    /** Existing compatibility fields retained for renderers and callers. */
+    name: string;
+    role?: string;
+    space: string;
+    id: string;
+    cotalVersion: string;
+    model?: string;
+  };
   access: {
     /** auth mode → these grants are broker-enforced; open mode → advisory (host-trusted) only. */
     authMode: boolean;
@@ -62,6 +112,9 @@ export interface Orientation {
     readAcl: string[];
     /** Post ACL — channels you may broadcast to. Empty ⇒ read-only (default-deny). */
     post: string[];
+    /** Concrete channels in the read ACL you are NOT on yet, each with its registry note when the
+     *  registry has one: where to look before the first send, without a second call. */
+    joinable: { channel: string; note?: string }[];
   };
   /** Control-plane capabilities (e.g. `spawn`). Empty ⇒ none beyond the defaults granted to all. */
   capabilities: string[];
@@ -93,37 +146,33 @@ const honestStatus = (status: PresenceStatus): string =>
 
 /** Whether this observer's roster can be trusted, and why not. `cotal_roster` and this card both
  *  print `detail`, so the two surfaces cannot explain one condition differently. A stuck writer
- *  takes precedence over the view's own state (#1356); otherwise an `unpopulated` or `stale`
- *  view (#1229) keeps the roster from being complete or current. */
-export function presenceLiveness(agent: MeshAgent): Orientation["presence"] {
+ *  takes precedence over the read (#1356); otherwise a failed read (#1229) keeps the roster
+ *  last-known. */
+export function presenceLiveness(agent: MeshAgent, read: RosterRead): Orientation["presence"] {
   const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
   if (writeFailure?.stuck)
     return {
       live: false,
       detail: `bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms, so the roster is last-known until a write succeeds or the broker store is repaired`,
     };
-  const view = agent.presenceView();
-  if (view.state === "unpopulated")
+  if (read.failure)
     return {
       live: false,
-      detail: `${presenceViewCondition(view)}, so the roster may be partial and a missing name is not an absence verdict`,
-    };
-  if (view.state === "stale")
-    return {
-      live: false,
-      detail: `${presenceViewCondition(view)}, so the roster is last-known`,
+      detail: `${presenceReadCondition(read.failure)}, so the roster is last-known and a missing name is not an absence verdict`,
     };
   return { live: true };
 }
 
 /** Assemble the card. `visibleTools` is the already-gated tool list the connector exposes (pass the
  *  result of `cotalToolSpecs(config)` mapped to name/title) — the orientation tool itself is dropped.
- *  Pure: `generatedAt` is supplied by the caller so it's testable and deterministic. */
+ *  Pure: `generatedAt` and the roster `read` ({@link MeshAgent.readRoster}) are supplied by the
+ *  caller so it's testable and deterministic. */
 export function buildOrientation(
   agent: MeshAgent,
   config: AgentConfig,
   visibleTools: OrientationTool[],
   generatedAt: number,
+  read: RosterRead,
 ): Orientation {
   const core: OrientationTool[] = [];
   const more: OrientationTool[] = [];
@@ -132,18 +181,34 @@ export function buildOrientation(
     (CORE_TOOLS.has(t.name) ? core : more).push(t);
   }
 
-  const peers = agent.roster().filter((p) => p.card.id !== agent.id);
+  const peers = read.roster.filter((p) => p.card.id !== agent.id);
   const shown = peers
     .slice(0, 8)
     .map((p) => `${peerLabel(p.card)} (${honestStatus(p.status)})`);
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
+  const principal = parsePrincipalKey(agent.id);
 
   return {
     v: 1,
     generatedAt,
-    identity: { name: config.name, role: config.role, space: config.space, id: agent.id, cotalVersion: DOCS_VERSION, ...(config.model ? { model: config.model } : {}) },
+    identity: {
+      state: agent.connected ? "bound" : "unbound",
+      display: { name: config.name, role: config.role ?? "unknown" },
+      principal: principal ?? { owner: "unknown", actor: "unknown" },
+      lifecycleUid: config.lifecycleUid ?? "unknown",
+      replacement: {
+        state: "unknown",
+        predecessorLifecycleUid: "unknown",
+      },
+      name: config.name,
+      role: config.role,
+      space: config.space,
+      id: agent.id,
+      cotalVersion: DOCS_VERSION,
+      ...(config.model ? { model: config.model } : {}),
+    },
     access: {
       // AUTHENTICATED, not "has static creds": a user-auth mesh has no static creds and its grants
       // are broker-enforced, so `!!config.creds` told every agent on one that its grants were
@@ -152,11 +217,17 @@ export function buildOrientation(
       read: config.subscribe,
       readAcl: config.allowSubscribe,
       post: config.allowPublish,
+      joinable: config.allowSubscribe
+        .filter((c) => isConcreteChannel(c) && !config.subscribe.includes(c))
+        .map((channel) => {
+          const note = agent.channelInfo(channel).description?.trim();
+          return note ? { channel, note } : { channel };
+        }),
     },
     capabilities: config.capabilities ?? [],
     tools: { core, more },
     peers: { present: peers.length, summary },
-    presence: presenceLiveness(agent),
+    presence: presenceLiveness(agent, read),
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },
@@ -179,6 +250,11 @@ export function renderOrientation(o: Orientation): string {
 
   const lines: string[] = [
     `You are ${who} in space "${o.identity.space}" (id ${o.identity.id.slice(0, 8)}…).`,
+    `Identity state: ${o.identity.state}`,
+    `  • display: ${o.identity.display.name}/${o.identity.display.role}`,
+    `  • principal: ${o.identity.principal.owner}.${o.identity.principal.actor}`,
+    `  • lifecycle UID: ${o.identity.lifecycleUid}`,
+    `  • replacement: ${o.identity.replacement.state} · predecessor lifecycle UID: ${o.identity.replacement.predecessorLifecycleUid}`,
     `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
       "Consult it before answering about Cotal or writing code against it; don't rely on training memory.",
     o.identity.model
@@ -189,6 +265,8 @@ export function renderOrientation(o: Orientation): string {
     `  • read: ${fmt(o.access.read)}`,
   ];
   if (aclDiffers) lines.push(`  • may join (read ACL): ${fmt(o.access.readAcl)}`);
+  if (o.access.joinable.length)
+    lines.push(`  • not on yet: ${o.access.joinable.map((j) => `#${j.channel}${j.note ? ` (${j.note})` : ""}`).join(", ")} · join one with cotal_join`);
   lines.push(
     `  • post: ${o.access.post.length ? fmt(o.access.post) : "— (read-only; no post channels)"}`,
     `  • capabilities: ${o.capabilities.length ? o.capabilities.join(", ") : "none beyond defaults"}`,

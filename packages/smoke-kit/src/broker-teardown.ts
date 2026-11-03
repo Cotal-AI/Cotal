@@ -1,49 +1,19 @@
 /**
- * Shared smoke helper: own a spawned `nats-server` so it dies when this process is SIGNALLED, not
- * only when the suite returns and its `finally` runs.
+ * Register owned smoke brokers and store directories for synchronous exit and signal cleanup.
  *
- * SCOPE, AND A CORRECTION TO THE FIRST VERSION OF IT. This helper covers ONE of two defects, and an
- * earlier draft of this paragraph claimed it covered the only one. It said `finally` teardown is
- * already correct on the normal path, which was measured — ten `bind-fence` runs on a long-lived box
- * left zero brokers and zero store dirs — but measured on ONE suite and then stated about all of
- * them. It does not hold generally. `channels-auth.smoke.ts` has no teardown at all: it passes,
- * reports `AUTH GRANT CHECKS PASSED`, and leaks its store dir on every green run. Sixty-two of them
- * had accumulated over four days when that was finally counted.
+ * Suites still need normal-path teardown: stop the broker, await its exit, remove its temporary store,
+ * and release its registration. Ownership here does not replace that lifecycle. The exit and
+ * SIGINT/SIGTERM/SIGHUP handlers cover interruptions that prevent a suite's finally block from
+ * running. Keep both hooks: a runner may turn an unhandled signal into an ordinary exit, while
+ * plain Node does not run exit handlers for a signal with its default disposition.
  *
- * So there are two defects, and this helper is only the answer to the second:
+ * Ownership follows the spawned ChildProcess handle. Command-line matching can miss valid broker
+ * launches or select unrelated processes, and a referenced config file may already be deleted.
+ * Use `pnpm smoke:broker-migration` for the current tracked spawn-site census and adoption checks.
  *
- *   1. NO NORMAL-PATH TEARDOWN. Nothing to unwind, so the suite leaks whether or not it is killed.
- *      Six suites are in this state. Ownership does NOT fix them, and worse, it makes them read as
- *      handled while they keep manufacturing directories on every pass.
- *   2. TEARDOWN THAT NEVER UNWINDS. The `finally` is correct and the process is SIGNALLED, so it
- *      never runs. That is what this file exists for, and it changes nothing else.
- *
- * Adopting this helper in a suite with defect 1 is a rename, not a fix. Check the normal path first.
- *
- * The two registrations below are INDEPENDENTLY SUFFICIENT under `tsx`, which is worth stating
- * because it is not obvious and it was only established by trying to disable each one: removing
- * either alone still tears the broker down, and only removing OWNERSHIP reinstates the leak. That is
- * why the suite's mutation targets `owned.add` rather than a hook.
- *
- * PARENTAGE IS THE DISCRIMINATOR, NOT ARGV. The helper holds the child handle it spawned and never
- * has to recognize the process later. That matters because argv fails in BOTH directions on a real
- * box: it under-matches (of 151 `spawn("nats-server"` sites, 38 pass a store dir and no config at
- * all, and one passes a prebuilt args variable), and it over-matches (a `server-open.conf` rule
- * covers 8 processes, only some of which are ever a real mesh). Worse, an argv marker can outlive the
- * file it names: across a fuller census of 15 live orphans, 4 named a config path that no longer
- * exists, deleted by the very cleanup that failed to kill the process. Anything that validates a
- * candidate by stat-ing its config would refuse to reap exactly those four.
- *
- * Two numbers above were revised once the census went from 4 orphans to 15: the `server-open.conf`
- * count was 7, and "every one of the 4 observed orphans" was true of the 4 then visible but is 4 of
- * 15 now. The conclusion is unchanged and so is the reason for it; only the ratio was overstated,
- * and an overstated ratio in a paragraph arguing against a matching strategy is worth correcting.
- *
- * WHAT THIS CANNOT DO, and it must be read as a limit rather than a solved problem: SIGKILL is
- * uncatchable. `kill -9` on a suite kills the handle along with the process, and the broker is
- * orphaned with nothing holding it. The minted store-dir token below is the only surviving evidence
- * in that case, and it is what a separate reaper matches. Parentage covers the case this helper
- * fixes; the token covers the case it cannot. Neither covers both.
+ * SIGKILL cannot run these hooks. The store-directory token records its owner's pid and optional
+ * runner scope for a separate orphan reaper; the reaper must distinguish an orphan from a live
+ * owner's broker. Neither the token nor this helper makes a missing normal teardown safe.
  */
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";

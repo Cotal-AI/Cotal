@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/status-persona-root.mutations.json",
   "why": [
     "TWO MUTATIONS cover both status guards: the selected spawn root and loader-valid launchability.",
-    "Assigning spawnRoot from folder makes the",
+    "Comparing the folder's catalog with itself makes the",
     "comparison agree by construction even when the selected mesh points elsewhere, recreating the",
     "false status card that advertised the folder's default persona as if spawn could launch it.",
     "",
@@ -25,17 +25,17 @@
     {
       "name": "status compares the folder catalog with itself instead of spawn truth",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "  const spawnRoot = selected.target.personaRoot;",
-      "replace": "  const spawnRoot = folder;",
+      "find": "  if (sameDir(personaDir(root), selected.target.personaRoot)) return { personas, launches: true };",
+      "replace": "  if (sameDir(personaDir(root), personaDir(root))) return { personas, launches: true };",
       "expectRed": "divergent: the spawn root is named too",
       "cell": "divergent: the spawn root is named too",
-      "note": "This preserves a valid string and keeps TypeScript green while making divergence detection impossible by construction."
+      "note": "This keeps TypeScript green while making divergence detection impossible by construction."
     },
     {
       "name": "status treats any default persona file as launchable even when the shipped loader rejected it",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "  const parts = [def?.def ? c.green(\"default\") : def?.error ? c.red(\"invalid default\") : c.dim(\"no default\")];",
-      "replace": "  const parts = [def ? c.green(\"default\") : c.dim(\"no default\")];",
+      "find": "    default: def?.def ? \"valid\" : def?.error ? \"invalid\" : \"missing\",",
+      "replace": "    default: def ? \"valid\" : \"missing\",",
       "expectRed": "invalid default: present file is NOT green when the shipped loader rejects it",
       "cell": "invalid default: present file is NOT green when the shipped loader rejects it",
       "note": "This compile-clean mutation breaks the shipped renderer's load-validity guard without restating loadAgentFile's rules."

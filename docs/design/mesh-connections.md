@@ -4,6 +4,12 @@
 > and [#1207](https://github.com/Cotal-AI/Cotal/issues/1207). Measured against `544a974b7`.
 > Phase 2 (implementation) does not start until the operator has read this.
 >
+> **Status on 26 October 2026.** Not implemented. The tree has none of the four `cotal_mesh*` tools,
+> the `list-meshes`, `register-mesh`, `mesh-material` and `mesh-disconnect` commands, `MeshSessionSet`,
+> the `mesh` capability, the `tools:` persona field, a `hosted` connector or runtime, or a control-frame
+> `revoke` op. File and line citations are to `544a974b7` and have moved since. The CLI's registry
+> verbs are now documented under `cotal space`, with `cotal meshes` kept as the mesh registry.
+>
 > **No delivery-plane wire change.** No new subject family, no new stream, no new message kind. What
 > this adds: four manager-endpoint commands, one control-frame op, one capability, one persona field,
 > one connector, one runtime, and a per-tool mesh selector.
@@ -663,7 +669,7 @@ Reason for the last row: it is the `agentAuthState` rule verbatim
 one must not render the same. Silence in a liveness slot reads exactly like a live seat, and that is
 how a dead seat keeps a lane.
 
-**Decision: presence stays honest about what it measures.** `docs/presence-and-delivery.md` already
+**Decision: presence stays honest about what it measures.** `docs/presence-and-delivery.mdx` already
 says `working` is a process-alive claim and not a progress claim, and that surfaces with no outside
 observation render `progress unknown`. A hosted seat's lease is an attach claim, weaker still: it
 says the hosted side called something recently. It is rendered as attach freshness, never as work.

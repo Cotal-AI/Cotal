@@ -90,6 +90,7 @@ try {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space, token: { key: signing.publicKey, issuer: issuerUrl },
     expectedServerIds: [operator.info!.server_id],
+    recordIssuance: async () => {},
     async authorizeActor(token) {
       assert.equal(token.owner, owner); assert.equal(token.act.actor, actor);
       await authorizeConnectCredential(reader, token, Date.now);

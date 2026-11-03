@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-i1263-home-"));
 process.env.COTAL_HOME = home;
@@ -30,6 +30,12 @@ const { Manager } = await import("../src/manager.js");
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const HERE = fileURLToPath(import.meta.url);
+/** The ambient environment without this run's COTAL_ settings, for a worker to set its own. */
+const cleanEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return env;
+};
 const TSX = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx");
 
 if (process.env.COTAL_I1263_WORKER === "1") {
@@ -45,7 +51,11 @@ if (process.env.COTAL_I1263_WORKER === "1") {
     process.stdout.write(JSON.stringify({ ok: true, pid: process.pid, instanceId: id }) + "\n");
     await new Promise(() => {});
   } catch (e) {
-    process.stdout.write(JSON.stringify({ ok: false, pid: process.pid, error: (e as Error).message }) + "\n");
+    // The package's own export, looked up at run time so a package without it reports untyped (#3915).
+    const exported = (await import("../src/index.js") as Record<string, unknown>).ManagerInstanceLeaseHeld;
+    const typed = typeof exported === "function" && e instanceof (exported as abstract new (...args: never[]) => Error);
+    const lease = e as { instanceId?: unknown; space?: unknown; sameRoot?: unknown; held?: { pid?: unknown; root?: unknown } };
+    process.stdout.write(JSON.stringify({ ok: false, pid: process.pid, error: (e as Error).message, typed, instanceId: lease.instanceId, space: lease.space, sameRoot: lease.sameRoot, heldPid: lease.held?.pid, heldRoot: lease.held?.root }) + "\n");
     process.exit(2);
   }
 }
@@ -75,14 +85,48 @@ try {
   const first = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: seqRoot });
   await first.start();
   const firstId = (first as unknown as { managerInstanceId: string }).managerInstanceId;
-  let seqErr = "";
-  const second = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: seqRoot });
-  try { await second.start(); } catch (e) { seqErr = (e as Error).message; }
+  // The second start runs in a process of its own, as a second manager does. In this process the
+  // lease names this pid, which a restart reads as its own crashed predecessor (#4092).
+  const seqBarrier = join(seqRoot, "go");
+  writeFileSync(seqBarrier, "go");
+  const second = spawnProc(TSX, [HERE], {
+    env: { ...cleanEnv(), COTAL_I1263_WORKER: "1", COTAL_I1263_ROOT: seqRoot, COTAL_I1263_SPACE: SPACE, COTAL_I1263_SERVER: SERVER, COTAL_I1263_BARRIER: seqBarrier },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  teardownOnSignal(second);
+  kids.push(second);
+  let stderr = "";
+  second.stderr?.on("data", (c: Buffer) => { stderr += c.toString(); });
+  type SeqReport = { ok: boolean; error?: string; typed?: boolean; instanceId?: unknown; space?: unknown; sameRoot?: unknown; heldPid?: unknown; heldRoot?: unknown };
+  const seqReport = await new Promise<SeqReport>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); fn(); };
+    const timer = setTimeout(() => settle(() => reject(new Error("the sequential second start did not report"))), 25_000);
+    let buf = "";
+    second.stdout?.on("data", (c: Buffer) => {
+      buf += c.toString();
+      // Only a complete line is a report; a chunk can end inside one.
+      const line = buf.split("\n").slice(0, -1).find((l) => l.startsWith("{"));
+      if (!line) return;
+      settle(() => {
+        try {
+          const report = JSON.parse(line) as { ok?: unknown; error?: unknown };
+          if (typeof report.ok !== "boolean" || (report.ok === false && typeof report.error !== "string")) throw new Error(`malformed report: ${line}`);
+          resolve(report as SeqReport);
+        } catch (e) { reject(e); }
+      });
+    });
+    second.once("error", (e) => settle(() => reject(e)));
+    second.once("exit", (code, signal) => settle(() => reject(new Error(`the sequential second start exited before reporting (code ${code}, signal ${signal}): ${stderr.slice(-2000)}`))));
+  }).finally(() => killAndAwaitExit(second, "SIGKILL"));
+  const seqErr = seqReport.ok ? "" : seqReport.error ?? "";
   check("sequential second start REFUSES with already-serves (fence after identity exists)",
     /already serves space/.test(seqErr), seqErr);
+  check("the refusal is the exported ManagerInstanceLeaseHeld naming the held row (this process, this root)",
+    seqReport.typed === true && seqReport.instanceId === firstId && seqReport.space === SPACE && seqReport.sameRoot === true &&
+      seqReport.heldPid === process.pid && seqReport.heldRoot === seqRoot, seqReport);
   check("sequential pair shares the persisted identity",
     loadManagerInstanceIdentity(seqRoot, SPACE)?.instanceId === firstId);
-  await second.stop({ withAgents: true }).catch(() => {});
   await first.stop({ withAgents: true }).catch(() => {});
 
   let raced = 0;
@@ -94,8 +138,7 @@ try {
     const barrier = join(root, "go");
     const workers: ChildProcess[] = [];
     const parsed: Array<{ ok: boolean; pid: number; instanceId?: string; error?: string }> = [];
-    const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
-    for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
+    const ambientEnv = cleanEnv();
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("workers did not report")), 25_000);
       for (let i = 0; i < N; i++) {

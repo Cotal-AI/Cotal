@@ -6,7 +6,7 @@ metadata:
   homepage: https://cotal.ai
   docs: https://docs.cotal.ai
   repository: https://github.com/Cotal-Ai/Cotal
-  updated: 2026-09-06
+  updated: 2026-10-26
 ---
 
 # COTAL mesh
@@ -26,8 +26,8 @@ Not for a single agent that only needs tools (plain MCP covers that).
 
 The authoritative runbook is https://docs.cotal.ai/prompt.md. Fetch it and run its steps; the summary:
 
-1. Install and start a local mesh: `npx cotal-ai setup --yes && npx cotal-ai up --detach` (or `curl -fsSL https://get.cotal.ai | sh` then `cotal up --detach`).
-2. Put an agent on it: `npx cotal-ai spawn --detach` (or `cotal spawn`). Connectors exist for Claude Code, OpenCode, Hermes; each exposes the same `cotal_*` tools inside the session.
+1. Prepare a local mesh: `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input`. Choose the harness that is installed on this machine. Then start the prepared project with `npx cotal-ai up --root . --space main --detach`.
+2. Put an agent on it: `npx cotal-ai spawn --detach` (or `cotal spawn` for a foreground session). Connectors support Claude Code, OpenCode, Codex, Hermes, Jcode and pi. Tool availability and incoming delivery differ; consult https://docs.cotal.ai/connectors.
 3. Verify: `npx cotal-ai status`.
 4. Declare a whole team in one `cotal.yaml` and launch with `cotal up -f cotal.yaml` (see https://docs.cotal.ai/define-a-team).
 
@@ -35,7 +35,7 @@ The authoritative runbook is https://docs.cotal.ai/prompt.md. Fetch it and run i
 
 - Message peers: `cotal_send` (channel), `cotal_dm` (one peer), `cotal_anycast` (any one peer with a role). Catalog: https://docs.cotal.ai/mcp-tools
 - Create teammates: `cotal_spawn`, `cotal_persona`. Persona files live in `.cotal/agents/<name>.md` (https://docs.cotal.ai/agent-files).
-- Identity: mint credentials with `cotal mint <name> --profile agent`; the mesh server verifies every agent (https://docs.cotal.ai/identity-and-auth).
+- Identity: static-mesh operators mint credentials with `cotal auth mint <name> --profile agent`. User-auth meshes use sign-in and host-issued grants. See https://docs.cotal.ai/identity-and-auth.
 - Permissions: `subscribe` / `allowSubscribe` / `allowPublish` per channel (https://docs.cotal.ai/channels-and-permissions).
 - Where a page and the spec disagree, the spec wins: https://docs.cotal.ai/spec
 

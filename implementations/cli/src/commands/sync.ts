@@ -1,17 +1,26 @@
 import { join } from "node:path";
 import { isLoopbackLiteral, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
+  CommandFailure,
   clearCurrent,
   getCurrent,
   homeCotalDir,
+  jsonFlag,
+  plainFlag,
+  presentationOf,
+  writeResult,
+  type Cell,
+  type OutputWarning,
+  type Report,
   loadMeshes,
   readMesh,
   recordMeshes,
   removeMeshes,
   userAuthStateDir,
   type MeshEntry,
+  type RefusalCode,
 } from "@cotal-ai/workspace";
-import { checkUserBundle, type UserBundle } from "./meshes-add.js";
+import { checkBundleDocument, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
 
 export interface CatalogSpace {
@@ -23,10 +32,20 @@ export interface CatalogSpace {
   registration: UserBundle;
 }
 
+/** A space the account still belongs to that the catalog cannot serve now, with the catalog's reason. */
+export interface UnavailableCatalogSpace {
+  id: string;
+  slug: string;
+  name: string;
+  kind: string;
+  role: string;
+  unavailable: string;
+}
+
 export interface SpaceCatalogSnapshot {
   v: 1;
   account: { idpUrl: string; issuer: string; sub: string };
-  spaces: CatalogSpace[];
+  spaces: (CatalogSpace | UnavailableCatalogSpace)[];
 }
 
 export interface CatalogDiff {
@@ -35,10 +54,14 @@ export interface CatalogDiff {
   removed: string[];
   unchanged: string[];
   collisions: string[];
+  /** Listed spaces the latest snapshot marks unavailable. A held registration is also `unchanged`. */
+  unavailable: string[];
   selectionInvalidated?: string;
 }
 
 const syncFlags = [
+  jsonFlag,
+  plainFlag,
   { name: "idp", type: "string", value: "<auth base URL>", description: "refresh only this signed-in IdP account" },
 ] as const satisfies readonly FlagSpec[];
 export { syncFlags };
@@ -74,9 +97,9 @@ function assertRegistrationAccountBinding(bundle: UserBundle, account: AuthSpace
     throw new Error(`${label} names IdP trust that differs from the proved catalog account`);
   const accountOrigin = new URL(accountIdp).origin;
   for (const [name, raw] of [
-    ["exchange endpoint", bundle.userAuth.endpoints?.url],
-    ["agent-provisioning endpoint", bundle.userAuth.endpoints?.agentProvisioningUrl],
-    ["manager-authority endpoint", bundle.userAuth.endpoints?.managerAuthorityUrl],
+    ["exchange endpoint", bundle.userAuth.endpoints.url],
+    ["agent-provisioning endpoint", bundle.userAuth.endpoints.agentProvisioningUrl],
+    ["manager-authority endpoint", bundle.userAuth.endpoints.managerAuthorityUrl],
   ] as const) {
     if (!raw) continue;
     let endpoint: URL;
@@ -102,14 +125,21 @@ export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalo
     for (const key of ["id", "slug", "name", "kind", "role"] as const)
       if (typeof row[key] !== "string" || row[key].length === 0)
         throw new Error(`space catalog entry ${i + 1} has no ${key}`);
-    const checked = checkUserBundle(JSON.stringify(row.registration));
-    if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
-    assertRegistrationAccountBinding(checked.value, account, `space catalog entry "${row.name}"`);
-    if (checked.value.space !== row.slug)
-      throw new Error(`space catalog entry "${row.name}" (${row.slug}) registration names space "${checked.value.space}"`);
-    if (slugs.has(row.slug)) throw new Error(`space catalog repeats the slug "${row.slug}"`);
-    slugs.add(row.slug);
-    row.registration = checked.value;
+    if ("unavailable" in row) {
+      if (typeof row.unavailable !== "string" || row.unavailable.length === 0)
+        throw new Error(`space catalog entry "${row.name}" is unavailable without a reason`);
+      if ("registration" in row) throw new Error(`space catalog entry "${row.name}" is both unavailable and registered`);
+    } else {
+      const checked = checkBundleDocument(row.registration);
+      if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
+      assertRegistrationAccountBinding(checked.value, account, `space catalog entry "${row.name}"`);
+      if (checked.value.space !== row.slug)
+        throw new Error(`space catalog entry "${row.name}" (${row.slug}) registration names space "${checked.value.space}"`);
+      row.registration = checked.value;
+    }
+    const slug = row.slug as string;
+    if (slugs.has(slug)) throw new Error(`space catalog repeats the slug "${slug}"`);
+    slugs.add(slug);
   }
 }
 
@@ -117,14 +147,16 @@ function catalogRoot(ownerKey: string, space: string): string {
   return join(homeCotalDir(), "catalog", ownerKey, encodeURIComponent(space));
 }
 
-function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt?: string, error?: string): MeshEntry {
-  const root = catalogRoot(account.ownerKey, row.slug);
-  const dir = userAuthStateDir(root, row.slug);
+function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, prior?: MeshEntry, fetchedAt?: string, error?: string): MeshEntry {
+  const custodyRoot = prior?.catalogRoot ?? catalogRoot(account.ownerKey, row.slug);
+  const root = prior?.root ?? custodyRoot;
+  const dir = userAuthStateDir(custodyRoot, row.slug);
   const sentinelCredsPath = join(dir, "sentinel.creds");
   return {
     space: row.slug,
     server: row.registration.server,
     root,
+    catalogRoot: custodyRoot,
     mode: "user",
     origin: "catalog",
     catalogOwner: account.ownerKey,
@@ -145,7 +177,7 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt
 function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
   const path = entry.userAuth?.sentinelCredsPath;
   if (!path) throw new Error(`catalog registration for "${entry.space}" has no sentinel credential path`);
-  mkSecretDir(userAuthStateDir(entry.root, entry.space));
+  mkSecretDir(userAuthStateDir(entry.catalogRoot ?? entry.root, entry.space));
   writeSecretFileAtomic(path, row.registration.sentinelCreds);
 }
 
@@ -154,16 +186,16 @@ function sameEntry(a: MeshEntry, b: MeshEntry): boolean {
   return JSON.stringify(clean(a)) === JSON.stringify(clean(b));
 }
 
-const emptyDiff = (): CatalogDiff => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [] });
+const emptyDiff = (): CatalogDiff => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [], unavailable: [] });
 
 /** One account can be applied twice in one preparation: a repair of an interrupted application,
  * then the refreshed snapshot. Report each slug against the registry the command started from, so
- * the first classification of a slug stands. */
+ * the first classification of a slug stands. Availability is the refreshed snapshot's. */
 function mergeDiff(prior: CatalogDiff | undefined, next: CatalogDiff): CatalogDiff {
   if (!prior) return next;
   const lists = ["added", "changed", "removed", "unchanged"] as const;
   const seen = new Set(lists.flatMap((k) => prior[k]));
-  const merged: CatalogDiff = { ...prior, collisions: [...new Set([...prior.collisions, ...next.collisions])].sort() };
+  const merged: CatalogDiff = { ...prior, collisions: [...new Set([...prior.collisions, ...next.collisions])].sort(), unavailable: next.unavailable };
   for (const k of lists) merged[k] = [...prior[k], ...next[k].filter((s) => !seen.has(s))].sort();
   if (!merged.selectionInvalidated && next.selectionInvalidated) merged.selectionInvalidated = next.selectionInvalidated;
   return merged;
@@ -212,8 +244,17 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
         diff.collisions.push(row.slug);
         continue;
       }
-      const next = entryFor(result.account, row, result.fetchedAt);
       const prior = priorByName.get(row.slug);
+      // Still listed, so never removed or deselected, but not served now: the registration this
+      // machine holds stays exactly as it is, and none is recorded for a space it does not hold.
+      if ("unavailable" in row) {
+        diff.unavailable.push(row.slug);
+        if (!prior) continue;
+        diff.unchanged.push(row.slug);
+        yield { ...prior, ...(result.fetchedAt ? { catalogFetchedAt: result.fetchedAt } : {}), catalogError: row.unavailable };
+        continue;
+      }
+      const next = entryFor(result.account, row, prior, result.fetchedAt);
       writeCatalogCredential(next, row);
       if (!prior) diff.added.push(row.slug);
       else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);
@@ -222,17 +263,30 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
     }
   }
   recordMeshes(entries());
-  for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions]) list.sort();
+  for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions, diff.unavailable]) list.sort();
   return diff;
 }
 
-export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean } = {}): Promise<{ results: AuthSpaceCatalogResult[]; diffs: CatalogDiff[] }> {
+/** The reason a refreshed account snapshot gives for not serving `slug`, when it lists it as
+ *  unavailable. `owner` narrows the search to the account that owns a recorded entry. A failed
+ *  refresh answers nothing here: its own failure decides. Every snapshot a result carries passed
+ *  {@link validateCatalogSnapshot} before the provider kept it. */
+function unavailableReason(results: readonly AuthSpaceCatalogResult[], slug: string, owner?: string): string | undefined {
+  for (const result of results) {
+    if (result.state === "failed" || (owner !== undefined && result.account.ownerKey !== owner)) continue;
+    const row = (result.snapshot as SpaceCatalogSnapshot | undefined)?.spaces.find((s) => s.slug === slug);
+    if (row && "unavailable" in row) return row.unavailable;
+  }
+  return undefined;
+}
+
+export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean; sessionDir?: string } = {}): Promise<{ results: AuthSpaceCatalogResult[]; diffs: CatalogDiff[] }> {
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs)
     throw new Error(`auth provider "${provider.name}" does not support space catalogs`);
   const applied = new Map<string, CatalogDiff>();
   const results = await provider.prepareSpaceCatalogs({
-    dir: homeCotalDir(),
+    dir: opts.sessionDir ?? homeCotalDir(),
     ...(opts.idpUrl ? { idpUrl: opts.idpUrl } : {}),
     ...(opts.force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
@@ -248,11 +302,21 @@ export function preparedCatalogDiagnostics(): readonly AuthSpaceCatalogResult[] 
   return catalogDiagnostics;
 }
 
+/** A space catalog that stopped a command before it ran, with the stable code a structured command
+ *  reports it under: the selected space left its catalog, or the catalog for the target's account
+ *  could not be refreshed. */
+export class CatalogPreparationError extends Error {
+  constructor(message: string, readonly code: RefusalCode) {
+    super(message);
+    this.name = "CatalogPreparationError";
+  }
+}
+
 /** Shared once-per-command preparation. Every target-resolving call gives each signed-in account a
  * chance to refresh inside the provider's freshness window. An operational catalog target scopes
- * that work to its own account and treats its failure as fatal. Other targets warn per account;
- * diagnostics retain every result for `status` and never refuse the command. Unknown names force a
- * refresh even inside the freshness window. */
+ * that work to its own account and treats its failure as fatal. Other targets warn once per account
+ * outage; diagnostics retain every result for `status` and never refuse the command. Unknown names
+ * force a refresh even inside the freshness window. */
 export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = false, command?: "meshes" | "use"): Promise<void> {
   catalogDiagnostics = [];
   const values = args.values as { space?: string };
@@ -289,35 +353,111 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   if (vanished.length) {
     const message = `selected space "${vanished.join("\", \"")}" vanished from its account catalog; no default mesh is selected`;
     if (diagnostics) console.error(c.yellow(message));
-    else throw new Error(message);
+    else throw new CatalogPreparationError(message, "TARGET_NOT_FOUND");
   }
   const failures = results.filter((r) => r.state === "failed");
   if (diagnostics) return;
   if (targetCatalog && failures.length)
-    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "));
-  for (const failure of failures)
-    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}`));
+    throw new CatalogPreparationError(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "), "DEPENDENCY_UNAVAILABLE");
+  // A target its catalog lists as unavailable refuses alone, after its siblings were applied above.
+  // That includes a name this machine never held a registration for.
+  const slug = targetCatalog?.space ?? (requested && !named ? requested : undefined);
+  const reason = slug === undefined ? undefined : unavailableReason(results, slug, targetCatalog?.catalogOwner);
+  if (reason !== undefined)
+    throw new CatalogPreparationError(`space "${slug}" is unavailable in its account catalog: ${reason}`, "DEPENDENCY_UNAVAILABLE");
+  // One warning per outage: a failure that continues one an earlier command already warned about
+  // stays quiet until the catalog answers again. A failing target still refuses above.
+  for (const failure of failures.filter((r) => !r.ongoing))
+    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}; its last snapshot stays in use, and this warning is not repeated while it keeps failing`));
 }
 
+/** One signed-in account's refresh, as `cotal sync` reports it. */
+interface SyncedAccount {
+  readonly idp: string;
+  readonly state: AuthSpaceCatalogResult["state"];
+  /** The catalog the account advertises, or null when it advertises none. */
+  readonly catalog: string | null;
+  readonly added: readonly string[];
+  readonly changed: readonly string[];
+  readonly removed: readonly string[];
+  readonly unchanged: readonly string[];
+  readonly collisions: readonly string[];
+  /** Listed spaces the catalog cannot serve now; a held registration is kept and also `unchanged`. */
+  readonly unavailable: readonly string[];
+  /** The selected space this refresh removed, so no space is selected now; null otherwise. */
+  readonly selectionCleared: string | null;
+  readonly error: string | null;
+}
+
+interface SyncResult {
+  readonly kind: "sync";
+  readonly accounts: readonly SyncedAccount[];
+}
+
+/**
+ * `cotal sync` refreshes every signed-in account's space catalog, or the one `--idp` names, and
+ * applies it to the registry. An account whose catalog could not be refreshed keeps its last
+ * snapshot and is named in a warning; when some failed the result is partial, and when every one
+ * failed the command is refused.
+ */
 export async function sync(args: ParsedArgs): Promise<void> {
   const values = args.values as SyncValues;
+  const presentation = presentationOf(values);
   const { results, diffs } = await prepareCatalogTargets({ idpUrl: values.idp, force: true });
-  if (results.length === 0) {
-    console.log(c.dim("no signed-in IdP accounts"));
-    return;
-  }
-  results.forEach((result, i) => {
-    const d = diffs[i];
-    const catalog = result.account.catalogUrl ? result.account.catalogUrl : "no catalog advertised";
-    console.log(`${result.account.idpUrl}  ${result.state}  ${catalog}`);
-    for (const [label, names] of [["added", d.added], ["changed", d.changed], ["removed", d.removed], ["unchanged", d.unchanged], ["collisions", d.collisions]] as const)
-      console.log(`  ${label.padEnd(10)} ${names.length ? names.join(", ") : "-"}`);
-    if (d.selectionInvalidated)
-      console.log(c.yellow(`  selected space "${d.selectionInvalidated}" vanished; no default mesh is selected`));
+  const accounts: SyncedAccount[] = results.map((result, i) => {
+    const d = diffs[i]!;
+    return {
+      idp: result.account.idpUrl,
+      state: result.state,
+      catalog: result.account.catalogUrl ?? null,
+      added: d.added,
+      changed: d.changed,
+      removed: d.removed,
+      unchanged: d.unchanged,
+      collisions: d.collisions,
+      unavailable: d.unavailable,
+      selectionCleared: d.selectionInvalidated ?? null,
+      error: result.state === "failed" ? (result.error ?? "refresh failed") : null,
+    };
   });
-  const failures = results.filter((r) => r.state === "failed");
-  if (failures.length)
-    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "));
+  const failed = accounts.filter((a) => a.error !== null);
+  const failure = failed.map((a) => `space catalog for ${a.idp} failed: ${a.error}`).join("; ");
+  if (failed.length > 0 && failed.length === accounts.length)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failure, { remedy: "check the IdP is reachable and you are signed in (`cotal whoami`), then run `cotal sync` again" });
+  const warnings: OutputWarning[] = failed.map((a) => ({ code: "CATALOG_UNAVAILABLE", target: { idp: a.idp }, message: `space catalog for ${a.idp} failed: ${a.error}; its last snapshot stays applied` }));
+  const result: SyncResult = { kind: "sync", accounts };
+  writeResult(
+    presentation,
+    {
+      command: "sync",
+      target: values.idp === undefined ? null : { idp: values.idp },
+      result,
+      warnings,
+      ...(failed.length > 0 ? { partial: { message: `${failed.length} of ${accounts.length} space catalogs could not be refreshed; the warnings name them`, remedy: "run `cotal sync --idp <url>` again for each once its IdP answers" } } : {}),
+    },
+    syncView,
+  );
+}
+
+function syncView(r: SyncResult): Report {
+  if (r.accounts.length === 0) return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: "no signed-in IdP accounts - sign in with `cotal login`", tone: "hint" }] }] }] };
+  return {
+    sections: r.accounts.map((a) => {
+      const names = (list: readonly string[]): Cell => (list.length ? list.join(", ") : { text: "-", tone: "hint" });
+      const fields: [string, Cell][] = [
+        ["state", { text: a.state, tone: a.error === null ? "ok" : "failed" }],
+        ["catalog", a.catalog ?? { text: "none advertised", tone: "hint" }],
+        ["added", names(a.added)],
+        ["changed", names(a.changed)],
+        ["removed", names(a.removed)],
+        ["unchanged", names(a.unchanged)],
+        ["collisions", names(a.collisions)],
+        ["unavailable", names(a.unavailable)],
+      ];
+      const notes: Cell[] = a.selectionCleared === null ? [] : [{ text: `selected space "${a.selectionCleared}" left its catalog; no space is selected now`, tone: "waiting" }];
+      return { title: a.idp, blocks: [{ kind: "fields", rows: fields }, ...(notes.length ? [{ kind: "lines" as const, lines: notes }] : [])] };
+    }),
+  };
 }
 
 const spaceCatalogConsumer: SpaceCatalogConsumer = {

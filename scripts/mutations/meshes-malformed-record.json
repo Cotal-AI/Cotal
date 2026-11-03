@@ -23,8 +23,8 @@
     {
       "name": "the shape check is reverted to the old skip",
       "file": "packages/workspace/src/mesh-registry.ts",
-      "find": "    assertMeshEntryShape(entry, file);",
-      "replace": "",
+      "find": "  assertMeshEntryShape(entry, file);\n  return entry;",
+      "replace": "  return entry;",
       "expectRed": "a record missing required fields refuses naming the file and the fields",
       "cell": "a record missing required fields refuses naming the file and the fields",
       "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
@@ -33,8 +33,8 @@
     {
       "name": "a file that does not parse is skipped again",
       "file": "packages/workspace/src/mesh-registry.ts",
-      "find": "      throw new Error(`${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`);",
-      "replace": "      continue;",
+      "find": "      unusable.push(e);\n      continue;\n",
+      "replace": "      if (e.cause === undefined) unusable.push(e);\n      continue;\n",
       "expectRed": "a registry file that does not parse refuses naming the file (no silent skip)",
       "cell": "a registry file that does not parse refuses naming the file (no silent skip)",
       "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
@@ -43,7 +43,7 @@
     {
       "name": "the mode enum check is removed",
       "file": "packages/workspace/src/mesh-registry.ts",
-      "find": "  if (entry.mode !== \"auth\" && entry.mode !== \"open\" && entry.mode !== \"user\")\n    throw new Error(`${file} is not a usable mesh record: mode \"${entry.mode}\" is not one of auth, open, user - restore the record or remove it`);",
+      "find": "  if (entry.mode !== \"auth\" && entry.mode !== \"open\" && entry.mode !== \"user\")\n    throw new MeshRegistryError(file, `${file} is not a usable mesh record: mode \"${entry.mode}\" is not one of auth, open, user - restore the record or remove it`);",
       "replace": "",
       "expectRed": "a record with a mode this build does not know refuses naming the file",
       "cell": "a record with a mode this build does not know refuses naming the file",
@@ -53,7 +53,7 @@
     {
       "name": "the storeDir isAbsolute check is removed",
       "file": "packages/workspace/src/mesh-registry.ts",
-      "find": "  if (entry.storeDir !== undefined && (typeof entry.storeDir !== \"string\" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))\n    throw new Error(`${file} is not a usable mesh record: storeDir \"${entry.storeDir}\" is not a non-empty absolute path - restore the record or remove it`);",
+      "find": "  if (entry.storeDir !== undefined && (typeof entry.storeDir !== \"string\" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))\n    throw new MeshRegistryError(file, `${file} is not a usable mesh record: storeDir \"${entry.storeDir}\" is not a non-empty absolute path - restore the record or remove it`);",
       "replace": "",
       "expectRed": "a record with a relative storeDir refuses naming the file and storeDir",
       "cell": "a record with a relative storeDir refuses naming the file and storeDir",

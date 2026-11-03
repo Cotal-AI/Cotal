@@ -1,0 +1,2 @@
+# A manager preset service at a --no-manager stack's root is named by status and by up's refusal.
+smoke:no-manager-preset:live

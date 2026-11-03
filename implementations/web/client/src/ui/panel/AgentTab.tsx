@@ -2,6 +2,7 @@ import { ArrowUpRight01Icon, Message01Icon } from "@hugeicons/core-free-icons";
 import { useMemo } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { messageRoute } from "../../lib/compose.js";
+import { presenceFacts } from "../../lib/presence.js";
 import { rosterRows } from "../../lib/roster.js";
 import { formatRoute, type Route } from "../../lib/route.js";
 import { clock as hhmm } from "../../lib/time.js";
@@ -68,6 +69,7 @@ export function AgentTab({ store, controller = null, id, route }: {
         <StatusWord row={row} />
         <span style={{ color: "var(--ink)" }}>{row.activity || "No current activity"}</span>
         {reported && <small>{reported}</small>}
+        {presenceFacts(row, Date.now()) && <small className="ui-facts">{presenceFacts(row, Date.now())}</small>}
       </div>
       {!(route?.view === "agent" && route.id === id) && <SessionPreview store={store} id={id} />}
       <div className="ui-actions">

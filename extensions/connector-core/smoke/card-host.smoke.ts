@@ -1,7 +1,7 @@
 /**
  * Agent-card `meta.host` test (no test runner) — spins up its OWN nats-server and drives a
  * MeshAgent directly to verify that a session reports WHICH MACHINE it runs on:
- *   - `meta.host` is this machine's `os.hostname()`, and it travels on the wire (a *peer* reads it
+ *   - `meta.host` and `meta.cwd` travel on the wire to a peer's roster (`meta.host` is this machine's `os.hostname()`, and it travels on the wire (a *peer* reads it
  *     off the roster, not the agent's own local object);
  *   - an agent file CANNOT spoof it: a config-supplied `meta.host` is overlaid by the real
  *     hostname, exactly like `meta.connector`;
@@ -37,7 +37,8 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-// The agent file's own `meta` deliberately CLAIMS a false host, to prove the connector overlays it.
+// Agent-file metadata supplies false location values; the connector must overlay both.
+const startupCwd = process.cwd();
 const cfg: AgentConfig = {
   space,
   name: "Hosty",
@@ -51,7 +52,7 @@ const cfg: AgentConfig = {
   id: "hosty_agent",
   connector: "claude",
   model: "opus",
-  meta: { host: "definitely-not-this-machine", custom: "kept" },
+  meta: { host: "definitely-not-this-machine", cwd: "definitely-not-this-directory", custom: "kept" },
   lifecycleUid: mintLifecycleUid(),
 };
 
@@ -118,7 +119,9 @@ try {
   check("peer sees the agent's card meta", seen !== undefined, seen);
   check("meta.host is THIS machine's hostname", seen?.host === hostname(), { got: seen?.host, want: hostname() });
   check("an agent file cannot spoof meta.host", seen?.host !== "definitely-not-this-machine", seen?.host);
-  check("connector-owned meta survives alongside host", seen?.connector === "claude" && seen?.model === "opus", seen);
+  check("meta.cwd is the connector's startup directory", seen?.cwd === startupCwd, { got: seen?.cwd, want: startupCwd });
+  check("an agent file cannot spoof meta.cwd", seen?.cwd !== "definitely-not-this-directory", seen?.cwd);
+  check("connector-owned meta survives alongside location", seen?.connector === "claude" && seen?.model === "opus", seen);
   check("agent-file meta the connector does not own is preserved", seen?.custom === "kept", seen);
 
   const eventsOf = async (name: string): Promise<unknown> => {

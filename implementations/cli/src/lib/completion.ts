@@ -1,7 +1,21 @@
-import type { FlagSpec } from "@cotal-ai/core";
+import type { CompletionResult, FlagSpec } from "@cotal-ai/core";
+import { loadMeshes, loadPreparedSpaces } from "@cotal-ai/workspace";
+import { metadataPositionals } from "./command-path.js";
+
+/** No candidates of our own, so the shell completes a file name, as every `--creds` takes. */
+export function fileCompletion(): CompletionResult {
+  return { items: [], directive: "default" };
+}
+
+/** The spaces registered or prepared on this machine, the names every `--space` takes. */
+export function spaceCompletion(): CompletionResult {
+  const spaces = new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)]);
+  return { items: [...spaces].map((value) => ({ value })), directive: "nofiles" };
+}
 
 /** The string flag whose value is currently being completed, if the cursor is in one. */
 export function completingFlagValue(argv: string[], flags: readonly FlagSpec[]): FlagSpec | undefined {
+  if (metadataPositionals({ flags }, argv, { completing: true }).optionsEnded) return undefined;
   const prev = argv[argv.length - 2];
   if (!prev) return undefined;
   const flag = flagForToken(prev, flags);
@@ -14,7 +28,7 @@ export function positionalsForCompletion(argv: string[], flags: readonly FlagSpe
   let positionalOnly = false;
   for (let i = 0; i < argv.length; i++) {
     const word = argv[i];
-    if (!positionalOnly && word === "--") {
+    if (!positionalOnly && word === "--" && i < argv.length - 1) {
       positionalOnly = true;
       continue;
     }

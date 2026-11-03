@@ -18,6 +18,7 @@ import {
   MODE_PEERS,
   prog,
   Ripple,
+  straightWire,
   wirePath,
   Wires,
   type Pt,
@@ -35,7 +36,7 @@ const IN_END: Pt = { x: PILL.x - PILL_HALF, y: PILL.y };
 const OUT_START: Pt = { x: PILL.x + PILL_HALF, y: PILL.y };
 const FAN = MODE_PEERS.map((p) => fanWire(OUT_START, p.at));
 
-const IN_PATH = wirePath(IN_START, lerp(IN_START, IN_END, 0.4), lerp(IN_START, IN_END, 0.6), IN_END);
+const IN_PATH = straightWire(IN_START, IN_END);
 const OUT_PATHS = FAN.map((w) => wirePath(...w));
 
 const T = {
@@ -68,7 +69,7 @@ export const ModeMulticast: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[IN_PATH, ...OUT_PATHS]} glow={[inGlow, flash, flash, flash]} />
+      <Wires wires={[{ d: IN_PATH, glow: inGlow }, ...OUT_PATHS.map((d) => ({ d, glow: flash }))]} />
       <Ripple at={PILL} p={prog(frame, T.fanStart - 2, T.fanStart + 30)} />
       <Ripple at={PILL} p={prog(frame, T.fanStart + 8, T.fanStart + 42)} />
       <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />

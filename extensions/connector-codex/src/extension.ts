@@ -2,7 +2,8 @@
  * The Codex connector: launches a host-mode peer that embeds the Cotal endpoint and drives a
  * `codex app-server` thread over JSON-RPC (see host.ts). A mesh message becomes a real
  * Codex turn — wake an idle thread (`turn/start`) or steer a directed message into one already
- * running (`turn/steer`) — and the cotal_* tools are served by the host over a loopback MCP
+ * started by the connector (`turn/steer`). Externally started turns defer delivery until they end.
+ * The cotal_* tools are served by the host over a loopback MCP
  * endpoint, so the session is a full lateral peer at parity with the other connectors. Presence
  * is read off the app-server event stream; with a terminal the host attaches the real Codex TUI,
  * and without one it prints an activity feed. Self-registers on import; the manager resolves it
@@ -11,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
 /** The bundled host loop (self-contained — core + connector-core inlined, see package.json's
@@ -43,15 +44,12 @@ interface CodexModelEntry {
 
 /** Query the model catalog over a short-lived `codex app-server` (`model/list` — there is no
  *  `codex models` subcommand). Times out rather than hanging the manager's selector UI. */
-async function listCodexModels(): Promise<ModelCatalog> {
-  const child = spawn("codex", ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
-  const kill = (): void => {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      /* ignore */
-    }
-  };
+async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
+  // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
+  // pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
+  // probe from looking like a managed seat. A later PATH change cannot pick a different file.
+  const bin = process.env.COTAL_CODEX_BIN?.trim() || opts.resolvedBinaries?.codex || "codex";
+  const child = spawn(bin, ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
   try {
     const result = await new Promise<{ data?: CodexModelEntry[] }>((resolvePromise, reject) => {
       const timer = setTimeout(() => reject(new Error("codex app-server model/list timed out (10s)")), 10_000);
@@ -83,7 +81,10 @@ async function listCodexModels(): Promise<ModelCatalog> {
         clearTimeout(timer);
         reject(e);
       });
-      child.on("exit", (code) => {
+      // `close`, not `exit`: `exit` can fire while stdout still holds the model/list response,
+      // so a child that answers and exits at once raced its own reply (#3749). `close` follows
+      // the end of stdout, after every `data` event has been handled.
+      child.on("close", (code) => {
         clearTimeout(timer);
         reject(new Error(`codex app-server exited (${code}) before model/list answered`));
       });
@@ -114,7 +115,7 @@ async function listCodexModels(): Promise<ModelCatalog> {
       }));
     return { source: "codex app-server model/list", models };
   } finally {
-    kill();
+    child.kill("SIGKILL");
   }
 }
 
@@ -165,9 +166,6 @@ export const codexConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CODEX_ENV_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
-      // host drops even that once it has read it, so a shell this seat runs inherits neither.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -197,7 +195,7 @@ export const codexConnector: Connector = {
     // decides there (one setting for every codex agent it supervises), while a foreground spawn
     // reads the shell that ran it. Passing it through the spawn request instead would make it a
     // per-agent launch option, which is a bigger surface than a display toggle earns; the split is
-    // documented in docs/connect-codex.md rather than half-wired.
+    // documented in docs/connect-codex.mdx rather than half-wired.
     const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
     if (tuiPref) env.COTAL_CODEX_TUI = tuiPref;
 
@@ -275,7 +273,14 @@ export const codexConnector: Connector = {
     // signal-less runtime. Minted here, held in memory by the manager, served by the host.
     env.COTAL_CONTROL_SOCKET = control.path;
 
-    return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control };
+    // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
+    // host drops even that once it has read it, so a shell this seat runs inherits neither. Written
+    // after every refusal above, and its directory is a launch artifact the launcher removes once the
+    // child has exited (core launch-artifacts).
+    const artifacts: string[] = [];
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+
+    return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };
   },
 };
 

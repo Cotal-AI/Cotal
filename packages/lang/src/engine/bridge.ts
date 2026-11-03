@@ -41,13 +41,15 @@ import { Cancelled, EffectError, EffectRefused } from "../effects.js";
 import type { EntryState, JournalEntry, JournalStore } from "../journal.js";
 import { EffectResultTooLarge, JournalAppendRejected } from "../journal.js";
 import type { StepKey } from "../keys.js";
+import { messageOf, nameOf } from "../errors.js";
 
 /** One 16-byte SharedArrayBuffer: an Int32 answer flag at 0, the Float64 clock value at 8. */
 export const CLOCK_BYTES = 16;
 
-/** The eleven async members of {@link EffectHandler}, the only methods the bridge will forward. */
+/** The async members of {@link EffectHandler}, the only methods the bridge will forward. */
 const METHODS = [
   "spawn",
+  "participant",
   "turn",
   "ask",
   "checkpoint",
@@ -141,11 +143,11 @@ function flatten(e: unknown): WireError {
       ...(e.indeterminate ? { indeterminate: true } : {}),
     };
   }
-  const err = e as { name?: unknown; message?: unknown; code?: unknown; indeterminate?: unknown };
+  const err = e as { code?: unknown; indeterminate?: unknown };
   return {
     class: "error",
-    name: typeof err?.name === "string" ? err.name : "Error",
-    message: typeof err?.message === "string" ? err.message : String(e),
+    name: nameOf(e),
+    message: messageOf(e),
     ...(typeof err?.code === "string" ? { code: err.code } : {}),
     ...(err?.indeterminate === true ? { indeterminate: true } : {}),
   };
@@ -309,8 +311,16 @@ export interface BridgeHost {
  * the thread (where the journal lives) and its durable append comes back through `store.append`
  * on this side; `signal` is a mirror the thread's cancellations flip. The host never blocks —
  * every branch here either answers from a synchronous clock or awaits work it already owns.
+ *
+ * A thread that disagrees with this host about the protocol is reported to `disagree`, never
+ * thrown: the listener runs on the host's own stack, where a throw is uncaught and ends the whole
+ * process with every run on it (#3216). The caller fails the one run whose thread spoke it.
  */
-export function serviceBridge(port: MessagePort, seam: { readonly handler: EffectHandler; readonly store: JournalStore }): BridgeHost {
+export function serviceBridge(
+  port: MessagePort,
+  seam: { readonly handler: EffectHandler; readonly store: JournalStore },
+  disagree: (e: Error) => void,
+): BridgeHost {
   const clock = new SharedArrayBuffer(CLOCK_BYTES);
   const flag = new Int32Array(clock, 0, 1);
   const value = new Float64Array(clock, 8, 1);
@@ -421,13 +431,16 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
     }
     if (m.kind === "bind-answer") {
       const b = binds.get(m.bseq);
-      if (b === undefined) throw new Error(`cotal-lang effect bridge: the thread answered bind ${m.bseq}, which this host never asked`);
+      if (b === undefined) {
+        disagree(new Error(`cotal-lang effect bridge: the thread answered bind ${m.bseq}, which this host never asked; the thread and the host disagree about the boundary`));
+        return;
+      }
       binds.delete(m.bseq);
       if (m.error === undefined) b.resolve();
       else b.reject(rehydrate(m.error));
       return;
     }
-    throw new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)})`);
+    disagree(new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)}); the thread and the host disagree about the boundary`));
   });
 
   return {

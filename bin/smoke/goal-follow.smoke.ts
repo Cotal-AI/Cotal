@@ -31,6 +31,11 @@ const CALLER = { owner: "u_probe", actor: "cli", uid: "0123456789abcdefghijklmno
 const GOAL = "goal-follow-probe";
 const SUBJECT = "cotal.s.epe.manager.*.*.goal.u_probe.cli.0123456789abcdefghijklmnopqrst.>";
 const DENIAL = `permission denied: cannot subscription "${SUBJECT}"`;
+/** As on the wire: a reply names the responder that answered it, and that responder publishes
+ *  progress under its own instance and epoch. Only that publisher settles the goal it accepted. */
+const RESPONDER = { endpoint: "manager", instanceId: "i1", epoch: 0 };
+const progressSubject = (instanceId: string, epoch: number, goalId: string) =>
+  `cotal.s.epe.manager.${instanceId}.${epoch}.goal.u_probe.cli.0123456789abcdefghijklmnopqrst.${goalId}.progress`;
 
 /** A connection whose subscribe is REFUSED: the callback is handed an error and no message ever
  *  arrives, which is exactly what a broker-denied subscription looks like from inside the client. */
@@ -61,8 +66,7 @@ const brokenConn = {
  *  was never accepted, and claiming acceptance there would strand a goal that never ran. */
 const refuseAtAccept = () => Promise.resolve({
   reply: { ok: false as const, data: undefined, error: { code: "failed-precondition", message: "refused at accept" } },
-  instanceId: "i1",
-  epoch: 0,
+  responder: RESPONDER,
 });
 
 /** A connection whose subscribe succeeds and never delivers: the ordinary "no terminal yet" case,
@@ -74,14 +78,12 @@ const silentConn = {
 
 const acceptance = () => Promise.resolve({
   reply: { ok: true as const, data: { goalId: GOAL } },
-  instanceId: "i1",
-  epoch: 0,
+  responder: RESPONDER,
 });
 
 const boundedAcceptance = () => Promise.resolve({
   reply: { ok: true as const, data: { goalId: GOAL, readinessDeadlineMs: 400 } },
-  instanceId: "i1",
-  epoch: 0,
+  responder: RESPONDER,
 });
 
 console.log("A. a REFUSED progress subscription is reported as a refusal, not as a timeout");
@@ -138,8 +140,9 @@ console.log("E. the accepted readiness budget, not a shorter generic caller wait
 {
   const delayedTerminalConn = {
     flush: async () => {},
-    subscribe: (_subject: string, opts: { callback: (err: Error | null, m: { data: Uint8Array }) => void }) => {
+    subscribe: (_subject: string, opts: { callback: (err: Error | null, m: { subject: string; data: Uint8Array }) => void }) => {
       const timer = setTimeout(() => opts.callback(null, {
+        subject: progressSubject("i1", 0, GOAL),
         data: new TextEncoder().encode(JSON.stringify({ goalId: GOAL, phase: "terminal", state: "succeeded", data: { name: "slow" } })),
       }), 250);
       return { unsubscribe: () => clearTimeout(timer) };
@@ -147,6 +150,35 @@ console.log("E. the accepted readiness budget, not a shorter generic caller wait
   };
   const r = await submitAndFollowGoal(delayedTerminalConn as never, "s", "manager", CALLER, 100, boundedAcceptance as never);
   ok("a terminal inside the accepted readiness budget outlives the shorter generic caller wait", r.reply.ok === true, r.reply);
+}
+
+console.log("F. only the instance and epoch that accepted the goal settle it from live progress");
+{
+  // Each publisher below may be a real one (the broker vouches for a subject's instance and epoch),
+  // but none accepted this goal, or its body names another goal than its subject. None may settle it.
+  const terminal = (subject: string, goalId: string) => ({
+    subject, data: new TextEncoder().encode(JSON.stringify({ goalId, phase: "terminal", state: "succeeded", data: { by: subject } })),
+  });
+  const forged = [
+    terminal(progressSubject("i2", 0, GOAL), GOAL),
+    terminal(progressSubject("i1", 1, GOAL), GOAL),
+    terminal(progressSubject("i1", 0, "other-goal"), GOAL),
+    terminal(progressSubject("i1", 0, GOAL), "other-goal"),
+    terminal(`cotal.s.epe.manager.i1.0.goal.u_other.cli.0123456789abcdefghijklmnopqrst.${GOAL}.progress`, GOAL),
+  ];
+  const connWith = (messages: { subject: string; data: Uint8Array }[]) => ({
+    flush: async () => {},
+    subscribe: (_subject: string, opts: { callback: (err: Error | null, m: unknown) => void }) => {
+      const timer = setTimeout(() => { for (const m of messages) opts.callback(null, m); }, 20);
+      return { unsubscribe: () => clearTimeout(timer) };
+    },
+  });
+  const r = await submitAndFollowGoal(connWith(forged) as never, "s", "manager", CALLER, 400, acceptance as never);
+  ok(`${forged.length} terminals from publishers that did not accept the goal settle nothing`, r.reply.error?.code === "deadline-exceeded", r.reply);
+  const genuine = terminal(progressSubject("i1", 0, GOAL), GOAL);
+  const settled = await submitAndFollowGoal(connWith([...forged, genuine]) as never, "s", "manager", CALLER, 5_000, acceptance as never);
+  ok("...while the accepting publisher's own terminal settles it, with its data", settled.reply.ok === true
+    && (settled.reply.data as { by?: string } | undefined)?.by === genuine.subject, settled.reply);
 }
 
 console.log(`\ngoal-follow smoke passed (${pass} checks)`);

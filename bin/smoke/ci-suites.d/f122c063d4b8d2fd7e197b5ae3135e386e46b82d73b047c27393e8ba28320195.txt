@@ -1,0 +1,3 @@
+# The command kernel's entry: bare cotal, help and version stay local, an alias behaves as its
+# command, and a usage error is refused before the connector seed or any config write.
+smoke:cli-entry

@@ -14,6 +14,7 @@ import { deepFreeze } from "./values.js";
 /** The journalled effect kinds. `channel` is pure and deliberately absent. */
 export const EFFECT_KINDS = [
   "spawn",
+  "participant",
   "turn",
   "ask",
   "checkpoint",
@@ -95,21 +96,33 @@ export interface PrimitiveSpec extends CalleeDoc {
 }
 
 export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = deepFreeze({
+  participant: {
+    kind: "participant",
+    nameRequired: false,
+    options: ["name"],
+    optionsAt: 0,
+    hashedOptions: [],
+    hashesSubject: false,
+    scope: null,
+    signature: "participant({ name? }) -> AgentHandle",
+    doc: "Resolve a native participant handle supplied by the host. It has no spawn or adoption semantics.",
+    example: 'const self = await participant({ name: "self" })',
+  },
   spawn: {
     kind: "spawn",
     nameRequired: false,
-    options: ["name", "cwd", "placement", "worktree", "join", "role", "permits", "supervise", "onFork", "events"],
+    options: ["name", "cwd", "placement", "worktree", "join", "role", "permits", "supervise", "onFork", "events", "runtime"],
     optionsAt: 1,
     // `placement` is HASHED, beside `cwd`: the target is half the answer to "where does this seat
     // live". A replay that edits the target must diverge as a migration, not silently reuse the
-    // resolution taken against the old instance (#1616 item 3). `events` is launch policy, like
-    // `supervise`, so it is not hashed.
+    // resolution taken against the old instance (#1616 item 3). `events` and `runtime` are launch
+    // policy, like `supervise`, so they are not hashed.
     hashedOptions: ["cwd", "placement", "worktree", "join", "role"],
     hashesSubject: true,
     scope: null,
     signature:
-      "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle",
-    doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy; events: false starts the agent without an event plane.",
+      "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle",
+    doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy; events: false starts the agent without an event plane; runtime names the terminal runtime for this one seat.",
     example: 'const builder = await spawn("builder", { worktree: "wt-1", join: [team] })',
   },
   turn: {
@@ -369,7 +382,7 @@ export const BUILTINS: readonly string[] = Object.freeze([
 export const VALUE_NAMES: readonly string[] = Object.freeze(["undefined"]);
 
 /** Every name the program may reference without defining it, and may never shadow. */
-export const RESERVED_NAMES: ReadonlySet<string> = new Set([
+export const RESERVED_NAMES: readonly string[] = Object.freeze([
   ...Object.keys(PRIMITIVES),
   ...Object.keys(EVENT_CONSTRUCTORS),
   ...Object.keys(PURE_PRIMITIVES),
@@ -406,7 +419,7 @@ export const HOST_GLOBAL_HINTS: Readonly<Record<string, string>> = Object.freeze
 });
 
 /** Host globals a program might reach for out of habit, each rejected by name (L2012). */
-export const FORBIDDEN_GLOBALS: ReadonlySet<string> = new Set([
+export const FORBIDDEN_GLOBALS: readonly string[] = Object.freeze([
   ...Object.keys(HOST_GLOBAL_HINTS),
   "globalThis", "global", "window", "self", "process", "fetch",
   "RegExp", "Reflect", "Proxy", "Symbol", "WeakMap", "WeakSet", "WeakRef", "Function",

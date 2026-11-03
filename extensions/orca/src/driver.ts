@@ -93,6 +93,19 @@ function errorText(err: unknown): string {
   return (stderr?.trim() || stdout?.trim() || e.message || String(err)).replace(/\s+/g, " ");
 }
 
+function execOptions(opts: { cwd?: string; timeoutMs?: number }) {
+  return {
+    cwd: opts.cwd,
+    env: localCliEnv(),
+    encoding: "utf8" as const,
+    maxBuffer: MAX_BUFFER,
+    timeout: opts.timeoutMs,
+    // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM
+    // would outlast the timeout.
+    killSignal: "SIGKILL" as const,
+  };
+}
+
 function execOrca(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): string {
   const tried: string[] = [];
   const explicit = !!process.env.COTAL_ORCA_BIN?.trim();
@@ -100,17 +113,7 @@ function execOrca(args: string[], opts: { cwd?: string; timeoutMs?: number } = {
   for (const bin of bins) {
     tried.push(bin);
     try {
-      const out = execFileSync(bin, args, {
-        cwd: opts.cwd,
-        env: localCliEnv(),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: MAX_BUFFER,
-        timeout: opts.timeoutMs,
-        // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM
-        // would outlast the timeout.
-        killSignal: "SIGKILL",
-      });
+      const out = execFileSync(bin, args, { ...execOptions(opts), stdio: ["ignore", "pipe", "pipe"] });
       if (!explicit) selectedBin = bin;
       return out;
     } catch (err) {
@@ -146,13 +149,7 @@ function execOrcaAsync(args: string[], opts: { cwd?: string; timeoutMs?: number 
       execFile(
         bin,
         args,
-        {
-          cwd: opts.cwd,
-          env: localCliEnv(),
-          encoding: "utf8",
-          maxBuffer: MAX_BUFFER,
-          timeout: opts.timeoutMs,
-        },
+        execOptions(opts),
         (err, stdout, stderr) => {
           if (!err) {
             if (!explicit) selectedBin = bin;
@@ -297,6 +294,44 @@ export function showTerminal(
   return request<TerminalResult>(["terminal", "show", "--terminal", handle, "--json"], { timeoutMs });
 }
 
+export function isGoneCode(code = ""): boolean {
+  return /not_found|stale|closed/i.test(code);
+}
+
+export function resolveTerminal(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  terminals: readonly OrcaTerminal[],
+  show: () => OrcaEnvelope<TerminalResult>,
+): OrcaTerminal | undefined;
+export function resolveTerminal(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  terminals: readonly OrcaTerminal[],
+  show: () => Promise<OrcaEnvelope<TerminalResult>>,
+): Promise<OrcaTerminal | undefined>;
+export function resolveTerminal(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  terminals: readonly OrcaTerminal[],
+  show: () => OrcaEnvelope<TerminalResult> | Promise<OrcaEnvelope<TerminalResult>>,
+): OrcaTerminal | undefined | Promise<OrcaTerminal | undefined> {
+  const listed = terminals.find((candidate) =>
+    terminal.ptyId ? candidate.ptyId === terminal.ptyId : candidate.handle === terminal.handle,
+  );
+  if (listed) return { ...terminal, ...listed };
+  if (terminal.ptyId) return undefined;
+  const classify = (shown: OrcaEnvelope<TerminalResult>): OrcaTerminal | undefined => {
+    if (shown.ok === false) {
+      const code = shown.error?.code ?? "";
+      if (isGoneCode(code)) return undefined;
+      throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
+    }
+    if (!shown.result?.terminal)
+      throw new Error(`orca terminal show returned no authoritative state for ${terminal.handle}`);
+    return shown.result.terminal;
+  };
+  const shown = show();
+  return shown instanceof Promise ? shown.then(classify) : classify(shown);
+}
+
 /** Resolve the current handle for a terminal. Orca handles are runtime-scoped, while ptyId stays
  * stable across handle rotation. */
 export function currentTerminal(
@@ -307,18 +342,7 @@ export function currentTerminal(
     const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"], { timeoutMs }).terminals ?? [];
     terminalCache = { at: Date.now(), terminals: listed };
   }
-  const listed = terminal.ptyId
-    ? terminalCache.terminals.find((candidate) => candidate.ptyId === terminal.ptyId)
-    : terminalCache.terminals.find((candidate) => candidate.handle === terminal.handle);
-  if (listed) return { ...terminal, ...listed };
-
-  const shown = showTerminal(terminal.handle, { timeoutMs });
-  if (shown.ok === false) {
-    const code = shown.error?.code ?? "";
-    if (/not_found|stale|closed/i.test(code)) return undefined;
-    throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
-  }
-  return shown.result?.terminal ?? terminal;
+  return resolveTerminal(terminal, terminalCache.terminals, () => showTerminal(terminal.handle, { timeoutMs }));
 }
 
 export function terminalAlive(terminal: Pick<OrcaTerminal, "handle" | "ptyId">): boolean {
@@ -366,26 +390,14 @@ async function currentTerminalForWait(
     const code = listedResult.error?.code ?? "unknown_error";
     throw new OrcaCliError(code, `orca terminal list failed: ${listedResult.error?.message ?? code}`);
   }
-  const listed = (listedResult.result?.terminals ?? []).find((candidate) =>
-    terminal.ptyId ? candidate.ptyId === terminal.ptyId : candidate.handle === terminal.handle,
-  );
-  if (listed) return { ...terminal, ...listed };
-  if (terminal.ptyId) return undefined;
-
-  remaining = deadline - Date.now();
-  if (remaining <= 0) throw new Error(`orca: timed out while resolving terminal ${terminal.handle}`);
-  const shown = await requestAsync<TerminalResult>(
-    ["terminal", "show", "--terminal", terminal.handle, "--json"],
-    { timeoutMs: remaining },
-  );
-  if (shown.ok === false) {
-    const code = shown.error?.code ?? "";
-    if (/not_found|stale|closed/i.test(code)) return undefined;
-    throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
-  }
-  if (!shown.result?.terminal)
-    throw new Error(`orca terminal show returned no authoritative state for ${terminal.handle}`);
-  return shown.result.terminal;
+  return resolveTerminal(terminal, listedResult.result?.terminals ?? [], () => {
+    remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`orca: timed out while resolving terminal ${terminal.handle}`);
+    return requestAsync<TerminalResult>(
+      ["terminal", "show", "--terminal", terminal.handle, "--json"],
+      { timeoutMs: remaining },
+    );
+  });
 }
 
 /** Await Orca's provider-native terminal exit condition, following one or more handle rotations by
@@ -404,7 +416,7 @@ export async function waitManagedTerminalExit(
       terminalCache = undefined;
       return;
     } catch (err) {
-      if (!(err instanceof OrcaCliError) || !/not_found|stale|closed/i.test(err.code)) throw err;
+      if (!(err instanceof OrcaCliError) || !isGoneCode(err.code)) throw err;
       terminalCache = undefined;
       const rotated = await currentTerminalForWait(terminal, deadline);
       if (!rotated) return;
@@ -417,10 +429,12 @@ export async function waitManagedTerminalExit(
 /** The text terminal `handle` renders now. `--screen` reads the rendered frame, so a prompt a TUI
  *  draws with cursor moves reads whole instead of as stacked repaint fragments. */
 export function readScreen(handle: string, { timeoutMs = PROBE_MS }: { timeoutMs?: number } = {}): string {
-  return requireOk<{ terminal: { tail: string[] } }>(
-    ["terminal", "read", "--terminal", handle, "--screen", "--json"],
-    { timeoutMs },
-  ).terminal.tail.join("\n");
+  const args = ["terminal", "read", "--terminal", handle, "--screen", "--json"];
+  const tail = requireOk<{ terminal?: { tail?: unknown } } | null>(args, { timeoutMs })?.terminal?.tail;
+  if (!Array.isArray(tail) || !tail.every((line): line is string => typeof line === "string")) {
+    throw new Error(`orca ${args.join(" ")} returned no terminal tail`);
+  }
+  return tail.join("\n");
 }
 
 export function sendTerminal(
@@ -440,7 +454,7 @@ export function closeTerminal(handle: string, opts: { timeoutMs?: number } = {})
     const r = request<Record<string, unknown>>(["terminal", "close", "--terminal", handle, "--json"], opts);
     if (r.ok === false) {
       const code = r.error?.code ?? "";
-      if (/not_found|stale|closed/i.test(code)) return false;
+      if (isGoneCode(code)) return false;
       throw new Error(`orca terminal close failed for ${handle}: ${r.error?.message ?? code}`);
     }
     return true;

@@ -1,0 +1,3 @@
+# An unprotected nats-server on PATH, such as one in a group-writable Homebrew folder, gives way to
+# the bundled one and is never run; a protected one on PATH is still chosen.
+smoke:broker-selection

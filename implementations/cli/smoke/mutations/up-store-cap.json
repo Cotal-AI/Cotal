@@ -14,8 +14,8 @@
     {
       "name": "detached boot accepts the flag but does not render it",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "writeOpenBrokerConf(storeDir, { port, host, transport, maxFileStore: opts.maxFileStore })",
-      "replace": "writeOpenBrokerConf(storeDir, { port, host, transport })",
+      "find": "writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore: opts.maxFileStore })",
+      "replace": "writeOpenBrokerConf(storeDir, space, { port, host, transport })",
       "expectRed": "the fresh boot renders --max-file-store into the jetstream block",
       "cell": "the fresh boot renders --max-file-store into the jetstream block",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-adopt-resume-lock:live",

@@ -49,8 +49,8 @@
     {
       "name": "a divergence in a parallel arm cancels its sibling (the round-2 defect)",
       "file": "packages/lang/src/perform.ts",
-      "find": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
-      "replace": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
+      "find": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence || isStackExhaustion(e)) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
+      "replace": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || isStackExhaustion(e)) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
       "expectRed": "(6) and the sibling arm's entry settles ok, not cancelled",
       "completionMarker": "ok (6) a divergence in one arm of a both-begun parallel still surfaces as RunDivergence",
       "cell": "(6) and the sibling arm's entry settles ok, not cancelled",
@@ -59,8 +59,8 @@
     {
       "name": "a divergence in a fanOut branch cancels its sibling (the round-2 defect)",
       "file": "packages/lang/src/perform.ts",
-      "find": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
-      "replace": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
+      "find": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence || isStackExhaustion(e)) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
+      "replace": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || isStackExhaustion(e)) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
       "expectRed": "(7) and the sibling branch's entry settles ok, not cancelled",
       "completionMarker": "ok (7) a divergence in one branch of a both-begun fanOut still surfaces as RunDivergence",
       "cell": "(7) and the sibling branch's entry settles ok, not cancelled",
@@ -69,8 +69,8 @@
     {
       "name": "a diverging race arm stays a candidate and cancels the siblings (the round-2 defect)",
       "file": "packages/lang/src/perform.ts",
-      "find": "            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence,",
-      "replace": "            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected,",
+      "find": "        (e: unknown) =>\n          onSettle(\n            i,\n            e instanceof Cancelled ||\n              e instanceof RunReleased ||\n              e instanceof RunHeld ||\n              e instanceof JournalAppendRejected ||\n              e instanceof RunDivergence ||\n              isStackExhaustion(e),\n          ),",
+      "replace": "        (e: unknown) =>\n          onSettle(\n            i,\n            e instanceof Cancelled ||\n              e instanceof RunReleased ||\n              e instanceof RunHeld ||\n              e instanceof JournalAppendRejected ||\n              isStackExhaustion(e),\n          ),",
       "expectRed": "(8) and the other arm's entry settles ok, not cancelled",
       "completionMarker": "ok (8) a divergence in one arm of a both-begun race still surfaces as RunDivergence",
       "cell": "(8) and the other arm's entry settles ok, not cancelled",

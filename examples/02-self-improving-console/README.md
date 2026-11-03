@@ -42,6 +42,11 @@ a new NATS client). The reviewer caught that a fixed 60-column render shoved the
 off-screen on narrow terminals; the fix sizes the bars from the available width
 (`tail={Math.floor(width/4)}`).
 
+That is what the recorded demo run built; the overnight harness below rebuilds it in a throwaway
+worktree each iteration. The console on `main` has since changed: its StatusBar shows a fixed
+15-bar `Sparkline` over `rates.activity`, so the names above describe the demo's output rather
+than the current console source.
+
 ## Run it on stage (cmux or tmux)
 From inside a cmux terminal:
 ```bash
@@ -51,13 +56,15 @@ Give the orchestrator a goal (see [`GOAL.md`](./GOAL.md) for the format). It spa
 into their own tabs, dispatches, and brings in a reviewer. Watch the swarm work through the old
 console, live.
 
-To run under **tmux** instead, import `@cotal-ai/tmux` in the composition root and pass
-`--runtime tmux` to `cotal supervise`. With neither extension imported, the manager throws a
-clear `"import @cotal-ai/<runtime>"` error — no silent fallback.
+`src/manager.ts` takes its runtime from `COTAL_RUNTIME` (`cmux` by default, `pty` for the
+overnight harness) and imports only `@cotal-ai/cmux`, and `launch.sh` drives cmux only. A tmux run
+needs `import "@cotal-ai/tmux"` added to `src/manager.ts` and `COTAL_RUNTIME=tmux`. A runtime that
+was never imported is refused with `unknown runtime "<runtime>"`, with no fallback.
 
 ## Run it overnight (headless self-optimizing loop)
 `harness/run-once.sh <iter>` runs the whole swarm **headless** (PTY runtime, throwaway git
 worktree, unique space), captures all mesh traffic to `transcript.jsonl`, then
 `harness/evaluate.ts` judges it: **build green AND genuine peer-to-peer comms**. The loop runs
-it repeatedly, applies one setup fix per iteration, and journals to `ITERATIONS.md`. See the
-plan and `ITERATIONS.md`.
+it repeatedly, applies one setup fix per iteration, and journals to
+[`ITERATIONS.md`](./ITERATIONS.md), which also records the stop rule and which run artifacts are
+not checked in.

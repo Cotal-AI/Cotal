@@ -1,0 +1,2 @@
+# chat --plain prints its close line once, a reader that closes --plain or --stdio output still closes the session and exits with its close status, and the native session refuses a channel outside its grant before the endpoint. Stand-ins, no broker.
+smoke:chat-stand-in

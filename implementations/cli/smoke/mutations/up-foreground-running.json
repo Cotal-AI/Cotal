@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "implementations/cli/smoke/foreground-up-running-live.smoke.ts"
+  ],
+  "guard": "`cotal up --foreground` over this folder's running stack refuses with the `cotal down` remedy and leaves the broker running, instead of printing `already running` and exiting 0",
+  "command": "pnpm smoke:foreground-up-running:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/up-foreground-running.json",
+  "why": [
+    "The suite drives the shipped binary (`tsx bin/cotal.ts`) against a real detached broker on an allocated port, so the refusal is observed as the CLI's exit code and stderr, not inferred from a source string.",
+    "The mutation removes only the `--foreground` refusal in the refresh branch, so a red must come from the exit-code cell that names it."
+  ],
+  "mutations": [
+    {
+      "name": "drop the --foreground refusal on refresh",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "      if (values.foreground) {\n",
+      "replace": "      if (values.foreground && process.env.COTAL_MUTATION_NEVER_SET === \"1\") {\n",
+      "expectRed": "foreground up over a running stack must not succeed",
+      "cell": "foreground up over a running stack must not succeed",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:foreground-up-running:live",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "`bin/cotal.ts` imports `@cotal-ai/cli`, which resolves to `dist/`, so the mutant is built before the run and the restored source is rebuilt after. With the refusal gone, the refresh branch prints `✓ already running` and exits 0, which the first refusal cell rejects."
+    }
+  ]
+}

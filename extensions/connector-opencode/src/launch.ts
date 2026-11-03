@@ -24,8 +24,9 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { acquireLock } from "@cotal-ai/core/advisory-lock";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
@@ -148,27 +149,49 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
 
-  // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. The
-  // previous launcher removes this record when its serve exits, which can land anywhere in this
-  // check, so a record that vanishes under the read or the removal is no record. A directory is no
-  // record either, but only an empty one is removed: one that holds files is refused, never deleted.
-  const pidFile = join(agentHome, "serve.pid");
-  let recorded: string | undefined;
+  // One launcher of a name at a time. The check below reads the serve records, and a serve records
+  // itself only after the version probe and the spawn, so two overlapping launches both passed it and
+  // both started a serve on this database (#3040). The claim is core's advisory lock, held until this
+  // process exits: a launcher that died leaves a claim the next launch reclaims, and any serve it
+  // left behind is still found by its record below.
+  const claim = acquireLock(join(agentHome, "launch.lock"), {
+    waitMs: 0,
+    label: `agent "${name}"'s launch`,
+    onTimeout: (owner) => new Error(`agent "${name}" is already running (launcher pid ${owner.pid}) — kill it first`),
+  });
+  process.on("exit", () => claim.release());
+
+  // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. Each
+  // launch records its serve at a path of its own, and `serve.pid` is the record of a serve an
+  // earlier version started, so nothing rewrites a record once its serve is gone and the check
+  // removes it. The previous launcher removes its record when its serve exits, which can land
+  // anywhere in this check, so a record that vanishes under the read or the removal is no record. A
+  // directory is no record either, but only an empty one is removed: one that holds files is
+  // refused, never deleted.
+  let records: string[] = [];
   try {
-    try {
-      recorded = readFileSync(pidFile, "utf8");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EISDIR") throw e;
-      rmdirSync(pidFile);
-    }
+    records = readdirSync(agentHome).filter((file) => /^serve(?:\.[0-9a-f]{32})?\.pid$/.test(file));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
-  if (recorded !== undefined) {
+  for (const file of records) {
+    const record = join(agentHome, file);
+    let recorded: string | undefined;
+    try {
+      try {
+        recorded = readFileSync(record, "utf8");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EISDIR") throw e;
+        rmdirSync(record);
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    if (recorded === undefined) continue;
     const pid = Number(recorded);
     if (isLiveOpencodeServe(pid))
       throw new Error(`agent "${name}" is already running (opencode serve pid ${pid}) — kill it first`);
-    rmSync(pidFile, { force: true });
+    rmSync(record, { force: true });
   }
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
@@ -181,6 +204,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // the next launch cannot see, so the record has to exist before the serve does: the process writes
   // its own pid and only then becomes the serve, which keeps that pid. Windows has no exec, so there
   // the launcher records it after the spawn.
+  const pidFile = join(agentHome, `serve.${randomBytes(16).toString("hex")}.pid`);
   const serveArgv: [string, ...string[]] = [BIN, "serve", "--hostname", "127.0.0.1", "--port", port];
   const [serveCommand, ...serveArgs]: [string, ...string[]] = process.platform === "win32"
     ? serveArgv
@@ -199,6 +223,14 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   });
   if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));
+  // A graceful stop signals only this process and can arrive anywhere in the minute-long boot below,
+  // so its teardown is installed with the serve. The exit handlers below end this process.
+  let tui: ChildProcess | undefined;
+  for (const sig of ["SIGINT", "SIGTERM"] as const)
+    process.on(sig, () => {
+      void terminate(serve);
+      if (tui) void terminate(tui);
+    });
 
   // Scan the server's output for the plugin's session handshake; forward boot logs to our stderr
   // until the TUI takes over the terminal (after that, drop them so they can't corrupt its display).
@@ -217,8 +249,11 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   };
   serve.stdout?.on("data", scan);
   serve.stderr?.on("data", scan);
+  // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
+  // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
+  let bootFailed = false;
   serve.on("exit", (code, signal) => {
-    if (!attached) process.exit(code ?? (signal ? 1 : 0)); // died before the TUI came up
+    if (!attached) process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0))); // died before the TUI came up
   });
 
   // Poke the server until the plugin's session handshake lands (lazy plugin load → mesh join +
@@ -250,6 +285,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     process.stderr.write(
       `[cotal-connector] serve: agent session never came up (~60s) — aborting. Check the boot log above for plugin/mesh errors (OPENCODE_DB=${dbPath})\n`,
     );
+    bootFailed = true;
     await terminate(serve);
     process.exit(1);
   }
@@ -262,8 +298,6 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // down for real.
   if (process.env.COTAL_SERVE_HEADLESS?.trim() === "1") {
     process.stdout.write(`[cotal-serve] ${JSON.stringify({ port: Number(port), session: id })}\n`);
-    for (const sig of ["SIGINT", "SIGTERM"] as const)
-      process.on(sig, () => void terminate(serve).then(() => process.exit(0)));
     return;
   }
 
@@ -277,13 +311,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   for (const k of Object.keys(tuiEnv)) if (k.startsWith("COTAL_")) delete tuiEnv[k];
   attached = true;
   const [command, ...args] = tuiArgv({ url, session: id, line });
-  const tui = spawn(command, args, { env: tuiEnv, stdio: "inherit" });
-
-  for (const sig of ["SIGINT", "SIGTERM"] as const)
-    process.on(sig, () => {
-      tui.kill(sig);
-      serve.kill(sig);
-    });
+  tui = spawn(command, args, { env: tuiEnv, stdio: "inherit" });
   // The server is the seat. A TUI stays up against a server that has gone, so without this the
   // seat's process outlives it and the manager goes on listing a seat that has left the mesh.
   serve.on("exit", () => void terminate(tui));

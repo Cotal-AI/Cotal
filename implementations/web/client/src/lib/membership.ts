@@ -64,6 +64,7 @@ export function memberChannels(
   live: string[],
   durable: string[],
   known: string[],
+  durableKnown: string[] = [],
 ): { channels: Map<string, "live" | "durable">; wide: boolean } {
   const channels = new Map<string, "live" | "durable">();
   let wide = false;
@@ -76,6 +77,13 @@ export function memberChannels(
       for (const ch of known) if (patternMatches(pat, ch)) channels.set(ch, "live");
     } else channels.set(pat, "live");
   }
-  for (const ch of durable) if (!channels.has(ch)) channels.set(ch, "durable");
+  // A durable family row (`team.>`) reaches the durable channels under it, the ones its stored
+  // copies cover, and only those: `durableKnown` is the channels whose class the page has read as
+  // durable, so a family draws no link to a channel whose class is still unknown.
+  for (const pat of durable) {
+    if (isWild(pat)) {
+      for (const ch of durableKnown) if (!channels.has(ch) && patternMatches(pat, ch)) channels.set(ch, "durable");
+    } else if (!channels.has(pat)) channels.set(pat, "durable");
+  }
   return { channels, wide };
 }

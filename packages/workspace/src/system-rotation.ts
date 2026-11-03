@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsClaims,
@@ -11,12 +11,14 @@ import {
 } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
+import { retainSystemSigningSeed } from "./system-signing-seed.js";
+import { credentialFileExposure, readLocalRecordSource } from "./protected-records.js";
 import {
   connectionEvictorCredsKey,
   CONNECTION_EVICTOR_CREDS_KIND,
   membershipObserverCredsKey,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
-  migrateLegacyCotalMaterial,
+  migrateLegacyCotalMaterial, type MaterialPathOptions,
 } from "./space-segmentation.js";
 
 /**
@@ -24,8 +26,9 @@ import {
  * standing renewal and deliberately EXCLUDES these two files.
  *
  * `membership-observer.creds` and `connection-evictor.creds` are `rotation-renewed`: they are signed
- * by the system-account seed, which is never persisted (`putSpaceAuth` strips it), so no running
- * process can re-sign them for their existing identity the way `remintDaemonCreds` does. Their only
+ * by the system-account seed, which the trust record omits (`putSpaceAuth` strips it; the root's
+ * separate custody record, see `system-signing-seed.ts`, serves own-broker caller issuance only), so
+ * no running process re-signs them for their existing identity the way `remintDaemonCreds` does. Their only
  * renewal is a system-account ROTATION: a fresh $SYS account under the SAME broker operator, fresh
  * creds minted from its in-memory seed, and a broker that reloads the new operator/system JWTs.
  *
@@ -124,7 +127,7 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   // AHEAD of the creds: both files stale (crash before either write) or one stale (crash between
   // them). The window is not closed here; it is DETECTED, by {@link staleSystemCreds}, which every
   // boot and every `doctor auth` runs against the persisted record. It cannot be repaired in place
-  // either: the successor's signing seed is gone the moment it is persisted, so the only repair is
+  // either: nothing re-signs these two creds in place after this call returns, so the only repair is
   // another rotation, which is idempotent and costs one generation. A durable rotation journal would
   // close the window instead of reporting it; that is deliberately not built for a display-only feed
   // plus an eviction rail whose recovery is one re-run.
@@ -138,6 +141,7 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   // `space.<hex>/` dir on a root whose pair has never been segmented.
   const composition = { injected: false as const, root };
   await putSpaceAuth(s, rotated);
+  await retainSystemSigningSeed(s, rotated); // the successor's seed replaces the retired account's
   await s.put(membershipObserverCredsKey(expectedSpace, composition), observer);
   await s.put(connectionEvictorCredsKey(expectedSpace, composition), evictor);
 
@@ -165,10 +169,12 @@ export interface StaleSystemCred {
  * this state healthy. The delivery daemon is deliberately NOT a caller: it never loads the signer.
  *
  * Absent files are not stale (an unprovisioned space is a different, separately reported state), and
- * an unreadable file is reported with no `iss` rather than throwing, because a diagnosis surface must not
- * crash on the corruption it exists to describe.
+ * the mutating/default path reports an unreadable file with no `iss`. A read-only observation
+ * refuses a required migration or an unreadable protected input instead of guessing issuer state,
+ * except a file other accounts can open: it is left unjudged, because the read-only caller reads
+ * each file itself and names that exposure and its repair.
  */
-export function staleSystemCreds(root: string, sysPub: string, space: string): StaleSystemCred[] {
+export function staleSystemCreds(root: string, sysPub: string, space: string, options: MaterialPathOptions = {}): StaleSystemCred[] {
   const stale: StaleSystemCred[] = [];
   for (const file of SYSTEM_CREDS_FILES) {
     // The CHOKE POINT, called for its path (P7 §2 rule 1). A reader, not a writer — but it must not
@@ -177,16 +183,34 @@ export function staleSystemCreds(root: string, sysPub: string, space: string): S
     // this function exists to catch, and both surfaces that call it (the boot path, `doctor auth`)
     // are the first thing to touch these creds on a root `up` has not re-provisioned. A §2 rule 3/4
     // refusal propagates, loudly, rather than being swallowed into a healthy-looking answer.
-    const path = migrateLegacyCotalMaterial(root, space, file);
+    const path = migrateLegacyCotalMaterial(root, space, file, options);
     if (!existsSync(path)) continue;
     let iss: string | undefined;
     try {
-      iss = credsClaims(readFileSync(path, "utf8")).iss;
-    } catch {
+      if (options.readOnly) {
+        const bytes = readLocalRecordSource(path, 1024 * 1024, true);
+        if (!bytes) continue;
+        iss = credsClaims(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).iss;
+      } else iss = credsClaims(readFileSync(path, "utf8")).iss;
+    } catch (error) {
+      if (options.readOnly) {
+        if (exposedFile(path)) continue;
+        throw error;
+      }
       stale.push({ file }); // unreadable: cannot be shown to match, so it is not assumed to
       continue;
     }
     if (iss !== sysPub) stale.push({ file, iss });
   }
   return stale;
+}
+
+/** Whether `path` is a regular file other accounts own or can open. */
+function exposedFile(path: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    return stat.isFile() && credentialFileExposure(path, stat) !== undefined;
+  } catch {
+    return false;
+  }
 }

@@ -1,5 +1,1014 @@
 # @cotal-ai/connector-opencode
 
+## 0.138.0
+
+No changes in this release.
+
+## 0.137.0
+
+No changes in this release.
+
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+### Patch Changes
+
+- ce9c35e: OpenCode 2.x no longer treats a refused plugin setup as completed. A repeated call validates again,
+  concurrent callers share the setup result, and a completed session releases its setup slot only
+  after teardown finishes. Later location boots still start no duplicate agent.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+### Patch Changes
+
+- f5251ae: An OpenCode agent name now has one launcher at a time. Two launches that overlapped both passed the server-record check, which runs before the version probe and the spawn, so both started a server on the agent's SQLite database. The launcher now first claims the name with core's advisory lock, `launch.lock` in the agent's directory, and holds it until it exits. A second launch is refused as already running, and a claim left by a launcher that died is reclaimed. `@cotal-ai/core` exports the lock as `@cotal-ai/core/advisory-lock`, so the bundled launcher can use it without the barrel.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+### Patch Changes
+
+- 8e12fe0: Let `cotal_inbox` with `peek` show the connector-managed automatic messages still queued in Codex, Jcode and OpenCode seats, without clearing anything. A DM that arrives during a turn the operator started, or a plain channel post during any turn, can now be read before that turn ends. The connector still delivers and clears it at the end of the turn.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
+## 0.135.0
+
+### Minor Changes
+
+- e7fbeb8: `cotal_spawn` takes `once: true` with a `prompt` to start a helper for one task. The manager relays the prompt to the helper as its only turn and stops the helper when that turn ends or when the deadline passes. The deadline is one hour unless `deadline` sets another, and `-1` sets none. A spawn that succeeds names the task's goal in its result, and `goal-result` reads how it ended. A task that ends without the helper ending its turn may have run in part or in full, and nothing runs it again. A once spawn needs no `run` capability.
+  
+  The manager's `spawn` command takes `once: { deadlineMs }`, and the manager contract revision is 44. The task is served only after the spawn's succeeded terminal is written, so a manager that restarts before then cancels the task as never served. A seat hands a once task to its harness at most once. When it cannot confirm the harness took the task, it reports that with the new self-mode `turn-unconfirmed` command, which fails the task with `delivery-unconfirmed` and stops the seat. A manager that inherits a once seat it cannot hold ends the task without serving it, says so in the outcome, and answers that seat's every `turn-pending` with `stop` while its debt stays recorded.
+  
+  A connector declares `supportsTurnRelay` to take a once task: Jcode, OpenCode, pi and Claude Code do. A connector whose seat needs a confirmed startup declares `onceNeedsConfirmed`, and the manager serves its task only when the runtime reports the startup watch ended `confirmed`. Claude Code needs it: a once launch waits for Claude's development-channels prompt and then its `confirmNotice`, the line saying `server:cotal` messages reach the session. A runtime declares `reportsStartupOutcome` and its handles report `startupOutcome()`; the built-in pty runtime, tmux, cmux, herdr and orca do. A connector may declare `turnFrameLimit`, and a once prompt whose task does not fit it is refused at admission. A once exit registered with `registerOnceExit` may answer false to decline, and the seat then keeps reporting instead of exiting. A connector whose seat launches processes outside its own implements `retireAfterExit`, and the manager keeps the task's debt until that hook proves them gone. Jcode records each native launch of a once seat under the seat's uid for that proof, and a Jcode once seat always starts a fresh session, never one an earlier seat of the same name left in its home.
+
+## 0.134.0
+
+### Minor Changes
+
+- 8b80ca6: Every connector now hands its agent the same briefing, composed once in `@cotal-ai/connector-core` (`briefing(config, harness)`): identity, orient first, feedback, mesh-first delegation, durable workflow runs, where to talk, how a peer message arrives, how to reply, attention modes and reply etiquette. Codex, Jcode, OpenCode, Hermes and pi used to carry their own shorter copies and drifted; each now adds only the sentence that says how a peer message appears in its context. `docs/agent-briefing.mdx` is generated from the module (`pnpm gen:briefingdoc`) so a wording change shows as a diff of what each harness reads, and `pnpm check:docsbundle` fails when it drifts.
+  
+  A conversation that joins through `cotal_connect` (the Claude Code plugin in a session you opened, Claude Desktop, a hosted connector) used to be told only how to connect and listen; the connect result now carries its orientation card and the briefing. The Claude Code session-start hook hands the orientation card over at startup, resume, fork, clear and compaction, or with the next prompt when the seat was not bound yet, so the model has its bearings without asking. `orientationCard()` is the one rendering the `cotal_orientation` tool, the connect result and the hook share. Hermes' `setupProfile` takes the seat's `config` to render the briefing into `SOUL.md`.
+
+## 0.133.13
+
+No changes in this release.
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Rewrite the Fundamentals concepts as direct MDX and separate Architecture's detailed contracts into their reference pages. Include complete Markdown and schema inspection content in offline documentation. Update documentation pointers and offline checks for the renamed sources.
+
+## 0.133.11
+
+### Patch Changes
+
+- 9182cfc: Restore the tool specs' and gateway's zod namespace import. The by-name imports released in 0.133.9 made the bundled claude, codex, hermes, jcode and opencode connectors throw `Class2 is not a constructor` when imported, so a fresh `cotal setup` failed its first connector seed.
+
+## 0.133.10
+
+### Patch Changes
+
+- 13e667e: An OpenCode 2.x setup that the host refuses no longer leaves its mesh agent joined: the agent start is queued only after the host's hook and tool registrations succeed.
+
+## 0.133.9
+
+### Patch Changes
+
+- 69f469b: The OpenCode 2.x adapter ignores execution events from other sessions before its own session id is known, so another session's turn can no longer leave the adapter permanently busy.
+
+## 0.133.8
+
+### Patch Changes
+
+- 174b09c: In the OpenCode 1.x adapter, a message that arrives while a turn runs now drives its own turn after the user stops that turn, instead of sitting buffered until unrelated traffic arrives.
+- 63aa37e: In the OpenCode 2.x adapter, a focus @mention that arrives while a turn runs is now delivered when that turn ends, instead of being dropped.
+
+## 0.133.7
+
+### Patch Changes
+
+- 1cf7309: A launcher whose agent session never comes up now exits 1 even when the opencode server exits cleanly on SIGTERM, instead of reporting the failed boot as exit 0.
+
+## 0.133.6
+
+No changes in this release.
+
+## 0.133.5
+
+No changes in this release.
+
+## 0.133.4
+
+No changes in this release.
+
+## 0.133.3
+
+No changes in this release.
+
+## 0.133.2
+
+No changes in this release.
+
+## 0.133.1
+
+No changes in this release.
+
+## 0.133.0
+
+### Minor Changes
+
+- 1e554e4: Precompute documentation search at build time and load the corpus and compact index only when needed. Search results and scoring are unchanged. Documentation data now lives in two digest-checked files beside each module or bundle; normal packages, plugins and installers include them automatically. Custom integrations that copy or bundle an executable alone must also carry its matching `docs-bundle.bin` and `docs-index.bin` files.
+
+## 0.132.7
+
+No changes in this release.
+
+## 0.132.6
+
+No changes in this release.
+
+## 0.132.5
+
+No changes in this release.
+
+## 0.132.4
+
+No changes in this release.
+
+## 0.132.3
+
+No changes in this release.
+
+## 0.132.2
+
+### Patch Changes
+
+- d776fcf: Share the OpenCode adapters' surfaced batch so a native prompt cannot replace the messages carried by an active turn. Queued messages remain pending for a later eligible turn. Update the Claude Code connector's comment naming that acknowledgment boundary.
+
+## 0.132.1
+
+No changes in this release.
+
+## 0.132.0
+
+No changes in this release.
+
+## 0.131.6
+
+No changes in this release.
+
+## 0.131.5
+
+No changes in this release.
+
+## 0.131.4
+
+No changes in this release.
+
+## 0.131.3
+
+No changes in this release.
+
+## 0.131.2
+
+No changes in this release.
+
+## 0.131.1
+
+No changes in this release.
+
+## 0.131.0
+
+No changes in this release.
+
+## 0.130.2
+
+No changes in this release.
+
+## 0.130.1
+
+No changes in this release.
+
+## 0.130.0
+
+No changes in this release.
+
+## 0.129.9
+
+No changes in this release.
+
+## 0.129.8
+
+No changes in this release.
+
+## 0.129.7
+
+No changes in this release.
+
+## 0.129.6
+
+No changes in this release.
+
+## 0.129.5
+
+No changes in this release.
+
+## 0.129.4
+
+No changes in this release.
+
+## 0.129.3
+
+No changes in this release.
+
+## 0.129.2
+
+No changes in this release.
+
+## 0.129.1
+
+No changes in this release.
+
+## 0.129.0
+
+No changes in this release.
+
+## 0.128.7
+
+No changes in this release.
+
+## 0.128.6
+
+No changes in this release.
+
+## 0.128.5
+
+No changes in this release.
+
+## 0.128.4
+
+No changes in this release.
+
+## 0.128.3
+
+No changes in this release.
+
+## 0.128.2
+
+No changes in this release.
+
+## 0.128.1
+
+No changes in this release.
+
+## 0.128.0
+
+No changes in this release.
+
+## 0.127.5
+
+No changes in this release.
+
+## 0.127.4
+
+No changes in this release.
+
+## 0.127.3
+
+No changes in this release.
+
+## 0.127.2
+
+No changes in this release.
+
+## 0.127.1
+
+No changes in this release.
+
+## 0.127.0
+
+No changes in this release.
+
+## 0.126.3
+
+No changes in this release.
+
+## 0.126.2
+
+No changes in this release.
+
+## 0.126.1
+
+No changes in this release.
+
+## 0.126.0
+
+No changes in this release.
+
+## 0.125.0
+
+No changes in this release.
+
+## 0.124.3
+
+No changes in this release.
+
+## 0.124.2
+
+No changes in this release.
+
+## 0.124.1
+
+No changes in this release.
+
+## 0.124.0
+
+No changes in this release.
+
+## 0.123.0
+
+No changes in this release.
+
+## 0.122.0
+
+No changes in this release.
+
+## 0.121.7
+
+No changes in this release.
+
+## 0.121.6
+
+No changes in this release.
+
+## 0.121.5
+
+No changes in this release.
+
+## 0.121.4
+
+No changes in this release.
+
+## 0.121.3
+
+No changes in this release.
+
+## 0.121.2
+
+No changes in this release.
+
+## 0.121.1
+
+No changes in this release.
+
+## 0.121.0
+
+No changes in this release.
+
+## 0.120.2
+
+No changes in this release.
+
+## 0.120.1
+
+No changes in this release.
+
+## 0.120.0
+
+No changes in this release.
+
+## 0.119.5
+
+No changes in this release.
+
+## 0.119.4
+
+No changes in this release.
+
+## 0.119.3
+
+No changes in this release.
+
+## 0.119.2
+
+No changes in this release.
+
+## 0.119.1
+
+No changes in this release.
+
+## 0.119.0
+
+No changes in this release.
+
+## 0.118.3
+
+No changes in this release.
+
+## 0.118.2
+
+No changes in this release.
+
+## 0.118.1
+
+No changes in this release.
+
+## 0.118.0
+
+No changes in this release.
+
+## 0.117.1
+
+No changes in this release.
+
+## 0.117.0
+
+No changes in this release.
+
+## 0.116.5
+
+No changes in this release.
+
+## 0.116.4
+
+No changes in this release.
+
+## 0.116.3
+
+No changes in this release.
+
+## 0.116.2
+
+No changes in this release.
+
+## 0.116.1
+
+No changes in this release.
+
+## 0.116.0
+
+### Minor Changes
+
+- 50ee624: Cut what an idle seat costs its host, with stock build and runtime mechanisms.
+  
+  Every connector bundle that loads into a long-running process now ships as one-byte text. V8 holds a
+  string at one byte per character only while every character is Latin-1, and a single character above
+  U+00FF made each 5 MB bundle two-byte for the life of the process. The characters were em dashes and
+  arrows in comments, so the bundles are built with esbuild's `--minify-whitespace`, which drops
+  comments and the parentheses around a single arrow parameter, and keeps every identifier. Anything
+  matching text in a built bundle sees the second part: `(e) => f(e)` now reads `e=>f(e)`. `pnpm smoke:connector-bundle-text` reads the 19 built bundles
+  and fails on any character above U+00FF. Stack-trace frames keep their function names and their line
+  and column numbers move, because the bundle is now fewer, longer lines.
+  
+  The Claude Code connector's seat is launched through a new entry, `dist/seat.cjs`, which enables
+  Node's module compile cache in `~/.cotal/compile-cache` and then loads `dist/mcp.cjs`. Node's cache
+  covers modules compiled after it is enabled, so the entry has to sit in front of the bundle. The
+  directory is created 0700 like the rest of `~/.cotal`, whatever the launching umask was. A cache
+  that cannot be opened prints one line and the seat serves without it,
+  `NODE_DISABLE_COMPILE_CACHE=1` turns it off, and `NODE_COMPILE_CACHE` takes precedence and is left
+  alone. `dist/mcp.cjs` remains the library entry (`@cotal-ai/connector-claude-code/mcp`) and still
+  serves when run directly.
+  
+  The declared Node floor rises from 22 to 22.10, which is where `module.flushCompileCache()` lands,
+  and every package's `engines.node` now says so. The `cotal` binary checks it at its front door and
+  refuses an older runtime with the floor, the running version and the repair for how it was
+  installed; the seat entry refuses before its first cache call, so an old Node gets one sentence
+  rather than a `TypeError`; and the installer compares the minor version, so a host whose own Node is
+  22.9 gets the pinned Node downloaded and verified instead. `node dist/mcp.cjs` still serves on an
+  older runtime. Operators moving a host read
+  [the upgrade note](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
+  
+  Measured on one idle seat per arm, Node v22.23.2, paired and read at 160 s and 600 s: 41.9 MiB USS
+  on the stock bundle, 35.2 with one-byte text, 26.3 with the seat entry's compile cache as well.
+
+## 0.115.4
+
+No changes in this release.
+
+## 0.115.3
+
+No changes in this release.
+
+## 0.115.2
+
+No changes in this release.
+
+## 0.115.1
+
+No changes in this release.
+
+## 0.115.0
+
+No changes in this release.
+
+## 0.114.1
+
+No changes in this release.
+
+## 0.114.0
+
+No changes in this release.
+
+## 0.113.3
+
+No changes in this release.
+
+## 0.113.2
+
+No changes in this release.
+
+## 0.113.1
+
+No changes in this release.
+
+## 0.113.0
+
+No changes in this release.
+
+## 0.112.0
+
+No changes in this release.
+
+## 0.111.1
+
+No changes in this release.
+
+## 0.111.0
+
+No changes in this release.
+
+## 0.110.0
+
+No changes in this release.
+
+## 0.109.25
+
+No changes in this release.
+
+## 0.109.24
+
+No changes in this release.
+
+## 0.109.23
+
+No changes in this release.
+
+## 0.109.22
+
+No changes in this release.
+
+## 0.109.21
+
+No changes in this release.
+
+## 0.109.20
+
+No changes in this release.
+
+## 0.109.19
+
+No changes in this release.
+
+## 0.109.18
+
+No changes in this release.
+
+## 0.109.17
+
+No changes in this release.
+
+## 0.109.16
+
+No changes in this release.
+
+## 0.109.15
+
+No changes in this release.
+
+## 0.109.14
+
+No changes in this release.
+
+## 0.109.13
+
+No changes in this release.
+
+## 0.109.12
+
+No changes in this release.
+
+## 0.109.11
+
+No changes in this release.
+
+## 0.109.10
+
+No changes in this release.
+
+## 0.109.9
+
+No changes in this release.
+
+## 0.109.8
+
+No changes in this release.
+
+## 0.109.7
+
+No changes in this release.
+
+## 0.109.6
+
+No changes in this release.
+
+## 0.109.5
+
+No changes in this release.
+
+## 0.109.4
+
+No changes in this release.
+
+## 0.109.3
+
+No changes in this release.
+
+## 0.109.2
+
+No changes in this release.
+
+## 0.109.1
+
+No changes in this release.
+
+## 0.109.0
+
+No changes in this release.
+
+## 0.108.1
+
+No changes in this release.
+
+## 0.108.0
+
+No changes in this release.
+
+## 0.107.0
+
+No changes in this release.
+
+## 0.106.1
+
+No changes in this release.
+
+## 0.106.0
+
+No changes in this release.
+
+## 0.105.1
+
+No changes in this release.
+
+## 0.105.0
+
+No changes in this release.
+
+## 0.104.2
+
+No changes in this release.
+
+## 0.104.1
+
+No changes in this release.
+
+## 0.104.0
+
+### Patch Changes
+
+- e0c4e6e: Correct the documentation page by page against the implementation, including CLI commands, connector delivery and activity sharing, authentication, observer surfaces, hosted composition, telemetry and historical design status. Refresh package guides and generated tool and HTTP references while preserving existing links and normative contracts.
+
+## 0.103.4
+
+No changes in this release.
+
+## 0.103.3
+
+No changes in this release.
+
+## 0.103.2
+
+No changes in this release.
+
+## 0.103.1
+
+No changes in this release.
+
+## 0.103.0
+
+No changes in this release.
+
+## 0.102.0
+
+No changes in this release.
+
+## 0.101.7
+
+No changes in this release.
+
+## 0.101.6
+
+No changes in this release.
+
+## 0.101.5
+
+No changes in this release.
+
+## 0.101.4
+
+No changes in this release.
+
+## 0.101.3
+
+No changes in this release.
+
+## 0.101.2
+
+No changes in this release.
+
+## 0.101.1
+
+No changes in this release.
+
+## 0.101.0
+
+### Patch Changes
+
+- f715048: The OpenCode 2.x connector no longer acts on a model check that settles after its teardown. A refusal that arrived late used to exit the host process, and a model listed late used to start a mesh agent that was already stopped, which surfaced as an unhandled `cannot start a stopped mesh session`. Both are now ignored once teardown has begun.
+- 74f07c3: Replace unavailable working-file citations in OpenCode 2.x adapter comments with self-contained contract notes.
+
+## 0.100.2
+
+No changes in this release.
+
+## 0.100.1
+
+No changes in this release.
+
+## 0.100.0
+
+No changes in this release.
+
+## 0.99.3
+
+No changes in this release.
+
+## 0.99.2
+
+No changes in this release.
+
+## 0.99.1
+
+No changes in this release.
+
+## 0.99.0
+
+No changes in this release.
+
+## 0.98.0
+
+No changes in this release.
+
+## 0.97.1
+
+No changes in this release.
+
+## 0.97.0
+
+No changes in this release.
+
+## 0.96.1
+
+No changes in this release.
+
+## 0.96.0
+
+No changes in this release.
+
+## 0.95.2
+
+No changes in this release.
+
+## 0.95.1
+
+No changes in this release.
+
+## 0.95.0
+
+No changes in this release.
+
+## 0.94.7
+
+No changes in this release.
+
+## 0.94.6
+
+No changes in this release.
+
+## 0.94.5
+
+No changes in this release.
+
+## 0.94.4
+
+No changes in this release.
+
+## 0.94.3
+
+No changes in this release.
+
+## 0.94.2
+
+No changes in this release.
+
+## 0.94.1
+
+No changes in this release.
+
+## 0.94.0
+
+No changes in this release.
+
+## 0.93.0
+
+No changes in this release.
+
+## 0.92.2
+
+No changes in this release.
+
+## 0.92.1
+
+No changes in this release.
+
+## 0.92.0
+
+### Patch Changes
+
+- ab2acc8: Tell every agent where to talk when it joins. A fresh agent can start on no channel, so the Claude Code, Codex, Jcode, OpenCode and Hermes startup text now says how to find its team's channel with `cotal_channels` and `cotal_join`, to use `cotal_dm` for one peer and `cotal_anycast` for a role, and to post on `#announce` only for a deliberate space-wide notice. OpenCode and Hermes previously carried no channel guidance at all. This is guidance only: no grant, subscription, mention or wake behaviour changes.
+
+## 0.91.0
+
+### Minor Changes
+
+- 5c85ef3: `cotal ps`, `cotal models` and `cotal runtimes` write one structured document with `--json` and a plain report with `--plain`, and exit by the structured outcome table. A read that could not read part of what it was asked for, such as a manager that did not answer a census, is `partial` and exits 4, with a warning naming each part it could not read. A mesh a structured command cannot resolve or reach is refused before any request with a stable code (`TARGET_NOT_FOUND`, `TARGET_UNAVAILABLE`, `AUTH_REQUIRED`, `PERMISSION_DENIED`, `DEPENDENCY_UNAVAILABLE` and others) and exits 2, and under `--json` that refusal is one envelope. The user-auth provider names why it could not issue credentials (signed out, service unavailable, refused), so that refusal carries the right code. `cotal version --json` with an unreadable extensions manifest is now `partial` and exits 4. A connector's `listModels` can return `unavailable` with a reason when its install has no catalog to list; the manager then reports it `supported: false` instead of a failed read, and OpenCode 2.x does so instead of failing `cotal models`. An installed connector the manager cannot load makes `cotal models` partial with its load error, and a home folder reached through a symlink is no longer read as a project with a stopped mesh.
+
+  Breaking: `cotal ps --json` writes one envelope whose `result.items` are the manager rows, instead of one row per line. An incomplete manager census exits 4 instead of 1, and a mesh `ps` or `models` cannot reach exits 2 instead of 1. The human reports of `ps`, `models` and `runtimes` are tables, and `ps --wide` prints one record per seat. See the upgrade notes.
+
+## 0.90.1
+
+## 0.90.0
+
+## 0.89.0
+
+## 0.88.0
+
+## 0.87.0
+
+### Patch Changes
+
+- af82e8d: A seat's launch-material directory (`cotal-launch-*` in the OS temp dir, holding the broker URL, the creds path and the control token) is now removed when the seat's process exits. Before this change a Claude seat left it behind after `cotal stop`, while the persona file and control socket of the same launch were removed. `materialEnv` in `@cotal-ai/connector-core` now takes the launch's artifact array as a second, required argument and appends the material's private directory to it, and every connector returns that array on `LaunchSpec.artifacts`, so the manager, the pty runtime and the foreground `cotal spawn` remove it the way they remove a persona file. Each connector now writes the material after its last refusal, so a refused launch leaves no material file behind. The second material file the Hermes launcher writes for its gateway child is not covered by this change.
+
+## 0.86.0
+
+### Patch Changes
+
+- 70331ab: The OpenCode 1.x plugin's teardown and session-swap comments now state the rule the code beside them keeps, in the present tense, in place of accounts of earlier revisions and of how a review caught them. The swap note no longer names a `drivePending` flag the code does not have. No behavior changes.
+
+## 0.85.0
+
+## 0.84.0
+
+## 0.83.0
+
+## 0.82.2
+
+## 0.82.1
+
+## 0.82.0
+
+### Patch Changes
+
+- 45c0d12: On OpenCode 2.x, a peer batch is acked only by the end of an execution that started after the batch was submitted. An end observed while idle, a replay of one, or an end positioned before the running execution started (even after a late copy of an earlier start) no longer acks a newly submitted batch, and a failed prompt submission no longer lets a second batch into an execution that is still running.
+- c428383: The OpenCode launcher now stops its server on SIGINT or SIGTERM from the moment it starts it. The handler used to be installed only after the plugin's session handshake, so a graceful stop during the boot, which can take a minute on a cold server, ended the launcher and left the server running on the agent's database, with a `serve.pid` record that refused every later launch of that name until the server was killed by hand. One handler now stops the server and, once it runs, the TUI.
+- 3ed1942: The OpenCode launcher now records each server in a file of its own, `serve.<token>.pid` in the agent's directory, and removes only that file when the server exits. Every launch of a name used to share one `serve.pid`, and the launcher's exit handler removed it unconditionally, so a handler that ran after the next launch had started its server removed that server's record, and the launch after that started a second server on the same database. A launch now checks every record in the directory, including a `serve.pid` left by an earlier version, refuses while any names a running server, and removes the records of servers that are gone.
+- a33cd0b: The OpenCode 2.x adapter no longer starts a turn once its teardown has begun. A message handled after the disposer started, or a drive waiting on session creation when it started, used to be submitted to OpenCode as a new turn whose batch was never acked because the seat was going away. `drive` now refuses on entry and again after the session await, as the 1.x adapter does.
+
 ## 0.81.1
 
 ## 0.81.0

@@ -510,6 +510,8 @@ const startBroker = async (prefix: string): Promise<ChildProcess> => {
 let ownerPid: number | undefined, orphanPid: number | undefined, orphanDir: string | undefined;
 let owner: ChildProcess | undefined;
 try {
+  const mention = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)", "COTAL_BROKER_LOG_NATS=/official/nats-server"], { stdio: "ignore" });
+  kids.push(mention);
   // (1) A broker this process owns and is still using. Tokened, owner alive: must survive.
   const ownedLive = await startBroker(SMOKE_BROKER_TOKEN);
   // (2) A broker nobody minted through the kit: must survive for a different reason.
@@ -535,6 +537,8 @@ try {
   check("the enumerator is supported on this platform", listed !== undefined);
   const pids = (listed ?? []).map((r) => r.pid);
   check("the enumerator sees all three", pids.includes(ownedLive.pid!) && pids.includes(untokened.pid!) && pids.includes(orphanPid!));
+  check("the non-broker argument control is running", mention.exitCode === null && alive(mention.pid!));
+  check("an argument's broker path does not classify its process as a broker", !pids.includes(mention.pid!));
 
   // Kill the OWNER only. Its broker is a plain child, so it survives and is reparented: a real orphan.
   process.kill(ownerPid!, "SIGKILL");

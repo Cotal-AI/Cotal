@@ -114,6 +114,15 @@ export function currentPhase(frame: number): { phase: Phase; t: number } {
 export type Cell = { row: number; col: number };
 export type Dot = { row: number; col: number; color: string; char?: string };
 
+// Both endpoints are kept and the cells run in travel order, so a dot can ride the
+// path from either end with pick().
+export function horizontalPath(row: number, startCol: number, endCol: number): Cell[] {
+  const step = endCol >= startCol ? 1 : -1;
+  const out: Cell[] = [];
+  for (let col = startCol; col !== endCol + step; col += step) out.push({ row, col });
+  return out;
+}
+
 export function pick<T>(path: T[], t: number): T {
   const i = Math.min(Math.floor(t * path.length), path.length - 1);
   return path[Math.max(0, i)]!;

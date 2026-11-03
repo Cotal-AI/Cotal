@@ -31,7 +31,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { cotalToolSpecs, NO_TOOL_ARGS, type MeshAgent, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, DOCS_VERSION, type MeshAgent, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
 
 /** The env var the codex child reads the bearer token from (`mcp_servers.cotal.bearer_token_env_var`). */
 export const MCP_TOKEN_ENV = "COTAL_MCP_TOKEN";
@@ -83,6 +83,7 @@ export async function startCotalMcp(
   agent: MeshAgent,
   config: AgentConfig,
   log: (m: string) => void,
+  boundThread: () => string | undefined,
 ): Promise<CotalMcpEndpoint> {
   const token = randomBytes(32).toString("hex");
   const specs = cotalToolSpecs(config, "codex");
@@ -90,16 +91,32 @@ export async function startCotalMcp(
   /** One MCP server per session. Cheap: every one closes over the SAME MeshAgent, so this is
    *  tool wiring, not a second mesh identity. */
   const build = (): McpServer => {
-    const server = new McpServer({ name: MCP_SERVER_NAME, version: "0.0.0" });
+    const server = new McpServer({ name: MCP_SERVER_NAME, version: DOCS_VERSION });
     for (const spec of specs) {
       const toContent = (r: ToolResult) => {
         const content = [{ type: "text" as const, text: r.text }];
         return r.isError ? { content, isError: true as const } : { content };
       };
+      // Codex supplies this metadata itself, including on TUI turns (0.145.0+).
+      // A second root inherits the app-server's MCP configuration, not this seat's identity.
+      const run = async (args: Record<string, unknown>, meta: Record<string, unknown> | undefined) => {
+        const thread = boundThread();
+        if (!thread || meta?.threadId !== thread) return toContent({
+          isError: true,
+          text: thread
+            ? `/new does not replace the managed conversation. Cotal tools belong to managed thread ${thread}. ` +
+              `Return to that thread in Codex to use this mesh identity, ` +
+              `or spawn a separate Cotal seat for a different conversation.`
+            : "Cotal's managed thread is not ready. Retry after the seat finishes starting.",
+        });
+        return toContent(await spec.run(agent, config, args));
+      };
       // The one Codex-specific override (shared with the OpenCode connector): automatic traffic
       // is OWNED by the host's turn loop — surfaced into turns and acked at the turn boundary —
-      // so cotal_inbox must pull only quiet ambient here. A destructive drain of automatic items
-      // would ack messages the loop is still accountable for delivering.
+      // so a clearing cotal_inbox must pull only quiet ambient here. A destructive drain of
+      // automatic items would ack messages the loop is still accountable for delivering. A peek
+      // clears nothing, so it may show that queue too (#5688): a turn the operator started, or a
+      // plain channel post, is never steered in, and would otherwise be unreadable until it ends.
       if (spec.name === "cotal_inbox") {
         server.registerTool(
           spec.name,
@@ -107,13 +124,12 @@ export async function startCotalMcp(
             title: spec.title,
             description:
               "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic " +
-              "stays queued; in focus mode, normal channel recall is also shown read-only.",
-            // The override drops the spec's own `peek` and supplies `scope` itself, so the caller
-            // has nothing to send — but WITHOUT an `inputSchema` the host has nothing to refuse
-            // against and forwards extras to be discarded here. Publish the closed empty object.
-            inputSchema: NO_TOOL_ARGS,
+              "stays queued; in focus mode, normal channel recall is also shown read-only. With peek, " +
+              "also shows the queued automatic messages without clearing anything; they still arrive " +
+              "at the end of your turn.",
+            inputSchema: spec.schema,
           },
-          async () => toContent(await spec.run(agent, config, { scope: "pull-only" })),
+          async (args: { peek?: boolean }, extra) => run({ peek: args.peek, scope: "pull-only" }, extra._meta),
         );
         continue;
       }
@@ -122,7 +138,7 @@ export async function startCotalMcp(
       server.registerTool(
         spec.name,
         { title: spec.title, description: spec.description, inputSchema: spec.schema },
-        async (args: Record<string, unknown>) => toContent(await spec.run(agent, config, args)),
+        async (args: Record<string, unknown>, extra) => run(args, extra._meta),
       );
     }
     return server;

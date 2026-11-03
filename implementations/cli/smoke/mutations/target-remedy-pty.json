@@ -1,0 +1,20 @@
+{
+  "suite": [
+    "implementations/cli/smoke/cli-pty.smoke.ts"
+  ],
+  "guard": "structured no-mesh failures retain a remedy whose terminal continuation aligns under the remedy text",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/cli-pty.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/target-remedy-pty.json",
+  "mutations": [
+    {
+      "name": "a no-mesh refusal drops its structured remedy",
+      "file": "packages/workspace/src/render.ts",
+      "find": "      return parts(\"no mesh running\", \"run `cotal up` in a project, or pass `--server`\");",
+      "replace": "      return parts(\"no mesh running\");",
+      "cell": "a failure on a 40-column terminal wraps under its text",
+      "expectRed": "a failure on a 40-column terminal wraps under its text",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

@@ -70,6 +70,7 @@ try {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space,
     token: { key: publicKey as never, issuer: ISS },
+    recordIssuance: async () => {},
     authorizeActor: () => { throw new Error(DENY_REASON); }, // deny EVERY actor, with a non-ASCII reason
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: smokeUid, scope: [] })),
     log: (l) => calloutLog.push(l),
@@ -123,7 +124,7 @@ try {
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
   try { await calloutNc?.close(); } catch { /* */ }
