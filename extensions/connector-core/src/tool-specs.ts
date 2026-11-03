@@ -1228,7 +1228,7 @@ export function cotalToolSpecs(
       description:
         "Post to a channel. Use it for anything more than one agent could use, now or later: briefs, plans, status, decisions, results. " +
         "Channels deliver in one of two ways. On a durable channel, the usual kind, every agent on it gets the post unless it has muted the channel, and a member that is offline gets it when it comes back. " +
-        "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it. An idle agent is woken by a post, unless it set dnd or focus or made the channel quiet. " +
+        "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name. An idle agent is woken by a post, unless it set dnd or focus or made the channel quiet. " +
         "Separately, most channels replay history: an agent that joins later is shown recent posts, and those old posts don't wake it. cotal_channel_info says whether a channel replays. " +
         "If only one agent will ever need it, use cotal_dm instead. Give the channel's full name. If you leave it out, the post goes to your default channel, the first one you are on and may post to. " +
         "To reach a group, post on a channel the group follows, such as review.announce. You can't post to a pattern such as review.>. To reach several channels, post to each one by name; cotal_channels lists them. " +

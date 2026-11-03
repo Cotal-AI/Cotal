@@ -596,10 +596,11 @@ const proto = MeshAgent.prototype as unknown as {
     dm.description.includes("To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there."),
     dm.description,
   );
-  // SPEC §4: a live post is at-most-once, so only a durable channel reaches every member.
+  // SPEC §4: a live post is at-most-once, so only a durable channel reaches every member, except that a
+  // mention keeps a copy for a mentioned agent allowed to read the channel whose name is its own.
   check(
-    "the cotal_send description says a live post misses an agent that is disconnected or busy",
-    send.description.includes("On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it.") &&
+    "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+    send.description.includes("On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name.") &&
       !send.description.includes("Every agent on the channel receives the post"),
     send.description,
   );

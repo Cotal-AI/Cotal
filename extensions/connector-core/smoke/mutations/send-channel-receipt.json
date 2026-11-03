@@ -374,11 +374,20 @@
     {
       "name": "N33 the cotal_send description says a live channel reaches everyone connected again",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it. ",
+      "find": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name. ",
       "replace": "On a live channel, only agents connected at that moment get it. ",
-      "expectRed": "the cotal_send description says a live post misses an agent that is disconnected or busy",
-      "cell": "the cotal_send description says a live post misses an agent that is disconnected or busy",
+      "expectRed": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+      "cell": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
       "note": "SPEC §4: a live post misses an agent that is disconnected, busy or not yet joined."
+    },
+    {
+      "name": "N36 the cotal_send description drops the mention exception on a live channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name. ",
+      "replace": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it. ",
+      "expectRed": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+      "cell": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+      "note": "SPEC §4: a mention on a live channel keeps a durable copy for a mentioned target allowed to read it."
     },
     {
       "name": "N34 the cotal_spawn description offers once on every harness",

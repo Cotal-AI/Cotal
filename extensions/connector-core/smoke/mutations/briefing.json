@@ -67,8 +67,8 @@
     {
       "name": "M5 the briefing drops what a live channel misses",
       "file": "extensions/connector-core/src/orientation.ts",
-      "find": "\"and one that is offline gets it when it comes back; on a live channel, one that is disconnected or \" +\n  \"busy then misses it.",
-      "replace": "\"and one that is offline gets it when it comes back; on a live channel, every connected agent \" +\n  \"gets it.",
+      "find": "\"and one that is offline gets it when it comes back; on a live channel, one that is disconnected or \" +\n  \"busy then misses it, unless the post mentions it by a name only it has and it may read the channel. \" +",
+      "replace": "\"and one that is offline gets it when it comes back; on a live channel, every connected agent \" +\n  \"gets it. \" +",
       "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
       "cell": "the briefing says a live post misses an agent that is away, and where once works",
       "note": "SPEC §4: a live post misses an agent that is disconnected or busy."
@@ -81,6 +81,15 @@
       "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
       "cell": "the briefing says a live post misses an agent that is away, and where once works",
       "note": "The manager refuses once for a connector without supportsTurnRelay."
+    },
+    {
+      "name": "M7 the briefing drops the mention exception on a live channel",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "  \"busy then misses it, unless the post mentions it by a name only it has and it may read the channel. \" +",
+      "replace": "  \"busy then misses it. \" +",
+      "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
+      "cell": "the briefing says a live post misses an agent that is away, and where once works",
+      "note": "SPEC §4: a mention on a live channel keeps a durable copy for a mentioned target allowed to read it."
     }
   ]
 }
