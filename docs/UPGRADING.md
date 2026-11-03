@@ -7,7 +7,7 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
-## More streams take a history limit after 0.138.1
+## More streams take a history limit after 0.139.1
 
 `cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and
 takes `none` for any age or count ([CLI messaging](cli-messaging.mdx#history)). An upgrade changes no
@@ -106,8 +106,8 @@ no space's limit, so an upgrade deletes no post.
 - `cotal history limit` still sets an age, a per-sender count, or both. A lower limit deletes the
   posts it no longer keeps. In a terminal, it asks first.
 - `cotal up`, `team boot`, and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`.
-- INBOX and DLV, the durable delivery streams, keep their own limit of 1000 entries per subject. From
-  0.139.0 `cotal history limit --inbox-per-agent` changes it.
+- INBOX and DLV, the durable delivery streams, keep their own limit of 1000 entries per subject. After
+  0.139.1, `cotal history limit --inbox-per-agent` changes it.
 
 ## Multi-space host acknowledgments after 0.116.1
 
