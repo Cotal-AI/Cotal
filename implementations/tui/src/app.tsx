@@ -9,7 +9,7 @@ import { DialogSelect } from "../vendor/opencode/packages/tui/src/ui/dialog-sele
 import { useToast } from "../vendor/opencode/packages/tui/src/ui/toast"
 import type { Catalog, Entry } from "./catalog.js"
 import { layoutFor } from "./layout.js"
-import type { Conn, FeedEntry, Mesh, Presence, Session } from "./live.js"
+import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
 import { clock, entryKey, feedFor, meshOf, type Open, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
 
 /** The catalog read, which starts after the first frame so the frame never waits on it. */
@@ -39,6 +39,8 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   const [open, setOpen] = createSignal<Open>({ kind: "channel" })
   const [seen, setSeen] = createSignal<Record<string, number>>({})
   const [now, setNow] = createSignal(Date.now())
+  const clockTimer = setInterval(() => setNow(Date.now()), 1000)
+  onCleanup(() => clearInterval(clockTimer))
 
   const entries = () => {
     const l = load()
@@ -46,6 +48,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   }
   const conn = (): Conn => session()?.conn() ?? { phase: "connecting" }
   const mesh = () => meshOf(conn())
+  const managed = (): Managed => session()?.managed() ?? { phase: "loading" }
   const waiting = () => mesh()?.signals.waiting ?? []
   const items = createMemo(() => treeItems(entries(), conn(), seen()))
   const rows = createMemo(() => items().filter((i): i is Row => i.kind !== "header"))
@@ -158,6 +161,18 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
       </text>
       <text fg={theme.text.faint} wrapMode="none">
         {p.right ?? ""}
+      </text>
+    </box>
+  )
+
+  /** One overview row. A long value wraps under itself, so the labels stay a clean column. */
+  const Field = (p: { label: string; value: string; fg: RGBA }) => (
+    <box flexDirection="row" flexShrink={0}>
+      <text width={9} flexShrink={0} wrapMode="none" fg={theme.text.faint}>
+        {p.label}
+      </text>
+      <text flexGrow={1} flexShrink={1} fg={p.fg}>
+        {p.value}
       </text>
     </box>
   )
@@ -306,7 +321,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
                 <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : "It reported no question."}</text>
               </Show>
               <Show when={layout().kind === "two"}>
-                <For each={overview(pr(), now())}>{(f) => <text fg={theme.text.muted}>{`${f.label.padEnd(9)}${f.value}`}</text>}</For>
+                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>
               </Show>
             </box>
           )}
@@ -394,18 +409,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
             <box flexShrink={0} marginTop={1}>
               <Section title={a().card.kind === "agent" ? "AGENT" : "ENDPOINT"} right={fit(a().card.name, p.width - 16)} />
               <box height={1} flexShrink={0} />
-              <For each={overview(a(), now())}>
-                {(f) => (
-                  <box flexDirection="row" flexShrink={0}>
-                    <text width={9} flexShrink={0} wrapMode="none" fg={theme.text.faint}>
-                      {f.label}
-                    </text>
-                    <text flexGrow={1} flexShrink={1} fg={theme.text.base}>
-                      {f.value}
-                    </text>
-                  </box>
-                )}
-              </For>
+              <For each={overview(a(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.base} />}</For>
             </box>
           )}
         </Show>

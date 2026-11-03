@@ -156,12 +156,77 @@ try {
   check("fixture: the manager hosts w1 and w2, and both joined presence", s1.ok && s2.ok && joined, JSON.stringify({ s1, s2, roster: watcher.getRoster().map((p) => p.card.name) }))
   console.log(`node ${process.versions.node}, tmux ${tmux("-V").trim()}, broker ${server}, captures in ${captures}`)
 
-  launch(209, 52, join(work, "fixture.err"))
-  const first = await waitFor((f) => f.includes(`● live · ${space}`) && f.includes("w1") && f.includes("w2") && f.includes("planner"), "the live roster with both seats")
-  save(join(captures, "fixture"), "01-live")
-  check("fixture: the app lists both seats and the unmanaged agent", true, first)
-  keys("q")
-  await waitFor(has("EXIT=0"), "q to quit with status 0")
+  // Enter on a row opens it, and the open row's name heads the middle column at every width. From the
+  // top of the tree the first move passes the space rows, where Enter would switch spaces.
+  const title = (frame: string) => frame.split("\n").find((l) => l.includes("SPACES")) ?? ""
+  async function pick(name: string, at: string) {
+    for (let i = 0; i < 20; i++) keys("k")
+    keys("j")
+    for (let i = 0; i < 12; i++) {
+      keys("j")
+      await sleep(80)
+      keys("Enter")
+      const opened = await waitFor((f) => !title(f).includes("all traffic"), "a row to open", 2000).catch(() => "")
+      if (title(opened).includes(`${name}  ${at}`)) return
+    }
+    throw new Error(`could not open ${name}:\n${capture()}`)
+  }
+  const uptime = (frame: string) => {
+    const m = /uptime\s+(\d+)s\b/.exec(frame)
+    return m ? Number(m[1]) : undefined
+  }
+  // An overview value as one string: it wraps onto the next lines under its own column.
+  const field = (frame: string, label: string) => {
+    const lines = frame.split("\n")
+    const at = lines.findIndex((l) => new RegExp(`(^|\\s)${label}\\s{2}`).test(l))
+    if (at < 0) return undefined
+    const col = lines[at]!.search(new RegExp(`${label}\\s{2}`)) + 9
+    const parts = [lines[at]!.slice(col).trimEnd()]
+    for (const l of lines.slice(at + 1)) {
+      if (l.slice(col - 9, col).trim() !== "" || l.slice(col).trim() === "") break
+      parts.push(l.slice(col).trimEnd())
+    }
+    return parts.map((p) => p.trim()).join(" ")
+  }
+
+  for (const [width, height] of [[209, 52], [97, 49], [80, 24]] as const) {
+    const size = `${width}x${height}`
+    const dir = join(captures, size)
+    console.log(size)
+    launch(width, height, join(work, `${size}.err`))
+    await waitFor((f) => f.includes(`● live · ${space}`) && f.includes("w1") && f.includes("w2") && f.includes("planner"), "the live roster with both seats")
+
+    await pick("w1", space)
+    const managed = await waitFor((f) => /process\s+running/.test(f), "the manager's row for w1")
+    save(dir, "01-managed-agent")
+    check(`${size}: a managed agent shows its runtime and process from the manager`, /runtime\s+pty/.test(managed) && /harness\s+seat/.test(managed) && !managed.includes("managed  "), managed)
+    if (width === 209) {
+      const ticks: (number | undefined)[] = []
+      for (let i = 0; i < 3; i++) {
+        ticks.push(uptime(capture()))
+        await sleep(1100)
+      }
+      check(`${size}: the managed uptime counts forward between reads`, ticks.every((t, i) => t !== undefined && (i === 0 || t > ticks[i - 1]!)), `uptimes: ${ticks.join(", ")}`)
+    }
+
+    await pick("planner", space)
+    const unmanaged = await waitFor((f) => title(f).includes(`planner  ${space}`) && field(f, "managed") === "not by a manager on this space", "the unmanaged agent's overview")
+    save(dir, "03-unmanaged-agent")
+    check(`${size}: an unmanaged agent says no manager runs it`, !/runtime\s+pty/.test(unmanaged), unmanaged)
+
+    for (let i = 0; i < 8; i++) keys("k")
+    await sleep(80)
+    keys("Enter")
+    await waitFor(has(`● live · ${bare}`), "the space with no manager")
+    await pick("solo", bare)
+    const unavailable = await waitFor((f) => !!field(f, "managed")?.startsWith("cannot ask the manager:"), "the reason no manager answers", 30000)
+    save(dir, "04-no-manager")
+    check(`${size}: a space with no manager says why, not a stuck loading line`, !!field(unavailable, "managed")?.includes("has no live registered instances"), unavailable)
+
+    keys("q")
+    await waitFor(has("EXIT=0"), "q to quit with status 0")
+  }
+
 } finally {
   try {
     tmux("kill-server")
