@@ -15,7 +15,6 @@ import { connect } from "@nats-io/transport-node";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
-  LEGACY_CHAT_HISTORY,
   canonicalBackupStreamConfig,
   chatStream,
   createSpaceAuth,
@@ -58,8 +57,8 @@ const openServers = `nats://127.0.0.1:${openPort}`;
 const openStore = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const openBroker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(openPort), "-sd", join(openStore, "js")], { stdio: "ignore" });
 const releaseOpenBroker = teardownOnSignal(openBroker, openStore);
-// An open space still on the legacy pair, one with no chat stream, and an auth space whose root holds no trust.
-const legacySpace = `histlegacy-${randomUUID().slice(0, 8)}`;
+// An open space on the default limit (no age), one with no chat stream, and an auth space whose root holds no trust.
+const noAgeSpace = `histnoage-${randomUUID().slice(0, 8)}`;
 const bareSpace = `histbare-${randomUUID().slice(0, 8)}`;
 const untrusted = `histnotrust-${randomUUID().slice(0, 8)}`;
 
@@ -114,14 +113,14 @@ try {
   const jsm = await jetstreamManager(nc);
   const onc = await connect({ servers: openServers });
   const ojsm = await jetstreamManager(onc);
-  await ojsm.streams.add(canonicalBackupStreamConfig(legacySpace, chatStream(legacySpace), LEGACY_CHAT_HISTORY));
+  await ojsm.streams.add(canonicalBackupStreamConfig(noAgeSpace, chatStream(noAgeSpace), CHAT_HISTORY_DEFAULT));
   saveSpaceAuth(authDir(roots.auth), auth);
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
   try {
     recordMesh({ space, server: servers, root: roots.auth, mode: "auth", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: untrusted, server: servers, root: roots.untrusted, mode: "auth", origin: "manual", ts: new Date().toISOString() });
-    recordMesh({ space: legacySpace, server: openServers, root: roots.open, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: noAgeSpace, server: openServers, root: roots.open, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: bareSpace, server: openServers, root: roots.open, mode: "open", origin: "manual", ts: new Date().toISOString() });
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -156,12 +155,12 @@ try {
   check("a space with no chat stream is refused TARGET_NOT_FOUND", bare.status === 2 && bare.envelope?.error?.code === "TARGET_NOT_FOUND", shown(bare));
   check("...and no chat stream was created", bareCreated === false);
 
-  // ── the legacy pair needs an age ─────────────────────────────────────────────────────────────────
-  const countOnly = await run(["history", "limit", "--per-sender", "500", "--yes", "--json", "--space", legacySpace], roots.open);
+  // ── a stream with no age limit needs an age ──────────────────────────────────────────────────────
+  const countOnly = await run(["history", "limit", "--per-sender", "500", "--yes", "--json", "--space", noAgeSpace], roots.open);
   check("a stream with no age limit refuses a count alone, naming --max-age", countOnly.status === 1 && countOnly.envelope?.error?.code === "USAGE_INVALID" && countOnly.envelope.error.message.includes("pass --max-age as well"), shown(countOnly));
-  check("...and changed nothing", same(await limitOf(ojsm, legacySpace), LEGACY_CHAT_HISTORY));
-  const withAge = await run(["history", "limit", "--max-age", "30d", "--per-sender", "500", "--yes", "--json", "--space", legacySpace], roots.open);
-  check("an open space takes an age and a count on a bare connection", withAge.status === 0 && withAge.envelope?.result?.changed === true && same(await limitOf(ojsm, legacySpace), { maxAgeMs: 30 * DAY, perSender: 500 }), shown(withAge));
+  check("...and changed nothing", same(await limitOf(ojsm, noAgeSpace), CHAT_HISTORY_DEFAULT));
+  const withAge = await run(["history", "limit", "--max-age", "30d", "--per-sender", "500", "--yes", "--json", "--space", noAgeSpace], roots.open);
+  check("an open space takes an age and a count on a bare connection", withAge.status === 0 && withAge.envelope?.result?.changed === true && same(await limitOf(ojsm, noAgeSpace), { maxAgeMs: 30 * DAY, perSender: 500 }), shown(withAge));
 
   // ── a change, its receipt, and a repeat ──────────────────────────────────────────────────────────
   const weekly = { maxAgeMs: 7 * DAY, perSender: 500 };

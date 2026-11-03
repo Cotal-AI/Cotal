@@ -409,6 +409,31 @@ registry.register(preserveAuth as unknown as AuthProvider);
   manager.abortPreservation("replacement");
 }
 
+// #3241: the plan a caller receives shares nothing with the live seat. An in-process caller that
+// edits the plan and then abandons the attempt leaves the seat's retained launch as it was, so the
+// next cut records the seat as it runs.
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
+  map.set("worker", managed("worker", "open_principal_alias", fakeHandle("worker"), "persona"));
+  const first = await manager.preparePreservation("alias-1");
+  const handed = first.inventory.agents[0]?.launch;
+  check("the abandoned plan carries the seat", first.ok && handed !== undefined, first);
+  if (handed) {
+    for (const list of [handed.subscribe, handed.allowSubscribe, handed.allowPublish ?? [], handed.capabilities ?? []]) (list as string[]).push("ops");
+    (handed.source as { configSha256: string }).configSha256 = "0".repeat(64);
+  }
+  manager.abortPreservation("alias-1");
+  const next = await manager.preparePreservation("alias-2");
+  const recorded = next.inventory.agents[0]?.launch;
+  check("a caller's edit to an abandoned plan does not widen the seat's lists in the next cut",
+    JSON.stringify([recorded?.subscribe, recorded?.allowSubscribe, recorded?.allowPublish, recorded?.capabilities]) === JSON.stringify([["general"], ["general"], [], ["spawn"]]),
+    JSON.stringify(recorded));
+  check("...nor change its launch source, so the next cut still records the seat",
+    next.ok && next.failures.length === 0 && recorded?.source.configSha256 === digest(personaPath), JSON.stringify({ failures: next.failures, source: recorded?.source }));
+  manager.abortPreservation("alias-2");
+}
+
 // An accepted pre-fence destructive stop includes its detached deprovision in the drain. The
 // preserved inventory is taken only after that operation has fully completed.
 {

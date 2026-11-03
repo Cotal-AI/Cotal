@@ -242,7 +242,7 @@ try {
     dmsPlain.status === 0 && /DM to erin\s+alice\s+for erin/.test(dmsPlain.stdout) && /DM to bob\s+alice\s+a private note/.test(dmsPlain.stdout), dmsPlain.stdout);
 
   const plain = await run(["history", "general", "--plain"]);
-  check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: 1000 per sender on each channel, posts older than 30d expire; /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+  check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: 1000 per sender on each channel; /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
   const localTime = items[0] ? new Date(items[0].ts).toLocaleTimeString() : "";
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 

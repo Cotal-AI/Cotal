@@ -66,7 +66,7 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Static spawns are bounded by the spawner's evidence after 0.133.13
+## Static spawns are bounded by the spawner's evidence after 0.136.3
 
 On a static mesh, an agent that could spawn could hand its helper any channel or capability, because
 nothing compared the grant with what the agent held. The manager now measures every spawn an agent
@@ -127,35 +127,25 @@ takes from its spawner are all measured. The operator's own commands, such as `c
   door now gets `parent` in the answer, and the door refuses a helper wider than that parent. Record
   `parent` on the grant you write, and fill a list the request leaves out from the parent's grant at
   most, never from the owner's wider row.
-## Channel posts expire at 30 days after 0.133.13
 
-A space now keeps a channel post for 30 days, or until its sender has posted 1000 newer ones on
-that channel, whichever comes first. Earlier releases kept each sender's newest 1000 posts on each
-channel with no age limit.
+## Channel posts keep no age limit after 0.134.0
 
-**The first `cotal up` that starts an existing space's broker on this release deletes every channel
-post older than 30 days.** It moves a chat stream still on the old settings (no age limit, 1000 per
-sender) to the new default, and the broker removes the older posts at once. Nothing asks first. `up`
-prints a warning that names the old and new limit, and the receipt of a controller stack,
-`team boot` or `setup --start` carries it as `CHAT_HISTORY_MIGRATED`. A start that fails after the move says so in its
-error. The posts it deletes are gone from the stream.
+0.134.0 gave a space a 30-day age limit on channel posts, and the first `cotal up` that started an
+existing space's broker moved the space to it, which deleted every channel post older than 30 days.
+This release takes both back. A space keeps a channel post until its sender has posted 1000 newer
+ones on that channel, with no age limit, as it did up to 0.133.13. `cotal up` changes no space's
+limit, so an upgrade deletes no post.
 
 ### What changes for you
 
-- To keep posts longer, set the limit while the broker from the old release still runs. Install this
-  release, then from the space's root on the broker host run `cotal history limit --max-age <age>`,
-  such as `365d`. A refresh of a running broker changes no limit, and `up` leaves any limit other
-  than the old pair as it is, so the next start keeps yours.
-- A resume after `cotal down --preserve-state` runs no stream setup, so it moves nothing. The next
-  start after it does.
-- `cotal history limit` changes the limit at any time later, by age, per-sender count or both. A
-  lower limit deletes the posts it no longer keeps, and in a terminal it asks first.
-- A backup taken before this release restores with no age limit, and the next `cotal up` that starts
-  its broker moves it to 30 days the same way.
-- A stream with no age limit and a count other than 1000 is left as it is.
-- INBOX and DLV, the durable delivery streams, keep their own bound of 1000 entries per subject. It
-  does not follow the chat limit, and a copy already delivered into them stays until that bound
-  removes it.
+- An upgrade from 0.133.13 or earlier changes nothing.
+- A space that a 0.134.0 `cotal up` already moved keeps its 30-day limit, and the posts that move
+  deleted do not come back. From the space's root on the broker host,
+  `cotal history limit --max-age <age>` sets a longer age, up to `3650d`.
+- `cotal history limit` still sets an age, a per-sender count or both. A lower limit deletes the
+  posts it no longer keeps, and in a terminal it asks first.
+- `cotal up`, `team boot` and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`.
+- INBOX and DLV, the durable delivery streams, keep their own bound of 1000 entries per subject.
 
 ## Multi-space host acknowledgments after 0.116.1
 

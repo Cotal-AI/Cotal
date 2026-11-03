@@ -6,6 +6,7 @@ import {
   RUN_LAUNCH_DEADLINE_MS,
   subjectMatches,
   isConcreteChannel,
+  isChannelFamily,
   assertValidChannel,
   channelInAllow,
   eventChannelPrincipal,
@@ -495,6 +496,9 @@ export class MeshAgent extends EventEmitter {
   private protectedPullOnlyIds = new Set<string>();
   private protectedDropIds = new Set<string>();
   private dropUnsafe = false;
+  /** How many times the endpoint saw this session's stored copies at their limit (#5404) since a
+   *  cotal_inbox reply last carried the notice. */
+  private _storedCopiesFull = 0;
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
@@ -676,6 +680,7 @@ export class MeshAgent extends EventEmitter {
     // A warning is a condition the endpoint is already surviving. Log it through the same bounded
     // operator sink, but never turn it into connectionIssue: readiness is still true.
     this.ep.on("warning", (e: Error) => this.handleEndpointWarning(e));
+    this.ep.on("stored-copies-full", () => { this._storedCopiesFull++; });
     // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
     // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
     // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
@@ -821,6 +826,19 @@ export class MeshAgent extends EventEmitter {
    *  `stop()` clears readiness and transport together, so those two read identically in both cases. */
   get stopping(): boolean {
     return this._stopping;
+  }
+
+  /** How many times this session's stored copies reached their limit since a cotal_inbox reply last
+   *  said so, so older channel posts may have been dropped before they reached it (#5404). Zero when
+   *  there is nothing to say. */
+  get storedCopiesFull(): number {
+    return this._storedCopiesFull;
+  }
+
+  /** A reply carrying the stored-copy notice went out, read when the count was `seen`. Clear what
+   *  it covered; a limit seen while that reply was being built stays for the next one. */
+  clearStoredCopiesFull(seen: number): void {
+    this._storedCopiesFull = Math.max(0, this._storedCopiesFull - seen);
   }
 
   /** Session-local channel degradation, independent of transport liveness. */
@@ -3322,7 +3340,9 @@ export class MeshAgent extends EventEmitter {
 
   /** Discoverable channel list: every channel with traffic or a registry entry, tagged with
    *  its one-line description, replay policy, and whether WE are subscribed (self only — never
-   *  other peers' membership). The companion to cotal_join. */
+   *  other peers' membership). The companion to cotal_join. Each pattern WE follow is a row too,
+   *  marked `follow`: a family (`team.>`) with the health of its own stored copies, any other pattern
+   *  as live only. */
   async listChannels(): Promise<
     {
       channel: string;
@@ -3334,6 +3354,7 @@ export class MeshAgent extends EventEmitter {
       messages: number;
       mode: ChannelMode | "normal";
       event?: "own" | "agent";
+      follow?: "family" | "live";
     }[]
   > {
     const mine = this.ep.joinedChannels();
@@ -3374,23 +3395,25 @@ export class MeshAgent extends EventEmitter {
     // be established (the reader lacks the grant, or the responder errored) renders "unknown",
     // distinct from the degraded of a daemon that answered but holds no membership for this owner —
     // and from the undefined of a channel where health does not apply (not durable-class, not
-    // joined, open mode).
-    const health = (channel: string, joined: boolean): "active" | "degraded" | "unknown" | undefined =>
-      joined && this.ep.channelDeliveryClass(channel) === "durable"
-        ? !leaseReadable
-          ? "unknown"
-          : daemonMemberships === undefined
-            ? "degraded"
-            : daemonMemberships.some((m) => m.channel === channel) && leaseLive
-              ? "active"
-              : "degraded"
-        : undefined;
+    // joined, open mode). A channel or family is held by its own row or a family row above it (#5404),
+    // since that family's stored copies cover it.
+    const held = (channel: string): "active" | "degraded" | "unknown" =>
+      !leaseReadable
+        ? "unknown"
+        : daemonMemberships !== undefined && leaseLive && daemonMemberships.some((m) => m.channel === channel || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel)))
+          ? "active"
+          : "degraded";
+    // Health applies where stored copies were asked for: the channel itself or a family over it. A
+    // channel read only through a pattern with * or the root > is live only and has none.
+    const health = (channel: string, stored: boolean): "active" | "degraded" | "unknown" | undefined =>
+      stored && this.ep.channelDeliveryClass(channel) === "durable" ? held(channel) : undefined;
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
       durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
-      event?: "own" | "agent";
+      event?: "own" | "agent"; follow?: "family" | "live";
     }[] = (await this.ep.listChannels()).map((c) => {
       const joined = mine.some((p) => subjectMatches(p, c.channel));
+      const stored = mine.some((p) => p === c.channel || (isChannelFamily(p) && subjectMatches(p, c.channel)));
       return {
         channel: c.channel,
         description: c.config?.description,
@@ -3399,12 +3422,26 @@ export class MeshAgent extends EventEmitter {
         // A live sub was refused while a Plane-3 durable membership stayed open; its §7 tombstone is
         // still retrying. Surface it so the channel is never shown as ordinary "not subscribed" (ux).
         durableUnclosed: unclosed.has(c.channel),
-        deliveryHealth: health(c.channel, joined),
+        deliveryHealth: health(c.channel, stored),
         messages: c.messages,
         mode: this.channelMode(c.channel) ?? "normal",
         event: this.eventChannelOf(c.channel),
       };
     });
+    for (const pattern of mine) {
+      if (isConcreteChannel(pattern)) continue;
+      const family = isChannelFamily(pattern);
+      rows.push({
+        channel: pattern,
+        replay: this.ep.channelReplay(pattern),
+        joined: true,
+        durableUnclosed: unclosed.has(pattern),
+        deliveryHealth: family ? held(pattern) : undefined,
+        messages: 0,
+        mode: "normal",
+        follow: family ? "family" : "live",
+      });
+    }
     // A channel in refused-sub durable cleanup can have NO traffic AND no registry entry, so listChannels()
     // omits it — UNION it in so the durable-unclosed state can never disappear by omission (ux/security).
     const present = new Set(rows.map((r) => r.channel));
@@ -3420,6 +3457,7 @@ export class MeshAgent extends EventEmitter {
         messages: 0,
         mode: this.channelMode(ch) ?? "normal",
         event: this.eventChannelOf(ch),
+        ...(isChannelFamily(ch) ? { follow: "family" as const } : {}),
       });
     }
     return rows;

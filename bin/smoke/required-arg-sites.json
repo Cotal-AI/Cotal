@@ -4,6 +4,7 @@
   "bin/smoke/lang-spawn-live-conclave.ts": 4,
   "bin/smoke/run-cancel-live.smoke.ts": 2,
   "bin/smoke/run-host-live.smoke.ts": 11,
+  "bin/smoke/run-ps-latency.smoke.ts": 1,
   "bin/smoke/run-status-program-identity.smoke.ts": 2,
   "extensions/connector-core/smoke/idle-seat-connects.smoke.ts": 3,
   "extensions/connector-core/smoke/manager-connect-deadline.smoke.ts": 1,

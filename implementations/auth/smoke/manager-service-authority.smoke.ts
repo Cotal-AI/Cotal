@@ -93,11 +93,11 @@ const verifyRenewal = (candidate: typeof renewWithProof | typeof runWithProof, o
 });
 await cell("current registration allows the five-identity renewal request", () => verifyRenewal(renewWithProof));
 await rejects("foreign account refuses before signing", () => verifyRenewal(renewWithProof, { accountPublicKey: `A${"B".repeat(55)}` }), /account/);
-await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /processEpoch/);
-await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /owner/);
+await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /serve epoch 3 is stale; current is 4/);
+await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /not serve principal/);
 await rejects("malformed renewal owner uses the principal token validator", () =>
   verifyRenewal(renewWithProof, { owner: "u_bad-owner" }), /invalid owner\/actor token/);
-await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /open registration gate/);
+await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /no current open manager gate/);
 await cell("activated run allows same takeover and write fence", () => verifyRenewal(runWithProof));
 await rejects("superseded run holder refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, holder: "successor" } }), /activated run/);
 await rejects("superseded run fencing token refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, fencingToken: 4 } }), /activated run/);

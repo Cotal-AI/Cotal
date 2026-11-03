@@ -52,7 +52,7 @@ It requires a YAML mapping between `---` fences and a valid `name`.
 | `kind` | `agent` \| `endpoint` | Participation class. Defaults to `agent`. |
 | `description` | string | One-line summary in `card.description`. |
 | `tags` | string[] | Capability tags in `card.tags`. |
-| `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
+| `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. A [family](channels-and-permissions.mdx#families) such as `team.>` gets stored copies of posts on its durable channels from startup. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
 | `allowSubscribe` | string[] | Channels the agent may read. Wildcard subtrees such as `team.>` are allowed. Omitted or empty defaults to `subscribe`. |
 | `allowPublish` | string[] | Channels the agent may post to. Omitted or empty grants no posting permission. Wildcard subtrees are allowed. |
 | `quiet` | string[] | Attention default. Ambient messages stay buffered until `cotal_inbox`; mentions remain automatic. Entries must be concrete channels within the read ACL. |
@@ -127,6 +127,7 @@ A complete agent file in `prompt` is merged into one frontmatter block.
 For a new definition, its grants, role, and agent survive unless an explicit tool argument overrides them.
 On redefinition, existing fields remain unless an explicit tool argument changes them; the prompt replaces the body.
 Malformed leading frontmatter is refused with `prompt-frontmatter`.
+A definition the manager could not load back is refused and nothing is written, for example one whose `subscribe` names a channel or family that no `allowSubscribe` entry contains.
 `capabilities` is policy: only an explicit `capabilities` argument sets it, and the manager's `define-persona` command checks it against the definer before it writes.
 A definer can put into a persona only capabilities it holds itself, and a later spawn of the persona is checked again against its spawner.
 A redefine that omits `capabilities` keeps the saved list, and that list is checked the same way, so a definer that no longer holds a saved capability passes the ones it holds, or `[]` to clear them.

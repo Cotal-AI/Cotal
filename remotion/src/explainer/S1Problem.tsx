@@ -43,10 +43,10 @@ const BLOCKED = "#c0584e";
 // --- layout (comp coords, center 960,540) --------------------------------------
 
 const ORCH: Pt = { x: 960, y: 200 }; // orchestrator pill, top-center
-const WORKERS: { at: Pt; name: string; role: string }[] = [
-  { at: { x: 520, y: 560 }, name: "worker-a", role: "coder" },
-  { at: { x: 960, y: 560 }, name: "worker-b", role: "coder" },
-  { at: { x: 1360, y: 560 }, name: "worker-c", role: "coder" },
+const WORKERS: { at: Pt; name: string; role: string; fanStart: number }[] = [
+  { at: { x: 520, y: 560 }, name: "worker-a", role: "coder", fanStart: 12 },
+  { at: { x: 960, y: 560 }, name: "worker-b", role: "coder", fanStart: 24 },
+  { at: { x: 1360, y: 560 }, name: "worker-c", role: "coder", fanStart: 36 },
 ];
 
 const NODE_R = 45;
@@ -76,8 +76,6 @@ const LINK_MID: Pt = lerp(LINK_START, LINK_END, 0.5);
 // --- timing --------------------------------------------------------------------
 
 const T = {
-  // staggered task beams, one per worker
-  fanStart: [12, 24, 36],
   fanLen: 24,
   // blocked sibling link
   linkDraw: [70, 90] as const, // dashed line reveals
@@ -88,20 +86,21 @@ export const S1Problem: React.FC = () => {
   const frame = useCurrentFrame();
 
   // Per-wire task beam progress + a lingering gold afterglow on each tree wire.
-  const beamT = T.fanStart.map((s) => prog(frame, s, s + T.fanLen));
-  const treeGlow = T.fanStart.map((s) =>
-    fade(frame, s + T.fanLen - 6, s + T.fanLen) * (1 - fade(frame, s + T.fanLen + 24, s + T.fanLen + 48)),
-  );
+  const beamT = WORKERS.map(({ fanStart: s }) => prog(frame, s, s + T.fanLen));
+  const treeWires = WORKERS.map(({ at, fanStart: s }) => ({
+    d: wirePath(wireStart, ...wireCtrls(at), wireEnd(at)),
+    glow: fade(frame, s + T.fanLen - 6, s + T.fanLen) * (1 - fade(frame, s + T.fanLen + 24, s + T.fanLen + 48)),
+  }));
 
   // A brief receive-flash on each worker as its task lands.
-  const flash = T.fanStart.map((s) => {
+  const flash = WORKERS.map(({ fanStart: s }) => {
     const land = s + T.fanLen;
     return frame >= land ? Math.max(0, 1 - fade(frame, land, land + 14)) : 0;
   });
 
   // Orchestrator emits while any beam is in flight.
   const orchGlow = Math.max(
-    ...T.fanStart.map((s) => fade(frame, s, s + 6) * (1 - fade(frame, s + T.fanLen - 4, s + T.fanLen + 8))),
+    ...WORKERS.map(({ fanStart: s }) => fade(frame, s, s + 6) * (1 - fade(frame, s + T.fanLen - 4, s + T.fanLen + 8))),
   );
 
   // Blocked link: dashed line reveals, then "snaps" + an ✕ blinks in.
@@ -124,7 +123,7 @@ export const S1Problem: React.FC = () => {
     <CreamStage>
       <div style={{ opacity: loopEnvelope(frame, PROBLEM_DURATION) }}>
         {/* tree wires from orchestrator down to each worker, with task afterglow */}
-        <WireLines paths={TREE_PATHS} glow={treeGlow} />
+        <WireLines wires={treeWires} />
 
         {/* the broken sibling link: dashed brick-red, snapping with an ✕ */}
         <Field>

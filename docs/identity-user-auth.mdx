@@ -144,6 +144,20 @@ issuer must match the exact JWT `iss` pin. Its exchange, provisioning, and manag
 endpoints must be same-origin with that IdP. One foreign pin or endpoint refuses the whole
 candidate snapshot.
 
+An entry may carry `"unavailable": "<reason>"` instead of `registration` when the account still
+belongs to the space but the catalog cannot serve it now, for example while an operator holds it:
+
+```json
+{ "id": "space-id", "slug": "held_project", "name": "Held project", "kind": "hosted", "role": "member", "unavailable": "held by an operator" }
+```
+
+The client keeps the registration it already holds for that slug unchanged, records the reason as
+that entry's catalog error, and records nothing for a slug it does not hold. The space is neither
+removed nor deselected, and its siblings in the snapshot are applied as usual. A command that
+targets it refuses with `DEPENDENCY_UNAVAILABLE` and the reason. An entry with both fields or an
+empty reason refuses the whole candidate snapshot. A client from before this field refuses the
+whole snapshot too, so it keeps its prior snapshot as it would after a failed refresh.
+
 The `slug` is the space identity resolved by `--space`, `use`, registry roots, and collisions. The
 `name` is a display label only.
 

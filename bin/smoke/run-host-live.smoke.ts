@@ -531,42 +531,37 @@ try {
       await seat.start();
       await (seat as unknown as { pollTurns(): Promise<void> }).pollTurns();
       const surfaced = await until(async () => seat.peekPendingTurns(), 10_000);
-      // The seat renders its native answer route, `cotal_invoke` with `args={...}`; the shipped CLI
-      // answers the same run and step from inside the seat.
-      const route = surfaced?.text.split("\n").find((s) => s.startsWith("Answer through your native Cotal tools:"));
-      const routed = route?.match(/ args=(\{.*\})\.$/)?.[1];
-      const coordinate = ((): { runId?: unknown; stepKey?: unknown } | undefined => {
-        try { return routed === undefined ? undefined : JSON.parse(routed.replace("<json record>", "null")); } catch { return undefined; }
-      })();
-      if (route !== undefined) {
-        const args = typeof coordinate?.runId === "string" && typeof coordinate.stepKey === "string"
-          ? ["run", "answer", coordinate.runId, coordinate.stepKey, "--value", '{"estimate":4}'] : undefined;
-        if (args !== undefined) {
-          // With `--json` so its receipt is the CLI's result envelope.
-          renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args, "--json"], {
-            cwd: wsA,
-            env: {
-              ...process.env,
-              COTAL_HOME: home,
-              COTAL_SKIP_CONNECTOR_SEED: "1",
-              COTAL_NAME: "asked",
-              COTAL_ID: asked.id,
-              COTAL_LIFECYCLE_UID: asked.lifecycleUid,
-              COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
-            },
-          }).then(({ stdout }) => {
-            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown }; answer?: { step?: unknown; value?: { estimate?: unknown }; valueGiven?: unknown } } };
-            const reply = out.result?.result;
-            const echoed = out.result?.answer;
-            // The manager's answer does not repeat the run id, so the receipt names the run the command
-            // did, and echoes the step and the value it filed.
-            return out.command === "run" && out.outcome === "ok" && out.target?.run === runId && out.result?.kind === "run-receipt" && out.result.action === "answer"
-              && typeof reply?.token === "string" && typeof reply.answerId === "string"
-              && echoed?.step === "/ask:size#0" && echoed.valueGiven === true && echoed.value?.estimate === 4
-              ? { ok: true as const, token: reply.token, answerId: reply.answerId }
-              : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
-          }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
-        } else renderedForm = { ok: false, error: `unexpected rendered answer route ${route}` };
+      // The turn renders the native tool route (#5144). A seat that shells out answers the run and step
+      // that route names with `cotal run answer`, which must act as this seat.
+      const route = surfaced?.text.split("\n").find((s) => s.startsWith("Answer through your native Cotal tools:"))
+        ?.match(/command="run-answer", self=true and args=(\{.*\})\.$/)?.[1];
+      const routed = route === undefined ? undefined : JSON.parse(route.replace("<json record>", "null")) as { runId?: unknown; stepKey?: unknown };
+      if (surfaced !== undefined && routed === undefined) renderedForm = { ok: false, error: "the seat's pending ask renders no native run-answer route" };
+      if (typeof routed?.runId === "string" && typeof routed.stepKey === "string") {
+        // `--json` so the receipt is the CLI's result envelope.
+        renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", "answer", routed.runId, routed.stepKey, "--value", '{"estimate":4}', "--json"], {
+          cwd: wsA,
+          env: {
+            ...process.env,
+            COTAL_HOME: home,
+            COTAL_SKIP_CONNECTOR_SEED: "1",
+            COTAL_NAME: "asked",
+            COTAL_ID: asked.id,
+            COTAL_LIFECYCLE_UID: asked.lifecycleUid,
+            COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
+          },
+        }).then(({ stdout }) => {
+          const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown }; answer?: { step?: unknown; value?: { estimate?: unknown }; valueGiven?: unknown } } };
+          const reply = out.result?.result;
+          const echoed = out.result?.answer;
+          // The manager's answer does not repeat the run id, so the receipt names the run the command
+          // did, and echoes the step and the value it filed.
+          return out.command === "run" && out.outcome === "ok" && out.target?.run === runId && out.result?.kind === "run-receipt" && out.result.action === "answer"
+            && typeof reply?.token === "string" && typeof reply.answerId === "string"
+            && echoed?.step === "/ask:size#0" && echoed.valueGiven === true && echoed.value?.estimate === 4
+            ? { ok: true as const, token: reply.token, answerId: reply.answerId }
+            : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
+        }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
       }
     } finally {
       await seat.stop();
@@ -578,7 +573,7 @@ try {
         recordedBy = (await readCheckpointAnswer(await openRecordsBucket(readNc, spaceA), "manager", renderedForm.token, renderedForm.answerId))?.by;
       } finally { await readNc.drain().catch(() => readNc.close()); }
     }
-    c("the addressed baseline seat answers its rendered ask through the shipped CLI path with --json, as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
+    c("the addressed baseline seat's `cotal run answer` for the run and step its turn names, with --json, is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
     const answered = await until(async () => {
       const v = await status(runId);
       return v?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state === "settled") ? v : undefined;

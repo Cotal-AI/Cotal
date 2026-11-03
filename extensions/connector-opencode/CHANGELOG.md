@@ -1,5 +1,119 @@
 # @cotal-ai/connector-opencode
 
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+### Patch Changes
+
+- f5251ae: An OpenCode agent name now has one launcher at a time. Two launches that overlapped both passed the server-record check, which runs before the version probe and the spawn, so both started a server on the agent's SQLite database. The launcher now first claims the name with core's advisory lock, `launch.lock` in the agent's directory, and holds it until it exits. A second launch is refused as already running, and a claim left by a launcher that died is reclaimed. `@cotal-ai/core` exports the lock as `@cotal-ai/core/advisory-lock`, so the bundled launcher can use it without the barrel.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+### Patch Changes
+
+- 8e12fe0: Let `cotal_inbox` with `peek` show the connector-managed automatic messages still queued in Codex, Jcode and OpenCode seats, without clearing anything. A DM that arrives during a turn the operator started, or a plain channel post during any turn, can now be read before that turn ends. The connector still delivers and clears it at the end of the turn.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
+## 0.135.0
+
+### Minor Changes
+
+- e7fbeb8: `cotal_spawn` takes `once: true` with a `prompt` to start a helper for one task. The manager relays the prompt to the helper as its only turn and stops the helper when that turn ends or when the deadline passes. The deadline is one hour unless `deadline` sets another, and `-1` sets none. A spawn that succeeds names the task's goal in its result, and `goal-result` reads how it ended. A task that ends without the helper ending its turn may have run in part or in full, and nothing runs it again. A once spawn needs no `run` capability.
+  
+  The manager's `spawn` command takes `once: { deadlineMs }`, and the manager contract revision is 44. The task is served only after the spawn's succeeded terminal is written, so a manager that restarts before then cancels the task as never served. A seat hands a once task to its harness at most once. When it cannot confirm the harness took the task, it reports that with the new self-mode `turn-unconfirmed` command, which fails the task with `delivery-unconfirmed` and stops the seat. A manager that inherits a once seat it cannot hold ends the task without serving it, says so in the outcome, and answers that seat's every `turn-pending` with `stop` while its debt stays recorded.
+  
+  A connector declares `supportsTurnRelay` to take a once task: Jcode, OpenCode, pi and Claude Code do. A connector whose seat needs a confirmed startup declares `onceNeedsConfirmed`, and the manager serves its task only when the runtime reports the startup watch ended `confirmed`. Claude Code needs it: a once launch waits for Claude's development-channels prompt and then its `confirmNotice`, the line saying `server:cotal` messages reach the session. A runtime declares `reportsStartupOutcome` and its handles report `startupOutcome()`; the built-in pty runtime, tmux, cmux, herdr and orca do. A connector may declare `turnFrameLimit`, and a once prompt whose task does not fit it is refused at admission. A once exit registered with `registerOnceExit` may answer false to decline, and the seat then keeps reporting instead of exiting. A connector whose seat launches processes outside its own implements `retireAfterExit`, and the manager keeps the task's debt until that hook proves them gone. Jcode records each native launch of a once seat under the seat's uid for that proof, and a Jcode once seat always starts a fresh session, never one an earlier seat of the same name left in its home.
+
 ## 0.134.0
 
 ### Minor Changes

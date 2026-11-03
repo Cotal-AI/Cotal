@@ -6,7 +6,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
-import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
+import { mirrorJcodeCredentials, removeJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, recordOnceLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { connectSteerClient, softInterruptWithLateReply } from "./steer-replies.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
@@ -455,6 +455,15 @@ export async function runJcodeHost(): Promise<void> {
     // wedged seat from a broken connector (#1211).
     throw new JcodeConnectorError("private_state", "jcode connector: the seat's private Jcode state could not be prepared", { cause: error });
   }
+  /** Only after a verified stop: nothing of this lifecycle can read the seat's credential copies any
+   *  more, and the next launch mirrors them afresh (#5641). The home itself stays for its resume record. */
+  const removeCredentials = (): void => {
+    try {
+      removeJcodeCredentials(home);
+    } catch (error) {
+      writeJcodeDiagnostic(`[cotal-jcode] the seat's credential copies could not be removed: ${(error as Error).message}\n`);
+    }
+  };
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
@@ -889,7 +898,7 @@ export async function runJcodeHost(): Promise<void> {
     tui.once("exit", (code) => void shutdown(code ?? 0));
   };
 
-  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM"): Promise<void> => {
+  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
     if (stopping) return;
     stopping = true;
     // A once seat's tree goes first, before the event joins, the broker or the client close can hold
@@ -929,6 +938,7 @@ export async function runJcodeHost(): Promise<void> {
     await releaseEventLock();
     try {
       await stopPrivateJcode();
+      removeCredentials();
     } catch (error) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
       exit = 1;
@@ -1954,6 +1964,7 @@ export async function runJcodeHost(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown(0, "SIGINT"));
   process.on("SIGTERM", () => void shutdown(0, "SIGTERM"));
+  process.on("SIGHUP", () => void shutdown(0, "SIGHUP"));
   // A once seat that must end itself, because its task's handoff could not be reported.
   registerOnceExit(() => void shutdown(1));
 
@@ -2318,6 +2329,7 @@ export async function runJcodeHost(): Promise<void> {
     // hands the manager a retired seat while an unverified daemon would keep running (#839).
     try {
       await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
+      removeCredentials();
     } catch (teardown) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(teardown as Error).message}\n`);
     }

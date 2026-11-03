@@ -92,9 +92,10 @@ const REFUSED = Symbol("refused");
 /** A FRESH PAGE: its own vm context, its own feed, its own bootstrap timing. A section that needs a
  *  different boot ordering than the section before it cannot reuse a settled page, and one that
  *  quietly did would be asserting about a page whose bootstrap had already applied. */
-function newPage(opts: { refuseMembershipRead?: boolean } = {}) {
+function newPage(opts: { refuseMembershipRead?: boolean; channels?: () => unknown[] } = {}) {
   const openedAt: number[] = [];
   const fetchedAt: number[] = [];
+  const fetchedUrls: string[] = [];
   const state: { feed: { listeners: Record<string, (e: { data: string }) => void> } | null } = { feed: null };
   const thrown: string[] = [];
   const rafs: ((t: number) => void)[] = [];
@@ -112,7 +113,7 @@ function newPage(opts: { refuseMembershipRead?: boolean } = {}) {
   const STALE_MEMBERS = { asOf: 1, members: [{ id: "local.O", live: ["general"], durable: [] }] };
   const payload = (u: string) => {
     if (u.includes("/api/meta")) return { space: "s" };
-    if (u.includes("/api/channels")) return [{ channel: "general", messages: 1, replay: true, deliveryClass: "durable" }];
+    if (u.includes("/api/channels")) return opts.channels ? opts.channels() : [{ channel: "general", messages: 1, replay: true, deliveryClass: "durable" }];
     if (u.includes("/api/roster")) return STALE_ROSTER;
     if (u.includes("/api/membership")) return opts.refuseMembershipRead ? REFUSED : STALE_MEMBERS;
     if (u.includes("/api/activity")) return { entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 };
@@ -128,6 +129,7 @@ function newPage(opts: { refuseMembershipRead?: boolean } = {}) {
     fetch: (u: string) =>
       new Promise((res) => setTimeout(() => {
         fetchedAt.push(Date.now() - t0);
+        fetchedUrls.push(u);
         const v = payload(u);
         if (v === REFUSED) res({ ok: false, status: 503, json: async () => ({ error: "membership read refused" }) });
         else res({ ok: true, status: 200, json: async () => v });
@@ -195,7 +197,7 @@ function newPage(opts: { refuseMembershipRead?: boolean } = {}) {
   const pillText = (id: string) =>
     String((byId(id).querySelector as (s: string) => { textContent: unknown })(".t").textContent);
 
-  return { openedAt, fetchedAt, thrown, rafs, drawn, byId, scripts, state, deliver, frame, pillText };
+  return { openedAt, fetchedAt, fetchedUrls, thrown, rafs, drawn, byId, scripts, state, deliver, frame, pillText };
 }
 
 const PAGE_SCRIPTS = ["snapshot.js", "harness.js", "parts.js", "agui-frame.js", "graph.js"];
@@ -345,5 +347,102 @@ async function main() {
 }
 
 await main();
+
+// ── 6. A DURABLE FAMILY ROW EXPANDS OVER THE DURABLE HUBS UNDER IT (#5404) ─────────────────────
+// The feed keeps a family row as recorded (`team.>`). It stores copies only on durable-class channels,
+// so an offline follower gets a durable spoke to each durable hub it covers and none to a live one.
+// The shipped `memberChannels` and the two matchers it uses run as graph.js has them, over a stub hub map.
+{
+  console.log("6. a durable family row expands over the durable hubs under it");
+  const src = readFileSync(join(web, "graph.js"), "utf8");
+  const fn = (name: string): string => {
+    const start = src.indexOf(`function ${name}(`);
+    let depth = 0;
+    for (let i = src.indexOf("{", start); i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1);
+    }
+    throw new Error(`graph.js has no function ${name}`);
+  };
+  const isWild = /const isWild = [^\n]*\n/.exec(src)?.[0] ?? "";
+  const hubs = new Map([["team.build", { deliveryClass: "durable" }], ["team.chat", { deliveryClass: "live" }], ["ops", { deliveryClass: "durable" }]]);
+  const c = vm.createContext({ hubs, known: [...hubs.keys()] });
+  vm.runInContext(`${isWild}${fn("patternMatches")}\n${fn("memberChannels")}\nthis.memberChannels = memberChannels;`, c);
+  const run = (live: string[], durable: string[]) =>
+    [...(c.memberChannels as (l: string[], d: string[], k: string[]) => { channels: Map<string, string> })(live, durable, c.known as string[]).channels].map(([ch, kind]) => `${ch}:${kind}`).sort();
+  ok("6.1 an offline team.> follower gets a durable spoke to team.build only, and no hub named team.>",
+    JSON.stringify(run([], ["team.>"])) === JSON.stringify(["team.build:durable"]), run([], ["team.>"]));
+  ok("6.2 a live read of team.chat sits beside the family's durable spoke to team.build",
+    JSON.stringify(run(["team.chat"], ["team.>"])) === JSON.stringify(["team.build:durable", "team.chat:live"]), run(["team.chat"], ["team.>"]));
+}
+
+// ── 7. A FAMILY ROW IS DRAWN WHICHEVER ARRIVES FIRST, ITS SNAPSHOT OR ITS CLASSES (#5404) ───────
+// The feed opens before the bootstrap reads, so its first membership snapshot lands while no hub has a
+// delivery class, and a channel first seen in a message has none either. The whole page boots here, so
+// the order is the page's own.
+{
+  console.log("7. a durable family row is drawn whichever arrives first, its snapshot or its classes");
+  const chans = [
+    { channel: "team.build", messages: 1, replay: true, deliveryClass: "durable" },
+    { channel: "team.chat", messages: 1, replay: true, deliveryClass: "live" },
+    { channel: "ops", messages: 1, replay: true, deliveryClass: "durable" },
+  ];
+  const page = newPage({ channels: () => chans });
+  // F follows team.> while offline. G is a durable member of ops, the control that a spoke draws its hub.
+  page.deliver("membership", { asOf: Date.now(), members: [
+    { id: "local.F", live: [], durable: ["team.>"] }, { id: "local.G", live: [], durable: ["ops"] }] });
+  ok("7.0 the snapshot landed before any read answered", page.fetchedAt.length === 0, page.fetchedAt);
+  await new Promise((r) => setTimeout(r, READ_MS + CONCURRENT_MS));
+  // An offline member's spokes ship hidden. With them shown, an empty hub stays hidden, so a hub's label
+  // is drawn only when a spoke reaches it.
+  (page.byId("hideOffline").onclick as () => void)();
+  const booted = page.frame(2000);
+  ok("7.1 control: G's durable spoke draws #ops, so a hub label is what a spoke shows", booted.includes("#ops"), booted);
+  ok("7.2 F's team.> row reaches #team.build when /api/channels answers after the snapshot",
+    booted.includes("#team.build"), booted);
+  ok("7.3 and not #team.chat, whose class is live", !booted.includes("#team.chat"), booted);
+  chans.push({ channel: "team.new", messages: 1, replay: true, deliveryClass: "durable" });
+  page.deliver("message", { mode: "chat", senderId: "local.H", channel: "team.new",
+    msg: { id: "n", ts: Date.now(), from: { id: "local.H", name: "hh" }, parts: [{ kind: "text", text: "first post" }] } });
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  const later = page.frame(2001);
+  ok("7.4 a durable channel first seen in a message gets F's spoke once its class is read",
+    later.includes("#team.new"), { drawn: later, channelReads: page.fetchedUrls.filter((u) => u.includes("/api/channels")).length });
+  // A hub can also first appear through another member's concrete row. Q's row makes the hub, then Q
+  // leaves, so the hub is drawn only if F's family row reaches it.
+  const members = (...extra: { id: string; live: string[]; durable: string[] }[]) => ({ asOf: Date.now(), members: [
+    { id: "local.F", live: [], durable: ["team.>"] }, { id: "local.G", live: [], durable: ["ops"] }, ...extra] });
+  page.deliver("membership", members({ id: "local.Q", live: [], durable: ["team.quiet"] }));
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  page.deliver("membership", members());
+  chans.push({ channel: "team.quiet", messages: 1, replay: true, deliveryClass: "durable" });
+  page.deliver("message", { mode: "chat", senderId: "local.H", channel: "team.quiet",
+    msg: { id: "q", ts: Date.now(), from: { id: "local.H", name: "hh" }, parts: [{ kind: "text", text: "first post" }] } });
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  const quiet = page.frame(2002);
+  ok("7.6 a channel a membership row showed first gets F's spoke once its first post makes its class readable",
+    quiet.includes("#team.quiet"), quiet);
+  chans.push({ channel: "team.cfg", messages: 0, replay: true, deliveryClass: "durable" });
+  page.deliver("membership", members({ id: "local.R", live: [], durable: ["team.cfg"] }));
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  page.deliver("membership", members());
+  const cfg = page.frame(2003);
+  ok("7.7 a channel a membership row showed first, with no post yet, gets F's spoke once its class is read",
+    cfg.includes("#team.cfg"), cfg);
+  // A channel the list never names, such as an event channel, is read for once, not once per post.
+  const reads = () => page.fetchedUrls.filter((u) => u.includes("/api/channels")).length;
+  const post = (id: string) => page.deliver("message", { mode: "chat", senderId: "local.H", channel: "unlisted",
+    msg: { id, ts: Date.now(), from: { id: "local.H", name: "hh" }, parts: [{ kind: "text", text: "post" }] } });
+  const beforeUnlisted = reads();
+  post("u1");
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  post("u2");
+  post("u3");
+  await new Promise((r) => setTimeout(r, READ_MS + 2 * CONCURRENT_MS));
+  ok("7.8 posts on a channel /api/channels never lists read it once, not once per post",
+    reads() - beforeUnlisted === 1, { reads: reads() - beforeUnlisted });
+  ok("7.5 the page threw nothing", page.thrown.length === 0, page.thrown);
+}
+
 console.log(failed === 0 ? `web graph boot: ${cells} cells OK` : `web graph boot: ${failed}/${cells} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
