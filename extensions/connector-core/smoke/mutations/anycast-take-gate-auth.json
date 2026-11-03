@@ -105,9 +105,9 @@
       "file": "extensions/connector-core/src/agent.ts",
       "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
       "replace": "      this.emit(\"incoming\", p.item);",
-      "expectRed": "10c a DM after that read wakes its reader again",
-      "cell": "10c a DM after that read wakes its reader again",
-      "note": "A take the read waits on is announced as a new arrival. The gateway signals its reader again in the middle of that read, so the reader stays signalled over the inbox the read empties and the next DM wakes nobody."
+      "expectRed": "10b a read that waits on the take shows the request and announces it no more",
+      "cell": "10b a read that waits on the take shows the request and announces it no more",
+      "note": "A take the read waits on is announced as a new arrival, so a read that shows the request announces it again (10b, and 1h for the first read). 10c no longer catches it: the gateway holds a connection while it is read, so an arrival during the read is signalled only if something is still unread when the read ends, and that read emptied the inbox."
     },
     {
       "name": "a take that answers after its read gave up is admitted silently",
