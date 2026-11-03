@@ -1,5 +1,19 @@
 # cotal-ai
 
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/connector-core@0.135.12
+  - @cotal-ai/auth@0.135.12
+  - @cotal-ai/cli@0.135.12
+  - @cotal-ai/delivery@0.135.12
+  - @cotal-ai/manager@0.135.12
+  - @cotal-ai/runtime@0.135.12
+  - @cotal-ai/core@0.135.12
+  - @cotal-ai/seat@0.135.12
+  - @cotal-ai/workspace@0.135.12
+
 ## 0.135.11
 
 ### Patch Changes
