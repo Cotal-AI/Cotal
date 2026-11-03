@@ -56,7 +56,7 @@ jobs:
       - name: Build the stock macOS identity bindings
         if: runner.os == 'macOS'
         run: node packages/workspace/scripts/build-native.mjs
-      - run: pnpm --workspace-concurrency=1 build
+      - run: pnpm --workspace-concurrency=1 --filter cotal-ai... build
       - run: pnpm --filter @cotal-ai/seat build:native
       - run: pnpm smoke:daemon-transport
       - run: pnpm --dir desktop test

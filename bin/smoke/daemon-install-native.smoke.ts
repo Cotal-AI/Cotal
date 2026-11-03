@@ -27,7 +27,7 @@
  * Run: tsx bin/smoke/daemon-install-native.smoke.ts   (POSIX; the Windows adapter runs on its fake)
  */
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace";
@@ -56,7 +56,9 @@ function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeR
   } };
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-daemon-install-native-"));
+// The physical path: macOS puts the temp dir under /var, a symlink, which a protected service
+// directory refuses as it would for a user, and the fixture home here stands in for a real one.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-daemon-install-native-")));
 const savedHome = process.env.HOME;
 try {
   const uid = process.getuid!();
