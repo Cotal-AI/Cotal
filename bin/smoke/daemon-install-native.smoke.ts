@@ -61,7 +61,7 @@ function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeR
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-daemon-install-native-")));
 const savedHome = process.env.HOME;
 try {
-  const uid = process.getuid!();
+  const uid = process.getuid?.();
   const node = "/opt/cotal/1.2.3/bin/node";
   const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
 
@@ -79,7 +79,16 @@ try {
   }
 
   console.log("N2 LaunchAgent lifecycle");
-  {
+  // Windows has no user id for a launchd GUI domain, so the adapter refuses there before it reads
+  // anything, and the lifecycle cells, which drive it with injected launchctl answers, do not run.
+  if (uid === undefined) {
+    const state = join(root, "mac-state");
+    mkdirSync(state, { mode: 0o700 });
+    const paths: DaemonPaths = { dir: join(root, "run"), socket: join(root, "run", "daemon.sock"), state, lock: join(state, "daemon.lock") };
+    const r = recorder(() => ({}));
+    check("a platform with no user id refuses a LaunchAgent plan UNSUPPORTED, reading nothing", code(() => launchAgentService(r.run, () => ({ state: "absent" })).plan(paths, undefined, argv, () => "/usr/bin:/bin")) === "UNSUPPORTED" && r.calls.length === 0, r.calls);
+    console.log(`  ○ NOT RUN N2 lifecycle cells: no launchd user id on ${process.platform}`);
+  } else {
     const home = join(root, "mac-home");
     mkdirSync(join(home, "Library"), { recursive: true, mode: 0o700 });
     process.env.HOME = home;
