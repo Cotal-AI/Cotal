@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.135.15
+
+### Patch Changes
+
+- 100eb59: A supervised seat that a successor manager restarts after a crash now stays supervised when it joins after its readiness window. The seat record counts the restart as soon as the replacement launches, so a later successor no longer grants one restart past the budget. When the seat joins, its restart is armed as for one that joined in time, so its next crash restarts it in place instead of retiring it. The late join is matched only against heartbeats newer than the dead seat's.
+- @cotal-ai/core@0.135.15
+  - @cotal-ai/seat@0.135.15
+  - @cotal-ai/workspace@0.135.15
+
 ## 0.135.14
 
 ### Patch Changes
