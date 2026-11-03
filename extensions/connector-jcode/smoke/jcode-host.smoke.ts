@@ -680,6 +680,10 @@ try {
     !existsSync(relaySocket) && !existsSync(relayDir),
     { relaySocket, relayDir },
   );
+  // The seat home outlives the launch for its resume record, but its credential copies do not: the
+  // next launch mirrors them afresh (#5641).
+  check("a retired launch removes the credential copy it mirrored into the seat home",
+    !existsSync(join(peerHome, "auth.json")) && existsSync(join(inheritedJcodeHome, "auth.json")) && existsSync(peerHome));
 
   // A variant does not require an explicit model pin. The connector must still fetch RuntimeInfo and
   // verify the provider route that will receive the effort instead of treating the provider default

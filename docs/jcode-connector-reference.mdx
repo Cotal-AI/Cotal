@@ -94,7 +94,11 @@ codes rather than arbitrary Harness API messages.
 Credential mirroring is mandatory for managed Jcode seats: each launch atomically refreshes the
 allowlisted Jcode, provider-config, and external-login destinations, and removes a destination when
 its source login was removed. Cleanup addresses only that explicit inventory; transcripts, MCP
-configuration, logs, and other private-home state are untouched. Copy, mkdir, and removal walk the
+configuration, logs, and other private-home state are untouched. When a launch ends and its stop has
+verified that no Jcode process of that lifecycle is left, the connector removes every destination in
+that inventory, so a stopped or retired seat's home keeps no credential copies. The home itself stays,
+because a later launch of the same name resumes from it and mirrors its logins afresh. A launch whose
+stop could not be verified leaves the copies in place. Copy, mkdir, and removal walk the
 parents with `O_NOFOLLOW`, then publish, create, or unlink the leaf through the pinned parent rather
 than through a path the kernel re-walks. Replacing a walked directory with a symlink cannot write,
 create, or delete a namesake outside the private home.
