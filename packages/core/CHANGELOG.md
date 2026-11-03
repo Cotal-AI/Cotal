@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.139.1
+
+### Patch Changes
+
+- 644f6eb: Describe the spawn capability's service commands as untargeted manager endpoint additions, including goal outcome reads, instead of referring to a deleted control tier. Capability sets and granted authority are unchanged.
+
 ## 0.139.0
 
 ### Minor Changes
