@@ -34,6 +34,7 @@ import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
 import type { ServiceWriteScope } from "./service-write.js";
+import type { ServiceKeys } from "./store.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
  *  in-memory credential that closes with the service — never an unbounded persisted one). */
@@ -493,7 +494,7 @@ export interface AuthorityClientOpts {
   onConnection?: (nc: NatsConnection, label: string) => void;
   server: string;
   space: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   /** The CONNZ-visible connection name (`cotal:auth-reader:<space>` / `cotal:auth-mint:<space>`). */
   label: string;
   /** The grant builder — called with the connection's stable identity so the scoped inbox is in

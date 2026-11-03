@@ -506,6 +506,8 @@ export class MeshAgent extends EventEmitter {
   /** How many times the endpoint saw this session's stored copies at their limit (#5404) since a
    *  cotal_inbox reply last carried the notice. */
   private _storedCopiesFull = 0;
+  /** The count those stored copies held, from the latest copy that found them full. */
+  private _storedCopiesLimit = 0;
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
@@ -687,7 +689,7 @@ export class MeshAgent extends EventEmitter {
     // A warning is a condition the endpoint is already surviving. Log it through the same bounded
     // operator sink, but never turn it into connectionIssue: readiness is still true.
     this.ep.on("warning", (e: Error) => this.handleEndpointWarning(e));
-    this.ep.on("stored-copies-full", () => { this._storedCopiesFull++; });
+    this.ep.on("stored-copies-full", (full: { limit: number }) => { this._storedCopiesFull++; this._storedCopiesLimit = full.limit; });
     // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
     // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
     // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
@@ -840,6 +842,11 @@ export class MeshAgent extends EventEmitter {
    *  there is nothing to say. */
   get storedCopiesFull(): number {
     return this._storedCopiesFull;
+  }
+
+  /** The count the stored copies held when they last reached it, from the copy that said so. */
+  get storedCopiesLimit(): number {
+    return this._storedCopiesLimit;
   }
 
   /** A reply carrying the stored-copy notice went out, read when the count was `seen`. Clear what

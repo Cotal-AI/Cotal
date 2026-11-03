@@ -98,8 +98,8 @@ c("issued per-goal progress row is the plain triple: the subject the endpoint pu
 const baseline = epBaselineGrantRows("demo", caller);
 c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
   baseline.pub[0] === `cotal.demo.ep.one.*.describe.u_abc.cli.${UID}.*`);
-c("baseline: delivery join/leave/list untargeted + manager stop/turn-participate/turn-pending/turn-yield/run-answer self-mode + the ONE epc-subject-scoped store fetch, nothing else",
-  baseline.pub.length === 10
+c("baseline: delivery join/leave/list untargeted + manager stop/turn-participate/turn-pending/turn-yield/turn-unconfirmed/run-answer self-mode + the ONE epc-subject-scoped store fetch, nothing else",
+  baseline.pub.length === 11
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.join.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.leave.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.list.u_abc.cli.${UID}.*`)
@@ -109,6 +109,7 @@ c("baseline: delivery join/leave/list untargeted + manager stop/turn-participate
   // relay at all, and the manager pushes nothing.
   && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`)
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`)
   // §13.7 store fetch rides the baseline (describe answers digests; a caller that may describe
   // may fetch the schemas those digests name) — EXACTLY the epc-subject-scoped Direct Get form,
@@ -282,9 +283,10 @@ const BASELINE_PUB = [
   `cotal.epg.ep.one.manager.turn-participate.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
 ];
-c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-participate/turn-pending/turn-yield/run-answer), nothing wider",
+c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-participate/turn-pending/turn-yield/turn-unconfirmed/run-answer), nothing wider",
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort())
   === JSON.stringify([...BASELINE_PUB].sort()),
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep."))));

@@ -4,8 +4,7 @@ import { assertIssuedStoreConfig, WRITE_ONCE_PER_KEY } from "./issued-authority.
 import { assertAdmissionStoreConfig } from "./run-admission.js";
 import { authorityStreamShapeIssue } from "./authority-store-config.js";
 import { assertArtifactStoreConfig, LEGACY_ARTIFACT_STORE_MAX_BYTES } from "./streams.js";
-import { streamReadPolicyBaseline, validateCanonicalBackupStreamConfig } from "./backup-config.js";
-import { chatStream } from "./subjects.js";
+import { historyLimitStreamOf, streamReadPolicyBaseline, validateCanonicalBackupStreamConfig } from "./backup-config.js";
 import { canonicalJson } from "./canonical.js";
 import { DiscardPolicy, type StreamConfig } from "@nats-io/jetstream";
 import type { SpaceSchemaObservation } from "./space-schema-observation.js";
@@ -101,14 +100,15 @@ function nativeVerification(resource: SpaceResourceDefinition, config: StreamCon
   }
 }
 
-/** The chat stream's history limit, which an operator sets (`cotal history limit`) and `cotal up`
- *  leaves as it is. */
-const CHAT_HISTORY_FIELDS: ReadonlySet<string> = new Set(["max_age", "max_msgs_per_subject"]);
+/** The history limit of CHAT, INBOX, DLV and DM, which an operator sets (`cotal history limit`) and
+ *  `cotal up` leaves as it is. */
+const HISTORY_LIMIT_FIELDS: ReadonlySet<string> = new Set(["max_age", "max_msgs_per_subject"]);
 
-/** Whether a chat row's only differences are an operator-set history limit. The whole observed
- *  config must pass the canonical check; the observed limit is never copied into the desired config. */
+/** Whether a CHAT, INBOX, DLV or DM row's only differences are an operator-set history limit. The
+ *  whole observed config must pass the canonical check; the observed limit is never copied into the
+ *  desired config. */
 function isOperatorSetHistoryLimit(resource: SpaceResourceDefinition, observation: SpaceSchemaObservation | undefined, fields: readonly string[], space: string): boolean {
-  if (resource.stream !== chatStream(space) || observation?.state !== "present" || fields.length === 0 || !fields.every((field) => CHAT_HISTORY_FIELDS.has(field))) return false;
+  if (!historyLimitStreamOf(space, resource.stream) || observation?.state !== "present" || fields.length === 0 || !fields.every((field) => HISTORY_LIMIT_FIELDS.has(field))) return false;
   try { validateCanonicalBackupStreamConfig(space, resource.stream, observation.config as unknown as Record<string, unknown>); }
   catch { return false; }
   return true;

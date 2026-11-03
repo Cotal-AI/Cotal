@@ -95,14 +95,15 @@ A fresh joiner backfills the retained window. A channel joined later in the resu
 A space keeps a channel post until its sender has posted 1000 newer ones on that channel, with no
 age limit ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)). One limit holds for every channel in the
 space. An operator sets an age, a different per-sender count or both with
-[`cotal history limit`](cli-messaging.mdx#history), and the broker then deletes a post past either bound. A
-lower limit deletes the posts it no longer keeps at once. `cotal up` never changes the limit.
+[`cotal history limit`](cli-messaging.mdx#history), or `none` for either, and the broker then deletes a
+post past either bound. A lower limit deletes the posts it no longer keeps at once. `cotal up` never
+changes the limit. The same command sets the limits of DMs and of stored copies.
 `replayWindow` only bounds what a joiner is backfilled, so it cannot reach further back than the
 limit.
 
 The per-sender count means a busy sender's oldest posts on a channel go first, while other senders'
 posts from the same time stay. A durable member's copy of a post, once the delivery daemon has taken
-it, is not removed by the chat limit.
+it, is not removed by the chat limit; the stored copies' own limit bounds it.
 
 ## Access examples [#common-tasks]
 
@@ -151,8 +152,9 @@ A family needs one `allowSubscribe` entry that contains it, such as `team.>` or 
 The root `>` and any pattern with `*`, such as `team.*` or `team.*.>`, can be followed live, but they hold no durable membership and get no stored copies.
 `cotal_join` says so when it joins one.
 
-Each agent keeps at most 1000 stored copies.
+Each agent keeps its newest 1000 stored copies, a count an operator can change with [`cotal history limit --inbox-per-agent`](cli-messaging.mdx#history).
 When an agent returns to a full store, earlier copies may have been dropped, and its next `cotal_inbox` reply says so once.
+The daemon stamps each copy with the count it was stored under, so the notice follows that count. Copies removed when an operator lowers the count, or by an age limit, bring no notice.
 `cotal history <channel>` may still hold those posts, within the space's [history limit](#how-long-posts-are-kept).
 
 `cotal_channels` lists a followed family as its own row, with the state of its stored copies.

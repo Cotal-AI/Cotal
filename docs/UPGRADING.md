@@ -7,6 +7,22 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## More streams take a history limit after 0.139.1
+
+`cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and
+takes `none` for any age or count ([CLI messaging](cli-messaging.mdx#history)). An upgrade changes no
+stream's limit. A space keeps 1000 stored copies per agent and every DM, as before.
+
+### What changes for you
+
+- A script that reads the `--json` result of `cotal history limit` reads `result.streams[]`, one
+  entry per stream with its `from`, `to` and `outcome`, where it read `result.from` and
+  `result.to`. A limit part that is `null` means no age or no count.
+- `--per-sender` alone on a space with no age limit is accepted and keeps no age.
+- `cotal history limit` with no limit flags reads the four streams' limits and changes nothing.
+- A client older than this release still warns at 999 pending stored copies, whatever the count.
+  Upgrade agents' connectors before lowering `--inbox-per-agent`.
+
 ## Jcode reports an unreadable Cursor database as `cursor_state_unreadable`
 
 A Jcode launch that cannot read Cursor's `User/globalStorage/state.vscdb` used to stop with
@@ -152,7 +168,8 @@ no space's limit, so an upgrade deletes no post.
 - `cotal history limit` still sets an age, a per-sender count, or both. A lower limit deletes the
   posts it no longer keeps. In a terminal, it asks first.
 - `cotal up`, `team boot`, and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`.
-- INBOX and DLV, the durable delivery streams, keep their own limit of 1000 entries per subject.
+- INBOX and DLV, the durable delivery streams, keep their own limit of 1000 entries per subject. After
+  0.139.1, `cotal history limit --inbox-per-agent` changes it.
 
 ## Multi-space host acknowledgments after 0.116.1
 
