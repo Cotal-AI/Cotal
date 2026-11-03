@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.136.6
+
+### Patch Changes
+
+- 2bf3b97: A bare `cotal spawn` in this terminal whose catalog has no default persona, as a Cloud space's has before anything prepared it, now writes the shipped default persona there and launches it, instead of refusing with `TARGET_NOT_FOUND` and naming a `persona create` that rejects that same template. The write is create-only and private; an existing or edited default is launched as it stands, a named or preferred persona that is missing is still refused, and `--dry-run` writes nothing and says the launch would.
+- Updated dependencies [2bf3b97]
+  - @cotal-ai/cli@0.136.6
+  - @cotal-ai/connector-core@0.136.6
+  - @cotal-ai/auth@0.136.6
+  - @cotal-ai/delivery@0.136.6
+  - @cotal-ai/manager@0.136.6
+  - @cotal-ai/runtime@0.136.6
+  - @cotal-ai/core@0.136.6
+  - @cotal-ai/seat@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
 ## 0.136.5
 
 ### Patch Changes
