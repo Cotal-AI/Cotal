@@ -8,16 +8,17 @@
  *
  * Linux and macOS compile native/peercred.c with the host `cc` against the
  * Node headers that ship next to this Node binary. Windows compiles
- * native/peercred_win32.c with the node-gyp that npm bundles next to node.exe,
- * in a temporary project, because a Windows addon links node.lib, which only
- * node-gyp fetches; nothing node-gyp writes lands in this package.
+ * native/peercred_win32.c with `cl.exe` from the MSVC Developer Command Prompt
+ * against the Node headers and import library the workspace binding pins,
+ * downloaded and checksummed, because a Windows addon links node.lib.
  *
  * `pnpm build` runs this without `--host` and compiles on Linux only, so a
  * macOS or Windows workspace build needs no C toolchain. `build:native` passes
  * `--host` and compiles for whichever of the three platforms runs it.
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,32 +134,25 @@ function buildWindows() {
   if (expected === undefined) {
     fail([`@cotal-ai/seat: named-pipe native helper unsupported on win32-${arch} (supported: win32-x64, win32-arm64)`]);
   }
-  const gyp = join(dirname(process.execPath), "node_modules", "npm", "node_modules", "node-gyp", "bin", "node-gyp.js");
-  if (!existsSync(gyp)) {
-    fail([`@cotal-ai/seat: node-gyp not found at ${gyp} (from ${process.execPath}). A Windows source build uses the node-gyp that npm installs next to node.exe.`]);
-  }
+  // The compiler comes from the MSVC Developer Command Prompt, as the workspace binding's does: no
+  // Visual Studio discovery runs here, which is what node-gyp could not do on a newer Studio.
+  if (!process.env.VCToolsVersion) fail(["@cotal-ai/seat: build the Windows helper in the matching MSVC Developer Command Prompt (VCToolsVersion is unset)"]);
   console.error(`@cotal-ai/seat: host dev build for win32-${arch}. This is not a publishable tree.`);
   const work = mkdtempSync(join(tmpdir(), "cotal-seat-native-"));
   try {
-    copyFileSync(join(root, "native", "peercred_win32.c"), join(work, "peercred_win32.c"));
-    writeFileSync(
-      join(work, "binding.gyp"),
-      JSON.stringify({ targets: [{ target_name: "peercred", sources: ["peercred_win32.c"], libraries: ["advapi32.lib"] }] }),
-    );
-    const result = spawnSync(process.execPath, [gyp, "rebuild", `--arch=${arch}`], { cwd: work, encoding: "utf8" });
-    if (result.status !== 0 || result.error) {
-      const detail = result.error ? result.error.message : `${result.stderr || result.stdout || `node-gyp exited ${result.status ?? 1}`}`;
-      fail(
-        [
-          `@cotal-ai/seat: failed to compile the named-pipe helper for win32-${arch}.`,
-          `command: ${process.execPath} ${gyp} rebuild --arch=${arch}`,
-          detail.trim() || "(no compiler diagnostic)",
-          "Visual Studio C++ build tools are required to BUILD this package from source on Windows. Published tarballs ship the prebuilt helpers and do not compile on install.",
-        ],
-        result.status ?? 1,
-      );
-    }
-    const built = join(work, "build", "Release", "peercred.node");
+    const { include, library } = fetchNodeSdk(work);
+    const obj = join(work, "peercred.obj");
+    const built = join(work, "peercred.node");
+    const run = (file, args) => {
+      const result = spawnSync(file, args, { cwd: work, encoding: "utf8" });
+      if (result.status !== 0 || result.error) {
+        const detail = result.error ? result.error.message : `${result.stderr || result.stdout || `${file} exited ${result.status ?? 1}`}`;
+        fail([`@cotal-ai/seat: failed to compile the named-pipe helper for win32-${arch}.`, `command: ${file} ${args.join(" ")}`, detail.trim() || "(no compiler diagnostic)",
+          "Visual Studio C++ build tools are required to BUILD this package from source on Windows. Published tarballs ship the prebuilt helpers and do not compile on install."], result.status ?? 1);
+      }
+    };
+    run("cl.exe", ["/nologo", "/c", "/O2", "/MT", "/W4", "/std:c11", `/I${include}`, `/Fo${obj}`, join(root, "native", "peercred_win32.c")]);
+    run("link.exe", ["/nologo", "/DLL", "/Brepro", `/OUT:${built}`, obj, library, "kernel32.lib", "advapi32.lib"]);
     const buf = readFileSync(built);
     const pe = buf.length >= 0x40 ? buf.readUInt32LE(0x3c) : 0;
     if (buf.subarray(0, 2).toString("ascii") !== "MZ" || buf.length < pe + 6 || buf.subarray(pe, pe + 4).toString("latin1") !== "PE\0\0") {
@@ -171,4 +165,24 @@ function buildWindows() {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+/** The Node headers and import library the helper links against: the workspace binding's pinned
+ *  SDK (`packages/workspace/native/node-sdk.json`), downloaded from nodejs.org and checked against
+ *  its recorded digests, so both native packages build against one pinned Node. */
+function fetchNodeSdk(work) {
+  const pin = JSON.parse(readFileSync(join(root, "..", "workspace", "native", "node-sdk.json"), "utf8"));
+  const fetchChecked = (path, expected, output) => {
+    const result = spawnSync("curl.exe", ["--fail", "--silent", "--show-error", "--location", "--max-time", "120", "--output", output, `https://nodejs.org/dist/v${pin.version}/${path}`], { encoding: "utf8" });
+    if (result.status !== 0 || result.error) fail([`@cotal-ai/seat: Node SDK download failed for ${path}: ${result.error ? result.error.message : result.stderr.trim()}`]);
+    const digest = createHash("sha256").update(readFileSync(output)).digest("hex");
+    if (digest !== expected) fail([`@cotal-ai/seat: Node SDK checksum mismatch for ${path}: ${digest}, expected ${expected}`]);
+  };
+  const headers = join(work, "headers.tar.gz");
+  const library = join(work, "node.lib");
+  fetchChecked(`node-v${pin.version}-headers.tar.gz`, pin.headers, headers);
+  fetchChecked(`win-${arch}/node.lib`, pin.libraries[arch], library);
+  const extract = spawnSync("tar.exe", ["-xzf", headers, "-C", work], { encoding: "utf8" });
+  if (extract.status !== 0 || extract.error) fail([`@cotal-ai/seat: could not extract the Node headers: ${extract.error ? extract.error.message : extract.stderr.trim()}`]);
+  return { include: join(work, `node-v${pin.version}`, "include", "node"), library };
 }

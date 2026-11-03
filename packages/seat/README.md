@@ -48,8 +48,9 @@ including their container format and architecture, then compile TypeScript witho
 with no rebuild. The compile uses the `include/node` directory next to the running
 Node binary, not a hardcoded `/usr/include/node`. Off Linux `pnpm build` skips the compile, so
 a macOS or Windows `pnpm build` does not need headers or a C compiler. `pnpm build:native`
-compiles for the host on all three: macOS with `cc`, targeting macOS 11 like the workspace binding, into `build/Release/darwin-<arch>/`, Windows
-with the node-gyp npm installs next to `node.exe`, in a temporary project, into
+compiles for the host on all three: macOS with `cc`, targeting macOS 11 like the workspace binding, into
+`build/Release/darwin-<arch>/`, Windows with `cl.exe` from the MSVC Developer Command Prompt against
+the Node headers and import library the workspace binding pins in `native/node-sdk.json`, into
 `build/Release/win32-<arch>/`. Until a macOS or Windows helper is built or shipped, the host
 primitives throw that it is missing. There is no `binding.gyp` in the package, so
 `pnpm install` does not infer `node-gyp rebuild`. Customer `npm i` does not compile it. A host

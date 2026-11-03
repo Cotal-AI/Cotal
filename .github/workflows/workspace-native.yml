@@ -38,12 +38,12 @@ jobs:
           if "${{ inputs.test_controls }}"=="true" (set "CONTROLS=--test-controls") else (set "CONTROLS=")
           node packages/workspace/scripts/build-native.mjs %CONTROLS%
           if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
           if "${{ inputs.test_controls }}"=="true" (
             cl /nologo /O2 /MT /W4 /WX /std:c11 /Fopackages\workspace\build\test\win32-${{ matrix.arch }}\query-control.obj /Fepackages\workspace\build\test\win32-${{ matrix.arch }}\query-control.exe packages\workspace\smoke\fixtures\win32-denied-process.c /link /Brepro advapi32.lib
           )
           if errorlevel 1 exit /b 1
-      - name: Compile the daemon host primitives
-        run: node packages/seat/scripts/build-native.mjs --host
       - uses: actions/upload-artifact@v4
         with:
           name: seat-native-win32-${{ matrix.arch }}
