@@ -293,6 +293,16 @@ const SESSION_RESTART_WINDOW_MS = 120_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+/** How long a clean stop keeps trying to release its liveness lease when the broker does not answer
+ *  (#3916). The client redials a lost broker every 2 s, so a connection dropped by an outage of up to
+ *  about 3 s is back inside this budget. A longer outage is left to the row's TTL: the stop's other
+ *  steps also wait on the broker, and the whole stop must still finish inside the 15 s a CLI stop
+ *  waits before it sends SIGKILL. */
+const LEASE_RELEASE_BUDGET_MS = 5_000;
+/** The pause between lease release attempts that got no answer. An attempt that waits for its own
+ *  deadline already spaces the retries; this only keeps one that fails at once, on a closed
+ *  connection, from spinning. */
+const LEASE_RELEASE_RETRY_MS = 250;
 /** At most this many retirements run at once (#4965). A retirement dials up to four fresh broker
  *  connections in turn and queues an eviction and an inventory on the delivery daemon's admin rail,
  *  each against a fixed deadline. A stop that started all 50 seats' retirements together lost most of
@@ -3691,23 +3701,29 @@ export class Manager {
   /** Release this instance's liveness lease key on a clean stop, at the broker's own revision
    *  rather than a cached one that a renew still in flight moments ago may have already moved past.
    *  Re-reads the row and releases only what is PROVABLY this process's (absent, or another pid's,
-   *  is left alone — the same test {@link reconcileLease} uses). Nothing here throws: a stop must
-   *  complete either way, and a row that could not be released is left for the bucket TTL, with one
-   *  line of warning so the cost (a same-root restart waiting out the TTL) is not silent. */
+   *  is left alone — the same test {@link reconcileLease} uses).
+   *
+   *  A read or delete that gets no answer, as during a reconnect, is tried again until the delete is
+   *  acknowledged or {@link LEASE_RELEASE_BUDGET_MS} has passed (#3916). Nothing here throws: a stop
+   *  must complete either way, and a row that could not be released is left for the bucket TTL, with
+   *  one line of warning so the cost (a same-root restart waiting out the TTL) is not silent. */
   private async releaseOwnManagerLease(): Promise<void> {
-    try {
-      const own = await this.ep.readOwnManagerLease(this.managerInstanceId);
-      if (own !== undefined && own.info.pid === process.pid)
+    const deadline = Date.now() + LEASE_RELEASE_BUDGET_MS;
+    for (;;) {
+      let why: string;
+      try {
+        const own = await this.ep.readOwnManagerLease(this.managerInstanceId);
+        if (own === undefined || own.info.pid !== process.pid) return;
         await this.ep.releaseManagerLease(this.managerInstanceId, own.revision);
-    } catch {
-      // Best-effort: a release that did not commit is reported by the re-read below.
-    }
-    try {
-      const stillOurs = await this.ep.readOwnManagerLease(this.managerInstanceId);
-      if (stillOurs !== undefined && stillOurs.info.pid === process.pid)
-        console.error(`! manager instance ${this.managerInstanceId} could not release its liveness lease (space "${this.space}"); a same-root restart inside the bucket TTL will be refused`);
-    } catch {
-      // Could not confirm either way; the warning is best-effort, not a verdict.
+        return;
+      } catch (e) {
+        why = rejectionText(e);
+      }
+      if (Date.now() >= deadline) {
+        console.error(`! manager instance ${this.managerInstanceId} could not release its liveness lease (space "${this.space}"): ${why}; a same-root restart inside the bucket TTL will be refused`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, LEASE_RELEASE_RETRY_MS));
     }
   }
 
