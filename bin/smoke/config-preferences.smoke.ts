@@ -306,7 +306,7 @@ const ansi = /\x1b\[/;
   // The detach key is read by the attach client before it connects; drive that function in-process.
   process.env.XDG_CONFIG_HOME = xdg;
   for (const k of ["COTAL_DETACH_KEY"]) delete process.env[k];
-  const { detachKey } = await import("../../implementations/cli/src/lib/attach-client.js");
+  const { detachKey } = await import("@cotal-ai/workspace/attach");
   const plain = detachKey();
   check("the detach key defaults to Ctrl-]", plain.byte === 0x1d && plain.label === "Ctrl-]" && !plain.overridden, plain);
   const { readPreferences, writePreference } = await import("@cotal-ai/workspace");
