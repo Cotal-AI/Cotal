@@ -40,11 +40,20 @@ without the profiler forcing them, and keep traced runs separate from performanc
 To name what the broker allocates, add `--broker-prof <dir>`. The harness writes the broker's
 pprof allocation profile (`/debug/pprof/allocs`) into that directory twice without forcing a
 collection: `window-start.pb.gz` before the window's first counter is read and `window-end.pb.gz`
-after its last; the Go runtime samples allocations at its default rate regardless. Read the window
-alone with `go tool pprof -top -sample_index=alloc_space -diff_base <dir>/window-start.pb.gz
-<nats-server> <dir>/window-end.pb.gz`. The runtime publishes allocation records at the end of a
-collection, so each file is as of the last broker GC cycle before its read; a window without a
-cycle yields two equal profiles, and the difference is sharp only over several cycles.
+after its last. The Go runtime samples allocations at its default rate regardless. Compare the
+profiles with:
+
+```sh
+go tool pprof -top -sample_index=alloc_space -unit=bytes \
+  -base <dir>/window-start.pb.gz <nats-server> <dir>/window-end.pb.gz
+```
+
+`-base` reports shares of the allocation difference; `-diff_base` instead uses the base profile's
+total for percentages. The [runtime profile](https://pkg.go.dev/runtime#MemProfile) can lag by up
+to two GC cycles, so the difference covers delayed snapshots, not the exact wall-clock window.
+A short window can produce equal allocation totals. Retain the collection trace and use a window
+covering several cycles. These are sampled allocation counts, not a live-memory census or an
+exact reconciliation with the trace's rounded heap figures.
 
 `pnpm smoke:seat-idle-go-trace` runs native default and opt-in controls. It requires Linux
 and NATS Server 2.15.1. Other platforms or broker versions emit an explicit skipped sentinel
