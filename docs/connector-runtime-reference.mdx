@@ -119,15 +119,15 @@ An unknown name after a successful read receives the ordinary unknown-peer refus
 ## Send receipts [#send-receipts]
 
 A stored sequence proves broker acceptance, without confirming receipt or completed work.
-`cotal_dm` includes the sequence, the recipient's roster status immediately before publication, and `delivery not confirmed`.
-The status can be `idle`, `waiting`, `working`, or `offline`.
-When offline, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
+`cotal_dm` names the recipient, says other agents can't read the DM, and points what others could use at the task's channel.
+It reads the recipient's roster status immediately before publication.
+When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
 The same lifecycle receives it after reconnect. A new spawn under the same name does not inherit that inbox.
 Retention and the lifecycle interval still bound delivery.
 
 A one-shot sender such as `cotal send` can send a DM without joining the roster.
 A reply to that authenticated sender is stored under its ID even if no inbox ever reads it.
-`cotal_dm` describes this case with `recipient had no roster row at send`.
+`cotal_dm` says the recipient `has no roster row` and that the DM may never reach an inbox.
 Storage, status at send, and eventual inbox delivery are separate facts.
 [`cotal deliver pending`](cli-services.mdx#deliver) inspects the recipient's pending DM durable.
 The [NATS binding](../SPEC.md#8-nats--jetstream-binding) defines lifecycle-scoped consumers and retention.
