@@ -417,9 +417,9 @@ try {
   {
     const gate = (value: unknown, extra: Record<string, unknown> = {}): string | undefined => {
       const b = new AguiBrackets();
-      b.accept(runStarted({ threadId: "t1", runId: "r1" }) as AguiEvent);
-      b.accept(toolCallStart({ toolCallId: "tc1", toolCallName: "Read" }) as AguiEvent);
-      b.accept(toolCallEnd({ toolCallId: "tc1" }) as AguiEvent);
+      b.accept(runStarted({ threadId: "t1", runId: "r1", timestamp: 1 }) as AguiEvent);
+      b.accept(toolCallStart({ toolCallId: "tc1", toolCallName: "Read", timestamp: 1 }) as AguiEvent);
+      b.accept(toolCallEnd({ toolCallId: "tc1", timestamp: 1 }) as AguiEvent);
       try {
         b.accept({ type: "CUSTOM", name: "cotal.toolResult", value, timestamp: 1, ...extra } as unknown as AguiEvent);
         return undefined;

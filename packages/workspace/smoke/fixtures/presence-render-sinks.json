@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 951,
+    "total": 957,
     "honest-text": 64,
     "presence-only-glyph/count": 142,
     "command-ack": 11,
-    "non-render/control": 734
+    "non-render/control": 740
   },
   "renderers": [
     {
@@ -6725,7 +6725,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`\u25d0 ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `\u201c${pr().activity}\u201d` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\"}>\n                <For each={overview(pr(), now())}>{(f) => <text fg={theme.text.muted}>{`${f.label.padEnd(9)}${f.value}`}</text>}</For>\n              </Show>\n            </box>\n          )}",
+      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`\u25d0 ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `\u201c${pr().activity}\u201d` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\"}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
       "class": "honest-text",
       "rationale": "App peer header: a waiting agent's own question, then the overview fields whose status names working progress as unknown.",
       "proof": {
@@ -6930,9 +6930,51 @@
     {
       "path": "implementations/tui/src/screen.ts",
       "kind": "status-token",
-      "anchor": "e\", value: p.status !== \"offline\" && p.runtime ? duration",
+      "anchor": " 0))\n    : p.status !== \"offline\" && p.runtime\n      ? du",
       "class": "non-render/control",
-      "rationale": "App overview uptime: the offline check decides whether uptime exists; no status word is rendered."
+      "rationale": "App overview uptime: the offline check picks the unmanaged uptime branch; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "row.uptimeMs + (row.status === \"running\" && managed.phase === \"rows\" ? now - managed.readAt : 0)",
+      "class": "non-render/control",
+      "rationale": "App overview uptime: the manager row's process state extends a running seat's uptime; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "*/\ntype Stop = { phase: \"idle\" } | { phase: \"confirm\";",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "teSignal<Stop>({ phase: \"idle\" })\n  const clockTimer =",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "})\n    setStop({ phase: \"idle\" })\n    await old?.close",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "== \"confirm\" ? { phase: \"idle\" } : cur)),\n    )\n  }\n  ",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "cur === done ? { phase: \"idle\" } : cur)), STOP_NOTICE_",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
     }
   ]
 }
