@@ -574,6 +574,322 @@
           }
         }
       }
+    },
+    "/api/agents/{agent}/watch": {
+      "post": {
+        "operationId": "watch-agent",
+        "summary": "Watch an agent's event frames on a feed",
+        "description": "Subscribe one open feed to the agent's event-plane frames, which then arrive on that feed as agent-frame events. No body: a watch is a row in this process's map, which the feed's close removes. It changes no mesh state. Watching again is still 204. Other methods fall through to 404.",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "description": "The agent's id, <owner>.<actor> with each part in [A-Za-z0-9_], percent-encoded as one URL path component. Any other text is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 4096
+            },
+            "example": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS"
+          },
+          {
+            "name": "feed",
+            "in": "query",
+            "required": true,
+            "description": "The id the feed's hello event named. A missing id, or one that is not an open feed of this process, is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Recorded. No body."
+          },
+          "400": {
+            "description": "The agent id or the feed id was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/agents/{agent}/unwatch": {
+      "post": {
+        "operationId": "unwatch-agent",
+        "summary": "Stop watching an agent's event frames on a feed",
+        "description": "Remove the feed's watch of the agent. No body, no mesh state. Unwatching an agent the feed does not watch is still 204. Other methods fall through to 404.",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "description": "The agent's id, <owner>.<actor> with each part in [A-Za-z0-9_], percent-encoded as one URL path component. Any other text is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 4096
+            },
+            "example": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS"
+          },
+          {
+            "name": "feed",
+            "in": "query",
+            "required": true,
+            "description": "The id the feed's hello event named. A missing id, or one that is not an open feed of this process, is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Recorded. No body."
+          },
+          "400": {
+            "description": "The agent id or the feed id was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/agents/{agent}/events": {
+      "get": {
+        "operationId": "read-agent-events",
+        "summary": "Read an agent's recent event frames",
+        "description": "Read the newest frames on the agent's event channel, bounded like its siblings: a read that does not finish within the aggregation deadline, or that fails, returns HTTP 503 saying which. A read the broker refuses is answered 200 with the refusal and, when known, the grant that would allow it. Other methods are refused with 405 and an Allow header naming GET.",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "description": "The agent's id, <owner>.<actor> with each part in [A-Za-z0-9_], percent-encoded as one URL path component. Any other text is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 4096
+            },
+            "example": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "allowEmptyValue": true,
+            "description": "Maximum requested frames. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 200
+            },
+            "example": 20
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page, or the broker's refusal of the read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentEventsPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The agent id or the limit was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReadUnavailable"
+          }
+        }
+      }
+    },
+    "/api/send": {
+      "post": {
+        "operationId": "send-as-operator",
+        "summary": "Post as the operator",
+        "description": "Post one message as the operator the process holds: {kind: \"msg\", channel, text} to one concrete channel, or {kind: \"dm\", to, text} to one roster member. The body is read before any refusal, so the 8192-byte cap bounds what a refused post costs, and every check runs before the poster starts, so a refused post never puts the operator on the roster. A wildcard or alias channel, an id not on the roster, an empty text, another kind, or a body that is not a JSON object is refused with 400. A read-only service, an expired operator credential and a cross-origin request answer 403 with the reason. A publish the broker refuses answers 502 with the refusal. Other methods fall through to 404.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "msg",
+                      "dm"
+                    ]
+                  },
+                  "channel": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The channel, for kind msg. One concrete channel; no wildcard."
+                  },
+                  "to": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The roster member's agent id, for kind dm."
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The message. Trimmed; an empty text is refused."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "text"
+                ]
+              },
+              "examples": {
+                "channel": {
+                  "value": {
+                    "kind": "msg",
+                    "channel": "general",
+                    "text": "Ship it."
+                  }
+                },
+                "dm": {
+                  "value": {
+                    "kind": "dm",
+                    "to": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS",
+                    "text": "How long until the smoke is green?"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The post went out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The target, the text, the kind or the body was refused; the error names which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "A browser origin was refused (cross-origin), the service is read-only (post is off in /api/meta), or the operator credential expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "The broker refused the publish; the error carries the refusal as it came.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The dashboard is shutting down, so it no longer posts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1016,6 +1332,78 @@
           "channel",
           "purged",
           "removed"
+        ],
+        "additionalProperties": false
+      },
+      "AgentEventsPage": {
+        "description": "The newest frames on the agent's event channel, oldest first, or the broker's refusal of that read.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "frames": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              },
+              "more": {
+                "type": "boolean",
+                "description": "Whether older frames exist beyond this page."
+              }
+            },
+            "required": [
+              "frames",
+              "more"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "refused": {
+                "type": "string",
+                "description": "The broker's refusal, as it came."
+              },
+              "grant": {
+                "type": "string",
+                "description": "The command that grants this dashboard the read, when one is known."
+              }
+            },
+            "required": [
+              "refused"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "SendAnswer": {
+        "type": "object",
+        "description": "A post that went out. seq is a DM's stored sequence, the broker's proof that it kept the message; a channel post has none.",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The message id."
+          },
+          "operatorId": {
+            "type": "string",
+            "description": "The operator's agent id, the same id /api/meta reports."
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "ok",
+          "id",
+          "operatorId"
         ],
         "additionalProperties": false
       }
