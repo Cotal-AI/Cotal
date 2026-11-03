@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.135.18
+
+### Patch Changes
+
+- f609a37: `preparePreservation` now hands out an inventory that is its own copy. A caller that edited the plan it received, then aborted the attempt, no longer widened the running seat's subscribe and allow lists or changed its launch source in the next cut.
+- @cotal-ai/core@0.135.18
+  - @cotal-ai/seat@0.135.18
+  - @cotal-ai/workspace@0.135.18
+
 ## 0.135.17
 
 ### Patch Changes
