@@ -744,6 +744,7 @@
     "smoke:auth-idp-bridge": "tsx implementations/auth/smoke/idp-bridge.smoke.ts",
     "smoke:auth-response-json": "tsx implementations/auth/smoke/auth-response-json.smoke.ts",
     "smoke:auth-login": "tsx implementations/auth/smoke/login.smoke.ts",
+    "smoke:auth-login-name": "tsx implementations/auth/smoke/login-name.smoke.ts",
     "smoke:login-unreachable": "tsx implementations/auth/smoke/login-unreachable.smoke.ts",
     "smoke:actor-target": "tsx implementations/auth/smoke/actor-target.smoke.ts",
     "smoke:grant-usage": "tsx implementations/auth/smoke/grant-usage.smoke.ts",
