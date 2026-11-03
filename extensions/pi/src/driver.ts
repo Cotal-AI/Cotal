@@ -334,9 +334,12 @@ export class PiDriver {
     // A taken batch whose takes left nothing that wakes goes out only when forced or with a run turn.
     // Otherwise the next batch is chosen again.
     if (taken?.length && (force || turnPeek || taken.some((item) => wakeable(this.mesh, item)))) {
-      const live = new Set(available.map((item) => item.recvKey));
+      // Only what may be shown now: a request a redelivery sent back to wait for its take is not.
+      const live = new Set(this.inbox.peek("automatic").filter((item) => !reserved.has(item.recvKey)).map((item) => item.recvKey));
       const items = taken.filter((item) => live.has(item.recvKey));
       ids = items.map((item) => item.recvKey);
+      // Held for its turn like any other batch, or its ack wait runs out mid-turn (#5637).
+      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;
       content = items.length > 0 ? formatInjection(items) : undefined;
     } else if (this.nudges.length > 0) {
       content = this.nudges.splice(0).join("\n");

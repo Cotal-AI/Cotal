@@ -367,6 +367,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     host.sent.length === 1 && host.sent[0]!.details.ids.length === 32 && host.sent[0]!.details.ids[0] === "dm",
     "the batch goes out once taken, carrying what it took",
   );
+  ok(host.sent[0]!.details.ids.every((id) => mesh.held.has(id)), "a batch that goes out on its take is held for its turn like any other");
 }
 
 // A take that leaves a batch with nothing that wakes, and a user turn that starts during a take.
@@ -460,6 +461,30 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     ok(
       host.sent.length === 1 && host.sent[0]!.details.ids.join() === "c1",
       "a user turn that starts during a take still carries the chatter once the take is refused",
+    );
+  }
+  {
+    // A redelivery between a take's answer and its batch sends the request back to wait for a take
+    // of the new copy.
+    const mesh = new TakingMesh();
+    mesh.items = [item("d1")];
+    mesh.gated = [request("r1")];
+    const takeChosen = mesh.takeChosen.bind(mesh);
+    mesh.takeChosen = async (scope, choose) => {
+      const shown = await takeChosen(scope, choose);
+      mesh.items = mesh.items.filter((value) => value.recvKey !== "r1");
+      mesh.gated.push(request("r1"));
+      return shown;
+    };
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "d1",
+      "a taken batch sends nothing a redelivery sent back to wait for its take",
     );
   }
 }
