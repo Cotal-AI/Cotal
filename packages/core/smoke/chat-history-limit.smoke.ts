@@ -371,7 +371,8 @@ try {
       await writerJs.publish(who.subject, JSON.stringify({ version: 1, channel: "stamp.e", msg }), { headers: h });
     }
   };
-  const [old1000, old999] = [await agent(""), await agent("")];
+  const old1000 = await agent("");
+  const old999 = await agent("");
   await unstamped(old1000, 1000);
   await unstamped(old999, 999);
   await writer.close();

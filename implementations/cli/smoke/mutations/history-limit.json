@@ -3,13 +3,16 @@
     "implementations/cli/smoke/history-limit.smoke.ts"
   ],
   "guard": "cotal history limit reads the four streams' limits with no limit flag and writes nothing, takes none for each age and count and refuses an age of 0s as below the floor, sets INBOX and DLV with one pair, treats a limit set from none as lower and previews it per sender, agent lifecycle and DM pair under an operator census line, counts the stored copies a lower count removes before their durable delivered them, reports a refusal after an earlier stream changed as partial, and reports an update whose reply never came as an unknown outcome.",
-  "command": "pnpm smoke:history-limit",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:history-limit",
+  "executes": [
+    "bin/dist/cotal.js"
+  ],
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
   "minTicks": 64,
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-limit.json",
   "why": [
-    "The suite drives the built binary, and its script builds it first, so each mutant is what the suite runs and",
+    "The suite drives bin/dist/cotal.js, which loads @cotal-ai/cli from dist, so the command builds the CLI first and",
     "`afterRestore` rebuilds the restored source. The unknown cells run through a TCP hop that passes an update to",
     "the broker and drops its reply, and the read-only cell has an observer on the open broker for STREAM.UPDATE."
   ],
@@ -45,8 +48,8 @@
     {
       "name": "H4 an update without a reply is reported as nothing changed",
       "file": "implementations/cli/src/commands/history-limit.ts",
-      "find": "        if (error instanceof HistoryLimitUpdateUnknown) {",
-      "replace": "        if (error instanceof HistoryLimitUpdateUnknown && false) {",
+      "find": "throw new CommandFailure(\"unknown\", \"OPERATION_UNKNOWN\", `${error.message}; it was not retried (${outcomeLines(rows)})`",
+      "replace": "throw new CommandFailure(\"refused\", \"CONFLICT\", `${error.message}; nothing was changed`",
       "expectRed": "a first update cut off before its reply is OPERATION_UNKNOWN, exit 3, not retried",
       "cell": "a first update cut off before its reply is OPERATION_UNKNOWN, exit 3, not retried",
       "afterRestore": "pnpm --filter cotal-ai... build",

@@ -102,9 +102,9 @@
     },
     {
       "name": "the setter refuses no count",
-      "file": "packages/core/src/backup-config.ts",
-      "find": "  if (limit.perSubject !== HISTORY_NO_COUNT && (!Number.isSafeInteger(limit.perSubject) || limit.perSubject < 1))\n",
-      "replace": "  if (!Number.isSafeInteger(limit.perSubject) || limit.perSubject < 1)\n",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (problem) throw new Error(`invalid ${stream} history limit: ${problem}`);\n",
+      "replace": "  if (problem || limit.perSubject === HISTORY_NO_COUNT) throw new Error(`invalid ${stream} history limit: ${problem}`);\n",
       "expectRed": "setHistoryLimit accepts no age and no count on chat",
       "cell": "setHistoryLimit accepts no age and no count on chat"
     },
@@ -129,8 +129,8 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "        if (limit !== null && m.info.pending >= limit - 1) this.emit(\"stored-copies-full\", { limit });",
       "replace": "        if (limit !== null && m.info.pending >= limit) this.emit(\"stored-copies-full\", { limit });",
-      "expectRed": "copies stored under 5 still warn, at 5, after the count is raised to none",
-      "cell": "copies stored under 5 still warn, at 5, after the count is raised to none"
+      "expectRed": "...and the same agent's next copies, stored under 5, warn at 5",
+      "cell": "...and the same agent's next copies, stored under 5, warn at 5"
     },
     {
       "name": "the writer stops stamping its count",
@@ -195,8 +195,8 @@
     {
       "name": "the writer acts on its stamp read without asking the fence again",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      // The count read above may be broker I/O, so the fence is asked again before the write.\n      if (!this.plane3MayAct()) return;\n",
-      "replace": "",
+      "find": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n      if (!this.plane3MayAct()) return;\n",
+      "replace": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n",
       "expectRed": "a daemon that stands down during its count read writes no stored copy",
       "cell": "a daemon that stands down during its count read writes no stored copy",
       "note": "A daemon that lost the shard while it read the count would still write the copy, which is the write the fence exists to stop."

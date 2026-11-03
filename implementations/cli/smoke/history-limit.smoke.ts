@@ -140,14 +140,19 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[], cwd = roots.auth): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
-  new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd, env: isolatedEnv, timeout: 120_000 }, (err, stdout, stderr) => {
-      const lines = stdout.split("\n").filter(Boolean);
-      const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
-      resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
-    });
+type RunResult = { status: number; stdout: string; stderr: string; envelope?: Envelope };
+// The launch sits in `run` itself, outside the promise callback, so the mutation auditor can trace
+// BIN to this call and see that the suite runs bin/dist/cotal.js.
+const run = (args: string[], cwd = roots.auth): Promise<RunResult> => {
+  let done!: (result: RunResult) => void;
+  const result = new Promise<RunResult>((resolve) => { done = resolve; });
+  execFile(process.execPath, [BIN, ...args], { cwd, env: isolatedEnv, timeout: 120_000 }, (err, stdout, stderr) => {
+    const lines = stdout.split("\n").filter(Boolean);
+    const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
+    done({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
   });
+  return result;
+};
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 800) });
 
 /** One `cotal history limit` under a real terminal, so it may prompt. */
