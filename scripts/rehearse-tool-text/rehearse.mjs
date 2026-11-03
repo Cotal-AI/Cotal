@@ -240,12 +240,22 @@ class Sandbox {
       const seat = seatDir.replace(new RegExp(`^${SPACE}-`), "").replace(/-[0-9a-f]{12}$/, "");
       const sdir = join(jhome, seatDir, "sessions");
       if (!existsSync(sdir)) continue;
-      for (const f of readdirSync(sdir).filter((x) => x.endsWith(".journal.jsonl"))) {
-        const msgs = readFileSync(join(sdir, f), "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return JSON.parse(l).append_messages ?? []; } catch { return []; } });
+      // A session is a snapshot (session_<id>.json) plus a journal of what was appended since
+      // (session_<id>.journal.jsonl). A seat that has stopped may have folded its journal into the
+      // snapshot, so read both and keep each message once.
+      const sessions = new Set(readdirSync(sdir).filter((x) => /^session_.*\.(json|journal\.jsonl)$/.test(x)).map((x) => x.replace(/\.(json|journal\.jsonl)$/, "")));
+      for (const id of sessions) {
+        const snap = join(sdir, `${id}.json`), journal = join(sdir, `${id}.journal.jsonl`);
+        const seen = new Set(), msgs = [];
+        const add = (m) => { if (m && !(m.id && seen.has(m.id))) { if (m.id) seen.add(m.id); msgs.push(m); } };
+        if (existsSync(snap)) { try { (JSON.parse(readFileSync(snap, "utf8")).messages ?? []).forEach(add); } catch {} files.push({ from: snap, as: `jcode-${seat}-${id}.json` }); }
+        if (existsSync(journal)) {
+          for (const l of readFileSync(journal, "utf8").split("\n").filter(Boolean)) { try { (JSON.parse(l).append_messages ?? []).forEach(add); } catch {} }
+          files.push({ from: journal, as: `jcode-${seat}-${id}.journal.jsonl` });
+        }
         const got = jcodeCalls(msgs, seat);
         calls.push(...got.calls);
         uses.push(...got.uses);
-        files.push({ from: join(sdir, f), as: `jcode-${seat}-${f}` });
       }
     }
     return { calls, uses, files };
