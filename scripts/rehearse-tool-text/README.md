@@ -85,6 +85,10 @@ open files by their real path.
 
 ## Reading the results
 
+The get-help check finds alice's brief by the PR's name and material, and a post that is not a brief
+can also carry those, so a get-help pass needs a reader to confirm the brief. `report.mjs` quotes every
+brief the check counted, in full, for that.
+
 `grade-cases.mjs` runs the pass checks on records built by hand, including runs that look right but
 did not do the thing, and fails if any is graded wrong. `report.mjs` grades every run again from the files it kept, so runs from different days are read by
 the same checks. A run that ended in an error fails whatever its checks say.

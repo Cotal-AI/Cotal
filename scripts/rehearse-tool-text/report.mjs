@@ -68,6 +68,9 @@ for (const [k, r] of [...runs].sort()) {
 writeFileSync(join(out, "report.md"), [
   "# Tool text rehearsal", "",
   ...lines, "",
+  "A get-help pass is not proof on its own that alice's post was the brief. The check finds the brief by",
+  "the PR's name and material, which a post that is not a brief can also carry, so each brief it counted",
+  "is quoted below for a reader to confirm.", "",
   "## Scenarios the baseline already passes", "",
   ...(already.length ? already : ["- none"]), "",
   "## Revised runs that fail", "",
