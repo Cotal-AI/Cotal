@@ -9,6 +9,11 @@ credentialed local HTTP console.
 It owns process lifecycle and config, not the agents' work; agents still coordinate laterally
 over the mesh.
 
+When a launch or supervised recovery fails, an unreadable output snapshot is logged as
+`<name>: last output unavailable: <reason>`. Closed-session read failures and failed recovery
+attaches are reported too, rather than guessed to mean the child printed nothing. The original
+launch/recovery failure and retirement still proceed. An empty readable snapshot adds no warning.
+
 **Tier:** `implementations/` (a self-contained surface over core). Implementations never import
 each other; they meet at runtime over NATS.
 
