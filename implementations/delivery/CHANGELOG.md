@@ -1,5 +1,12 @@
 # @cotal-ai/delivery
 
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+  - @cotal-ai/workspace@0.135.9
+
 ## 0.135.8
 
 ### Patch Changes
