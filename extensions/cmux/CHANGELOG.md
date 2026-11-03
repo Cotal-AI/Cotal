@@ -1,5 +1,37 @@
 # @cotal-ai/cmux
 
+## 0.139.0
+
+No changes in this release.
+
+## 0.138.2
+
+No changes in this release.
+
+## 0.138.1
+
+No changes in this release.
+
+## 0.138.0
+
+No changes in this release.
+
+## 0.137.0
+
+No changes in this release.
+
+## 0.136.8
+
+### Patch Changes
+
+- f16b36b: cmux workspace listing and label lookup now report missing, failed or timed-out CLI reads instead
+  of returning an empty list. All inventory readers use the existing one-second probe bound. Healthy
+  listings, public exports and the CLI's default line format are unchanged.
+
+## 0.136.7
+
+No changes in this release.
+
 ## 0.136.6
 
 No changes in this release.

@@ -32,10 +32,8 @@ import {
 } from "../src/chat/view.js";
 import { listChoices, parseRecipient } from "../src/chat/picker.js";
 import { rosterLines, runSlash } from "../src/chat/controller.js";
-import { MAX_BUFFER, ParticipantEngine } from "../src/chat/engine.js";
-import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
+import { MAX_BUFFER, ParticipantEngine, grantRefusal, resolveDmTarget, type CloseReport, type RosterView, type SessionIdentity, type SessionMessage } from "@cotal-ai/workspace/chat";
 import type { Presence } from "@cotal-ai/core";
-import type { CloseReport, RosterView, SessionIdentity, SessionMessage } from "../src/chat/session.js";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {

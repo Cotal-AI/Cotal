@@ -440,7 +440,46 @@ await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", capa
 const recDefine = callsDefine.find((c) => c.command === "define-persona");
 check("cotal_persona forwards capabilities for the manager to bound", JSON.stringify(recDefine?.args?.capabilities) === JSON.stringify(["spawn"]), recDefine?.args);
 
-const EXPECTED_CHECKS = 74;
+// #5490: the result of a started seat says where it is and the next move. It names only the join the
+// caller passed: the reply carries no channel list, and a persona may list channels the caller
+// cannot read. The run path is the tool's own, over a manager reply shaped as the manager sends it.
+const startedWith = async (args: Record<string, unknown>, data: Record<string, unknown>) => {
+  const agent = new MeshAgent(reader);
+  (agent as unknown as InvokeEp).ep = {
+    invokeService: (endpoint) => Promise.resolve({ reply: { ok: true, data }, responder: { endpoint, instanceId: "i", epoch: 0 } }),
+    principal: { owner: "local", actor: "caller" },
+  };
+  (agent as unknown as { _connected: boolean })._connected = true;
+  return spawnTool!.run(agent, reader, args);
+};
+const onChannel = await startedWith({ name: "helper", join: ["review"] }, { name: "helper", mode: "tmux" });
+check(
+  "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",
+  onChannel.text === "Started helper on #review (tmux). Post the brief there, and mention it only when it must act. Despawn it when its job is done.",
+  onChannel.text,
+);
+const noJoin = await startedWith({ name: "helper" }, { name: "helper", mode: "tmux" });
+check(
+  "a spawn without join says the seat has only its persona's channels and names join",
+  noJoin.text === "Started helper (tmux) without join, so it starts only on the channels its persona lists, which may be none. Pass join to put it on the task's channel.",
+  noJoin.text,
+);
+const renamed = await startedWith({ name: "helper", join: ["review"] }, { name: "helper_2", mode: "tmux" });
+check("a renamed seat leads with the name it got and the name that was taken", renamed.text.startsWith('Started helper_2 ("helper" was taken) on #review (tmux).'), renamed.text);
+const waiting = await startedWith({ name: "helper", join: ["review"] }, { name: "helper", mode: "tmux", waitingFor: "Claude's session picker" });
+check(
+  "a seat waiting for the operator says it has not joined the mesh yet",
+  waiting.text === "Started helper (tmux), but it is waiting for the operator at Claude's session picker and joins the mesh after that. It starts on #review.",
+  waiting.text,
+);
+const onceOn = await startedWith({ name: "helper", join: ["review"], prompt: "Do one thing.", once: true }, { name: "helper", mode: "tmux", once: { goalId: "g1" } });
+check(
+  "a once seat is not told to be despawned, since its manager stops it",
+  onceOn.text.startsWith('Started helper on #review (tmux). Post the brief there, and mention it only when it must act. Its task is goal "g1"') && !onceOn.text.includes("Despawn it"),
+  onceOn.text,
+);
+
+const EXPECTED_CHECKS = 79;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

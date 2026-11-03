@@ -1,0 +1,2 @@
+# A channel's members come from the authoritative membership feed, else from who posted there, and say which.
+smoke:web-members

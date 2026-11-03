@@ -5,7 +5,7 @@
  */
 import { oneLine } from "@cotal-ai/core";
 import { shownTime } from "../lib/shown-time.js";
-import type { AdmittedChatSession, ChannelInfo, ConnectionReport, HistoryPage, PublishResult, Result, RosterView, SessionMessage } from "./session.js";
+import type { AdmittedChatSession, ChannelInfo, ConnectionReport, HistoryPage, PublishResult, Result, RosterView, SessionMessage } from "@cotal-ai/workspace/chat";
 import {
   addNotice, applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, slashHelp, type ChatState, type Person, type Recipient, type SlashCommand,
 } from "./view.js";

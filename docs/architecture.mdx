@@ -87,6 +87,8 @@ It depends on no other package in this repository. Adapter-specific concepts sta
 and shared operator models, including mesh selection, credential paths, process custody, and `MeshView`.
 `@cotal-ai/workspace/control` supplies manager requests, registry reads, seat lookup, and shared console control helpers.
 `@cotal-ai/workspace/launch` builds the managed-launch request and reads the manager's joined result.
+`@cotal-ai/workspace/chat` opens a chat session that acts as a person on the mesh, admitted by the target's recorded auth mode.
+`@cotal-ai/workspace/attach` attaches a terminal to an agent's seat over a mesh session and re-establishes the session when the link drops.
 Command flags, prompts, and version-specific remedies stay in each caller.
 A client can embed core without adopting that workstation state.
 
@@ -163,6 +165,9 @@ Runtimes supply process and terminal control. PTY is built in. tmux, cmux, Orca,
 explicit extensions. Spawned children receive a declared environment and private connection material.
 A tmux seat handle follows its pane after a move and binds stop, interrupt, status and exit waits
 to the server that opened it. A restarted server's reused pane IDs cannot target another seat.
+Its native attach guidance selects the current window and pane by the seat's pane ID.
+cmux workspace inventories and label lookups use a one-second CLI read bound. Missing executables,
+socket errors and timeouts propagate as errors; only a successful query can report an empty inventory.
 Terminal attachment uses a scoped mesh session and can reach a manager on another machine.
 
 The declared environment forwards `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not add TLS verification overrides or key-log settings.

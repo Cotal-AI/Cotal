@@ -6104,7 +6104,8 @@ export class Manager {
         restart.recovering = false;
         restart.armed = false;
         let tail = "";
-        try { tail = await this.tail((replacement ?? a.handle).attach()); } catch { /* runtime has no readable tail */ }
+        try { tail = await this.tail((replacement ?? a.handle).attach()); }
+        catch (error) { console.error(`! ${a.name}: last output unavailable: ${rejectionText(error)}`); }
         console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${rejectionText(error)}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
         // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
@@ -8760,22 +8761,17 @@ export class Manager {
         // tells a deliberate stop from a launch failure.
         const deliberate = a.terminalizing === true;
         void (async () => {
-          // waitForExit may close the attach stream before this snapshot
+          // A closed stream or a reader failure must not prevent settlement, or read as empty output.
           let tail = "";
           try {
             if (s) tail = await this.tail(s);
-          } catch {}
+          } catch (error) {
+            console.error(`! ${a.name}: last output unavailable: ${rejectionText(error)}`);
+          }
           if (opts.reapOnExit !== false) this.onAgentExit(a);
-          // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
-          // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
-          // caller the agent died on launch when in fact an operator cancelled it. The process
-          // teardown above still runs — only the goal's OUTCOME is left to the path that caused it.
-          // A deliberate stop still has to SETTLE this promise. `clearTimeout` above already
-          // removed the only other resolver, so returning here leaves it pending forever and the
-          // spawn's lifecycle ticket is never released — which permanently wedges every drain
-          // (preparePreservation, and through it a preserving `down`). Settle it as its own
-          // variant: not `failed` and not `uncertain`, so the caller emits NO terminal and the
-          // despawn path keeps sole ownership of this goal's `cancel`.
+          // The despawn path owns this goal's terminal (`cancel`), and this promise still settles
+          // as the `deliberate` variant so the caller commits none: the readiness timer is already
+          // cleared, and the spawn's lifecycle ticket is released only on settle.
           if (deliberate) {
             finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
             return;

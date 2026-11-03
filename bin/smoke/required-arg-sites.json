@@ -44,8 +44,6 @@
   "implementations/cli/smoke/seed-task-durable.ts": 1,
   "implementations/cli/smoke/space-teardown-live.smoke.ts": 1,
   "implementations/cli/smoke/sys-rotation-e2e.smoke.ts": 1,
-  "implementations/cli/src/chat/open-session.ts": 1,
-  "implementations/cli/src/commands/agents.ts": 3,
   "implementations/cli/src/commands/down-live-lease.ts": 1,
   "implementations/cli/src/commands/down.ts": 2,
   "implementations/cli/src/commands/history-clear.ts": 1,
@@ -161,6 +159,8 @@
   "packages/core/src/issuer-session.ts": 2,
   "packages/core/src/lease.ts": 1,
   "packages/core/src/streams.ts": 6,
+  "packages/workspace/src/attach/attach-seat.ts": 3,
+  "packages/workspace/src/chat/open-session.ts": 1,
   "packages/workspace/src/control-target.ts": 1,
   "packages/workspace/src/control/manager.ts": 2
 }

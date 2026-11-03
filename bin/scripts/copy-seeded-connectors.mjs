@@ -30,6 +30,12 @@ const umbrellaVersion = JSON.parse(readFileSync(join(binRoot, "package.json"), "
 rmSync(outRoot, { recursive: true, force: true });
 mkdirSync(outRoot, { recursive: true });
 
+// Windows has no `npm` executable to spawn without a shell, only `npm.cmd`; run the npm that ships
+// next to node.exe through this node instead, as the seat native build does for its node-gyp.
+const npm = process.platform === "win32"
+  ? (args) => [process.execPath, [join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), ...args]]
+  : (args) => ["npm", args];
+
 for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSIONS)) {
   const srcDir = join(repoRoot, srcSubdir);
   const meta = JSON.parse(readFileSync(join(srcDir, "package.json"), "utf8"));
@@ -42,10 +48,15 @@ for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSION
   if (!existsSync(join(srcDir, "dist"))) {
     throw new Error(`first-party extension ${pkg} is not built (no dist at ${srcDir}) - run \`pnpm build\` before packing cotal-ai`);
   }
+  // The dashboard's page is its own build step (vite) beside the server's tsc, so a dist holding the
+  // server alone is possible, and an install of it would answer 503 on its own front page.
+  if (pkg === "@cotal-ai/web" && !existsSync(join(srcDir, "dist", "web", "index.html"))) {
+    throw new Error(`first-party extension ${pkg} has no client build (no dist/web/index.html at ${srcDir}) - run \`pnpm --filter @cotal-ai/web build\` before packing cotal-ai`);
+  }
   const tmp = mkdtempSync(join(tmpdir(), "cotal-seed-"));
   try {
     // --ignore-scripts: dist is already built above; don't re-run the connector's own prepack.
-    const stdout = execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", tmp, srcDir], { encoding: "utf8" });
+    const stdout = execFileSync(...npm(["pack", "--ignore-scripts", "--silent", "--pack-destination", tmp, srcDir]), { encoding: "utf8" });
     const tgz = stdout.trim().split("\n").filter(Boolean).pop();
     if (!tgz) throw new Error(`npm pack produced no tarball for ${pkg}`);
     const dest = join(outRoot, name);

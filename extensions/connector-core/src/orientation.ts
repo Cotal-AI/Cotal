@@ -26,11 +26,12 @@ export const ORIENTATION_BOOTSTRAP =
  *  visible to the user and addressable by peers. Unconditional (a read-only agent still delegates via
  *  DM/anycast rather than a private subagent); the spawn-specific detail lives on the cotal_spawn tool. */
 export const MESH_FIRST_STEER =
-  "Keep multi-agent work on the mesh. Before reaching for your harness's own subagents, Task tool, or " +
-  "any built-in parallel-agent feature, do it through Cotal instead: spawn or delegate to a real peer " +
-  "(cotal_spawn if you have it, otherwise cotal_dm or cotal_anycast to reach one) so the work stays " +
-  "visible to the user and addressable by peers rather than hidden inside a private subagent. For a " +
-  "single task, cotal_spawn with once: true starts a helper that is stopped when the task ends.";
+  "Keep multi-agent work on the mesh. Prefer it to your harness's own subagents, Task tool, or any " +
+  "built-in parallel-agent feature: spawn or delegate to a real peer (cotal_spawn if you have it, " +
+  "otherwise cotal_dm or cotal_anycast to reach one) so the work stays visible to the user and " +
+  "addressable by peers rather than hidden inside a private subagent. Use a harness subagent only for " +
+  "a self-contained job nobody else needs to follow. For a single task, cotal_spawn with once: true " +
+  "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.";
 
 /** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
  *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is
@@ -49,16 +50,23 @@ export const WORKFLOW_STEER =
 export const CHANNEL_GUIDANCE =
   "Information moves through channels. Subscribe to the channel where what you need is published, " +
   "and publish what others may need on the channel where they will look for it. The channel you work " +
-  "on is where your work happens: post plans, status, results and decisions there with cotal_send, so every peer on it, " +
-  "and anyone who joins later, reads them without being asked. A plain post wakes nobody; @mention a " +
-  "peer only when that peer must act now, since a mention wakes them, and a mention in an " +
-  "acknowledgement or sign-off starts a wake-up loop. Use cotal_dm only for something one peer alone " +
-  "needs, because a DM is invisible to everyone else, and cotal_anycast to ask whoever holds a role. " +
+  "on is where your work happens: post plans, status, results and decisions there with cotal_send. " +
+  "On a durable channel, the usual kind, every agent on it gets the post unless it muted the channel, " +
+  "and one that is offline gets it when it comes back; on a live channel, one that is disconnected or " +
+  "busy then misses it, unless the post mentions it by a name only it has and it may read the channel. " +
+  "On a channel that replays history, agents who join later are shown it. A post " +
+  "wakes an idle agent unless it set dnd or focus or made the channel quiet. @mention a peer only when " +
+  "that peer must act now, since a mention wakes it even in dnd, and a mention in an acknowledgement " +
+  "or sign-off starts a wake-up loop. When you are " +
+  "asked to tell a peer about shared work, such as a status or a result, post it on the channel you " +
+  "share and mention that peer there. Use cotal_dm only for something one peer alone needs, such as a " +
+  "question only it can answer or a private detail, because other agents can't read a DM. Use " +
+  "cotal_anycast only when the team has agents holding a role to take requests. " +
   "A channel's purpose is its registry note (cotal_channel_info); cotal_channels lists them and " +
   "cotal_join adds one within your read allowance. To follow every channel under a prefix, join a " +
   "family such as team.>: posts on its durable channels are kept for you while you are away, from the " +
-  "join on. A helper you spawn starts on the channels its persona subscribes to plus any you pass in " +
-  "join, so pass join with the channel you are working on. Post on #announce only for a deliberate notice " +
+  "join on. A helper you spawn starts only on the channels its persona lists, which may be none, so " +
+  "pass join with the channel you are working on. Post on #announce only for a deliberate notice " +
   "to the whole space.";
 
 /** A tool the agent can actually call (already gated), as it appears in the card. */

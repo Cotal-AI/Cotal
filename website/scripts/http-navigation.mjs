@@ -10,6 +10,10 @@ export const httpSidebarTitles = {
     'watch-feed': 'Live events',
     'read-dashboard-meta': 'Metadata',
     'delete-dashboard-channel': 'Delete legacy channel',
+    'send-as-operator': 'Post as the operator',
+    'watch-agent': 'Watch an agent',
+    'unwatch-agent': 'Unwatch an agent',
+    'read-agent-events': 'Agent events',
   },
   auth: {
     'auth-health': 'Health',

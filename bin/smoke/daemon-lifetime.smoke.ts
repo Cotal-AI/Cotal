@@ -122,7 +122,9 @@ const home = join(root, "h");
 const rtDir = join(root, "r");
 mkdirSync(home, { mode: 0o700, recursive: true });
 mkdirSync(rtDir, { mode: 0o700, recursive: true });
-const paths = daemonPaths({ XDG_RUNTIME_DIR: rtDir }, home);
+// Linux paths always carry the socket directory; only a Windows pipe has none.
+const linuxPaths = daemonPaths({ XDG_RUNTIME_DIR: rtDir }, home);
+const paths = { ...linuxPaths, dir: linuxPaths.dir! };
 // `sun_path` is 108 bytes including its terminator, and the daemon binds a private name beside its
 // socket before publishing it. A root too deep to hold that name would fail as an opaque EINVAL
 // from listen(2), so it is refused here by name instead.

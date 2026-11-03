@@ -4,6 +4,13 @@
   // This config exists because the smoke tree was typechecked by nothing: the suites run under
   // tsx, which erases types without checking them.
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true, "rootDir": "../.." },
-  "include": ["smoke/**/*.ts"]
+  // `jsx` (and `.tsx` import paths) because the shell suites render `client/src/Shell.tsx` on the
+  // server. There is no DOM lib in this program, so a client module the suites load cannot reach
+  // `window` or `document` and pass.
+  "compilerOptions": { "noEmit": true, "rootDir": "../..", "jsx": "react-jsx", "allowImportingTsExtensions": true },
+  "include": ["smoke/**/*.ts"],
+  // The suites that stub or drive a DOM need DOM types and are typechecked by tsconfig.smoke-dom.json
+  // instead: the theme suite, the suites that mount React in jsdom, and the shell suites, whose
+  // imports reach a copied shadcn file that names a DOM global.
+  "exclude": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/sidebar.smoke.ts", "smoke/views.smoke.ts", "smoke/topology-view.smoke.ts", "smoke/agents-view.smoke.ts", "smoke/panel.smoke.ts", "smoke/states.smoke.ts", "smoke/layout.smoke.ts", "smoke/compose.smoke.ts", "smoke/identity.smoke.ts", "smoke/session-parts.smoke.ts", "smoke/session-view.smoke.ts", "smoke/mount.ts", "smoke/app-shell.smoke.ts", "smoke/event-order.smoke.ts", "smoke/parts-non-silence.smoke.ts", "smoke/snapshot-retention.smoke.ts", "smoke/render-shell.ts"]
 }

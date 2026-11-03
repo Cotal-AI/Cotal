@@ -51,6 +51,7 @@ registry.provide({ provides: commands("supervise", "__daemon-manager", "__servic
 registry.provide({ provides: commands("deliver", "__daemon-deliver", "__service-delivery", "feedback-intake", "__service-feedback-intake"), load: importing("delivery", "auth") });
 registry.provide({ provides: commands("auth-service", "__daemon-auth-service", "__service-auth"), load: importing("auth") });
 registry.provide({ provides: commands("__service-unit"), load: () => import("@cotal-ai/cli/service-unit") });
+registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth") });
 
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.
@@ -77,4 +78,6 @@ process.stdout.on("error", stdoutError);
 // the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
 // runtimes, connectors, and local process components all self-register from those packages. Library
 // roots keep the explicit-import model.
-await runCli(registry, argv, { extensions: true, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+// The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
+const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
+await runCli(registry, argv, { extensions: !desktopBridge, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });

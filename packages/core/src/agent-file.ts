@@ -337,10 +337,14 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   const text = `---\n${frontmatter}\n---\n\n${body}`;
   // A persona that saves must load. A file the reader refuses, such as one whose subscribe entry no
   // allowSubscribe entry contains, made every later load, spawn and redefine of that name fail.
+  // The message reaches an agent as the reason its definition was refused, so it names the rule the
+  // file broke and not this function or the path of a file that was never written.
   try {
     parseAgentFileSource(text, path);
   } catch (e) {
-    throw new Error(`saveAgentFile: "${def.name}" was not saved because it would not load: ${(e as Error).message}`);
+    const reason = (e as Error).message;
+    const prefix = `agent file ${path}: `;
+    throw new Error(`it would not load: ${reason.startsWith(prefix) ? reason.slice(prefix.length) : reason}`);
   }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   if (opts.createOnly) createPrivateRecord(path, text);

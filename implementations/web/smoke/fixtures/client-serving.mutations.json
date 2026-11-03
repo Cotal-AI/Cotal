@@ -1,0 +1,73 @@
+{
+  "command": "pnpm smoke:web-client-serving",
+  "suite": [
+    "implementations/web/smoke/client-serving.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "a file type the client does not use becomes a route",
+      "file": "implementations/web/src/web.ts",
+      "find": "if (type) routes.set(",
+      "replace": "routes.set(",
+      "expectRed": "a file type the client does not use is not served",
+      "cell": "a file type the client does not use is not served"
+    },
+    {
+      "name": "a hashed asset is no longer cached as immutable",
+      "file": "implementations/web/src/web.ts",
+      "find": "immutable: true });",
+      "replace": "immutable: false });",
+      "expectRed": "a hashed script is served as JavaScript and cached as immutable",
+      "cell": "a hashed script is served as JavaScript and cached as immutable"
+    },
+    {
+      "name": "the old /graph link stops opening the app",
+      "file": "implementations/web/src/web.ts",
+      "find": "routes.set(\"/graph\", page);",
+      "replace": "",
+      "expectRed": "/graph serves the same page, so old links still open the app",
+      "cell": "/graph serves the same page, so old links still open the app"
+    },
+    {
+      "name": "a missing build stops answering 503",
+      "file": "implementations/web/src/web.ts",
+      "find": "if (routes.size === 0 && (path === \"/\" || path === \"/graph\")) return { status: 503, body: { error: CLIENT_NOT_BUILT } };",
+      "replace": "",
+      "expectRed": "an empty map gives 503 with the not-built message for / and /graph",
+      "cell": "an empty map gives 503 with the not-built message for / and /graph"
+    },
+    {
+      "name": "the not-built message speaks only to a source checkout again, so a customer whose install lost its page is told to run a pnpm command they cannot run",
+      "file": "implementations/web/src/web.ts",
+      "find": "  \"An installed @cotal-ai/web always ships its client, so this is a broken install: reinstall it with `cotal ext seed --force`.\";",
+      "replace": "  \"\";",
+      "expectRed": "the not-built message tells an installed package it is a broken install and how to reinstall it",
+      "cell": "the not-built message tells an installed package it is a broken install and how to reinstall it"
+    },
+    {
+      "name": "the theme boot script is not served, so the page loads in the system palette",
+      "file": "implementations/web/src/web.ts",
+      "find": "if (existsSync(boot)) routes.set(`/${THEME_BOOT}`, ",
+      "replace": "if (false) routes.set(`/${THEME_BOOT}`, ",
+      "expectRed": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash",
+      "cell": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash"
+    },
+    {
+      "name": "the theme boot script is cached for good though its name carries no hash, so an upgrade keeps the old one",
+      "file": "implementations/web/src/web.ts",
+      "find": "{ path: boot, type: CLIENT_TYPES[\".js\"], immutable: false }",
+      "replace": "{ path: boot, type: CLIENT_TYPES[\".js\"], immutable: true }",
+      "expectRed": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash",
+      "cell": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash"
+    },
+    {
+      "name": "a build without the boot script still routes it, to a file that is not there",
+      "file": "implementations/web/src/web.ts",
+      "find": "if (existsSync(boot)) routes.set(`/${THEME_BOOT}`, ",
+      "replace": "routes.set(`/${THEME_BOOT}`, ",
+      "expectRed": "a build without the boot script has no route for it",
+      "cell": "a build without the boot script has no route for it"
+    }
+  ]
+}
