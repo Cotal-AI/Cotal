@@ -34,6 +34,7 @@ import {
 } from "@cotal-ai/core";
 import type { RefusalCode } from "../output.js";
 import { codeSpan } from "../text-wrap.js";
+import { mentionsName } from "./compose.js";
 import { ParticipantEngine } from "./engine.js";
 import type {
   AdmittedChatSession,
@@ -233,9 +234,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   private ingest(m: CotalMessage, d: Delivery, meta?: MessageMeta): void {
     if (this.closed) return; // unacked: a durable copy redelivers to nobody once retired
-    const self = this.inputs.identity.label.toLowerCase();
-    // Advisory only: the payload `mentions` list is forgeable; it changes visibility, never authority.
-    const mentionsMe = (m.mentions ?? []).some((x) => x.toLowerCase() === self);
+    const mentionsMe = mentionsName(m.mentions, this.inputs.identity.label);
     const disp = this.engine.accept(m, d, meta, mentionsMe);
     if (disp.kind === "surface") this.emit({ type: "message", message: disp.message });
     const over = this.engine.takeOverflow();

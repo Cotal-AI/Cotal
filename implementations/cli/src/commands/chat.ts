@@ -19,8 +19,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { cliControl } from "../lib/control.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
-import { closeSummary, type Recipient } from "../chat/view.js";
-import { USER_CHAT_TTL_SEC, openChatSession, type AdmittedChatSession, type ChatAdmission, type CloseReport, type RosterView } from "@cotal-ai/workspace/chat";
+import { USER_CHAT_TTL_SEC, closeSummary, openChatSession, type AdmittedChatSession, type ChatAdmission, type CloseReport, type Recipient, type RosterView } from "@cotal-ai/workspace/chat";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,

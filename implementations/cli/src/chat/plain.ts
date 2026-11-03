@@ -24,27 +24,23 @@ import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { oneLine } from "@cotal-ai/core";
 import { plainPunctuation } from "@cotal-ai/workspace";
-import type { AdmittedChatSession, SessionEvent } from "@cotal-ai/workspace/chat";
+import {
+  MAX_DRAFT, discloseChoice, endingNotice, parseRecipient, parseSlash, publish, recipientLabel, runsOffline, sharedNames,
+  type AdmittedChatSession, type Recipient, type SessionEvent,
+} from "@cotal-ai/workspace/chat";
 import {
   addNotice,
   applyEvent,
   applyPublishResult,
-  endingNotice,
   headerRows,
   heardFrom,
   initialState,
-  parseSlash,
-  recipientLabel,
-  runsOffline,
   setRecipient,
-  sharedNames,
   transcriptRows,
-  MAX_DRAFT,
   type ChatState,
-  type Recipient,
 } from "./view.js";
-import { closeSession, publish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
+import { closeSession, runSlash } from "./controller.js";
+import { listChoices, refusedDm, type Choice } from "./picker.js";
 
 type Mode =
   | { readonly kind: "compose" }
@@ -97,7 +93,7 @@ export async function runPlain(opts: {
   const prompt = (): void => {
     switch (mode.kind) {
       case "compose": print(`[to ${recipientLabel(state.recipient, ":to")}] type a message, /command, :to, :multi`); break;
-      case "confirm": print(`send to ${recipientLabel(mode.to)}? y = send, anything else = keep as draft`); break;
+      case "confirm": print(`send to ${recipientLabel(mode.to, ":to")}? y = send, anything else = keep as draft`); break;
       case "multi": print("(multi-line: end with a line containing only .)"); break;
       case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels, /quit leaves"); break;
       case "confirm-leave": print("you have an unsent draft. y = discard and leave, anything else = keep editing"); break;
@@ -192,7 +188,7 @@ export async function runPlain(opts: {
           // asked again while the draft and its recipient are unchanged.
           mode = { kind: "compose" };
           await handle(line);
-          if ((mode as Mode).kind === "compose" && !state.endedByEvent && state.draft === asked.text && recipientLabel(state.recipient) === recipientLabel(asked.to)) mode = asked;
+          if ((mode as Mode).kind === "compose" && !state.endedByEvent && state.draft === asked.text && recipientLabel(state.recipient, ":to") === recipientLabel(asked.to, ":to")) mode = asked;
           return;
         }
         if (line.trim().toLowerCase() === "y") await send(asked.to, asked.text);
