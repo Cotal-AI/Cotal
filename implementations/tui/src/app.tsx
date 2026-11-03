@@ -21,7 +21,12 @@ type Command = { id: string; bind: string; keys?: string; title: string; group: 
 
 type Line = { text: string; fg: RGBA }
 
+/** Stopping an agent: the confirm, the manager call while it runs, then its outcome for a while. */
+type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
+type Answer = "graceful" | "force" | "cancel"
+
 const FEED_ROWS = 200
+const STOP_NOTICE_MS = 8000
 
 const fit = (s: string, n: number) => (n <= 0 ? "" : s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s)
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
@@ -39,6 +44,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   const [open, setOpen] = createSignal<Open>({ kind: "channel" })
   const [seen, setSeen] = createSignal<Record<string, number>>({})
   const [now, setNow] = createSignal(Date.now())
+  const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
   const clockTimer = setInterval(() => setNow(Date.now()), 1000)
   onCleanup(() => clearInterval(clockTimer))
 
@@ -85,6 +91,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     setSession(undefined)
     setOpen({ kind: "channel" })
     setSeen({})
+    setStop({ phase: "idle" })
     await old?.close()
     const next = await props.openSpace(space)
     if (mine !== switches) return void next.close()
@@ -135,12 +142,38 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     openWaiting(at + 1 < waiting().length ? at + 1 : 0)
   }
 
+  const askStop = () => {
+    const r = selection()
+    if (r?.kind !== "peer" || r.presence.card.kind !== "agent") return toast.show({ variant: "info", message: "Select an agent to stop it" })
+    const s = stop()
+    if (s.phase === "stopping") return toast.show({ variant: "warning", message: `Still stopping ${s.name}` })
+    const name = r.presence.card.name
+    setStop({ phase: "confirm", name })
+    dialog.replace(
+      () => <ConfirmStop name={name} answer={(a) => answerStop(name, a)} />,
+      () => setStop((cur) => (cur.phase === "confirm" ? { phase: "idle" } : cur)),
+    )
+  }
+  const answerStop = async (name: string, a: Answer) => {
+    dialog.clear()
+    const s = session()
+    if (a === "cancel" || !s) return
+    const force = a === "force"
+    setStop({ phase: "stopping", name, force })
+    const r = await s.stop(name, !force)
+    if (session() !== s) return
+    const done: Stop = r.ok ? { phase: "done", text: `${force ? "force-killed" : "stopped"} ${name}`, tone: "success" } : { phase: "done", text: `stop: ${r.error}`, tone: "error" }
+    setStop(done)
+    setTimeout(() => setStop((cur) => (cur === done ? { phase: "idle" } : cur)), STOP_NOTICE_MS)
+  }
+
   const commands: Command[] = [
     { id: "cotal.down", bind: "j,down", keys: "j ↓", title: "Next row", group: "Move", run: () => move(1) },
     { id: "cotal.up", bind: "k,up", keys: "k ↑", title: "Previous row", group: "Move", run: () => move(-1) },
     { id: "cotal.open", bind: "return", keys: "enter", title: "Open the selected row", group: "Move", run: openRow },
     { id: "cotal.next-need", bind: "w", keys: "w", title: "Open the next waiting agent", group: "Needs you", palette: true, run: nextWaiting },
     { id: "cotal.need", bind: "1,2,3,4,5,6,7,8,9", keys: "1-9", title: "Open that waiting agent", group: "Needs you", run: (e) => e && openWaiting(Number(e.name) - 1) },
+    { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
     { id: "cotal.reload", bind: "ctrl+r", keys: "ctrl+r", title: "Reread spaces", group: "System", palette: true, run: () => void read(true) },
     { id: COMMAND_PALETTE_COMMAND, bind: "ctrl+p", keys: "ctrl+p", title: "Commands", group: "System", global: true, run: () => dialog.replace(() => <Palette commands={commands} />) },
     { id: "cotal.help", bind: "?", keys: "?", title: "Keys", group: "System", palette: true, run: () => dialog.replace(() => <Help commands={commands} />, undefined, { size: "large" }) },
@@ -426,6 +459,13 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     return { text: "✗ not connected", fg: theme.text.feedback.error.base }
   }
 
+  const stopLine = (): Line | undefined => {
+    const s = stop()
+    if (s.phase === "stopping") return { text: `${s.force ? "force-killing" : "stopping"} ${s.name}…`, fg: theme.text.muted }
+    if (s.phase === "done") return { text: s.text, fg: s.tone === "success" ? theme.text.feedback.success.base : theme.text.feedback.error.base }
+    return undefined
+  }
+
   const StatusBar = () => (
     <box flexShrink={0} flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.high}>
       <text wrapMode="none" fg={theme.text.faint} flexShrink={1}>
@@ -444,8 +484,40 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
         <Middle />
         <Show when={inspectorWidth()}>{(width) => <Inspector width={width()} />}</Show>
       </box>
+      <Show when={stopLine()}>
+        {(line) => (
+          <box flexShrink={0} paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.base}>
+            <text fg={line().fg}>{line().text}</text>
+          </box>
+        )}
+      </Show>
       <StatusBar />
     </box>
+  )
+}
+
+function ConfirmStop(props: { name: string; answer: (a: Answer) => void }) {
+  const theme = useTheme().surface("dialog")
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    commands: [
+      { id: "cotal.stop.graceful", bind: "y", title: "Stop", group: "Dialog", run: () => props.answer("graceful") },
+      { id: "cotal.stop.force", bind: "f", title: "Force-kill", group: "Dialog", run: () => props.answer("force") },
+      // Enter cancels: the safe answer is the one a stray Enter gives.
+      { id: "cotal.stop.cancel", bind: "n,return", title: "Cancel", group: "Dialog", run: () => props.answer("cancel") },
+    ],
+  }))
+  return (
+    <DialogLayout header={<DialogHeader title={`Stop agent ${props.name} via the manager?`} />}>
+      <text>
+        <span style={{ fg: theme.text.action.primary.base }}>y</span>
+        <span style={{ fg: theme.text.base }}> stop · </span>
+        <span style={{ fg: theme.text.action.primary.base }}>f</span>
+        <span style={{ fg: theme.text.base }}> force-kill · </span>
+        <span style={{ fg: theme.text.action.primary.base }}>n esc enter</span>
+        <span style={{ fg: theme.text.base }}> cancel</span>
+      </text>
+    </DialogLayout>
   )
 }
 

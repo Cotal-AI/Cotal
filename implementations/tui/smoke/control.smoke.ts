@@ -188,6 +188,7 @@ try {
     }
     return parts.map((p) => p.trim()).join(" ")
   }
+  const confirm = (name: string) => `Stop agent ${name} via the manager?`
 
   for (const [width, height] of [[209, 52], [97, 49], [80, 24]] as const) {
     const size = `${width}x${height}`
@@ -209,6 +210,16 @@ try {
       check(`${size}: the managed uptime counts forward between reads`, ticks.every((t, i) => t !== undefined && (i === 0 || t > ticks[i - 1]!)), `uptimes: ${ticks.join(", ")}`)
     }
 
+    keys("D")
+    const asked = await waitFor(has(confirm("w1")), "D to ask before stopping w1")
+    save(dir, "02-confirm")
+    check(`${size}: D on an agent asks before stopping it`, asked.includes("y stop · f force-kill · n esc enter cancel"), asked)
+    keys("Enter")
+    await waitFor((f) => !f.includes(confirm("w1")), "Enter to close the confirm")
+    await sleep(3000)
+    const kept = capture()
+    check(`${size}: D then Enter does not stop the agent`, !!live("w1") && !kept.includes("stopping w1") && !kept.includes("stopped w1") && /process\s+running/.test(kept), kept)
+
     await pick("planner", space)
     const unmanaged = await waitFor((f) => title(f).includes(`planner  ${space}`) && field(f, "managed") === "not by a manager on this space", "the unmanaged agent's overview")
     save(dir, "03-unmanaged-agent")
@@ -227,6 +238,43 @@ try {
     await waitFor(has("EXIT=0"), "q to quit with status 0")
   }
 
+  console.log("stop")
+  const dir = join(captures, "stop")
+  launch(209, 52, join(work, "stop.err"))
+  await waitFor((f) => f.includes(`● live · ${space}`) && f.includes("w1") && f.includes("w2"), "the live roster with both seats")
+  await pick("w1", space)
+  await waitFor((f) => /process\s+running/.test(f), "the manager's row for w1")
+  keys("D")
+  await waitFor(has(confirm("w1")), "D to ask before stopping w1")
+  keys("f")
+  const killing = await waitFor((f) => f.includes("force-killing w1…") || f.includes("force-killed w1"), "the force-kill under way")
+  check("D then f shows the force-kill under way until the manager answers", killing.includes("force-killing w1…"), killing)
+  const killed = await waitFor(has("force-killed w1"), "the force-kill outcome", 30000)
+  save(dir, "01-force-killed")
+  check("D then f force-kills the agent and says so", true, killed)
+  const gone = await until(() => !live("w1"), 15000)
+  const left = await waitFor((f) => !/[○●◐] w1\b/.test(f), "w1 to leave the roster or go offline", 15000).catch(() => capture())
+  save(dir, "02-w1-gone")
+  check("the force-killed seat leaves the roster or goes offline", gone && !/[○●◐] w1\b/.test(left) && !!live("w2"), left)
+
+  await pick("w2", space)
+  await waitFor((f) => /process\s+running/.test(f), "the manager's row for w2")
+  keys("D")
+  await waitFor(has(confirm("w2")), "D to ask before stopping w2")
+  keys("y")
+  const stopping = await waitFor((f) => f.includes("stopping w2…") || f.includes("stopped w2"), "the stop under way")
+  check("D then y shows the stop under way until the manager answers", stopping.includes("stopping w2…"), stopping)
+  const stopped = await waitFor(has("stopped w2"), "the graceful stop outcome", 30000)
+  save(dir, "03-stopped")
+  check("D then y stops the agent and says so", !stopped.includes("stop: "), stopped)
+  check("the stopped seat leaves the roster or goes offline", await until(() => !live("w2"), 15000))
+  keys("?")
+  const help = await waitFor(has("Stop the selected agent"), "? to list the keys")
+  check("? lists D as the stop key", /D\s+Stop the selected agent/.test(help), help)
+  keys("Escape")
+  await waitFor((f) => !f.includes("Stop the selected agent"), "Esc to close the keys")
+  keys("q")
+  await waitFor(has("EXIT=0"), "q to quit with status 0")
 } finally {
   try {
     tmux("kill-server")

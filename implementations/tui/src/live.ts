@@ -1,6 +1,6 @@
 import { chatWildcard, DEV_OWNER, parsePrincipalKey, principalKey } from "@cotal-ai/core"
 import { connectOrThrow, isCommandFailure, isConnectRefusal, oneLine, userViewAuth } from "@cotal-ai/workspace"
-import { controlPs, type ControlClient, type ControlCtx, type ManagedRow } from "@cotal-ai/workspace/control"
+import { control, controlPs, type ControlClient, type ControlCtx, type ManagedRow } from "@cotal-ai/workspace/control"
 import { MeshView, openObserver, type MeshSnapshot } from "@cotal-ai/workspace/view"
 import { createSignal, type Accessor } from "solid-js"
 
@@ -26,7 +26,16 @@ export type Managed =
   | { phase: "rows"; byId: ReadonlyMap<string, ManagedRow>; readAt: number; partial?: string }
   | { phase: "unavailable"; reason: string }
 
-export type Session = { conn: Accessor<Conn>; managed: Accessor<Managed>; close: () => Promise<void> }
+export type StopResult = { ok: true } | { ok: false; error: string }
+
+export type Session = {
+  conn: Accessor<Conn>
+  managed: Accessor<Managed>
+  /** Asks the seat's manager to stop the agent by name. Graceful lets it shut down; otherwise the
+   *  manager kills the process. */
+  stop: (name: string, graceful: boolean) => Promise<StopResult>
+  close: () => Promise<void>
+}
 
 const OBSERVER_NAME = "tui"
 const PS_POLL_MS = 10_000
@@ -119,6 +128,13 @@ export function openSpace(space?: string): Session {
   return {
     conn,
     managed,
+    stop: async (name, graceful) => {
+      if (!ctx) return { ok: false, error: "the space is not open yet" }
+      const r = await control(client, ctx, "stop", { name, graceful })
+      if (!r.ok) return { ok: false, error: safe(r.error ?? "failed") }
+      void readManaged()
+      return { ok: true }
+    },
     close: async () => {
       if (closed) return
       closed = true
