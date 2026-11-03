@@ -1,5 +1,7 @@
 # Interface stability
 
+> **Project** (informative) · **For:** anyone building on the published packages · **See also:** [Embedding Cotal](embedding.mdx), [Release](release.md), [wire versioning](../SPEC.md#11-versioning-and-extensibility)
+
 Cotal's packages are pre-1.0 and publish in lockstep. Pin the versions you embed, and read
 [Upgrading](UPGRADING.md) before you change them. Three version numbers mark three separate
 compatibility boundaries: the package version, the wire revision, and the contract revision that
