@@ -17,7 +17,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, registry, type AuthProvider, type ChatSessionOpenRequest } from "@cotal-ai/core";
-import { CommandFailure, type MeshTarget } from "@cotal-ai/workspace";
+import type { MeshTarget } from "../src/mesh-target.js";
+import { CommandFailure } from "../src/output.js";
 import { openUserChatSession } from "../src/chat/user-session.js";
 
 let pass = 0, fail = 0;

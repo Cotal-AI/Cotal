@@ -1,5 +1,15 @@
 # @cotal-ai/seat
 
+## 0.138.0
+
+No changes in this release.
+
+## 0.137.0
+
+### Minor Changes
+
+- d02b40c: Add the desktop daemon app with a tray, device-approval onboarding, daemon-owned space discovery and connection controls. Package the stock CLI with the app, keep login credentials out of the renderer, and refuse npm self-update of a bundled runtime. Add native desktop service and local-control support while preserving Linux ownership and lifetime checks.
+
 ## 0.136.8
 
 No changes in this release.

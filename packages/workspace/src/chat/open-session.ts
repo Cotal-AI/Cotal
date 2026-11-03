@@ -13,7 +13,8 @@ import {
 } from "@cotal-ai/core";
 import { JetStreamApiCodes, jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { CommandFailure, type MeshTarget } from "@cotal-ai/workspace";
+import type { MeshTarget } from "../mesh-target.js";
+import { CommandFailure } from "../output.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
 

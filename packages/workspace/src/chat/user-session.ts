@@ -8,7 +8,10 @@ import {
   type AuthProvider,
   type ChatSessionOpened,
 } from "@cotal-ai/core";
-import { CommandFailure, userAuthStateDir, workspaceSecretStore, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { userAuthStateDir } from "../auth-paths.js";
+import type { MeshTarget } from "../mesh-target.js";
+import { CommandFailure, type RefusalCode } from "../output.js";
+import { workspaceSecretStore } from "../secret-store-fs.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
 

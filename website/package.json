@@ -13,7 +13,7 @@
     "postinstall": "fumadocs-mdx",
     "check:runtime": "node scripts/check-runtime.mjs",
     "gen:api": "node scripts/generate-openapi-docs.mjs",
-    "test": "node scripts/check-http-coverage.mjs && node --test scripts/http-api.test.mjs"
+    "test": "node scripts/check-http-coverage.mjs && node --test scripts/http-api.test.mjs scripts/skill-index.test.mjs scripts/check-links.test.mjs"
   },
   "dependencies": {
     "@cotal-ai/docs-content": "file:../tools/docs-content",
