@@ -27,6 +27,7 @@ export * from "./flags.js";
 export { boundedValue, oneLine } from "@cotal-ai/core";
 export * from "./output.js";
 export * from "./preferences.js";
+export * from "./chat-name.js";
 export * from "./present.js";
 export * from "./space-streams.js";
 export * from "./prompt-input.js";
