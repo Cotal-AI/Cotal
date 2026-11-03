@@ -3186,7 +3186,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     await closeServer(publicHttp).catch(() => {});
     await closeServer(http).catch(() => {});
     await nc?.close().catch(() => {});
-    await plane.close().catch(() => {});
+    await plane.close().catch((r: unknown) => log(r instanceof Error ? r.message : String(r)));
     throw e;
   }
 }
