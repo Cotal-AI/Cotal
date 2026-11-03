@@ -195,9 +195,12 @@ export function createManagedPoller(
     },
   };
 }
-export async function controlPs(client: ControlClient, ctx: ControlCtx): Promise<PsReply> {
+
+/** The `ps` read across the space's managers. `readOnly` resolves and connects without sweeping or
+ *  pruning the local registry, for a caller that polls and must leave it as it found it. */
+export async function controlPs(client: ControlClient, ctx: ControlCtx, opts: { readOnly?: boolean } = {}): Promise<PsReply> {
   try {
-    const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
+    const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: opts.readOnly });
     if (t.auth.bearer) {
       const r = await askManager(client, t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
       if (!r.ok) return { ok: false, error: r.error ?? "error" };
