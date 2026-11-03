@@ -15,7 +15,9 @@
  * request it never asked, a read after a reconnect on the same connection asks again, a copy from a recreated stream is delivered again at once, and a
  * gateway read that waits on a take leaves its reader's wake latch neither set over an empty inbox
  * nor unsignalled for a message that arrived during it. While the link is down a held request is
- * offered to no read and wakes nothing, and it is announced again once the link is back.
+ * offered to no read and wakes nothing, and it is announced again once the link is back. A held
+ * request keeps its arrival place among what needs no take, offered and then shown ahead of chatter
+ * that arrived after it.
  *
  * Run: pnpm smoke:anycast-take-gate:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -807,6 +809,26 @@ try {
   check("21b once the link is back the held request is announced again", again21 === true, { before21, after: announced21() });
   const read21 = await down.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent21.msg.id));
   check("21c and the next read takes it and shows it", read21.some((i) => i.recvKey === sent21.msg.id), { shown: read21.length });
+
+  // ── 22. a held request keeps its arrival place ────────────────────────────────────────────
+  // A host that shows the head of its inbox shows what arrived first, as it does where no request
+  // is held, so a role request that arrived before chatter is offered and shown ahead of it.
+  console.log("[22] a role request that arrived before chatter is offered, and shown once taken, ahead of it");
+  const order = await holderOf("order_holder", "orderrole", ["team"]);
+  const sent22 = await sender.agent.ep.anycastAttributed("orderrole", "arrived before the chatter");
+  await until(() => order.agent.inboxKeys().includes(sent22.msg.id));
+  for (let n = 0; n < 3; n++) await poster.agent.send(`order chatter ${n}`, "team");
+  await until(() => order.agent.peekInbox().filter((i) => i.text.startsWith("order chatter")).length === 3 || undefined);
+  const place22 = (items: InboxItem[]) => ({
+    request: items.findIndex((i) => i.recvKey === sent22.msg.id),
+    chatter: items.flatMap((i, n) => (i.text.startsWith("order chatter") ? [n] : [])),
+  });
+  const ahead22 = (p: ReturnType<typeof place22>) => p.request >= 0 && p.chatter.length === 3 && p.chatter.every((n) => n > p.request);
+  const preview22 = place22(order.agent.inboxPreview());
+  check("22a the preview offers the request ahead of the chatter that arrived after it", ahead22(preview22), preview22);
+  await order.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent22.msg.id));
+  const shown22 = place22(order.agent.peekInbox());
+  check("22b once taken it is shown in that place", ahead22(shown22), shown22);
 } catch (e) {
   check(`scenario threw: ${(e as Error).stack ?? (e as Error).message}`, false);
 } finally {

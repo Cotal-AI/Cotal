@@ -83,6 +83,7 @@ On an authenticated mesh a holder's connector asks the [delivery daemon](deliver
 A connector that shows only part of its inbox takes only the requests it shows, so a request left for a later read can still be cancelled.
 A request taken just before the connection drops, or still being taken when it drops, is taken again before it is shown.
 While the connection is down the connector takes nothing, and once it is back it tells the agent about the requests it holds.
+A request waiting for its take keeps its place in the order messages arrived, so the agent sees it where it arrived.
 The daemon then sends the sender a notice naming that holder, and a second notice if the holder's ack wait ran out and another holder took the request.
 The sender can read the request's status by the seq its send returned, and can cancel it until a holder takes it. After that the cancel is refused and names the taker.
 A take means the request was about to be shown and says nothing about the work itself.

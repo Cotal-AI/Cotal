@@ -200,6 +200,9 @@ interface Pending {
   pullOnly: boolean;
   /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
   receivedAt: number;
+  /** Its place in this session's arrival order. A held role request keeps it while held and once
+   *  taken, so it is offered and shown where it arrived. */
+  arrival: number;
   /** #662: the focus tally a buffered id-less channel message is counted in, its digest there, and
    *  the copy it is counted as. Evicting it un-counts that copy only, so recall can hand its stream
    *  copy back while an identical copy with another disposition stays counted. */
@@ -507,6 +510,8 @@ export class MeshAgent extends EventEmitter {
    *  They count toward a wake and are never shown: {@link takeChosen} asks the delivery daemon to
    *  record the take of each one a host chose to show, and a recorded one moves to {@link inbox}. */
   private gated: Pending[] = [];
+  /** Counts arrivals, to number each entry's {@link Pending.arrival}. */
+  private arrivals = 0;
   /** Why the last take could not be decided, when it could not, and when a held request may be
    *  asked about again. Reported by `cotal_inbox`. */
   private heldTake?: { reason: string; detail: string; retryAt: number };
@@ -1353,7 +1358,7 @@ export class MeshAgent extends EventEmitter {
     pullOnly: boolean,
     idless?: { digest: string; copy: IdlessCopy },
   ): void {
-    const pending: Pending = { item, ack: delivery.ack, pullOnly, receivedAt: Date.now() };
+    const pending: Pending = { item, ack: delivery.ack, pullOnly, receivedAt: Date.now(), arrival: this.arrivals++ };
     this.own(pending, delivery.redelivery);
     if (idless) pending.idless = { tally: this.focusIdless, ...idless };
     if (delivery.take) {
@@ -1369,9 +1374,11 @@ export class MeshAgent extends EventEmitter {
     this.emit("incoming", item);
   }
 
-  /** Put one entry in the shown inbox, running the overflow valve. */
+  /** Put one entry in the shown inbox at its arrival place, running the overflow valve. */
   private admit(pending: Pending): void {
-    this.inbox.push(pending);
+    let at = this.inbox.length;
+    while (at > 0 && this.inbox[at - 1]!.arrival > pending.arrival) at--;
+    this.inbox.splice(at, 0, pending);
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow is bounded
       // local loss for channel traffic only: an evicted channel item is acked without being marked
@@ -1616,7 +1623,7 @@ export class MeshAgent extends EventEmitter {
   inboxPreview(scope: InboxScope = "all"): InboxItem[] {
     this.dropLapsedTakes();
     const askable = scope === "pull-only" ? [] : this.gated.filter((p) => p.taking !== undefined || this.mayAskTakes());
-    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...askable].map((p) => p.item);
+    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...askable].sort((a, b) => a.arrival - b.arrival).map((p) => p.item);
   }
 
   /** Choose what to show from {@link inboxPreview}, ask the delivery daemon to record the take of

@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=86",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=88",
   "mutations": [
     {
       "name": "a role request skips its take and lands in the inbox at once",
@@ -288,6 +288,24 @@
       "expectRed": "21b once the link is back the held request is announced again",
       "cell": "21b once the link is back the held request is announced again",
       "note": "A request a read could not be offered while the link was down is never announced, so a host that waits for an announcement never reads it."
+    },
+    {
+      "name": "the preview lists held requests after everything shown",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "].sort((a, b) => a.arrival - b.arrival).map((p) => p.item);",
+      "replace": "].map((p) => p.item);",
+      "expectRed": "22a the preview offers the request ahead of the chatter that arrived after it",
+      "cell": "22a the preview offers the request ahead of the chatter that arrived after it",
+      "note": "A role request that arrived before chatter is offered after it, so a host that shows the head of its preview leaves the request behind the chatter."
+    },
+    {
+      "name": "a taken request joins the end of the inbox",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    while (at > 0 && this.inbox[at - 1]!.arrival > pending.arrival) at--;\n",
+      "replace": "",
+      "expectRed": "22b once taken it is shown in that place",
+      "cell": "22b once taken it is shown in that place",
+      "note": "A request taken after chatter arrived is shown after that chatter rather than where it arrived."
     }
   ]
 }
