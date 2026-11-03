@@ -1624,11 +1624,11 @@ export function permissionsFor(
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
     // No `$KV.${channelBucket(space)}.*` publish — privileged-write, default-deny gives that free.
     `$JS.API.STREAM.MSG.GET.${CHKV}`,
-    // The one-shot CLI reads the registry once with a batched Direct Get, whose request subject is
-    // the bare stream (#4091). On a user-auth mesh those commands connect on the user's bearer, which
-    // the auth service mints with these rows, so the row is what lets them leave no watch consumer
-    // behind. The same reply-subject reasoning as the presence read above: the consumer create below
-    // already grants that vector on this world-readable bucket.
+    // A seat reads the registry on demand, and the one-shot CLI reads it once, each with a batched
+    // Direct Get whose request subject is the bare stream (SPEC §7, #4091). On a user-auth mesh the
+    // CLI connects on the user's bearer, which the auth service mints with these rows, so the row is
+    // what lets it leave no watch consumer behind. The same reply-subject reasoning as the presence
+    // read above: the consumer create below already grants that vector on this world-readable bucket.
     `$JS.API.DIRECT.GET.${CHKV}`,
     `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
     `$JS.API.CONSUMER.INFO.${CHKV}.>`,

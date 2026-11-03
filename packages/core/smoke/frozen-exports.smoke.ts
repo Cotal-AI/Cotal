@@ -108,7 +108,9 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // and loading the barrel was most of its cost.
 // "./browser-control" and "./browser-validators-build" are the Node-free browser describe/invoke
 // entry and its build-time validator generator; their callers never load the barrel, so their
-// entry functions live only there.)
+// entry functions live only there.
+// "./advisory-lock" is the lock the OpenCode launcher bundles to claim an agent's database, which
+// would otherwise bundle the barrel.)
 {
   const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { exports?: Record<string, unknown> };
   const keys = Object.keys(pkg.exports ?? {});
@@ -120,6 +122,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
     ["./command", { module: "command", additions: [] }],
     ["./loopback", { module: "loopback", additions: [] }],
     ["./subjects", { module: "subjects", additions: [] }],
+    ["./advisory-lock", { module: "advisory-lock", additions: [] }],
     ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
     ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
   ]);

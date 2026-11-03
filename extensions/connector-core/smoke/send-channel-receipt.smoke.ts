@@ -52,6 +52,7 @@ function stubAgent(opts: {
   return {
     ep,
     joinedChannels: () => opts.joined,
+    readChannels: async () => {},
     connected: true,
     channelInfo: (channel: string) => ({ replay: true, registered: registered.has(channel) }),
   } as unknown as MeshAgentType;

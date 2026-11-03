@@ -87,6 +87,20 @@ class FakeMesh {
     return channel ? this.modes.get(channel) : undefined;
   }
 
+  /** Receive keys the driver holds in flight, and whether the next hold hits the ceiling. */
+  held = new Set<string>();
+  refuseHolds = false;
+
+  holdInFlight(keys: readonly string[]): boolean {
+    if (this.refuseHolds) return false;
+    for (const key of keys) this.held.add(key);
+    return true;
+  }
+
+  releaseInFlight(keys: readonly string[]): void {
+    for (const key of keys) this.held.delete(key);
+  }
+
   // The run-turn intake is two-phase on the real agent (peek is pure, commit arms). Nothing here
   // drives a turn, so the peek is empty and a commit would be a defect worth failing on.
   peekPendingTurns(): { text: string; goalIds: string[] } | undefined {
@@ -256,6 +270,22 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(mesh.drained.length === 0, "provider acceptance alone waits for a terminal agent boundary");
   driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
   ok(mesh.drained.join() === "m1", "a clean terminal boundary drains the exact confirmed prefix");
+  ok(mesh.held.size === 0, "the commit releases the batch it held in flight");
+}
+
+// A dispatched batch is held in flight until its turn commits it; at the hold ceiling nothing goes out.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  mesh.refuseHolds = true;
+  driver.onSessionStart(context());
+  ok(host.sent.length === 0 && mesh.drained.length === 0, "a batch the agent cannot hold in flight is deferred, not dispatched");
+  mesh.refuseHolds = false;
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "m1" && mesh.held.has(item("m1").recvKey), "once holds are available the batch is dispatched and held");
 }
 
 // Real Pi may expose the request context before all extensions observe message_start.

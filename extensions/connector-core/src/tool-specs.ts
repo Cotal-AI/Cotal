@@ -1041,7 +1041,11 @@ export function cotalToolSpecs(
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
       run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }, call) => {
-        const inboxScope = scope ?? "all";
+        // A host that owns automatic delivery restricts clearing reads to pull-only. A peek clears
+        // nothing, so it may show that queue too: the host still delivers and acks it at the boundary.
+        const pulls = scope !== undefined && peek !== true;
+        const inboxScope = pulls ? scope : "all";
+        const stillDelivered = scope ? "; connector-managed messages still arrive at your turn's end" : "";
         // Asked at each clear, not once: the caller can go while this read waits for the one before
         // it or for focus recall, and what it never receives must stay for the next read.
         const keeps = () => peek === true || call?.signal?.aborted === true;
@@ -1071,14 +1075,14 @@ export function cotalToolSpecs(
             peek,
             warning,
             head: (s) =>
-              scope
+              pulls
                 ? `${s.length} pull-only message${s.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
-                : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`,
+                : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? ` (peek: nothing cleared${stillDelivered})` : ""}:`,
           });
           if (!buffered.length)
             return reply(
-              [warning, scope
-                ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+              [warning, pulls
+                ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued; peek to read ${automaticPending === 1 ? "it" : "them"} now.` : ""}`
                 // A hook receipt never masks an unavailable connection, even with a live transport.
                 : connectionWarning ? "Local inbox buffer is empty."
                   : (agent.connectionState === "ready" ? emptyInboxNote?.() : undefined) ?? "Inbox empty, no new messages."].filter(Boolean).join("\n\n"),
@@ -1164,14 +1168,14 @@ export function cotalToolSpecs(
           warning,
           strictIds: new Set(clocked.map((i) => i.recvKey)),
           head: (s) =>
-            scope
+            pulls
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
-              : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`,
+              : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? ` (peek: live buffer not cleared${stillDelivered})` : ""} in focus mode; channel items are recall since you focused:`,
         });
         if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return reply(
-            [connectionWarning, storedNote, scope
-              ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+            [connectionWarning, storedNote, pulls
+              ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued; peek to read ${automaticPending === 1 ? "it" : "them"} now.` : ""}`
               : connectionWarning ? "Local inbox buffer and available focus recall are empty." : "Inbox empty, no new messages, and no channel chatter since you entered focus."].filter(Boolean).join("\n\n"),
           );
         if (!all.length) {
@@ -1383,10 +1387,11 @@ export function cotalToolSpecs(
       schema: {
         channel: z.string().describe("The channel to look up (e.g. review)."),
       },
-      run(agent, _config, { channel }: { channel: string }) {
+      async run(agent, _config, { channel }: { channel: string }) {
         const notName = notAChannelName(channel, "Nothing was looked up.");
         if (notName !== undefined) return err(`Couldn't look up the channel: ${notName}`);
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
+        await agent.readChannels();
         return ok(renderChannelInfo(channel, agent.channelInfo(channel)));
       },
     },

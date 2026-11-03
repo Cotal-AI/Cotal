@@ -1,5 +1,144 @@
 # @cotal-ai/core
 
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+### Patch Changes
+
+- e8003ed: Seats see the channel registry again. Since seats stopped watching presence, they had also stopped
+  watching the channel registry: `cotal_channels` and `cotal_channel_info` showed no registered
+  channel and no description, the boot briefing carried no channel notes, and a join treated every
+  channel as durable. A seat now reads the registry on demand with `CotalEndpoint.readChannels()`, a
+  batched Direct Get that binds no consumer: once at connect, and again before it lists channels,
+  looks one up, joins or leaves.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+### Minor Changes
+
+- f5251ae: An OpenCode agent name now has one launcher at a time. Two launches that overlapped both passed the server-record check, which runs before the version probe and the spawn, so both started a server on the agent's SQLite database. The launcher now first claims the name with core's advisory lock, `launch.lock` in the agent's directory, and holds it until it exits. A second launch is refused as already running, and a claim left by a launcher that died is reclaimed. `@cotal-ai/core` exports the lock as `@cotal-ai/core/advisory-lock`, so the bundled launcher can use it without the barrel.
+
+## 0.135.21
+
+### Patch Changes
+
+- a259571: `acquireLock` now honors its `waitMs` while another live process is reclaiming a stale lock, as `acquireLockAsync` already did. Before, the synchronous acquirer retried the reclaim with no deadline check. A zero-wait acquisition then blocked its event loop until the reclaimer finished, and never returned when the reclaimer was its own process.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+### Patch Changes
+
+- 985dbc5: A broker refusal of an endpoint call no longer tells a caller that was just granted that it holds no grant. The broker fixes a connection's permissions when it authenticates, so a grant made while the caller is connected reaches only its next connection. Every refusal (describe, call, cast and liveness probe) now says either no grant covers the call, or it was granted after the connection authenticated and the caller should reconnect and retry. `cotal service-endpoint grant` also says that a connection the grantee opened before the grant must reconnect before it can use the new commands.
+
+## 0.135.9
+
+No changes in this release.
+
+## 0.135.8
+
+### Patch Changes
+
+- 0c09e47: Keep each endpoint's presence heartbeat on its own phase. Repeating timers that Node re-arms in one pass stay bunched after a loop stall, so one process holding many endpoints put every heartbeat into the same tick. The heartbeat now re-arms from its own start instant, so stalls no longer bunch heartbeats and the interval and TTL are unchanged.
+
+## 0.135.7
+
+### Patch Changes
+
+- bb263b1: Preserve effect outcomes when converting native endpoint replies and envelope errors to ControlReply.
+
+## 0.135.6
+
+### Patch Changes
+
+- 65311dd: Derive a creds file's identity with Node's Ed25519 instead of the nkeys library's JavaScript curve. `identityFromCreds` runs on every endpoint construction and took about 8 ms per call; it now takes about 0.2 ms, which a process constructing thousands of endpoints paid per endpoint.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
 ## 0.135.0
 
 ### Minor Changes

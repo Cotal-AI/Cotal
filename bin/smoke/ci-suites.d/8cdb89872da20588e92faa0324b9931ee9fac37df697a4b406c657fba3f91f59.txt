@@ -1,0 +1,2 @@
+# Every manager door refuses a gate with the same code, through one current-registration check (#2896).
+smoke:manager-registration-check

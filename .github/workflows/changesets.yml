@@ -305,7 +305,7 @@ jobs:
         if: steps.publish.outputs.published == 'true' && needs.release.outputs.staged == 'true'
         run: |
           version=$(node --print "require('./bin/package.json').version")
-          node scripts/verify-publish-closure.mjs "$version"
+          node scripts/verify-publish-closure.mjs "$version" --deadline-ms=1500000
           node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
       - name: Promote verified packages to latest
         if: steps.publish.outputs.published == 'true' && needs.release.outputs.staged == 'true'
@@ -325,11 +325,14 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      # The census waits as long as the install check after it. npm has taken over twenty minutes
+      # to serve an accepted cotal-ai, and a census that gave up at its ten-minute default failed
+      # this job and skipped the Release for a version that was only late (#3285).
       - name: Verify direct closure and registry installation
         if: needs.publish.outputs.staged != 'true'
         run: |
           version=$(node --print "require('./bin/package.json').version")
-          node scripts/verify-publish-closure.mjs "$version"
+          node scripts/verify-publish-closure.mjs "$version" --deadline-ms=1500000
           node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
       # The notes lead with the changeset summaries (what changed, as written in the package
       # changelogs) and end with GitHub's generated list of merged PRs since the previous version

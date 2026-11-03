@@ -3,7 +3,7 @@
  *  `endpoint-invoke.ts`; the store fetch, recompile and split repair stay there. */
 import { base64url } from "./base64url.js";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
-import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
+import { BROKER_REFUSAL_CAUSE, openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, parseEndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { epCall, type EpVerbTarget, type EpAttributedReply } from "./endpoint-call.js";
@@ -125,7 +125,7 @@ export async function describeEndpoint(
     // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
     // from an unanswered describe.
     denialWatch = openPublishDenialWatch(nc, subject, () => new EpEnvelopeError("permission-denied",
-      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`, undefined, "not-executed"), "describe");
+      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; ${BROKER_REFUSAL_CAUSE}`, undefined, "not-executed"), "describe");
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {

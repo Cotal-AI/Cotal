@@ -31,7 +31,10 @@ in-process plugin does everything.
   not-yet-built feature (see [Limits](#session-lifecycle)).
 - **Per-agent database.** The session SQLite DB is moved per agent
   (`.cotal/opencode/<name>/opencode.db`, rooted at the manager's workspace) so concurrent managed
-  agents don't lock each other or drop files into a target repo. Each launch records its server in
+  agents don't lock each other or drop files into a target repo. A launch first claims the name with
+  a lock file, `launch.lock`, which it holds until it exits. A second launch of the name while the
+  first runs is refused as already running, and a claim left by a launcher that died is reclaimed.
+  Each launch records its server in
   a file of its own in that directory, `serve.<token>.pid` with a token minted for the launch, and
   checks every record there before it starts a server, including a `serve.pid` an earlier version
   wrote. A record that the previous launcher removes during that check counts as no record, and so
@@ -100,7 +103,9 @@ in-process plugin does everything.
   seat end.
 - **A refused setup joins nothing on 2.x.** The agent joins the mesh only after OpenCode has
   accepted the plugin's session and tool hooks. If OpenCode refuses one, setup fails before the
-  join, so no seat stays on the roster without the hooks that drive it.
+  join, so no seat stays on the roster without the hooks that drive it. Concurrent setup calls share
+  the attempt's result. A refused attempt can be retried; a completed setup keeps later location
+  boots inert until its teardown finishes.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
