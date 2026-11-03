@@ -1622,7 +1622,7 @@ export class MeshAgent extends EventEmitter {
    *  showing: hand the choice to {@link takeChosen}. */
   inboxPreview(scope: InboxScope = "all"): InboxItem[] {
     this.dropLapsedTakes();
-    const askable = scope === "pull-only" ? [] : this.gated.filter((p) => p.taking !== undefined || this.mayAskTakes());
+    const askable = scope === "pull-only" ? [] : this.gated.filter((p) => this.mayOffer(p));
     return [...this.inbox.filter((p) => this.inScope(p, scope)), ...askable].sort((a, b) => a.arrival - b.arrival).map((p) => p.item);
   }
 
@@ -1640,7 +1640,7 @@ export class MeshAgent extends EventEmitter {
     const chosen = choose(this.inboxPreview(scope));
     const keys = new Set(chosen.map((i) => i.recvKey));
     const asked = scope === "pull-only" ? [] : this.gated
-      .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()));
+      .filter((p) => keys.has(p.item.recvKey) && this.mayOffer(p));
     for (const p of asked) p.awaited = (p.awaited ?? 0) + 1;
     const runs = asked.map((p) => (p.taking !== undefined && p.takingDrops === this.transportDrops ? p.taking : this.startTake(p)));
     if (runs.length) {
@@ -1664,6 +1664,13 @@ export class MeshAgent extends EventEmitter {
    *  decide is being waited out ({@link heldTake}). */
   private mayAskTakes(): boolean {
     return this._transportConnected && (!this.heldTake || Date.now() >= this.heldTake.retryAt);
+  }
+
+  /** Whether a read may be offered a held role request now: the link is up and its take is out
+   *  already, or a take may be asked ({@link mayAskTakes}). A take that is out when the link drops
+   *  cannot admit the request until the link is back, so a read then is offered nothing of it. */
+  private mayOffer(p: Pending): boolean {
+    return (p.taking !== undefined && this._transportConnected) || this.mayAskTakes();
   }
 
   private startTake(p: Pending): Promise<void> {

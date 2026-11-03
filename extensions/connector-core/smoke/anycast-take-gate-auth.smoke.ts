@@ -17,9 +17,9 @@
  * delivered again at once, and a
  * gateway read that waits on a take leaves its reader's wake latch neither set over an empty inbox
  * nor unsignalled for a message that arrived during it. While the link is down a held request is
- * offered to no read and wakes nothing, and it is announced again once the link is back. A held
- * request keeps its arrival place among what needs no take, offered and then shown ahead of chatter
- * that arrived after it.
+ * offered to no read, its take out or not, and wakes nothing, and it is announced again once the
+ * link is back. A held request keeps its arrival place among what needs no take, offered and then
+ * shown ahead of chatter that arrived after it.
  *
  * Run: pnpm smoke:anycast-take-gate:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -404,7 +404,15 @@ try {
   const started11 = Date.now();
   const read11 = dropper.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === key11), waitMs11);
   const asked11 = await takeRail.received;
+  // The link drops while the take is out, so a read then could not show the request (11h).
+  let offered11: boolean | undefined;
+  const onDrop11 = (e: { connected: boolean }) => {
+    if (e.connected || offered11 !== undefined) return;
+    offered11 = dropper.agent.inboxPreview().some((i) => i.recvKey === key11);
+  };
+  dropper.agent.on("transport", onDrop11);
   await dropper.agent.reconnect();
+  dropper.agent.off("transport", onDrop11);
   const shown11 = await read11;
   const ended11 = Date.now() - started11;
   check(
@@ -477,6 +485,7 @@ try {
     asked11g && drivingAtDrop && shown11g === true,
     { asked11g, drivingAtDrop, shown: [...driverShown] },
   );
+  check("11h while the link is down a read is offered no request whose take was out when it dropped", offered11 === false, { offered11 });
 
   // ── 12. one seq naming two of this session's requests ─────────────────────────────────────
   // After every cell that uses the old stream, because it deletes and recreates the TASK stream.

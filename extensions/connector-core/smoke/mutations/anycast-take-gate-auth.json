@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
   ],
   "command": "pnpm smoke:anycast-take-gate:auth",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=89",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=90",
   "mutations": [
     {
       "name": "a role request skips its take and lands in the inbox at once",
@@ -58,8 +58,8 @@
     {
       "name": "the take ignores the host's choice and takes every held request in scope",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      .filter((p) => keys.has(p.item.recvKey) && (p.taking !== undefined || this.mayAskTakes()))",
-      "replace": "      .filter((p) => p.taking !== undefined || this.mayAskTakes())",
+      "find": "      .filter((p) => keys.has(p.item.recvKey) && this.mayOffer(p))",
+      "replace": "      .filter((p) => this.mayOffer(p))",
       "expectRed": "6c the requests it left still read waiting",
       "cell": "6c the requests it left still read waiting",
       "note": "The take ignores the host's choice and takes every held request in scope."
@@ -270,6 +270,15 @@
       "expectRed": "21a while the link is down a read is offered no held request, and none wakes",
       "cell": "21a while the link is down a read is offered no held request, and none wakes",
       "note": "A read during the drop chooses the request, its take returns at once without asking, and a host that reads whenever one is offered reads it again with no turn of the event loop between."
+    },
+    {
+      "name": "a request whose take is out is offered to a read while the link is down",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return (p.taking !== undefined && this._transportConnected) || this.mayAskTakes();",
+      "replace": "    return p.taking !== undefined || this.mayAskTakes();",
+      "expectRed": "11h while the link is down a read is offered no request whose take was out when it dropped",
+      "cell": "11h while the link is down a read is offered no request whose take was out when it dropped",
+      "note": "A take out when the link dropped cannot admit the request until the link is back, so a read offered it then chooses it and shows nothing."
     },
     {
       "name": "the reconnect announces no held request",
