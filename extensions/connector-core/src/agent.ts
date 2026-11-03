@@ -2086,19 +2086,16 @@ export class MeshAgent extends EventEmitter {
    * did not. Does not refuse create. Graded before multicast so the new message cannot
    * make the name look pre-existing.
    */
-  async describeSendChannel(channel: string): Promise<string> {
-    if (this.ep.getChannelConfig(channel)) return "existing channel";
+  async describeSendChannel(channel: string): Promise<{ known: boolean; hints: string[] }> {
+    if (this.ep.getChannelConfig(channel)) return { known: true, hints: [] };
     const known = new Set<string>(this.ep.joinedChannels().filter(isConcreteChannel));
     try {
       for (const row of await this.ep.listChannels()) known.add(row.channel);
     } catch {
       /* no stream: joined + registry cache still distinguish a typo of a channel we are on */
     }
-    if (known.has(channel)) return "existing channel";
-    const hints = closeChannelNames(channel, [...known]);
-    if (hints.length)
-      return `new channel - no registry entry and no prior traffic; did you mean ${hints.map((h) => "#" + h).join(", ")}?`;
-    return "new channel - no registry entry and no prior traffic";
+    if (known.has(channel)) return { known: true, hints: [] };
+    return { known: false, hints: closeChannelNames(channel, [...known]) };
   }
 
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster

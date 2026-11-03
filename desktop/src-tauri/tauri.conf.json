@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cotal",
+  "version": "../../bin/package.json",
+  "identifier": "ai.cotal.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Cotal",
+        "width": 940,
+        "height": 900,
+        "minWidth": 560,
+        "minHeight": 660,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Connect your computer to Cotal",
+    "externalBin": [
+      "binaries/cotal-node"
+    ],
+    "resources": {
+      "runtime/": "runtime/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.5"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "mainBinaryName": "cotal-desktop",
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "cotal"
+        ]
+      }
+    }
+  }
+}

@@ -4,7 +4,7 @@ import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { attachSeat } from "../commands/agents.js";
-import { detachKey } from "../lib/attach-client.js";
+import { detachKey } from "@cotal-ai/workspace/attach";
 import { cliControl } from "../lib/control.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";

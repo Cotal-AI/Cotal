@@ -122,7 +122,7 @@ for (const channel of ["team.>", "team.ci.>", "team.*", "perm.*", "perm.x"]) {
 
 check(
   "the cotal_join description says what a family keeps",
-  join.description.includes("A family such as team.> follows every channel under team, now and later, but not team itself: posts on its durable channels are stored for you while you are away, from the join on"),
+  join.description.includes("Under a family such as review.>, posts on its durable channels are kept for you while you are offline, from the join on, and its live channels reach you only while you are connected."),
   join.description,
 );
 

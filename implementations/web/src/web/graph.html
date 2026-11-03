@@ -130,6 +130,8 @@
       .d-status.waiting { background: #2a2117; color: var(--waiting); }
       .d-status.idle { color: var(--dim); }
       .d-status.offline { color: var(--faint); }
+      .presence-facts { font-size: 12px; color: var(--dim); line-height: 1.5;
+        white-space: normal; overflow-wrap: anywhere; }
       .d-section { display: flex; flex-direction: column; gap: 5px; }
       .d-label { font-size: 9.5px; font-weight: 600; letter-spacing: .5px; color: var(--faint);
         text-transform: uppercase; }
@@ -218,6 +220,6 @@
     <script src="/harness.js"></script>
     <script src="/parts.js"></script>
     <script src="/agui-frame.js"></script>
-    <script src="/graph.js"></script>
+    <script type="module" src="/graph.js"></script>
   </body>
 </html>

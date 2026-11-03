@@ -13,7 +13,7 @@ import {
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { batchedRead } from "../lib/transient.js";
-import { MAX_BUFFER } from "../chat/engine.js";
+import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { channelMembers } from "./channel-members.js";

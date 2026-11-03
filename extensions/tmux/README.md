@@ -19,6 +19,8 @@ import.
   Stop and interrupt follow the pane when it moves between windows. Their tmux commands check the
   opening server's identity, including the delayed graceful close, so a replacement server cannot
   receive an old handle's input or close. Status and exit waits bind the pane to that server too.
+  Native attach guidance selects the seat's current window and pane by its stable pane ID,
+  so moving the pane or renaming its window does not redirect the operator to another seat.
   A dead server proves exit; an unreachable recorded server that still runs remains unknown.
   Exit waits honor tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the
   wait closed. Direct window closes still accept only tmux's own gone-window/session reports.

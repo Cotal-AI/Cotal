@@ -312,6 +312,8 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   // snapshot while the other drops it is the state this file exists to prevent.
   "/snapshot.js": { path: join(here, "web/snapshot.js"), type: jsType },
   "/md.js": { path: join(here, "web/md.js"), type: jsType },
+  "/presence-ages.js": { path: join(here, "web/presence-ages.js"), type: jsType },
+  "/presence.js": { path: join(here, "web/presence.js"), type: jsType },
   "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
   "/graph.js": { path: join(here, "web/graph.js"), type: jsType },

@@ -5,7 +5,7 @@
  * It never widens anything: a choice only names a destination; the broker still decides.
  */
 import { assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
-import type { AdmittedChatSession, ConnectionReport, RosterView } from "./session.js";
+import type { AdmittedChatSession, ConnectionReport, RosterView } from "@cotal-ai/workspace/chat";
 import { personLabel, recipientLabel, sharedNames, type Person, type Recipient } from "./view.js";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 

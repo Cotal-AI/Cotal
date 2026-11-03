@@ -1,14 +1,16 @@
 /**
  * The daemon's lifetime lock, and the socket generation it correlates with.
  *
- * `serve` holds an exclusive `flock(2)` on `<state>/daemon.lock` for as long as it runs. The
- * kernel owns that lock's lifetime: it is released when the last descriptor referring to it
- * closes, which includes every way the process can die. A daemon killed with SIGKILL, or taken by
+ * `serve` holds an exclusive kernel lock on `<state>/daemon.lock` for as long as it runs: `flock(2)`
+ * on Linux and macOS, `LockFileEx` on one byte past the record on Windows. The kernel owns that
+ * lock's lifetime: it is released when the last descriptor referring to it closes, which includes
+ * every way the process can die. A daemon killed with SIGKILL, or taken by
  * the OOM killer, therefore leaves no lock behind, and the next `serve` learns its predecessor is
  * gone from the kernel's own refusal to hold the lock twice, not from a recorded pid it has to
  * judge alive or dead.
  *
- * That is what makes stale-socket recovery safe. A unix socket's inode outlives its listener, so
+ * That is what makes stale-socket recovery safe on Linux and macOS. (A Windows pipe name needs no
+ * recovery: it exists only while a process holds an instance of it.) A unix socket's inode outlives its listener, so
  * a crash leaves a published socket nobody is bound to, and a probe-then-unlink of it races with
  * another starter publishing a live one. Holding the lock removes the race: publishing requires the
  * lock, so while this process holds it nobody else can put a socket at the path. The one socket it
@@ -18,6 +20,8 @@
  *
  * The record is written through the locked descriptor, so it is always the record of the file this
  * process locked. It carries no secret: a pid, its start token, a start time and an inode number.
+ * The start token is the kernel's own start time for that pid ({@link processBirth}), so a reused
+ * pid never matches it.
  *
  * Two different questions use the two different facts. "May I serve?" is a liveness question, and
  * the kernel answers it by holding the lock for at most one process. "Is the process answering
@@ -29,7 +33,7 @@ import { closeSync, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync,
 import { constants } from "node:fs";
 import { createConnection } from "node:net";
 import { processStartToken } from "@cotal-ai/core";
-import { flockExclusiveNb } from "@cotal-ai/seat";
+import { lockExclusiveNb, processStartTime } from "@cotal-ai/seat";
 import { codeSpan, shellPath } from "@cotal-ai/workspace";
 import { EndpointRefusal } from "./endpoint.js";
 
@@ -41,10 +45,21 @@ export interface SocketGeneration {
 }
 
 /** What a holder writes through its locked descriptor. `socket` is absent until it publishes one. */
+/**
+ * The kernel's start token for process `pid`, so a pid reused by a later process never matches:
+ * `/proc/<pid>/stat` starttime on Linux, the process table's start time on macOS, the creation
+ * time of the process object on Windows (the same value the native pipe open reads for its peer).
+ * Undefined when there is no such process.
+ */
+export function processBirth(pid: number): string | undefined {
+  return process.platform === "linux" ? processStartToken(pid) : processStartTime(pid);
+}
+
+/** What a holder writes through the locked descriptor. `socket` is absent until it publishes one. */
 export interface LockRecord {
   readonly v: 1;
   readonly pid: number;
-  /** The holder's `/proc` process-start token, so a client can tell its pid from a reused one. */
+  /** The holder's {@link processBirth} token, so a client can tell its pid from a reused one. */
   readonly start?: string;
   readonly startedAt: string;
   readonly socket?: SocketGeneration;
@@ -89,7 +104,7 @@ export function holdLifetime(path: string): HeldLifetime {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
   let held: boolean;
   try {
-    held = flockExclusiveNb(fd);
+    held = lockExclusiveNb(fd);
   } catch (e) {
     closeSync(fd);
     throw e;
@@ -113,7 +128,7 @@ export function holdLifetime(path: string): HeldLifetime {
   } catch { /* an unreadable record names no generation, so nothing is recovered */ }
 
   const startedAt = new Date().toISOString();
-  const token = processStartToken(process.pid);
+  const token = processBirth(process.pid);
   const identity = { v: 1 as const, pid: process.pid, ...(token !== undefined ? { start: token } : {}), startedAt };
   let released = false;
   const write = (record: LockRecord): void => {

@@ -1,7 +1,7 @@
 import type { NatsConnection } from "@nats-io/transport-node";
 import { openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, type SessionGrant } from "@cotal-ai/core";
-import { cachedPreferences, describeLayer, parseDetachKey, resolvePreference } from "@cotal-ai/workspace";
-import { c, stderrLine } from "../ui.js";
+import { c } from "../colors.js";
+import { cachedPreferences, describeLayer, parseDetachKey, resolvePreference } from "../preferences.js";
 
 /**
  * The detach key — Ctrl-] (0x1d) by default, as in telnet/ssh escape conventions. The `detach-key`
@@ -254,22 +254,30 @@ export function isTransportEnd(reason: string): boolean {
   return TRANSPORT_END_REASONS.has(reason);
 }
 
+/** A line the attach tells the operator while it runs. A `status` line is the loop's own progress;
+ *  a `warning` is something about the operator's setup worth a look. */
+export type AttachNotice = { tone: "status" | "warning"; text: string };
+
+/** The default notice sink: stderr, with a status line dimmed. */
+export function writeNotice(notice: AttachNotice): void {
+  console.error(notice.tone === "status" ? c.dim(notice.text) : notice.text);
+}
+
 /**
  * Drive a manager's attach session from the terminal: raw-mode stdin streams to the remote PTY,
  * PTY output streams to stdout, and SIGWINCH-style resizes are forwarded. The detach key (Ctrl-]
  * by default, {@link detachKey}) detaches without killing the agent. Transport-agnostic over the
- * mesh §13.6 session.
+ * mesh §13.6 session. `notice` receives the line naming a rebound detach key.
  */
-export function attachClient(transport: TerminalTransport, hold?: TerminalHold, takeStdin?: () => boolean): Promise<AttachOutcome> {
-  // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
-  // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
-  let detach: ReturnType<typeof detachKey>;
-  try {
-    detach = detachKey();
-  } catch (e) {
-    stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    process.exit(1);
-  }
+export function attachClient(
+  transport: TerminalTransport,
+  hold?: TerminalHold,
+  takeStdin?: () => boolean,
+  notice: (notice: AttachNotice) => void = writeNotice,
+): Promise<AttachOutcome> {
+  // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY throws up front instead of
+  // after an attach we'd only tear down.
+  const detach = detachKey();
   // A caller that reconnects owns the terminal across attempts and undoes it once at the end;
   // without a hold this session owns it, which is the one-shot behaviour.
   const ownsTerminal = hold === undefined;
@@ -447,7 +455,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
       }
       // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
       // default label). Only on override, so the default case stays free of duplicate noise.
-      if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (from ${detach.from})`));
+      if (detach.overridden) notice({ tone: "status", text: `detach key: ${detach.label} (from ${detach.from})` });
       term.enterRaw();
       stdin.resume();
       tookStdin = true;

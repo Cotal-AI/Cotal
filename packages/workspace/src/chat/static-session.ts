@@ -19,11 +19,12 @@ import {
   CotalEndpoint, DEV_OWNER, EP_UNANSWERED, SealRecipient, assertLifecycleToken, assertValidChannel, idFromCreds, isCurvePublicKey, principalKey, resolveReadAcl,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, isConnectRefusal, mintControlInstrument, preflightOrThrow, type MeshTarget } from "@cotal-ai/workspace";
+import { isConnectRefusal, mintControlInstrument, preflightOrThrow } from "../connect.js";
+import { askManager, managerFailure, refuseWithoutLiveManager, type ControlClient, type ManagerReply } from "../control/manager.js";
+import type { MeshTarget } from "../mesh-target.js";
+import { CommandFailure } from "../output.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
-import { askManager, managerFailure, refuseWithoutLiveManager, type ManagerReply } from "@cotal-ai/workspace/control";
-import { cliControl } from "../lib/control.js";
 
 /** The leaf's whole life. The manager caps `ttl` here and never renews it. */
 export const STATIC_CHAT_TTL_SEC = 900;
@@ -116,11 +117,11 @@ export function retireReport(reply: ManagerReply, managerInstanceId: string, val
  *  With `purpose`, an unpinned call on a space whose registry lists no live manager is refused
  *  before `op` is sent, as the run verbs refuse it, rather than after it has waited out its deadline.
  *  `timeoutMs` is the reply window for `op` itself; absent, it is `askManager`'s default. */
-async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined, purpose?: string, timeoutMs?: number): Promise<ManagerReply> {
+async function askPinned(control: ControlClient, mesh: PinnedMesh, op: string, args: Record<string, unknown>, instanceId: string | undefined, purpose?: string, timeoutMs?: number): Promise<ManagerReply> {
   try {
     const auth = { ...await mintControlInstrument(mesh, "privileged", instanceId), tls: mesh.tlsRequired };
     if (purpose !== undefined && instanceId === undefined) await refuseWithoutLiveManager(mesh.space, mesh.server, auth, { space: mesh.space }, purpose);
-    return await askManager(cliControl, mesh.space, mesh.server, op, args, auth, "owner", timeoutMs, instanceId !== undefined ? { instanceId } : undefined);
+    return await askManager(control, mesh.space, mesh.server, op, args, auth, "owner", timeoutMs, instanceId !== undefined ? { instanceId } : undefined);
   } catch (e) {
     if (e instanceof CommandFailure) throw e;
     await preflightOrThrow(mesh, undefined, true);
@@ -132,7 +133,7 @@ async function askPinned(mesh: PinnedMesh, op: string, args: Record<string, unkn
  *  a spawn's, under its rules: `subscribe` the initial channels, `allowSubscribe` the read ceiling
  *  (empty means `subscribe`), `allowPublish` the post list (empty means none). `instanceId`
  *  (`--on`) chooses the admitting manager; retirement always goes to the instance that answered
- *  the open. */
+ *  the open. `control` asks the manager both at the open and at the retirement. */
 export async function openStaticChatSession(target: MeshTarget, options: {
   readonly label: string;
   readonly subscribe?: readonly string[];
@@ -140,6 +141,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   readonly allowPublish?: readonly string[];
   readonly instanceId?: string;
   readonly reopen: (channel: string) => string;
+  readonly control: ControlClient;
 }): Promise<NativeChatSession> {
   if (target.mode !== "auth" || !target.auth)
     throw new CommandFailure("refused", "UNSUPPORTED", "the static chat adapter requires a recorded static-auth target with its trust material; no other admission was attempted", { target: { space: target.space } });
@@ -154,12 +156,13 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     throw new CommandFailure("refused", "USAGE_INVALID", `chat could not be opened: ${(e as Error).message}`);
   }
   const mesh: PinnedMesh = Object.freeze({ ...target, auth: target.auth });
+  const control = options.control;
   // The one-time key the leaf is sealed to. Its private half stays in this object and is cleared
   // once the reply is opened or the open fails.
   const recipient = new SealRecipient();
   let reply: ManagerReply;
   try {
-    reply = await askPinned(mesh, "chatSessionOpen", {
+    reply = await askPinned(control, mesh, "chatSessionOpen", {
       subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,
     }, options.instanceId, "admit a chat session");
   } catch (e) {
@@ -199,7 +202,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   const retire = async (): Promise<CloseReport> => {
     let answer: ManagerReply;
     try {
-      answer = await askPinned(mesh, "chatSessionRetire", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS);
+      answer = await askPinned(control, mesh, "chatSessionRetire", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS);
     } catch (e) {
       const cause = isConnectRefusal(e) ? e.failure().message : (e as Error).message;
       return { retirement: "unknown", connectionClosed: "confirmed", credentialValidUntil: slot.expiresAt, message: `The retire request was not sent to manager ${managerInstanceId}: ${cause}. That manager retires the session at its expiry or its stop if it is still running.` };

@@ -11,7 +11,9 @@
  * Run: pnpm smoke:seat-native-ci
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/seat-native-ci.json
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -87,7 +89,7 @@ function downloaded(body: string): string[] {
     if (!/uses:\s*actions\/download-artifact@/.test(lines[i])) continue;
     for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
       if (/^\s+-\s+uses:/.test(lines[j]) || /^\s+-\s+name:/.test(lines[j])) break;
-      const n = lines[j].match(/^\s+name:\s*(\S+)\s*$/);
+      const n = lines[j].match(/^\s+(?:name|pattern):\s*(\S+)\s*$/);
       if (n) {
         names.push(n[1]);
         break;
@@ -166,6 +168,62 @@ check("publication consumes the pack this workflow's push run on main made from 
     && /pack-dir-artifact-id:.*steps\.packed\.outputs\.artifact-id/.test(publish));
 check("only publication receives npm identity", /^\s+environment:\s*npm-publish\s*$/m.test(publish) && /id-token: write/.test(publish) && !/id-token:/.test(releasePack));
 check("publication does not invoke custom qualification or publication wrappers", !/release-qualification|publish-cold-candidate|direct-release|select-release-natives/.test(csText));
+
+console.log("\nD. Desktop host artifacts");
+const hostTargets = ["darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"];
+check("PR pack needs the shared host builder", needsList(pack).includes("workspace-native"));
+check("PR pack requests the macOS host builds", /^\s+darwin: true\s*$/m.test(ciJobs.get("workspace-native") ?? ""));
+for (const [name, body] of [["PR", pack], ["cold", candidate]]) {
+  check(`${name} pack downloads all four desktop host artifacts`, hostTargets.every((target) => downloaded(body).some((spec) => spec === `seat-native-${target}` || (spec.endsWith("*") && `seat-native-${target}`.startsWith(spec.slice(0, -1))))));
+}
+for (const [name, body] of [["PR", pack], ["cold", candidate], ["release", releasePack]]) {
+  check(`${name} pack supplies all four host artifacts to assembly`, hostTargets.every((target) => body.includes(`SEAT_NATIVE_${target.toUpperCase().replaceAll("-", "_")}`)));
+}
+check("shared host builders compile and upload seat helpers", (windowsRecipe.match(/node packages\/seat\/scripts\/build-native.mjs --host/g) ?? []).length === 2
+  && windowsRecipe.includes("name: seat-native-win32-${{ matrix.arch }}") && windowsRecipe.includes("name: seat-native-darwin-${{ matrix.arch }}"));
+
+// Container-header fixtures test the packaging validator, not native loading or execution.
+console.log("\nE. Native container validation fixtures");
+const fixture = mkdtempSync(join(tmpdir(), "cotal-native-headers-"));
+const headers = new Map<string, Buffer>();
+for (const [arch, machine] of [["x64", 62], ["arm64", 183]] as const) {
+  const bytes = Buffer.alloc(64); bytes.write("\x7fELF", 0, "ascii"); bytes.writeUInt16LE(machine, 18);
+  headers.set(`linux-${arch}`, bytes);
+}
+for (const [arch, machine] of [["x64", 0x01000007], ["arm64", 0x0100000c]] as const) {
+  const bytes = Buffer.alloc(32); bytes.writeUInt32LE(0xfeedfacf, 0); bytes.writeUInt32LE(machine, 4); bytes.writeUInt32LE(8, 12);
+  headers.set(`darwin-${arch}`, bytes);
+}
+for (const [arch, machine] of [["x64", 0x8664], ["arm64", 0xaa64]] as const) {
+  const bytes = Buffer.alloc(128); bytes.write("MZ"); bytes.writeUInt32LE(64, 60); bytes.write("PE\0\0", 64); bytes.writeUInt16LE(machine, 68); bytes.writeUInt16LE(0x2000, 86);
+  headers.set(`win32-${arch}`, bytes);
+}
+const targetPath = (target: string) => join(fixture, "build", "Release", target, "peercred.node");
+const validate = () => spawnSync(process.execPath, [join(ROOT, "packages/seat/scripts/assert-shipped-natives.mjs"), fixture], { encoding: "utf8", timeout: 10_000 });
+try {
+  for (const [target, bytes] of headers) { mkdirSync(dirname(targetPath(target)), { recursive: true }); writeFileSync(targetPath(target), bytes); }
+  check("all six matching container headers pass", validate().status === 0);
+  for (const target of hostTargets) {
+    rmSync(targetPath(target));
+    check(`missing ${target} refuses packaging`, validate().status !== 0);
+    writeFileSync(targetPath(target), headers.get(target)!);
+    const wrong = Buffer.from(headers.get(target)!);
+    if (target.startsWith("darwin")) wrong.writeUInt32LE(0, 4); else wrong.writeUInt16LE(0, 68);
+    writeFileSync(targetPath(target), wrong);
+    check(`wrong ${target} architecture refuses packaging`, validate().status !== 0);
+    writeFileSync(targetPath(target), headers.get(target)!);
+  }
+  const exe = Buffer.from(headers.get("win32-x64")!); exe.writeUInt16LE(0, 86);
+  writeFileSync(targetPath("win32-x64"), exe);
+  check("a PE executable cannot substitute for the addon DLL", validate().status !== 0);
+  writeFileSync(targetPath("win32-x64"), headers.get("win32-x64")!);
+  const macho = Buffer.from(headers.get("darwin-x64")!); macho.writeUInt32LE(2, 12);
+  writeFileSync(targetPath("darwin-x64"), macho);
+  check("a Mach-O executable cannot substitute for the addon bundle", validate().status !== 0);
+  writeFileSync(targetPath("darwin-x64"), headers.get("darwin-x64")!);
+  writeFileSync(targetPath("win32-arm64"), Buffer.alloc(0));
+  check("a truncated host artifact refuses packaging", validate().status !== 0);
+} finally { rmSync(fixture, { recursive: true, force: true }); }
 
 console.log(`\n${fail === 0 ? "SEAT NATIVE CI SMOKE OK" : "SEAT NATIVE CI SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
