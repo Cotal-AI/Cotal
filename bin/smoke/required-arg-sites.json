@@ -43,7 +43,6 @@
   "implementations/cli/smoke/seed-task-durable.ts": 1,
   "implementations/cli/smoke/space-teardown-live.smoke.ts": 1,
   "implementations/cli/smoke/sys-rotation-e2e.smoke.ts": 1,
-  "implementations/cli/src/commands/agents.ts": 3,
   "implementations/cli/src/commands/down-live-lease.ts": 1,
   "implementations/cli/src/commands/down.ts": 2,
   "implementations/cli/src/commands/history-clear.ts": 1,
