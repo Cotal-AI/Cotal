@@ -1,8 +1,10 @@
 /**
  * Drives the real launcher in tmux against an open space on a broker this suite starts, with a real
  * Manager (pty runtime) hosting two seats that join presence, one unmanaged agent, and a second open
- * space with no manager. The manager is loaded from the manager's built package: this package does
- * not depend on it. Captures are kept under the printed directory.
+ * space with no manager. The stop scenario adds an unmanaged agent under a managed seat's name, a
+ * second manager holding a seat under the same name as one of the first's, and a broker restart that
+ * turns auth on. The manager is loaded from the manager's built package: this package does not
+ * depend on it. Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, and a built manager, so it is not part of smoke:ci.
  * Run: pnpm --filter @cotal-ai/tui smoke
@@ -26,6 +28,7 @@ const work = mkdtempSync(join(tmpdir(), "cotal-tui-control-"))
 const captures = join(work, "captures")
 const home = join(work, "home")
 const project = join(work, "project")
+const project2 = join(work, "project-2")
 const bareProject = join(work, "project-bare")
 const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))
 const socket = `cotal-tui-control-${process.pid}`
@@ -70,10 +73,21 @@ const seat: Connector = {
 registry.register(seat)
 
 const port = await freePort()
+const monitor = await freePort()
 const server = `nats://127.0.0.1:${port}`
 let broker: ChildProcess | undefined
 let release = () => {}
+async function startBroker(...auth: string[]) {
+  let output = ""
+  broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-m", String(monitor), "-sd", store, ...auth], { stdio: ["ignore", "pipe", "pipe"] })
+  broker.stdout!.on("data", (d) => (output += d))
+  broker.stderr!.on("data", (d) => (output += d))
+  release = teardownOnSignal(broker, store)
+  await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100, output: () => output })
+}
 
+// Every manager read dials the broker, so a read the app makes shows up in this count.
+const dials = async () => ((await (await fetch(`http://127.0.0.1:${monitor}/varz`)).json()) as { total_connections: number }).total_connections
 const capture = () => tmux("capture-pane", "-p", "-t", "t")
 async function waitFor(test: (frame: string) => boolean, what: string, timeout = 20000): Promise<string> {
   const start = Date.now()
@@ -110,8 +124,10 @@ function peer(at: string, name: string) {
 }
 
 let manager: ManagerLike | undefined
+let manager2: ManagerLike | undefined
 let watcher: CotalEndpoint | undefined
 const live = (name: string): Presence | undefined => watcher?.getRoster().find((p) => p.card.name === name && p.status !== "offline")
+const seatLive = (id: string) => !!watcher?.getRoster().some((p) => p.card.id === id && p.status !== "offline")
 async function until(test: () => boolean, ms: number) {
   const start = Date.now()
   while (!test() && Date.now() - start < ms) await sleep(100)
@@ -121,21 +137,18 @@ async function until(test: () => boolean, ms: number) {
 try {
   mkdirSync(home, { mode: 0o700 })
   mkdirSync(join(project, ".cotal", "agents"), { recursive: true })
-  for (const name of ["w1", "w2"]) writeFileSync(join(project, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nagent: seat\n---\n`)
+  mkdirSync(join(project2, ".cotal", "agents"), { recursive: true })
+  for (const name of ["w1", "w2", "w3"]) writeFileSync(join(project, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nagent: seat\n---\n`)
+  writeFileSync(join(project2, ".cotal", "agents", "w3.md"), "---\nname: w3\nrole: worker\nagent: seat\n---\n")
   mkdirSync(bareProject)
-  let output = ""
-  broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", store], { stdio: ["ignore", "pipe", "pipe"] })
-  broker.stdout!.on("data", (d) => (output += d))
-  broker.stderr!.on("data", (d) => (output += d))
-  release = teardownOnSignal(broker, store)
-  await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100, output: () => output })
+  await startBroker()
   await setupSpaceStreams({ servers: server, space })
   await setupSpaceStreams({ servers: server, space: bare })
   process.env.HOME = home
   delete process.env.COTAL_HOME
   const w = await import("@cotal-ai/workspace")
   const ts = new Date().toISOString()
-  w.recordMesh({ space, server, root: project, mode: "open", origin: "manual", ts })
+  w.recordMesh({ space, server, root: project, mode: "open", origin: "up", ts })
   w.recordMesh({ space: bare, server, root: bareProject, mode: "open", origin: "manual", ts })
   w.setCurrent(space)
 
@@ -157,17 +170,19 @@ try {
   console.log(`node ${process.versions.node}, tmux ${tmux("-V").trim()}, broker ${server}, captures in ${captures}`)
 
   // Enter on a row opens it, and the open row's name heads the middle column at every width. From the
-  // top of the tree the first move passes the space rows, where Enter would switch spaces.
+  // top of the tree the first move passes the space rows, where Enter would switch spaces. Enter on
+  // the row already open leaves the title as it was. `want` tells apart rows under one name.
   const title = (frame: string) => frame.split("\n").find((l) => l.includes("SPACES")) ?? ""
-  async function pick(name: string, at: string) {
+  async function pick(name: string, at: string, want: (frame: string) => boolean = () => true) {
     for (let i = 0; i < 20; i++) keys("k")
     keys("j")
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 14; i++) {
       keys("j")
       await sleep(80)
+      const before = title(capture())
       keys("Enter")
-      const opened = await waitFor((f) => !title(f).includes("all traffic"), "a row to open", 2000).catch(() => "")
-      if (title(opened).includes(`${name}  ${at}`)) return
+      const opened = await waitFor((f) => title(f) !== before, "a row to open", 2000).catch(() => capture())
+      if (title(opened).includes(`${name}  ${at}`) && (await waitFor(want, `the overview of ${name}`, 2000).then(() => true, () => false))) return
     }
     throw new Error(`could not open ${name}:\n${capture()}`)
   }
@@ -202,10 +217,12 @@ try {
     save(dir, "01-managed-agent")
     check(`${size}: a managed agent shows its runtime and process from the manager`, /process\s+running/.test(managed) && /runtime\s+pty/.test(managed) && /harness\s+seat/.test(managed) && !managed.includes("managed  "), managed)
     if (width === 209) {
+      // The display redraws on the 1s clock and on presence, and a manager read restarts the count
+      // from the manager's figure, so reads 3s apart always differ by a whole second.
       const ticks: (number | undefined)[] = []
       for (let i = 0; i < 3; i++) {
         ticks.push(uptime(capture()))
-        await sleep(1100)
+        await sleep(3000)
       }
       check(`${size}: the managed uptime counts forward between reads`, ticks.every((t, i) => t !== undefined && (i === 0 || t > ticks[i - 1]!)), `uptimes: ${ticks.join(", ")}`)
     }
@@ -233,6 +250,12 @@ try {
     const unavailable = await waitFor((f) => !!field(f, "managed")?.startsWith("cannot ask the manager:"), "the reason no manager answers", 30000).catch(() => capture())
     save(dir, "04-no-manager")
     check(`${size}: a space with no manager says why, not a stuck loading line`, !!field(unavailable, "managed")?.includes("has no live registered instances"), unavailable)
+    if (width === 209) {
+      const before = await dials()
+      await sleep(25000)
+      const after = await dials()
+      check(`${size}: a space whose managers cannot be asked is not asked again`, after === before, `broker connections ${before} -> ${after}`)
+    }
 
     keys("q")
     await waitFor(has("EXIT=0"), "q to quit with status 0")
@@ -257,17 +280,56 @@ try {
   save(dir, "02-w1-gone")
   check("the force-killed seat leaves the roster or goes offline", gone && !/[○●◐] w1\b/.test(left) && !!live("w2"), left)
 
-  await pick("w2", space)
-  await waitFor((f) => /process\s+running/.test(f), "the manager's row for w2")
+  const w2 = live("w2")!.card.id
+  const outsider = peer(space, "w2")
+  await outsider.start()
+  await waitFor((f) => (f.match(/[○●◐] w2\b/g) ?? []).length === 2, "the outsider named w2 in the roster")
+  const unmanaged = (f: string) => field(f, "managed") === "not by a manager on this space"
+  await pick("w2", space, unmanaged)
+  keys("D")
+  const refused = await waitFor(has("No manager on this space reports running w2"), "D refused on the outsider", 5000).catch(() => capture())
+  save(dir, "03-outsider-refused")
+  check("D on an unmanaged agent named like a managed seat does not offer to stop it", !refused.includes(confirm("w2")) && refused.includes("No manager on this space reports running w2"), refused)
+  await sleep(2000)
+  check("the managed seat under that name keeps running", seatLive(w2) && !capture().includes(confirm("w2")))
+  await outsider.stop()
+
+  await pick("w2", space, (f) => /process\s+running/.test(f))
   keys("D")
   await waitFor(has(confirm("w2")), "D to ask before stopping w2")
   keys("y")
   const stopping = await waitFor((f) => f.includes("stopping w2…") || f.includes("stopped w2"), "the stop under way").catch(() => capture())
   check("D then y shows the stop under way until the manager answers", stopping.includes("stopping w2…"), stopping)
   const stopped = await waitFor(has("stopped w2"), "the graceful stop outcome", 30000).catch(() => capture())
-  save(dir, "03-stopped")
+  save(dir, "04-stopped")
   check("D then y stops the agent and says so", stopped.includes("stopped w2"), stopped)
-  check("the stopped seat leaves the roster or goes offline", await until(() => !live("w2"), 15000))
+  check("the stopped seat leaves the roster or goes offline", await until(() => !seatLive(w2), 15000))
+
+  manager2 = new Manager({ space, servers: server, runtime: "pty", workspaceRoot: project2 })
+  await manager2.start()
+  // Started together, neither manager sees the other's seat in presence yet, so both keep the name.
+  const held = await Promise.all([manager.startAgent({ name: "w3", agent: "seat", cwd: project, events: false }), manager2.startAgent({ name: "w3", agent: "seat", cwd: project2, events: false })])
+  const both = await until(() => watcher!.getRoster().filter((p) => p.card.name === "w3" && p.status !== "offline").length === 2, 15000)
+  check("fixture: two managers each hold a seat named w3", held.every((r) => r.ok) && both, JSON.stringify(held))
+  // The app learns of the second seat on its next manager read.
+  await sleep(11000)
+  await pick("w3", space, (f) => /process\s+running/.test(f))
+  keys("D")
+  const twice = await waitFor(has("2 managed agents are named w3"), "D refused on a name two managers hold", 5000).catch(() => capture())
+  save(dir, "05-held-twice")
+  check("D on a name two managers hold says the app cannot pick one, and offers no stop", twice.includes("2 managed agents are named w3") && !twice.includes(confirm("w3")) && !twice.includes("--on"), twice)
+
+  // As after a `cotal up`: one registered space at this address, so a broker that now wants auth
+  // reads as that entry gone stale, which a pruning connect removes.
+  console.log("registry")
+  w.removeMesh(bare)
+  await sleep(2000)
+  if (broker) await killAndAwaitExit(broker)
+  release()
+  await startBroker("--user", "u", "--pass", "p")
+  await sleep(25000)
+  save(dir, "06-broker-wants-auth")
+  check("the manager reads leave the space's registry entry when its broker turns auth on", !!w.findMesh(space), capture())
   keys("?")
   const help = await waitFor(has("Stop the selected agent"), "? to list the keys").catch(() => capture())
   check("? lists D as the stop key", /D\s+Stop the selected agent/.test(help), help)
@@ -280,6 +342,7 @@ try {
     tmux("kill-server")
   } catch {}
   await manager?.stop({ withAgents: true }).catch(() => {})
+  await manager2?.stop({ withAgents: true }).catch(() => {})
   await Promise.all([...peers, ...(watcher ? [watcher] : [])].map((ep) => ep.stop().catch(() => {})))
   if (broker) await killAndAwaitExit(broker)
   release()
