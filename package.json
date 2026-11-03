@@ -383,6 +383,7 @@
     "smoke:secret-fs": "tsx packages/core/smoke/secret-fs.smoke.ts",
     "smoke:env-isolate": "tsx implementations/manager/smoke/env-isolate.smoke.ts",
     "smoke:tmux": "tsx extensions/tmux/smoke.ts",
+    "smoke:tmux-attach-hint": "pnpm --filter @cotal-ai/tmux build && tsx extensions/tmux/attach-hint.smoke.ts",
     "smoke:cmux": "tsx extensions/cmux/smoke.ts",
     "smoke:cmux-inventory": "pnpm --filter @cotal-ai/cmux build && tsx extensions/cmux/inventory.smoke.ts",
     "smoke:startup-expiry": "tsx implementations/manager/smoke/startup-expiry.smoke.ts",
