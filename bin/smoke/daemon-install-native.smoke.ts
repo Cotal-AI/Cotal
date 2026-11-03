@@ -28,7 +28,7 @@
  */
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths } from "../daemon/endpoint.js";
@@ -202,7 +202,8 @@ try {
     const paths: DaemonPaths = { dir: join(root, "wrun"), socket: join(root, "wrun", "s"), state, lock: join(state, "daemon.lock") };
     const posixArgv = ["/opt/node", "/opt/cotal.js", "daemon", "serve"];
     let task: Record<string, unknown> = { present: false };
-    const security = { userId: sid, logonType: 3, runLevel: 0, workingDirectory: process.env.HOME! };
+    // The working directory the adapter writes is the home it reads, which Windows takes from USERPROFILE.
+    const security = { userId: sid, logonType: 3, runLevel: 0, workingDirectory: homedir() };
     const r = recorder((c) => {
       if (c.file.endsWith("whoami.exe")) return { stdout: `"host\\user","${sid}"\r\n` };
       if (c.file.endsWith("powershell.exe")) return { stdout: `\uFEFF${JSON.stringify(task)}\r\n` };
@@ -222,7 +223,8 @@ try {
 
     r.calls.length = 0;
     service.publish(plan);
-    check("publish creates the definition with the planned digest", sha(readFileSync(plan.unitPath)) === plan.sha256 && (lstatSync(plan.unitPath).mode & 0o777) === 0o600);
+    // Windows protects the file by ACL, not by mode bits, so only POSIX reads 0600 back.
+    check("publish creates the definition with the planned digest", sha(readFileSync(plan.unitPath)) === plan.sha256 && (process.platform === "win32" || (lstatSync(plan.unitPath).mode & 0o777) === 0o600));
     check("an existing definition refuses the next plan", code(() => service.plan(paths, undefined, posixArgv, () => "")) === "CONFLICT");
     service.register(plan);
     const schtasks = (calls: Call[]) => calls.filter((c) => c.file.endsWith("schtasks.exe")).map((c) => c.args.join(" ")).join(" | ");
