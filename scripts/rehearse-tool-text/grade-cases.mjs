@@ -9,30 +9,39 @@ function expect(name, got, want) {
   console.log(`${got === want ? "ok " : "BAD"} ${name}: ${got}`);
 }
 
-const T = (min) => `2026-11-02T23:${String(min).padStart(2, "0")}:00.000Z`;
+const T = (min) => new Date(Date.parse("2026-11-02T23:00:00.000Z") + min * 60000).toISOString();
 const run = (over) => ({ alice: "A", ids: {}, posts: [], dms: [], personas: [], calls: [], spawned: [], reaps: [], presentAtEnd: ["alice"], finalPsOk: true, ...over });
 const selfStop = (id, min) => ({ at: T(min), id, reason: "it stopped itself (self-stop)" });
 
-// get-help: the brief is alice's post naming the PR on a helper's channel, after which, and only after
-// which, the helper starts on the PR; it comes while that helper runs and before it has said anything.
+// get-help: the brief names the PR and carries its material, on a helper's channel; it lands before
+// that helper starts on the PR, says anything or stops, and the helper's transcript shows it arriving.
 {
   const spawn = { tool: "cotal_spawn", ok: true, args: { name: "rev", join: ["review.pr-812"] } };
-  const reads = (min) => ({ seat: "rev", tool: "Read", at: T(min), input: '{"file_path":"/w/PR-812.md"}', cotal: false });
-  const gh = (over) => grade("get-help", run({ calls: [spawn], spawned: [{ name: "rev", id: "H" }], reaps: [selfStop("H", 30)], toolUses: [reads(3)], ...over })).checks[0].ok;
+  const BRIEF = "Review PR 812: the diff is in PR-812.md";
+  const reads = (min, seat = "rev") => ({ seat, tool: "Read", at: T(min), input: '{"file_path":"/w/PR-812.md"}', cotal: false });
+  const gets = (min, text = BRIEF, seat = "rev") => ({ seat, at: T(min), text: `1 message:\n[#review.pr-812 alice/default] ${text}` });
+  const gh = (over) => grade("get-help", run({ calls: [spawn], spawned: [{ name: "rev", id: "H" }], reaps: [selfStop("H", 30)], toolUses: [reads(3)], inbound: [gets(2)], ...over })).checks[0].ok;
   const post = (min, from, text, channel = "review.pr-812") => ({ ts: T(min), channel, from, text, mentions: [] });
-  expect("brief, then the helper reads the PR and posts", gh({ posts: [post(1, "A", "Review PR 812"), post(5, "H", "done")] }), true);
-  expect("brief, then the helper answers from the post alone", gh({ toolUses: [], posts: [post(1, "A", "Review PR 812: the diff is below"), post(5, "H", "PR 812: one finding")] }), true);
-  expect("brief on a review channel no helper is on", gh({ posts: [post(1, "A", "PR 812", "review.other")] }), false);
-  expect("post only after the helper posted there", gh({ posts: [post(1, "H", "what do I do"), post(2, "A", "PR 812")] }), false);
-  expect("post only after the helper DMed alice", gh({ dms: [{ ts: T(1), from: "H", to: "A", text: "findings" }], posts: [post(2, "A", "PR 812 done")] }), false);
-  expect("status after a silent helper stopped (brief only in the prompt)", gh({ toolUses: [], posts: [post(40, "A", "PR 812 done")] }), false);
-  expect("status while a silent helper runs, which never starts on the PR", gh({ toolUses: [], posts: [post(29, "A", "PR 812 done")] }), false);
-  expect("status after the helper already read the PR (brief only in the prompt)", gh({ posts: [post(29, "A", "PR 812 done")] }), false);
-  expect("a Cotal call naming the channel is not a start on the PR", gh({ toolUses: [{ seat: "rev", tool: "cotal_join", at: T(0), input: '{"channel":"review.pr-812"}', cotal: true }, reads(3)], posts: [post(1, "A", "Review PR 812")] }), true);
-  expect("post without the PR", gh({ posts: [post(1, "A", "hello")] }), false);
-  expect("a channel from a refused spawn", gh({ calls: [{ ...spawn, ok: false }], posts: [post(1, "A", "PR 812")] }), false);
-  expect("a channel from the spawned persona file", gh({ calls: [{ tool: "cotal_spawn", ok: true, args: { name: "rev" } }], personas: [{ name: "rev", subscribe: ["review.pr-812"] }], posts: [post(1, "A", "PR 812")] }), true);
-  expect("only the seat whose launch failed was running", gh({ reaps: [{ at: T(30), id: "H", reason: "this manager stopped it: its once task ended (launch-failed)" }], posts: [post(1, "A", "PR 812")] }), false);
+  expect("brief, the helper gets it, reads the PR and posts", gh({ posts: [post(1, "A", BRIEF), post(5, "H", "done")] }), true);
+  expect("the helper reads the PR from its prompt first, then gets the brief", gh({ toolUses: [reads(3)], inbound: [gets(4)], posts: [post(1, "A", BRIEF)] }), true);
+  expect("brief, then the helper answers from the post alone", gh({ toolUses: [], posts: [post(1, "A", BRIEF), post(5, "H", "PR 812: one finding")] }), true);
+  expect("the brief never reaches the helper", gh({ inbound: [], posts: [post(1, "A", BRIEF)] }), false);
+  expect("the brief reaches the helper only after it stopped", gh({ inbound: [gets(31)], posts: [post(1, "A", BRIEF)] }), false);
+  expect("a status naming the PR, then the helper reads it (brief only in the prompt)", gh({ toolUses: [reads(29.5)], inbound: [gets(29.2, "PR 812 done")], posts: [post(29, "A", "PR 812 done")] }), false);
+  expect("status while a silent helper runs, which never starts on the PR", gh({ toolUses: [], inbound: [gets(29.2, "PR 812 done")], posts: [post(29, "A", "PR 812 done")] }), false);
+  expect("status after a silent helper stopped", gh({ toolUses: [], inbound: [], posts: [post(40, "A", "PR 812 done")] }), false);
+  expect("brief after the helper already read the PR", gh({ toolUses: [reads(0)], posts: [post(1, "A", BRIEF)] }), false);
+  expect("brief after the helper posted there", gh({ posts: [post(0, "H", "what do I do"), post(1, "A", BRIEF)] }), false);
+  expect("brief after the helper DMed alice", gh({ dms: [{ ts: T(0), from: "H", to: "A", text: "findings" }], posts: [post(1, "A", BRIEF)] }), false);
+  expect("another seat reads the PR, the helper never does", gh({ toolUses: [reads(3, "other")], posts: [post(1, "A", BRIEF)] }), false);
+  expect("another seat gets the brief, the helper never does", gh({ inbound: [gets(2, BRIEF, "other")], posts: [post(1, "A", BRIEF)] }), false);
+  expect("a Cotal call naming the channel is not a start on the PR", gh({ toolUses: [{ seat: "rev", tool: "cotal_join", at: T(0), input: '{"channel":"review.pr-812"}', cotal: true }, reads(3)], posts: [post(1, "A", BRIEF)] }), true);
+  expect("brief on a review channel no helper is on", gh({ posts: [post(1, "A", BRIEF, "review.other")] }), false);
+  expect("a post naming the PR without its material", gh({ inbound: [gets(2, "PR 812 is up")], posts: [post(1, "A", "PR 812 is up")] }), false);
+  expect("a channel from a refused spawn", gh({ calls: [{ ...spawn, ok: false }], posts: [post(1, "A", BRIEF)] }), false);
+  expect("a channel from the spawned persona file", gh({ calls: [{ tool: "cotal_spawn", ok: true, args: { name: "rev" } }], personas: [{ name: "rev", subscribe: ["review.pr-812"] }], posts: [post(1, "A", BRIEF)] }), true);
+  expect("only the seat whose launch failed was running", gh({ reaps: [{ at: T(30), id: "H", reason: "this manager stopped it: its once task ended (launch-failed)" }], posts: [post(1, "A", BRIEF)] }), false);
+  expect("a Claude Code helper's calls are filed by its working directory", gh({ spawned: [{ name: "rev", id: "H", agent: "claude-code" }], toolUses: [reads(3, "helper@proj")], inbound: [gets(2, BRIEF, "helper@proj")], posts: [post(1, "A", BRIEF)] }), true);
 }
 
 // one-job: told to stop, and the helper really stopped.

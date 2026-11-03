@@ -2,11 +2,13 @@
 //
 // Each check reads one run's record: alice's tool calls in the order she made them, from her own
 // transcript; the posts and DMs from `cotal history`; the seats alice started; the roster at the end;
-// the personas on disk; and how the manager says each seat ended. loadRecord() builds the record from
+// the personas on disk; how the manager says each seat ended; and, from the helpers' own transcripts,
+// their tool calls and what reached them from the mesh. loadRecord() builds the record from
 // the files a run leaves, so a run can be graded again later from what it kept. A check names what
 // it saw, so a reader can tell a pass from a lucky one.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fromTranscripts } from "./transcripts.mjs";
 
 const isPattern = (c) => typeof c === "string" && /[*>]/.test(c);
 const list = (v) => (Array.isArray(v) ? v : v === undefined || v === null || v === "" ? [] : [v]);
@@ -16,6 +18,8 @@ const alicePosts = (r) => r.posts.filter((p) => p.from === r.alice);
 const aliceDms = (r) => r.dms.filter((d) => d.from === r.alice);
 const check = (name, ok, detail) => ({ check: name, ok: Boolean(ok), detail });
 const time = (t) => (typeof t === "number" ? t : Date.parse(t));
+// What a brief for PR 812 carries: the PR file, its diff, or its title (files/PR-812.md).
+const MATERIAL = /PR-812\.md|session\.ts|SESSION_TIMEOUT_MS|login session timeout/i;
 const launchFailed = (r, seat) => r.reaps.some((x) => x.id === seat.id && /launch-failed/.test(x.reason));
 
 /** A seat counts as stopped only when the manager says it stopped itself, ended its once task, or
@@ -59,23 +63,31 @@ const checks = {
   "get-help"(r) {
     const spawns = okCalls(r, "cotal_spawn");
     const helperIds = new Set(r.spawned.map((s) => s.id));
-    // The brief: alice's post naming the PR, on a channel a helper was put on, after which, and only
-    // after which, a helper started on PR 812. Its start is its first tool call outside Cotal that names
-    // 812, such as reading PR-812.md, or a post or DM of its own that names 812; a run with no such
-    // start has no brief. The post must also come before the helper said anything at all or stopped.
+    // The brief: alice's post on a review channel a helper was put on, naming the PR and carrying its
+    // material (PR-812.md, the diff, or the PR's title). It lands before that helper starts on the PR,
+    // which is the helper's first tool call outside Cotal naming 812 or its first post or DM naming
+    // 812, and before the helper says anything at all or stops. The helper's own transcript shows the
+    // post reaching it through Cotal, as a tool result or a channel push, before it stops. A helper
+    // with no start on the PR received no brief. Only that helper's calls and deliveries count.
     const said = (id) => [...r.posts, ...r.dms].filter((m) => m.from === id).map((m) => time(m.ts));
     const stoppedAt = (id) => r.reaps.filter((x) => x.id === id).map((x) => (x.at === undefined ? -Infinity : time(x.at)));
-    const started = Math.min(
-      ...(r.toolUses ?? []).filter((u) => !u.cotal && /\b812\b/.test(u.input)).map((u) => time(u.at)),
-      ...[...r.posts, ...r.dms].filter((m) => helperIds.has(m.from) && /\b812\b/.test(m.text)).map((m) => time(m.ts)),
+    const ofHelper = (u, h) => u.seat === h.name || (u.seat.startsWith("helper@") && /claude/.test(h.agent ?? ""));
+    const startOf = (h) => Math.min(
+      ...(r.toolUses ?? []).filter((u) => ofHelper(u, h) && !u.cotal && /\b812\b/.test(u.input)).map((u) => time(u.at)),
+      ...[...r.posts, ...r.dms].filter((m) => m.from === h.id && /\b812\b/.test(m.text)).map((m) => time(m.ts)),
     );
-    const reached = (p, spawn) => Number.isFinite(started) && time(p.ts) < started && r.spawned.filter((h) => h.name === spawn.args?.name && !launchFailed(r, h))
-      .some((h) => [...said(h.id), ...stoppedAt(h.id)].every((t) => time(p.ts) < t));
-    const briefs = alicePosts(r).filter((p) => p.channel.startsWith("review.") && /\b812\b/.test(p.text) &&
+    const flat = (t) => String(t).replace(/\s+/g, " ").trim();
+    const deliveredAt = (p, h) => Math.min(...(r.inbound ?? []).filter((u) => ofHelper(u, h) && flat(u.text).includes(flat(p.text).slice(0, 60))).map((u) => time(u.at)));
+    const reached = (p, spawn) => r.spawned.filter((h) => h.name === spawn.args?.name && !launchFailed(r, h)).some((h) => {
+      const start = startOf(h), stop = Math.min(...stoppedAt(h.id));
+      const got = deliveredAt(p, h);
+      return Number.isFinite(start) && time(p.ts) < start && [...said(h.id), stop].every((t) => time(p.ts) < t) && Number.isFinite(got) && got <= stop;
+    });
+    const briefs = alicePosts(r).filter((p) => p.channel.startsWith("review.") && /\b812\b/.test(p.text) && MATERIAL.test(p.text) &&
       spawns.some((s) => helperChannels(r, s).has(p.channel) && reached(p, s)));
     const briefDms = aliceDms(r).filter((d) => helperIds.has(d.to));
     return [
-      check("alice posts the brief on a review channel a helper is put on, before the helper starts on the PR", briefs.length > 0, { briefs: briefs.map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), helperStarted: Number.isFinite(started) ? new Date(started).toISOString() : "never", posts: alicePosts(r).map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
+      check("alice posts the brief on a review channel a helper is put on, and it reaches the helper", briefs.length > 0, { briefs: briefs.map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), helpers: r.spawned.map((h) => ({ name: h.name, started: Number.isFinite(startOf(h)) ? new Date(startOf(h)).toISOString() : "never" })), posts: alicePosts(r).map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
       check("the brief is not DMed to the helper", briefDms.length === 0, briefDms.map((d) => d.text.slice(0, 120))),
       check("every helper stops by the end", helpersStopped(r), { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd, finalPsOk: r.finalPsOk, reaps: r.reaps }),
     ];
@@ -197,7 +209,10 @@ export function loadRecord(dir) {
     const ps = JSON.parse(readFileSync(join(dir, "cli.json"), "utf8")).filter((x) => x.argv[0] === "ps");
     finalPsOk = ps.length > 0 && ps.at(-1).status === 0;
   }
-  return { ...r, personas, reaps: reapsFrom(log), finalPsOk: Boolean(finalPsOk) };
+  // The helpers' tool calls and what reached them, read again from the transcripts the run kept.
+  const seen = fromTranscripts(join(dir, "transcripts"));
+  const helpers = (xs) => xs.filter((x) => x.seat !== "alice");
+  return { ...r, personas, reaps: reapsFrom(log), finalPsOk: Boolean(finalPsOk), toolUses: helpers(seen.uses), inbound: helpers(seen.inbound) };
 }
 
 /** Grade one run's record. */
