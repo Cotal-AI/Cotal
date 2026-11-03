@@ -1,3 +1,0 @@
-smoke:daemon-install-native
-smoke:daemon-desktop
-smoke:daemon-transport
