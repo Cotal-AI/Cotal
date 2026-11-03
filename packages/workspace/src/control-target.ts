@@ -74,13 +74,14 @@ const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["
  *
  * `onRefusal: "throw"` makes an unresolvable or unreachable mesh a thrown {@link ConnectRefusal}
  * instead of a printed sentence and `process.exit(1)`, for a loop that has to survive the broker
- * being briefly gone.
+ * being briefly gone. `readOnly` resolves and connects without the liveness sweep and without
+ * pruning a stale registry entry, for a read that must leave the registry as it found it.
  */
 export async function resolveControlTarget(
   flags: ConnectFlags,
   profile: Profile,
   instanceId?: string,
-  opts: { onRefusal?: "exit" | "throw"; endpoint?: string } = {},
+  opts: { onRefusal?: "exit" | "throw"; endpoint?: string; readOnly?: boolean } = {},
 ): Promise<ControlTarget> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
   // A credential-less resolve that reads liveness sweeps once, unless the caller already swept for
@@ -90,7 +91,7 @@ export async function resolveControlTarget(
   // connect helper takes the selected space or this folder's.
   const withSpace = flags.creds
     ? flags.space === undefined && flags.server !== undefined ? { ...flags, space: soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE } : flags
-    : { ...flags, offline: flags.offline ?? (resolveReadsLiveness(process.cwd(), { server: flags.server, space: flags.space }) ? (await pruneStaleMeshes(flags.server)).offline : []) };
+    : { ...flags, offline: flags.offline ?? (!opts.readOnly && resolveReadsLiveness(process.cwd(), { server: flags.server, space: flags.space }) ? (await pruneStaleMeshes(flags.server)).offline : []) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.
@@ -107,12 +108,13 @@ export async function resolveControlTarget(
         server: withSpace.server,
         space: withSpace.space,
         offline: withSpace.offline,
+        readOnly: opts.readOnly,
       }).mode;
     } catch (e) {
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }
     if (mode === "user") {
-      const conn = await (opts.onRefusal === "throw" ? connectUserControlOrThrow : connectUserControlOrExit)(withSpace);
+      const conn = await (opts.onRefusal === "throw" ? connectUserControlOrThrow : connectUserControlOrExit)({ ...withSpace, readOnly: opts.readOnly });
       // A managed seat's own shell defaults to the manager that launched it, as its tools do, so a
       // second live manager for the owner does not make the seat's calls ambiguous. `--on` wins.
       const pin = instanceId ?? seatManagerInstance(conn.space);
@@ -136,7 +138,7 @@ export async function resolveControlTarget(
       };
     }
   }
-  const conn = await connect_(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
+  const conn = await connect_(withSpace, profile, { ...(instanceId !== undefined ? { instanceId } : {}), readOnly: opts.readOnly });
   return {
     space: conn.space,
     server: conn.server,
