@@ -1134,9 +1134,8 @@ export async function runJcodeHost(): Promise<void> {
       // load-bearing in both directions.
       //
       // It must be gated at all because `run()` calls `sendMessage()` internally, which waits on the
-      // very same session-scoped `message_accepted` (jcode-sdk client.js:317). I checked rather than
-      // assumed: a run dispatched while a handover is awaiting its acknowledgement is exactly the
-      // second listener that makes one event ambiguous, and it is the path a reviewer measured.
+      // same session-scoped `message_accepted` (jcode-sdk client.js:317). A run dispatched while a
+      // handover awaits its acknowledgement adds a second listener, making one event ambiguous.
       //
       // It must NOT hold the gate for the whole turn, because `run()` does not return until the turn
       // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
@@ -1300,10 +1299,10 @@ export async function runJcodeHost(): Promise<void> {
         if (!injection) return;
         const current: JcodeClient = client;
         // Reserve BEFORE the write, and reserve in the RESERVATION set rather than the accepted
-        // ledger. Review's correction to my first attempt, and it matters: `surfacedIds` is what the
-        // turn boundary acks, and `sendMessage`/`softInterrupt` resolving does not by itself prove the
-        // session took the text (the SDK's acceptance wait RESOLVES on timeout). Reserving here makes
-        // the batch unselectable by any concurrent path without claiming it was accepted.
+        // ledger. `surfacedIds` is what the turn boundary acks. Resolving `sendMessage`/`softInterrupt`
+        // does not by itself prove the session took the text (the SDK's acceptance wait RESOLVES on
+        // timeout). Reserving here makes the batch unselectable by concurrent paths without claiming
+        // acceptance.
         const keys = items.map((item) => item.recvKey);
         const releaseReservation = reserveForHandover(keys);
         if (!releaseReservation) return;
@@ -1318,11 +1317,8 @@ export async function runJcodeHost(): Promise<void> {
         // request's own id, so its acceptance is ALREADY correlated and cannot be satisfied by
         // another send's event. Only the uncorrelated `message_accepted` path needs exclusivity.
         //
-        // Gating it anyway is not free and I measured the cost: a run can hold the dispatch gate for
-        // its acceptance window, so a gated steer waits behind it, and #910's mid-turn delivery suite
-        // timed out waiting for short/4KiB/64KiB DMs to reach the session before the turn ended. That
-        // is the exact delivery this connector exists to provide, so the gate must not stand in front
-        // of the one path that was never ambiguous.
+        // A run can hold the dispatch gate for its acceptance window. Gating a steer behind it
+        // would delay mid-turn delivery, so this already-correlated path must remain ungated.
         const pending = softInterruptWithLateReply(current, sessionId, injection, (accepted) => {
           // The SDK emits a correlated reply as an event after its waiter times out. Only this
           // still-owned request's positive reply promotes it; the normal turn boundary still acks.
@@ -1415,7 +1411,7 @@ export async function runJcodeHost(): Promise<void> {
     const items = unservedAutomatic();
     if (!items.length) return;
     // A LAPSED SEND HAS POISONED ACCEPTANCE ON THIS CONNECTION, and the two obvious responses are
-    // both wrong, which is worth stating because I shipped each of them in turn.
+    // both unsafe.
     //
     // Keep re-delivering and every attempt is accepted and EXECUTED by a healthy Harness, so the
     // same non-idempotent instruction runs once a minute forever; a reviewer measured three
@@ -1492,14 +1488,8 @@ export async function runJcodeHost(): Promise<void> {
         // The run is unsettleable, so the connection boundary is the answer -- BUT ONLY IF THERE IS
         // ONE LEFT TO TAKE. `recoverBridge` is one-shot: once spent it does not replace anything, it
         // calls `shutdown(1)` and the seat exits. Forcing the boundary here on a spent recovery
-        // would answer a starvation report by killing the seat, which is worse than either failure
-        // this repair exists to prevent, and a reviewer named it before I had measured it.
-        //
-        // So when no recovery remains, keep DELIVERING instead. The batch is genuinely owed, the
-        // bridge is healthy, and the only cost of an unattributable acceptance is that the batch
-        // stays unacked and may be delivered again -- late and possibly twice, which is the stance
-        // this tier already takes everywhere else: late delivery beats loss, and a live seat that
-        // repeats beats a dead seat that cannot be steered at all.
+        // would kill the seat rather than restore delivery. When no recovery remains, the branch
+        // below stops the queued-turn tier and leaves the batch unacked for redelivery elsewhere.
         if (exhaustedDeferralAction(!bridgeRecoveryUsed) === "replace-bridge") {
           acceptanceSuspectUntilBridgeReplaced = true;
           writeJcodeDiagnostic(
@@ -1512,9 +1502,8 @@ export async function runJcodeHost(): Promise<void> {
         // NO RECOVERY LEFT, AND NEITHER OBVIOUS ANSWER IS SAFE. Forcing the boundary calls into a
         // spent `recoverBridge`, which does not replace anything: it calls `shutdown(1)` and the
         // seat exits, answering a starvation report by killing the seat. Continuing to WRITE is no
-        // better, and a reviewer corrected me when I claimed it was: the send is refused as
-        // unattributable exactly as before, the batch stays owed, and the level-triggered loop
-        // re-sends once a minute for as long as the run stays open, while the Harness accepts and
+        // better: the send is refused as unattributable, the batch stays owed, and the level-triggered
+        // loop re-sends once a minute for as long as the run stays open, while the Harness accepts and
         // RUNS each copy. Nothing caps that at two. It is the measured 4-executions defect reached
         // through the last remaining door.
         //

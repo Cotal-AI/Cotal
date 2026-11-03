@@ -9,7 +9,7 @@ import { DialogSelect } from "../vendor/opencode/packages/tui/src/ui/dialog-sele
 import { useToast } from "../vendor/opencode/packages/tui/src/ui/toast"
 import type { Catalog, Entry } from "./catalog.js"
 import { layoutFor } from "./layout.js"
-import type { Conn, FeedEntry, Mesh, Presence, Session } from "./live.js"
+import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
 import { clock, entryKey, feedFor, meshOf, type Open, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
 
 /** The catalog read, which starts after the first frame so the frame never waits on it. */
@@ -21,7 +21,12 @@ type Command = { id: string; bind: string; keys?: string; title: string; group: 
 
 type Line = { text: string; fg: RGBA }
 
+/** Stopping an agent: the confirm, the manager call while it runs, then its outcome for a while. */
+type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
+type Answer = "graceful" | "force" | "cancel"
+
 const FEED_ROWS = 200
+const STOP_NOTICE_MS = 8000
 
 const fit = (s: string, n: number) => (n <= 0 ? "" : s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s)
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
@@ -39,6 +44,9 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   const [open, setOpen] = createSignal<Open>({ kind: "channel" })
   const [seen, setSeen] = createSignal<Record<string, number>>({})
   const [now, setNow] = createSignal(Date.now())
+  const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
+  const clockTimer = setInterval(() => setNow(Date.now()), 1000)
+  onCleanup(() => clearInterval(clockTimer))
 
   const entries = () => {
     const l = load()
@@ -46,6 +54,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   }
   const conn = (): Conn => session()?.conn() ?? { phase: "connecting" }
   const mesh = () => meshOf(conn())
+  const managed = (): Managed => session()?.managed() ?? { phase: "loading" }
   const waiting = () => mesh()?.signals.waiting ?? []
   const items = createMemo(() => treeItems(entries(), conn(), seen()))
   const rows = createMemo(() => items().filter((i): i is Row => i.kind !== "header"))
@@ -82,6 +91,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     setSession(undefined)
     setOpen({ kind: "channel" })
     setSeen({})
+    setStop({ phase: "idle" })
     await old?.close()
     const next = await props.openSpace(space)
     if (mine !== switches) return void next.close()
@@ -132,6 +142,38 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     openWaiting(at + 1 < waiting().length ? at + 1 : 0)
   }
 
+  // The stop names the seat, so it is offered only for a seat a manager reports, under a name no
+  // other managed seat holds.
+  const askStop = () => {
+    const r = selection()
+    if (r?.kind !== "peer" || r.presence.card.kind !== "agent") return toast.show({ variant: "info", message: "Select an agent to stop it" })
+    const m = managed()
+    const row = m.phase === "rows" ? m.byId.get(r.presence.card.id) : undefined
+    if (!row || m.phase !== "rows") return toast.show({ variant: "info", message: `No manager on this space reports running ${r.presence.card.name}` })
+    const name = row.name
+    const held = [...m.byId.values()].filter((o) => o.name === name).length
+    if (held > 1) return toast.show({ variant: "warning", message: `${held} managed agents are named ${name}, and the app stops an agent by name, so it cannot pick one` })
+    const s = stop()
+    if (s.phase === "stopping") return toast.show({ variant: "warning", message: `Still stopping ${s.name}` })
+    setStop({ phase: "confirm", name })
+    dialog.replace(
+      () => <ConfirmStop name={name} answer={(a) => answerStop(name, a)} />,
+      () => setStop((cur) => (cur.phase === "confirm" ? { phase: "idle" } : cur)),
+    )
+  }
+  const answerStop = async (name: string, a: Answer) => {
+    dialog.clear()
+    const s = session()
+    if (a === "cancel" || !s) return
+    const force = a === "force"
+    setStop({ phase: "stopping", name, force })
+    const r = await s.stop(name, !force)
+    if (session() !== s) return
+    const done: Stop = r.ok ? { phase: "done", text: `${force ? "force-killed" : "stopped"} ${name}`, tone: "success" } : { phase: "done", text: `stop: ${r.error}`, tone: "error" }
+    setStop(done)
+    setTimeout(() => setStop((cur) => (cur === done ? { phase: "idle" } : cur)), STOP_NOTICE_MS)
+  }
+
   const commands: Command[] = [
     { id: "cotal.down", bind: "j,down", keys: "j ↓", title: "Next row", group: "Move", run: () => move(1) },
     { id: "cotal.up", bind: "k,up", keys: "k ↑", title: "Previous row", group: "Move", run: () => move(-1) },
@@ -143,6 +185,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     { id: "cotal.help", bind: "?", keys: "?", title: "Keys", group: "System", palette: true, run: () => dialog.replace(() => <Help commands={commands} />, undefined, { size: "large" }) },
     { id: "cotal.quit", bind: "q", keys: "q ctrl+c", title: "Quit", group: "System", palette: true, run: props.quit },
     { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: props.quit },
+    { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
   ]
   const toLayer = (c: Command) => ({ ...c, run: (_input?: string, event?: KeyEvent) => c.run(event) })
   Keymap.createLayer(() => ({ commands: commands.filter((c) => !c.global).map(toLayer) }))
@@ -158,6 +201,18 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
       </text>
       <text fg={theme.text.faint} wrapMode="none">
         {p.right ?? ""}
+      </text>
+    </box>
+  )
+
+  /** One overview row. A long value wraps under itself, so the labels stay a clean column. */
+  const Field = (p: { label: string; value: string; fg: RGBA }) => (
+    <box flexDirection="row" flexShrink={0}>
+      <text width={9} flexShrink={0} wrapMode="none" fg={theme.text.faint}>
+        {p.label}
+      </text>
+      <text flexGrow={1} flexShrink={1} fg={p.fg}>
+        {p.value}
       </text>
     </box>
   )
@@ -306,7 +361,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
                 <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : "It reported no question."}</text>
               </Show>
               <Show when={layout().kind === "two"}>
-                <For each={overview(pr(), now())}>{(f) => <text fg={theme.text.muted}>{`${f.label.padEnd(9)}${f.value}`}</text>}</For>
+                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>
               </Show>
             </box>
           )}
@@ -394,18 +449,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
             <box flexShrink={0} marginTop={1}>
               <Section title={a().card.kind === "agent" ? "AGENT" : "ENDPOINT"} right={fit(a().card.name, p.width - 16)} />
               <box height={1} flexShrink={0} />
-              <For each={overview(a(), now())}>
-                {(f) => (
-                  <box flexDirection="row" flexShrink={0}>
-                    <text width={9} flexShrink={0} wrapMode="none" fg={theme.text.faint}>
-                      {f.label}
-                    </text>
-                    <text flexGrow={1} flexShrink={1} fg={theme.text.base}>
-                      {f.value}
-                    </text>
-                  </box>
-                )}
-              </For>
+              <For each={overview(a(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.base} />}</For>
             </box>
           )}
         </Show>
@@ -420,6 +464,13 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     if (c.phase === "connecting") return { text: c.space ? `◌ connecting · ${c.space}` : "◌ connecting", fg: theme.text.muted }
     if (c.phase === "closed") return { text: "○ closed", fg: theme.text.muted }
     return { text: "✗ not connected", fg: theme.text.feedback.error.base }
+  }
+
+  const stopLine = (): Line | undefined => {
+    const s = stop()
+    if (s.phase === "stopping") return { text: `${s.force ? "force-killing" : "stopping"} ${s.name}…`, fg: theme.text.muted }
+    if (s.phase === "done") return { text: s.text, fg: s.tone === "success" ? theme.text.feedback.success.base : theme.text.feedback.error.base }
+    return undefined
   }
 
   const StatusBar = () => (
@@ -440,8 +491,40 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
         <Middle />
         <Show when={inspectorWidth()}>{(width) => <Inspector width={width()} />}</Show>
       </box>
+      <Show when={stopLine()}>
+        {(line) => (
+          <box flexShrink={0} paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.base}>
+            <text fg={line().fg}>{fit(line().text, dims().width - 2)}</text>
+          </box>
+        )}
+      </Show>
       <StatusBar />
     </box>
+  )
+}
+
+function ConfirmStop(props: { name: string; answer: (a: Answer) => void }) {
+  const theme = useTheme().surface("dialog")
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    commands: [
+      { id: "cotal.stop.graceful", bind: "y", title: "Stop", group: "Dialog", run: () => props.answer("graceful") },
+      { id: "cotal.stop.force", bind: "f", title: "Force-kill", group: "Dialog", run: () => props.answer("force") },
+      // Enter cancels: the safe answer is the one a stray Enter gives.
+      { id: "cotal.stop.cancel", bind: "n,return", title: "Cancel", group: "Dialog", run: () => props.answer("cancel") },
+    ],
+  }))
+  return (
+    <DialogLayout header={<DialogHeader title={`Stop agent ${props.name} via the manager?`} />}>
+      <text>
+        <span style={{ fg: theme.text.action.primary.base }}>y</span>
+        <span style={{ fg: theme.text.base }}> stop · </span>
+        <span style={{ fg: theme.text.action.primary.base }}>f</span>
+        <span style={{ fg: theme.text.base }}> force-kill · </span>
+        <span style={{ fg: theme.text.action.primary.base }}>n esc enter</span>
+        <span style={{ fg: theme.text.base }}> cancel</span>
+      </text>
+    </DialogLayout>
   )
 }
 
