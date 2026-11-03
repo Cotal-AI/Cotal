@@ -44,12 +44,17 @@ const WARM_TICKS = 300;
 /** The alpha a change in the node or link set heats the simulation back to. */
 const REHEAT = 0.5;
 
+/** How far an agent's name hangs below its circle, which the bottom edge must leave room for. */
+const LABEL_BELOW = 20;
+
 export class ForceLayout {
   private readonly sim: Simulation<Body, undefined>;
   private readonly links: ForceLink<Body, SimulationLinkDatum<Body>>;
   private bodies = new Map<string, Body>();
   private key: string | undefined;
   private size = "";
+  private width = 0;
+  private height = 0;
 
   constructor(width: number, height: number) {
     this.links = forceLink<Body, SimulationLinkDatum<Body>>([]).id((d) => d.id).strength(0.4);
@@ -62,6 +67,14 @@ export class ForceLayout {
       .force("collide", forceCollide<Body>().radius((d) => d.r))
       .force("x", forceX<Body>())
       .force("y", forceY<Body>())
+      // The charge of a full mesh can push an outer node past the edge, where the drawing clips it.
+      // Each tick ends by keeping every node, with its radius and the name under it, inside the drawing.
+      .force("bounds", () => {
+        for (const b of this.bodies.values()) {
+          if (b.x !== undefined) b.x = Math.min(Math.max(b.x, b.r), this.width - b.r);
+          if (b.y !== undefined) b.y = Math.min(Math.max(b.y, b.r), this.height - b.r - LABEL_BELOW);
+        }
+      })
       .stop();
     this.resize(width, height);
   }
@@ -73,6 +86,8 @@ export class ForceLayout {
     const size = `${width}x${height}`;
     if (size === this.size) return false;
     this.size = size;
+    this.width = width;
+    this.height = height;
     // The distances were tuned on the panel's 420 units; a larger drawing spreads them in proportion.
     const k = Math.min(width, height) / 420;
     this.links.distance(90 * k);

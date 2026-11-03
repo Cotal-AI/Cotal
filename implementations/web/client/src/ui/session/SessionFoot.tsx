@@ -19,7 +19,7 @@ export function SessionFoot({ row }: { row: RosterRow }) {
   let said: string | undefined;
   if (row.status === "working" || row.status === "waiting") {
     const reported = hhmm(row.statusSince);
-    said = [activity && `${activity}.`, reported && `Reported ${reported}.`].filter(Boolean).join(" ") || undefined;
+    said = [activity && (/[.!?]$/.test(activity) ? activity : `${activity}.`), reported && `Reported ${reported}.`].filter(Boolean).join(" ") || undefined;
   } else if (row.status === "offline") {
     const beat = hhmm(row.ts);
     said = beat && `Last heartbeat ${beat}.`;
