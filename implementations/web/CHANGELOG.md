@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.138.0
+
+### Patch Changes
+
+- 85f288b: Show reported conditions and status, activity and work ages in the dashboard's roster, waiting cards and agent details, including graph details. Use core's canonical age functions through its new browser-safe presence-ages subpath, so a 90-second heartbeat displays as 1m rather than rounding to 2m. Wrap the fact lines instead of hiding them behind ellipses.
+
 ## 0.137.0
 
 No changes in this release.
