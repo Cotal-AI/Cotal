@@ -1,0 +1,2 @@
+# The Agents view and the Needs route: groups, rows, badges, endpoints, the heartbeat line, the toggle and its saving, selection and focus.
+smoke:web-agents-view

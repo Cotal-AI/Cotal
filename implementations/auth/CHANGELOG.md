@@ -1,5 +1,87 @@
 # @cotal-ai/auth
 
+## 0.140.0
+
+### Patch Changes
+
+- 63a7621: The auth package's option types now take the data account as `ServiceKeys["dataAccount"]` instead of restating `{ pub: string; signingSeed: string }` across its consumers, so a change to what the auth service holds of the data account reaches every declaration that receives it. No runtime change.
+- Updated dependencies [485bbfe]
+- Updated dependencies [4da6cf5]
+  - @cotal-ai/core@0.140.0
+  - @cotal-ai/workspace@0.140.0
+  - @cotal-ai/lang@0.140.0
+
+## 0.139.1
+
+### Patch Changes
+
+- Updated dependencies [644f6eb]
+  - @cotal-ai/core@0.139.1
+  - @cotal-ai/workspace@0.139.1
+  - @cotal-ai/lang@0.139.1
+
+## 0.139.0
+
+### Patch Changes
+
+- Updated dependencies [c3d4af4]
+  - @cotal-ai/core@0.139.0
+  - @cotal-ai/workspace@0.139.0
+  - @cotal-ai/lang@0.139.0
+
+## 0.138.2
+
+### Patch Changes
+
+- Updated dependencies [a2fba68]
+  - @cotal-ai/workspace@0.138.2
+  - @cotal-ai/core@0.138.2
+  - @cotal-ai/lang@0.138.2
+
+## 0.138.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.138.1
+  - @cotal-ai/lang@0.138.1
+  - @cotal-ai/workspace@0.138.1
+
+## 0.138.0
+
+### Patch Changes
+
+- Updated dependencies [534382c]
+- Updated dependencies [85f288b]
+- Updated dependencies [3473992]
+- Updated dependencies [789c904]
+  - @cotal-ai/core@0.138.0
+  - @cotal-ai/workspace@0.138.0
+  - @cotal-ai/lang@0.138.0
+
+## 0.137.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.137.0
+  - @cotal-ai/lang@0.137.0
+  - @cotal-ai/workspace@0.137.0
+
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+  - @cotal-ai/lang@0.136.8
+  - @cotal-ai/workspace@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+  - @cotal-ai/lang@0.136.7
+  - @cotal-ai/workspace@0.136.7
+
 ## 0.136.6
 
 ### Patch Changes

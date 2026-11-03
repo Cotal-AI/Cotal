@@ -19,7 +19,7 @@
     "",
     "J6 drops the pattern's registry line, so a family reads as a name a prior send invented.",
     "",
-    "J7 drops the family sentence from the cotal_join description.",
+    "J7 drops the sentence on what a family keeps from the cotal_join description.",
     "",
     "NO BUILD STEP: the suite imports ../src.",
     "",
@@ -81,9 +81,9 @@
       "note": "A send cannot create a pattern, so the unregistered-name line misleads."
     },
     {
-      "name": "J7 the cotal_join description drops the family sentence",
+      "name": "J7 the cotal_join description drops what a family keeps",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        \"A family such as team.> follows every channel under team, now and later, but not team itself: posts on its durable channels are stored for you while you are away, from the join on, and its live channels reach you only while you are connected. A pattern with * or the root > is followed live only. \" +\n",
+      "find": "        \"Under a family such as review.>, posts on its durable channels are kept for you while you are offline, from the join on, and its live channels reach you only while you are connected. \" +\n",
       "replace": "",
       "expectRed": "the cotal_join description says what a family keeps",
       "cell": "the cotal_join description says what a family keeps",

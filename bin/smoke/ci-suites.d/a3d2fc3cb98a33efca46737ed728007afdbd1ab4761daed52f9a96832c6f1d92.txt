@@ -1,0 +1,2 @@
+# The centre views: the channel header, members, messages, working line and Needs card, Activity with its filters, the DM view, the empty space state, and a reopen that keeps its rows.
+smoke:web-views

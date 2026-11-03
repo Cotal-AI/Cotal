@@ -49,7 +49,7 @@ import {
   turnNoticeFilter,
   renderOnceTask,
 } from "@cotal-ai/core";
-import type { AgentConfig } from "./config.js";
+import { eventPlaneArmed, type AgentConfig } from "./config.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
@@ -86,6 +86,10 @@ export function isLocalServer(servers: string): boolean {
     .every((s) => /^(?:[a-z]+:\/\/)?(?:[^@/]*@)?(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:\/|$)/i.test(s.trim()));
 }
 
+/** The card key that says whether this session arms its event plane. Namespaced, because SPEC §11
+ *  reserves bare meta keys to the spec. */
+export const EVENTS_META_KEY = "ai.cotal.events";
+
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
 function buildMeta(config: AgentConfig, processCwd: boolean): Record<string, string> | undefined {
@@ -99,6 +103,9 @@ function buildMeta(config: AgentConfig, processCwd: boolean): Record<string, str
   // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
   // is not on. Advisory display metadata, never an authorization or routing input.
   meta.host = hostname();
+  // Whether the session arms its event plane, from the predicate the emitting connectors branch on.
+  // Overlaid with the other connector-owned keys, so an agent file cannot declare it. Advisory.
+  meta[EVENTS_META_KEY] = eventPlaneArmed(config) ? "on" : "off";
   // Snapshot the connector process directory when the session is constructed. This is display
   // metadata, not a model harness's later shell directory or a routing/authorization input. A
   // connector whose process directory is not the session's leaves it unknown until the harness
@@ -545,6 +552,8 @@ export class MeshAgent extends EventEmitter {
   /** How many times the endpoint saw this session's stored copies at their limit (#5404) since a
    *  cotal_inbox reply last carried the notice. */
   private _storedCopiesFull = 0;
+  /** The count those stored copies held, from the latest copy that found them full. */
+  private _storedCopiesLimit = 0;
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
@@ -729,7 +738,7 @@ export class MeshAgent extends EventEmitter {
     // A warning is a condition the endpoint is already surviving. Log it through the same bounded
     // operator sink, but never turn it into connectionIssue: readiness is still true.
     this.ep.on("warning", (e: Error) => this.handleEndpointWarning(e));
-    this.ep.on("stored-copies-full", () => { this._storedCopiesFull++; });
+    this.ep.on("stored-copies-full", (full: { limit: number }) => { this._storedCopiesFull++; this._storedCopiesLimit = full.limit; });
     // Two guards, and the comments sit out here so neither anchors a mutation on prose. An
     // in-flight initial bind or rebuild can finish after stop() cleared local state, and shutdown is
     // terminal for this MeshAgent, so a late endpoint edge must not resurrect transport. Separately,
@@ -894,6 +903,11 @@ export class MeshAgent extends EventEmitter {
    *  there is nothing to say. */
   get storedCopiesFull(): number {
     return this._storedCopiesFull;
+  }
+
+  /** The count the stored copies held when they last reached it, from the copy that said so. */
+  get storedCopiesLimit(): number {
+    return this._storedCopiesLimit;
   }
 
   /** A reply carrying the stored-copy notice went out, read when the count was `seen`. Clear what
@@ -2365,19 +2379,16 @@ export class MeshAgent extends EventEmitter {
    * did not. Does not refuse create. Graded before multicast so the new message cannot
    * make the name look pre-existing.
    */
-  async describeSendChannel(channel: string): Promise<string> {
-    if (this.ep.getChannelConfig(channel)) return "existing channel";
+  async describeSendChannel(channel: string): Promise<{ known: boolean; hints: string[] }> {
+    if (this.ep.getChannelConfig(channel)) return { known: true, hints: [] };
     const known = new Set<string>(this.ep.joinedChannels().filter(isConcreteChannel));
     try {
       for (const row of await this.ep.listChannels()) known.add(row.channel);
     } catch {
       /* no stream: joined + registry cache still distinguish a typo of a channel we are on */
     }
-    if (known.has(channel)) return "existing channel";
-    const hints = closeChannelNames(channel, [...known]);
-    if (hints.length)
-      return `new channel - no registry entry and no prior traffic; did you mean ${hints.map((h) => "#" + h).join(", ")}?`;
-    return "new channel - no registry entry and no prior traffic";
+    if (known.has(channel)) return { known: true, hints: [] };
+    return { known: false, hints: closeChannelNames(channel, [...known]) };
   }
 
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster

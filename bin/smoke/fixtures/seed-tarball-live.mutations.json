@@ -1,0 +1,17 @@
+{
+  "command": "pnpm --filter @cotal-ai/web build && pnpm smoke:seed-tarball:live",
+  "suite": [
+    "bin/smoke/seed-tarball-live.smoke.ts"
+  ],
+  "mutations": [
+    {
+      "name": "the web build stops recording the packages it bundles, so the published payload ships an SBOM that names nothing",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "          if (p) found.set(p.name, p.root);",
+      "replace": "          void p;",
+      "expectRed": "web bundle-licenses.json names react and react-dom",
+      "cell": "web bundle-licenses.json names react and react-dom",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    }
+  ]
+}

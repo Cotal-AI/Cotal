@@ -1,5 +1,92 @@
 # @cotal-ai/cli
 
+## 0.140.0
+
+### Minor Changes
+
+- 485bbfe: `cotal history limit` now sets the limits of DMs and of the delivery daemon's inbox and stored copies as well as channel posts, and takes `none` for any age or count. `--inbox-max-age` and `--inbox-per-agent` set the inbox and stored copies together, and `--dm-max-age` and `--dm-per-sender` set DMs. A new space keeps 1000 stored copies per agent and every DM, as before, and `cotal up` and connecting never change a limit. A lower limit shows what it deletes for each agent or DM pair and asks first. With no limit flags the command prints the four streams' limits and changes nothing. Its `--json` result now lists one entry per stream under `result.streams`. Restore brings back the recorded limits of all four streams.
+  
+  The delivery daemon stamps each stored copy with the count it was stored under in a `Cotal-Delivery-Limit` header, and the stored-copies notice compares against that count. A copy without the header counts as 1000.
+  
+  In `@cotal-ai/core`, the chat-only limit API is replaced by one that takes the stream. `ChatHistoryLimit` becomes `HistoryLimit`, whose `perSender` is now `perSubject`; `setChatHistoryLimit`, `describeChatHistory`, `chatHistoryLimitProblem`, `chatHistoryLimitOf` and `chatHistoryRestoreStaging` become `setHistoryLimit`, `describeHistoryLimit`, `historyLimitProblem`, `historyLimitOf` and `historyLimitRestoreStaging`; and `ChatHistoryChange`, `ChatHistoryUpdateUnknown` and `ChatHistoryChanged` become `HistoryLimitChange`, `HistoryLimitUpdateUnknown` and `HistoryLimitChanged`. `isAcceptedChatHistory`, `CHAT_HISTORY_MIN_AGE_MS` and `CHAT_HISTORY_MAX_AGE_MS` are removed; `historyLimitMinAgeMs` and `HISTORY_MAX_AGE_MS` give the bounds, and `historyAgeProblem` checks an age on its own, where 0 is an age below the floor. The `stored-copies-full` event now carries the stamped `limit`.
+
+### Patch Changes
+
+- Updated dependencies [485bbfe]
+- Updated dependencies [4da6cf5]
+  - @cotal-ai/core@0.140.0
+  - @cotal-ai/workspace@0.140.0
+
+## 0.139.1
+
+### Patch Changes
+
+- bf1ce04: Drop the unused `MeshViewOptions` type re-export from `src/console/mesh.ts` so `mesh.ts` re-exports only the `MeshView` model types that the console UI components import.
+- Updated dependencies [644f6eb]
+  - @cotal-ai/core@0.139.1
+  - @cotal-ai/workspace@0.139.1
+
+## 0.139.0
+
+### Patch Changes
+
+- Updated dependencies [c3d4af4]
+  - @cotal-ai/core@0.139.0
+  - @cotal-ai/workspace@0.139.0
+
+## 0.138.2
+
+### Patch Changes
+
+- Updated dependencies [a2fba68]
+  - @cotal-ai/workspace@0.138.2
+  - @cotal-ai/core@0.138.2
+
+## 0.138.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.138.1
+  - @cotal-ai/workspace@0.138.1
+
+## 0.138.0
+
+### Patch Changes
+
+- 3473992: Move terminal attach from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/attach`: the detach key, the terminal hold, the session client over a mesh session (`attachClient`, `meshSessionTransport`), and the attach loop that establishes a session, re-establishes it when the link drops and hands back abandoned sessions (`attachSeat`). A caller passes a `ControlClient`, the command a seat-miss refusal names, an optional remedy for a seat with no terminal, and an optional sink for the notices the loop prints, so the library never imports CLI code. `cotal attach`, the console's attach and spawn-then-attach behave as before.
+- 789c904: Move the chat session layer from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/chat`: the session contract, the participant engine, the native session, and the open, static and user-mode adapters. `openChatSession` admits a session through the adapter the target's recorded mode names, and a caller passes a `ControlClient` for the manager calls a static session makes at its open and its retirement, so the library never imports CLI code. `cotal chat` and `cotal channels` behave as before.
+- Updated dependencies [534382c]
+- Updated dependencies [85f288b]
+- Updated dependencies [3473992]
+- Updated dependencies [789c904]
+  - @cotal-ai/core@0.138.0
+  - @cotal-ai/workspace@0.138.0
+
+## 0.137.0
+
+### Minor Changes
+
+- d02b40c: Add the desktop daemon app with a tray, device-approval onboarding, daemon-owned space discovery and connection controls. Package the stock CLI with the app, keep login credentials out of the renderer, and refuse npm self-update of a bundled runtime. Add native desktop service and local-control support while preserving Linux ownership and lifetime checks.
+
+### Patch Changes
+
+- @cotal-ai/core@0.137.0
+  - @cotal-ai/workspace@0.137.0
+
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+  - @cotal-ai/workspace@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+  - @cotal-ai/workspace@0.136.7
+
 ## 0.136.6
 
 ### Patch Changes

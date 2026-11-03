@@ -194,66 +194,108 @@ export type CanonicalBackupStreamConfig = Pick<
 
 const DEFAULT_DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 const DEFAULT_DUPLICATE_WINDOW = nanos(DEFAULT_DUPLICATE_WINDOW_MS);
-/** Per-subject cap on the INBOX and DLV streams, where a subject is one member lifecycle across
- *  every channel: the newest copies kept for it, delivered ones included, since the reader acks an
- *  entry without deleting it. A delivery bound, independent of {@link ChatHistoryLimit}. */
+/** The count a new space's INBOX and DLV streams keep per subject, where a subject is one agent
+ *  lifecycle across every channel: its newest copies, delivered ones included, since the reader acks
+ *  an entry without deleting it. An operator may set another with `cotal history limit`. It is also
+ *  the count of a DLV copy without a {@link DELIVERY_LIMIT_HEADER}, which only a daemon from before
+ *  the count was configurable writes. */
 export const PLANE3_MAX_MSGS_PER_SUBJECT = 1000;
 export const BACKUP_PLANE3_DEDUP_WINDOW_MS = 2 * 60 * 60 * 1000;
 const PLANE3_DUPLICATE_WINDOW = nanos(BACKUP_PLANE3_DEDUP_WINDOW_MS);
+/** The header the trusted DLV writer stamps on each copy: the DLV count in force when it wrote the
+ *  copy, as a whole number, or `none` (SPEC §8). */
+export const DELIVERY_LIMIT_HEADER = "Cotal-Delivery-Limit";
 
-/** How long the chat stream keeps a channel post (SPEC §8): until it is older than `maxAgeMs`,
- *  or until its sender has posted `perSender` newer ones on that channel, whichever comes first.
- *  One limit per space, enforced by the broker as the stream's `max_age` and
- *  `max_msgs_per_subject`; a chat subject is one sender on one channel. */
-export interface ChatHistoryLimit {
+/** The message streams a history limit applies to: CHAT, INBOX, DLV and DM. */
+export type HistoryLimitStream = "chat" | "inbox" | "dlv" | "dm";
+
+/** How long a message stream keeps an entry (SPEC §8): until it is older than `maxAgeMs`, or until
+ *  `perSubject` newer entries share its subject, whichever comes first. A subject is one sender on
+ *  one channel in CHAT, one agent lifecycle in INBOX and DLV, and one sender to one recipient in DM.
+ *  The broker enforces the pair as the stream's `max_age` and `max_msgs_per_subject`. */
+export interface HistoryLimit {
   /** `max_age` in milliseconds. 0 is no age limit. */
   maxAgeMs: number;
-  /** `max_msgs_per_subject`. */
-  perSender: number;
+  /** `max_msgs_per_subject`. {@link HISTORY_NO_COUNT} is no count limit. */
+  perSubject: number;
 }
 
-/** The limit a new space's chat stream is created with: no age limit, and each sender's newest 1000
- *  posts on each channel. Every chat stream held this pair before the limit was configurable, and
- *  `cotal up` changes no existing stream's limit. */
-export const CHAT_HISTORY_DEFAULT: Readonly<ChatHistoryLimit> = Object.freeze({ maxAgeMs: 0, perSender: 1000 });
-/** The shortest age an operator may set: the stream's duplicate window, which the broker requires
- *  `max_age` not to undercut. */
-export const CHAT_HISTORY_MIN_AGE_MS = DEFAULT_DUPLICATE_WINDOW_MS;
-export const CHAT_HISTORY_MAX_AGE_MS = 3650 * 86_400_000;
+/** `max_msgs_per_subject` for no count limit. */
+export const HISTORY_NO_COUNT = -1;
 
-/** Why an operator may not set `limit`, or undefined when it may. The age is whole seconds so its
- *  nanosecond `max_age` stays an exact integer. */
-export function chatHistoryLimitProblem(limit: ChatHistoryLimit): string | undefined {
-  if (!Number.isSafeInteger(limit.perSender) || limit.perSender < 1)
-    return `the per-sender count must be a whole number of at least 1, not ${limit.perSender}`;
-  if (!Number.isSafeInteger(limit.maxAgeMs) || limit.maxAgeMs % 1000 !== 0)
-    return "the age must be a whole number of seconds";
-  if (limit.maxAgeMs < CHAT_HISTORY_MIN_AGE_MS) return "the age must be at least 2m, the chat stream's duplicate window";
-  if (limit.maxAgeMs > CHAT_HISTORY_MAX_AGE_MS) return "the age must be at most 3650d";
+/** A new space's chat stream: no age limit, and each sender's newest 1000 posts on each channel.
+ *  Every chat stream held this pair before the limit was configurable, and `cotal up` changes no
+ *  existing stream's limit. */
+export const CHAT_HISTORY_DEFAULT: Readonly<HistoryLimit> = Object.freeze({ maxAgeMs: 0, perSubject: 1000 });
+/** A new space's INBOX and DLV streams: no age limit, and each agent lifecycle's newest 1000 copies. */
+export const INBOX_HISTORY_DEFAULT: Readonly<HistoryLimit> = Object.freeze({ maxAgeMs: 0, perSubject: PLANE3_MAX_MSGS_PER_SUBJECT });
+/** A new space's DM stream keeps every DM: no age limit and no count limit. */
+export const DM_HISTORY_DEFAULT: Readonly<HistoryLimit> = Object.freeze({ maxAgeMs: 0, perSubject: HISTORY_NO_COUNT });
+export const HISTORY_MAX_AGE_MS = 3650 * 86_400_000;
+
+/** The limit a new space's `stream` is created with. */
+export function historyLimitDefault(stream: HistoryLimitStream): Readonly<HistoryLimit> {
+  if (stream === "chat") return CHAT_HISTORY_DEFAULT;
+  return stream === "dm" ? DM_HISTORY_DEFAULT : INBOX_HISTORY_DEFAULT;
+}
+
+/** The shortest age `stream` may hold: its duplicate window, which the broker requires `max_age` not
+ *  to undercut. 2 minutes for CHAT and DM, 2 hours for INBOX and DLV. */
+export function historyLimitMinAgeMs(stream: HistoryLimitStream): number {
+  return stream === "inbox" || stream === "dlv" ? BACKUP_PLANE3_DEDUP_WINDOW_MS : DEFAULT_DUPLICATE_WINDOW_MS;
+}
+
+/** Why `stream` may not hold `limit`, or undefined when it may. An age is none (0) or one
+ *  {@link historyAgeProblem} accepts; a count is none ({@link HISTORY_NO_COUNT}) or at least 1. None
+ *  for both is allowed. */
+export function historyLimitProblem(stream: HistoryLimitStream, limit: HistoryLimit): string | undefined {
+  if (limit.perSubject !== HISTORY_NO_COUNT && (!Number.isSafeInteger(limit.perSubject) || limit.perSubject < 1))
+    return `the count must be a whole number of at least 1, or none, not ${limit.perSubject}`;
+  return limit.maxAgeMs === 0 ? undefined : historyAgeProblem(stream, limit.maxAgeMs);
+}
+
+/** Why `stream` may not hold an age of `maxAgeMs`, or undefined when it may: whole seconds from the
+ *  stream's duplicate window to 3650 days, so its nanosecond `max_age` stays an exact integer. Here
+ *  0 is an age, below every window; only a {@link HistoryLimit} spells none as 0. */
+export function historyAgeProblem(stream: HistoryLimitStream, maxAgeMs: number): string | undefined {
+  if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs % 1000 !== 0) return "the age must be a whole number of seconds";
+  if (maxAgeMs < historyLimitMinAgeMs(stream))
+    return `the age must be at least ${stream === "inbox" || stream === "dlv" ? "2h" : "2m"}, the stream's duplicate window, or none`;
+  if (maxAgeMs > HISTORY_MAX_AGE_MS) return "the age must be at most 3650d, or none";
   return undefined;
 }
 
-/** A limit a chat stream may hold: one an operator may set, or no age with a valid count, which a
- *  new stream holds by default. */
-export function isAcceptedChatHistory(limit: ChatHistoryLimit): boolean {
-  if (limit.maxAgeMs === 0) return Number.isSafeInteger(limit.perSender) && limit.perSender >= 1;
-  return chatHistoryLimitProblem(limit) === undefined;
-}
-
-/** The limit a chat stream config holds, read from its `max_age` and `max_msgs_per_subject`. */
-export function chatHistoryLimitOf(config: Readonly<Record<string, unknown>>): ChatHistoryLimit {
+/** The limit a stream config holds, read from its `max_age` and `max_msgs_per_subject`. */
+export function historyLimitOf(config: Readonly<Record<string, unknown>>): HistoryLimit {
   const age = config.max_age ?? 0, count = config.max_msgs_per_subject;
-  return { maxAgeMs: typeof age === "number" ? age / 1_000_000 : Number.NaN, perSender: typeof count === "number" ? count : Number.NaN };
+  return { maxAgeMs: typeof age === "number" ? age / 1_000_000 : Number.NaN, perSubject: typeof count === "number" ? count : Number.NaN };
 }
 
-/** The limit a restore holds the chat stream at while it checks the restored state: the artifact's
+/** The limit a restore holds `stream` at while it checks the restored state: the artifact's
  *  recorded count and no age, so nothing expires before the messages, bytes and sequences are
  *  compared. The recorded age is applied after the last check. The recorded limit is checked here
  *  first, so staging never admits a limit no stream may hold. */
-export function chatHistoryRestoreStaging(recorded: ChatHistoryLimit): ChatHistoryLimit {
-  if (!isAcceptedChatHistory(recorded))
-    throw new Error(`the backup records a chat history limit no stream may hold: max_age ${recorded.maxAgeMs}ms, ${recorded.perSender} per sender`);
-  return { maxAgeMs: 0, perSender: recorded.perSender };
+export function historyLimitRestoreStaging(stream: HistoryLimitStream, recorded: HistoryLimit): HistoryLimit {
+  const problem = historyLimitProblem(stream, recorded);
+  if (problem)
+    throw new Error(`the backup records a ${stream} history limit no stream may hold (${problem}): max_age ${recorded.maxAgeMs}ms, ${recorded.perSubject} per subject`);
+  return { maxAgeMs: 0, perSubject: recorded.perSubject };
+}
+
+/** Which history limit `stream` of `space` carries, or undefined for a stream without one. */
+export function historyLimitStreamOf(space: string, stream: string): HistoryLimitStream | undefined {
+  if (stream === chatStream(space)) return "chat";
+  if (stream === inboxStream(space)) return "inbox";
+  if (stream === dlvStream(space)) return "dlv";
+  if (stream === dmStream(space)) return "dm";
+  return undefined;
+}
+
+/** The stream name of `space`'s `stream`. */
+export function historyLimitStreamName(space: string, stream: HistoryLimitStream): string {
+  if (stream === "chat") return chatStream(space);
+  if (stream === "inbox") return inboxStream(space);
+  return stream === "dlv" ? dlvStream(space) : dmStream(space);
 }
 
 function baseConfig(name: string, subjects: string[]): CanonicalBackupStreamConfig {
@@ -291,40 +333,24 @@ export function spaceStreamCreationBase(name: string, subjects: string[]): Canon
 }
 
 /** Current canonical config for one of the backed-up streams. Restore callers must use this config,
- * not the config embedded in untrusted snapshot bytes. `chat` sets the chat stream's history limit
- * and is ignored for every other stream; callers validate it. */
+ * not the config embedded in untrusted snapshot bytes. `limit` sets the history limit of CHAT, INBOX,
+ * DLV or DM, defaulting to the stream's {@link historyLimitDefault}, and is ignored for every other
+ * stream; callers validate it. */
 export function canonicalBackupStreamConfig(
   space: string,
   stream: string,
-  chat: Readonly<ChatHistoryLimit> = CHAT_HISTORY_DEFAULT,
+  limit?: Readonly<HistoryLimit>,
 ): CanonicalBackupStreamConfig {
   const p = spacePrefix(space);
-  if (stream === chatStream(space)) {
-    return {
-      ...baseConfig(stream, [`${p}.chat.>`]),
-      max_age: nanos(chat.maxAgeMs),
-      max_msgs_per_subject: chat.perSender,
-      allow_direct: true,
-    };
-  }
-  if (stream === dmStream(space)) return baseConfig(stream, [`${p}.inst.>`]);
+  const target = historyLimitStreamOf(space, stream);
+  const limits = target && { max_age: nanos((limit ?? historyLimitDefault(target)).maxAgeMs), max_msgs_per_subject: (limit ?? historyLimitDefault(target)).perSubject };
+  if (target === "chat") return { ...baseConfig(stream, [`${p}.chat.>`]), ...limits, allow_direct: true };
+  if (target === "dm") return { ...baseConfig(stream, [`${p}.inst.>`]), ...limits };
   if (stream === taskStream(space)) {
     return { ...baseConfig(stream, [`${p}.svc.>`]), retention: RetentionPolicy.Workqueue };
   }
-  if (stream === inboxStream(space)) {
-    return {
-      ...baseConfig(stream, [`${p}.dinbox.>`]),
-      max_msgs_per_subject: PLANE3_MAX_MSGS_PER_SUBJECT,
-      duplicate_window: PLANE3_DUPLICATE_WINDOW,
-    };
-  }
-  if (stream === dlvStream(space)) {
-    return {
-      ...baseConfig(stream, [`${p}.dlv.>`]),
-      max_msgs_per_subject: PLANE3_MAX_MSGS_PER_SUBJECT,
-      duplicate_window: PLANE3_DUPLICATE_WINDOW,
-    };
-  }
+  if (target === "inbox") return { ...baseConfig(stream, [`${p}.dinbox.>`]), ...limits, duplicate_window: PLANE3_DUPLICATE_WINDOW };
+  if (target === "dlv") return { ...baseConfig(stream, [`${p}.dlv.>`]), ...limits, duplicate_window: PLANE3_DUPLICATE_WINDOW };
   if (stream === wfjStreamName(space)) return baseConfig(stream, [`${p}.wfj.*`]);
   // The records and admission stores are KV buckets hardened after creation, as their own
   // definitions say.
@@ -396,23 +422,24 @@ function normalize(value: unknown): unknown {
 
 /** Validate every active and security-sensitive stream setting, including explicit rejection of
  * mirrors, sources, transforms, republish, placement, sealing, metadata, and future active features.
- * The chat stream's history limit is the one setting that varies: it is read from `actual` and must
- * be one a stream may hold ({@link isAcceptedChatHistory}). A restore that is still checking the
- * state it restored passes `restoreStagingFor`, the limit its artifact recorded, and the config must
- * then hold that limit's staging form exactly ({@link chatHistoryRestoreStaging}). */
+ * The history limit of CHAT, INBOX, DLV and DM is the one setting that varies: it is read from
+ * `actual` and must be one the stream may hold ({@link historyLimitProblem}). A restore that is still
+ * checking the state it restored passes `restoreStagingFor`, the limit its artifact recorded, and the
+ * config must then hold that limit's staging form exactly ({@link historyLimitRestoreStaging}). */
 export function validateCanonicalBackupStreamConfig(
   space: string,
   stream: string,
   actual: Readonly<Record<string, unknown>>,
-  opts: { restoreStagingFor?: ChatHistoryLimit } = {},
+  opts: { restoreStagingFor?: HistoryLimit } = {},
 ): CanonicalBackupStreamConfig {
-  let chat: ChatHistoryLimit | undefined;
-  if (stream === chatStream(space)) {
-    chat = opts.restoreStagingFor ? chatHistoryRestoreStaging(opts.restoreStagingFor) : chatHistoryLimitOf(actual);
-    if (!opts.restoreStagingFor && !isAcceptedChatHistory(chat))
-      throw new Error(`${stream} config is not canonical: max_age=${JSON.stringify(actual.max_age)}, max_msgs_per_subject=${JSON.stringify(actual.max_msgs_per_subject)} is not a chat history limit`);
+  const limitStream = historyLimitStreamOf(space, stream);
+  let limit: HistoryLimit | undefined;
+  if (limitStream) {
+    limit = opts.restoreStagingFor ? historyLimitRestoreStaging(limitStream, opts.restoreStagingFor) : historyLimitOf(actual);
+    if (!opts.restoreStagingFor && historyLimitProblem(limitStream, limit) !== undefined)
+      throw new Error(`${stream} config is not canonical: max_age=${JSON.stringify(actual.max_age)}, max_msgs_per_subject=${JSON.stringify(actual.max_msgs_per_subject)} is not a history limit it may hold`);
   }
-  const expected = canonicalBackupStreamConfig(space, stream, chat);
+  const expected = canonicalBackupStreamConfig(space, stream, limit);
   const known = new Set([...Object.keys(expected), ...Object.keys(INERT_CONFIG_DEFAULTS)]);
   const unknown = Object.keys(actual).filter((key) => !known.has(key));
   if (unknown.length) throw new Error(`${stream} config has unsupported fields: ${unknown.sort().join(", ")}`);

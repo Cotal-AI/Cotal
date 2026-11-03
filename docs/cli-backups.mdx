@@ -189,7 +189,10 @@ receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
 confirm that any seat joined. Its `restored` and `recreatedEmpty` fields name the streams the
-restore brought back and the ones it recreated empty. A registry restore brings back channel settings only, so chat and DM
+restore brought back and the ones it recreated empty. A restore brings back the history limits the
+artifact recorded for channel posts, DMs, the delivery inbox and stored copies: it creates each of
+those streams with no age limit and the recorded count, checks the restored state, and only then
+applies each recorded age. A registry restore brings back channel settings only, so chat and DM
 history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_RESTORED` warning, and `previousStore`
 names the store the restore set aside, which holds the only copy of them. Its next step says
 that `backup cleanup-fallback` deletes that store only with `--discard-history`. A full restore of

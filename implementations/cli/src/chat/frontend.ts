@@ -7,7 +7,7 @@
 import { writeSync } from "node:fs";
 import { colorEnabled, inputDisabledByFlag, terminalWidth } from "@cotal-ai/workspace";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
-import type { AdmittedChatSession, CloseReport } from "./session.js";
+import type { AdmittedChatSession, CloseReport } from "@cotal-ai/workspace/chat";
 import type { Recipient } from "./view.js";
 
 export type FrontEnd = "tui" | "plain" | "stdio";

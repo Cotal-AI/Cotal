@@ -1,0 +1,2 @@
+# What the dashboard can post as: the startup decision in /api/meta on open, static-auth and --creds meshes, and the operator poster that joins the roster on the first post.
+smoke:web-post-capability

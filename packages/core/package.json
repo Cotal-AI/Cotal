@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/core",
   "description": "The Cotal protocol: endpoint, subjects, message types, the NATS client layer, and the extension contracts.",
-  "version": "0.136.6",
+  "version": "0.140.0",
   "license": "Apache-2.0",
   "keywords": [
     "cotal",
@@ -43,6 +43,10 @@
     "./secret-fs": {
       "types": "./dist/secret-fs-entry.d.ts",
       "import": "./dist/secret-fs-entry.js"
+    },
+    "./presence-ages": {
+      "types": "./dist/presence-ages.d.ts",
+      "import": "./dist/presence-ages.js"
     },
     "./peer-label": {
       "types": "./dist/peer-label.d.ts",

@@ -1,0 +1,2 @@
+# The dashboard hash routes parse, format and round-trip, and a bad address never throws.
+smoke:web-route

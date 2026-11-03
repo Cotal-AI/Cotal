@@ -1,5 +1,45 @@
 # @cotal-ai/seat
 
+## 0.140.0
+
+No changes in this release.
+
+## 0.139.1
+
+### Patch Changes
+
+- 053f5b3: The manager's in-process pty runtime now takes its terminal size, attach scrollback and stop grace window from `@cotal-ai/seat`, which exports `DEFAULT_COLS`, `DEFAULT_ROWS`, `SCROLLBACK_ROWS` and `GRACE_MS`. It used to keep its own copies, so a change to the seat's values left in-process seats on the old size and grace while custodian seats moved. The values themselves do not change.
+
+## 0.139.0
+
+No changes in this release.
+
+## 0.138.2
+
+No changes in this release.
+
+## 0.138.1
+
+No changes in this release.
+
+## 0.138.0
+
+No changes in this release.
+
+## 0.137.0
+
+### Minor Changes
+
+- d02b40c: Add the desktop daemon app with a tray, device-approval onboarding, daemon-owned space discovery and connection controls. Package the stock CLI with the app, keep login credentials out of the renderer, and refuse npm self-update of a bundled runtime. Add native desktop service and local-control support while preserving Linux ownership and lifetime checks.
+
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
 ## 0.136.6
 
 No changes in this release.

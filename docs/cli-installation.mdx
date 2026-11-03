@@ -133,6 +133,10 @@ stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. 
 
 ## update [#update]
 
+A runtime bundled with the desktop app refuses `update --self` before changing its installation.
+Update that app with its signed platform installer so the app, CLI and runtime stay together.
+
+
 ```bash
 cotal update [--self] [--space <s>] [--server <url>] [--creds <path>]
 cotal update --check [-j|--json|--plain]

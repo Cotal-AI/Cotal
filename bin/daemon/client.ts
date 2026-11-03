@@ -1,17 +1,20 @@
 /**
- * The client side of the local daemon endpoint, used by `cotal daemon status`.
+ * The client side of the local daemon endpoint, used by `cotal daemon status` and the other verbs.
  *
- * It refuses before connecting unless the directory and socket pass the same ownership and mode
- * checks the server applies, and refuses after connecting, before writing a single byte, unless
- * the kernel reports the listening peer as this same uid. So a squatter under another uid, or a
- * socket in a loosened directory, never receives a request.
+ * On Linux and macOS it refuses before connecting unless the directory and socket pass the same
+ * ownership and mode checks the server applies. On every platform it refuses after connecting,
+ * before writing a single byte, unless the kernel reports the answering process as this same user
+ * and as the live holder of the daemon's lifetime lock. On Windows the native pipe open reads that
+ * process's identity before Node sees the connection. So a squatter under another user, a process
+ * that is not this daemon, or a socket in a loosened directory never receives a request.
  */
+import { closeSync } from "node:fs";
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
-import { processStartToken } from "@cotal-ai/core";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
+import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
 import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
-import { readLifetimeRecord } from "./lifetime.js";
+import { processBirth, readLifetimeRecord } from "./lifetime.js";
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
 export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string }): Promise<
@@ -68,9 +71,11 @@ export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
 
 export interface QueryOptions {
   readonly paths: DaemonPaths;
-  readonly peerUid: PeerUid;
-  /** Required with an explicit daemon home ({@link DaemonPaths.lock}): the peer's kernel pid, which
-   *  must be the live owner of that home's lifetime lock. */
+  /** Test hook (Linux, macOS): read the peer's kernel uid. Defaults to the native reader. Windows
+   *  reads the peer inside the native pipe open and does not consult it. */
+  readonly peerUid?: PeerUid;
+  /** Test hook (Linux, macOS): read the peer's kernel pid, which must be the live owner of the
+   *  daemon's lifetime lock. Defaults to the native reader; not consulted on Windows. */
   readonly peerPid?: PeerPid;
   readonly uid?: number;
   readonly timeoutMs?: number;
@@ -99,7 +104,8 @@ function connectTo(path: string, timeoutMs: number): Promise<Socket> {
   });
 }
 
-function readLine(sock: Socket, timeoutMs: number): Promise<string> {
+/** Read one newline-terminated reply, refusing one longer than the line limit. */
+export function readLine(sock: Socket, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let buf = "";
     const t = setTimeout(() => finish(new Error("timed out waiting for the daemon's reply")), timeoutMs);
@@ -142,15 +148,16 @@ export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
 }
 
 /** Connect only after the directory and socket checks pass, and keep the connection only when the
- *  kernel reports the listener as this same uid. Nothing is written before both. */
-async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid" | "timeoutMs">): Promise<Socket> {
-  assertLinux();
+ *  kernel reports the listener as this same uid and as the holder of the daemon's lifetime lock.
+ *  Nothing is written before all of them. */
+export async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid" | "timeoutMs">): Promise<Socket> {
+  assertSupportedPlatform();
+  if (process.platform === "win32") return openPipe(opts.paths, opts.timeoutMs ?? 5000);
   const uid = opts.uid ?? process.geteuid!();
   const { paths } = opts;
-  if (paths.lock !== undefined && opts.peerPid === undefined) throw new Error("an explicit daemon home needs the peer pid check");
   try {
     if (paths.parent !== undefined) checkDir(paths.parent, uid);
-    checkDir(paths.dir, uid);
+    checkDir(paths.dir!, uid);
     checkSocket(paths.socket, uid);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new EndpointRefusal("NOT_RUNNING", `no daemon endpoint at ${paths.socket}`);
@@ -159,7 +166,7 @@ async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peer
   const sock = await connectTo(paths.socket, opts.timeoutMs ?? 5000);
   let peer: number;
   try {
-    peer = opts.peerUid(sock);
+    peer = (opts.peerUid ?? defaultPeerUid)(sock);
   } catch (e) {
     sock.destroy();
     throw new EndpointRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer credentials: ${(e as Error).message}`);
@@ -172,16 +179,49 @@ async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peer
   // lock, the same process (pid and process-start token) that lock's record names. The record is
   // read, never the lock itself, because taking the lock to test it would refuse a legitimate
   // start. The record is written only under the lock and cleared on a clean release.
-  {
-    let pid: number | undefined;
-    try { pid = opts.peerPid!(sock); } catch { pid = undefined; }
-    const owner = readLifetimeRecord(paths.lock);
-    if (pid === undefined || owner === undefined || owner.pid !== pid || owner.start === undefined || processStartToken(pid) !== owner.start) {
-      sock.destroy();
-      throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
-    }
+  let pid: number | undefined;
+  try { pid = (opts.peerPid ?? defaultPeerPid)(sock); } catch { pid = undefined; }
+  if (pid === undefined || !isLockOwner(paths.lock, pid, processBirth(pid))) {
+    sock.destroy();
+    throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
   }
   return sock;
+}
+
+/** Whether the lifetime lock at `lock` names process `pid` born at `birth`. */
+function isLockOwner(lock: string, pid: number, birth: string | undefined): boolean {
+  const owner = readLifetimeRecord(lock);
+  return owner !== undefined && owner.pid === pid && owner.start !== undefined && birth === owner.start;
+}
+
+/** The pipe-open steps that read the server's identity. A failure in one means that identity could
+ *  not be established, so nothing may be sent. */
+const IDENTITY_STEPS = new Set(["GetNamedPipeServerProcessId", "OpenProcess", "GetProcessTimes", "OpenProcessToken", "GetTokenInformation", "ConvertSidToStringSidW"]);
+
+/** Windows: open the daemon's pipe, which the native side authenticates, and keep it only when its
+ *  server is this user and the holder of the lifetime lock. Nothing is written before both. */
+async function openPipe(paths: DaemonPaths, timeoutMs: number): Promise<Socket> {
+  let peer: PipePeer;
+  try {
+    peer = await connectPipe(paths.socket, timeoutMs);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") throw new EndpointRefusal("NOT_RUNNING", `no daemon answers at ${paths.socket}`);
+    if (err.code === "ETIMEDOUT") throw new Error(`timed out connecting to ${paths.socket}`);
+    // The pipe exists but its DACL does not admit this user: another account's process serves it.
+    if (err.code === "EACCES" && err.syscall === "CreateFileW") throw new EndpointRefusal("PEER_UID_MISMATCH", `${paths.socket} is served by a process that does not admit this user; nothing was sent`);
+    if (err.syscall !== undefined && IDENTITY_STEPS.has(err.syscall)) throw new EndpointRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer identity: ${err.message}`);
+    if (err.syscall === undefined) throw new EndpointRefusal("UNSUPPORTED_PLATFORM", `the daemon pipe needs this platform's native daemon helper: ${err.message}`);
+    throw e;
+  }
+  const refuse = (code: "PEER_UID_MISMATCH" | "PEER_NOT_LOCK_OWNER", message: string): never => {
+    closeSync(peer.fd);
+    throw new EndpointRefusal(code, message);
+  };
+  const own = windowsUserSid();
+  if (peer.user !== own) refuse("PEER_UID_MISMATCH", `the process answering at ${paths.socket} runs as ${peer.user}, not ${own}; nothing was sent`);
+  if (!isLockOwner(paths.lock, peer.pid, peer.birth)) refuse("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
+  return adoptPipe(peer.fd);
 }
 
 export interface LoginOptions extends Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> {

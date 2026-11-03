@@ -45,7 +45,7 @@ The typed request/reply command interface on the `ep` rails, served by endpoints
 
 ## Delivery class
 
-A channel's delivery guarantee. `live` is at-most-once delivery to current subscribers. `durable` adds an at-least-once backstop for current members within the space's chat history limit. Class is distinct from the message's addressing mode. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Channel permissions](channels-and-permissions.mdx).
+A channel's delivery guarantee. `live` is at-most-once delivery to current subscribers. `durable` adds an at-least-once backstop for current members within the space's chat history limit and the backstop's own limit. Class is distinct from the message's addressing mode. See [SPEC §4](../SPEC.md#4-delivery-modes) and [Channel permissions](channels-and-permissions.mdx).
 
 ## Delivery daemon (Plane-3)
 

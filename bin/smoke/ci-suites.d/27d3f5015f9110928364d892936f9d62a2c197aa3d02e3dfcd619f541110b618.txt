@@ -1,0 +1,2 @@
+# The graph model draws agents and channels from the roster, the channel list and chat, never from a unicast or an anycast.
+smoke:web-topology

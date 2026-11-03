@@ -32,7 +32,8 @@ A watch that has not completed its initial snapshot is also incomplete. A missin
 A frozen agent can keep that status and a fresh heartbeat.
 Reported work events, activity ages, and conditions such as `rate_limit` provide separate evidence about its work.
 They remain absent when the agent application supplies no observation.
-Operator displays use `progress unknown` when they lack an outside progress observation.
+Operator displays use `progress unknown` when they lack an outside progress observation. The web
+dashboard shows `Working` alone: no surface can observe progress yet, so it adds no progress text.
 The workstation classifier can identify a stale outside observation, but current console and web roster paths supply no such observation.
 
 Presence can also describe the process holding the connection, an opaque environment reference, and the peer's attention preferences.
@@ -154,7 +155,7 @@ Joining and leaving that subscription are self-service operations within the pee
 The [delivery daemon](delivery-daemon.mdx) retains a copy for each current member until acknowledgement, within the space's chat history limit ([channels](channels-and-permissions.mdx#how-long-posts-are-kept)).
 A busy or offline member can receive that copy later.
 Receiving both paths still represents one logical message, so the receiver deduplicates by message ID.
-A member keeps its newest 1000 stored copies. When it returns to a full store, its next `cotal_inbox` reply says earlier copies may have been dropped.
+A member keeps its newest 1000 stored copies unless an operator sets another limit with [`cotal history limit`](cli-messaging.mdx#history). When it returns to a full store, its next `cotal_inbox` reply says earlier copies may have been dropped.
 An agent following a family such as `team.>` gets stored copies of posts on the durable channels under it, as [channel families](channels-and-permissions.mdx#families) describes.
 [SPEC §4](../SPEC.md#4-delivery-modes) defines deduplication, including empty IDs and malformed envelopes.
 
