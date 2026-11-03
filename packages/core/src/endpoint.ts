@@ -59,6 +59,7 @@ import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
+import { nextHeartbeat } from "./presence-heartbeat.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
 import { PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
@@ -1872,9 +1873,23 @@ export class CotalEndpoint extends EventEmitter {
           `presence registration failed for ${this.card.id}: the space's presence KV bucket "${presenceBucket(this.space)}" did not accept this endpoint's first write (${detail}). The bucket can be OPENED and WATCHED while refusing every write, so a healthy-looking connection does not rule this out; a broker whose store has latched refuses until it is restarted, and no client can clear it (#1356).`,
         );
       }
-      this.heartbeatTimer = setInterval(() => {
-        this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
-      }, this.heartbeatMs);
+      // Beat at this endpoint's own phase. A repeating timer re-arms from the instant its callback
+      // ran, and every timer run in one timers pass re-arms to the same instant, so the heartbeats of
+      // many endpoints in one process that once coincided stay coincident and the loop takes the whole
+      // batch in one tick (5088 endpoints in one process: 1 to 2 s stalls, with the put deadlines
+      // expiring inside them). Re-arming from the scheduled beat keeps each endpoint's phase.
+      const phase = Date.now();
+      let beat = 0;
+      const arm = () => {
+        const next = nextHeartbeat(phase, this.heartbeatMs, beat, Date.now());
+        beat = next.beat;
+        const handle = setTimeout(() => {
+          this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+          if (this.heartbeatTimer === handle) arm();
+        }, next.delayMs);
+        this.heartbeatTimer = handle;
+      };
+      arm();
     }
 
     // Caller-owned membership watches are INTENT rather than one-connection iterators. Re-open them
