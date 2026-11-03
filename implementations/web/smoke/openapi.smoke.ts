@@ -100,7 +100,7 @@ try {
   assert.equal(deletion.status, 403, 'Native dashboard cannot acquire channel purge authority');
   conforms(responseSchema('/api/channel/delete', 403, 'post'), await deletion.json());
   for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed' && path !== '/api/meta' && spec.paths[path].get)) {
-    const response = await fetch(base + path.replace('{channel}', 'general'), { headers });
+    const response = await fetch(base + path.replace('{channel}', 'general').replace('{agent}', encodeURIComponent(seed!.card.id)), { headers });
     assert.equal(response.status, 200, `${path}: ${response.status}`);
     const body = await response.json();
     conforms(responseSchema(path, 200), body);
