@@ -662,6 +662,7 @@
     "smoke:manager-refusal-code": "tsx implementations/manager/smoke/refusal-code.smoke.ts",
     "smoke:manager-supervise-restart": "tsx implementations/manager/smoke/supervise-restart.smoke.ts",
     "smoke:manager-supervise-crash": "tsx implementations/manager/smoke/supervise-manager-crash.smoke.ts",
+    "smoke:supervise-crash-late-join": "tsx implementations/manager/smoke/supervise-crash-late-join.smoke.ts",
     "smoke:manager-tmux-adopt": "tsx implementations/manager/smoke/tmux-adopt-manager-crash.smoke.ts",
     "smoke:manager-spawn-action-auth": "tsx implementations/manager/smoke/spawn-action-auth.smoke.ts",
     "smoke:manager-restart-fence": "tsx implementations/manager/smoke/manager-restart-fence.smoke.ts",
