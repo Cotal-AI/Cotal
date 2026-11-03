@@ -1,0 +1,112 @@
+{
+  "suite": [
+    "implementations/cli/smoke/history-limit.smoke.ts"
+  ],
+  "guard": "cotal history limit reads the four streams' limits with no limit flag and writes nothing, takes none for each age and count, sets INBOX and DLV with one pair, treats a limit set from none as lower and previews it per sender, agent lifecycle and DM pair under an operator census line, counts a stored copy's unacknowledged copies from its durable, reports a refusal after an earlier stream changed as partial, and reports an update whose reply never came as an unknown outcome.",
+  "command": "pnpm smoke:history-limit",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "progressPattern": "^  [✓✗] ",
+  "minTicks": 58,
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-limit.json",
+  "why": [
+    "The suite drives the built binary, and its script builds it first, so each mutant is what the suite runs and",
+    "`afterRestore` rebuilds the restored source. The unknown cells run through a TCP hop that passes an update to",
+    "the broker and drops its reply, and the read-only cell has an observer on the open broker for STREAM.UPDATE."
+  ],
+  "mutations": [
+    {
+      "name": "H1 no limit flag is treated as a change",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "  const readOnly = request.size === 0;",
+      "replace": "  const readOnly = false;",
+      "expectRed": "with no limit flag, --json without --yes reads the four streams' limits",
+      "cell": "with no limit flag, --json without --yes reads the four streams' limits",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "H2 the read-only call writes each stream back",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "    if (readOnly) {\n",
+      "replace": "    if (readOnly) {\n      for (const row of rows) await jsm.streams.update(row.stream, row.info.config);\n",
+      "expectRed": "the read-only call publishes no STREAM.UPDATE",
+      "cell": "the read-only call publishes no STREAM.UPDATE",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "An update of a stream with its own config changes nothing, so only the observer on the broker sees it."
+    },
+    {
+      "name": "H3 a refusal after a stream changed is reported as a refusal",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "        if (before.length === 0) throw new CommandFailure(\"refused\",",
+      "replace": "        if (true) throw new CommandFailure(\"refused\",",
+      "expectRed": "a later stream that moved is a partial change, exit 4, naming each stream's outcome",
+      "cell": "a later stream that moved is a partial change, exit 4, naming each stream's outcome",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "H4 an update without a reply is reported as nothing changed",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "        if (error instanceof HistoryLimitUpdateUnknown) {",
+      "replace": "        if (error instanceof HistoryLimitUpdateUnknown && false) {",
+      "expectRed": "a first update cut off before its reply is OPERATION_UNKNOWN, exit 3, not retried",
+      "cell": "a first update cut off before its reply is OPERATION_UNKNOWN, exit 3, not retried",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The broker applied that update, so \"nothing was changed\" would be false."
+    },
+    {
+      "name": "H5 the preview drops the operator census line",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "        process.stderr.write(\"As the space's operator you see every agent and DM pair these streams hold entries for.\\n\");\n",
+      "replace": "        {}\n",
+      "expectRed": "the preview says it is an operator census",
+      "cell": "the preview says it is an operator census",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "H6 the stored-copy preview counts only copies never delivered",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "    return info.num_pending + info.num_ack_pending;",
+      "replace": "    return info.num_ack_pending;",
+      "expectRed": "...gives each stored-copy lifecycle's unacknowledged copies among them, or says it could not read them",
+      "cell": "...gives each stored-copy lifecycle's unacknowledged copies among them, or says it could not read them",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "H7 none is not an age",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "      if (age === \"none\") part.maxAgeMs = 0;\n      else {",
+      "replace": "      {",
+      "expectRed": "none for every flag leaves every stream with no age and no count",
+      "cell": "none for every flag leaves every stream with no age and no count",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "H8 the inbox pair sets only INBOX",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "  { age: \"inbox-max-age\", count: \"inbox-per-agent\", streams: [\"inbox\", \"dlv\"] },",
+      "replace": "  { age: \"inbox-max-age\", count: \"inbox-per-agent\", streams: [\"inbox\"] },",
+      "expectRed": "the inbox pair sets INBOX and DLV together, and the DM pair sets DM",
+      "cell": "the inbox pair sets INBOX and DLV together, and the DM pair sets DM",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "H9 an age from none is not a drop",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "to.maxAgeMs !== 0 && (from.maxAgeMs === 0 || to.maxAgeMs < from.maxAgeMs);",
+      "replace": "to.maxAgeMs !== 0 && to.maxAgeMs < from.maxAgeMs;",
+      "expectRed": "...and each DM pair over the new count, with every DM older than the new age",
+      "cell": "...and each DM pair over the new count, with every DM older than the new age",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "An age set on a stream that had none deletes every entry older than it, unasked."
+    },
+    {
+      "name": "H10 a count from none is not a drop",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "to.perSubject !== HISTORY_NO_COUNT && (from.perSubject === HISTORY_NO_COUNT || to.perSubject < from.perSubject);",
+      "replace": "to.perSubject !== HISTORY_NO_COUNT && to.perSubject < from.perSubject;",
+      "expectRed": "...and each DM pair over the new count, with every DM older than the new age",
+      "cell": "...and each DM pair over the new count, with every DM older than the new age",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "A count set on a stream that had none deletes every entry past it, unasked."
+    }
+  ]
+}
