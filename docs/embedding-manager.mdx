@@ -212,8 +212,10 @@ provisioning authority. An enrollment writes the managed grant at a fresh UID wi
 actor as its parent, or, when the request carries `spawn: { served, runId? }`, with the caller the
 host observed publishing that served `spawn` subject, or the run's starter for a run's spawn. It
 provisions that UID's durables, and returns the daemon's public exchange URL as
-`agentBearerExchangeUrl`; a daemon started without `--exchange-public-port` refuses enrollment. A
-retry with the same token digest answers the same UID while its parent's current grant covers it,
+`agentBearerExchangeUrl`; a daemon started without `--exchange-public-port` refuses enrollment.
+Before launching the child, the manager requires HTTPS or an HTTP loopback IP literal for this URL,
+using the same rule as `cotal agent-bearer`. A name such as `localhost` does not qualify for HTTP.
+A retry with the same token digest answers the same UID while its parent's current grant covers it,
 and a fresh enrollment's refusal otherwise. While the agent's grant stands, an enrollment
 with another digest is refused with `conflict` until that lifecycle's retirement is prepared. A
 prepare-retirement releases the target UID's broker footprint and then revokes its grant, so the

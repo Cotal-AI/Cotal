@@ -1,5 +1,22 @@
 # @cotal-ai/auth
 
+## 0.140.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.2
+  - @cotal-ai/lang@0.140.2
+  - @cotal-ai/workspace@0.140.2
+
+## 0.140.1
+
+### Patch Changes
+
+- 94c1948: A failed auth-service start now logs an authority-plane close failure through its diagnostic sink while preserving the original startup error. A refused or unreachable plane-claim release is no longer silently discarded.
+- @cotal-ai/core@0.140.1
+  - @cotal-ai/lang@0.140.1
+  - @cotal-ai/workspace@0.140.1
+
 ## 0.140.0
 
 ### Patch Changes
