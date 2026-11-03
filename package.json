@@ -764,6 +764,7 @@
     "smoke:drain-repair:auth": "tsx implementations/auth/smoke/drain-repair.smoke.ts",
     "smoke:auth-admin:auth": "tsx implementations/auth/smoke/auth-admin.smoke.ts",
     "smoke:managed-agent-enrollment:auth": "tsx implementations/auth/smoke/managed-agent-enrollment.smoke.ts",
+    "smoke:retire-member-rows:auth": "tsx implementations/auth/smoke/retire-member-rows.smoke.ts",
     "smoke:managed-agent-runtime:auth": "tsx implementations/auth/smoke/managed-agent-runtime.smoke.ts",
     "smoke:managed-activate-door:auth": "tsx implementations/auth/smoke/managed-activate-door.smoke.ts",
     "smoke:managed-retire-door:auth": "tsx implementations/auth/smoke/managed-retire-door.smoke.ts",

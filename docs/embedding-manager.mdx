@@ -211,7 +211,11 @@ retry with the same token digest answers the same UID while the supervising acto
 covers it, and a fresh enrollment's refusal otherwise. While the agent's grant stands, an enrollment
 with another digest is refused with `conflict` until that lifecycle's retirement is prepared. A
 prepare-retirement releases the target UID's broker footprint and then revokes its grant, so the
-manager's terminal rail finds the grant gone. A platform that keeps these writers in its own storage
+manager's terminal rail finds the grant gone. The footprint includes every durable membership row of
+that UID, found as the manager's own teardown finds them: the grant's concrete channels, plus the
+delivery daemon's `lifecycleMemberships` inventory read after the ACL fence, which adds family rows
+and rows on channels a wildcard grants. When that inventory cannot be read, the prepare removes what
+the grant names, fails, and keeps the grant for a retry. A platform that keeps these writers in its own storage
 intercepts both kinds instead. It terminates its own public route, authenticates the human there,
 and asks the auth service for the decision at
 `POST /manager-service-authority/verify-enrollment` (exported as `VERIFY_ENROLLMENT_PATH` from
