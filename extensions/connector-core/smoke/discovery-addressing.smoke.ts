@@ -171,7 +171,7 @@ try {
   const unrelated = await run(me, "cotal_dm", { to: "grace", text: "nobody" });
   check("an unrelated name keeps the plain refusal", unrelated.isError && unrelated.text === `Couldn't DM: no peer "grace" in space "${space}"`, unrelated.text);
   const full = await run(me, "cotal_dm", { to: "ada-lovelace (web)", text: "by full name" });
-  check("the full name delivers", !full.isError && full.text.includes("for ada-lovelace (web)"), full.text);
+  check("the full name delivers", !full.isError && full.text.startsWith("Sent to ada-lovelace (web)."), full.text);
   const texts = (seat: Seat) => seat.agent.inboxSnapshot(8).items.map((i) => i.text);
   check("the full-name DM arrived", await until(() => texts(human).includes("by full name")), texts(human));
   await sleep(500);

@@ -10,7 +10,7 @@ import { displayWidth, wrapWords } from "@cotal-ai/workspace";
 import { oneLine } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import { shownTime } from "../lib/shown-time.js";
-import type { CloseReport, ConnectionState, PublishResult, Result, SessionEvent, SessionIdentity, SessionMessage } from "./session.js";
+import type { CloseReport, ConnectionState, PublishResult, Result, SessionEvent, SessionIdentity, SessionMessage } from "@cotal-ai/workspace/chat";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 
 /** Bounded transcript retention. A dropped entry leaves a visible gap marker. Provisional. */

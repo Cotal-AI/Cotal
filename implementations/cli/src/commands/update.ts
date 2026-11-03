@@ -24,7 +24,7 @@ import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
-import { seedWriterKind } from "../seed/paths.js";
+import { cliPackageRoot, seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -138,6 +138,11 @@ const runtime: UpdateRuntime = {
 export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
   validateUpdateArguments(args);
   if (args.values.check === true) return checkUpdate(args, rt);
+  if (args.values.self === true && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) {
+    throw new CommandFailure("refused", "UNSUPPORTED", "this Cotal runtime belongs to the desktop app; npm self-update would separate it from its bundled runtime", {
+      remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
+    });
+  }
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {

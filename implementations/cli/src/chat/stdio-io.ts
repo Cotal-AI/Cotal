@@ -7,7 +7,7 @@
 import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 import { MAX_REQUEST_LINE, StdioParticipant } from "./stdio.js";
-import type { AdmittedChatSession, CloseReport } from "./session.js";
+import type { AdmittedChatSession, CloseReport } from "@cotal-ai/workspace/chat";
 
 /** Bound on buffered output records waiting for a slow reader before input is paused. Provisional. */
 export const MAX_PENDING_OUTPUT_BYTES = 4 * 1024 * 1024;

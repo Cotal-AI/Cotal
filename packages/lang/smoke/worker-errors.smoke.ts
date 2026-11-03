@@ -42,7 +42,7 @@ for (const test of cases) {
   check(`${test.label}: neither route promotes a plain throw into a typed host failure`, !ordinary.ok && ordinary.class === "error" && !inspection.ok && inspection.class === "error");
 
   const { port1, port2 } = new MessageChannel();
-  const host = serviceBridge(port1, { handler: new SimHandler({}), store: { append: async () => { throw test.value; } } });
+  const host = serviceBridge(port1, { handler: new SimHandler({}), store: { append: async () => { throw test.value; } } }, (e) => { throw e; });
   try {
     const remote = bridgedSeam(port2, host.clock);
     let caught: unknown;

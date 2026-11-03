@@ -19,6 +19,21 @@ against their own authorization policy; a PID is not a lifecycle or ownership fe
 throws for an unsupported transport or missing native helper, and for a socket without a
 file descriptor. No PTY or custodian is started by reading the peer identity.
 
+The same helper also carries the host primitives the local `cotal daemon` endpoint uses, which,
+unlike custody, are built for Linux, macOS and Windows (`src/host.ts`): `localPeerCredentials`
+(Linux `SO_PEERCRED`; macOS `LOCAL_PEERCRED`, the uid `getpeereid(3)` reads, with
+`LOCAL_PEERPID`), `lockExclusiveNb` (`flock(2)`; on Windows `LockFileEx` on one byte past any
+content), `processStartTime` (macOS and Windows), `darwinUserCacheDir`, `darwinLaunchdJob` (a
+read-only `SMJobCopyDictionary` lookup of a loaded job, resolved at run time because Apple
+deprecated it with no replacement and documents its contents as unstable), and on Windows
+`windowsUserSid`, `windowsDirSecurity`, `listenPipe` and `connectPipe`. The pipe functions create,
+connect and authenticate a named pipe in native code, because Node's own pipe server creates it
+with a default DACL that admits Everyone and Anonymous for reading and accepts remote clients:
+every instance gets a protected DACL granting only the user's SID, `FILE_FLAG_FIRST_PIPE_INSTANCE`
+on the first and `PIPE_REJECT_REMOTE_CLIENTS` on all, and each side reads the other's process
+token user and creation time before a connection is handed to Node as a descriptor.
+`native/peercred_win32.c` documents each flag.
+
 The custodian raises its child's `oom_score_adj` to 500 and writes one line to `custodian.log`
 when the kernel refuses. The manager's in-process `pty` runtime applies the same preference
 through the exported `preferSeatForOomKill`.
@@ -28,11 +43,16 @@ developer tree, not a publishable one: it prints a host-dev-build banner and wri
 `build/Release/linux-<arch>/peercred.node`. Pack and publish require both `linux-x64`
 (ELF e_machine 62) and `linux-arm64` (ELF e_machine 183), copied in by
 `scripts/seat-assemble-natives.mjs` from native builder jobs. `prepack` and
-`prepublishOnly` assert those two files, then compile TypeScript without rebuilding either
-native helper. The ARM load job installs the same packed tarball
+`prepublishOnly` assert both Linux helpers and the macOS and Windows helpers for x64 and arm64,
+including their container format and architecture, then compile TypeScript without rebuilding them. The ARM load job installs the same packed tarball
 with no rebuild. The compile uses the `include/node` directory next to the running
-Node binary, not a hardcoded `/usr/include/node`. Off Linux the compile script is a no-op, so
-Windows `pnpm build` does not need headers or a C compiler. There is no `binding.gyp`, so
+Node binary, not a hardcoded `/usr/include/node`. Off Linux `pnpm build` skips the compile, so
+a macOS or Windows `pnpm build` does not need headers or a C compiler. `pnpm build:native`
+compiles for the host on all three: macOS with `cc`, targeting macOS 11 like the workspace binding, into
+`build/Release/darwin-<arch>/`, Windows with `cl.exe` from the MSVC Developer Command Prompt against
+the Node headers and import library the workspace binding pins in `native/node-sdk.json`, into
+`build/Release/win32-<arch>/`. Until a macOS or Windows helper is built or shipped, the host
+primitives throw that it is missing. There is no `binding.gyp` in the package, so
 `pnpm install` does not infer `node-gyp rebuild`. Customer `npm i` does not compile it. A host
 without a C compiler installs the prebuilt helpers; a missing helper, an unsupported
 `linux-<arch>`, or a load failure throws rather than compiling in place.

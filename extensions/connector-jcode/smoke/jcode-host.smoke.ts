@@ -680,6 +680,10 @@ try {
     !existsSync(relaySocket) && !existsSync(relayDir),
     { relaySocket, relayDir },
   );
+  // The seat home outlives the launch for its resume record, but its credential copies do not: the
+  // next launch mirrors them afresh (#5641).
+  check("a retired launch removes the credential copy it mirrored into the seat home",
+    !existsSync(join(peerHome, "auth.json")) && existsSync(join(inheritedJcodeHome, "auth.json")) && existsSync(peerHome));
 
   // A variant does not require an explicit model pin. The connector must still fetch RuntimeInfo and
   // verify the provider route that will receive the effort instead of treating the provider default
@@ -1113,6 +1117,14 @@ try {
   await waitFor("ordinary dnd traffic buffered before kickoff", () =>
     busyActivity.includes("inbound: 1 automatic queued") ? busyActivity : undefined);
   check("ordinary dnd traffic does not start a turn while kickoff is held", !busyTurns().some((entry) => String(entry.frame?.content).includes(deferred)), busyTurns());
+  // #5688: the connector still owns that channel post, but a peek may read it now. The cell below
+  // that sees it reach the following turn is the proof the peek cleared nothing.
+  const deferredPeek = await callJcodeMcp(busyHome, busySocket, busyToken, { peek: true });
+  check(
+    "a peek shows the queued channel post before its turn and clears nothing",
+    !deferredPeek.isError && deferredPeek.text.includes(deferred) && deferredPeek.text.includes("peek: nothing cleared"),
+    deferredPeek,
+  );
   writeFileSync(busyRelease, "release");
   await waitFor("the external busy turn to become idle", () =>
     busyRead().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "idle"));

@@ -1,5 +1,148 @@
 # @cotal-ai/connector-core
 
+## 0.138.1
+
+No changes in this release.
+
+## 0.138.0
+
+### Minor Changes
+
+- 534382c: Make the coordination tools say what to do next. The results of `cotal_send`, `cotal_dm` and `cotal_spawn` now say where the post, message or seat went and the next move. A post says the agents on the channel see it, and a post to a new name says so and names close matches. A DM says other agents can't read it and points anything others could use at the task's channel. A started seat names its `join` channels, or says it starts only on the channels its persona lists. The descriptions of `cotal_send`, `cotal_dm`, `cotal_anycast`, `cotal_spawn`, `cotal_persona`, `cotal_despawn`, `cotal_join`, `cotal_leave`, `cotal_channels`, `cotal_channel_info` and `cotal_run` say what each tool is for, when a neighbouring tool fits better, and give one example, and the briefing's channel guidance agrees with them. The briefing and `cotal_dm` both say to post a status meant for one peer on the shared channel with a mention, and to keep DMs for what that peer alone needs. The briefing and `cotal_send` say a post on a live channel misses an agent that is disconnected or busy, unless it mentions that agent and the agent may read the channel, and the briefing and `cotal_spawn` say `once` works on Claude Code, jcode, OpenCode and pi helpers. A persona that would not load is refused as `Couldn't define <name>: it would not load: <reason>`. `MeshAgent.describeSendChannel` returns `{ known, hints }` instead of a sentence.
+
+## 0.137.0
+
+No changes in this release.
+
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+### Patch Changes
+
+- e8003ed: Seats see the channel registry again. Since seats stopped watching presence, they had also stopped
+  watching the channel registry: `cotal_channels` and `cotal_channel_info` showed no registered
+  channel and no description, the boot briefing carried no channel notes, and a join treated every
+  channel as durable. A seat now reads the registry on demand with `CotalEndpoint.readChannels()`, a
+  batched Direct Get that binds no consumer: once at connect, and again before it lists channels,
+  looks one up, joins or leaves.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+No changes in this release.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+### Patch Changes
+
+- 8e12fe0: Let `cotal_inbox` with `peek` show the connector-managed automatic messages still queued in Codex, Jcode and OpenCode seats, without clearing anything. A DM that arrives during a turn the operator started, or a plain channel post during any turn, can now be read before that turn ends. The connector still delivers and clears it at the end of the turn.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
 ## 0.135.0
 
 ### Minor Changes

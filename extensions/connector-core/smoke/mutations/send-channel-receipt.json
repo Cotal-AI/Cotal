@@ -56,14 +56,29 @@
     "",
     "N26 drops the stored copy from the advertised channel text.",
     "",
+    "N27 puts the old bare line back for a known channel, so the result again says only that it was sent.",
+    "",
+    "N28 drops \"Agents on it see it too\" from the mention line, so a mention reads like a DM.",
+    "",
+    "N29 ignores the channel's replay setting in the line, and N30 stops the tool passing it, so a",
+    "channel that does not replay still promises later joiners the post.",
+    "",
+    "N31 drops the DM line's guidance, so a DM again says nothing about the task's channel.",
+    "",
+    "N32 drops the cotal_dm description's sentence that sends a status for a peer to the task's",
+    "channel with a mention.",
+    "",
+    "N33 restores the claim that a live channel reaches every connected agent, which SPEC §4 does not",
+    "give a busy one. N34 offers once on every harness, though the manager refuses it without turn relay.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
     {
       "name": "N1 the success line ignores the receipt, restoring identical words for typo and known",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const dest = `Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(\", @\")})` : \"\"}`;\n          return ok(receipt ? `${dest} (${receipt}).` : `${dest}.`);",
-      "replace": "          const dest = `Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(\", @\")})` : \"\"}`;\n          return ok(`${dest}.`);",
+      "find": "  if (receipt.known)\n    return mentions.length",
+      "replace": "  if (true)\n    return mentions.length",
       "expectRed": "cotal_send on a typo says new channel so the caller can TELL",
       "cell": "cotal_send on a typo says new channel so the caller can TELL",
       "note": "The reported defect: success words no longer distinguish a typo from a known room."
@@ -80,8 +95,8 @@
     {
       "name": "N3 describeSendChannel always reports existing, so a typo looks like a known room",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this.ep.getChannelConfig(channel)) return \"existing channel\";",
-      "replace": "    if (true) return \"existing channel\";",
+      "find": "    if (this.ep.getChannelConfig(channel)) return { known: true, hints: [] };",
+      "replace": "    if (true) return { known: true, hints: [] };",
       "expectRed": "cotal_send on a typo says new channel so the caller can TELL",
       "cell": "cotal_send on a typo says new channel so the caller can TELL",
       "note": "If every name is 'existing', the tool receipt is identical to the old success line."
@@ -301,6 +316,87 @@
       "expectRed": "the advertised channel text names both ways to reach a family",
       "cell": "the advertised channel text names both ways to reach a family",
       "note": "The schema text is what an agent reads before it ever hits the refusal."
+    },
+    {
+      "name": "N27 the known-channel line goes back to a bare sent receipt",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "      : `Posted to ${at}. Agents on it see it; mention one to make it act.`;",
+      "replace": "      : `Sent to ${at}.`;",
+      "expectRed": "cotal_send on a known channel says who sees it and how to make one act",
+      "cell": "cotal_send on a known channel says who sees it and how to make one act",
+      "note": "The issue: the result said the call worked but not what it means for the next move."
+    },
+    {
+      "name": "N28 the mention line stops saying the channel sees the post",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "      ? `Posted to ${at} and mentioned ${named}. Agents on it see it too.`",
+      "replace": "      ? `Posted to ${at} and mentioned ${named}.`",
+      "expectRed": "cotal_send with a mention names it and says the channel sees the post too",
+      "cell": "cotal_send with a mention names it and says the channel sees the post too",
+      "note": "An agent could read a mention as a private message to the mentioned peer."
+    },
+    {
+      "name": "N29 the new-channel line ignores replay",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const later = replay\n",
+      "replace": "  const later = true\n",
+      "expectRed": "cotal_send on a new channel that does not replay says a later joiner won't see the post",
+      "cell": "cotal_send on a new channel that does not replay says a later joiner won't see the post",
+      "note": "On a space whose channels do not replay, the line would promise later joiners a post they are never shown."
+    },
+    {
+      "name": "N30 the tool stops passing the channel's replay setting",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "receipt, agent.channelInfo(m.channel ?? target).replay));",
+      "replace": "receipt, true));",
+      "expectRed": "cotal_send on a new channel that does not replay says a later joiner won't see the post",
+      "cell": "cotal_send on a new channel that does not replay says a later joiner won't see the post",
+      "note": "The line is right only if the tool reads the effective replay of the channel it posted to."
+    },
+    {
+      "name": "N31 the DM line drops its guidance",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": " Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);",
+      "replace": "${dup}`);",
+      "expectRed": "1229:i cotal_dm text for a offline recipient says where it went and points shared facts at the channel",
+      "cell": "1229:i cotal_dm text for a offline recipient says where it went and points shared facts at the channel",
+      "note": "Fresh agents DM each other instead of posting on the task's channel; this line is where they are told."
+    },
+    {
+      "name": "N32 the cotal_dm description drops the sentence that sends a status to the task's channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": " To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there.",
+      "replace": "",
+      "expectRed": "the cotal_dm description sends a status for a peer to the task's channel with a mention",
+      "cell": "the cotal_dm description sends a status for a peer to the task's channel with a mention",
+      "note": "A harness that lists descriptions before the agent chooses, as jcode does, shows the agent this sentence there."
+    },
+    {
+      "name": "N33 the cotal_send description says a live channel reaches everyone connected again",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name. ",
+      "replace": "On a live channel, only agents connected at that moment get it. ",
+      "expectRed": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+      "cell": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+      "note": "SPEC §4: a live post misses an agent that is disconnected, busy or not yet joined."
+    },
+    {
+      "name": "N36 the cotal_send description drops the mention exception on a live channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name. ",
+      "replace": "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it. ",
+      "expectRed": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+      "cell": "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
+      "note": "SPEC §4: a mention on a live channel keeps a durable copy for a mentioned target allowed to read it."
+    },
+    {
+      "name": "N34 the cotal_spawn description offers once on every harness",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true",
+      "replace": "For a single job, pass once: true",
+      "expectRed": "the cotal_spawn description names the harnesses once works on",
+      "cell": "the cotal_spawn description names the harnesses once works on",
+      "note": "The manager refuses once for a connector without supportsTurnRelay, such as Hermes or Codex."
     }
   ]
 }

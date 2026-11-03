@@ -280,6 +280,10 @@ const UNHELD_SEAT = "the manager does not hold the seat; it may still be running
  *  how long it waits past the window for the proof of its last read. An operator waits on this reply,
  *  so it asks more often than the exit watch that outlives readiness. */
 const READINESS_EXIT_POLL_MS = 1_000;
+/** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
+ *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
+ *  it asks less often than the readiness fence's 50 ms poll. */
+const LATE_JOIN_POLL_MS = 1_000;
 /** How long the process of a launch that waits for the operator ({@link Connector.waitsForOperator})
  *  must run without exiting before it is ready: long enough that a harness refusing its arguments
  *  exits first and is reported as failed. */
@@ -293,6 +297,16 @@ const SESSION_RESTART_WINDOW_MS = 120_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+/** How long a clean stop keeps trying to release its liveness lease when the broker does not answer
+ *  (#3916). The client redials a lost broker every 2 s, so a connection dropped by an outage of up to
+ *  about 3 s is back inside this budget. A longer outage is left to the row's TTL: the stop's other
+ *  steps also wait on the broker, and the whole stop must still finish inside the 15 s a CLI stop
+ *  waits before it sends SIGKILL. */
+const LEASE_RELEASE_BUDGET_MS = 5_000;
+/** The pause between lease release attempts that got no answer. An attempt that waits for its own
+ *  deadline already spaces the retries; this only keeps one that fails at once, on a closed
+ *  connection, from spinning. */
+const LEASE_RELEASE_RETRY_MS = 250;
 /** At most this many retirements run at once (#4965). A retirement dials up to four fresh broker
  *  connections in turn and queues an eviction and an inventory on the delivery daemon's admin rail,
  *  each against a fixed deadline. A stop that started all 50 seats' retirements together lost most of
@@ -3367,7 +3381,8 @@ export class Manager {
   }
 
   /** The resume entry of one live seat, with no side effect: a preservation cut and a supervised
-   *  seat's record both build it. */
+   *  seat's record both build it. The entry is its own copy, so a caller's write to the plan it was
+   *  handed cannot change the launch the manager keeps supervising (#3241). */
   private resumeEntryOf(a: ManagedAgent, backfillFloor?: number): ManagerResumeAgent {
     const principal = a.userOwner
       ? parsePrincipalKey(a.id)
@@ -3401,7 +3416,7 @@ export class Manager {
     const dependencies = [a.launch.source.configPath];
     if (a.launch.source.kind === "manifest" && a.launch.source.runId)
       dependencies.unshift(join(this.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
-    return {
+    return structuredClone({
       space: this.space,
       name: a.name,
       role: a.role,
@@ -3433,7 +3448,7 @@ export class Manager {
       authorityParent: a.authorityParent,
       startedAt: new Date(a.startedAt).toISOString(),
       ...(backfillFloor !== undefined ? { backfillFloor } : {}),
-    };
+    });
   }
 
   /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the
@@ -3691,23 +3706,29 @@ export class Manager {
   /** Release this instance's liveness lease key on a clean stop, at the broker's own revision
    *  rather than a cached one that a renew still in flight moments ago may have already moved past.
    *  Re-reads the row and releases only what is PROVABLY this process's (absent, or another pid's,
-   *  is left alone — the same test {@link reconcileLease} uses). Nothing here throws: a stop must
-   *  complete either way, and a row that could not be released is left for the bucket TTL, with one
-   *  line of warning so the cost (a same-root restart waiting out the TTL) is not silent. */
+   *  is left alone — the same test {@link reconcileLease} uses).
+   *
+   *  A read or delete that gets no answer, as during a reconnect, is tried again until the delete is
+   *  acknowledged or {@link LEASE_RELEASE_BUDGET_MS} has passed (#3916). Nothing here throws: a stop
+   *  must complete either way, and a row that could not be released is left for the bucket TTL, with
+   *  one line of warning so the cost (a same-root restart waiting out the TTL) is not silent. */
   private async releaseOwnManagerLease(): Promise<void> {
-    try {
-      const own = await this.ep.readOwnManagerLease(this.managerInstanceId);
-      if (own !== undefined && own.info.pid === process.pid)
+    const deadline = Date.now() + LEASE_RELEASE_BUDGET_MS;
+    for (;;) {
+      let why: string;
+      try {
+        const own = await this.ep.readOwnManagerLease(this.managerInstanceId);
+        if (own === undefined || own.info.pid !== process.pid) return;
         await this.ep.releaseManagerLease(this.managerInstanceId, own.revision);
-    } catch {
-      // Best-effort: a release that did not commit is reported by the re-read below.
-    }
-    try {
-      const stillOurs = await this.ep.readOwnManagerLease(this.managerInstanceId);
-      if (stillOurs !== undefined && stillOurs.info.pid === process.pid)
-        console.error(`! manager instance ${this.managerInstanceId} could not release its liveness lease (space "${this.space}"); a same-root restart inside the bucket TTL will be refused`);
-    } catch {
-      // Could not confirm either way; the warning is best-effort, not a verdict.
+        return;
+      } catch (e) {
+        why = rejectionText(e);
+      }
+      if (Date.now() >= deadline) {
+        console.error(`! manager instance ${this.managerInstanceId} could not release its liveness lease (space "${this.space}"): ${why}; a same-root restart inside the bucket TTL will be refused`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, LEASE_RELEASE_RETRY_MS));
     }
   }
 
@@ -5290,6 +5311,14 @@ export class Manager {
         a.delegatedHandle.stop({ graceful: true });
         await this.awaitHandleExit(a.delegatedHandle);
       }
+      // THE LOCAL FAMILY IS THIS PARTICIPANT'S, not the host's (#3055). The hosted enrollment wrote
+      // it here, so the host's release cannot remove it, and returning after the terminal request
+      // left every hosted seat's actor token, sentinel and health file on disk. It goes once the
+      // grant is released and the child is gone, by the same rule as the local arm below: every
+      // removal is attempted, and a failure keeps the name held instead of reaching the terminal.
+      const unshredded: string[] = [];
+      await this.shredUserSecrets(unshredded, a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid));
+      if (unshredded.length) throw new Error(`could not shred "${a.name}": ${unshredded.join("; ")}`);
       await this.requestRetirement(a);
       return;
     }
@@ -5903,7 +5932,8 @@ export class Manager {
         restart.recovering = false;
         restart.armed = false;
         let tail = "";
-        try { tail = await this.tail((replacement ?? a.handle).attach()); } catch { /* runtime has no readable tail */ }
+        try { tail = await this.tail((replacement ?? a.handle).attach()); }
+        catch (error) { console.error(`! ${a.name}: last output unavailable: ${rejectionText(error)}`); }
         console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${rejectionText(error)}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
         // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
@@ -7110,7 +7140,8 @@ export class Manager {
             await acceptOnce({ owner: prep.owner, actor: name, uid: lifecycleUid });
           } catch (e) {
             // A refused accept rolls the enrollment back: the host's grant through `provisioned`, and
-            // this participant's secret family here, because the hosted retirement leaves it on disk.
+            // this participant's secret family here, before the refusal returns. The hosted retirement
+            // removes it too, but only once the host's release completes.
             const unshredded: string[] = [];
             await this.shredUserSecrets(unshredded, prep.files);
             if (unshredded.length) throw new Error(`${rejectionText(e)}; cleanup failed: ${unshredded.join("; ")}`, { cause: e });
@@ -8083,36 +8114,14 @@ export class Manager {
       if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
       if (!readiness.ok) {
         this.watchExit(managed);
-        this.watchResumeAdoption(managed);
+        // The restart was counted when it launched, so the record carries that crash whether or not
+        // the seat ever joins: a successor reads the record to decide whether another fits the budget.
+        if (supervised) this.refreshSeatRecord(managed);
+        this.watchResumeAdoption(managed, supervised?.joinedAfter, () => this.armLateResume(managed, connector, prepared, supervised));
         return { ok: false, error: readiness.detail };
       }
-      // A supervised restart arms the way its spawn did: a connector with no session continuation is
-      // armed at readiness, one with it once its session is proved below.
-      if (supervised && managed.restart && !connector.supportsSessionContinuation && !prepared.exact) {
-        managed.restart.armed = true;
-      } else if (managed.restart || prepared.exact) {
-        try {
-          await this.armSessionRecovery(managed);
-          // As on a manifest launch, an exact seat is recorded only at the session it asked for,
-          // proved over the connector's authenticated control endpoint.
-          if (prepared.exact && !managed.restart?.armed)
-            throw new Error("continuity: exact needs the connector to prove its session over an authenticated control endpoint, and it supplied none");
-          managed.launch.sessionId = this.readManagedSession(managed);
-          const asked = prepared.launchOpts.reopenSession;
-          if (asked !== undefined && managed.launch.sessionId !== asked)
-            throw new Error(`continuity: exact asked for session ${asked}, the connector bound ${managed.launch.sessionId}`);
-          if (prepared.exact) {
-            managed.continuity = { space: this.space, name: managed.name, connector: managed.agent, cwd: managed.launch.cwd };
-            this.recordContinuity(managed, managed.launch.sessionId);
-          }
-        } catch (error) {
-          return await this.stopFailedResume(
-            managed,
-            "resume-session-rebind-failed",
-            `${managed.name} resumed, but its exact host session could not be rebound: ${rejectionText(error)}`,
-          );
-        }
-      }
+      const unbound = await this.armResumedSeat(managed, connector, prepared, supervised);
+      if (unbound !== undefined) return await this.stopFailedResume(managed, "resume-session-rebind-failed", unbound);
       if (!this.resumeAttemptId) managed.suppressCleanup = false;
       if (supervised) this.refreshSeatRecord(managed);
       this.watchExit(managed);
@@ -8130,6 +8139,52 @@ export class Manager {
         this.reservedLive.delete(entry.name);
       }
     }
+  }
+
+  /** Arm a resumed seat's restart once it is ready, whether it joined inside the readiness window or
+   *  after it (#4144). A supervised restart arms the way its spawn did: a connector with no session
+   *  continuation is armed at readiness, one with it once its session is proved. Returns why the
+   *  session could not be rebound, and the caller stops the seat. */
+  private async armResumedSeat(managed: ManagedAgent, connector: Connector, prepared: PreparedResume, supervised: SupervisedRestart | undefined): Promise<string | undefined> {
+    if (supervised && managed.restart && !connector.supportsSessionContinuation && !prepared.exact) {
+      managed.restart.armed = true;
+      return undefined;
+    }
+    if (!managed.restart && !prepared.exact) return undefined;
+    try {
+      await this.armSessionRecovery(managed);
+      // As on a manifest launch, an exact seat is recorded only at the session it asked for,
+      // proved over the connector's authenticated control endpoint.
+      if (prepared.exact && !managed.restart?.armed)
+        throw new Error("continuity: exact needs the connector to prove its session over an authenticated control endpoint, and it supplied none");
+      managed.launch.sessionId = this.readManagedSession(managed);
+      const asked = prepared.launchOpts.reopenSession;
+      if (asked !== undefined && managed.launch.sessionId !== asked)
+        throw new Error(`continuity: exact asked for session ${asked}, the connector bound ${managed.launch.sessionId}`);
+      if (prepared.exact) {
+        managed.continuity = { space: this.space, name: managed.name, connector: managed.agent, cwd: managed.launch.cwd };
+        this.recordContinuity(managed, managed.launch.sessionId);
+      }
+      return undefined;
+    } catch (error) {
+      return `${managed.name} resumed, but its exact host session could not be rebound: ${rejectionText(error)}`;
+    }
+  }
+
+  /** A resumed seat whose readiness was uncertain gets what a ready one gets once it joins: its
+   *  restart is armed and its record rewritten. Without this, a supervised seat restarted after a
+   *  manager crash that joined late was retired on its next exit instead of restarted. */
+  private async armLateResume(managed: ManagedAgent, connector: Connector, prepared: PreparedResume, supervised: SupervisedRestart | undefined): Promise<void> {
+    const current = (): boolean => this.agents.get(managed.name) === managed && !managed.terminalizing;
+    if (!current()) return;
+    const unbound = await this.armResumedSeat(managed, connector, prepared, supervised);
+    if (!current()) return;
+    if (unbound !== undefined) {
+      const stopped = await this.stopFailedResume(managed, "resume-session-rebind-failed", unbound);
+      if (!stopped.ok) console.error(`! ${stopped.error}`);
+      return;
+    }
+    if (supervised) this.refreshSeatRecord(managed);
   }
 
   /** A resumed seat keeps its retained credentials, so freeing it runs no deprovision and nothing
@@ -8153,20 +8208,33 @@ export class Manager {
   }
 
   /** An uncertain resume remains non-destructive until exact-principal AND exact-incarnation presence
-   *  arrives later. Same predicate as the readiness fence: a principal-only match would let a
-   *  wrong/absent-uid presence under the reused alias clear cleanup suppression on another incarnation. */
-  private watchResumeAdoption(a: ManagedAgent): void {
+   *  arrives later, and then `adopted` runs. Same predicate as the readiness fence: a principal-only
+   *  match would let a wrong/absent-uid presence under the reused alias clear cleanup suppression on
+   *  another incarnation. A supervised restart keeps its principal and uid, so it also carries the
+   *  fence's `joinedAfter` bound: the row the dead seat left must not stand in for the new process.
+   *  A heartbeat on that row moves only its time and emits no presence event, so the bound is polled. */
+  private watchResumeAdoption(a: ManagedAgent, joinedAfter: number | undefined, adopted: () => Promise<void>): void {
     const wanted = this.managedPrincipal(a);
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const done = (): void => {
+      this.ep.off("presence", onPresence);
+      if (poll !== undefined) clearInterval(poll);
+    };
     const onPresence = (): void => {
       if (this.agents.get(a.name) !== a) {
-        this.ep.off("presence", onPresence);
+        done();
         return;
       }
-      if (!this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid)) return;
+      if (!this.ep.getRoster().some((p) => p.card.id === wanted && p.status !== "offline" && p.lifecycleUid === a.lifecycleUid && (joinedAfter === undefined || p.ts >= joinedAfter))) return;
       if (!this.resumeRequired) a.suppressCleanup = false;
-      this.ep.off("presence", onPresence);
+      done();
+      adopted().catch((error) => console.error(`! ${a.name}: joined after its readiness window, but ${rejectionText(error)}`));
     };
     this.ep.on("presence", onPresence);
+    if (joinedAfter !== undefined) {
+      poll = setInterval(onPresence, LATE_JOIN_POLL_MS);
+      poll.unref?.();
+    }
     onPresence();
   }
 
@@ -8261,11 +8329,13 @@ export class Manager {
         // tells a deliberate stop from a launch failure.
         const deliberate = a.terminalizing === true;
         void (async () => {
-          // waitForExit may close the attach stream before this snapshot
+          // A closed stream or a reader failure must not prevent settlement, or read as empty output.
           let tail = "";
           try {
             if (s) tail = await this.tail(s);
-          } catch {}
+          } catch (error) {
+            console.error(`! ${a.name}: last output unavailable: ${rejectionText(error)}`);
+          }
           if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the

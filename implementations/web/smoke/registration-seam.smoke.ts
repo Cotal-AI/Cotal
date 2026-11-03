@@ -46,7 +46,7 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
 
 /** Every `src="/…"` in document order. The browser executes classic scripts in exactly this order. */
 const scriptsOf = (html: string): string[] =>
-  [...html.matchAll(/<script\s+src="([^"]+)"/g)].map((m) => m[1]);
+  [...html.matchAll(/<script(?: type="module")?\s+src="([^"]+)"/g)].map((m) => m[1]);
 
 const PAGES = [
   { page: "index.html", consumer: "/app.js" },

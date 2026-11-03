@@ -1,0 +1,28 @@
+/** Space discovery stays in the daemon, next to the sign-in that authorizes it. */
+import { prepareCatalogTargets } from "@cotal-ai/cli";
+import { readMeshRegistry } from "@cotal-ai/workspace";
+import type { DaemonSpaces } from "./protocol.js";
+
+export async function desktopSpaces(sessionDir: string, refresh: boolean): Promise<DaemonSpaces> {
+  let outcome: DaemonSpaces["refresh"] = "not-requested";
+  let collisions = 0;
+  if (refresh) {
+    const { results, diffs } = await prepareCatalogTargets({ sessionDir, force: true });
+    const failures = results.filter((result) => result.state === "failed").length;
+    collisions = diffs.reduce((count, diff) => count + diff.collisions.length, 0);
+    outcome = failures === 0 ? (collisions ? "partial" : "complete") : failures === results.length ? "failed" : "partial";
+  }
+  const { entries, unusable } = readMeshRegistry();
+  return {
+    kind: "spaces",
+    refresh: outcome,
+    unreadable: unusable.length,
+    collisions,
+    spaces: entries.map((entry) => ({
+      space: entry.space,
+      label: entry.catalogName ?? entry.space,
+      mode: entry.mode,
+      ...(entry.mode === "user" && entry.userAuth ? { idp: entry.userAuth.idp.url } : {}),
+    })),
+  };
+}

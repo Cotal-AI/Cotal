@@ -74,6 +74,10 @@ Each view keeps navigation on the left, content in the center, and the NEEDS-YOU
 | Graph at `/graph` | Agents and channels connected by channel membership, with links that glow as messages flow. |
 
 The roster shows status by shape and color, role, activity, and harness.
+The roster, waiting cards and agent details (including the graph) also show reported conditions,
+how long the status has stood, when the activity was set, and when the last work event occurred.
+Missing stamps stay undated. Ages use the same whole-unit rounding down as the CLI; a heartbeat
+90 seconds old reads `1m`. Heartbeat age is not time spent waiting or proof of work progress.
 It groups peers by the host they report, with counts. Peers without a host appear under `host not reported`.
 Seats do not report their owning manager, so the roster does not group them by manager.
 DM threads use authenticated ids, and names, roles, and statuses come from the roster rather than message payloads.

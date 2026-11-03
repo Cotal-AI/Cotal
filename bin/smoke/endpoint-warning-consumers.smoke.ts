@@ -238,10 +238,10 @@ const sites: Site[] = [
   },
   {
     cell: "native chat session ends itself when a reconnect finds its consumer gone",
-    consumer: "CLI native chat session",
+    consumer: "workspace native chat session",
     disposition: "surface",
-    source: "implementations/cli/src/chat/native-session.ts",
-    dist: "implementations/cli/dist/chat/native-session.js",
+    source: "packages/workspace/src/chat/native-session.ts",
+    dist: "packages/workspace/dist/chat/native-session.js",
     sourceNeedle: 'ep.on("warning", this.onWarning);',
     distNeedle: 'ep.on("warning",this.onWarning);',
     proof: "behavioral",
