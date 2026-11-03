@@ -12,7 +12,9 @@
  * requests after the role queue was recreated. A held request wakes nothing while its retry is waited
  * out or once its copy ran out, a read whose caller left takes nothing, a read reports what its own
  * takes left held and carries what needs no take when a take is undecided, naming nothing of a
- * request it never asked, a read after a reconnect on the same connection asks again, a copy from a recreated stream is delivered again at once, and a
+ * request it never asked, a read after a reconnect on the same connection asks again while with no
+ * read since the old take ending announces the request again, a copy from a recreated stream is
+ * delivered again at once, and a
  * gateway read that waits on a take leaves its reader's wake latch neither set over an empty inbox
  * nor unsignalled for a message that arrived during it. While the link is down a held request is
  * offered to no read and wakes nothing, and it is announced again once the link is back. A held
@@ -707,6 +709,25 @@ try {
   );
   await inPlace.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent18.msg.id), 200);
   check("18c and a read then waits on the new take rather than asking a third time", asked18.length === 2, { asked: asked18.length });
+  // With no read after the reconnect, nothing asks again on the new link, so the old take ending is
+  // what tells the host about the request once more. The takes above ended undecided, so their
+  // retry wait is let pass first.
+  await sleep(Math.max(0, asked18[1]! + 5_000 + 10_500 - Date.now()));
+  const sent18d = await sender.agent.ep.anycastAttributed("inplacerole", "asked across a reconnect nothing reads after");
+  await until(() => inPlace.agent.inboxKeys().includes(sent18d.msg.id));
+  const announced18d = () => inPlace.incoming.filter((i) => i.recvKey === sent18d.msg.id).length;
+  void inPlace.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent18d.msg.id), 200);
+  const asked18d = await until(() => (asked18.length === 3 ? asked18[2] : undefined), 5000);
+  for (const s of proxied) s.destroy();
+  await until(() => !inPlace.agent.transportConnected || undefined, 3000);
+  await until(() => (inPlace.agent.connected && inPlace.agent.transportConnected) || undefined, 15_000);
+  const before18d = announced18d();
+  await sleep(Math.max(0, (asked18d ?? Date.now()) + 5_500 - Date.now()));
+  check(
+    "18d with no read since the reconnect, the old take ending announces the request once more",
+    asked18d !== undefined && announced18d() === before18d + 1,
+    { asked18d: asked18d !== undefined, before18d, after: announced18d() },
+  );
   await railNc18.close();
   daemon = await startDaemon();
 
