@@ -13,7 +13,7 @@
  * the adapter can tell a native denial from an unknown outcome.
  */
 import type { AttentionMode, ChannelMode, PresenceStatus } from "@cotal-ai/core";
-import type { RefusalCode } from "@cotal-ai/workspace";
+import type { RefusalCode } from "../output.js";
 
 /** The auth mode the opening was admitted under. It sets which security claims output may make. */
 export type SessionMode = "user" | "static" | "open";

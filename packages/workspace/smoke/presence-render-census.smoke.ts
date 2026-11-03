@@ -37,6 +37,7 @@ const renderRoots = [
   join(root, "implementations/cli/src"),
   join(root, "packages/workspace/src/view"),
   join(root, "packages/workspace/src/control"),
+  join(root, "packages/workspace/src/chat"),
   join(root, "packages/workspace/src/attach"),
   join(root, "implementations/web/src"),
   join(root, "implementations/tui/src"),
