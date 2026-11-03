@@ -56,8 +56,8 @@
     {
       "name": "PT5 a taken batch goes out without its hold",
       "file": "extensions/pi/src/driver.ts",
-      "find": "      // Held for its turn like any other batch, or its ack wait runs out mid-turn (#5637).\n      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;\n",
-      "replace": "",
+      "find": "      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;\n      content = items.length > 0 ? formatInjection(items) : undefined;\n    } else if (this.nudges.length > 0) {",
+      "replace": "      content = items.length > 0 ? formatInjection(items) : undefined;\n    } else if (this.nudges.length > 0) {",
       "expectRed": "a batch that goes out on its take is held for its turn like any other",
       "cell": "a batch that goes out on its take is held for its turn like any other"
     },
