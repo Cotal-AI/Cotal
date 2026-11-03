@@ -527,6 +527,11 @@ from out-of-band context. The same effective config MUST be the single source of
 join, durable fan-out, history read, and membership surfacing; an implementation MUST NOT resolve
 the class differently in different paths.
 
+A participant that reads presence on demand (§6) reads the registry the same way: batched Direct
+Gets over `$KV.cotal_channels_<space>.>`, which bind no consumer. It reads before it shows the
+registry and before it resolves a join's or leave's delivery class, so an entry written or removed
+after it started is not missed.
+
 Join subscribes the instance to the channel; leave unsubscribes it. A join target MUST be within
 the instance's read ACL (`allowSubscribe`, §9); a join outside it MUST be refused by the broker on
 subscribe. A client MUST NOT publish to wildcard channels, but a wildcard read ACL (`team.>`)
@@ -6758,7 +6763,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.FC.>`
 - `$KV.cotal_presence_<space>.<owner>.<actor>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
-- `$JS.API.DIRECT.GET.<CHKV>` (the one-shot registry read of the headless CLI commands, which connect on the user's bearer on a user-auth mesh; the same reply-subject vector as the consumer create below)
+- `$JS.API.DIRECT.GET.<CHKV>` (the on-demand registry read, §7, and the one-shot registry read of the headless CLI commands, which connect on the user's bearer on a user-auth mesh; the same reply-subject vector as the consumer create below)
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness; read-only, non-gating)
@@ -7056,6 +7061,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |
 | 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
 | 2026-11-01 | **Durable membership of a channel family (§7, §8, §9, Appendix B), additive except one refusal.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join, and any pattern in `subscribe`, lies within one `allowSubscribe` entry, so an agent definition whose `subscribe` pattern only matches an entry, such as `perm.>` under `perm.*`, is now refused. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
 | 2026-10-30 | **A terminal-started static seat is issued (§13.15).** A foreground spawn or a bare join on a static space minted an unissued credential, so its seat held no evidence and handed on no grant. The terminal now activates the seat's own §13.1 lifecycle and issues the credential against its gate. The generation's horizon is the expiry the person set, or `0xffffffff` (2106-02-07) when none; the credential is never renewed; and a clean exit retires the lifecycle and its issuances. Additive. |

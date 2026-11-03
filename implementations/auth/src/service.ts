@@ -85,7 +85,7 @@ import { grantCoordinates } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, isRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
-import { assertCurrentManagerRegistration, authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerGate, assertCurrentManagerRegistration, authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, resolveRemoteSpawner, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
@@ -404,7 +404,6 @@ type RemoteRetirementGate = Pick<EpGateState, "state" | "principal" | "processEp
  * this after deriving the owner and manager actors; broker-free smokes exercise the same decision. */
 export function authorizeRemoteManagerRetirement(args: {
   owner: string;
-  serveActor: string;
   instanceId: string;
   targetOwner: string;
   serveEpoch: number;
@@ -412,13 +411,7 @@ export function authorizeRemoteManagerRetirement(args: {
 }): void {
   if (args.targetOwner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager-service retirement may target only its authenticated owner ${args.owner}, not ${args.targetOwner}`);
-  if (!args.gate || args.gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `manager-service retirement found no current open manager gate for instance ${args.instanceId}`);
-  const servePrincipal = principalKey(args.owner, args.serveActor).key;
-  if (args.gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
-  if (args.gate.processEpoch !== args.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${args.gate.processEpoch}`);
+  assertCurrentManagerGate(args.gate, args.instanceId, args.serveEpoch, args.owner, "manager-service retirement");
 }
 
 /** The §13.9 name authority in static mode: the plane holds the space signing seed, so it
@@ -1435,7 +1428,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             authorizeRemoteManagerRetirement({
-              owner, serveActor: actors.serve, instanceId: r.instanceId,
+              owner, instanceId: r.instanceId,
               targetOwner: retirement.target.owner, serveEpoch: retirement.serveEpoch, gate: observed,
             });
             credentials.retirementRequester = await mintPublicUserJwt(

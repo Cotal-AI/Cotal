@@ -243,7 +243,9 @@ Every door that checks a manager's current registration does it the same way, af
 scope and target checks. It refuses an absent or non-open gate with `failed-precondition`, then a
 gate held by any other principal with `permission-denied`, then a stale epoch with `conflict`. Last,
 it refuses a proof that does not match with `permission-denied`, compared in constant time. A
-manager-service `renew` carries no epoch, so a stale one fails the proof check.
+manager-service `renew` carries no epoch, so a stale one fails the proof check. A manager-service
+`retire` runs the same gate checks with the same refusals but no current-registration proof, because
+its request carries the lifecycle registration proof instead.
 
 A host that runs managed agents on its own hosted runtime adds two more kinds on the same transport.
 `kind: "manager-managed-agent-runtime-create"` asks the host to create the runtime for one agent it

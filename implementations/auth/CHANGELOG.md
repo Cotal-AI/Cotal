@@ -1,5 +1,31 @@
 # @cotal-ai/auth
 
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+  - @cotal-ai/lang@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+  - @cotal-ai/workspace@0.136.5
+  - @cotal-ai/lang@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- 5da69bf: The manager-service `retire` arm now checks the manager gate with the same shared check as every other manager door. It refuses with the same codes in the same order, and its message for a gate held by another principal now uses the same wording as the other doors.
+- @cotal-ai/core@0.136.4
+  - @cotal-ai/lang@0.136.4
+  - @cotal-ai/workspace@0.136.4
+
 ## 0.136.3
 
 ### Patch Changes

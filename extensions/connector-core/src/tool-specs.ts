@@ -1336,10 +1336,11 @@ export function cotalToolSpecs(
       schema: {
         channel: z.string().describe("The channel to look up (e.g. review)."),
       },
-      run(agent, _config, { channel }: { channel: string }) {
+      async run(agent, _config, { channel }: { channel: string }) {
         const notName = notAChannelName(channel, "Nothing was looked up.");
         if (notName !== undefined) return err(`Couldn't look up the channel: ${notName}`);
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
+        await agent.readChannels();
         return ok(renderChannelInfo(channel, agent.channelInfo(channel)));
       },
     },

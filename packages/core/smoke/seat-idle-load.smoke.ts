@@ -63,12 +63,12 @@
  * `--broker-prof <dir>` writes the broker's allocation profile (`/debug/pprof/allocs`, pprof
  * protobuf, gzip) twice into `dir`: `window-start.pb.gz` before the window's first counter is read
  * and `window-end.pb.gz` after its last. The Go runtime samples allocations at its default rate
- * whether or not anything reads them, and the reads force no collection, so the window itself is
- * unchanged; `go tool pprof -sample_index=alloc_space -diff_base window-start.pb.gz` on the end
- * file names what the broker allocated during the window alone. The runtime publishes allocation
- * records at the end of a collection, so each file is as of the last cycle before its read (up to
- * two cycles behind): a window too short for a broker GC cycle produces two equal profiles, and
- * the window-only reading is sharp only once several cycles fall inside the window. Off by default.
+ * whether or not anything reads them. The reads force no collection and occur outside the timed
+ * counters, but still add diagnostic work. Use `go tool pprof -sample_index=alloc_space -unit=bytes
+ * -base window-start.pb.gz` on the end file for sampled allocation differences and their shares.
+ * Profiles can lag by up to two GC cycles, so the difference covers delayed snapshots rather than
+ * the exact wall-clock window. A short window can yield equal allocation totals; retain the trace
+ * and measure across several cycles. Off by default.
  *
  * `--ram` adds the RAM profile. The broker's live heap and goroutines are read from its pprof
  * endpoint after a forced GC at each step of the build-up (empty, message streams, KV buckets and
