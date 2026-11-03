@@ -6,7 +6,7 @@
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build && pnpm smoke:chat-history-restore:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 30,
+  "minTicks": 32,
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/chat-history-restore.json",
   "why": [
     "The suite drives `tsx bin/cotal.ts`, which loads core and the CLI from their built dist, so each mutation",
@@ -23,9 +23,19 @@
       "file": "packages/core/src/backup-config.ts",
       "find": "  return { maxAgeMs: 0, perSubject: recorded.perSubject };",
       "replace": "  return { maxAgeMs: recorded.maxAgeMs, perSubject: recorded.perSubject };",
-      "expectRed": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts and DMs older than the recorded ages",
-      "cell": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts and DMs older than the recorded ages",
+      "expectRed": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
+      "cell": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the restore stages INBOX and DLV at the recorded age",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "  return { maxAgeMs: 0, perSubject: recorded.perSubject };",
+      "replace": "  return { maxAgeMs: stream === \"inbox\" || stream === \"dlv\" ? recorded.maxAgeMs : 0, perSubject: recorded.perSubject };",
+      "expectRed": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
+      "cell": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
+      "note": "Only the INBOX and DLV copies are older than those two streams' ages, so this mutant reaches the restore's checks through them alone."
     },
     {
       "name": "the restore never sets the recorded ages",

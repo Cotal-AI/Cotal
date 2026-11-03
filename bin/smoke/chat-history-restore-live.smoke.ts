@@ -24,7 +24,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect, nanos } from "@nats-io/transport-node";
-import { chatStream, dlvStream, dmStream, historyLimitStreamName, inboxStream, type HistoryLimit, type HistoryLimitStream } from "@cotal-ai/core";
+import { chatStream, dinboxSubject, dlvStream, dlvSubject, dmStream, historyLimitStreamName, inboxStream, mintLifecycleUid, type HistoryLimit, type HistoryLimitStream } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, backdateMessages, createSuite, freePort, recordSmokeSandbox, streamMsgsDir } from "@cotal-ai/smoke-kit";
 import { infrastructureMaintenancePermissions } from "../../implementations/cli/src/lib/isolated-broker.js";
 
@@ -87,6 +87,12 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     const js = jetstream(nc);
     for (const i of [1, 2, 3]) await js.publish(`cotal.${space}.chat.o.a.general`, JSON.stringify({ i }));
     for (const i of [1, 2]) await js.publish(`cotal.${space}.inst.o.b.o.a`, JSON.stringify({ dm: i }));
+    // Delivery copies, backdated below to just short of the two- and three-hour ages their streams
+    // record: younger than the age when the backup reads them, older when the restore checks them.
+    const uid = mintLifecycleUid();
+    const copySeqs = { inbox: [] as number[], dlv: [] as number[] };
+    for (const i of [1, 2]) copySeqs.inbox.push((await js.publish(dinboxSubject(space, "o", "a", uid), JSON.stringify({ copy: i }))).seq);
+    for (const i of [1, 2]) copySeqs.dlv.push((await js.publish(dlvSubject(space, "o", "a", uid), JSON.stringify({ copy: i }))).seq);
     const writtenAt = Date.now();
     const set = s.run("history", "limit", "--max-age", "2m", "--per-sender", "2500", "--inbox-max-age", "2h", "--inbox-per-agent", "1500", "--dm-max-age", "2m", "--dm-per-sender", "3", "--yes", "--json", "--space", space);
     const njsm = await jetstreamManager(nc);
@@ -96,13 +102,22 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     check("control: the source takes an age and a count on each of the four streams", set.status === 0, s.shown(set));
     const preserved = s.run("down", "--preserve-state");
     up = preserved.status !== 0;
+    const store = join(s.root, ".cotal", "nats");
+    const SHORT_MS = 75_000;
+    const backdatedAt = Date.now();
+    const backdated = ([["inbox", copySeqs.inbox], ["dlv", copySeqs.dlv]] as const).map(([kind, seqs]) => {
+      const stream = historyLimitStreamName(space, kind);
+      return backdateMessages(streamMsgsDir(store, stream), stream, new Map(seqs.map((seq) => [seq, recorded[kind].maxAgeMs - SHORT_MS])), backdatedAt).join();
+    });
+    check("control: the stopped store's INBOX and DLV copies are backdated to 75 seconds short of their recorded ages", backdated[0] === copySeqs.inbox.join() && backdated[1] === copySeqs.dlv.join(), { backdated, copySeqs });
     const backed = s.run("backup", "create", artifact);
     check("control: the backup is taken", preserved.status === 0 && backed.status === 0, { down: s.shown(preserved), backup: s.shown(backed) });
-    const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as { streams: { stream: string; config: { max_age?: number; max_msgs_per_subject?: number } }[] };
+    const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as { streams: { stream: string; config: { max_age?: number; max_msgs_per_subject?: number }; state: { messages: number } }[] };
     const recordedIn = (stream: HistoryLimitStream) => manifest.streams.find((row) => row.stream === historyLimitStreamName(space, stream));
     check("the backup records each stream's limit", STREAMS.every((stream) => { const row = recordedIn(stream); return row !== undefined && same(limitOf(row.config), recorded[stream]); }), STREAMS.map((stream) => recordedIn(stream)?.config));
+    check("...and holds the backdated copies, taken before they reached their ages", recordedIn("inbox")?.state.messages === 2 && recordedIn("dlv")?.state.messages === 2, { inbox: recordedIn("inbox")?.state, dlv: recordedIn("dlv")?.state });
 
-    const due = writtenAt + 2 * MIN + 5_000 - Date.now();
+    const due = Math.max(writtenAt + 2 * MIN, backdatedAt + SHORT_MS) + 5_000 - Date.now();
     if (due > 0) await wait(due);
     // The age applied last in the manifest's order fails, after the ones before it landed.
     const ordered = manifest.streams.map((row) => row.stream).filter((name) => STREAMS.some((stream) => historyLimitStreamName(space, stream) === name));
@@ -111,17 +126,15 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     check(`a failure applying a later age (${lastAged}) fails the restore with it`, faulted.status !== 0 && faulted.stderr.includes(`smoke-injected failure applying the recorded age of ${lastAged}`), s.shown(faulted));
     const restored = s.run("up", "--restore", artifact, "--detach", "--server", server, "--space", space);
     up = restored.status === 0;
-    check("...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts and DMs older than the recorded ages", restored.status === 0, s.shown(restored));
+    check("...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages", restored.status === 0, s.shown(restored));
     const rc = await connect({ servers: server });
     const jsm = await jetstreamManager(rc);
     const held = Object.fromEntries(await Promise.all(STREAMS.map(async (stream) => [stream, limitOf((await jsm.streams.info(historyLimitStreamName(space, stream))).config)] as const))) as Record<HistoryLimitStream, HistoryLimit>;
     check("...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count", STREAMS.every((stream) => same(held[stream], recorded[stream])), held);
-    let left = -1;
-    for (let i = 0; i < 50 && left !== 0; i++) {
-      left = (await jsm.streams.info(chatStream(space))).state.messages + (await jsm.streams.info(dmStream(space))).state.messages;
-      if (left !== 0) await wait(200);
-    }
-    check("...and the broker deletes the posts and DMs older than their ages", left === 0, left);
+    const counts = async () => Promise.all([chatStream(space), dmStream(space), inboxStream(space), dlvStream(space)].map(async (name) => (await jsm.streams.info(name)).state.messages));
+    let left = await counts();
+    for (let i = 0; i < 50 && left.some((n) => n !== 0); i++) { await wait(200); left = await counts(); }
+    check("...and the broker deletes the posts, DMs and INBOX and DLV copies older than their ages", left.every((n) => n === 0), { chat: left[0], dm: left[1], inbox: left[2], dlv: left[3] });
     const inbox = (await jsm.streams.info(inboxStream(space))).config;
     check("control: the inbox keeps its own two-hour age", inbox.max_age === nanos(2 * HOUR), inbox.max_age);
     await rc.close();

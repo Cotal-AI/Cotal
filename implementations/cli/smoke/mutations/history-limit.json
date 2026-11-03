@@ -6,7 +6,7 @@
   "command": "pnpm smoke:history-limit",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 59,
+  "minTicks": 61,
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-limit.json",
   "why": [
     "The suite drives the built binary, and its script builds it first, so each mutant is what the suite runs and",

@@ -88,20 +88,33 @@ const tag = randomUUID().slice(0, 8);
 const noAgeSpace = `histnoage-${tag}`;
 const bareSpace = `histbare-${tag}`;
 const previewSpace = `histpreview-${tag}`;
-const cutSpaces = { update: `histcutfirst-${tag}`, second: `histcutsecond-${tag}`, readback: `histcutread-${tag}` };
+const cutSpaces = { update: `histcutfirst-${tag}`, second: `histcutsecond-${tag}`, readback: `histcutread-${tag}`, parked: `histparked-${tag}`, drift: `histdrift-${tag}` };
 const untrusted = `histnotrust-${tag}`;
 
 /** The cutting hop: passes everything to the open broker until the chosen request, which it still
- *  passes on, then drops every reply and closes the command's connection. */
-type Cut = { at: "update"; nth: number } | { at: "readback" };
+ *  passes on, then drops every reply and closes the command's connection. `park` holds the read back
+ *  after the first update instead, and everything the command sends after it, until released. */
+type Cut = { at: "update"; nth: number } | { at: "readback" } | { at: "park" };
 let cut: Cut | undefined;
+let unpark: (() => void) | undefined;
 const hopPort = await pickFreePort();
 const hop: Server = createServer((client) => {
   const upstream = tcpConnect(openPort, "127.0.0.1");
   let updates = 0, sawUpdate = false, cutOff = false;
+  const parked: Buffer[] = [];
   client.on("data", (chunk) => {
+    if (parked.length) { parked.push(chunk); return; }
+    if (cut?.at === "park" && !unpark) {
+      const text = chunk.toString("latin1");
+      if (/\$JS\.API\.STREAM\.UPDATE\./.test(text)) sawUpdate = true;
+      else if (sawUpdate && /\$JS\.API\.STREAM\.INFO\./.test(text)) {
+        parked.push(chunk);
+        unpark = () => { for (const b of parked.splice(0)) upstream.write(b); };
+        return;
+      }
+    }
     upstream.write(chunk);
-    if (!cut || cutOff) return;
+    if (!cut || cut.at === "park" || cutOff) return;
     const text = chunk.toString("latin1");
     const n = (text.match(/\$JS\.API\.STREAM\.UPDATE\./g) ?? []).length;
     if (cut.at === "update") { updates += n; cutOff = updates >= cut.nth; }
@@ -381,6 +394,29 @@ try {
   check("a read back cut off after the update is OPERATION_UNKNOWN too", readback.status === 3 && readback.envelope?.error?.code === "OPERATION_UNKNOWN" && same(await limitOf(ojsm, cutSpaces.readback), { maxAgeMs: 0, perSubject: 300 }), shown(readback));
   const after = await run(["history", "limit", "--json", "--space", cutSpaces.second], roots.open);
   check("...and the read-only call then shows what each stream holds", after.status === 0 && sameView(rowOf(after.envelope, "chat")?.holds, { maxAgeMs: 0, perSubject: 300 }) && sameView(rowOf(after.envelope, "dlv")?.holds, INBOX_HISTORY_DEFAULT), shown(after));
+  // The read back must find the whole config canonical, not only the limit. The update is a
+  // whole-config write, so a setting that drifted between the two is not the write the command made.
+  const parkedRead = async (space: string, between: () => Promise<void>) => {
+    cut = { at: "park" };
+    unpark = undefined;
+    const pending = run(["history", "limit", "--per-sender", "300", "--yes", "--json", "--space", space], roots.open);
+    // The hop sets `unpark` from its socket callback, which narrowing cannot see.
+    const parkedRelease = (): (() => void) | undefined => unpark;
+    for (let i = 0; i < 200 && !parkedRelease(); i++) await wait(50);
+    const parkedSeen = parkedRelease() !== undefined;
+    await between();
+    parkedRelease()?.();
+    const result = await pending;
+    cut = undefined;
+    return { parkedSeen, result };
+  };
+  const control = await parkedRead(cutSpaces.parked, async () => {});
+  check("control: a read back held and released with nothing changed in between confirms the change", control.parkedSeen && control.result.status === 0 && rowOf(control.result.envelope, "chat")?.outcome === "changed", { parkedSeen: control.parkedSeen, run: shown(control.result) });
+  const drift = await parkedRead(cutSpaces.drift, async () => {
+    const { config } = await ojsm.streams.info(chatStream(cutSpaces.drift));
+    await ojsm.streams.update(chatStream(cutSpaces.drift), { ...config, max_bytes: 10 * 1024 * 1024 });
+  });
+  check("a stream whose other settings drift between the update and its read back is OPERATION_UNKNOWN", drift.parkedSeen && drift.result.status === 3 && drift.result.envelope?.error?.code === "OPERATION_UNKNOWN", { parkedSeen: drift.parkedSeen, run: shown(drift.result) });
   await nc.close();
   await onc.close();
 } finally {
