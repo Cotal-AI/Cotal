@@ -1,5 +1,63 @@
 # @cotal-ai/manager
 
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+  - @cotal-ai/seat@0.136.8
+  - @cotal-ai/workspace@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+  - @cotal-ai/seat@0.136.7
+  - @cotal-ai/workspace@0.136.7
+
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+  - @cotal-ai/seat@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+  - @cotal-ai/workspace@0.136.5
+  - @cotal-ai/seat@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.4
+  - @cotal-ai/seat@0.136.4
+  - @cotal-ai/workspace@0.136.4
+
+## 0.136.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.3
+  - @cotal-ai/seat@0.136.3
+  - @cotal-ai/workspace@0.136.3
+
+## 0.136.2
+
+### Patch Changes
+
+- e0e6506: A hosted seat's retirement on a participant now removes the actor token, sentinel credential and health file that its enrollment wrote to the participant's secret store and disk. Before, the host released the grant and the lifecycle retired, but those files stayed behind for every hosted seat, on despawn and on a spawn's orphan rollback. A removal that fails keeps the name held instead of completing the retirement.
+- @cotal-ai/core@0.136.2
+  - @cotal-ai/seat@0.136.2
+  - @cotal-ai/workspace@0.136.2
+
 ## 0.136.1
 
 ### Patch Changes

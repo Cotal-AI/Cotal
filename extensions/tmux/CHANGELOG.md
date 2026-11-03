@@ -1,5 +1,33 @@
 # @cotal-ai/tmux
 
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
 ## 0.136.1
 
 No changes in this release.

@@ -116,6 +116,10 @@ keeps its existing operation identity and remains compatible. The `retireLifecyc
 recomputes the managed id from its broker-pinned target before any gate, head, intent, or barrier
 access, so mint-time validation is not the terminal boundary. A failure keeps
 the alias held. This does not expose the auth barrier or give the participant signer authority.
+Between prepare and the terminal request, the manager removes the agent's actor token, sentinel
+credential and health file from its own secret store and disk. The hosted enrollment wrote them
+there, so the host cannot remove them. Every removal is attempted, and a failed one keeps the alias
+held before the terminal request.
 
 If the participant disappears after prepare, the host finishes the retirement itself on the auth
 service's loopback face: `POST /managed-lifecycle/retire` (exported as `MANAGED_RETIRE_PATH` from
@@ -226,6 +230,14 @@ than the body, checks the manager gate and registration proof in-process, and an
 and `authorizeRemoteManagedAgentPrepareRetirement` are exported too, for a host that composes the
 decision without the HTTP hop. Both require ledger scope `supervise`; `spawn` and `admin` do not
 imply it.
+
+Every door that checks a manager's current registration does it the same way, after its own space,
+scope and target checks. It refuses an absent or non-open gate with `failed-precondition`, then a
+gate held by any other principal with `permission-denied`, then a stale epoch with `conflict`. Last,
+it refuses a proof that does not match with `permission-denied`, compared in constant time. A
+manager-service `renew` carries no epoch, so a stale one fails the proof check. A manager-service
+`retire` runs the same gate checks with the same refusals but no current-registration proof, because
+its request carries the lifecycle registration proof instead.
 
 A host that runs managed agents on its own hosted runtime adds two more kinds on the same transport.
 `kind: "manager-managed-agent-runtime-create"` asks the host to create the runtime for one agent it

@@ -146,6 +146,11 @@ Herdr session (they survive the manager's terminal going away).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
 time) and self-registers its command.
+- `**@cotal-ai/tui**` (`implementations/tui`): the terminal app, one full-screen workspace that
+lists this machine's spaces and opens one read-only. Built on OpenCode's Solid and OpenTUI
+components, vendored under `vendor/opencode/` and held to their recorded hashes by
+`scripts/check-vendor.mjs`. Private, needs Node 26.4 or newer, and depends on core and workspace.
+The `cotal` binary does not start it yet.
 - `**@cotal-ai/linear**` (`implementations/linear`): serves the official Linear MCP server as a
 registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, plus the
 `cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +
