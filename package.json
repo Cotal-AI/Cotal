@@ -343,6 +343,7 @@
     "smoke:opencode-teardown-before-model": "tsx extensions/connector-opencode/smoke/teardown-before-model.smoke.ts",
     "smoke:opencode-once": "tsx extensions/connector-opencode/smoke/once-handoff.smoke.ts",
     "smoke:opencode-setup-refused": "tsx extensions/connector-opencode/smoke/setup-refused.smoke.ts",
+    "smoke:opencode-setup-guard": "pnpm --filter @cotal-ai/connector-opencode build && tsx extensions/connector-opencode/smoke/setup-guard.smoke.ts",
     "smoke:attach": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager --filter @cotal-ai/cmux --filter @cotal-ai/tmux build && tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:mesh-attach": "tsx implementations/manager/smoke/mesh-attach.smoke.ts",
     "smoke:mesh-attach-plane": "tsx implementations/manager/smoke/mesh-attach-plane.smoke.ts",
