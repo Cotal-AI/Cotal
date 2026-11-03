@@ -16,11 +16,10 @@ const script = join(import.meta.dirname, "seat-idle-load.smoke.ts");
 let assertions = 0;
 const check = (value: unknown, message: string): void => { assert.ok(value, message); assertions++; };
 const profDir = mkdtempSync(join(tmpdir(), "seat-idle-prof-"));
-const profFile = join(profDir, "allocs.pb.gz");
 for (const cell of ["default", "go-trace", "broker-prof"]) {
   const trace = cell === "go-trace", prof = cell === "broker-prof";
   const result = spawnSync(process.execPath, [...process.execArgv, script,
-    "--seats", "2", "--space-size", "1", "--seconds", "1", "--settle", "0", ...(trace ? ["--go-trace"] : []), ...(prof ? ["--broker-prof", profFile] : [])], {
+    "--seats", "2", "--space-size", "1", "--seconds", "1", "--settle", "0", ...(trace ? ["--go-trace"] : []), ...(prof ? ["--broker-prof", profDir] : [])], {
     env: process.env, encoding: "utf8", timeout: 60_000,
   });
   check(!result.error, result.error?.message ?? "harness completed");
@@ -31,15 +30,15 @@ for (const cell of ["default", "go-trace", "broker-prof"]) {
   const gc = result.stderr.split("\n").filter(line => /^broker-go utc_epoch_ms=\d+ gc \d+ @/.test(line));
   check(trace ? gc.length > 0 : gc.length === 0, "only the opt-in surfaces native broker GC records");
   check(!/^(gc \d+ @|scav \d+ KiB)/m.test(result.stderr), "other Go processes did not inherit the diagnostic opt-in");
-  const profRow = /broker allocation profile\s+(.+)/.exec(result.stdout)?.[1] ?? "";
-  if (prof) {
-    const file = readFileSync(profFile);
-    check(file.length > 2 && file[0] === 0x1f && file[1] === 0x8b, "the allocation profile is a gzip pprof file");
-    check(profRow.startsWith(`${file.length} bytes, sha256 `), `the report names the written profile: ${profRow}`);
-  } else check(profRow === "off", `no allocation profile without the opt-in: ${profRow}`);
-  console.log(`  ✓ ${cell}: two native endpoints, ${gc.length} surfaced broker GC records${prof ? `, ${profRow}` : ""}`);
+  const profRows = ["window start", "window end"].map((when) => new RegExp(`broker allocation profile \\(${when}\\)\\s+(.+)`).exec(result.stdout)?.[1] ?? "");
+  if (prof) for (const [i, name] of ["window-start.pb.gz", "window-end.pb.gz"].entries()) {
+    const file = readFileSync(join(profDir, name));
+    check(file.length > 2 && file[0] === 0x1f && file[1] === 0x8b, `${name} is a gzip pprof file`);
+    check(profRows[i].startsWith(`${file.length} bytes, sha256 `), `the report names ${name}: ${profRows[i]}`);
+  } else check(profRows.every((r) => r === "off"), `no allocation profile without the opt-in: ${profRows.join(" | ")}`);
+  console.log(`  ✓ ${cell}: two native endpoints, ${gc.length} surfaced broker GC records${prof ? `, ${profRows.join("; ")}` : ""}`);
 }
 rmSync(profDir, { recursive: true, force: true });
-assert.equal(assertions, 25);
+assert.equal(assertions, 27);
 console.log(`  ${assertions} assertions across three native runs`);
 emitSentinel({ passed: 3, failed: 0 });

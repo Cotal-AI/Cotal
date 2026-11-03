@@ -60,11 +60,15 @@
  * no memory limit or GC policy; use it without `--ram` to avoid the profiler's forced collections.
  * Trace output adds diagnostic overhead and is not an ordinary performance sample.
  *
- * `--broker-prof <file>` writes the broker's allocation profile (`/debug/pprof/allocs`, pprof
- * protobuf, gzip) to `file` after the window's counters are read. The Go runtime samples
- * allocations at its default rate whether or not anything reads them, and the read forces no
- * collection, so the window itself is unchanged; `go tool pprof -sample_index=alloc_space` on the
- * file names what the broker allocated since it started. Off by default.
+ * `--broker-prof <dir>` writes the broker's allocation profile (`/debug/pprof/allocs`, pprof
+ * protobuf, gzip) twice into `dir`: `window-start.pb.gz` before the window's first counter is read
+ * and `window-end.pb.gz` after its last. The Go runtime samples allocations at its default rate
+ * whether or not anything reads them, and the reads force no collection, so the window itself is
+ * unchanged; `go tool pprof -sample_index=alloc_space -diff_base window-start.pb.gz` on the end
+ * file names what the broker allocated during the window alone. The runtime publishes allocation
+ * records at the end of a collection, so each file is as of the last cycle before its read (up to
+ * two cycles behind): a window too short for a broker GC cycle produces two equal profiles, and
+ * the window-only reading is sharp only once several cycles fall inside the window. Off by default.
  *
  * `--ram` adds the RAM profile. The broker's live heap and goroutines are read from its pprof
  * endpoint after a forced GC at each step of the build-up (empty, message streams, KV buckets and
@@ -398,6 +402,14 @@ const memAvailableMb = (): number => Number(/MemAvailable:\s+(\d+) kB/.exec(read
 const PORT = await pickFreePort();
 const MON_PORT = await pickFreePort();
 const PROF_PORT = RAM || BROKER_PROF ? await pickFreePort() : 0;
+/** The broker's allocation profile written to `file`, read without `gc=1`: nothing is collected for it. */
+const brokerAllocs = async (file: string): Promise<{ file: string; bytes: number; sha256: string }> => {
+  const res = await fetch(`http://127.0.0.1:${PROF_PORT}/debug/pprof/allocs`);
+  if (!res.ok) throw new Error(`seat-idle-load: broker allocation profile fetch failed: ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  writeFileSync(file, buf);
+  return { file, bytes: buf.length, sha256: createHash("sha256").update(buf).digest("hex") };
+};
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const tag = randomUUID().slice(0, 6);
 const brokerAuth = await createBrokerAuth(`seat-idle-load-${tag}`);
@@ -580,6 +592,7 @@ try {
   // ---- settle, then the measured idle window ------------------------------------------------------
   await wait(SETTLE_S * 1000);
   await step("+ seats (settled)");
+  const brokerProfStart = BROKER_PROF ? await brokerAllocs(join(BROKER_PROF, "window-start.pb.gz")) : undefined;
   const v0 = await monitor("/varz"), j0 = await monitor<Jsz>("/jsz");
   const b0 = procCpuMs(srv.pid!), d0 = procCpuMs(daemon.pid!), s0 = seatKids.map((c) => procCpuMs(c.pid!));
   const box0 = boxCpu();
@@ -602,15 +615,8 @@ try {
   const seatRss = seatKids.reduce((a, c) => a + procRssMb(c.pid!), 0);
   const memAvail = memAvailableMb();
   const memAt = RAM ? { broker: procMem(srv.pid!), daemon: procMem(daemon.pid!), seats: seatKids.map((c) => procMem(c.pid!)) } : undefined;
-  // Read last, after every window counter, and without `gc=1`: nothing is collected for it.
-  let brokerProf: { bytes: number; sha256: string } | undefined;
-  if (BROKER_PROF) {
-    const res = await fetch(`http://127.0.0.1:${PROF_PORT}/debug/pprof/allocs`);
-    if (!res.ok) throw new Error(`seat-idle-load: broker allocation profile fetch failed: ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    writeFileSync(BROKER_PROF, buf);
-    brokerProf = { bytes: buf.length, sha256: createHash("sha256").update(buf).digest("hex") };
-  }
+  // Read last, after every window counter.
+  const brokerProfEnd = BROKER_PROF ? await brokerAllocs(join(BROKER_PROF, "window-end.pb.gz")) : undefined;
 
   const N = seatsUp || 1;
   const perMin = (x: number) => (x / winS) * 60 / N;
@@ -639,7 +645,8 @@ try {
   row("broker Go trace", GO_TRACE ? "on (diagnostic overhead)" : "off");
   row("endpoint error trace", TRACE_ERRORS ? "on (diagnostic overhead; 200 rows per child)" : "off");
   row("presence put probe", PUT_PROBE ? "on (about 4 extra puts per second per process; 50 rows per child)" : "off");
-  row("broker allocation profile", brokerProf ? `${brokerProf.bytes} bytes, sha256 ${brokerProf.sha256}, ${BROKER_PROF}` : "off");
+  for (const [when, prof] of [["window start", brokerProfStart], ["window end", brokerProfEnd]] as const)
+    row(`broker allocation profile (${when})`, prof ? `${prof.bytes} bytes, sha256 ${prof.sha256}, ${prof.file}` : "off");
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_PRESENCE && WATCH_CHANNELS ? "on" : "OFF"} (requested ${WATCH_CHANNELS ? "on" : "OFF"})`);
   row("setup (spaces + provisioning) (s)", setupS);
