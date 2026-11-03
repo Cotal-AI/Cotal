@@ -5311,6 +5311,14 @@ export class Manager {
         a.delegatedHandle.stop({ graceful: true });
         await this.awaitHandleExit(a.delegatedHandle);
       }
+      // THE LOCAL FAMILY IS THIS PARTICIPANT'S, not the host's (#3055). The hosted enrollment wrote
+      // it here, so the host's release cannot remove it, and returning after the terminal request
+      // left every hosted seat's actor token, sentinel and health file on disk. It goes once the
+      // grant is released and the child is gone, by the same rule as the local arm below: every
+      // removal is attempted, and a failure keeps the name held instead of reaching the terminal.
+      const unshredded: string[] = [];
+      await this.shredUserSecrets(unshredded, a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid));
+      if (unshredded.length) throw new Error(`could not shred "${a.name}": ${unshredded.join("; ")}`);
       await this.requestRetirement(a);
       return;
     }
@@ -7131,7 +7139,8 @@ export class Manager {
             await acceptOnce({ owner: prep.owner, actor: name, uid: lifecycleUid });
           } catch (e) {
             // A refused accept rolls the enrollment back: the host's grant through `provisioned`, and
-            // this participant's secret family here, because the hosted retirement leaves it on disk.
+            // this participant's secret family here, before the refusal returns. The hosted retirement
+            // removes it too, but only once the host's release completes.
             const unshredded: string[] = [];
             await this.shredUserSecrets(unshredded, prep.files);
             if (unshredded.length) throw new Error(`${rejectionText(e)}; cleanup failed: ${unshredded.join("; ")}`, { cause: e });
