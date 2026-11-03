@@ -37,6 +37,10 @@ channels; scope `spawn,role:default`, so it may spawn and may delegate the defau
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
 
+`cotal login` also records the account name the IdP gives: its email, else its name, else its
+preferred user name. A [chat session](cli-messaging.mdx#chat) appears under it unless you choose
+another name. A login made by an older cotal has none on record until you sign in again.
+
 
 ### Concurrent ledger changes
 
