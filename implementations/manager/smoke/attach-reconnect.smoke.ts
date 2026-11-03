@@ -108,7 +108,7 @@ console.log(`broker-url guard: ${BROKER} (manager+seat) / ${PROXY} (attach clien
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const home = join(dir, "home");
-mkdirSync(home, { recursive: true });
+mkdirSync(home, { recursive: true, mode: 0o700 });
 process.env.COTAL_HOME = home; // the CLI's mesh registry lives here, never the operator's real one
 // And the CONNECTOR SEED STORE, which does NOT live under COTAL_HOME: it sits under
 // `globalConfigDir()`, so it is the operator's real `~/.config/cotal` unless XDG_CONFIG_HOME

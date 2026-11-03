@@ -135,9 +135,10 @@ export function recordSmokeSandbox(input: {
   const cotalHome = exactAbsolute("COTAL_HOME", input.cotalHome);
   const xdgConfigHome = exactAbsolute("XDG_CONFIG_HOME", input.xdgConfigHome);
   const marker = join(root, ".cotal");
-  mkdirSync(marker, { recursive: true });
-  mkdirSync(cotalHome, { recursive: true });
-  mkdirSync(xdgConfigHome, { recursive: true });
+  // Owner-only whatever the umask: the product refuses a group-writable `.cotal` or Cotal home.
+  mkdirSync(marker, { recursive: true, mode: 0o700 });
+  mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
+  mkdirSync(xdgConfigHome, { recursive: true, mode: 0o700 });
   const anchor: SmokeSandboxAnchor = Object.freeze({
     [smokeSandboxAnchor]: Object.freeze({
       root: directoryIdentity("root", root),

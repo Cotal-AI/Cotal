@@ -82,7 +82,7 @@ const releaseOpenBroker = teardownOnSignal(openBroker, openStore);
 
 const home = mkdtempSync(join(tmpdir(), "cotal-history-home-"));
 const releaseHome = teardownPathOnSignal(home);
-mkdirSync(join(home, ".cotal"), { recursive: true });
+mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
 const xdg = join(home, "xdg");
 mkdirSync(xdg);
 const meshRoot = join(home, "mesh-root");
@@ -325,7 +325,7 @@ try {
     const byFolder = await run(["history", "general", "--json", "--creds", selectionObserver], meshRoot);
     check("with nothing selected, it reads the space registered for the folder it runs in", byFolder.status === 0 && spaceOf(byFolder) === space, shown(byFolder));
     const prepRoot = join(home, "prep-root");
-    mkdirSync(prepRoot);
+    mkdirSync(prepRoot, { mode: 0o700 });
     const prepared = await run(["space", "create", "histprep"], prepRoot);
     check("control: a space is prepared in another folder", prepared.status === 0, shown(prepared));
     const unstarted = await run(["history", "general", "--json", "--creds", selectionObserver], prepRoot);
