@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.139.1
+
+### Patch Changes
+
+- bf1ce04: Drop the unused `MeshViewOptions` type re-export from `src/console/mesh.ts` so `mesh.ts` re-exports only the `MeshView` model types that the console UI components import.
+- Updated dependencies [644f6eb]
+  - @cotal-ai/core@0.139.1
+  - @cotal-ai/workspace@0.139.1
+
 ## 0.139.0
 
 ### Patch Changes
