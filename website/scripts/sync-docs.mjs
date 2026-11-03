@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
+import { frontmatter } from 'fumadocs-core/content/md/frontmatter';
 import { parse, postprocess, preprocess } from 'micromark';
 import { gfm } from 'micromark-extension-gfm';
 import { mdxjs } from 'micromark-extension-mdxjs';
@@ -351,8 +352,13 @@ for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
   const file = join(skillsDir, entry.name, 'SKILL.md'); // missing SKILL.md fails the sync
   const raw = readFileSync(file);
-  const description = raw.toString('utf8').match(/^description:\s*"?(.+?)"?\s*$/m)?.[1];
-  if (!description) throw new Error(`no description frontmatter in ${file}`);
+  let description;
+  try {
+    description = frontmatter(raw.toString('utf8')).data?.description;
+  } catch (cause) {
+    throw new Error(`invalid skill frontmatter in ${file}`, { cause });
+  }
+  if (typeof description !== 'string' || !description.trim()) throw new Error(`non-empty description string required in frontmatter of ${file}`);
   skills.push({
     name: entry.name,
     type: 'skill-md',

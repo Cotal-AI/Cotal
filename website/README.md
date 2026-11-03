@@ -73,6 +73,10 @@ that twin for `Accept: text/markdown` with an `x-markdown-tokens` estimate.
 The root returns the documentation index for Markdown requests and discovery
 Link headers. Installer hosts `get.cotal.ai` and `install.cotal.ai` serve the installer.
 
+Skill descriptions come from YAML frontmatter parsed by Fumadocs, including quoted
+and multiline strings. Sync refuses missing, blank, non-string or invalid descriptions.
+The served `SKILL.md` bytes and their discovery digests remain unchanged.
+
 ## Deployment
 
 Cloudflare Pages uses root directory `website`, build command `npm run build`,
