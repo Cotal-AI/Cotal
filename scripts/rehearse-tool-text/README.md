@@ -50,7 +50,9 @@ Under `<out>/<label>-<harness>-<scenario>/`:
 - `transcripts/`: every seat's transcript, Claude Code and jcode. `grade.mjs` reads the helpers' tool
   calls and what reached them from the mesh out of these, through `transcripts.mjs`, which the
   runner also uses on the live files. The get-help check uses them to tell when a helper started on
-  the PR and whether alice's brief reached it.
+  the PR and whether alice's brief reached it. A jcode seat's transcript sits in that seat's own
+  folder. A Claude Code transcript is filed under the Cotal name its connector instructions give,
+  because seats can share a working directory.
 - `cli.json`: every `cotal` command the run issued, with its exit status and output.
 - `teardown.json`: what the teardown stopped, and anything that still held the sandbox.
 - `record.json`: the normalized record `grade.mjs` reads, and `result.json`: the graded result.

@@ -31,10 +31,10 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { counts, grade, loadRecord } from "./grade.mjs";
-import { claudeCalls, claudeRows, jcodeCalls, jcodeSession } from "./transcripts.mjs";
+import { claudeCalls, claudeRows, claudeSeat, jcodeCalls, jcodeSession } from "./transcripts.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = JSON.parse(readFileSync(join(HERE, "scenarios.json"), "utf8"));
@@ -226,10 +226,10 @@ class Sandbox {
   readCalls() {
     const calls = [], files = [];
     for (const dir of this.claudeProjectDirs()) {
-      const cwdSlug = basename(dir);
       for (const f of readdirSync(dir).filter((x) => x.endsWith(".jsonl"))) {
-        const seat = seatForClaude(cwdSlug, this.root);
-        calls.push(...claudeCalls(claudeRows(join(dir, f)), seat).calls);
+        const rows = claudeRows(join(dir, f));
+        const seat = claudeSeat(rows);
+        calls.push(...claudeCalls(rows, seat).calls);
         files.push({ from: join(dir, f), as: `claude-${seat}-${f}` });
       }
     }
@@ -328,13 +328,6 @@ class Sandbox {
     for (const d of claudeDirs) rmSync(d, { recursive: true, force: true });
     rmSync(gone, { recursive: true, force: true });
   }
-}
-
-function seatForClaude(cwdSlug, root) {
-  const slug = root.replace(/[^A-Za-z0-9]/g, "-");
-  if (cwdSlug === `${slug}-work`) return "alice";
-  if (cwdSlug.startsWith(`${slug}-seats-`)) return cwdSlug.slice(`${slug}-seats-`.length).replace(/-/g, "_");
-  return `helper@${cwdSlug.slice(slug.length + 1) || "root"}`;
 }
 
 /** A process's start time, which tells a live pid from a reused one. */

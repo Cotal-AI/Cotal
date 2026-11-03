@@ -16,20 +16,28 @@ const refused = (s) => /^(Couldn't|Can't|Cannot|Error|MCP error)/.test(s.trim())
 const useOf = (seat, tool, at, input, cotal) => ({ seat, tool, at, input: JSON.stringify(input ?? {}).slice(0, 500), cotal });
 const lines = (src) => src.split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 
-/** A Claude Code transcript's rows. A channel push is a user message carrying `source="cotal"`. */
+/** A Claude Code transcript's rows. A channel push is a user message carrying `source="cotal"`. Only
+ *  the user and assistant rows are the conversation: Claude Code also writes api-request-blob rows that
+ *  repeat a turn's calls and results with no timestamp, so those rows are skipped and each call is read
+ *  once. */
 export function claudeCalls(rows, seat) {
-  const pending = new Map(), calls = [], uses = [], inbound = [];
+  const pending = new Map(), seen = new Set(), calls = [], uses = [], inbound = [];
   for (const o of rows) {
+    if (o.type !== "user" && o.type !== "assistant") continue;
     const content = o.message?.content;
     if (o.type === "user" && typeof content === "string" && content.includes('source="cotal"')) inbound.push({ seat, at: o.timestamp, text: content.slice(0, KEEP) });
     for (const b of Array.isArray(content) ? content : []) {
       if (o.type === "user" && b.type === "text" && String(b.text).includes('source="cotal"')) inbound.push({ seat, at: o.timestamp, text: b.text.slice(0, KEEP) });
-      const isCotal = b.type === "tool_use" && /^mcp__[^_]+(?:_[^_]+)*__cotal_/.test(b.name);
-      if (b.type === "tool_use") uses.push(useOf(seat, b.name, o.timestamp, b.input, isCotal));
-      if (isCotal) pending.set(b.id, { seat, tool: b.name.replace(/^mcp__.*__(cotal_)/, "$1"), args: b.input });
+      if (b.type === "tool_use" && !seen.has(b.id)) {
+        seen.add(b.id);
+        const isCotal = /^mcp__[^_]+(?:_[^_]+)*__cotal_/.test(b.name);
+        uses.push(useOf(seat, b.name, o.timestamp, b.input, isCotal));
+        if (isCotal) pending.set(b.id, { seat, tool: b.name.replace(/^mcp__.*__(cotal_)/, "$1"), args: b.input });
+      }
       if (b.type === "tool_result" && pending.has(b.tool_use_id)) {
         const result = text(b.content);
         calls.push({ ...pending.get(b.tool_use_id), ok: !b.is_error && !refused(result), result });
+        pending.delete(b.tool_use_id);
         inbound.push({ seat, at: o.timestamp, text: result.slice(0, KEEP) });
       }
     }
@@ -71,16 +79,35 @@ export function jcodeSession(snapshot, journal) {
 
 export const claudeRows = (file) => lines(readFileSync(file, "utf8"));
 
-/** Everything in a run's kept transcripts/ folder, named claude-<seat>-<session>.jsonl and
- *  jcode-<seat>-<session>.json or .journal.jsonl. */
+/** The Cotal name a Claude Code seat ran as, from the cotal MCP server's instructions in its transcript.
+ *  Seats can share a working directory, so the directory does not say whose transcript it is. A
+ *  transcript that carries no Cotal identity is filed as `unattributed`, so its calls count for no seat. */
+export function claudeSeat(rows) {
+  const names = new Set();
+  for (const o of rows) {
+    const a = o.type === "attachment" ? o.attachment : undefined;
+    if (a?.type !== "mcp_instructions_delta") continue;
+    for (const block of a.addedBlocks ?? []) {
+      const m = /^## cotal\n[\s\S]*?connected to the Cotal mesh as "([^"]+)"/.exec(block);
+      if (m) names.add(m[1]);
+    }
+  }
+  if (names.size > 1) throw new Error(`claudeSeat: one transcript carries more than one Cotal identity: ${[...names].join(", ")}`);
+  return names.size ? [...names][0] : "unattributed";
+}
+
+/** Everything in a run's kept transcripts/ folder, named claude-<label>-<session>.jsonl and
+ *  jcode-<seat>-<session>.json or .journal.jsonl. A Claude Code transcript is filed under the Cotal
+ *  name it carries, whatever label its file name has. */
 export function fromTranscripts(dir) {
   const out = { calls: [], uses: [], inbound: [] };
   const add = (got) => { for (const k of Object.keys(out)) out[k].push(...got[k]); };
   if (!existsSync(dir)) return out;
   const files = readdirSync(dir).sort();
   for (const f of files) {
-    const m = /^claude-(.+)-([0-9a-f-]{36})\.jsonl$/.exec(f);
-    if (m) add(claudeCalls(claudeRows(join(dir, f)), m[1]));
+    if (!/^claude-.+-[0-9a-f-]{36}\.jsonl$/.test(f)) continue;
+    const rows = claudeRows(join(dir, f));
+    add(claudeCalls(rows, claudeSeat(rows)));
   }
   const sessions = new Map();
   for (const f of files) {

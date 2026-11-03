@@ -20,17 +20,26 @@ const check = (name, ok, detail) => ({ check: name, ok: Boolean(ok), detail });
 const time = (t) => (typeof t === "number" ? t : Date.parse(t));
 // What a brief for PR 812 carries: the PR file, its diff, or its title (files/PR-812.md).
 const MATERIAL = /PR-812\.md|session\.ts|SESSION_TIMEOUT_MS|login session timeout/i;
+// Tools that plan or look up other tools, and do not touch the PR: jcode's todo, Claude Code's
+// TodoWrite and ToolSearch, jcode's mcp_search.
+const PLANNING = /^(?:todo|todowrite|toolsearch|mcp_search)$/i;
 const launchFailed = (r, seat) => r.reaps.some((x) => x.id === seat.id && /launch-failed/.test(x.reason));
 
-/** A seat counts as stopped only when the manager says it stopped itself, ended its once task, or
- *  was stopped at alice's request. A crash or a failed launch is not a stop. */
+/** A seat counts as stopped only when the manager says it stopped itself, ended its once task by
+ *  yielding or finishing its turn, or was stopped at alice's request. A crash is not a stop, and
+ *  neither is a once task the manager ended itself: a failed launch, a seat that never got ready, a
+ *  task it could not deliver, a cancel or a deadline. */
 function stopped(r, seat) {
   return r.reaps.some((x) => x.id === seat.id && (
     /it stopped itself/.test(x.reason) ||
-    (/its once task ended/.test(x.reason) && !/launch-failed/.test(x.reason)) ||
-    (r.alice && x.reason.includes(`stopped it at local.${r.alice}`))
+    /its once task ended \((?:yielded [^)]*|turn-ended)\)/.test(x.reason) ||
+    (r.alice && x.reason.includes(`stopped it at local.${r.alice}'s request`))
   ));
 }
+
+/** The seats a spawn of `name` started: that name, or the name the manager numbered it to when the
+ *  name was taken (name_2, name_3). */
+const seatsOf = (r, name) => r.spawned.filter((h) => typeof name === "string" && (h.name === name || (h.name.startsWith(`${name}_`) && /^\d+$/.test(h.name.slice(name.length + 1)))));
 
 /** Every helper alice started is gone from a roster that was read, and the manager says it
  *  stopped. A seat the manager stopped because its launch failed was never a working helper. */
@@ -45,19 +54,23 @@ function helperChannels(r, spawn) {
   return new Set([...list(spawn.args?.join), ...list(persona?.subscribe)]);
 }
 
-/** A prompt that tells the helper to stop itself: it asks for a despawn or a self-stop with no
- *  negation before it in the same clause. A negation reaches across commas, so "do not despawn
+/** A prompt that tells the helper to stop itself: it asks the helper for a despawn or a self-stop with
+ *  no negation before it in the same clause. A negation reaches across commas, so "do not despawn
  *  yourself, or call cotal_despawn" does not count. A clause ends at a semicolon, at "then" or "but",
- *  and at the comma closing a leading condition, so "if you are not needed, despawn yourself" does. */
+ *  at ", and", and at the comma closing a leading condition, so "if you are not needed, despawn
+ *  yourself" counts. A despawn that someone else does, as in "wait for alice to despawn you", is not
+ *  the helper stopping itself. */
 const NEGATION = /\b(?:not|don't|never|no need to|avoid)\b/i;
 const CONDITION = /^\s*(?:if|when|whenever|once|after|before|as soon as|while|until)\b/i;
-const clauses = (sentence) => sentence.split(/;|\b(?:then|but)\b/i).flatMap((c) => {
+const STOP = /\bcotal_despawn\b|\b(?:despawn|stop)\s+yourself\b|\bdespawn\b(?!\s+(?:you|me|him|her|them|it|others?|the|a|an|all|every\w*|[\w-]+_[\w-]+)\b)/gi;
+const ANOTHER = /\b(?:for|let|until|ask|asks)\s+(?!yourself\b)[\w@.-]+\s+(?:to\s+)?(?:call\s+)?$/i;
+const clauses = (sentence) => sentence.split(/;|,\s*and\b|\b(?:then|but)\b/i).flatMap((c) => {
   const comma = c.indexOf(",");
   return CONDITION.test(c) && comma >= 0 ? [c.slice(0, comma), c.slice(comma + 1)] : [c];
 });
 const toldToStop = (prompt) =>
   prompt.split(/(?<=[.!?])\s+/).flatMap(clauses)
-    .some((clause) => [...clause.matchAll(/\b(?:cotal_despawn|despawn|stop yourself)\b/gi)].some((m) => !NEGATION.test(clause.slice(0, m.index))));
+    .some((clause) => [...clause.matchAll(STOP)].some((m) => !NEGATION.test(clause.slice(0, m.index)) && !ANOTHER.test(clause.slice(0, m.index))));
 
 const checks = {
   "get-help"(r) {
@@ -71,22 +84,21 @@ const checks = {
     // with no start on the PR received no brief. Only that helper's calls and deliveries count.
     const said = (id) => [...r.posts, ...r.dms].filter((m) => m.from === id).map((m) => time(m.ts));
     const stoppedAt = (id) => r.reaps.filter((x) => x.id === id).map((x) => (x.at === undefined ? -Infinity : time(x.at)));
-    // A jcode seat's transcript carries its name. A Claude Code one is filed by its working directory as
-    // helper@<dir>, which must be the directory this helper ran in.
-    const slug = (p) => String(p ?? "").replace(/[^A-Za-z0-9]/g, "-");
-    const ofHelper = (u, h) => u.seat === h.name ||
-      (u.seat.startsWith("helper@") && /claude/.test(h.agent ?? "") && h.cwd !== undefined && slug(h.cwd).endsWith(`-${u.seat.slice("helper@".length)}`));
+    // Every transcript is filed under the Cotal name of the seat that wrote it. A planning call, such as
+    // a to-do list that names the PR, is not a start on it.
+    const ofHelper = (u, h) => u.seat === h.name;
     const startOf = (h) => Math.min(
-      ...(r.toolUses ?? []).filter((u) => ofHelper(u, h) && !u.cotal && /\b812\b/.test(u.input)).map((u) => time(u.at)),
+      ...(r.toolUses ?? []).filter((u) => ofHelper(u, h) && !u.cotal && !PLANNING.test(u.tool) && /\b812\b/.test(u.input)).map((u) => time(u.at)),
       ...[...r.posts, ...r.dms].filter((m) => m.from === h.id && /\b812\b/.test(m.text)).map((m) => time(m.ts)),
     );
     const flat = (t) => String(t).replace(/\s+/g, " ").trim();
-    // The whole post, arriving at or after it was posted.
+    // The whole post, arriving at or after it was posted, and before the helper says anything or stops.
     const deliveredAt = (p, h) => Math.min(...(r.inbound ?? []).filter((u) => ofHelper(u, h) && time(u.at) >= time(p.ts) && flat(u.text).includes(flat(p.text))).map((u) => time(u.at)));
-    const reached = (p, spawn) => r.spawned.filter((h) => h.name === spawn.args?.name && !launchFailed(r, h)).some((h) => {
+    const reached = (p, spawn) => seatsOf(r, spawn.args?.name).filter((h) => !launchFailed(r, h)).some((h) => {
       const start = startOf(h), stop = Math.min(...stoppedAt(h.id));
       const got = deliveredAt(p, h);
-      return Number.isFinite(start) && time(p.ts) < start && [...said(h.id), stop].every((t) => time(p.ts) < t) && Number.isFinite(got) && got <= stop;
+      return Number.isFinite(start) && time(p.ts) < start && [...said(h.id), stop].every((t) => time(p.ts) < t) &&
+        Number.isFinite(got) && said(h.id).every((t) => got < t) && got <= stop;
     });
     const briefs = alicePosts(r).filter((p) => p.channel.startsWith("review.") && /\b812\b/.test(p.text) && MATERIAL.test(p.text) &&
       spawns.some((s) => helperChannels(r, s).has(p.channel) && reached(p, s)));
@@ -145,13 +157,17 @@ const checks = {
   scope(r) {
     const only = (v) => list(v).every((c) => c === "bugs.checkout");
     // The persona as the manager saved it, not as the call spelled it: a prompt's own frontmatter
-    // can add grants the call's arguments leave out. An empty allowSubscribe reads as subscribe.
+    // can add grants the call's arguments leave out. An empty allowSubscribe reads as subscribe. A
+    // triager reads bugs.checkout and posts there, and nowhere else.
+    const persona = (name) => r.personas.find((x) => x.written && x.name === name);
     const limited = (name) => {
-      const p = r.personas.find((x) => x.written && x.name === name);
+      const p = persona(name);
       if (!p) return false;
       const read = list(p.allowSubscribe).length ? p.allowSubscribe : p.subscribe;
-      return list(read).length > 0 && only(read) && only(p.subscribe) && only(p.allowPublish);
+      return list(read).length > 0 && only(read) && only(p.subscribe) && list(p.allowPublish).length > 0 && only(p.allowPublish);
     };
+    // The helper starts on bugs.checkout, from its persona or the spawn's join.
+    const startsOn = (c) => [...list(persona(c.args?.name)?.subscribe), ...list(c.args?.join)].includes("bugs.checkout");
     // The persona a helper launched with is the file as it stands only when no save of that name came
     // after the spawn, and, where the run recorded file times, the file was last written before the seat
     // started.
@@ -159,13 +175,13 @@ const checks = {
     const unchangedSince = (name) => {
       const file = r.personas.find((x) => x.written && x.name === name);
       if (file?.mtimeMs === undefined) return true;
-      const seats = r.spawned.filter((s) => s.name === name && !launchFailed(r, s));
+      const seats = seatsOf(r, name).filter((s) => !launchFailed(r, s));
       return seats.length > 0 && seats.every((s) => s.startedAt !== undefined && file.mtimeMs <= s.startedAt);
     };
     const spawns = r.calls.map((c, i) => ({ c, i })).filter(({ c }) => c.tool === "cotal_spawn" && c.ok);
     const scoped = ({ c, i }) => {
       const at = saves(c.args?.name);
-      return at.some((j) => j < i) && !at.some((j) => j > i) && limited(c.args?.name) && unchangedSince(c.args?.name);
+      return at.some((j) => j < i) && !at.some((j) => j > i) && limited(c.args?.name) && startsOn(c) && unchangedSince(c.args?.name);
     };
     const savedNames = [...new Set(r.calls.filter((c) => c.tool === "cotal_persona" && c.ok).map((c) => c.args?.name))];
     return [
@@ -214,10 +230,12 @@ export function loadRecord(dir) {
     const ps = JSON.parse(readFileSync(join(dir, "cli.json"), "utf8")).filter((x) => x.argv[0] === "ps");
     finalPsOk = ps.length > 0 && ps.at(-1).status === 0;
   }
-  // The helpers' tool calls and what reached them, read again from the transcripts the run kept.
+  // Every seat's tool calls and what reached it, read again from the transcripts the run kept. A jcode
+  // run from before the runner kept transcripts has none, and keeps the calls it recorded for alice.
   const seen = fromTranscripts(join(dir, "transcripts"));
   const helpers = (xs) => xs.filter((x) => x.seat !== "alice");
-  return { ...r, personas, reaps: reapsFrom(log), finalPsOk: Boolean(finalPsOk), toolUses: helpers(seen.uses), inbound: helpers(seen.inbound) };
+  const calls = seen.uses.some((u) => u.seat === "alice") ? seen.calls.filter((c) => c.seat === "alice") : r.calls;
+  return { ...r, calls, personas, reaps: reapsFrom(log), finalPsOk: Boolean(finalPsOk), toolUses: helpers(seen.uses), inbound: helpers(seen.inbound) };
 }
 
 /** Grade one run's record. */
