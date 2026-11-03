@@ -32,7 +32,8 @@ import {
   type PresenceStatus,
   type PresenceView,
 } from "@cotal-ai/core";
-import { codeSpan, type RefusalCode } from "@cotal-ai/workspace";
+import type { RefusalCode } from "../output.js";
+import { codeSpan } from "../text-wrap.js";
 import { ParticipantEngine } from "./engine.js";
 import type {
   AdmittedChatSession,
