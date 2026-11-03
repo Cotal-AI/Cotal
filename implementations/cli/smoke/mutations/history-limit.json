@@ -117,8 +117,8 @@
       "file": "implementations/cli/src/commands/history-limit.ts",
       "find": "historyAgeProblem(stream, part.maxAgeMs);",
       "replace": "(part.maxAgeMs === 0 ? undefined : historyAgeProblem(stream, part.maxAgeMs));",
-      "expectRed": "history limit refuses an age of 0s, which is not none, as usage, before resolving any target",
-      "cell": "history limit refuses an age of 0s, which is not none, as usage, before resolving any target",
+      "expectRed": "history limit refuses an age of 0s as usage, before resolving any target",
+      "cell": "history limit refuses an age of 0s as usage, before resolving any target",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "note": "0 is how a limit spells no age, so an age of 0s would remove the age limit instead of being refused."
     }

@@ -208,9 +208,9 @@ try {
   // ── refusals before any connection ──────────────────────────────────────────────────────────────
   for (const [args, what, needle] of [
     [["--max-age", "1m", "--yes"], "an age below 2m", "--max-age: the age must be at least 2m"],
-    [["--max-age", "0s", "--yes"], "an age of 0s, which is not none", "--max-age: the age must be at least 2m"],
-    [["--inbox-max-age", "0h", "--yes"], "an inbox age of 0h, which is not none", "--inbox-max-age: the age must be at least 2h"],
-    [["--dm-max-age", "0d", "--yes"], "a DM age of 0d, which is not none", "--dm-max-age: the age must be at least 2m"],
+    [["--max-age", "0s", "--yes"], "an age of 0s", "--max-age: the age must be at least 2m"],
+    [["--inbox-max-age", "0h", "--yes"], "an inbox age of 0h", "--inbox-max-age: the age must be at least 2h"],
+    [["--dm-max-age", "0d", "--yes"], "a DM age of 0d", "--dm-max-age: the age must be at least 2m"],
     [["--max-age", "5x", "--yes"], "an age that is not one", "--max-age takes an age such as 30d, 12h or 90m, or none"],
     [["--per-sender", "0", "--yes"], "a count of 0", "--per-sender: the count must be a whole number of at least 1"],
     [["--max-age", "4000d", "--yes"], "an age past 3650d", "at most 3650d"],
