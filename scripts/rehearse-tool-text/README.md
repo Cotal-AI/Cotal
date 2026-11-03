@@ -47,7 +47,8 @@ Under `<out>/<label>-<harness>-<scenario>/`:
 - `manager.log`: how each seat ended, stopped by someone or exited on its own.
 - `personas/`: every persona in the catalog at the end, including those the agents wrote.
 - `roster.json`: the roster at the end.
-- `transcripts/`: the Claude Code seats' transcripts.
+- `transcripts/`: every seat's transcript, Claude Code and jcode. `record.json` keeps the helpers' tool
+  calls with their times, which the get-help check reads to tell when a helper started on the PR.
 - `cli.json`: every `cotal` command the run issued, with its exit status and output.
 - `teardown.json`: what the teardown stopped, and anything that still held the sandbox.
 - `record.json`: the normalized record `grade.mjs` reads, and `result.json`: the graded result.

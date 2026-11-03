@@ -220,14 +220,19 @@ class Sandbox {
       });
   }
 
-  /** Each seat's tool calls, normalized across harnesses: { seat, tool, args, ok, result }. */
+  /** Each seat's Cotal tool calls, normalized across harnesses ({ seat, tool, args, ok, result }), and
+   *  every tool use of any kind with its time ({ seat, tool, at, input, cotal }), with the transcript
+   *  files they came from. */
   readCalls() {
-    const calls = [];
+    const calls = [], uses = [], files = [];
     for (const dir of this.claudeProjectDirs()) {
       const cwdSlug = basename(dir);
       for (const f of readdirSync(dir).filter((x) => x.endsWith(".jsonl"))) {
         const rows = readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-        calls.push(...claudeCalls(rows, seatForClaude(cwdSlug, this.root)));
+        const seat = seatForClaude(cwdSlug, this.root), got = claudeCalls(rows, seat);
+        calls.push(...got.calls);
+        uses.push(...got.uses);
+        files.push({ from: join(dir, f), as: `claude-${seat}-${f}` });
       }
     }
     const jhome = join(this.proj, ".cotal", "jcode");
@@ -237,10 +242,13 @@ class Sandbox {
       if (!existsSync(sdir)) continue;
       for (const f of readdirSync(sdir).filter((x) => x.endsWith(".journal.jsonl"))) {
         const msgs = readFileSync(join(sdir, f), "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return JSON.parse(l).append_messages ?? []; } catch { return []; } });
-        calls.push(...jcodeCalls(msgs, seat));
+        const got = jcodeCalls(msgs, seat);
+        calls.push(...got.calls);
+        uses.push(...got.uses);
+        files.push({ from: join(sdir, f), as: `jcode-${seat}-${f}` });
       }
     }
-    return calls;
+    return { calls, uses, files };
   }
 
   history(channel) {
@@ -251,7 +259,7 @@ class Sandbox {
   /** Copy what the run left into `dir` and build the record grade.mjs reads. */
   record(dir) {
     mkdirSync(dir, { recursive: true });
-    const calls = this.readCalls();
+    const { calls, uses, files: transcripts } = this.readCalls();
     const channels = new Set(["general", ...Object.keys(this.scenario.channels ?? {}), ...(this.scenario.alice.subscribe ?? [])]);
     for (const c of calls) for (const ch of [c.args?.channel, ...[c.args?.join ?? []].flat(), ...[c.args?.subscribe ?? []].flat()])
       if (typeof ch === "string" && !/[*>]/.test(ch) && ch) channels.add(ch);
@@ -285,6 +293,7 @@ class Sandbox {
       finalPsOk: true,
       personasWritten: files.filter((f) => !this.catalogAtStart.has(f)),
       personaTimes: Object.fromEntries(files.map((f) => [f, statSync(join(personaDir, f)).mtimeMs])),
+      toolUses: uses.filter((u) => u.seat !== "alice"),
     };
     writeFileSync(join(dir, "record.json"), JSON.stringify(record, null, 2));
     writeFileSync(join(dir, "calls.json"), JSON.stringify(calls, null, 2));
@@ -295,7 +304,7 @@ class Sandbox {
     const mlog = readdirSync(join(this.proj, ".cotal")).find((f) => /^manager\..*\.log$/.test(f));
     if (mlog) copyFileSync(join(this.proj, ".cotal", mlog), join(dir, "manager.log"));
     mkdirSync(join(dir, "transcripts"), { recursive: true });
-    for (const d of this.claudeProjectDirs()) for (const f of readdirSync(d).filter((x) => x.endsWith(".jsonl"))) copyFileSync(join(d, f), join(dir, "transcripts", `claude-${seatForClaude(basename(d), this.root)}-${f}`));
+    for (const t of transcripts) copyFileSync(t.from, join(dir, "transcripts", t.as));
     return record;
   }
 
@@ -340,25 +349,30 @@ function text(content) {
 
 const refused = (s) => /^(Couldn't|Can't|Cannot|Error|MCP error)/.test(s.trim());
 
+const useOf = (seat, tool, at, input, cotal) => ({ seat, tool, at, input: JSON.stringify(input ?? {}).slice(0, 500), cotal });
+
 function claudeCalls(rows, seat) {
-  const uses = new Map(), out = [];
+  const uses = new Map(), out = [], all = [];
   for (const o of rows) for (const b of Array.isArray(o.message?.content) ? o.message.content : []) {
-    if (b.type === "tool_use" && /^mcp__[^_]+(?:_[^_]+)*__cotal_/.test(b.name)) uses.set(b.id, { seat, tool: b.name.replace(/^mcp__.*__(cotal_)/, "$1"), args: b.input });
+    const isCotal = b.type === "tool_use" && /^mcp__[^_]+(?:_[^_]+)*__cotal_/.test(b.name);
+    if (b.type === "tool_use") all.push(useOf(seat, b.name, o.timestamp, b.input, isCotal));
+    if (isCotal) uses.set(b.id, { seat, tool: b.name.replace(/^mcp__.*__(cotal_)/, "$1"), args: b.input });
     if (b.type === "tool_result" && uses.has(b.tool_use_id)) {
       const u = uses.get(b.tool_use_id), result = text(b.content);
       out.push({ ...u, ok: !b.is_error && !refused(result), result });
     }
   }
-  return out;
+  return { calls: out, uses: all };
 }
 
 function jcodeCalls(msgs, seat) {
-  const uses = new Map(), out = [];
+  const uses = new Map(), out = [], all = [];
   for (const m of msgs) for (const b of m.content ?? []) {
     if (b.type === "tool_use") {
-      const viaProxy = b.name === "mcp_call" && b.input?.server === "cotal";
+      const viaProxy = ["mcp_call", "mcp_search"].includes(b.name) && b.input?.server === "cotal";
       const direct = /^mcp__cotal__cotal_/.test(b.name);
-      if (viaProxy) uses.set(b.id, { seat, tool: b.input.tool, args: b.input.arguments ?? {} });
+      all.push(useOf(seat, b.name, m.timestamp, b.input, viaProxy || direct));
+      if (viaProxy && b.name === "mcp_call") uses.set(b.id, { seat, tool: b.input.tool, args: b.input.arguments ?? {} });
       else if (direct) uses.set(b.id, { seat, tool: b.name.replace(/^mcp__cotal__/, ""), args: b.input });
     }
     if (b.type === "tool_result" && uses.has(b.tool_use_id)) {
@@ -366,7 +380,7 @@ function jcodeCalls(msgs, seat) {
       out.push({ ...u, ok: !b.is_error && !refused(result), result });
     }
   }
-  return out;
+  return { calls: out, uses: all };
 }
 
 /** A process's start time, which tells a live pid from a reused one. */

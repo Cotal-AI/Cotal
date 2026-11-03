@@ -13,17 +13,22 @@ const T = (min) => `2026-11-02T23:${String(min).padStart(2, "0")}:00.000Z`;
 const run = (over) => ({ alice: "A", ids: {}, posts: [], dms: [], personas: [], calls: [], spawned: [], reaps: [], presentAtEnd: ["alice"], finalPsOk: true, ...over });
 const selfStop = (id, min) => ({ at: T(min), id, reason: "it stopped itself (self-stop)" });
 
-// get-help: the brief is alice's post naming the PR on a helper's channel, while that helper runs and
-// before it has said anything.
+// get-help: the brief is alice's post naming the PR on a helper's channel, after which, and only after
+// which, the helper starts on the PR; it comes while that helper runs and before it has said anything.
 {
   const spawn = { tool: "cotal_spawn", ok: true, args: { name: "rev", join: ["review.pr-812"] } };
-  const gh = (over) => grade("get-help", run({ calls: [spawn], spawned: [{ name: "rev", id: "H" }], reaps: [selfStop("H", 30)], ...over })).checks[0].ok;
+  const reads = (min) => ({ seat: "rev", tool: "Read", at: T(min), input: '{"file_path":"/w/PR-812.md"}', cotal: false });
+  const gh = (over) => grade("get-help", run({ calls: [spawn], spawned: [{ name: "rev", id: "H" }], reaps: [selfStop("H", 30)], toolUses: [reads(3)], ...over })).checks[0].ok;
   const post = (min, from, text, channel = "review.pr-812") => ({ ts: T(min), channel, from, text, mentions: [] });
-  expect("brief before the helper's first post", gh({ posts: [post(1, "A", "Review PR 812"), post(5, "H", "done")] }), true);
+  expect("brief, then the helper reads the PR and posts", gh({ posts: [post(1, "A", "Review PR 812"), post(5, "H", "done")] }), true);
+  expect("brief, then the helper answers from the post alone", gh({ toolUses: [], posts: [post(1, "A", "Review PR 812: the diff is below"), post(5, "H", "PR 812: one finding")] }), true);
   expect("brief on a review channel no helper is on", gh({ posts: [post(1, "A", "PR 812", "review.other")] }), false);
   expect("post only after the helper posted there", gh({ posts: [post(1, "H", "what do I do"), post(2, "A", "PR 812")] }), false);
   expect("post only after the helper DMed alice", gh({ dms: [{ ts: T(1), from: "H", to: "A", text: "findings" }], posts: [post(2, "A", "PR 812 done")] }), false);
-  expect("status after a silent helper stopped (brief only in the prompt)", gh({ posts: [post(40, "A", "PR 812 done")] }), false);
+  expect("status after a silent helper stopped (brief only in the prompt)", gh({ toolUses: [], posts: [post(40, "A", "PR 812 done")] }), false);
+  expect("status while a silent helper runs, which never starts on the PR", gh({ toolUses: [], posts: [post(29, "A", "PR 812 done")] }), false);
+  expect("status after the helper already read the PR (brief only in the prompt)", gh({ posts: [post(29, "A", "PR 812 done")] }), false);
+  expect("a Cotal call naming the channel is not a start on the PR", gh({ toolUses: [{ seat: "rev", tool: "cotal_join", at: T(0), input: '{"channel":"review.pr-812"}', cotal: true }, reads(3)], posts: [post(1, "A", "Review PR 812")] }), true);
   expect("post without the PR", gh({ posts: [post(1, "A", "hello")] }), false);
   expect("a channel from a refused spawn", gh({ calls: [{ ...spawn, ok: false }], posts: [post(1, "A", "PR 812")] }), false);
   expect("a channel from the spawned persona file", gh({ calls: [{ tool: "cotal_spawn", ok: true, args: { name: "rev" } }], personas: [{ name: "rev", subscribe: ["review.pr-812"] }], posts: [post(1, "A", "PR 812")] }), true);
@@ -36,6 +41,9 @@ const selfStop = (id, min) => ({ at: T(min), id, reason: "it stopped itself (sel
   expect("despawn yourself with cotal_despawn (no name)", told("Once the post has gone out, despawn yourself with cotal_despawn (no name)."), true);
   expect("do not despawn yourself", told("Do not despawn yourself. Post the summary."), false);
   expect("do not despawn yourself or call cotal_despawn", told("Summarize CHANGELOG.md. Do not despawn yourself or call cotal_despawn."), false);
+  expect("do not despawn yourself, or call cotal_despawn", told("Summarize CHANGELOG.md. Do not despawn yourself, or call cotal_despawn."), false);
+  expect("if you are not needed, despawn yourself", told("If you are not needed any more, despawn yourself."), true);
+  expect("when done, do not despawn", told("When you are done, do not despawn yourself."), false);
   expect("don't stop yourself", told("Don't stop yourself when done."), false);
   expect("no need to despawn", told("There is no need to despawn yourself."), false);
   expect("do not stop, then despawn", told("Do not stop. Then despawn yourself."), true);

@@ -42,29 +42,40 @@ function helperChannels(r, spawn) {
 }
 
 /** A prompt that tells the helper to stop itself: it asks for a despawn or a self-stop with no
- *  negation before it in the same clause, so "do not despawn yourself or call cotal_despawn" does not
- *  count and "when it is out, despawn yourself with cotal_despawn (no name)" does. */
+ *  negation before it in the same clause. A negation reaches across commas, so "do not despawn
+ *  yourself, or call cotal_despawn" does not count. A clause ends at a semicolon, at "then" or "but",
+ *  and at the comma closing a leading condition, so "if you are not needed, despawn yourself" does. */
 const NEGATION = /\b(?:not|don't|never|no need to|avoid)\b/i;
+const CONDITION = /^\s*(?:if|when|whenever|once|after|before|as soon as|while|until)\b/i;
+const clauses = (sentence) => sentence.split(/;|\b(?:then|but)\b/i).flatMap((c) => {
+  const comma = c.indexOf(",");
+  return CONDITION.test(c) && comma >= 0 ? [c.slice(0, comma), c.slice(comma + 1)] : [c];
+});
 const toldToStop = (prompt) =>
-  prompt.split(/(?<=[.!?])\s+/).flatMap((s) => s.split(/[;,]|\b(?:then|but)\b/i))
+  prompt.split(/(?<=[.!?])\s+/).flatMap(clauses)
     .some((clause) => [...clause.matchAll(/\b(?:cotal_despawn|despawn|stop yourself)\b/gi)].some((m) => !NEGATION.test(clause.slice(0, m.index))));
 
 const checks = {
   "get-help"(r) {
     const spawns = okCalls(r, "cotal_spawn");
     const helperIds = new Set(r.spawned.map((s) => s.id));
-    // The brief: alice's post naming the PR, on a channel a helper was put on, while that helper was
-    // running and before it had said anything anywhere. A status posted after the helper spoke or
-    // stopped is not the brief.
+    // The brief: alice's post naming the PR, on a channel a helper was put on, after which, and only
+    // after which, a helper started on PR 812. Its start is its first tool call outside Cotal that names
+    // 812, such as reading PR-812.md, or a post or DM of its own that names 812; a run with no such
+    // start has no brief. The post must also come before the helper said anything at all or stopped.
     const said = (id) => [...r.posts, ...r.dms].filter((m) => m.from === id).map((m) => time(m.ts));
     const stoppedAt = (id) => r.reaps.filter((x) => x.id === id).map((x) => (x.at === undefined ? -Infinity : time(x.at)));
-    const reached = (p, spawn) => r.spawned.filter((h) => h.name === spawn.args?.name && !launchFailed(r, h))
+    const started = Math.min(
+      ...(r.toolUses ?? []).filter((u) => !u.cotal && /\b812\b/.test(u.input)).map((u) => time(u.at)),
+      ...[...r.posts, ...r.dms].filter((m) => helperIds.has(m.from) && /\b812\b/.test(m.text)).map((m) => time(m.ts)),
+    );
+    const reached = (p, spawn) => Number.isFinite(started) && time(p.ts) < started && r.spawned.filter((h) => h.name === spawn.args?.name && !launchFailed(r, h))
       .some((h) => [...said(h.id), ...stoppedAt(h.id)].every((t) => time(p.ts) < t));
     const briefs = alicePosts(r).filter((p) => p.channel.startsWith("review.") && /\b812\b/.test(p.text) &&
       spawns.some((s) => helperChannels(r, s).has(p.channel) && reached(p, s)));
     const briefDms = aliceDms(r).filter((d) => helperIds.has(d.to));
     return [
-      check("alice posts the brief on a review channel a helper is put on", briefs.length > 0, { posts: alicePosts(r).map((p) => ({ channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
+      check("alice posts the brief on a review channel a helper is put on, before the helper starts on the PR", briefs.length > 0, { briefs: briefs.map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), helperStarted: Number.isFinite(started) ? new Date(started).toISOString() : "never", posts: alicePosts(r).map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
       check("the brief is not DMed to the helper", briefDms.length === 0, briefDms.map((d) => d.text.slice(0, 120))),
       check("every helper stops by the end", helpersStopped(r), { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd, finalPsOk: r.finalPsOk, reaps: r.reaps }),
     ];
