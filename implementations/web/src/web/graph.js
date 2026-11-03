@@ -14,6 +14,8 @@
  *
  * Stability: messages drive *glow*, not layout. The simulation cools to a rest state (alpha decay) and
  * only gently re-heats when the node/edge SET changes — so nodes don't wander on every message. */
+import { presenceFacts } from "./presence.js";
+
 (() => {
   const $ = (id) => document.getElementById(id);
   const canvas = $("graph");
@@ -261,6 +263,8 @@
       a.attention = p.attention; // open/absent both mean receives-all; only dnd/focus render
       // Card legibility fields the detail panel renders (same source as the Monitor's Agent Detail).
       a.description = p.card.description; a.tags = p.card.tags; a.channelModes = p.channelModes;
+      a.condition = p.condition; a.statusSince = p.statusSince;
+      a.activitySince = p.activitySince; a.activeAt = p.activeAt;
       a.ts = p.ts;
       a.present = true; // in the roster = a live presence (the authority for isOffline)
       seen.add(a.id);
@@ -675,6 +679,7 @@
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
         <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>
+        ${presenceFacts(sel) ? `<div class="presence-facts">${esc(presenceFacts(sel))}</div>` : ""}
         ${descBlock}
         <div class="d-section"><div class="d-label">activity</div><div class="d-block ${sel.activity ? "" : "muted"}">${esc(sel.activity || "no current activity")}</div></div>
         ${(harnessRow || modelRow || attRow) ? `<div class="d-rows">${harnessRow}${modelRow}${attRow}</div>` : ""}

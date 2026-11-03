@@ -15,6 +15,10 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// First-party browser module: copy the canonical implementation, not a second age formatter.
+copyFileSync(fileURLToPath(import.meta.resolve("@cotal-ai/core/presence-ages")),
+  fileURLToPath(new URL("../dist/web/presence-ages.js", import.meta.url)));
+
 const require_ = createRequire(import.meta.url);
 const outDir = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "web", "vendor");
 mkdirSync(outDir, { recursive: true });

@@ -44,6 +44,10 @@
       "types": "./dist/secret-fs-entry.d.ts",
       "import": "./dist/secret-fs-entry.js"
     },
+    "./presence-ages": {
+      "types": "./dist/presence-ages.d.ts",
+      "import": "./dist/presence-ages.js"
+    },
     "./peer-label": {
       "types": "./dist/peer-label.d.ts",
       "import": "./dist/peer-label.js"
