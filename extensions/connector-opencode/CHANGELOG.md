@@ -1,5 +1,13 @@
 # @cotal-ai/connector-opencode
 
+## 0.136.7
+
+### Patch Changes
+
+- ce9c35e: OpenCode 2.x no longer treats a refused plugin setup as completed. A repeated call validates again,
+  concurrent callers share the setup result, and a completed session releases its setup slot only
+  after teardown finishes. Later location boots still start no duplicate agent.
+
 ## 0.136.6
 
 No changes in this release.
