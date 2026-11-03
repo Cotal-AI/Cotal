@@ -11,10 +11,10 @@ import {
 import {
   CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, operationWarnings, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
   type MeshTarget,
+  concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
-import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { cliControl } from "../lib/control.js";
 import { declaredFrom } from "./send.js";

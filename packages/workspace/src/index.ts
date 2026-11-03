@@ -40,6 +40,7 @@ export * from "./broker-policy.js";
 export * from "./idp-url.js";
 export * from "./broker-display.js";
 export * from "./mesh-target.js";
+export * from "./messaging.js";
 export * from "./preflight.js";
 export * from "./render.js";
 export * from "./renewal.js";

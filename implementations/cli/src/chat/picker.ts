@@ -7,7 +7,7 @@
 import { assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
 import type { AdmittedChatSession, ConnectionReport, RosterView } from "@cotal-ai/workspace/chat";
 import { personLabel, recipientLabel, sharedNames, type Person, type Recipient } from "./view.js";
-import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { concreteChannelProblem } from "@cotal-ai/workspace";
 
 /** Bound on listed choices; the rest stay reachable by typing an explicit name. Provisional. */
 export const MAX_CHOICES = 50;

@@ -4,7 +4,7 @@
  * creates a session; every call goes through the {@link AdmittedChatSession} it was given.
  */
 import { oneLine } from "@cotal-ai/core";
-import { shownTime } from "../lib/shown-time.js";
+import { shownTime } from "@cotal-ai/workspace";
 import type { AdmittedChatSession, ChannelInfo, ConnectionReport, HistoryPage, PublishResult, Result, RosterView, SessionMessage } from "@cotal-ai/workspace/chat";
 import {
   addNotice, applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, slashHelp, type ChatState, type Person, type Recipient, type SlashCommand,

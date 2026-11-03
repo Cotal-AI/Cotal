@@ -6,12 +6,10 @@
  * session, then reports back with {@link applyPublishResult}, {@link applySlashResult} or
  * {@link applyEnded}.
  */
-import { displayWidth, wrapWords } from "@cotal-ai/workspace";
+import { displayWidth, wrapWords, shownTime, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { oneLine } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
-import { shownTime } from "../lib/shown-time.js";
 import type { CloseReport, ConnectionState, PublishResult, Result, SessionEvent, SessionIdentity, SessionMessage } from "@cotal-ai/workspace/chat";
-import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 
 /** Bounded transcript retention. A dropped entry leaves a visible gap marker. Provisional. */
 export const MAX_TRANSCRIPT = 500;

@@ -42,7 +42,7 @@ import { parseRecipient } from "../src/chat/picker.js";
 import { runPlain } from "../src/chat/plain.js";
 import { StdioParticipant, dispatch, parseRequestLine } from "../src/chat/stdio.js";
 import { ENDING_NOTICE_MS, closeSummary } from "../src/chat/view.js";
-import { shownTime } from "../src/lib/shown-time.js";
+import { shownTime } from "@cotal-ai/workspace";
 import { closeExitCode } from "../src/commands/chat.js";
 import { stdoutError } from "../src/lib/stdout-owner.js";
 
