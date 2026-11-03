@@ -30,6 +30,12 @@ const umbrellaVersion = JSON.parse(readFileSync(join(binRoot, "package.json"), "
 rmSync(outRoot, { recursive: true, force: true });
 mkdirSync(outRoot, { recursive: true });
 
+// Windows has no `npm` executable to spawn without a shell, only `npm.cmd`; run the npm that ships
+// next to node.exe through this node instead, as the seat native build does for its node-gyp.
+const npm = process.platform === "win32"
+  ? (args) => [process.execPath, [join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), ...args]]
+  : (args) => ["npm", args];
+
 for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSIONS)) {
   const srcDir = join(repoRoot, srcSubdir);
   const meta = JSON.parse(readFileSync(join(srcDir, "package.json"), "utf8"));
@@ -45,7 +51,7 @@ for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSION
   const tmp = mkdtempSync(join(tmpdir(), "cotal-seed-"));
   try {
     // --ignore-scripts: dist is already built above; don't re-run the connector's own prepack.
-    const stdout = execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", tmp, srcDir], { encoding: "utf8" });
+    const stdout = execFileSync(...npm(["pack", "--ignore-scripts", "--silent", "--pack-destination", tmp, srcDir]), { encoding: "utf8" });
     const tgz = stdout.trim().split("\n").filter(Boolean).pop();
     if (!tgz) throw new Error(`npm pack produced no tarball for ${pkg}`);
     const dest = join(outRoot, name);

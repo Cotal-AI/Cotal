@@ -221,11 +221,23 @@ jobs:
         with:
           name: seat-native-linux-arm64
           path: ${{ runner.temp }}/seat-native-linux-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-darwin-*
+          path: ${{ runner.temp }}/seat-host-native
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-win32-*
+          path: ${{ runner.temp }}/seat-host-native
       - name: Assemble the seat SO_PEERCRED helpers
         run: node scripts/seat-assemble-natives.mjs
         env:
           SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/seat-host-native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-win32-arm64/peercred.node
       - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
         # The detector grades committed blobs. Earlier steps must not change inputs or execution hooks.
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
@@ -458,7 +470,7 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     name: seat pack (assembled)
     timeout-minutes: 20
-    needs: [seat-native-linux-x64, seat-native-linux-arm64]
+    needs: [seat-native-linux-x64, seat-native-linux-arm64, workspace-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -478,10 +490,22 @@ jobs:
         with:
           name: seat-native-linux-arm64
           path: ${{ runner.temp }}/seat-native-linux-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-darwin-*
+          path: ${{ runner.temp }}/seat-host-native
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-win32-*
+          path: ${{ runner.temp }}/seat-host-native
       - name: Assemble natives and pack
         env:
           SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/seat-host-native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-win32-arm64/peercred.node
           SEAT_PACK_DEST: ${{ runner.temp }}/seat-pack
         run: sh scripts/ci-seat-pack.sh
       - uses: actions/upload-artifact@v4

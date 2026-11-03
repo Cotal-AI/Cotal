@@ -41,3 +41,10 @@ extensions/connector-core/src/docs-index.bin
 
 # Historical callout arm the connect-load harness writes next to src so relative imports resolve.
 implementations/auth/src/.callout-load-arm-*.ts
+
+# Native desktop build products and staged stock runtime.
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/
+desktop/src-tauri/runtime/
+desktop/src-tauri/gen/
+desktop/src-tauri/.runtime-stage-*/
