@@ -191,13 +191,15 @@ function startAuthServiceDetached(space: string, server: string, command: string
  *  call launched (startAuthServiceDetached returns the spawned child's pid, or the live holder a
  *  claimed slot yielded to), else the live pid authServiceUp found in the pidfile. 0 means a
  *  spawn was attempted but nothing was claimed — the wait stays clock-only rather than binding
- *  to a pid nobody can attribute. */
-function authServiceWaitPid(space: string, launched: number | undefined): number | undefined {
-  if (launched !== undefined && launched > 0) return launched;
-  const raw = readPidfile(readPidPath(space));
-  if (raw === undefined) return undefined;
+ *  to a pid nobody can attribute. `record` is the pidfile that pid came from, resolved once, so a
+ *  failure names the file the wait was bound to (#3715). */
+function authServiceWaitPid(space: string, launched: number | undefined): { pid: number | undefined; record: string } {
+  if (launched !== undefined && launched > 0) return { pid: launched, record: PID_PATH(space) };
+  const record = readPidPath(space);
+  const raw = readPidfile(record);
+  if (raw === undefined) return { pid: undefined, record };
   const pid = parsePid(raw);
-  return pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined;
+  return { pid: pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined, record };
 }
 
 /** Make the user-auth service available for a space: start the provider's daemon unless it's
@@ -223,11 +225,13 @@ export async function ensureAuthService(opts: {
     await seedBeforeLaunch();
     launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
   }
-  const pid = authServiceWaitPid(opts.space, launched);
+  const { pid, record } = authServiceWaitPid(opts.space, launched);
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir, pid });
   } catch (e) {
-    const where = ` - the daemon's pid is recorded at ${readPidPath(opts.space)}, its log is at ${LOG_PATH(opts.space)}`;
+    // The record the wait read, not a fresh resolution: a spelling that appeared since would throw
+    // its ambiguity error in place of this reason, and a moved record would name an unread file.
+    const where = ` - the daemon's pid is recorded at ${record}, its log is at ${LOG_PATH(opts.space)}`;
     // A typed refusal stays typed, so the caller can tell its code and reason apart (#3947).
     if (e instanceof EpEnvelopeError) throw new EpEnvelopeError(e.code, e.message + where, e.details, e.outcome);
     throw new Error(`${e instanceof Error ? e.message : String(e)}${where}`);
