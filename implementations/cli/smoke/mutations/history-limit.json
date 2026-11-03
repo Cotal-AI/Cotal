@@ -2,11 +2,11 @@
   "suite": [
     "implementations/cli/smoke/history-limit.smoke.ts"
   ],
-  "guard": "cotal history limit reads the four streams' limits with no limit flag and writes nothing, takes none for each age and count, sets INBOX and DLV with one pair, treats a limit set from none as lower and previews it per sender, agent lifecycle and DM pair under an operator census line, counts a stored copy's unacknowledged copies from its durable, reports a refusal after an earlier stream changed as partial, and reports an update whose reply never came as an unknown outcome.",
+  "guard": "cotal history limit reads the four streams' limits with no limit flag and writes nothing, takes none for each age and count, sets INBOX and DLV with one pair, treats a limit set from none as lower and previews it per sender, agent lifecycle and DM pair under an operator census line, counts the stored copies a lower count removes before their durable delivered them, reports a refusal after an earlier stream changed as partial, and reports an update whose reply never came as an unknown outcome.",
   "command": "pnpm smoke:history-limit",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 58,
+  "minTicks": 59,
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-limit.json",
   "why": [
     "The suite drives the built binary, and its script builds it first, so each mutant is what the suite runs and",
@@ -62,13 +62,14 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "H6 the stored-copy preview counts only copies never delivered",
+      "name": "H6 the stored-copy preview counts delivered copies as not delivered",
       "file": "implementations/cli/src/commands/history-limit.ts",
-      "find": "    return info.num_pending + info.num_ack_pending;",
-      "replace": "    return info.num_ack_pending;",
-      "expectRed": "...gives each stored-copy lifecycle's unacknowledged copies among them, or says it could not read them",
-      "cell": "...gives each stored-copy lifecycle's unacknowledged copies among them, or says it could not read them",
-      "afterRestore": "pnpm --filter cotal-ai... build"
+      "find": "    return info.num_pending;",
+      "replace": "    return info.num_pending + info.num_ack_pending;",
+      "expectRed": "...gives how many of each stored-copy lifecycle's removed copies were never delivered, or says it could not read them",
+      "cell": "...gives how many of each stored-copy lifecycle's removed copies were never delivered, or says it could not read them",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The agent acknowledged its second copy and not its first, so a count of unacknowledged copies is not a newest run."
     },
     {
       "name": "H7 none is not an age",

@@ -591,7 +591,8 @@ not they were delivered or read. A count from `none` to a number, and an age fro
 are lower. In a terminal, lowering any part asks once, and the question comes with what each stream
 held when it was read: each sender on a channel, agent lifecycle, or DM pair with more entries than
 the new count and how many go, and the stream's oldest entry when an age drops. For stored copies it
-gives how many of those copies the agent has not acknowledged, read from its own consumer. For the
+gives how many of those copies the agent's consumer has not delivered yet, and says that copies
+delivered and not acknowledged yet may be among them too. For the
 inbox and DMs it says that copies not passed on yet and DMs not read yet may be among them. The
 preview lists every agent and DM pair, because the operator reads the streams under the space root's
 trust. Raising asks nothing, and entries deleted under an earlier limit do not come back. Scripts and

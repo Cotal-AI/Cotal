@@ -114,14 +114,15 @@ function subjectLabel(kind: HistoryLimitStream, subject: string): string | null 
   return life && `${life.owner}.${life.actor} (lifecycle ${life.lifecycleUid})`;
 }
 
-/** The DLV entries of one lifecycle its agent has not received or not acknowledged, from its own
- *  durable's info; null when that cannot be read. */
+/** The DLV copies of one lifecycle its own durable has not delivered yet, or null when its info
+ *  cannot be read. A delivered copy the agent has not acknowledged is not counted: acknowledgements
+ *  may come in any order, so nothing says which copies those are. */
 async function undeliveredOf(jsm: JetStreamManager, stream: string, subject: string): Promise<number | null> {
   const life = lifecycleOf(subject, "dlv");
   if (!life) return null;
   try {
     const info = await jsm.consumers.info(stream, dlvDurable(life.owner, life.actor, life.lifecycleUid));
-    return info.num_pending + info.num_ack_pending;
+    return info.num_pending;
   } catch { return null; }
 }
 
@@ -133,10 +134,10 @@ async function lowering(jsm: JetStreamManager, row: Row, readAt: Date): Promise<
     const label = subjectLabel(row.kind, subject);
     if (held <= row.to.perSubject || label === null) continue;
     const dropped = held - row.to.perSubject;
-    // The agent's unacknowledged copies are its newest, so those among the oldest ones the count
-    // removes are the ones past what the count keeps.
-    const unacked = row.kind === "dlv" ? await undeliveredOf(jsm, row.stream, subject) : undefined;
-    overCount.push({ subject: label, dropped, ...(unacked !== undefined ? { undelivered: unacked === null ? null : Math.min(dropped, Math.max(0, unacked - row.to.perSubject)) } : {}) });
+    // The durable delivers in stream order, so the copies it has not delivered are the newest, and
+    // those among the oldest ones the count removes are the ones past what the count keeps.
+    const undelivered = row.kind === "dlv" ? await undeliveredOf(jsm, row.stream, subject) : undefined;
+    overCount.push({ subject: label, dropped, ...(undelivered !== undefined ? { undelivered: undelivered === null ? null : Math.min(dropped, Math.max(0, undelivered - row.to.perSubject)) } : {}) });
   }
   overCount.sort((a, b) => a.subject.localeCompare(b.subject));
   return { stream: row.stream, readAt: readAt.toISOString(), overCount, olderThan: age ? formatChatAge(row.to.maxAgeMs) : null, oldestAt: row.info.state.messages > 0 ? row.info.state.first_ts : null };
@@ -150,7 +151,7 @@ function loweringLines(row: Row, snapshot: LoweringSnapshot): string[] {
   const lost = {
     chat: [],
     inbox: ["  These may include entries the delivery daemon has not passed on to their agents yet."],
-    dlv: ["  These may include copies their agents have not acknowledged yet."],
+    dlv: ["  These may also include copies delivered to their agents and not acknowledged yet."],
     dm: ["  These may include DMs their recipients have not read yet."],
   }[row.kind];
   return [
@@ -158,7 +159,7 @@ function loweringLines(row: Row, snapshot: LoweringSnapshot): string[] {
     ...(snapshot.olderThan !== null ? [`  every ${ENTRY[row.kind]} older than ${snapshot.olderThan} (the oldest is from ${snapshot.oldestAt ?? "no time; the stream holds none"})`] : []),
     ...(snapshot.overCount.length ? [
       `  ${dropped} ${ENTRIES[row.kind]} past the new count:`,
-      ...snapshot.overCount.map((item) => `    ${item.subject}: ${item.dropped}${item.undelivered === undefined ? "" : item.undelivered === null ? ", not acknowledged: unknown" : `, ${item.undelivered} not acknowledged`}`),
+      ...snapshot.overCount.map((item) => `    ${item.subject}: ${item.dropped}${item.undelivered === undefined ? "" : item.undelivered === null ? ", not delivered yet: unknown" : `, ${item.undelivered} not delivered yet`}`),
     ] : []),
     ...(snapshot.olderThan !== null || snapshot.overCount.length ? lost : []),
   ];

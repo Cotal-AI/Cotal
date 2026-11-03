@@ -340,8 +340,14 @@ try {
   const [busyUid, lightUid, unboundUid] = [mintLifecycleUid(), mintLifecycleUid(), mintLifecycleUid()];
   for (let i = 0; i < 6; i++) await ojs.publish(dinboxSubject(previewSpace, DEV_OWNER, busy, busyUid), `in ${i}`);
   for (let i = 0; i < 2; i++) await ojs.publish(dinboxSubject(previewSpace, DEV_OWNER, light, lightUid), `in ${i}`);
-  await ojsm.consumers.add(dlvStream(previewSpace), dlvDurableConfig(previewSpace, DEV_OWNER, busy, busyUid));
+  const busyDurable = dlvDurableConfig(previewSpace, DEV_OWNER, busy, busyUid, { ackWaitMs: 600_000 });
+  await ojsm.consumers.add(dlvStream(previewSpace), busyDurable);
   for (let i = 0; i < 6; i++) await ojs.publish(dlvSubject(previewSpace, DEV_OWNER, busy, busyUid), `copy ${i}`);
+  // The agent took its two oldest copies and acknowledged only the newer one, as explicit acks allow.
+  const taken: { ack(): void }[] = [];
+  for await (const m of await (await ojs.consumers.get(dlvStream(previewSpace), busyDurable.durable_name!)).fetch({ max_messages: 2, expires: 5_000 })) taken.push(m);
+  taken[1]?.ack();
+  await onc.flush();
   for (let i = 0; i < 5; i++) await ojs.publish(dlvSubject(previewSpace, DEV_OWNER, unbound, unboundUid), `copy ${i}`);
   const [recipient, sender, rare] = [newIdentity().id, newIdentity().id, newIdentity().id];
   for (let i = 0; i < 5; i++) await ojs.publish(`cotal.${previewSpace}.inst.${DEV_OWNER}.${recipient}.${DEV_OWNER}.${sender}`, `dm ${i}`);
@@ -351,7 +357,8 @@ try {
   const pv = preview.text().split(PROMPT)[0] ?? "";
   check("the preview says it is an operator census", pv.includes("As the space's operator you see every agent and DM pair these streams hold entries for."), pv.slice(-2000));
   check("...lists each inbox lifecycle over the new count with how many go, and no other", pv.includes(`${DEV_OWNER}.${busy} (lifecycle ${busyUid}): 4`) && !pv.includes(`(lifecycle ${lightUid})`) && pv.includes("These may include entries the delivery daemon has not passed on to their agents yet."), pv.slice(-2000));
-  check("...gives each stored-copy lifecycle's unacknowledged copies among them, or says it could not read them", pv.includes(`${DEV_OWNER}.${busy} (lifecycle ${busyUid}): 4, 4 not acknowledged`) && pv.includes(`${DEV_OWNER}.${unbound} (lifecycle ${unboundUid}): 3, not acknowledged: unknown`), pv.slice(-2000));
+  check("the rig: the busy agent holds one copy delivered and not acknowledged, and four not delivered", taken.length === 2 && await ojsm.consumers.info(dlvStream(previewSpace), busyDurable.durable_name!).then((i) => i.num_ack_pending === 1 && i.num_pending === 4), taken.length);
+  check("...gives how many of each stored-copy lifecycle's removed copies were never delivered, or says it could not read them", pv.includes(`${DEV_OWNER}.${busy} (lifecycle ${busyUid}): 4, 2 not delivered yet`) && pv.includes(`${DEV_OWNER}.${unbound} (lifecycle ${unboundUid}): 3, not delivered yet: unknown`) && pv.includes("These may also include copies delivered to their agents and not acknowledged yet."), pv.slice(-2000));
   check("...and each DM pair over the new count, with every DM older than the new age", pv.includes(`to ${DEV_OWNER}.${recipient} from ${DEV_OWNER}.${sender}: 3`) && !pv.includes(`from ${DEV_OWNER}.${rare}`) && /every DM older than 1d \(the oldest is from \d{4}-/.test(pv) && pv.includes("These may include DMs their recipients have not read yet."), pv.slice(-2000));
   preview.write("\r");
   await preview.exited();
