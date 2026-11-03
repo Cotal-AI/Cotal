@@ -49,6 +49,13 @@
  * No error messages, subjects or credentials are emitted by this observer. Diagnostic I/O adds
  * overhead; it is off by default. Context identifies the recognized wrapper, not the timeout cause.
  *
+ * `--put-probe` times real presence writes from inside each seat process: every 250 ms one of up
+ * to eight seats (one per space, round robin) republishes its own presence record, the same put the
+ * heartbeat makes on the same connection and bucket. The report carries p50 / p99 / max per window
+ * half (worst process); a put of 500 ms or more, or a failed one, is a timestamped
+ * `seat-idle-put {json}` row on stderr (at most 50 per process). About four extra puts per second
+ * per process, and off by default.
+ *
  * `--go-trace` emits native broker GC/scavenger lines with parent receipt timestamps. It changes
  * no memory limit or GC policy; use it without `--ram` to avoid the profiler's forced collections.
  * Trace output adds diagnostic overhead and is not an ordinary performance sample.
@@ -69,6 +76,12 @@
  * on stderr. They mark only completed transitions, with `up` and `failed` on
  * `all_seat_starts_settled`.
  *
+ * Every seat process watches its own event loop: the report carries the p99 and maximum loop delay
+ * of the worst seat process, from the ramp to the mid-window sample and over the second half of the
+ * window, and a process whose loop is late by a second or more prints a timestamped
+ * `seat-idle-stall {json}` row on stderr (at most 50 per process). A seat process that stops turning
+ * its loop times out every pending presence write at once; this places that stall in time.
+ *
  * `--server-version X.Y.Z` explicitly selects the expected broker version for a comparison.
  * It defaults to 2.15.1 and refuses a mismatched binary; NATS_SERVER_BIN selects the binary.
  * This changes only the version check, not broker configuration or the workload.
@@ -82,6 +95,7 @@ import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint, LEASE_TTL_MS, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable,
@@ -91,7 +105,7 @@ import {
 import { spaceMessageStreamConfigs, standaloneConnectOpts } from "../src/streams.js";
 import { dialerFor } from "../src/endpoint.js";
 import { pickFreePort } from "./_free-port.js";
-import { readRosterSample, nativeLoadFailures, nativeErrorObserver, type NativeErrorSource } from "./_seat-idle-results.js";
+import { readRosterSample, nativeLoadFailures, nativeErrorObserver, loopStallWatch, putLatencyProbe, type NativeErrorSource, type PutProbeStats } from "./_seat-idle-results.js";
 import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, procMem, teardownOnSignal, type BrokerHeap, type BrokerPart } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
@@ -102,16 +116,18 @@ import { SMOKE_BROKER_TOKEN, brokerHeap, heapSnapshotTop, killAndAwaitExit, proc
 interface SeatSpec { space: string; id: string; name: string; uid: string; creds: string }
 /** One space's delivery daemon. Carries its credential, so it travels over IPC only. */
 interface DaemonSpec { space: string; id: string; creds: string }
-interface SeatJob { kind: "seats"; servers: string; seats: SeatSpec[]; heartbeatMs?: number; watchPresence: boolean; watchChannels: boolean; concurrency: number; traceErrors: boolean }
+interface SeatJob { kind: "seats"; servers: string; seats: SeatSpec[]; heartbeatMs?: number; watchPresence: boolean; watchChannels: boolean; concurrency: number; traceErrors: boolean; putProbe: boolean }
 interface DaemonJob { kind: "daemons"; servers: string; daemons: DaemonSpec[] }
 /** V8's view of a child's memory, in MB: the JS heap in use and what V8 holds for it, memory
  *  outside the heap (Buffers, ArrayBuffers), and compiled code. */
 interface NodeMem { heapUsedMb: number; heapTotalMb: number; externalMb: number; arrayBuffersMb: number; codeMb: number }
 type ChildCmd = { cmd: "sample" | "readcost" | "stop" } | { cmd: "snapshot"; path: string };
+/** A seat process's event-loop delay since its previous sample, in ms. */
+interface LoopDelay { p99Ms: number; maxMs: number }
 /** What a seat child reports when asked to sample. `ages` are the ages (ms) of every same-space
  *  peer's last heartbeat as each seat's roster holds it; `missing` counts peers a seat's roster
  *  should hold and does not. */
-interface SeatSample { up: number; failed: number; errors: number; ages: number[]; missing: number; stale: number; cpuMs: number; rssMb: number; mem: NodeMem }
+interface SeatSample { up: number; failed: number; errors: number; ages: number[]; missing: number; stale: number; cpuMs: number; rssMb: number; mem: NodeMem; loop: LoopDelay; put?: PutProbeStats }
 /** What one on-demand roster read costs, from one seat per space: its latency, and the records and
  *  bytes the broker sends for it (subject + value of every record, not counting framing). */
 interface ReadCost { ms: number[]; msgs: number[]; bytes: number[] }
@@ -152,6 +168,16 @@ const nextJob = <T>(): Promise<T> => new Promise((r) => process.once("message", 
 
 async function runSeats(job: SeatJob): Promise<void> {
   const cpu0 = process.cpuUsage();
+  // The loop delay histogram is reset at every sample, so each report covers the time since the
+  // previous one; the stall watch stamps every stall of a second or more.
+  const loop = monitorEventLoopDelay({ resolution: 20 });
+  loop.enable();
+  const stopStallWatch = loopStallWatch((row) => console.error(`seat-idle-stall ${JSON.stringify({ childPid: process.pid, ...row })}`));
+  const loopDelay = (): LoopDelay => {
+    const d = { p99Ms: loop.percentile(99) / 1e6, maxMs: loop.max / 1e6 };
+    loop.reset();
+    return d;
+  };
   const eps: Array<{ ep: CotalEndpoint; space: string }> = [];
   const bySpace = new Map<string, number>();
   for (const s of job.seats) bySpace.set(s.space, (bySpace.get(s.space) ?? 0) + 1);
@@ -197,6 +223,12 @@ async function runSeats(job: SeatJob): Promise<void> {
   // space (the first this process holds): every seat reading would add K² messages to the window.
   const readers = new Map<string, CotalEndpoint>();
   for (const { ep, space } of eps) if (!readers.has(space)) readers.set(space, ep);
+  // The probe republishes a seat's own record through the endpoint's private publisher: the
+  // heartbeat's put, on the heartbeat's connection, timed from this event loop.
+  const probe = job.putProbe && readers.size ? putLatencyProbe(
+    [...readers.values()].slice(0, 8).map((ep) => () => (ep as unknown as { publishPresence(): Promise<void> }).publishPresence()),
+    (row) => console.error(`seat-idle-put ${JSON.stringify({ childPid: process.pid, ...row })}`),
+  ) : undefined;
   for (;;) {
     const cmd = await nextJob<ChildCmd>();
     if (cmd.cmd === "stop") break;
@@ -229,8 +261,11 @@ async function runSeats(job: SeatJob): Promise<void> {
     const cpu = process.cpuUsage(cpu0);
     // Every seat's view, but never more ages than one IPC message should carry.
     const step = Math.max(1, Math.ceil(ages.length / 200_000));
-    await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / MB, mem: nodeMem() } satisfies SeatSample });
+    await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / MB, mem: nodeMem(), loop: loopDelay(), ...(probe ? { put: probe.take() } : {}) } satisfies SeatSample });
   }
+  probe?.stop();
+  stopStallWatch();
+  loop.disable();
   await Promise.all(eps.map(({ ep }) => ep.stop().catch(() => {})));
   if (observation) console.error(`seat-idle-error-summary ${JSON.stringify({ childPid: process.pid, ...observation.summary() })}`);
   await ipcSend({ stopped: true });
@@ -317,6 +352,7 @@ if (SUBLIST_CACHE !== "on" && SUBLIST_CACHE !== "off")
 const RAM = argv.includes("--ram");
 const GO_TRACE = argv.includes("--go-trace");
 const TRACE_ERRORS = argv.includes("--trace-errors");
+const PUT_PROBE = argv.includes("--put-probe");
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
@@ -406,6 +442,12 @@ const startChild = (job: SeatJob | DaemonJob, onMessage: (m: Record<string, unkn
   child.send(job);
   return child;
 };
+/** Resolves when the child has exited, or after `ms`. */
+const exited = (child: ChildProcess, ms: number): Promise<void> => new Promise((resolve) => {
+  if (child.exitCode !== null || child.signalCode !== null) return resolve();
+  const timer = setTimeout(resolve, ms);
+  child.once("exit", () => { clearTimeout(timer); resolve(); });
+});
 const ask = (child: ChildProcess, cmd: ChildCmd, key: string): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
   const on = (m: Record<string, unknown>) => { if (key in m) { child.off("message", on); resolve(m); } };
   child.on("message", on);
@@ -512,7 +554,7 @@ try {
     if (!mine.length) continue;
     let done!: (m: Record<string, unknown>) => void;
     allUp.push(new Promise((r) => { done = r; }));
-    seatKids.push(startChild({ kind: "seats", servers: SERVERS, seats: mine, watchPresence: WATCH_PRESENCE, watchChannels: WATCH_CHANNELS, concurrency: CONCURRENCY, traceErrors: TRACE_ERRORS, ...(HEARTBEAT ? { heartbeatMs: Number(HEARTBEAT) } : {}) }, (m) => {
+    seatKids.push(startChild({ kind: "seats", servers: SERVERS, seats: mine, watchPresence: WATCH_PRESENCE, watchChannels: WATCH_CHANNELS, concurrency: CONCURRENCY, traceErrors: TRACE_ERRORS, putProbe: PUT_PROBE, ...(HEARTBEAT ? { heartbeatMs: Number(HEARTBEAT) } : {}) }, (m) => {
       if (typeof m.progress === "number") {
         started.set(p, m.progress);
         console.error(`  … ${[...started.values()].reduce((a, b) => a + b, 0)}/${seats.length} seats started (${((performance.now() - tRamp) / 1000).toFixed(0)}s)`);
@@ -580,6 +622,7 @@ try {
   row("subscription cache", SUBLIST_CACHE);
   row("broker Go trace", GO_TRACE ? "on (diagnostic overhead)" : "off");
   row("endpoint error trace", TRACE_ERRORS ? "on (diagnostic overhead; 200 rows per child)" : "off");
+  row("presence put probe", PUT_PROBE ? "on (about 4 extra puts per second per process; 50 rows per child)" : "off");
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_PRESENCE && WATCH_CHANNELS ? "on" : "OFF"} (requested ${WATCH_CHANNELS ? "on" : "OFF"})`);
   row("setup (spaces + provisioning) (s)", setupS);
@@ -622,6 +665,15 @@ try {
   row("box CPU busy (cores of " + availableParallelism() + ")", ((box1.busy - box0.busy) / (box1.total - box0.total)) * availableParallelism());
   row("box MemAvailable (MB)", memAvail);
   rows.push(["", ""]);
+  const worstLoop = (xs: SeatSample[], of: (d: LoopDelay) => number) => n2(maxOf(xs.map((s) => of(s.loop))));
+  row("seat event-loop delay p99 / max (ms), ramp to mid-window, worst process", `${worstLoop(mid, (d) => d.p99Ms)} / ${worstLoop(mid, (d) => d.maxMs)}`);
+  row("seat event-loop delay p99 / max (ms), second half of window, worst process", `${worstLoop(end, (d) => d.p99Ms)} / ${worstLoop(end, (d) => d.maxMs)}`);
+  if (PUT_PROBE) {
+    const worstPut = (xs: SeatSample[], of: (p: PutProbeStats) => number) => n2(maxOf(xs.map((s) => s.put ? of(s.put) : 0)));
+    const puts = (xs: SeatSample[]) => xs.reduce((a, s) => a + (s.put?.n ?? 0), 0), putFails = (xs: SeatSample[]) => xs.reduce((a, s) => a + (s.put?.failed ?? 0), 0);
+    row("presence put probe p50 / p99 / max (ms), ramp to mid-window, worst process", `${worstPut(mid, (p) => p.p50Ms)} / ${worstPut(mid, (p) => p.p99Ms)} / ${worstPut(mid, (p) => p.maxMs)} (${puts(mid)} puts, ${putFails(mid)} failed)`);
+    row("presence put probe p50 / p99 / max (ms), second half of window, worst process", `${worstPut(end, (p) => p.p50Ms)} / ${worstPut(end, (p) => p.p99Ms)} / ${worstPut(end, (p) => p.maxMs)} (${puts(end)} puts, ${putFails(end)} failed)`);
+  }
   row("peer heartbeat age mid-window p50 / p99 / max (ms)", `${n2(pct(agesMid, 50))} / ${n2(pct(agesMid, 99))} / ${n2(maxOf(agesMid))}`);
   row("peer heartbeat age at end p50 / p99 / max (ms)", `${n2(pct(agesEnd, 50))} / ${n2(pct(agesEnd, 99))} / ${n2(maxOf(agesEnd))}`);
   row("roster entries missing at end", `${missingEnd} of ${expectedPeers}`);
@@ -707,7 +759,9 @@ try {
 
   startTeardown();
   stopping = true;
-  await Promise.all([...seatKids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").catch(() => undefined)));
+  // A child that answered stop exits on its own; give it up to 15 s so what Node writes at exit
+  // (a CPU profile under --cpu-prof) is complete before the teardown below kills what remains.
+  await Promise.all([...seatKids, daemon].map((c) => ask(c, { cmd: "stop" }, "stopped").then(() => exited(c, 15_000)).catch(() => undefined)));
 } catch (e) {
   console.error("  ✗ seat-idle-load threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;

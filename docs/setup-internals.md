@@ -255,9 +255,16 @@ the umbrella (the
 `fixed` changeset group keeps them lockstep), so a version-skewed payload can never be published; `web`
 also emits `dist/web/vendor/vendor-manifest.json` (name/version/license/sha512) as the auditable
 inventory of its vendored browser libs (marked/DOMPurify ship as opaque `dist` bytes, not runtime deps).
+Every connector bundle reads the same `cotal_docs` data (`docs-bundle.bin`, `docs-index.bin`,
+`SEEDED_SHARED_FILES`) from beside itself, so the prepack ships one copy of each in
+`seeded-connectors/_shared/` and removes the per-connector copies. It refuses copies that differ.
+`_shared/placements.json` records each file's sha256 and every path it was removed from.
 `seed/paths.ts:shippedSourceDir` resolves the live `extensions/<pkg>` dir in a
 source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install. The reconcile copies
-that payload into the durable store `seed/store/<version>/<name>`. The version is validated as one safe
+that payload into the durable store `seed/store/<version>/<name>`, putting the shared files back at
+every recorded path (`seed/shared.ts`). It refuses a missing or malformed manifest, a path outside the
+payload, or a shared file whose bytes are not the recorded ones. `cotal update` compares each installed
+copy of those files with the shared one. The version is validated as one safe
 path segment, and the destination is checked to stay inside the store before anything is written. `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
 junction-links each `@cotal-ai/*` peer to the binary's own copy and relinks every other installed

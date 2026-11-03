@@ -912,10 +912,11 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
   // half of the compiler, and a stated breach wraps no native error to hang a cause on.
   ok("a stated breach carries no ReferenceError diagnosis and wraps no cause",
     !(e as Error).message.includes("zero free identifiers") && (e as EngineFault).cause === undefined, String(e).slice(0, 300));
-  // The entry HAS begun by then, and settles failed: the refusal happens inside the scope, which is
-  // exactly where the walker evaluates that argument.
+  // The entry HAS begun by then: the refusal happens inside the scope, which is exactly where the
+  // walker evaluates that argument. It settles NOTHING (#3215): an engine fault is not the scope's
+  // outcome, and a recorded one would replay as a failure a program's `catch` can swallow.
   const entries = h.run.journal.entries();
-  ok("the scope's entry was begun and settled failed, not skipped", entries.length === 1 && entries[0]?.kind === "fanOut" && entries[0]?.status === "failed", entries.map((x) => `${x.kind}/${x.status}`));
+  ok("the scope's entry was begun and left pending, not skipped and not settled", entries.length === 1 && entries[0]?.kind === "fanOut" && entries[0]?.state === "pending", entries.map((x) => `${x.kind}/${x.state}/${x.status}`));
 }
 
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
@@ -2959,6 +2960,19 @@ let n = 1;
     );
     ok("an unknown message kind is refused, not read as the run's answer", odd instanceof Error, JSON.stringify(odd).slice(0, 140));
     ok("and the refusal names the kind and says the two sides disagree", String((odd as Error).message).includes("trace") && String((odd as Error).message).includes("disagree"), String((odd as Error).message).slice(0, 120));
+    // THE BRIDGE'S SIDE OF THE SAME AGREEMENT (#3216). Its listener runs on this process's own
+    // stack, so a throw there was uncaught and ended the host with every run on it, before any cell
+    // below could grade it. The thread never answers, so only the host refusing the run ends it.
+    for (const [runId, named] of [["odd-bridge", "hello"], ["odd-bind", "bind 99"]] as const) {
+      const bridged = await caught(() =>
+        runInWorker(
+          { source: `log("x", 1);\n`, module: `(ctx) => async () => { await ctx.fuel(); return 1; }`, runId, handler: "bridged" },
+          { entry: new URL("./_odd-bridge-entry.mjs", import.meta.url), bridge: { handler: new SimHandler({}), store: { append: async () => {} } } },
+        ).done,
+      );
+      ok(`a thread's unexpected bridge message (${named}) fails its own run, and this process lives to say so`, bridged instanceof Error, String(bridged).slice(0, 140));
+      ok(`and that refusal names ${named} and says the two sides disagree`,String((bridged as Error).message).includes(named) && String((bridged as Error).message).includes("disagree"), String((bridged as Error).message).slice(0, 160));
+    }
 
     const workerData = [...new Set([...hostSrc.matchAll(/workerData: \{ ([^}]+) \}/g)].flatMap((m) => String(m[1]).split(",").map((x) => x.trim())))].sort();
     ok(`and the host hands the thread exactly the ${WORKER_DATA.length} things this table cells`, JSON.stringify(workerData) === JSON.stringify(WORKER_DATA), { declared: WORKER_DATA, found: workerData });
@@ -3167,6 +3181,76 @@ let n = 1;
     slotOk && JSON.stringify(pLogs) === '[["branch"],["done"]]',
     { completed: slotOk, logs: pLogs },
   );
+}
+
+// ---- 22e) a scope's failure is caught as the same thing live and on resume (#3215) --------------
+//
+// An `Error` failing a scope is caught as `{ code: "L4000", kind: "host" }` live, and the record
+// said `scope-fault`, so a resume bound a different kind and the `notify` carrying it diverged
+// (L5001) on both engines. And a native ReferenceError in a branch, which the catch head turns into
+// an uncatchable EngineFault, was settled first as an ordinary failure, so the resume of a run that
+// had unwound caught a recorded fault and carried on.
+{
+  const P = `const a = await spawn("a")
+let seen = null
+try { await parallel({ x: async () => () => 1 }, { name: "p" }) } catch (e) { seen = e }
+log("caught", seen)
+await notify([a], { decision: "d", outcome: seen.kind })
+`;
+  const M = transform(P).module;
+  const HANDLER = { module: SIM_HANDLER, config: {} };
+  const liveLogs: unknown[][] = [];
+  const live = await runInWorker({ source: P, module: M, runId: "sh-t", handler: HANDLER }, { entry: WORKER_ENTRY, onLog: (l) => liveLogs.push([...l.values]) }).done;
+  const caughtLive = liveLogs.find((l) => l[0] === "caught")?.[1] as { code?: string; kind?: string } | undefined;
+  ok("a refused branch value is caught as L4000 host in a real thread, and the scope records that kind",
+    live.ok === true && caughtLive?.code === "L4000" && caughtLive?.kind === "host"
+      && live.entries.find((e) => e.kind === "parallel")?.error?.kind === "host",
+    { ok: live.ok, caughtLive, recorded: live.ok ? live.entries.find((e) => e.kind === "parallel")?.error : undefined });
+  const got = live as Extract<typeof live, { ok: true }>;
+  const backLogs: unknown[][] = [];
+  const back = await runInWorker(
+    { source: P, module: M, runId: "sh-t", handler: HANDLER, pins: got.pins, entries: JSON.parse(JSON.stringify(got.entries)) as JournalEntry[] },
+    { entry: WORKER_ENTRY, onLog: (l) => backLogs.push([...l.values]) },
+  ).done;
+  ok("and the resume of unchanged source over the JSON round-tripped journal binds the same and completes",
+    back.ok === true && JSON.stringify(backLogs) === JSON.stringify(liveLogs),
+    { ok: back.ok, live: liveLogs, back: backLogs, failure: back.ok ? undefined : JSON.stringify(back).slice(0, 160) });
+
+  // The emitter-bug shape, written by hand: a branch reading a name nothing bound.
+  const R = `let seen = null
+try { await parallel({ x: async () => 1 }, { name: "p" }) } catch (e) { seen = e }
+log("caught", seen)`;
+  const RM = `(__ctx) => async () => {
+let __t0, __t1;
+await __ctx.fuel();
+let seen = null;
+try {
+(await __ctx.fuel(), await __ctx.await((await __ctx.effect("parallel", [__ctx.born({ ["x"]: async (...__ta) => {
+await __ctx.fuel();
+return __unbound_sh__;
+} }), __ctx.born({ ["name"]: "p" })], {}))));
+}
+catch (__t0) {
+const e = __ctx.caught(__t0);
+((__t1 = e), (seen = __t1), __t1);
+}
+(await __ctx.free("log", ["caught", seen]));
+}`;
+  const handler = new SimHandler({});
+  const pins = resolvePins({ runId: "sh-r" }, handler.now(), ENGINE_LANGUAGE_VERSION);
+  const journal = new Journal({ run: "sh-r" });
+  const unwound = await caught(() => runOnEngine(R, RM, { runId: "sh-r", handler, journal, pins, evaluate: plainly }));
+  const scope = journal.entries().find((e) => e.kind === "parallel");
+  ok("a ReferenceError in a branch unwinds the run as an EngineFault, and the scope settles nothing",
+    (unwound as Error)?.name === "EngineFault" && scope?.state === "pending",
+    { unwound: (unwound as Error)?.name, scope: scope === undefined ? undefined : `${scope.state}/${scope.status}/${scope.error?.kind}` });
+  const resumedLogs: unknown[][] = [];
+  const resumed = await caught(() => resumeOnEngine(R, RM, new Journal({ run: "sh-r", entries: JSON.parse(JSON.stringify(journal.entries())) as JournalEntry[] }), {
+    runId: "sh-r", handler: new SimHandler({}), pins, evaluate: plainly, onLog: (l) => resumedLogs.push([...l.values]),
+  }));
+  ok("so its resume re-enters the scope and unwinds the same way, rather than catching a recorded fault",
+    (resumed as Error)?.name === "EngineFault" && resumedLogs.length === 0,
+    { resumed: (resumed as Error)?.name, logs: resumedLogs });
 }
 
 // ---- 23) the mutation config, audited against this suite's own cells -----------------------------

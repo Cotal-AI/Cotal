@@ -648,6 +648,17 @@ export function mirrorJcodeCredentials(home: string, sources = credentialSources
   for (const { entry, values } of cursorStates) publishCursorState(home, entry.destinationRelative, values);
 }
 
+/** Remove every credential copy this home's mirror can hold, each through the same pinned-parent
+ * unlink as the mirror's own cleanup. Call it only once nothing of the lifecycle that mirrored them
+ * can still read them; the next launch mirrors afresh (#5641). The inventory also names prior
+ * managed destinations, so a copy whose source has since gone is removed too. */
+export function removeJcodeCredentials(home: string, sources = credentialSources()): number {
+  let removed = 0;
+  for (const entry of jcodeCredentialMirrorInventory(home, sources))
+    if (removeCredentialMirror(home, entry.destinationRelative)) removed++;
+  return removed;
+}
+
 export interface ShortSocketHome {
   /** A short alias to the managed JCODE_HOME passed to the SDK, keeping its hard-coded socket under 100 bytes. */
   jcodeHome: string;

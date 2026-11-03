@@ -151,7 +151,8 @@ control request. Connection or authorization failure is an error, not an empty c
 `topology`; `activity` remains the feed spelling. The terminal cycles available views with `f`.
 Roster and waiting rows show reported state without inventing blocked duration. Channel counts
 keep retained messages separate from observed arrivals. Topology displays broker-sourced live
-patterns and durable channels, not task dependencies or permission grants. Missing or unreadable
+patterns and durable channels, not task dependencies or permission grants. A durable family
+membership such as `team.>` links to each durable-class channel under it. Missing or unreadable
 membership is explicit, never an empty complete graph. Long identities wrap without clipping.
 
 The authenticated observer remains narrowed to channel traffic. Its DM view refuses instead of

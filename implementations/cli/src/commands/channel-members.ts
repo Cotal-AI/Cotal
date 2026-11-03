@@ -1,4 +1,4 @@
-import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
+import { CotalEndpoint, durableCovers, subjectMatches, type DeliveryClass, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
@@ -25,16 +25,24 @@ export async function channelMembers(values: Values, channel: string, presentati
     channels: [], consume: false, registerPresence: false, watchPresence: true,
   });
   const target = { space: connection.space, channel };
-  const resultOf = (snapshot: MembershipSnapshot): Members => {
+  // A family follower (`team.>`) holds stored copies only on the durable-class channels under it.
+  const resultOf = (snapshot: MembershipSnapshot, stored: boolean): Members => {
     const names = new Map(ep.getRoster().map((peer) => [peer.card.id, peer.card.name]));
     return {
       ...target, asOf: snapshot.asOf ?? null,
       members: snapshot.members.flatMap((member) => {
         const live = member.live.some((pattern) => subjectMatches(pattern, channel));
-        const durable = member.durable.includes(channel);
+        const durable = durableCovers(member.durable, channel, stored);
         return live || durable ? [{ id: member.id, name: names.get(member.id) ?? null, live, durable, observedAt: member.observedAt }] : [];
       }).sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)),
     };
+  };
+  // The class the last census was read under, which no membership change reports.
+  let readClass: DeliveryClass | undefined;
+  const read = async (): Promise<Members> => {
+    const [snapshot, cls] = await Promise.all([ep.readMembership(), ep.deliveryClassFresh(channel)]);
+    readClass = cls;
+    return resultOf(snapshot, cls === "durable");
   };
   let streaming = false;
   let stopped = false;
@@ -97,7 +105,7 @@ export async function channelMembers(values: Values, channel: string, presentati
     reading = (async () => {
       while (pending && !stopped) {
         pending = false;
-        const next = resultOf(await ep.readMembership());
+        const next = await read();
         if (stopped) continue;
         // The first read that answers after an interruption reports the gap and the census as it is now.
         if (interruption) {
@@ -122,9 +130,10 @@ export async function channelMembers(values: Values, channel: string, presentati
   // A heartbeat changes no census, only the feed's `asOf` (reported in a later gap record), so it is
   // copied into the last census instead of costing a bucket re-read (#4904). After an interruption
   // the next change of any kind is read back in full, so the gap is reported against a fresh census.
+  // So is a heartbeat that finds the channel's class moved: whether a family row counts turns on it.
   const onMembership = (change: MembershipChange) => {
     if (change.type === "replayed") return;
-    if (change.type === "heartbeat" && change.update && last && !interruption && !reading) {
+    if (change.type === "heartbeat" && change.update && last && !interruption && !reading && ep.channelDeliveryClass(channel) === readClass) {
       last = { ...last, asOf: change.asOf ?? null };
       return;
     }
@@ -138,7 +147,7 @@ export async function channelMembers(values: Values, channel: string, presentati
   });
   try {
     await ep.start();
-    last = resultOf(await ep.readMembership());
+    last = await read();
     if (values.follow) {
       streaming = true;
       process.once("SIGINT", interrupt);

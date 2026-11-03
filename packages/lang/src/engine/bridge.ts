@@ -311,8 +311,16 @@ export interface BridgeHost {
  * the thread (where the journal lives) and its durable append comes back through `store.append`
  * on this side; `signal` is a mirror the thread's cancellations flip. The host never blocks —
  * every branch here either answers from a synchronous clock or awaits work it already owns.
+ *
+ * A thread that disagrees with this host about the protocol is reported to `disagree`, never
+ * thrown: the listener runs on the host's own stack, where a throw is uncaught and ends the whole
+ * process with every run on it (#3216). The caller fails the one run whose thread spoke it.
  */
-export function serviceBridge(port: MessagePort, seam: { readonly handler: EffectHandler; readonly store: JournalStore }): BridgeHost {
+export function serviceBridge(
+  port: MessagePort,
+  seam: { readonly handler: EffectHandler; readonly store: JournalStore },
+  disagree: (e: Error) => void,
+): BridgeHost {
   const clock = new SharedArrayBuffer(CLOCK_BYTES);
   const flag = new Int32Array(clock, 0, 1);
   const value = new Float64Array(clock, 8, 1);
@@ -423,13 +431,16 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
     }
     if (m.kind === "bind-answer") {
       const b = binds.get(m.bseq);
-      if (b === undefined) throw new Error(`cotal-lang effect bridge: the thread answered bind ${m.bseq}, which this host never asked`);
+      if (b === undefined) {
+        disagree(new Error(`cotal-lang effect bridge: the thread answered bind ${m.bseq}, which this host never asked; the thread and the host disagree about the boundary`));
+        return;
+      }
       binds.delete(m.bseq);
       if (m.error === undefined) b.resolve();
       else b.reject(rehydrate(m.error));
       return;
     }
-    throw new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)})`);
+    disagree(new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)}); the thread and the host disagree about the boundary`));
   });
 
   return {

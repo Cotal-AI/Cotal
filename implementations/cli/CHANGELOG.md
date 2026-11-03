@@ -1,5 +1,208 @@
 # @cotal-ai/cli
 
+## 0.136.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.1
+  - @cotal-ai/workspace@0.136.1
+
+## 0.136.0
+
+### Patch Changes
+
+- Updated dependencies [f5251ae]
+  - @cotal-ai/core@0.136.0
+  - @cotal-ai/workspace@0.136.0
+
+## 0.135.21
+
+### Patch Changes
+
+- Updated dependencies [a259571]
+  - @cotal-ai/core@0.135.21
+  - @cotal-ai/workspace@0.135.21
+
+## 0.135.20
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.20
+  - @cotal-ai/workspace@0.135.20
+
+## 0.135.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.19
+  - @cotal-ai/workspace@0.135.19
+
+## 0.135.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.18
+  - @cotal-ai/workspace@0.135.18
+
+## 0.135.17
+
+### Patch Changes
+
+- Updated dependencies [55e8d0b]
+  - @cotal-ai/workspace@0.135.17
+  - @cotal-ai/core@0.135.17
+
+## 0.135.16
+
+### Patch Changes
+
+- 9513479: When the user-auth service fails its readiness wait, the error now always carries the provider's reason and names the pidfile the wait read. Before, if a pre-upgrade pidfile spelling appeared beside the record during the wait, an "ambiguous auth-service record" error replaced the reason. If the record was renamed during the wait, the message named a file the wait never read.
+- @cotal-ai/core@0.135.16
+  - @cotal-ai/workspace@0.135.16
+
+## 0.135.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.15
+  - @cotal-ai/workspace@0.135.15
+
+## 0.135.14
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.14
+  - @cotal-ai/workspace@0.135.14
+
+## 0.135.13
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.13
+  - @cotal-ai/workspace@0.135.13
+
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.12
+  - @cotal-ai/workspace@0.135.12
+
+## 0.135.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.11
+  - @cotal-ai/workspace@0.135.11
+
+## 0.135.10
+
+### Patch Changes
+
+- Updated dependencies [985dbc5]
+  - @cotal-ai/core@0.135.10
+  - @cotal-ai/workspace@0.135.10
+
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+  - @cotal-ai/workspace@0.135.9
+
+## 0.135.8
+
+### Patch Changes
+
+- Updated dependencies [0c09e47]
+  - @cotal-ai/core@0.135.8
+  - @cotal-ai/workspace@0.135.8
+
+## 0.135.7
+
+### Patch Changes
+
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+  - @cotal-ai/workspace@0.135.7
+
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- 8eebff8: `cotal ext add` no longer fails with `EEXIST` on `node_modules/.bin` when the new extension installs a bin link that the extensions prefix already has, for example a dependency shared with a seeded connector. Node's `fs.cpSync` refuses to copy a symlink onto an existing one, so the add now removes each link it is about to replace before it promotes the staged install.
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- ec531ec: A space catalog entry can now say a space is temporarily unavailable, with `"unavailable": "<reason>"` in place of its registration. The CLI keeps the registration it already holds for that space, and commands for the other spaces in the catalog keep working. A command that targets the unavailable space refuses with `DEPENDENCY_UNAVAILABLE` and the catalog's reason, and `cotal sync` lists it under `unavailable`. Before this, a catalog had to fail as a whole, which stopped commands for every space in it.
+- b3b4bf1: The `cotal-ai` package ships the connectors' docs data once instead of once per connector, which cuts the packed tarball from 16.8 MB to 6.7 MB. The seed puts a copy back in every installed connector, and `cotal update` verifies those copies against the shipped one.
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+
+## 0.135.0
+
+### Minor Changes
+
+- a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
+  
+  `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
+  
+  An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
+  
+  `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+- 21f937e: Channel history has no age limit by default again. A space keeps a channel post until its sender has posted 1000 newer ones on that channel, as it did up to 0.133.13, and an age applies only when an operator sets one with `cotal history limit`.
+  
+  An upgrade no longer moves or deletes posts. 0.134.0 moved every existing space to a 30-day limit at its first `cotal up`, which deleted every channel post older than 30 days. That move is gone: `cotal up` changes no space's limit, and a space that 0.134.0 already moved keeps its 30-day limit until an operator changes it. `cotal up`, `team boot` and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`. `@cotal-ai/core` no longer exports `LEGACY_CHAT_HISTORY`, `isLegacyChatHistory` or `reconcileChatHistory`, and `setupSpaceStreams` returns nothing; it still refuses a chat stream whose settings other than the limit are not canonical.
+
+### Patch Changes
+
+- a26360f: `cotal meshes rm` now resolves all requested space names from a single registry load, removes the accepted records in one `removeMeshes` batch call, and reads the `current-mesh` pointer once for the batch instead of once per name. Each completed removal is reported and its selection cleared before the next removal, so a later filesystem failure cannot hide earlier progress.
+- 1279537: `cotal up` names the attempt when a recovered listener fails its NATS INFO read. The read used to report every failure as a restore listener failure, so an ordinary resume that timed out printed `restore listener INFO timed out` with no attempt id. It now prints the same `<kind> attempt <id>` label as the rest of the listener proof, for example `resume attempt <id> listener INFO timed out`.
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+  - @cotal-ai/workspace@0.135.0
+
 ## 0.134.0
 
 ### Minor Changes

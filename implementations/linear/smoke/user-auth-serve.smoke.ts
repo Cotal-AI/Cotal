@@ -8,7 +8,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  contractDigest, invokeCommand, mintCreds, newIdentity, parseServiceAuthorityRequest, resolveService,
+  EpEnvelopeError, contractDigest, invokeCommand, mintCreds, newIdentity, parseServiceAuthorityRequest, resolveService,
   setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest,
 } from "@cotal-ai/core";
 import { startHostedAuthFixture, MemoryStore } from "../../auth/smoke/_hosted-auth-fixture.js";
@@ -120,7 +120,6 @@ try {
   const remedy = /`cotal service-endpoint approve ([^\s`]+) --caller-ceiling ([^\s`]+) --space ([^\s`]+)`, then repeat the same serve command/.exec(refused.remedy ?? "");
   assert.ok(remedy, `the remedy names the approve command: ${refused.remedy}`);
   assert.deepEqual(remedy.slice(1), [proposalId, LINEAR_CAPABILITY, a.space], "the approve command names this proposal, the Linear capability and this space");
-  const capabilities = LINEAR_COMMANDS.map(command => ({ endpoint, command, instanceId: request.instanceId, instanceOnly: true }));
   const approved = (await serviceEndpointHostCall(dir, remedy[3]!, ["approve", remedy[1]!], { "caller-ceiling": remedy[2]! })).answer;
   assert.equal(approved.state, "approved");
   if (approved.state !== "approved") throw new Error("approval");
@@ -135,10 +134,6 @@ try {
   assert.ok(seen.some(r => r.operation === "ready"), "ready is acknowledged through the native door");
   const registered = (await provider.serviceEndpointAuthority!({ store: clientStore, dir, request })).result;
   assert.equal(registered.state, "registered"); if (registered.state !== "registered") throw new Error("register replay");
-  const granted = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
-    grantee: { owner, actor: "caller", lifecycleUid: caller.lifecycleUid! }, service: { endpoint, instanceId: request.instanceId, approvalDigest: registered.witness.approvalDigest },
-    capabilities, expectedPolicyRevision: 0 } });
-  assert.equal(granted.state, "granted");
   const dial = async (actor: string) => {
     const response = await fetch(`${service!.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` }, body: JSON.stringify({ idpToken: jwt(), actor }) });
     assert.equal(response.status, 200);
@@ -148,6 +143,14 @@ try {
       authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(token)] });
     conns.push(nc); return nc;
   };
+  // A caller connected before its grant keeps the permissions it authenticated with (#5668).
+  const early = await dial("caller");
+  const grantCall = await serviceEndpointHostCall(dir, a.space, ["grant", proposalId], { to: `${owner}.caller`, lifecycle: caller.lifecycleUid!, commands: LINEAR_COMMANDS.join(",") });
+  assert.equal(grantCall.answer.state, "granted");
+  assert.match(grantCall.note ?? "", new RegExp(`connection ${owner}\\.caller opened before this grant .*must reconnect`), "the grant result says a connected grantee must reconnect");
+  const stale = await resolveService(early, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 }).then(() => undefined, (e: unknown) => e);
+  assert.ok(stale instanceof EpEnvelopeError && stale.code === "permission-denied" && stale.outcome === "not-executed", String(stale));
+  assert.match(stale.message, /granted after this connection authenticated.*reconnect and retry/, "the connected caller is told to reconnect, not that it holds no grant");
   const nc = await dial("caller");
   const target = await resolveService(nc, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 });
   const result = await invokeCommand(nc, a.space, target, "call-tool", { name: "echo", arguments: {}, inventoryDigest: "fixture-inventory" }, { deadlineMs: 3000 });
@@ -203,7 +206,7 @@ try {
     ctl.abort(); await running; running = undefined;
     assert.equal(closedUpstreams, 3, "restart stop closes its upstream");
   }
-  console.log("LINEAR HOSTED SERVE: approval refusal names its proposal and approve command, the printed approval, approval replay, native ready, exact caller discovery/invocation, ungranted refusal, account pin, stop and same-instance restart passed");
+  console.log("LINEAR HOSTED SERVE: approval refusal names its proposal and approve command, the printed approval, approval replay, native ready, exact caller discovery/invocation, the reconnect remedy for a caller connected before its grant, ungranted refusal, account pin, stop and same-instance restart passed");
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   ctl.abort(); await running?.catch(() => {});
