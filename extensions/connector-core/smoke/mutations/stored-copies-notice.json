@@ -59,8 +59,8 @@
     {
       "name": "S5 the empty focus reply drops the notice",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "[connectionWarning, storedNote, scope",
-      "replace": "[connectionWarning, scope",
+      "find": "[connectionWarning, storedNote, pulls",
+      "replace": "[connectionWarning, pulls",
       "expectRed": "in focus mode the next read carries the notice once",
       "cell": "in focus mode the next read carries the notice once"
     },
