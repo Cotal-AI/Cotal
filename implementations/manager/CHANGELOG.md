@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.135.14
+
+### Patch Changes
+
+- e3d3c6e: A clean manager stop that starts while the broker connection is reconnecting now keeps trying to release its liveness lease for up to 5 s, instead of giving up after one 2 s read. An immediate same-root restart no longer waits out the rest of the lease TTL after a short outage. When the broker still does not answer, the stop prints the reason and leaves the lease to its TTL.
+- @cotal-ai/core@0.135.14
+  - @cotal-ai/seat@0.135.14
+  - @cotal-ai/workspace@0.135.14
+
 ## 0.135.13
 
 ### Patch Changes
