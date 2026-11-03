@@ -154,7 +154,7 @@ try {
   for (const ep of [mgr, daemon]) { ep.on("error", () => {}); await ep.start(); endpoints.push(ep); }
   await daemon.startPlane3((owner, lifecycleUid) => daemon.aclForOwner(owner, lifecycleUid));
   const posterId = newIdentity(), posterUid = mintLifecycleUid();
-  const joinChannels = ["elsewhere", "held", "full", "capped", "gone"];
+  const joinChannels = ["elsewhere", "held", "full", "fam.full", "capped", "gone"];
   const posterCreds = await provisionAgent(mgr, auth, posterId, { allowSubscribe: joinChannels, allowPublish: joinChannels, subscribe: [], lifecycleUid: posterUid });
   const poster = new CotalEndpoint({ space: S, servers: authBroker.servers, creds: posterCreds, channels: [], consume: false, lifecycleUid: posterUid, watchPresence: false, registerPresence: false, card: { id: posterId.id, name: "poster", role: "agent", kind: "agent" } });
   poster.on("error", () => {});
@@ -209,6 +209,13 @@ try {
   await wait(300);
   const fullJoin = await join("full", await pending("full", fullCursor));
   check("a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts", fullJoin.open && fullJoin.copies === 2, fullJoin);
+  // The same on a family row (#5639): its window reads every channel under the family.
+  const familyCursor = await lastSeq();
+  await poster.multicast("other 4", { channel: "elsewhere" });
+  for (const i of [1, 2]) await poster.multicast(`fam ${i}`, { channel: "fam.full" });
+  await wait(300);
+  const familyJoin = await join("fam.>", await pending("fam.>", familyCursor));
+  check("a family join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts", familyJoin.open && familyJoin.copies === 2, familyJoin);
   // Past the count: the sender's two oldest posts in the window are evicted.
   const capCursor = await lastSeq();
   for (const i of [1, 2, 3, 4]) await poster.multicast(`capped ${i}`, { channel: "capped" });
