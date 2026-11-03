@@ -6,7 +6,8 @@
 // pass/fail grid per scenario, the scenarios the baseline already passes (they prove nothing about
 // the revised text), the runs that ended in an error, and the counts per run. A run that recorded an
 // error, such as a sandbox it could not remove, fails whatever its checks say. Each get-help brief the
-// check counted is quoted in full, because the check finds it by keywords.
+// check counted is quoted in full, because the check finds it by keywords, and so is each one-job spawn
+// prompt it counted, because it reads the instruction to stop by pattern.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +57,11 @@ const failing = scenarios.flatMap((s) => harnesses.filter((h) => cell("revised",
 const briefs = [...runs].sort().filter(([k, r]) => k.endsWith("|get-help") && r.pass).flatMap(([k, r]) =>
   (r.checks?.[0]?.detail?.briefs ?? []).map((b) => `### ${k.split("|").slice(0, 2).join(" ")}, #${b.channel} at ${b.ts}\n\n${b.text.split("\n").map((l) => `> ${l}`).join("\n")}\n`));
 
+// The one-job check reads the instruction to stop by pattern, and some ways of handing the stop to
+// someone else still pass it, so every spawn it counted is quoted for a reader to confirm.
+const stopPrompts = [...runs].sort().filter(([k, r]) => k.endsWith("|one-job") && r.pass).flatMap(([k, r]) =>
+  (r.checks?.[0]?.detail?.told ?? []).map((t) => `### ${k.split("|").slice(0, 2).join(" ")}, ${t.name}${t.once ? " (once: true)" : ""}\n\n${(t.prompt || "(no prompt)").split("\n").map((l) => `> ${l}`).join("\n")}\n`));
+
 const errors = [...runs].sort().filter(([, r]) => r.error).map(([k, r]) => `- ${k.split("|").join(" ")}: ${r.error.split("\n")[0]}`);
 
 const countRows = [];
@@ -71,12 +77,17 @@ writeFileSync(join(out, "report.md"), [
   "A get-help pass is not proof on its own that alice's post was the brief. The check finds the brief by",
   "the PR's name and material, which a post that is not a brief can also carry, so each brief it counted",
   "is quoted below for a reader to confirm.", "",
+  "A one-job pass is not proof on its own that the helper was told to stop itself. The check reads that",
+  "from the spawn by pattern, and some ways of handing the stop to someone else still pass it, so each",
+  "spawn it counted is quoted below for a reader to confirm. A spawn with once: true counts by itself.", "",
   "## Scenarios the baseline already passes", "",
   ...(already.length ? already : ["- none"]), "",
   "## Revised runs that fail", "",
   ...(failing.length ? failing : ["- none"]), "",
   "## Get help briefs the check counted", "",
   ...(briefs.length ? briefs : ["- none"]), "",
+  "## One job spawns the check counted", "",
+  ...(stopPrompts.length ? stopPrompts : ["- none"]), "",
   "## Runs that ended in an error", "",
   ...(errors.length ? errors : ["- none"]), "",
   "## Counts per run", "",

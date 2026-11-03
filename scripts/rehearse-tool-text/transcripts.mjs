@@ -19,7 +19,8 @@ const lines = (src) => src.split("\n").filter(Boolean).flatMap((l) => { try { re
 /** A Claude Code transcript's rows. A channel push is a user message carrying `source="cotal"`. Only
  *  the user and assistant rows are the conversation: Claude Code also writes api-request-blob rows that
  *  repeat a turn's calls and results with no timestamp, so those rows are skipped and each call is read
- *  once. */
+ *  once. A call is deduplicated and paired with its result by its id, so a call without one is counted
+ *  as a use but never recorded as a Cotal call. */
 export function claudeCalls(rows, seat) {
   const pending = new Map(), seen = new Set(), calls = [], uses = [], inbound = [];
   for (const o of rows) {
@@ -28,13 +29,14 @@ export function claudeCalls(rows, seat) {
     if (o.type === "user" && typeof content === "string" && content.includes('source="cotal"')) inbound.push({ seat, at: o.timestamp, text: content.slice(0, KEEP) });
     for (const b of Array.isArray(content) ? content : []) {
       if (o.type === "user" && b.type === "text" && String(b.text).includes('source="cotal"')) inbound.push({ seat, at: o.timestamp, text: b.text.slice(0, KEEP) });
-      if (b.type === "tool_use" && !seen.has(b.id)) {
-        seen.add(b.id);
+      const id = typeof b.id === "string" && b.id ? b.id : undefined;
+      if (b.type === "tool_use" && !(id && seen.has(id))) {
+        if (id) seen.add(id);
         const isCotal = /^mcp__[^_]+(?:_[^_]+)*__cotal_/.test(b.name);
         uses.push(useOf(seat, b.name, o.timestamp, b.input, isCotal));
-        if (isCotal) pending.set(b.id, { seat, tool: b.name.replace(/^mcp__.*__(cotal_)/, "$1"), args: b.input });
+        if (isCotal && id) pending.set(id, { seat, tool: b.name.replace(/^mcp__.*__(cotal_)/, "$1"), args: b.input });
       }
-      if (b.type === "tool_result" && pending.has(b.tool_use_id)) {
+      if (b.type === "tool_result" && typeof b.tool_use_id === "string" && pending.has(b.tool_use_id)) {
         const result = text(b.content);
         calls.push({ ...pending.get(b.tool_use_id), ok: !b.is_error && !refused(result), result });
         pending.delete(b.tool_use_id);

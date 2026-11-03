@@ -58,8 +58,10 @@ function helperChannels(r, spawn) {
  *  no negation before it in the same clause. A negation reaches across commas, so "do not despawn
  *  yourself, or call cotal_despawn" does not count. A clause ends at a semicolon, at "then" or "but",
  *  at ", and", and at the comma closing a leading condition, so "if you are not needed, despawn
- *  yourself" counts. A despawn that someone else does, as in "wait for alice to despawn you", is not
- *  the helper stopping itself. */
+ *  yourself" counts. A despawn that "for", "let", "until" or "ask" hands to someone else, as in
+ *  "wait for alice to despawn you", is not the helper stopping itself. This is a pattern over the
+ *  wording, and other ways of handing the stop to someone else still read as a self-stop, so the
+ *  report quotes every prompt it counted for a reader to confirm. */
 const NEGATION = /\b(?:not|don't|never|no need to|avoid)\b/i;
 const CONDITION = /^\s*(?:if|when|whenever|once|after|before|as soon as|while|until)\b/i;
 const STOP = /\bcotal_despawn\b|\b(?:despawn|stop)\s+yourself\b|\bdespawn\b(?!\s+(?:you|me|him|her|them|it|others?|the|a|an|all|every\w*|[\w-]+_[\w-]+)\b)/gi;
@@ -150,7 +152,7 @@ const checks = {
     const spawns = okCalls(r, "cotal_spawn");
     const told = spawns.filter((s) => s.args?.once === true || toldToStop(String(s.args?.prompt ?? "")));
     return [
-      check("the helper is told to stop (once, or despawn itself)", told.length > 0, spawns.map((s) => ({ name: s.args?.name, once: s.args?.once, prompt: String(s.args?.prompt ?? "").slice(0, 200) }))),
+      check("the helper is told to stop (once, or despawn itself)", told.length > 0, { told: told.map((s) => ({ name: s.args?.name, once: s.args?.once === true, prompt: String(s.args?.prompt ?? "") })), spawns: spawns.map((s) => ({ name: s.args?.name, once: s.args?.once, prompt: String(s.args?.prompt ?? "").slice(0, 200) })) }),
       check("the helper stops and leaves the roster", helpersStopped(r), { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd, finalPsOk: r.finalPsOk, reaps: r.reaps }),
     ];
   },

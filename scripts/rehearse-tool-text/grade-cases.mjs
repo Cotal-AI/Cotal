@@ -37,6 +37,10 @@ const identity = (name) => ({ type: "attachment", attachment: { type: "mcp_instr
   expect("a two-call Claude Code turn is read once, past its api-request-blob rows", claudeCalls(rows, "rev").uses.length, 2);
   const alice = turn(1, [use("p1", "mcp__cotal__cotal_persona", { name: "bot" }), use("s1", "mcp__cotal__cotal_spawn", { name: "bot" })], [result("p1", "Saved bot"), result("s1", "Started bot")]);
   expect("a save and a spawn in one turn are one call each", claudeCalls(alice, "alice").calls.map((c) => c.tool).join(","), "cotal_persona,cotal_spawn");
+  const noIds = [{ type: "assistant", timestamp: T(1), message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "a" } }, { type: "tool_use", name: "Read", input: { file_path: "b" } }, { type: "tool_use", name: "mcp__cotal__cotal_spawn", input: { name: "x" } }] } },
+    { type: "user", timestamp: T(1.1), message: { content: [{ type: "tool_result", content: "Started x" }, result("s9", "Started y")] } }];
+  expect("calls with no id are each a use", claudeCalls(noIds, "s").uses.length, 3);
+  expect("a call with no id is never paired with a result", claudeCalls(noIds, "s").calls.length, 0);
   const dir = mkdtempSync(join(tmpdir(), "grade-cases-"));
   try {
     writeFileSync(join(dir, "claude-alice-00000000-0000-0000-0000-000000000001.jsonl"), [identity("rev"), ...rows].map((o) => JSON.stringify(o)).join("\n"));
@@ -107,6 +111,11 @@ const identity = (name) => ({ type: "attachment", attachment: { type: "mcp_instr
   expect("wait for alice to call cotal_despawn on you", told("Post the summary. Wait for alice to call cotal_despawn on you."), false);
   expect("do not mention anyone, and despawn yourself", told("Post the summary. Do not @mention anyone, and despawn yourself when done."), true);
   expect("do not despawn yourself, and do not call cotal_despawn", told("Do not despawn yourself, and do not call cotal_despawn."), false);
+  // Where the pattern stops. These hand the stop to alice and still read as a self-stop, which is why
+  // the report quotes every prompt the one-job check counted.
+  expect("limit: wait for alice to invoke cotal_despawn on you reads as a self-stop", told("Post the summary. Wait for alice to invoke cotal_despawn on you."), true);
+  expect("limit: alice will call cotal_despawn on you reads as a self-stop", told("Alice will call cotal_despawn on you when you finish. Do not stop yourself."), true);
+  expect("limit: ask alice to run cotal_despawn on you reads as a self-stop", told("Ask alice to run cotal_despawn on you."), true);
   const stops = (reaps, over = {}) => grade("one-job", run({ calls: [{ tool: "cotal_spawn", ok: true, args: { name: "h", once: true } }], spawned: [{ name: "h", id: "H" }], reaps, ...over })).checks[1].ok;
   expect("self-stop", stops([selfStop("H", 9)]), true);
   expect("crash", stops([{ at: T(9), id: "H", reason: "it exited on its own (crash)" }]), false);
