@@ -28,6 +28,7 @@ import {
   newIdentity,
   principalKey,
   registry,
+  runDriverCaller,
   setupSpaceStreams,
   DEV_OWNER,
   type AgentDef,
@@ -726,6 +727,30 @@ try {
     });
     chmodSync(inlinePersonaDir(root), 0o700);
     check("a user-auth retirement that cannot remove the snapshot logs its path and leaves the file", existsSync(hostedPath) && lines.some((l) => l.includes("could not be removed") && l.includes(hostedPath)), lines);
+    // A run spawns under its own derived driver, and saves for the caller it was admitted for, so the
+    // copy belongs to the run's starter, whose catalog reads then find it. The host stands in for a
+    // run this manager drives: it maps the driver to the starter and holds no admission, which a
+    // user-auth spawn does not read.
+    const driver = runDriverCaller("smokerun", owner);
+    const runUid = mintLifecycleUid();
+    (U.mgr as unknown as { provisionUserAgent: (name: string) => Promise<unknown> }).provisionUserAgent = async (name: string) => ({
+      owner,
+      lifecycleUid: runUid,
+      files: agentLifecycleSecretFilePaths(root, space, name, runUid),
+      launch: { owner, actor: name, sentinelCredsPath: join(root, "sentinel.creds"), bearerCmd: ["true"] },
+    });
+    const hosting = U.mgr as unknown as { runHosting?: unknown };
+    hosting.runHosting = {
+      admittedCaller: (c: EpCaller) => c.owner === driver.owner && c.actor === driver.actor && c.uid === driver.uid ? { owner, actor: "parent", uid: mintLifecycleUid() } : undefined,
+      runAdmission: () => undefined,
+    };
+    const runSaved = await U.mgr.startAgent({ name: "run_saved", agent: "smoke-inline", events: false, persona: { prompt: "x", save: true } }, principalKey(driver.owner, driver.actor).key, undefined, driver);
+    hosting.runHosting = undefined;
+    check("control: the run's spawn starts and saves its persona", okData(runSaved)?.lifecycleUid === runUid && existsSync(definedPath("run_saved")), runSaved);
+    const runCopy = existsSync(definedPath("run_saved")) ? loadAgentFile(definedPath("run_saved")) : undefined;
+    check("a run's saved persona is owned by the run's starter, not by the run's driver", runCopy?.owner === spawner, runCopy?.owner);
+    U.seats.get("run_saved")?.exit();
+    await until(() => seatOf(U.M, "run_saved") === undefined);
   }
 } finally {
   await stopBroker();

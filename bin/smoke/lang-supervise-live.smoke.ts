@@ -39,7 +39,7 @@ interface JournalEntryT {
   error?: { code?: string; kind?: string; message?: string };
 }
 const { recordMesh } = await import("@cotal-ai/workspace");
-const { Manager } = await import("@cotal-ai/manager");
+const { Manager } = await import("../../implementations/manager/dist/index.js");
 const { MeshHandler, EpfSettleWatcher, startRun } = await import("@cotal-ai/runtime");
 const { launchEnv } = await import("@cotal-ai/connector-core");
 

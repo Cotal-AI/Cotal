@@ -34,7 +34,7 @@ const {
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
   instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
-} = await import("@cotal-ai/core");
+} = await import("../../packages/core/dist/index.js");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
 type EpServeContextT = import("@cotal-ai/core").EpServeContext;
@@ -47,9 +47,9 @@ type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
 type LaunchSpecT = import("@cotal-ai/core").LaunchSpec;
 const { authDir, saveSpaceAuth, recordMesh, removeMesh, userAuthStateDir } = await import("@cotal-ai/workspace");
 const { agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
-const { Manager, RunHosting } = await import("@cotal-ai/manager");
+const { Manager, RunHosting } = await import("../../implementations/manager/dist/index.js");
 // Importing the runtime is what registers the `cotal-lang` run host the manager resolves.
-const { runWorkflow } = await import("@cotal-ai/runtime");
+const { runWorkflow } = await import("../../implementations/runtime/dist/index.js");
 const { MeshAgent } = await import("@cotal-ai/connector-core");
 const { bootBroker } = await import("../../implementations/manager/smoke/_boot-broker.js");
 // The delivery daemon: the liveness oracle a manager restart on an auth mesh verify-evicts through

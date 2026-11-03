@@ -239,16 +239,6 @@
       "cell": "U1 an observed spawn enrolls one helper: its token digest under another actor is refused"
     },
     {
-      "name": "a run's saved persona is owned by its driver",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    const savedBy = authenticatedCaller === undefined ? undefined : this.runHosting?.admittedCaller(authenticatedCaller);",
-      "replace": "    const savedBy = undefined as EpCaller | undefined;",
-      "expectRed": "FAIL: U1 a run's saved persona is owned by the run's starter, and the run and the starter spawn it by name",
-      "completionMarker": "COTAL_SMOKE_SENTINEL cells=28",
-      "afterRestore": "pnpm smoke:managed-run-issuance",
-      "cell": "U1 a run's saved persona is owned by the run's starter, and the run and the starter spawn it by name"
-    },
-    {
       "name": "the verify door measures only the target's read list",
       "file": "implementations/auth/src/service.ts",
       "find": "allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe), allowPublish: t.allowPublish ?? [], role: t.role };",

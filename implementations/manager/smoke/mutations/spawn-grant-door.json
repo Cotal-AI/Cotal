@@ -19,21 +19,24 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "      caller,\n      hooks,\n      authenticatedCaller,\n    );\n  }",
       "replace": "      caller,\n      hooks,\n    );\n  }",
-      "expectRed": "a served spawn wider than the spawner is refused at the door, naming the part"
+      "expectRed": "a served spawn wider than the spawner is refused at the door, naming the part",
+      "cell": "a served spawn wider than the spawner is refused at the door, naming the part"
     },
     {
       "name": "D2 drop the served caller from define-persona",
       "file": "implementations/manager/src/manager.ts",
       "find": "this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller)",
       "replace": "this.opDefinePersona(args(ctx), callerOf(ctx), false)",
-      "expectRed": "a define-persona capability the definer does not hold is refused at the door, naming it"
+      "expectRed": "a define-persona capability the definer does not hold is refused at the door, naming it",
+      "cell": "a define-persona capability the definer does not hold is refused at the door, naming it"
     },
     {
       "name": "D3 write the def composed before the evidence resolved",
       "file": "implementations/manager/src/manager.ts",
       "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      const kept",
       "replace": "      const kept",
-      "expectRed": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile"
+      "expectRed": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile",
+      "cell": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile"
     }
   ]
 }

@@ -17,14 +17,16 @@
       "file": "implementations/cli/src/commands/spawn.ts",
       "find": "          issued: issue.issued,\n          issuance: issue.issuance,\n",
       "replace": "",
-      "expectRed": "its own credential reads its accepted row"
+      "expectRed": "its own credential reads its accepted row",
+      "cell": "its own credential reads its accepted row"
     },
     {
       "name": "F2 a clean exit leaves the gate open",
       "file": "implementations/cli/src/commands/spawn.ts",
       "find": "    if (issuedSeat) await attemptCleanup(failed, \"issuance gate\", () => retireTerminalSeat({ server, space, tlsRequired: target.tlsRequired, auth }, issuedSeat));\n",
       "replace": "",
-      "expectRed": "its issuance is revoked once the seat leaves, so its evidence no longer resolves"
+      "expectRed": "its issuance is revoked once the seat leaves, so its evidence no longer resolves",
+      "cell": "its issuance is revoked once the seat leaves, so its evidence no longer resolves"
     },
     {
       "name": "F3 the person's expiry is ignored",
@@ -32,6 +34,7 @@
       "find": "  const horizon = expiresAt ?? TERMINAL_SEAT_HORIZON_SEC;",
       "replace": "  const horizon = TERMINAL_SEAT_HORIZON_SEC;",
       "expectRed": "--expires-at is the generation's horizon",
+      "cell": "--expires-at is the generation's horizon",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:foreground-issuance:live",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
@@ -41,6 +44,7 @@
       "find": "    await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (session) =>\n      session.store.retireSource({ space: target.space, bucket: epAuthBucket(target.space), key: `cred.${lifecycleUid}` }));\n",
       "replace": "",
       "expectRed": "its issuance is revoked once the seat leaves, so its evidence no longer resolves",
+      "cell": "its issuance is revoked once the seat leaves, so its evidence no longer resolves",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:foreground-issuance:live",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }

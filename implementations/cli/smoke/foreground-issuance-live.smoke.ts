@@ -41,7 +41,7 @@ const root = mkdtempSync(join(tmpdir(), "cotal-fg-issuance-root-"));
 process.env.COTAL_HOME = home;
 const { createSpaceAuth, credsClaims, dialerFor, epAuthBucket, issuedHorizon, issuedSpawnerStanding, mintCreds, newIdentity, readAcceptedRow, setupSpaceStreams, standaloneConnectOpts, withIssuerSession, DEV_OWNER } =
   await import("@cotal-ai/core");
-const { authDir, recordMesh, saveSpaceAuth, TERMINAL_SEAT_HORIZON_SEC } = await import("@cotal-ai/workspace");
+const { authDir, recordMesh, saveSpaceAuth, TERMINAL_SEAT_HORIZON_SEC } = await import("../../../packages/workspace/dist/index.js");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
 const { validateSpawnArguments } = await import("../src/commands/spawn.js");
 

@@ -27,49 +27,56 @@
       "file": "packages/core/src/grant-bound.ts",
       "find": "    const pub = [...projected.pub].filter((r) => !empty.pub.has(r));\n    const sub = [...projected.sub].filter((r) => !empty.sub.has(r));",
       "replace": "    const pub = [...projected.pub];\n    const sub = [...projected.sub];",
-      "expectRed": "a grant inside the spawner's channels is within"
+      "expectRed": "a grant inside the spawner's channels is within",
+      "cell": "a grant inside the spawner's channels is within"
     },
     {
       "name": "B2 bound only the explicit read ACL",
       "file": "packages/core/src/grant-bound.ts",
       "find": "  for (const ch of resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined))",
       "replace": "  for (const ch of grant.allowSubscribe ?? [])",
-      "expectRed": "a subscribe-only grant is folded into the read ACL and bounded"
+      "expectRed": "a subscribe-only grant is folded into the read ACL and bounded",
+      "cell": "a subscribe-only grant is folded into the read ACL and bounded"
     },
     {
       "name": "B3 skip the publish test",
       "file": "packages/core/src/grant-bound.ts",
       "find": "    return pub.every((r) => issuedPermitsPattern(ceiling.publish, r)) && sub.every",
       "replace": "    return sub.every",
-      "expectRed": "posting where the spawner may only read is named"
+      "expectRed": "posting where the spawner may only read is named",
+      "cell": "posting where the spawner may only read is named"
     },
     {
       "name": "B4 drop run-implies-spawn from the token rule",
       "file": "packages/core/src/grant-bound.ts",
       "find": "  return parentScope.includes(token) || (token === \"spawn\" && parentScope.includes(\"run\"));",
       "replace": "  return parentScope.includes(token);",
-      "expectRed": "spawn is within run"
+      "expectRed": "spawn is within run",
+      "cell": "spawn is within run"
     },
     {
       "name": "B6 a role:<r> token is not a capability a spawner hands on",
       "file": "packages/core/src/grant-bound.ts",
       "find": "  return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token) || capabilityRole(token) !== undefined;",
       "replace": "  return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token);",
-      "expectRed": "role:<r> as a capability token is held when the spawner holds that role"
+      "expectRed": "role:<r> as a capability token is held when the spawner holds that role",
+      "cell": "role:<r> as a capability token is held when the spawner holds that role"
     },
     {
       "name": "I1 issue a source-free non-instrument with no presence key",
       "file": "packages/core/src/provision.ts",
       "find": "  if (seam.sources.length === 0 && !INSTRUMENT_PROFILES.has(profile) && !issuedPermitsPattern(permissions.publish, presenceKeySubject(space, pr.owner, pr.actor)))",
       "replace": "  if (false)",
-      "expectRed": "a source-free non-instrument with no presence key of its own is refused before staging"
+      "expectRed": "a source-free non-instrument with no presence key of its own is refused before staging",
+      "cell": "a source-free non-instrument with no presence key of its own is refused before staging"
     },
     {
       "name": "B7 the agent mint ignores role:<r> tokens",
       "file": "packages/core/src/provision.ts",
       "find": "  const svcDs = taskRoles(opts.role, opts.capabilities).map(taskDurable);",
       "replace": "  const svcDs = taskRoles(opts.role, undefined).map(taskDurable);",
-      "expectRed": "a spawner minted the role:<r> token hands that role on"
+      "expectRed": "a spawner minted the role:<r> token hands that role on",
+      "cell": "a spawner minted the role:<r> token hands that role on"
     }
   ]
 }

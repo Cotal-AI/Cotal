@@ -16,7 +16,8 @@
       "file": "implementations/auth/src/permissions.ts",
       "find": "    const minted = caps.filter((token) => capabilityRole(token) === undefined);",
       "replace": "    const minted = caps;",
-      "expectRed": "a role:<r> scope token mints no task-queue row for that role on a user mesh"
+      "expectRed": "a role:<r> scope token mints no task-queue row for that role on a user mesh",
+      "cell": "a role:<r> scope token mints no task-queue row for that role on a user mesh"
     }
   ]
 }
