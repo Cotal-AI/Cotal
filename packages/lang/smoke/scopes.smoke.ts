@@ -1388,4 +1388,52 @@ log("outer", out, viaResult)
   }
 }
 
+// #3215: an `Error` that fails a scope is caught as `{ code: "L4000", kind: "host" }` live, so the
+// record carries that kind and a resume binds the same. Recorded as `scope-fault`, the resume bound
+// a different kind and the `notify` carrying it diverged (L5001), for a refused branch value and for
+// a plain throw from the scope's own dispatch alike.
+{
+  const caughtKind = (scope: string): string => `
+const a = await spawn("a")
+const b = await spawn("b")
+let seen = null
+try { await ${scope} } catch (e) { seen = e }
+log("caught", seen)
+await notify([a], { decision: "d", outcome: seen.kind })
+`;
+  const plainThrow = (): EffectHandler => {
+    const h = Object.create(new SimHandler({})) as EffectHandler;
+    h.openConclave = async () => { throw new Error("plain handler boom"); };
+    return h;
+  };
+  const cases = [
+    ["a branch value the crossing rule refuses", caughtKind('parallel({ x: async () => () => 1 }, { name: "p" })'), () => new SimHandler({})],
+    ["a plain throw from the scope's own dispatch", caughtKind('conclave([a, b], () => 1, { name: "c" })'), plainThrow],
+  ] as const;
+  for (const [name, P, handler] of cases) {
+    const runId = "r-scope-host";
+    const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+    const j = new Journal({ run: runId });
+    logged.length = 0;
+    await run(P, { runId, pins, journal: j, handler: handler(), onLog: sink });
+    const live = logged.find((l) => l[0] === "caught");
+    const scope = j.entries().find((e) => e.kind === "parallel" || e.kind === "conclave");
+    ok(`${name}: the live catch binds L4000 host, and the scope records that kind`,
+      (live?.[1] as { kind?: string })?.kind === "host" && (live?.[1] as { code?: string })?.code === "L4000"
+        && scope?.error?.code === "L4000" && scope?.error?.kind === "host",
+      { live, recorded: scope?.error });
+    for (const [form, entries] of [["as recorded", j.entries()], ["JSON round-tripped", JSON.parse(JSON.stringify(j.entries())) as JournalEntry[]]] as const) {
+      logged.length = 0;
+      let threw: unknown;
+      try {
+        await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: handler(), onLog: sink });
+      } catch (e) { threw = e; }
+      const replayed = logged.find((l) => l[0] === "caught");
+      ok(`${name}: the resume of unchanged source (entries ${form}) binds the same and completes`,
+        threw === undefined && JSON.stringify(replayed) === JSON.stringify(live),
+        { threw: (threw as Error)?.message?.slice(0, 120), replayed, live });
+    }
+  }
+}
+
 console.log(`scopes.smoke: ${pass} checks passed`);

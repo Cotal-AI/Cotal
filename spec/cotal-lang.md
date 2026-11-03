@@ -866,7 +866,8 @@ its place, live as well. A failure the runtime raised arrives as a **frozen reco
 failure as `{ code, kind, message, detail? }` (the recorded `EntryError`, §10.1) and an interpreter
 fault as `{ code, kind: "runtime", message }`. A program cannot construct an `Error`, so anything
 that is one came from the runtime or the host and is delivered as
-`{ code: "L4000", kind: "host", message }`.
+`{ code: "L4000", kind: "host", message }`. A scope it fails records it under that code and kind
+(§10.6), so a resume delivers the same.
 `finally` carries ECMAScript's completion semantics: a `return`, `break`, `continue` or `throw`
 that completes the finalizer replaces whatever the `try` or `catch` was completing with.
 
@@ -966,8 +967,8 @@ crossable, where it is written, and a resume MUST refuse a journal whose recorde
 `error.detail` is not crossable, with **L5024**. The refusal on load names the entry AND which of
 the two fields, because "this journal cannot load" is otherwise not actionable. A value refused
 where it is written is a failure of the handler's own dispatch and carries `L4000` with kind
-`handler-fault` (or `scope-fault` inside a scope); it is not a catalog code of its own, because the
-catalog already says exactly that. Inside a scope a classified refusal the language itself raised
+`handler-fault` (or `host` inside a scope, the kind its `catch` binds there, §9.1); it is not a
+catalog code of its own, because the catalog already says exactly that. Inside a scope a classified refusal the language itself raised
 (a `RuntimeFault`, which carries its own catalog code) settles under that code with kind `runtime`,
 because `L4000` is for failures the catalog does not name and this one it does. A failure whose
 `detail` is refused is recorded under `L4000` rather than under the code the handler chose, and
@@ -1069,11 +1070,13 @@ of that namespace; its branches live under it. On success `result` is `{ branche
 where `value` is the scope's result (`{ index, value }` for a `race`); on failure `branches` is
 carried as a fact. The settled `value` MUST have a canonical form (§4.4), exactly as an effect's
 result must: a value the record cannot carry is refused AT THE SETTLE, and the scope is recorded as
-a fault under `L4000` with kind `scope-fault` rather than settled `ok`. A failure the program
-itself caused (§9) keeps its own catalog code with kind `runtime`, and a failure the handler
-raised keeps its code and kind (§10.1); `L4000` `scope-fault` is for everything else. A value the
-program threw is recorded under that fault as a copy, `thrown: { value }`, `{}` for `undefined`,
-and the live run and a replay both hand `catch` that copy (§9.1). The copy is the value as the
+a fault under `L4000` with kind `host` rather than settled `ok`. A failure the program itself
+caused (§9) keeps its own catalog code with kind `runtime`, and a failure the handler raised keeps
+its code and kind (§10.1). Any other failure that is an `Error`, the refusal included, is recorded
+as the `L4000` `host` fault a `catch` binds for it live (§9.1), so a replay hands `catch` the same
+record. A value the program threw is recorded under `L4000` `scope-fault` as a copy,
+`thrown: { value }`, `{}` for `undefined`, and the live run and a replay both hand `catch` that
+copy (§9.1). The copy is the value as the
 journal's JSON reads it back, so a record the value holds at two places arrives as two records, live
 as on a resume from a durable store. A thrown value with no canonical form is recorded without
 `thrown`, with the crossing rule's refusal (§4.4) as its message. A resume refuses a loaded
@@ -1362,3 +1365,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
 | 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |
 | 2026-11-03 | A concurrency scope's value reaches the program as the deep-frozen copy its record carries, live as on resume (§4.3, §10.6), as a thrown value already does (§9.1). Measured before it: a `parallel` branch that returned a record built outside the scope froze that record for the rest of the live run, so a later write raised L2031 live and succeeded on resume, and the effect that depended on it diverged (L5001) on the resume of unchanged source. |
+| 2026-11-03 | An `Error` that fails a concurrency scope is recorded as the `L4000` `host` fault a `catch` binds for it live (§9.1, §10.1, §10.6), so a resume binds the same kind; a refused scope value is recorded the same way. Measured before it: a `parallel` branch returning a function, and a plain throw from a `conclave`'s dispatch, were caught as `{ code: "L4000", kind: "host" }` live and as kind `scope-fault` on resume, on both engines, and a `notify` carrying the kind diverged (L5001) on the resume of unchanged source. A value the program throws is still recorded as `scope-fault`. |

@@ -352,7 +352,13 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     if (underlying !== undefined) return underlying;
     const had = walkerView.get(fn);
     if (had !== undefined) return had;
-    const w: Callable = async (frame, args) => await withFrame(frame as EngineFrame, () => fn(...args));
+    const w: Callable = async (frame, args) => {
+      try {
+        return await withFrame(frame as EngineFrame, () => fn(...args));
+      } catch (e) {
+        throw asEngineFault(e);
+      }
+    };
     walkerView.set(fn, w);
     return w;
   };
@@ -464,7 +470,11 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         `\`${scopeKind}\` takes its body UNEVALUATED, as a thunk: the walker evaluates it AFTER the scope's entry has begun (measured: an effect in that position journals inside the scope, one in the options bag journals before it), so a body handed over already evaluated has journalled its effects in the wrong place.`,
       );
     }
-    return asArm(await (thunk as () => unknown)());
+    try {
+      return asArm(await (thunk as () => unknown)());
+    } catch (e) {
+      throw asEngineFault(e);
+    }
   };
 
   /**
@@ -1034,6 +1044,16 @@ export class EngineFault extends Error {
     this.name = "EngineFault";
     this.cause = stated ? undefined : breach;
   }
+}
+
+/**
+ * What emitted code the scope machinery runs has thrown, with a native `ReferenceError` wrapped as
+ * the catch head and the run boundary wrap it. A scope SETTLES what its branches throw, and it would
+ * record a bare ReferenceError as an ordinary host failure that a resume replays as catchable, while
+ * the live run unwound on the EngineFault a catch head made of it later (#3215).
+ */
+function asEngineFault(e: unknown): unknown {
+  return e instanceof ReferenceError ? new EngineFault(e) : e;
 }
 
 /**
