@@ -259,6 +259,12 @@ implementation limit and not a language error: it carries no `L` code, so there 
 up in the catalog. It is a floor rather than a warning because the engine's frame plumbing rests on
 `AsyncLocalStorage`, and 22 is the lowest node it has been measured on. The walker has no such floor.
 
+**A thread that disagrees with its host fails only its own run.** An unknown message on the
+thread's port or on the effect bridge refuses that run and ends its thread, saying the two sides
+disagree about the boundary. The host process and its other runs carry on. An in-place upgrade
+under a live manager is the usual way to get here: the next run's thread loads the new code beside
+the old host.
+
 ### Foreign error text
 
 Worker execution, read-only inspection and the host effect bridge use the same name and
