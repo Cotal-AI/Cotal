@@ -14,16 +14,18 @@
  *      zero entries created), and the client sends zero bytes;
  *  E5  squat: a pre-existing non-socket file, a live foreign listener, and even a dead socket this
  *      uid owns at the socket path are all refused with zero unlinks (no automatic reclamation);
- *  E6  second instance: a second serve against a live endpoint refuses ALREADY_RUNNING;
+ *  E6  second instance: a second serve for the same daemon refuses LOCK_HELD at its lifetime lock,
+ *      before it reaches the socket;
  *  E7  shutdown removes only its own socket (dev+ino-checked), not a replacement at the same path;
- *  E10 N concurrent starters on an empty path: exactly one ready, N-1 refused, 0 live unlinks;
+ *  E10 N concurrent starters on an empty path: exactly one ready, N-1 refused LOCK_HELD, 0 live unlinks;
  *  E11 an unterminated 1 MiB write is refused at the 64 KiB limit and the connection closed;
  *  E8  cross-uid (server side): a peer reported by the kernel as another uid is dropped with zero
  *      frames decoded. Needs an unprivileged user namespace; reported UNTESTED when unavailable;
  *  E9  cross-uid (client side): the client refuses a listener whose kernel uid differs, writing
  *      zero bytes. Same namespace requirement.
  *
- * Run: tsx bin/smoke/daemon-endpoint.smoke.ts   (Linux only)
+ * Run: tsx bin/smoke/daemon-endpoint.smoke.ts   (Linux only; daemon-transport.smoke.ts covers the
+ * platform defaults every OS uses)
  */
 import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, symlinkSync, lstatSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,7 +63,8 @@ const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "c
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 chmodSync(root, 0o700);
 const runtime = (name: string) => { const r = join(root, name); mkdirSync(r, { mode: 0o700 }); return r; };
-const paths = (rt: string) => daemonPaths({ XDG_RUNTIME_DIR: rt });
+// Linux paths always carry the socket directory; only a Windows pipe has none.
+const paths = (rt: string) => { const p = daemonPaths({ XDG_RUNTIME_DIR: rt }); return { ...p, dir: p.dir! }; };
 
 try {
   // ---- E1: through the real composition root ----
@@ -174,7 +177,7 @@ try {
     const p = paths(runtime("e6"));
     const d1 = await serveDaemon({ paths: p, version: "x", peerUid });
     const ino = lstatSync(p.socket).ino;
-    check("E6 a second serve refuses ALREADY_RUNNING", (await refusalCode(serveDaemon({ paths: p, version: "x", peerUid }))) === "ALREADY_RUNNING");
+    check("E6 a second serve refuses LOCK_HELD at the lifetime lock", (await refusalCode(serveDaemon({ paths: p, version: "x", peerUid }))) === "LOCK_HELD");
     check("E6 the first daemon's socket is untouched and still answers", lstatSync(p.socket).ino === ino && (await queryDaemon({ paths: p, peerUid })).ok);
     await d1.close();
   }
@@ -225,9 +228,9 @@ try {
     kids.forEach((k, i) => k.stdout.on("data", (b) => { outs[i] += String(b); }));
     for (let t = 0; t < 200 && outs.filter((o) => /^(READY|REFUSED .+)$/m.test(o)).length < N; t++) await new Promise((r) => setTimeout(r, 100));
     const ready = outs.filter((o) => /^READY$/m.test(o)).length;
-    const refused = outs.filter((o) => /^REFUSED ALREADY_RUNNING$/m.test(o)).length;
+    const refused = outs.filter((o) => /^REFUSED LOCK_HELD$/m.test(o)).length;
     const leftover = existsSync(p.dir) ? readdirSync(p.dir).filter((n) => n !== "daemon.sock") : ["<dir missing>"];
-    check(`E10 ${N} concurrent starters: exactly 1 ready, ${N - 1} refused ALREADY_RUNNING`, ready === 1 && refused === N - 1, outs);
+    check(`E10 ${N} concurrent starters: exactly 1 ready, ${N - 1} refused LOCK_HELD`, ready === 1 && refused === N - 1, outs);
     check("E10 the one public socket answers status, and no private bind names are left behind", (await queryDaemon({ paths: p, peerUid })).ok && leftover.length === 0, leftover);
     for (const k of kids) k.kill("SIGTERM");
     await Promise.all(kids.map((k) => new Promise<void>((r) => { if (k.exitCode !== null || k.signalCode !== null) r(); else k.once("exit", () => r()); })));

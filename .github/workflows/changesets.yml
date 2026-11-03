@@ -182,6 +182,10 @@ jobs:
           NATIVE_SOURCE: ${{ github.sha }}
           SEAT_NATIVE_X64: ${{ runner.temp }}/native/seat-native-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/native/seat-native-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/native/seat-native-win32-arm64/peercred.node
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native/workspace-native-x64
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native/workspace-native-arm64
           WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/workspace-native-darwin-x64

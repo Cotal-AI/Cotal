@@ -908,3 +908,6 @@ export { daemonArgv } from "./lib/self-exec.js";
 export { assertSystemdSource, createSystemdSource } from "./lib/service-systemd-files.js";
 export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "./lib/service-systemd.js";
 export { launchAgent } from "./lib/manifest/live.js";
+
+// The machine daemon refreshes the same catalog while retaining its own sign-in session.
+export { prepareCatalogTargets } from "./commands/sync.js";
