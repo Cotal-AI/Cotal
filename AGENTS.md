@@ -105,8 +105,8 @@ program with no broker. Depends on nothing else in the repo; it knows about effe
 - `**@cotal-ai/seat**` (`packages/seat`): local PTY seat custody. A one-shot launcher starts one
 detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
 screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
-Unix socket. Depends on nothing else in the repo; it knows about PTYs, not about NATS. Linux is
-the only platform this package supports; others throw from it. The built-in `pty` runtime does not
+Unix socket. Depends on nothing else in the repo; it knows about host processes, not about NATS.
+Custody is Linux only; its host primitives for the daemon endpoint build on Linux, macOS and Windows. The built-in `pty` runtime does not
 launch through it: the manager spawns pty seats in-process on every platform, and uses this
 package only to adopt and reap seats that an earlier manager left under a custodian (on Linux;
 elsewhere `adopt` throws).

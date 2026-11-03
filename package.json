@@ -1134,7 +1134,10 @@
     "smoke:native-conversation-capabilities": "tsx implementations/manager/smoke/native-conversation-capabilities.smoke.ts",
     "smoke:native-conversation-run": "tsx implementations/manager/smoke/native-conversation-run.smoke.ts",
     "smoke:claude-mcp-default": "tsx extensions/connector-claude-code/smoke/mcp-default.smoke.ts",
-    "smoke:presence-runtime": "tsx packages/core/smoke/presence-runtime.smoke.ts"
+    "smoke:presence-runtime": "tsx packages/core/smoke/presence-runtime.smoke.ts",
+    "smoke:daemon-install-native": "tsx bin/smoke/daemon-install-native.smoke.ts",
+    "smoke:daemon-desktop": "tsx bin/smoke/daemon-desktop.smoke.ts",
+    "smoke:daemon-transport": "tsx bin/smoke/daemon-transport.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

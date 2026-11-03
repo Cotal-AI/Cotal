@@ -1,0 +1,24 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { approvalUrl, connectionView, requireResult, onboardingLink } from "../src/model.ts";
+
+test("only verified service connection is presented as connected", () => {
+  for (const state of ["ready", "connecting", "approval-pending", "disconnected", "refused", "unknown"]) assert.equal(connectionView(state).connected, false);
+  assert.equal(connectionView("connected").connected, true);
+});
+test("browser links reject executable schemes and embedded credentials", () => {
+  for (const url of ["file:///etc/passwd", "javascript:alert(1)", "https://user:pass@example.com", "http://example.com", "http://127.0.0.1.example.com"]) assert.throws(() => approvalUrl(url));
+  assert.equal(approvalUrl("https://example.com/approve?user_code=ABCD"), "https://example.com/approve?user_code=ABCD");
+  assert.equal(approvalUrl("http://127.0.0.1:8080/approve"), "http://127.0.0.1:8080/approve");
+});
+test("a prompt, malformed version or refusal is never a successful operation", () => {
+  assert.throws(() => requireResult({ v: 1, event: "login-prompt", ok: true }));
+  assert.throws(() => requireResult({ v: 1, event: "result", ok: false, error: { code: "DENIED", message: "Denied" } }), /Denied/);
+  assert.throws(() => requireResult({ v: 1, event: "result", ok: true }));
+  assert.deepEqual(requireResult({ v: 1, event: "result", ok: true, result: { state: "ready" } }), { state: "ready" });
+});
+
+test("dashboard links prefill only public coordinates and reject secrets or duplicate keys", () => {
+  assert.deepEqual(onboardingLink("cotal://connect?idp=https%3A%2F%2Fexample.com%2Fauth&space=team"), { idp: "https://example.com/auth", space: "team" });
+  for (const value of ["cotal://connect?idp=https://example.com/auth&token=secret", "cotal://connect?idp=https://example.com&idp=https://other.example", "cotal://exec?idp=https://example.com", "cotal://connect?idp=file:///tmp/auth", "cotal://connect?idp=https://example.com&space=bad%20space"]) assert.throws(() => onboardingLink(value));
+});

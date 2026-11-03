@@ -280,13 +280,13 @@ function unavailableReason(results: readonly AuthSpaceCatalogResult[], slug: str
   return undefined;
 }
 
-export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean } = {}): Promise<{ results: AuthSpaceCatalogResult[]; diffs: CatalogDiff[] }> {
+export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean; sessionDir?: string } = {}): Promise<{ results: AuthSpaceCatalogResult[]; diffs: CatalogDiff[] }> {
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs)
     throw new Error(`auth provider "${provider.name}" does not support space catalogs`);
   const applied = new Map<string, CatalogDiff>();
   const results = await provider.prepareSpaceCatalogs({
-    dir: homeCotalDir(),
+    dir: opts.sessionDir ?? homeCotalDir(),
     ...(opts.idpUrl ? { idpUrl: opts.idpUrl } : {}),
     ...(opts.force ? { force: true } : {}),
     validate: validateCatalogSnapshot,

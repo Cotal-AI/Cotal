@@ -1,0 +1,318 @@
+/**
+ * `cotal daemon install` on macOS and Windows: the LaunchAgent and scheduled-task adapters, driven
+ * through their shipped plan, publish, register, check and remove steps against owned temporary
+ * directories and a recording native runner. No launchctl, schtasks or PowerShell runs, and no
+ * user or machine configuration is touched; the runner answers as the OS tool would and records the
+ * exact argument vector it was handed.
+ *
+ * Cells (each asserts exact codes, argument vectors or bytes):
+ *  N1 the plist: label derivation, escaped arguments with no shell, KeepAlive and RunAtLoad, a
+ *     pinned PATH, and refusals for control characters and relative paths;
+ *  N2 the LaunchAgent lifecycle: plan reads `print gui/<uid>/<label>` and treats only 113 as
+ *     absent, a loaded label or a foreign plist refuses CONFLICT with the file unchanged, publish
+ *     creates a 0600 plist with the planned digest, register runs `enable` then `bootstrap`, a
+ *     changed plist refuses removal, and remove boots out only a loaded label;
+ *  N3 the task definition: UTF-16 with a byte order mark, the user's SID on the trigger and the
+ *     principal, interactive token at least privilege, and arguments that a Microsoft C runtime
+ *     split returns unchanged; `%` and `"` refuse;
+ *  N4 the scheduled-task lifecycle: the SID comes from whoami, the task read gets the name only
+ *     through its environment, an existing task or definition refuses CONFLICT, register runs
+ *     `/Create /XML` then `/Run`, a task whose command changed refuses removal, and remove disables,
+ *     ends only a running task, and deletes it;
+ *  N5 the receipt dispatch on this OS: a receipt from before mechanisms reads as systemd, and a
+ *     LaunchAgent receipt refuses CONFLICT here with nothing removed.
+ *
+ * Not covered here: a real launchd domain or Task Scheduler. Those need a macOS or Windows host.
+ *
+ * Run: tsx bin/smoke/daemon-install-native.smoke.ts   (POSIX; the Windows adapter runs on its fake)
+ */
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommandFailure } from "@cotal-ai/workspace";
+import type { DaemonPaths } from "../daemon/endpoint.js";
+import { planUninstall, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { launchAgentLabel, launchAgentService, renderLaunchAgent } from "../daemon/install-darwin.js";
+import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
+
+let pass = 0, fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
+const code = (fn: () => unknown): string => {
+  try { fn(); return "none"; } catch (e) { return e instanceof CommandFailure ? e.code : `throw:${(e as Error).message}`; }
+};
+const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+
+interface Call { file: string; args: readonly string[]; env?: NodeJS.ProcessEnv }
+/** A native runner that records every call and answers from `answer`. */
+function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeRun; calls: Call[] } {
+  const calls: Call[] = [];
+  return { calls, run: (file, args, env) => {
+    const call = { file, args: [...args], ...(env ? { env } : {}) };
+    calls.push(call);
+    return { status: 0, stdout: "", detail: "", ...answer(call) };
+  } };
+}
+
+// The physical path: macOS puts the temp dir under /var, a symlink, which a protected service
+// directory refuses as it would for a user, and the fixture home here stands in for a real one.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-daemon-install-native-")));
+const savedHome = process.env.HOME;
+try {
+  const uid = process.getuid?.();
+  const node = "/opt/cotal/1.2.3/bin/node";
+  const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
+
+  console.log("N1 plist");
+  {
+    check("default label", launchAgentLabel(undefined) === "ai.cotal.daemon");
+    check("home label is derived from the home", launchAgentLabel("/x") === `ai.cotal.daemon.${sha("/x").slice(0, 16)}`);
+    const { text, sha256 } = renderLaunchAgent({ label: "ai.cotal.daemon", argv, searchPath: "/usr/bin:/bin", workingDirectory: "/Users/a", logPath: "/Users/a/.cotal/daemon/daemon.log" });
+    check("arguments are escaped, one string each", text.includes("<string>/Users/a b/&amp;&lt;home&gt;</string>") && (text.match(/<string>/g) ?? []).length === argv.length + 5, text);
+    check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
+    check("PATH is pinned", text.includes("<key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin</string></dict>"));
+    check("digest is of the exact bytes", sha256 === sha(text));
+    check("a control character refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "a\nb"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
+    check("a relative executable refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: ["node", "x"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
+  }
+
+  console.log("N2 LaunchAgent lifecycle");
+  // Windows has no user id for a launchd GUI domain, so the adapter refuses there before it reads
+  // anything, and the lifecycle cells, which drive it with injected launchctl answers, do not run.
+  if (uid === undefined) {
+    const state = join(root, "mac-state");
+    mkdirSync(state, { mode: 0o700 });
+    const paths: DaemonPaths = { dir: join(root, "run"), socket: join(root, "run", "daemon.sock"), state, lock: join(state, "daemon.lock") };
+    const r = recorder(() => ({}));
+    check("a platform with no user id refuses a LaunchAgent plan UNSUPPORTED, reading nothing", code(() => launchAgentService(r.run, () => ({ state: "absent" })).plan(paths, undefined, argv, () => "/usr/bin:/bin")) === "UNSUPPORTED" && r.calls.length === 0, r.calls);
+    console.log(`  ○ NOT RUN N2 lifecycle cells: no launchd user id on ${process.platform}`);
+  } else {
+    const home = join(root, "mac-home");
+    mkdirSync(join(home, "Library"), { recursive: true, mode: 0o700 });
+    process.env.HOME = home;
+    const state = join(root, "mac-state");
+    mkdirSync(state, { mode: 0o700 });
+    const paths: DaemonPaths = { dir: join(root, "run"), socket: join(root, "run", "daemon.sock"), state, lock: join(state, "daemon.lock") };
+    const label = "ai.cotal.daemon";
+    const plist = join(home, "Library", "LaunchAgents", `${label}.plist`);
+    const target = `gui/${uid}/${label}`;
+
+    let printStatus = 113;
+    const r = recorder((c) => c.args[0] === "print" ? { status: printStatus, detail: printStatus === 125 ? "Domain does not support specified action" : "" } : {});
+    let observedJob: import("@cotal-ai/seat").DarwinLaunchdLookup = { state: "loaded", job: { label, program: argv[0], programArguments: argv, workingDirectory: home } };
+    const service = launchAgentService(r.run, () => observedJob);
+    const plan = service.plan(paths, undefined, argv, () => "/usr/bin:/bin");
+    check("plan reads the label in the user's GUI domain", r.calls.length === 1 && r.calls[0]!.file === "/bin/launchctl" && r.calls[0]!.args.join(" ") === `print ${target}`, r.calls);
+    check("plan names the plist under ~/Library/LaunchAgents", plan.unitPath === plist && plan.unit === label && plan.mechanism === "launchd-agent");
+    check("plan states restart and start from the bytes", plan.restart === "KeepAlive=true" && plan.wantedBy === `login to gui/${uid} (RunAtLoad=true)`, plan);
+    check("plan logs into the daemon's state", plan.bytes.toString().includes(`<key>StandardErrorPath</key><string>${join(state, "daemon.log")}</string>`));
+    printStatus = 0;
+    check("a loaded label refuses CONFLICT", code(() => service.plan(paths, undefined, argv, () => "/bin")) === "CONFLICT");
+    printStatus = 125;
+    check("a domain that does not answer refuses TARGET_UNAVAILABLE", code(() => service.plan(paths, undefined, argv, () => "/bin")) === "TARGET_UNAVAILABLE");
+    printStatus = 113;
+
+    mkdirSync(join(home, "Library", "LaunchAgents"), { mode: 0o755 });
+    writeFileSync(plist, "foreign");
+    check("a foreign plist at the path refuses CONFLICT", code(() => service.plan(paths, undefined, argv, () => "/bin")) === "CONFLICT");
+    check("and it is left unchanged", readFileSync(plist, "utf8") === "foreign");
+    rmSync(plist);
+
+    r.calls.length = 0;
+    service.publish(plan);
+    const stat = lstatSync(plist);
+    check("publish creates a 0600 regular plist with the planned digest", stat.isFile() && (stat.mode & 0o777) === 0o600 && sha(readFileSync(plist)) === plan.sha256);
+    check("publish calls nothing native", r.calls.length === 0);
+    service.register(plan);
+    check("register runs enable then bootstrap", r.calls.map((c) => c.args.join(" ")).join(" | ") === `enable ${target} | bootstrap gui/${uid} ${plist}`, r.calls);
+
+    const receipt: UnitReceipt = { v: 1, mechanism: "launchd-agent", unit: label, unitPath: plist, unitSha256: plan.sha256, installedAt: "t" };
+    r.calls.length = 0;
+    service.check(receipt);
+    check("check passes the unchanged plist after one domain read", r.calls.length === 1 && r.calls[0]!.args[0] === "print");
+    check("a different recorded digest refuses CONFLICT", code(() => service.check({ ...receipt, unitSha256: "0".repeat(64) })) === "CONFLICT");
+    printStatus = 0;
+    const originalJob = observedJob;
+    for (const badJob of [
+      { state: "absent" as const },
+      { state: "unavailable" as const, reason: "fixture" },
+      { state: "loaded" as const, job: { label, program: "/foreign", programArguments: argv, workingDirectory: home } },
+      { state: "loaded" as const, job: { label, program: argv[0], programArguments: ["foreign"], workingDirectory: home } },
+      { state: "loaded" as const, job: { label, program: argv[0], programArguments: argv } },
+    ]) {
+      observedJob = badJob;
+      r.calls.length = 0;
+      check("unverified or changed loaded job refuses teardown", ["TARGET_UNAVAILABLE", "CONFLICT"].includes(code(() => service.remove(receipt))));
+      check("refused teardown sends no bootout", !r.calls.some((call) => call.args[0] === "bootout") && lstatSync(plist).isFile());
+    }
+    observedJob = originalJob;
+    r.calls.length = 0;
+    service.start(receipt);
+    check("starting a loaded job never force-restarts it", r.calls.some((call) => call.args[0] === "kickstart") && !r.calls.some((call) => call.args.includes("-k")));
+    printStatus = 0;
+    r.calls.length = 0;
+    check("a receipt naming another label refuses CONFLICT", code(() => service.remove({ ...receipt, unit: "com.example.other" })) === "CONFLICT");
+    check("a receipt naming another plist refuses CONFLICT", code(() => service.remove({ ...receipt, unitPath: join(home, "other.plist") })) === "CONFLICT");
+    check("and neither reached launchd nor removed the plist", r.calls.length === 0 && lstatSync(plist).isFile());
+    printStatus = 113;
+
+    const failing = recorder((c) => c.args[0] === "bootstrap" ? { status: 5, detail: "Bootstrap failed: 5: Input/output error" } : { status: c.args[0] === "print" ? 113 : 0 });
+    check("a refused bootstrap is OPERATION_UNKNOWN", code(() => launchAgentService(failing.run).register(plan)) === "OPERATION_UNKNOWN");
+
+    printStatus = 113;
+    r.calls.length = 0;
+    const copy = readFileSync(plist);
+    service.remove(receipt);
+    check("remove of an unloaded label boots nothing out", r.calls.every((c) => c.args[0] === "print") && r.calls.length > 0, r.calls);
+    check("and removes the plist", (() => { try { lstatSync(plist); return false; } catch { return true; } })());
+    writeFileSync(plist, copy, { mode: 0o600 });
+    printStatus = 0;
+    r.calls.length = 0;
+    service.remove(receipt);
+    check("remove of a loaded label boots out that exact label once", r.calls.at(-1)!.args.join(" ") === `bootout ${target}` && r.calls.filter((c) => c.args[0] === "bootout").length === 1, r.calls);
+  }
+
+  console.log("N3 task definition");
+  {
+    const sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
+    check("default task name carries the SID", scheduledTaskName(undefined, sid) === `cotal-daemon-${sid}`);
+    check("home task name is derived from the home", scheduledTaskName("C:\\h", sid) === `cotal-daemon-${sha("C:\\h").slice(0, 16)}-${sid}`);
+    check("a malformed SID refuses", code(() => scheduledTaskName(undefined, "S-1-x")) === "TARGET_UNAVAILABLE");
+    const winArgv = ["C:\\Program Files\\nodejs\\node.exe", "--max-semi-space-size=1", "C:\\Program Files\\cotal\\cotal.js", "daemon", "serve", "--daemon-home", "C:\\Users\\a b\\home\\"];
+    const t = renderScheduledTask({ sid, argv: winArgv, workingDirectory: "C:\\Users\\a b" });
+    check("UTF-16LE with a byte order mark", t.bytes[0] === 0xff && t.bytes[1] === 0xfe && t.bytes.subarray(2).toString("utf16le") === t.text && t.sha256 === sha(t.bytes));
+    check("the trigger and principal name the SID", t.text.includes(`<UserId>${sid}</UserId></LogonTrigger>`) && t.text.includes(`<Principal id="Author"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>`));
+    check("restarts by a one-minute repetition that ignores a running instance", t.text.includes("<Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>") && t.text.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") && !t.text.includes("<Duration>"));
+    check("no run-time or battery limit", t.text.includes("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") && t.text.includes("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>") && t.text.includes("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
+    check("the command is the executable, unquoted", t.command === winArgv[0] && t.text.includes(`<Command>${winArgv[0]}</Command>`));
+    check("a C runtime split of the arguments returns them unchanged", JSON.stringify(splitWindows(t.arguments)) === JSON.stringify(winArgv.slice(1)), [t.arguments, splitWindows(t.arguments)]);
+    check("% refuses", code(() => windowsArgument("%APPDATA%")) === "UNSUPPORTED");
+    check("a double quote refuses", code(() => windowsArgument('a"b')) === "UNSUPPORTED");
+    check("a relative executable refuses", code(() => renderScheduledTask({ sid, argv: ["node.exe"], workingDirectory: "C:\\" })) === "UNSUPPORTED");
+  }
+
+  console.log("N4 scheduled-task lifecycle");
+  {
+    const sid = "S-1-5-21-1-2-3-1001";
+    const name = `cotal-daemon-${sid}`;
+    const state = join(root, "win-state");
+    mkdirSync(state, { mode: 0o700 });
+    const paths: DaemonPaths = { dir: join(root, "wrun"), socket: join(root, "wrun", "s"), state, lock: join(state, "daemon.lock") };
+    const posixArgv = ["/opt/node", "/opt/cotal.js", "daemon", "serve"];
+    let task: Record<string, unknown> = { present: false };
+    // The working directory the adapter writes is the home it reads, which Windows takes from USERPROFILE.
+    const security = { userId: sid, logonType: 3, runLevel: 0, workingDirectory: homedir() };
+    const r = recorder((c) => {
+      if (c.file.endsWith("whoami.exe")) return { stdout: `"host\\user","${sid}"\r\n` };
+      if (c.file.endsWith("powershell.exe")) return { stdout: `\uFEFF${JSON.stringify(task)}\r\n` };
+      return {};
+    });
+    const service = scheduledTaskService(r.run);
+    const plan = service.plan(paths, undefined, posixArgv, () => { throw new Error("a task pins no PATH"); });
+    const ps = r.calls.find((c) => c.file.endsWith("powershell.exe"))!;
+    const script = Buffer.from(ps.args.at(-1)!, "base64").toString("utf16le");
+    check("the SID comes from whoami", r.calls[0]!.file.endsWith("whoami.exe") && r.calls[0]!.args.join(" ") === "/user /fo csv /nh");
+    check("the task read takes the name only from its environment", ps.env?.COTAL_DAEMON_TASK === name && !script.includes(name) && ps.args.slice(0, 4).join(" ") === "-NoLogo -NoProfile -NonInteractive -EncodedCommand");
+    check("plan names the task and its definition file", plan.unit === name && plan.unitPath === join(state, "service-task.xml") && plan.mechanism === "scheduled-task");
+    check("plan states restart and start from the bytes", plan.restart === "every PT1M unless running (IgnoreNew)" && plan.wantedBy === `logon of ${sid}`, plan);
+    task = { present: true, ...security, state: "Ready", actions: 1, execute: "x", arguments: "" };
+    check("an existing task refuses CONFLICT", code(() => service.plan(paths, undefined, posixArgv, () => "")) === "CONFLICT");
+    task = { present: false };
+
+    r.calls.length = 0;
+    service.publish(plan);
+    // Windows protects the file by ACL, not by mode bits, so only POSIX reads 0600 back.
+    check("publish creates the definition with the planned digest", sha(readFileSync(plan.unitPath)) === plan.sha256 && (process.platform === "win32" || (lstatSync(plan.unitPath).mode & 0o777) === 0o600));
+    check("an existing definition refuses the next plan", code(() => service.plan(paths, undefined, posixArgv, () => "")) === "CONFLICT");
+    service.register(plan);
+    const schtasks = (calls: Call[]) => calls.filter((c) => c.file.endsWith("schtasks.exe")).map((c) => c.args.join(" ")).join(" | ");
+    check("register runs /Create /XML then /Run", schtasks(r.calls) === `/Create /TN ${name} /XML ${plan.unitPath} | /Run /TN ${name}`, r.calls);
+
+    const receipt: UnitReceipt = { v: 1, mechanism: "scheduled-task", unit: name, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: "t" };
+    const text = readFileSync(plan.unitPath).subarray(2).toString("utf16le");
+    const recorded = { execute: /<Command>([^<]*)</.exec(text)![1], arguments: /<Arguments>([^<]*)</.exec(text)![1] };
+    task = { present: true, ...security, state: "Running", actions: 1, ...recorded };
+    check("check passes the task that runs the recorded command", code(() => service.check(receipt)) === "none");
+    r.calls.length = 0;
+    check("a receipt naming another task refuses CONFLICT", code(() => service.remove({ ...receipt, unit: "OneDrive Standalone Update Task" })) === "CONFLICT");
+    check("a receipt naming another user's task refuses CONFLICT", code(() => service.remove({ ...receipt, unit: "cotal-daemon-S-1-5-21-9-9-9-1002" })) === "CONFLICT");
+    check("and neither reached schtasks nor removed the definition", schtasks(r.calls) === "" && lstatSync(plan.unitPath).isFile());
+    task = { present: true, ...security, state: "Running", actions: 1, execute: "C:\\other.exe", arguments: recorded.arguments };
+    check("a task whose command changed refuses CONFLICT", code(() => service.check(receipt)) === "CONFLICT");
+    task = { present: true, ...security, state: "Running", actions: 2, ...recorded };
+    check("a task with a second action refuses CONFLICT", code(() => service.check(receipt)) === "CONFLICT");
+    for (const changed of [{ userId: "S-1-5-18" }, { logonType: 5 }, { runLevel: 1 }, { workingDirectory: "C:\\foreign" }]) {
+      task = { present: true, ...security, state: "Running", actions: 1, ...recorded, ...changed };
+      check("changed task principal or working context refuses CONFLICT", code(() => service.check(receipt)) === "CONFLICT");
+    }
+    task = { present: true, ...security, state: "Running", actions: 1, ...recorded };
+    r.calls.length = 0;
+    service.start(receipt);
+    check("starting a running task does not restart it", schtasks(r.calls) === "");
+    task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
+    r.calls.length = 0;
+    service.start(receipt);
+    check("starting an inactive owned task submits one Run", schtasks(r.calls) === `/Run /TN ${name}`);
+
+    check("a different recorded digest refuses CONFLICT", code(() => service.check({ ...receipt, unitSha256: "0".repeat(64) })) === "CONFLICT");
+
+    const copy = readFileSync(plan.unitPath);
+    task = { present: true, ...security, state: "Running", actions: 1, ...recorded };
+    r.calls.length = 0;
+    service.remove(receipt);
+    check("remove disables, ends the running task, then deletes it", schtasks(r.calls) === `/Change /TN ${name} /DISABLE | /End /TN ${name} | /Delete /TN ${name} /F`, r.calls);
+    check("and removes the definition", (() => { try { lstatSync(plan.unitPath); return false; } catch { return true; } })());
+    writeFileSync(plan.unitPath, copy, { mode: 0o600 });
+    task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
+    r.calls.length = 0;
+    service.remove(receipt);
+    check("a task that is not running is not ended", schtasks(r.calls) === `/Change /TN ${name} /DISABLE | /Delete /TN ${name} /F`, r.calls);
+    writeFileSync(plan.unitPath, copy, { mode: 0o600 });
+    task = { present: false };
+    r.calls.length = 0;
+    service.remove(receipt);
+    check("an absent task needs no schtasks call", schtasks(r.calls) === "");
+  }
+
+  console.log("N5 receipt dispatch on this OS");
+  if (process.platform === "linux") {
+    const state = join(root, "linux-state");
+    mkdirSync(state, { mode: 0o700 });
+    const paths: DaemonPaths = { dir: join(root, "lrun"), socket: join(root, "lrun", "s"), state, lock: join(state, "daemon.lock") };
+    const receiptFile = join(state, "service-unit.json");
+    writeFileSync(receiptFile, JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(state, "gone.service"), unitSha256: "0".repeat(64), installedAt: "t" }));
+    check("a receipt without a mechanism is a systemd unit", code(() => planUninstall(paths)) === "TARGET_NOT_FOUND");
+    writeFileSync(receiptFile, JSON.stringify({ v: 1, mechanism: "launchd-agent", unit: "ai.cotal.daemon", unitPath: receiptFile, unitSha256: "0".repeat(64), installedAt: "t" }));
+    check("a LaunchAgent receipt refuses CONFLICT on Linux", code(() => planUninstall(paths)) === "CONFLICT");
+    check("and the receipt is kept", lstatSync(receiptFile).isFile());
+  } else console.log(`  ○ UNTESTED N5: the dispatch cells read a Linux receipt; this is ${process.platform}`);
+} finally {
+  if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+  rmSync(root, { recursive: true, force: true });
+}
+
+/** CommandLineToArgvW's rules for the argument tail: whitespace splits, a quote toggles, and 2n
+ *  backslashes before a quote are n backslashes, 2n+1 are n and a literal quote. */
+function splitWindows(line: string): string[] {
+  const out: string[] = [];
+  let current = "", quoted = false, started = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (ch === "\\") {
+      let n = 0;
+      while (line[i] === "\\") { n++; i++; }
+      if (line[i] === '"') { current += "\\".repeat(Math.floor(n / 2)); if (n % 2) current += '"'; else quoted = !quoted; }
+      else { current += "\\".repeat(n); i--; }
+      started = true;
+    } else if (ch === '"') { quoted = !quoted; started = true; }
+    else if ((ch === " " || ch === "\t") && !quoted) { if (started) out.push(current); current = ""; started = false; }
+    else { current += ch; started = true; }
+  }
+  if (started) out.push(current);
+  return out;
+}
+
+console.log(`\ndaemon-install-native smoke: ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);
