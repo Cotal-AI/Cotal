@@ -197,6 +197,27 @@ try {
       () => remoteManagedAgentEnrollmentMaterial({ ...older, runtimeIntent: { state: "bound" } } as never, enroll), /runtimeIntent other than/);
     throws("a runtimeIntent carrying a provider handle is refused",
       () => remoteManagedAgentEnrollmentMaterial({ ...older, runtimeIntent: { state: "reserved", handle: "prov-123" } } as never, enroll), /runtimeIntent other than/);
+    // Only the returned exchange URL varies: HTTPS and loopback IP literals are allowed, names
+    // over HTTP are not. Keep literal expectations independent of the validator under test.
+    for (const [url, allowed] of [
+      ["https://auth.example.test:4433", true],
+      ["http://127.0.0.1:4433", true],
+      ["http://[::1]:4433", true],
+      ["http://127.1:4433", true],
+      ["http://auth.example.test:4433", false],
+      ["http://localhost:4433", false],
+      ["http://LOCALHOST:4433", false],
+      ["http://127.0.0.2:4433", true],
+      ["http://[::ffff:127.0.0.1]:4433", true],
+    ] as const) {
+      const supplied = { ...material, agentBearerExchangeUrl: url };
+      let returned: unknown;
+      let refusal: unknown;
+      try { returned = remoteManagedAgentEnrollmentMaterial({ ...older, material: supplied }, enroll); }
+      catch (e) { refusal = e; }
+      check(`enrollment exchange URL ${url} is ${allowed ? "accepted unchanged" : "refused"}`,
+        allowed ? returned === supplied : refusal instanceof Error && /non-HTTPS agent bearer exchange URL/.test(refusal.message), refusal);
+    }
   }
 
   console.log("E. a host that grants other channels than the enrollment asked for is reported");
@@ -221,6 +242,6 @@ try {
   rmSync(tmp, { recursive: true, force: true });
   releaseBroker();
 }
-const EXPECTED = 12;
+const EXPECTED = 21;
 console.log(`\nMANAGED-AGENT-RUNTIME-CLIENT SMOKE ${fail === 0 && pass + fail === EXPECTED ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, expected ${EXPECTED})`);
 process.exit(fail === 0 && pass + fail === EXPECTED ? 0 : 1);
