@@ -173,12 +173,12 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     { id: "cotal.open", bind: "return", keys: "enter", title: "Open the selected row", group: "Move", run: openRow },
     { id: "cotal.next-need", bind: "w", keys: "w", title: "Open the next waiting agent", group: "Needs you", palette: true, run: nextWaiting },
     { id: "cotal.need", bind: "1,2,3,4,5,6,7,8,9", keys: "1-9", title: "Open that waiting agent", group: "Needs you", run: (e) => e && openWaiting(Number(e.name) - 1) },
-    { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
     { id: "cotal.reload", bind: "ctrl+r", keys: "ctrl+r", title: "Reread spaces", group: "System", palette: true, run: () => void read(true) },
     { id: COMMAND_PALETTE_COMMAND, bind: "ctrl+p", keys: "ctrl+p", title: "Commands", group: "System", global: true, run: () => dialog.replace(() => <Palette commands={commands} />) },
     { id: "cotal.help", bind: "?", keys: "?", title: "Keys", group: "System", palette: true, run: () => dialog.replace(() => <Help commands={commands} />, undefined, { size: "large" }) },
     { id: "cotal.quit", bind: "q", keys: "q ctrl+c", title: "Quit", group: "System", palette: true, run: props.quit },
     { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: props.quit },
+    { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
   ]
   const toLayer = (c: Command) => ({ ...c, run: (_input?: string, event?: KeyEvent) => c.run(event) })
   Keymap.createLayer(() => ({ commands: commands.filter((c) => !c.global).map(toLayer) }))
