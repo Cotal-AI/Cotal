@@ -243,18 +243,23 @@ export function historyLimitMinAgeMs(stream: HistoryLimitStream): number {
   return stream === "inbox" || stream === "dlv" ? BACKUP_PLANE3_DEDUP_WINDOW_MS : DEFAULT_DUPLICATE_WINDOW_MS;
 }
 
-/** Why `stream` may not hold `limit`, or undefined when it may. An age is none (0) or whole seconds
- *  from the stream's duplicate window to 3650 days, so its nanosecond `max_age` stays an exact
- *  integer; a count is none ({@link HISTORY_NO_COUNT}) or at least 1. None for both is allowed. */
+/** Why `stream` may not hold `limit`, or undefined when it may. An age is none (0) or one
+ *  {@link historyAgeProblem} accepts; a count is none ({@link HISTORY_NO_COUNT}) or at least 1. None
+ *  for both is allowed. */
 export function historyLimitProblem(stream: HistoryLimitStream, limit: HistoryLimit): string | undefined {
   if (limit.perSubject !== HISTORY_NO_COUNT && (!Number.isSafeInteger(limit.perSubject) || limit.perSubject < 1))
     return `the count must be a whole number of at least 1, or none, not ${limit.perSubject}`;
-  if (limit.maxAgeMs === 0) return undefined;
-  if (!Number.isSafeInteger(limit.maxAgeMs) || limit.maxAgeMs % 1000 !== 0)
-    return "the age must be a whole number of seconds";
-  if (limit.maxAgeMs < historyLimitMinAgeMs(stream))
+  return limit.maxAgeMs === 0 ? undefined : historyAgeProblem(stream, limit.maxAgeMs);
+}
+
+/** Why `stream` may not hold an age of `maxAgeMs`, or undefined when it may: whole seconds from the
+ *  stream's duplicate window to 3650 days, so its nanosecond `max_age` stays an exact integer. Here
+ *  0 is an age, below every window; only a {@link HistoryLimit} spells none as 0. */
+export function historyAgeProblem(stream: HistoryLimitStream, maxAgeMs: number): string | undefined {
+  if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs % 1000 !== 0) return "the age must be a whole number of seconds";
+  if (maxAgeMs < historyLimitMinAgeMs(stream))
     return `the age must be at least ${stream === "inbox" || stream === "dlv" ? "2h" : "2m"}, the stream's duplicate window, or none`;
-  if (limit.maxAgeMs > HISTORY_MAX_AGE_MS) return "the age must be at most 3650d, or none";
+  if (maxAgeMs > HISTORY_MAX_AGE_MS) return "the age must be at most 3650d, or none";
   return undefined;
 }
 

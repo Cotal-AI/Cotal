@@ -2,11 +2,11 @@
   "suite": [
     "implementations/cli/smoke/history-limit.smoke.ts"
   ],
-  "guard": "cotal history limit reads the four streams' limits with no limit flag and writes nothing, takes none for each age and count, sets INBOX and DLV with one pair, treats a limit set from none as lower and previews it per sender, agent lifecycle and DM pair under an operator census line, counts the stored copies a lower count removes before their durable delivered them, reports a refusal after an earlier stream changed as partial, and reports an update whose reply never came as an unknown outcome.",
+  "guard": "cotal history limit reads the four streams' limits with no limit flag and writes nothing, takes none for each age and count and refuses an age of 0s as below the floor, sets INBOX and DLV with one pair, treats a limit set from none as lower and previews it per sender, agent lifecycle and DM pair under an operator census line, counts the stored copies a lower count removes before their durable delivered them, reports a refusal after an earlier stream changed as partial, and reports an update whose reply never came as an unknown outcome.",
   "command": "pnpm smoke:history-limit",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 61,
+  "minTicks": 64,
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-limit.json",
   "why": [
     "The suite drives the built binary, and its script builds it first, so each mutant is what the suite runs and",
@@ -108,6 +108,16 @@
       "cell": "...and each DM pair over the new count, with every DM older than the new age",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "note": "A count set on a stream that had none deletes every entry past it, unasked."
+    },
+    {
+      "name": "H11 a zero age reads as none",
+      "file": "implementations/cli/src/commands/history-limit.ts",
+      "find": "historyAgeProblem(stream, part.maxAgeMs);",
+      "replace": "(part.maxAgeMs === 0 ? undefined : historyAgeProblem(stream, part.maxAgeMs));",
+      "expectRed": "history limit refuses an age of 0s, which is not none, as usage, before resolving any target",
+      "cell": "history limit refuses an age of 0s, which is not none, as usage, before resolving any target",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "0 is how a limit spells no age, so an age of 0s would remove the age limit instead of being refused."
     }
   ]
 }

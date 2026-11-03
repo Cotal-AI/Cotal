@@ -94,8 +94,8 @@
     {
       "name": "the inbox takes the chat stream's two-minute floor",
       "file": "packages/core/src/backup-config.ts",
-      "find": "  if (limit.maxAgeMs < historyLimitMinAgeMs(stream))\n",
-      "replace": "  if (limit.maxAgeMs < DEFAULT_DUPLICATE_WINDOW_MS)\n",
+      "find": "  if (maxAgeMs < historyLimitMinAgeMs(stream))\n",
+      "replace": "  if (maxAgeMs < DEFAULT_DUPLICATE_WINDOW_MS)\n",
       "expectRed": "setHistoryLimit refuses an age below the two-hour duplicate window on inbox",
       "cell": "setHistoryLimit refuses an age below the two-hour duplicate window on inbox",
       "note": "The broker refuses a `max_age` below the stream's two-hour duplicate window."

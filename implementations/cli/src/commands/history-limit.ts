@@ -1,6 +1,6 @@
 import * as prompts from "../lib/prompts.js";
 import {
-  HISTORY_NO_COUNT, HistoryLimitChanged, HistoryLimitUpdateUnknown, describeHistoryLimit, dialerFor, dlvDurable, formatChatAge, historyLimitOf, historyLimitProblem,
+  HISTORY_NO_COUNT, HistoryLimitChanged, HistoryLimitUpdateUnknown, describeHistoryLimit, dialerFor, dlvDurable, formatChatAge, historyAgeProblem, historyLimitOf, historyLimitProblem,
   historyLimitStreamName, isPrincipalOwnerToken, isPublishPermissionDenied, isStreamNotFound, mintCreds, newIdentity, parseDinboxPrincipal, parseDuration, parseSubject, requireBrokerFloor,
   setHistoryLimit, standaloneConnectOpts, validateCanonicalBackupStreamConfig,
   type HistoryLimit, type HistoryLimitStream,
@@ -82,8 +82,9 @@ export function historyLimitRequest(values: Values): Map<HistoryLimitStream, Par
       else throw usage(`--${pair.count} takes a whole number of at least 1, or none, not "${count}"`);
     }
     for (const stream of pair.streams) {
-      // Each given part is checked with none for the other half, so its own problem is the one named.
-      const ageProblem = part.maxAgeMs === undefined ? undefined : historyLimitProblem(stream, { maxAgeMs: part.maxAgeMs, perSubject: HISTORY_NO_COUNT });
+      // Each given part is checked alone, so its own problem is the one named. A given age is checked
+      // as an age, so 0s is refused as below the floor and only none asks for no age.
+      const ageProblem = part.maxAgeMs === undefined || age === "none" ? undefined : historyAgeProblem(stream, part.maxAgeMs);
       if (ageProblem) throw usage(`--${pair.age}: ${ageProblem}`);
       const countProblem = part.perSubject === undefined ? undefined : historyLimitProblem(stream, { maxAgeMs: 0, perSubject: part.perSubject });
       if (countProblem) throw usage(`--${pair.count}: ${countProblem}`);
