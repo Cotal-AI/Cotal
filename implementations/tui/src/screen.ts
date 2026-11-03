@@ -1,5 +1,5 @@
 import type { Entry } from "./catalog.js"
-import type { Conn, FeedEntry, Mesh, Presence } from "./live.js"
+import type { Conn, FeedEntry, Managed, Mesh, Presence } from "./live.js"
 
 /** One selectable tree row. The key is stable across snapshots, so the cursor stays on the same row
  *  while the roster re-sorts under it. */
@@ -64,15 +64,30 @@ const metaText = (p: Presence, key: string) => {
 }
 
 /** The overview the inspector shows for the selected agent. A field the wire does not carry reads
- *  "not reported"; uptime dates the publishing process and exists only while it is live. */
-export function overview(p: Presence, now: number): { label: string; value: string }[] {
+ *  "not reported". Uptime dates the process: the manager's count for a seat it runs, carried forward
+ *  from when it was read, otherwise the publishing process while it is live. */
+export function overview(p: Presence, now: number, managed: Managed): { label: string; value: string }[] {
+  const row = p.card.kind === "agent" && managed.phase === "rows" ? managed.byId.get(p.card.id) : undefined
+  const uptime = row
+    ? duration(row.uptimeMs + (row.status === "running" && managed.phase === "rows" ? now - managed.readAt : 0))
+    : p.status !== "offline" && p.runtime
+      ? duration(now - p.runtime.startedAt)
+      : "not reported"
   return [
     { label: "status", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === "working" ? " · progress unknown" : ""}` },
     ...(p.card.role ? [{ label: "role", value: p.card.role }] : []),
-    { label: "model", value: metaText(p, "model") ?? "not reported" },
-    { label: "harness", value: metaText(p, "connector") ?? "not reported" },
-    { label: "uptime", value: p.status !== "offline" && p.runtime ? duration(now - p.runtime.startedAt) : "not reported" },
+    { label: "model", value: metaText(p, "model") ?? row?.model ?? "not reported" },
+    { label: "harness", value: metaText(p, "connector") ?? row?.agent ?? "not reported" },
+    ...(row ? [{ label: "runtime", value: row.mode }, { label: "process", value: row.status }] : []),
+    { label: "uptime", value: uptime },
+    ...(p.card.kind === "agent" && !row ? [{ label: "managed", value: managedNote(managed) }] : []),
   ]
+}
+
+const managedNote = (m: Managed) => {
+  if (m.phase === "loading") return "asking the manager…"
+  if (m.phase === "unavailable") return `cannot ask the manager: ${m.reason}`
+  return m.partial ? `not by a manager that answered (${m.partial})` : "not by a manager on this space"
 }
 
 /** Who a feed row is from and where it went, for the line above its text. */

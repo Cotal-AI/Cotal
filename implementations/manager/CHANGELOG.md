@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.138.1
+
+### Patch Changes
+
+- 647defe: Report the seat name and reader failure when last output cannot be read after a launch exit or failed supervised recovery. Keep the original launch/recovery failure and cleanup, but no longer make a broken reader look like an empty screen. Closed-session read failures and failed recovery attaches are also reported as output unavailable rather than silently classified as empty.
+- @cotal-ai/core@0.138.1
+  - @cotal-ai/seat@0.138.1
+  - @cotal-ai/workspace@0.138.1
+
 ## 0.138.0
 
 ### Patch Changes
