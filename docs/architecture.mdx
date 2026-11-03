@@ -164,6 +164,7 @@ Runtimes supply process and terminal control. PTY is built in. tmux, cmux, Orca,
 explicit extensions. Spawned children receive a declared environment and private connection material.
 A tmux seat handle follows its pane after a move and binds stop, interrupt, status and exit waits
 to the server that opened it. A restarted server's reused pane IDs cannot target another seat.
+Its native attach guidance selects the current window and pane by the seat's pane ID.
 cmux workspace inventories and label lookups use a one-second CLI read bound. Missing executables,
 socket errors and timeouts propagate as errors; only a successful query can report an empty inventory.
 Terminal attachment uses a scoped mesh session and can reach a manager on another machine.

@@ -20,7 +20,7 @@ import { EndpointRefusal } from "./endpoint.js";
 import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { LoginPrompt, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, planUninstall } from "./install.js";
+import { applyInstall, planUninstall, startInstalled } from "./install.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
 export interface SetupStep {
@@ -112,7 +112,12 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
     const installed = applyInstall(opts.paths, opts.daemonHome);
     unit = installed.unit;
     outcome = "installed";
-    detail = `${installed.unit} installed, ${installed.lingerAlready ? "linger was already enabled" : "linger enabled"}, restart ${installed.restart}, started by ${installed.wantedBy}`;
+    detail = `${installed.unit} installed${installed.mechanism === "systemd-user" ? `, ${installed.lingerAlready ? "linger was already enabled" : "linger enabled"}` : ""}, restart ${installed.restart}, started by ${installed.wantedBy}`;
+  }
+  if (outcome === "already-installed" && !(await daemonAnswers(opts))) {
+    // A start failure is not evidence that no installation was recorded.
+    startInstalled(opts.paths);
+    detail = `${unit} is already installed; its owned service received a start request`;
   }
   steps.push({ step: "install", outcome, detail });
   opts.report(`service: ${detail}`);
