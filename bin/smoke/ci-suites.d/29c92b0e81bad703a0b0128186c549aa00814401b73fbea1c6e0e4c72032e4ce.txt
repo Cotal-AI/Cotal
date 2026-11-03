@@ -1,0 +1,2 @@
+# A `cotal run` from a managed seat probes the recorded brokers once, as an operator's does (#4018).
+smoke:run-seat-one-sweep

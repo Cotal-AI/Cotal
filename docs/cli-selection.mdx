@@ -777,8 +777,9 @@ A bare command does not treat that offline record as a running mesh;
 name it with `--space` to restart it. An operator command whose target is the selected space, or
 the space registered at its project's root, probes no other recorded broker. When it picks among
 the running meshes instead, it probes the recorded brokers once, and its mode check and its
-connect both read that one result. Managed-seat control resolution and commands that inspect all
-spaces keep their existing probe behavior. `cotal down` / `cotal clean all` still drop an `up` record for the project
+connect both read that one result. A `cotal run` from a managed seat with no `--space` also probes
+them once: its check for acting as the seat and the operator resolve that follows both read that
+result. Commands that inspect all spaces keep their existing probe behavior. `cotal down` / `cotal clean all` still drop an `up` record for the project
 they tear down; a hand-added one they leave alone even when it shares a root, because nothing
 on this machine could write it back.
 
