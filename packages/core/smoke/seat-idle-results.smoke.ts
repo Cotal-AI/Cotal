@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import type { Presence } from "../src/index.js";
-import { nativeLoadFailures, readRosterSample, nativeErrorClass, nativeErrorObserver, nativeErrorContext, loopStallWatch } from "./_seat-idle-results.js";
+import { nativeLoadFailures, readRosterSample, nativeErrorClass, nativeErrorObserver, nativeErrorContext, loopStallWatch, putLatencyProbe } from "./_seat-idle-results.js";
 
 let checks = 0;
 const clean = { requested: 12, up: 12, failed: 0, missingMid: 0, missingEnd: 0, staleMid: 0, staleEnd: 0, endpointErrors: 0, apiErrors: 0, slowConsumers: 0, brokerWarnings: 0 };
@@ -92,4 +92,35 @@ stopStalls();
 block(400); await settle();
 assert.equal(stalls.length, 1, "stopped watch is silent"); checks++;
 assert.throws(() => loopStallWatch(() => {}, 300, -1)); checks++;
+
+// put probe: round robin over publishers, one in flight, slow and failed rows, stats per take
+{
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const calls: string[] = [];
+  const rows: Array<{ epochMs: number; ms: number; failed?: string }> = [];
+  const probe = putLatencyProbe([
+    async () => { calls.push("fast"); await sleep(2); },
+    async () => { calls.push("slow"); await sleep(60); },
+    async () => { calls.push("bad"); await sleep(1); throw Object.assign(new Error("private detail"), { name: "TimeoutError" }); },
+  ], (row) => rows.push(row), 40, 2, 10);
+  await sleep(260);
+  probe.stop();
+  const stats = probe.take();
+  assert.ok(calls.length >= 4 && calls.length <= 26, `calls ${calls.length}`); checks++;
+  assert.deepEqual(calls.slice(0, 3), ["fast", "slow", "bad"]); checks++;
+  assert.equal(stats.n, calls.length); checks++;
+  assert.equal(stats.failed, calls.filter((c) => c === "bad").length); checks++;
+  assert.ok(stats.maxMs >= 60 && stats.p50Ms <= stats.p99Ms && stats.p99Ms <= stats.maxMs, JSON.stringify(stats)); checks++;
+  assert.equal(rows.length, 2, "row limit"); checks++;
+  assert.ok(rows[0].ms >= 60 && rows[0].failed === undefined, JSON.stringify(rows[0])); checks++;
+  assert.equal(rows[1].failed, "TimeoutError"); checks++;
+  assert.ok(!JSON.stringify(rows).includes("private detail")); checks++;
+  const after = probe.take();
+  assert.deepEqual(after, { n: 0, failed: 0, p50Ms: 0, p99Ms: 0, maxMs: 0 }); checks++;
+  const before = calls.length;
+  await sleep(40);
+  assert.equal(calls.length, before, "stopped probe issues no puts"); checks++;
+}
+assert.throws(() => putLatencyProbe([async () => {}], () => {}, 500, -1)); checks++;
+assert.throws(() => putLatencyProbe([], () => {})); checks++;
 console.log(`seat-idle-results: ${checks} assertions passed`);
