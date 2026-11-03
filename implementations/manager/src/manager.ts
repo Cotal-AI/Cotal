@@ -3381,7 +3381,8 @@ export class Manager {
   }
 
   /** The resume entry of one live seat, with no side effect: a preservation cut and a supervised
-   *  seat's record both build it. */
+   *  seat's record both build it. The entry is its own copy, so a caller's write to the plan it was
+   *  handed cannot change the launch the manager keeps supervising (#3241). */
   private resumeEntryOf(a: ManagedAgent, backfillFloor?: number): ManagerResumeAgent {
     const principal = a.userOwner
       ? parsePrincipalKey(a.id)
@@ -3415,7 +3416,7 @@ export class Manager {
     const dependencies = [a.launch.source.configPath];
     if (a.launch.source.kind === "manifest" && a.launch.source.runId)
       dependencies.unshift(join(this.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
-    return {
+    return structuredClone({
       space: this.space,
       name: a.name,
       role: a.role,
@@ -3447,7 +3448,7 @@ export class Manager {
       authorityParent: a.authorityParent,
       startedAt: new Date(a.startedAt).toISOString(),
       ...(backfillFloor !== undefined ? { backfillFloor } : {}),
-    };
+    });
   }
 
   /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the

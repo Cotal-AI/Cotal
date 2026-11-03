@@ -97,7 +97,8 @@ cleanup and alias reuse. The orphan OS process is not reaped by this reconciliat
 The admin control operations `preparePreservation {attemptId}` and
 `commitPreservation {attemptId}` form a crash-safe handshake. Prepare fences new lifecycle/control
 work, waits for already accepted work, and returns a `cotal-manager-resume/v2` non-secret inventory
-without stopping a child. The coordinator must fsync that inventory into its locked maintenance
+without stopping a child. The inventory is the caller's own copy: editing it changes no running
+seat. The coordinator must fsync that inventory into its locked maintenance
 attempt before commit hard-stops and authoritatively awaits managed children without deprovisioning.
 A failed child stop returns `ok: false` with the inventory and per-agent failures; callers must not
 publish a completed maintenance cut. `abortPreservation {attemptId}` returns an abandoned prepare to
