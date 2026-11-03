@@ -66,7 +66,7 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Anycast takes after 0.135.0
+## Anycast takes after 0.137.0
 
 On an authenticated mesh a role holder now shows a role request only after the delivery daemon
 records its take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). The sender gets a notice
