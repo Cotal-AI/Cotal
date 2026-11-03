@@ -714,19 +714,35 @@ try {
   // retry wait is let pass first.
   await sleep(Math.max(0, asked18[1]! + 5_000 + 10_500 - Date.now()));
   const sent18d = await sender.agent.ep.anycastAttributed("inplacerole", "asked across a reconnect nothing reads after");
+  const announcedAt18d: number[] = [];
+  const onAnnounce18d = (i: InboxItem) => { if (i.recvKey === sent18d.msg.id) announcedAt18d.push(Date.now()); };
+  inPlace.agent.on("incoming", onAnnounce18d);
   await until(() => inPlace.agent.inboxKeys().includes(sent18d.msg.id));
-  const announced18d = () => inPlace.incoming.filter((i) => i.recvKey === sent18d.msg.id).length;
   void inPlace.agent.takeChosen("all", (preview) => preview.filter((i) => i.recvKey === sent18d.msg.id), 200);
   const asked18d = await until(() => (asked18.length === 3 ? asked18[2] : undefined), 5000);
+  // The drop and the return can come faster than a poll, so the agent's own edges are recorded.
+  const edges18d: Array<{ connected: boolean; at: number }> = [];
+  const onEdge18d = (e: { connected: boolean }) => edges18d.push({ connected: e.connected, at: Date.now() });
+  inPlace.agent.on("transport", onEdge18d);
   for (const s of proxied) s.destroy();
-  await until(() => !inPlace.agent.transportConnected || undefined, 3000);
-  await until(() => (inPlace.agent.connected && inPlace.agent.transportConnected) || undefined, 15_000);
-  const before18d = announced18d();
+  const down18d = await until(() => edges18d.find((e) => !e.connected)?.at, 3000);
+  const up18d = await until(() => edges18d.find((e) => e.connected && down18d !== undefined && e.at >= down18d)?.at, 15_000);
+  await until(() => inPlace.agent.connected || undefined, 15_000);
   await sleep(Math.max(0, (asked18d ?? Date.now()) + 5_500 - Date.now()));
+  inPlace.agent.off("incoming", onAnnounce18d);
+  inPlace.agent.off("transport", onEdge18d);
+  // Only the arrival is announced before the drop. The link is back while the old take is still out,
+  // so the one announcement after the drop is the old take ending, not the return of the link.
+  const before18d = announcedAt18d.filter((t) => down18d !== undefined && t < down18d).length;
+  const after18d = announcedAt18d.filter((t) => down18d !== undefined && t >= down18d);
   check(
     "18d with no read since the reconnect, the old take ending announces the request once more",
-    asked18d !== undefined && announced18d() === before18d + 1,
-    { asked18d: asked18d !== undefined, before18d, after: announced18d() },
+    asked18d !== undefined && down18d !== undefined && up18d !== undefined && up18d - asked18d < 4_000 && before18d === 1 &&
+      after18d.length === 1 && after18d[0]! - asked18d >= 4_000 && asked18.length === 3,
+    {
+      asked18d: asked18d !== undefined, downFromAsk: asked18d && down18d && down18d - asked18d, upFromAsk: asked18d && up18d && up18d - asked18d,
+      before18d, afterFromAsk: after18d.map((t) => t - (asked18d ?? 0)), asked: asked18.length,
+    },
   );
   await railNc18.close();
   daemon = await startDaemon();
