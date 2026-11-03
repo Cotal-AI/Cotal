@@ -1350,4 +1350,42 @@ log("win", r.index, r.value);
     other === undefined ? "no other-arm entry" : { state: other.state, status: (other as { status?: string }).status });
 }
 
+// #3224: a scope's value is the frozen copy its record carries, live as on resume. Freezing the
+// value in place froze a record a branch returned from OUTSIDE the scope for the rest of the live
+// run, while a resume, which never runs the branch, left it writable: a write after the scope read
+// L2031 live and succeeded on resume, and the effect depending on it diverged (L5001).
+{
+  const P = `
+const a = await spawn("a")
+const rec = { n: 1 }
+const r = await parallel({ x: async () => rec }, { name: "p" })
+let out = "unset"
+try { rec.n = 2; out = "wrote" } catch (w) { out = w.code === "L2031" ? "frozen" : "threw" }
+let viaResult = "unset"
+try { r.x.n = 3; viaResult = "wrote" } catch (w) { viaResult = w.code === "L2031" ? "frozen" : "threw" }
+await notify([a], { decision: "d", outcome: out })
+log("outer", out, viaResult)
+`;
+  const runId = "r-scope-copy";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const j = new Journal({ run: runId });
+  logged.length = 0;
+  await run(P, { runId, pins, journal: j, handler: new SimHandler({}), onLog: sink });
+  const live = logged.find((l) => l[0] === "outer");
+  ok("a record a branch returns from outside the scope stays writable after it, live",
+    live?.[1] === "wrote", live);
+  ok("while the scope's own value is still frozen, live", live?.[2] === "frozen", live);
+  for (const [form, entries] of [["as recorded", j.entries()], ["JSON round-tripped", JSON.parse(JSON.stringify(j.entries())) as JournalEntry[]]] as const) {
+    logged.length = 0;
+    let threw: unknown;
+    try {
+      await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: new SimHandler({}), onLog: sink });
+    } catch (e) { threw = e; }
+    const replayed = logged.find((l) => l[0] === "outer");
+    ok(`and the resume of unchanged source (entries ${form}) completes, reading the same`,
+      threw === undefined && JSON.stringify(replayed) === JSON.stringify(live),
+      { threw: (threw as Error)?.message?.slice(0, 120), replayed, live });
+  }
+}
+
 console.log(`scopes.smoke: ${pass} checks passed`);

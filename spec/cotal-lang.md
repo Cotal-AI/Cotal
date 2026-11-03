@@ -224,8 +224,9 @@ including `xs.length` — writing at `length` appends — and a write past the e
 Two writes are refused:
 
 - **L2031, a frozen value.** Every value that crosses an effect boundary in either direction is
-  deep-frozen: an effect's arguments, its result, the result of a concurrency scope, and the copy of
-  a value the program throws out of one (§9.1). What crossed is what the journal recorded, so it
+  deep-frozen: an effect's arguments, its result, and the copies a concurrency scope carries of the
+  value it returns and of a value the program throws out of it (§9.1). A record a branch returned
+  from outside the scope is not frozen by it. What crossed is what the journal recorded, so it
   cannot change afterwards — through a store too: a journal seeded from serialized entries freezes
   each recorded value on the way in, so a result replayed on resume is as frozen as it was live.
   Build a new value instead (`{ ...record, field: value }`, `[...list, item]`).
@@ -1360,3 +1361,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
 | 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
 | 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |
+| 2026-11-03 | A concurrency scope's value reaches the program as the deep-frozen copy its record carries, live as on resume (§4.3, §10.6), as a thrown value already does (§9.1). Measured before it: a `parallel` branch that returned a record built outside the scope froze that record for the rest of the live run, so a later write raised L2031 live and succeeded on resume, and the effect that depended on it diverged (L5001) on the resume of unchanged source. |
