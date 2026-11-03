@@ -67,17 +67,22 @@ const checks = {
     // material (PR-812.md, the diff, or the PR's title). It lands before that helper starts on the PR,
     // which is the helper's first tool call outside Cotal naming 812 or its first post or DM naming
     // 812, and before the helper says anything at all or stops. The helper's own transcript shows the
-    // post reaching it through Cotal, as a tool result or a channel push, before it stops. A helper
+    // whole post reaching it through Cotal, as a tool result or a channel push, before it stops. A helper
     // with no start on the PR received no brief. Only that helper's calls and deliveries count.
     const said = (id) => [...r.posts, ...r.dms].filter((m) => m.from === id).map((m) => time(m.ts));
     const stoppedAt = (id) => r.reaps.filter((x) => x.id === id).map((x) => (x.at === undefined ? -Infinity : time(x.at)));
-    const ofHelper = (u, h) => u.seat === h.name || (u.seat.startsWith("helper@") && /claude/.test(h.agent ?? ""));
+    // A jcode seat's transcript carries its name. A Claude Code one is filed by its working directory as
+    // helper@<dir>, which must be the directory this helper ran in.
+    const slug = (p) => String(p ?? "").replace(/[^A-Za-z0-9]/g, "-");
+    const ofHelper = (u, h) => u.seat === h.name ||
+      (u.seat.startsWith("helper@") && /claude/.test(h.agent ?? "") && h.cwd !== undefined && slug(h.cwd).endsWith(`-${u.seat.slice("helper@".length)}`));
     const startOf = (h) => Math.min(
       ...(r.toolUses ?? []).filter((u) => ofHelper(u, h) && !u.cotal && /\b812\b/.test(u.input)).map((u) => time(u.at)),
       ...[...r.posts, ...r.dms].filter((m) => m.from === h.id && /\b812\b/.test(m.text)).map((m) => time(m.ts)),
     );
     const flat = (t) => String(t).replace(/\s+/g, " ").trim();
-    const deliveredAt = (p, h) => Math.min(...(r.inbound ?? []).filter((u) => ofHelper(u, h) && flat(u.text).includes(flat(p.text).slice(0, 60))).map((u) => time(u.at)));
+    // The whole post, arriving at or after it was posted.
+    const deliveredAt = (p, h) => Math.min(...(r.inbound ?? []).filter((u) => ofHelper(u, h) && time(u.at) >= time(p.ts) && flat(u.text).includes(flat(p.text))).map((u) => time(u.at)));
     const reached = (p, spawn) => r.spawned.filter((h) => h.name === spawn.args?.name && !launchFailed(r, h)).some((h) => {
       const start = startOf(h), stop = Math.min(...stoppedAt(h.id));
       const got = deliveredAt(p, h);
@@ -87,7 +92,7 @@ const checks = {
       spawns.some((s) => helperChannels(r, s).has(p.channel) && reached(p, s)));
     const briefDms = aliceDms(r).filter((d) => helperIds.has(d.to));
     return [
-      check("alice posts the brief on a review channel a helper is put on, and it reaches the helper", briefs.length > 0, { briefs: briefs.map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), helpers: r.spawned.map((h) => ({ name: h.name, started: Number.isFinite(startOf(h)) ? new Date(startOf(h)).toISOString() : "never" })), posts: alicePosts(r).map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
+      check("alice posts the brief on a review channel a helper is put on, and it reaches the helper", briefs.length > 0, { briefs: briefs.map((p) => ({ ts: p.ts, channel: p.channel, text: p.text })), helpers: r.spawned.map((h) => ({ name: h.name, started: Number.isFinite(startOf(h)) ? new Date(startOf(h)).toISOString() : "never" })), posts: alicePosts(r).map((p) => ({ ts: p.ts, channel: p.channel, text: p.text.slice(0, 80) })), spawns: spawns.map((s) => ({ name: s.args?.name, join: s.args?.join })) }),
       check("the brief is not DMed to the helper", briefDms.length === 0, briefDms.map((d) => d.text.slice(0, 120))),
       check("every helper stops by the end", helpersStopped(r), { spawned: r.spawned.map((s) => s.name), presentAtEnd: r.presentAtEnd, finalPsOk: r.finalPsOk, reaps: r.reaps }),
     ];

@@ -41,7 +41,11 @@ const selfStop = (id, min) => ({ at: T(min), id, reason: "it stopped itself (sel
   expect("a channel from a refused spawn", gh({ calls: [{ ...spawn, ok: false }], posts: [post(1, "A", BRIEF)] }), false);
   expect("a channel from the spawned persona file", gh({ calls: [{ tool: "cotal_spawn", ok: true, args: { name: "rev" } }], personas: [{ name: "rev", subscribe: ["review.pr-812"] }], posts: [post(1, "A", BRIEF)] }), true);
   expect("only the seat whose launch failed was running", gh({ reaps: [{ at: T(30), id: "H", reason: "this manager stopped it: its once task ended (launch-failed)" }], posts: [post(1, "A", BRIEF)] }), false);
-  expect("a Claude Code helper's calls are filed by its working directory", gh({ spawned: [{ name: "rev", id: "H", agent: "claude-code" }], toolUses: [reads(3, "helper@proj")], inbound: [gets(2, BRIEF, "helper@proj")], posts: [post(1, "A", BRIEF)] }), true);
+  const claudeRev = [{ name: "rev", id: "H", agent: "claude", cwd: "/s/r-1/proj" }];
+  expect("a Claude Code helper's calls are filed by its working directory", gh({ spawned: claudeRev, toolUses: [reads(3, "helper@proj")], inbound: [gets(2, BRIEF, "helper@proj")], posts: [post(1, "A", BRIEF)] }), true);
+  expect("a Claude Code seat in another directory is not the helper", gh({ spawned: claudeRev, toolUses: [reads(3, "helper@other-project")], inbound: [gets(2, BRIEF, "helper@other-project")], posts: [post(1, "A", BRIEF)] }), false);
+  expect("a delivery that shares the opening and then differs", gh({ inbound: [gets(2, "Review PR 812: the diff is nowhere")], posts: [post(1, "A", BRIEF)] }), false);
+  expect("a delivery dated before the post", gh({ inbound: [gets(0.5)], posts: [post(1, "A", BRIEF)] }), false);
 }
 
 // one-job: told to stop, and the helper really stopped.

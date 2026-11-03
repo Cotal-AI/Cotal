@@ -5,7 +5,8 @@
 // kept, so every run is read by the same checks whenever it ran, and writes report.md there: a
 // pass/fail grid per scenario, the scenarios the baseline already passes (they prove nothing about
 // the revised text), the runs that ended in an error, and the counts per run. A run that recorded an
-// error, such as a sandbox it could not remove, fails whatever its checks say.
+// error, such as a sandbox it could not remove, fails whatever its checks say. Each get-help brief the
+// check counted is quoted in full, because the check finds it by keywords.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +51,11 @@ const failing = scenarios.flatMap((s) => harnesses.filter((h) => cell("revised",
   return `- ${s.title} on ${h}: ${why || "not run"}`;
 }));
 
+// The get-help check finds the brief by the PR's name and material, which a post that is not a brief
+// can also carry, so every brief it counted is quoted for a reader to confirm.
+const briefs = [...runs].sort().filter(([k, r]) => k.endsWith("|get-help") && r.pass).flatMap(([k, r]) =>
+  (r.checks?.[0]?.detail?.briefs ?? []).map((b) => `### ${k.split("|").slice(0, 2).join(" ")}, #${b.channel} at ${b.ts}\n\n${b.text.split("\n").map((l) => `> ${l}`).join("\n")}\n`));
+
 const errors = [...runs].sort().filter(([, r]) => r.error).map(([k, r]) => `- ${k.split("|").join(" ")}: ${r.error.split("\n")[0]}`);
 
 const countRows = [];
@@ -66,6 +72,8 @@ writeFileSync(join(out, "report.md"), [
   ...(already.length ? already : ["- none"]), "",
   "## Revised runs that fail", "",
   ...(failing.length ? failing : ["- none"]), "",
+  "## Get help briefs the check counted", "",
+  ...(briefs.length ? briefs : ["- none"]), "",
   "## Runs that ended in an error", "",
   ...(errors.length ? errors : ["- none"]), "",
   "## Counts per run", "",
