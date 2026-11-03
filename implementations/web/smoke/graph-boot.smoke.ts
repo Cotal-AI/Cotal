@@ -29,8 +29,8 @@
  * The Monitor page next door already gets this right: `app.js` ends with `refresh(); connect();`,
  * concurrent, not chained. The graph page was the outlier.
  *
- * WHAT THIS RUNS. The two REAL served files, `snapshot.js` and `graph.js`, executed verbatim in a vm
- * context with the browser surface they touch stubbed (4 `document` uses, one canvas, one
+ * WHAT THIS RUNS. The page's REAL served files in a vm context (only graph's ESM syntax is compiled
+ * to CommonJS, with its import resolved to the built helper), with the browser surface they touch stubbed (4 `document` uses, one canvas, one
  * `EventSource`, `fetch`, `requestAnimationFrame`). It is the shipped boot path, not a restatement
  * of it: a cell over a hand-written copy of the boot line would pass whatever the real file did.
  *
@@ -40,6 +40,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import ts from "typescript";
+
+const presence = await import(new URL("../dist/web/presence.js", import.meta.url).href);
 
 const here = dirname(fileURLToPath(import.meta.url));
 const web = join(here, "..", "src", "web");
@@ -171,7 +174,7 @@ function newPage(opts: { refuseMembershipRead?: boolean; channels?: () => unknow
   // agui-frame.js, and the gap surfaced as `window.COTAL_PARTS` being undefined when a message
   // event was handled. That was the harness failing to be the page, not the page failing.
   const html = readFileSync(join(web, "graph.html"), "utf8");
-  const scripts = [...html.matchAll(/<script src="\/([^"]+\.js)"><\/script>/g)].map((m) => m[1]);
+  const scripts = [...html.matchAll(/<script(?: type="module")? src="\/([^"]+\.js)"><\/script>/g)].map((m) => m[1]);
   // The list below is a TRIPWIRE, not the source: the harness runs whatever graph.html names, so a
   // sixth script would be loaded here automatically. What the literal pins is that the stub surface
   // in this file was chosen against THESE five. The last time that set changed under a hardcoded
@@ -179,8 +182,20 @@ function newPage(opts: { refuseMembershipRead?: boolean; channels?: () => unknow
   // as a failure naming its cause. `graph.js` LAST matters on its own: its boot line runs at parse
   // time and reads globals the other four define, so a different order is a different program.
   const ctx = vm.createContext(sandbox);
-  for (const s of scripts)
-    vm.runInContext(readFileSync(join(web, s), "utf8"), ctx, { filename: s });
+  // Native ESM in the browser; compile only its module syntax for this synchronous VM harness.
+  // The import resolves to the real built helper, not a restatement of its age rules.
+  sandbox.exports = {};
+  sandbox.require = (specifier: string) => {
+    if (specifier === "./presence.js") return presence;
+    throw new Error(`unhandled browser import: ${specifier}`);
+  };
+  for (const s of scripts) {
+    const source = readFileSync(join(web, s), "utf8");
+    const code = s === "graph.js" ? ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ESNext },
+    }).outputText : source;
+    vm.runInContext(code, ctx, { filename: s });
+  }
 
   /** Deliver one SSE event through the listener THE PAGE registered, and record a throw rather than
    *  letting it escape, so "did this break the page" is an assertion and not a crashed suite. */
