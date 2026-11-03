@@ -3,11 +3,12 @@
 The Cotal terminal app: one full-screen workspace where you watch, talk to and control agents. It is
 built on OpenCode's terminal UI components (Solid on OpenTUI) and runs on Node.
 
-This package is private. The app lists the spaces registered on this machine and opens one
-read-only: the space every command in the launch folder would pick, or the one you open with enter.
-It shows the roster, the channels, the message feed, the agents waiting for an answer and the state
-of the connection. It cannot send anything or control an agent yet. Its observer is invisible to
-peers, and opening a space writes nothing to the registry and starts no service.
+This package is private. The app lists the spaces registered on this machine and opens one: the
+space every command in the launch folder would pick, or the one you open with enter. It shows the
+roster, the channels, the message feed, the agents waiting for an answer and the state of the
+connection, and it can stop an agent through the manager that runs it. It cannot send anything yet.
+Its observer is invisible to peers, and opening a space writes nothing to the registry and starts no
+service.
 
 ## Running it
 
@@ -38,6 +39,17 @@ columns, as at 80x24, the inspector shrinks to a one-line summary under the conv
 agent overview moves into the conversation. `w` opens the next waiting agent and `1`-`9` a specific
 one, at every width. `?` lists the keys and `ctrl+p` opens the commands.
 
+While a space is open the app asks its managers every 10 seconds which agents they run. A managed
+agent's overview adds its runtime (such as `pty`), whether its process is running, and the uptime the
+manager counts, kept ticking between reads. An agent no manager runs says so, and a space whose
+managers cannot be asked shows the reason instead.
+
+`D` on a selected agent asks `Stop agent <name> via the manager?`. `y` stops it gracefully, `f`
+force-kills it, and `n`, esc or enter cancel. The line above the status bar shows `stopping <name>…`
+or `force-killing <name>…` until the manager answers, then `stopped <name>`, `force-killed <name>` or
+`stop: <error>`. The stop names the agent and not one run of it, as `cotal stop` and the console do,
+so an agent restarted under the same name in the meantime is the one stopped.
+
 The status bar shows the connection: connecting, live, reconnecting while the broker is away (the
 last model stays on screen), closed, or not connected with the reason in the middle.
 
@@ -66,7 +78,9 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
 - `pnpm --filter @cotal-ai/tui smoke` drives the launcher in tmux at 209x52, 97x49 and 80x24
   against an isolated HOME and asserts the frame text. `smoke/shell.smoke.ts` covers the catalog
   and a space that cannot be opened. `smoke/live.smoke.ts` starts its own broker and peers and
-  covers the live screens and a broker restart. It needs Node 26.4, tmux and nats-server, so it is
-  not in `smoke:ci`.
+  covers the live screens and a broker restart. `smoke/control.smoke.ts` runs a real manager with two
+  seats and covers the overview, the confirm and both kinds of stop, and a space with no manager.
+  They need Node 26.4, tmux and nats-server, and the control smoke needs the manager built, so they
+  are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
   list under tmux.
