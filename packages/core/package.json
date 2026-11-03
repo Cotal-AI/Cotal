@@ -60,6 +60,10 @@
       "types": "./dist/subjects.d.ts",
       "import": "./dist/subjects.js"
     },
+    "./advisory-lock": {
+      "types": "./dist/advisory-lock.d.ts",
+      "import": "./dist/advisory-lock.js"
+    },
     "./browser-control": {
       "types": "./dist/browser-control.d.ts",
       "import": "./dist/browser-control.js"

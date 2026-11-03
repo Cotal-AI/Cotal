@@ -31,7 +31,10 @@ in-process plugin does everything.
   not-yet-built feature (see [Limits](#session-lifecycle)).
 - **Per-agent database.** The session SQLite DB is moved per agent
   (`.cotal/opencode/<name>/opencode.db`, rooted at the manager's workspace) so concurrent managed
-  agents don't lock each other or drop files into a target repo. Each launch records its server in
+  agents don't lock each other or drop files into a target repo. A launch first claims the name with
+  a lock file, `launch.lock`, which it holds until it exits. A second launch of the name while the
+  first runs is refused as already running, and a claim left by a launcher that died is reclaimed.
+  Each launch records its server in
   a file of its own in that directory, `serve.<token>.pid` with a token minted for the launch, and
   checks every record there before it starts a server, including a `serve.pid` an earlier version
   wrote. A record that the previous launcher removes during that check counts as no record, and so
