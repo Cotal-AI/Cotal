@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.140.2
+
+### Patch Changes
+
+- 4343432: The manager's managed-agent enrollment reader now accepts a plain `http://` agent bearer exchange URL only for a loopback IP literal, using the same `isLoopbackLiteral` rule as `cotal agent-bearer`. It used to accept `localhost`, a name whose resolution chooses where the actor token travels, and refused loopback literals such as `127.0.0.2` and `[::ffff:127.0.0.1]` that `agent-bearer` accepts.
+- @cotal-ai/core@0.140.2
+  - @cotal-ai/seat@0.140.2
+  - @cotal-ai/workspace@0.140.2
+
 ## 0.140.1
 
 ### Patch Changes
