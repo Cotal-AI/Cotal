@@ -37,6 +37,11 @@ the parent received a line, not the exact collection time. Native trace fields d
 broker's Go version. No memory cap or GC policy changes. Omit `--ram` to observe collections
 without the profiler forcing them, and keep traced runs separate from performance comparisons.
 
+To name what the broker allocates, add `--broker-prof <file>`. After the window's counters
+are read, the harness writes the broker's pprof allocation profile (`/debug/pprof/allocs`) to
+that file without forcing a collection; the Go runtime samples allocations at its default rate
+regardless. Read it with `go tool pprof -top -sample_index=alloc_space <nats-server> <file>`.
+
 `pnpm smoke:seat-idle-go-trace` runs native default and opt-in controls. It requires Linux
 and NATS Server 2.15.1. Other platforms or broker versions emit an explicit skipped sentinel
 with zero executed cells; a missing or unreadable broker remains a failure.

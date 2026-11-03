@@ -60,6 +60,12 @@
  * no memory limit or GC policy; use it without `--ram` to avoid the profiler's forced collections.
  * Trace output adds diagnostic overhead and is not an ordinary performance sample.
  *
+ * `--broker-prof <file>` writes the broker's allocation profile (`/debug/pprof/allocs`, pprof
+ * protobuf, gzip) to `file` after the window's counters are read. The Go runtime samples
+ * allocations at its default rate whether or not anything reads them, and the read forces no
+ * collection, so the window itself is unchanged; `go tool pprof -sample_index=alloc_space` on the
+ * file names what the broker allocated since it started. Off by default.
+ *
  * `--ram` adds the RAM profile. The broker's live heap and goroutines are read from its pprof
  * endpoint after a forced GC at each step of the build-up (empty, message streams, KV buckets and
  * registries, provisioned durables, delivery daemons, seats), so each step's delta is that part's
@@ -93,7 +99,7 @@ import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getHeapSpaceStatistics, writeHeapSnapshot } from "node:v8";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -353,6 +359,7 @@ const RAM = argv.includes("--ram");
 const GO_TRACE = argv.includes("--go-trace");
 const TRACE_ERRORS = argv.includes("--trace-errors");
 const PUT_PROBE = argv.includes("--put-probe");
+const BROKER_PROF = argv.includes("--broker-prof") ? flag("broker-prof") : "";
 const NATS_BIN = process.env.NATS_SERVER_BIN ?? "nats-server";
 
 const REPO = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd: import.meta.dirname }).trim();
@@ -390,7 +397,7 @@ const memAvailableMb = (): number => Number(/MemAvailable:\s+(\d+) kB/.exec(read
 // ---- broker -------------------------------------------------------------------------------------
 const PORT = await pickFreePort();
 const MON_PORT = await pickFreePort();
-const PROF_PORT = RAM ? await pickFreePort() : 0;
+const PROF_PORT = RAM || BROKER_PROF ? await pickFreePort() : 0;
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const tag = randomUUID().slice(0, 6);
 const brokerAuth = await createBrokerAuth(`seat-idle-load-${tag}`);
@@ -398,7 +405,7 @@ const spaceNames = Array.from({ length: SPACES }, (_, i) => `idle-${tag}-${i}`);
 const accounts = await Promise.all(spaceNames.map((s) => createSpaceAccountAuth(brokerAuth, s)));
 const auths: SpaceAuth[] = accounts.map((a) => composeSpaceAuth(brokerAuth, a));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\nhttp: 127.0.0.1:${MON_PORT}\n` + (RAM ? `prof_port: ${PROF_PORT}\n` : ""));
+writeFileSync(join(dir, "server.conf"), serverConfig(brokerAuth, accounts, { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\ndisable_sublist_cache: ${SUBLIST_CACHE === "off"}\nhttp: 127.0.0.1:${MON_PORT}\n` + (PROF_PORT ? `prof_port: ${PROF_PORT}\n` : ""));
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], {
   stdio: ["ignore", "ignore", "pipe"],
   // Scope runtime diagnostics to the broker; esbuild is also a Go program.
@@ -595,6 +602,15 @@ try {
   const seatRss = seatKids.reduce((a, c) => a + procRssMb(c.pid!), 0);
   const memAvail = memAvailableMb();
   const memAt = RAM ? { broker: procMem(srv.pid!), daemon: procMem(daemon.pid!), seats: seatKids.map((c) => procMem(c.pid!)) } : undefined;
+  // Read last, after every window counter, and without `gc=1`: nothing is collected for it.
+  let brokerProf: { bytes: number; sha256: string } | undefined;
+  if (BROKER_PROF) {
+    const res = await fetch(`http://127.0.0.1:${PROF_PORT}/debug/pprof/allocs`);
+    if (!res.ok) throw new Error(`seat-idle-load: broker allocation profile fetch failed: ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    writeFileSync(BROKER_PROF, buf);
+    brokerProf = { bytes: buf.length, sha256: createHash("sha256").update(buf).digest("hex") };
+  }
 
   const N = seatsUp || 1;
   const perMin = (x: number) => (x / winS) * 60 / N;
@@ -623,6 +639,7 @@ try {
   row("broker Go trace", GO_TRACE ? "on (diagnostic overhead)" : "off");
   row("endpoint error trace", TRACE_ERRORS ? "on (diagnostic overhead; 200 rows per child)" : "off");
   row("presence put probe", PUT_PROBE ? "on (about 4 extra puts per second per process; 50 rows per child)" : "off");
+  row("broker allocation profile", brokerProf ? `${brokerProf.bytes} bytes, sha256 ${brokerProf.sha256}, ${BROKER_PROF}` : "off");
   row("host", `${availableParallelism()} cores, ${(totalmem() / 1073741824).toFixed(1)} GB`);
   row("shape", `${SEATS} seats in ${SPACES} space(s) of ${SPACE_SIZE}, ${seatKids.length} seat process(es), heartbeat ${HEARTBEAT ? `${HEARTBEAT}ms (override)` : "endpoint default"}, presence watch ${WATCH_PRESENCE ? "on" : "OFF"}, channel registry watch ${WATCH_PRESENCE && WATCH_CHANNELS ? "on" : "OFF"} (requested ${WATCH_CHANNELS ? "on" : "OFF"})`);
   row("setup (spaces + provisioning) (s)", setupS);
