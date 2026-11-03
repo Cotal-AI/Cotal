@@ -19,13 +19,15 @@
     "",
     "S7 clears every limit the session saw, so one seen while a reply was built is never said.",
     "",
+    "S9 names 1000 whatever count the copy was stored under.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
     {
       "name": "S1 the agent ignores the endpoint's event",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    this.ep.on(\"stored-copies-full\", () => { this._storedCopiesFull++; });\n",
+      "find": "    this.ep.on(\"stored-copies-full\", (full: { limit: number }) => { this._storedCopiesFull++; this._storedCopiesLimit = full.limit; });\n",
       "replace": "",
       "expectRed": "the endpoint's stored-copies-full event marks the session",
       "cell": "the endpoint's stored-copies-full event marks the session"
@@ -65,8 +67,8 @@
     {
       "name": "S6 the notice clears before the reply exists",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "const storedNote = storedSeen ? STORED_COPIES_NOTE : \"\";",
-      "replace": "const storedNote = storedSeen ? STORED_COPIES_NOTE : \"\"; if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);",
+      "find": "const storedNote = storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : \"\";",
+      "replace": "const storedNote = storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : \"\"; if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);",
       "expectRed": "in focus mode a read whose recall throws keeps the notice for the next read",
       "cell": "in focus mode a read whose recall throws keeps the notice for the next read"
     },
@@ -85,6 +87,14 @@
       "replace": "const warning = [connectionWarning, droppedNote(recall.droppedChannels)",
       "expectRed": "in focus mode a read with recall to report carries the notice once",
       "cell": "in focus mode a read with recall to report carries the notice once"
+    },
+    {
+      "name": "S9 the notice names the compiled 1000, not the count the endpoint reported",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "this._storedCopiesLimit = full.limit;",
+      "replace": "this._storedCopiesLimit = 1000;",
+      "expectRed": "the notice names the count the endpoint reported",
+      "cell": "the notice names the count the endpoint reported"
     }
   ]
 }

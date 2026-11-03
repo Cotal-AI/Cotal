@@ -1,16 +1,17 @@
 /**
- * The chat stream's history limit across `cotal up` and backup and restore, on a real stack.
+ * The history limits across `cotal up` and backup and restore, on a real stack.
  *
  * A new space starts with no age limit and 1000 per sender. An existing space on those settings
  * keeps its posts older than 30 days through a `cotal up` that starts its broker, as an upgrade
  * does. The broker dates a post by its own clock, so the suite backdates the posts in the stopped
- * broker's store (`backdateMessages`). A restore holds the chat stream at no age while it checks the
- * restored state, then sets the age the backup recorded, and a backup on the old settings restores
+ * broker's store (`backdateMessages`). A restore holds CHAT, INBOX, DLV and DM at no age while it
+ * checks the restored state, then sets the ages the backup recorded, one stream at a time; a
+ * failure applying a later one rolls the whole attempt back. A backup on the old settings restores
  * on them and keeps them at the next start.
  *
  * The recorded-age scenario waits out the two-minute minimum age between the backup and the
- * restore, so its posts are older than the recorded age when the restore checks them. A restore that
- * applied the age before those checks would watch the broker delete them and refuse. The last
+ * restore, so its posts and DMs are older than the recorded ages when the restore checks them. A
+ * restore that applied an age before those checks would watch the broker delete them and refuse. The last
  * scenario runs `cotal setup --start`, whose start happens in a child process, and checks that a
  * manager identity that does not read after the start is reported as an unknown outcome.
  *
@@ -23,7 +24,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect, nanos } from "@nats-io/transport-node";
-import { PLANE3_MAX_MSGS_PER_SUBJECT, chatStream, dlvStream, inboxStream, type ChatHistoryLimit } from "@cotal-ai/core";
+import { chatStream, dlvStream, dmStream, historyLimitStreamName, inboxStream, type HistoryLimit, type HistoryLimitStream } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, backdateMessages, createSuite, freePort, recordSmokeSandbox, streamMsgsDir } from "@cotal-ai/smoke-kit";
 import { infrastructureMaintenancePermissions } from "../../implementations/cli/src/lib/isolated-broker.js";
 
@@ -50,24 +51,33 @@ function sandbox(label: string) {
   return { root, home, run, runWith, shown, cleanup: () => { for (const dir of [root, home]) rmSync(dir, { recursive: true, force: true }); } };
 }
 
-const limitOf = (config: { max_age?: number; max_msgs_per_subject?: number }): ChatHistoryLimit => ({ maxAgeMs: (config.max_age ?? 0) / 1_000_000, perSender: config.max_msgs_per_subject ?? Number.NaN });
-const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxAgeMs && a.perSender === b.perSender;
+const limitOf = (config: { max_age?: number; max_msgs_per_subject?: number }): HistoryLimit => ({ maxAgeMs: (config.max_age ?? 0) / 1_000_000, perSubject: config.max_msgs_per_subject ?? Number.NaN });
+const same = (a: HistoryLimit | undefined, b: HistoryLimit) => a !== undefined && a.maxAgeMs === b.maxAgeMs && a.perSubject === b.perSubject;
+const HOUR = 60 * MIN;
+const STREAMS: readonly HistoryLimitStream[] = ["chat", "inbox", "dlv", "dm"];
 
-// The login that sets the age reaches the chat stream alone.
-{
-  const permissions = infrastructureMaintenancePermissions("conn", ["CHAT_x"], ["CHAT_x"]) as { pub: { allow: string[] } };
+// The login that sets an age reaches its one stream alone.
+for (const stream of ["CHAT_x", "DM_x"]) {
+  const permissions = infrastructureMaintenancePermissions("conn", [stream], [stream]) as { pub: { allow: string[] } };
   const updates = permissions.pub.allow.filter((subject) => subject.startsWith("$JS.API.STREAM.UPDATE."));
-  check("the restore's age login may update the chat stream and no other", updates.length === 1 && updates[0] === "$JS.API.STREAM.UPDATE.CHAT_x" && !permissions.pub.allow.some((subject) => subject.includes("OBJ_")), permissions.pub.allow);
+  check(`the restore's age login for ${stream} may update it and no other stream`, updates.length === 1 && updates[0] === `$JS.API.STREAM.UPDATE.${stream}` && !permissions.pub.allow.some((subject) => subject.includes("OBJ_")), permissions.pub.allow);
 }
 
-// ── the recorded age lands after the restore's checks ──────────────────────────────────────────────
+// ── the recorded ages land after the restore's checks ──────────────────────────────────────────────
 {
   const s = sandbox("age");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "chl_restore_age";
   const artifact = join(s.root, "backup");
-  const recorded = { maxAgeMs: 2 * MIN, perSender: 2500 };
+  // INBOX and DLV on different limits, as a change that stopped partway leaves them, and DLV with
+  // no count.
+  const recorded: Record<HistoryLimitStream, HistoryLimit> = {
+    chat: { maxAgeMs: 2 * MIN, perSubject: 2500 },
+    inbox: { maxAgeMs: 2 * HOUR, perSubject: 1500 },
+    dlv: { maxAgeMs: 3 * HOUR, perSubject: -1 },
+    dm: { maxAgeMs: 2 * MIN, perSubject: 3 },
+  };
   let up = false;
   try {
     const started = s.run("up", "--detach", "--open", "--server", server, "--space", space);
@@ -76,32 +86,44 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
     const nc = await connect({ servers: server });
     const js = jetstream(nc);
     for (const i of [1, 2, 3]) await js.publish(`cotal.${space}.chat.o.a.general`, JSON.stringify({ i }));
+    for (const i of [1, 2]) await js.publish(`cotal.${space}.inst.o.b.o.a`, JSON.stringify({ dm: i }));
     const writtenAt = Date.now();
+    const set = s.run("history", "limit", "--max-age", "2m", "--per-sender", "2500", "--inbox-max-age", "2h", "--inbox-per-agent", "1500", "--dm-max-age", "2m", "--dm-per-sender", "3", "--yes", "--json", "--space", space);
+    const njsm = await jetstreamManager(nc);
+    const dlv = (await njsm.streams.info(dlvStream(space))).config;
+    await njsm.streams.update(dlvStream(space), { ...dlv, max_age: nanos(recorded.dlv.maxAgeMs), max_msgs_per_subject: recorded.dlv.perSubject });
     await nc.close();
-    const set = s.run("history", "limit", "--max-age", "2m", "--per-sender", "2500", "--yes", "--json", "--space", space);
-    check("control: the source takes a 2-minute age and a count above 1000", set.status === 0, s.shown(set));
+    check("control: the source takes an age and a count on each of the four streams", set.status === 0, s.shown(set));
     const preserved = s.run("down", "--preserve-state");
     up = preserved.status !== 0;
     const backed = s.run("backup", "create", artifact);
     check("control: the backup is taken", preserved.status === 0 && backed.status === 0, { down: s.shown(preserved), backup: s.shown(backed) });
     const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as { streams: { stream: string; config: { max_age?: number; max_msgs_per_subject?: number } }[] };
-    const chat = manifest.streams.find((row) => row.stream === chatStream(space));
-    check("the backup records the chat stream's limit", chat !== undefined && same(limitOf(chat.config), recorded), chat?.config);
+    const recordedIn = (stream: HistoryLimitStream) => manifest.streams.find((row) => row.stream === historyLimitStreamName(space, stream));
+    check("the backup records each stream's limit", STREAMS.every((stream) => { const row = recordedIn(stream); return row !== undefined && same(limitOf(row.config), recorded[stream]); }), STREAMS.map((stream) => recordedIn(stream)?.config));
 
     const due = writtenAt + 2 * MIN + 5_000 - Date.now();
     if (due > 0) await wait(due);
+    // The age applied last in the manifest's order fails, after the ones before it landed.
+    const ordered = manifest.streams.map((row) => row.stream).filter((name) => STREAMS.some((stream) => historyLimitStreamName(space, stream) === name));
+    const lastAged = ordered[ordered.length - 1]!;
+    const faulted = s.runWith({ COTAL_SMOKE_FAIL_RESTORE_STREAM: `age:${lastAged}` }, "up", "--restore", artifact, "--detach", "--server", server, "--space", space);
+    check(`a failure applying a later age (${lastAged}) fails the restore with it`, faulted.status !== 0 && faulted.stderr.includes(`smoke-injected failure applying the recorded age of ${lastAged}`), s.shown(faulted));
     const restored = s.run("up", "--restore", artifact, "--detach", "--server", server, "--space", space);
     up = restored.status === 0;
-    check("a restore whose posts are older than the recorded age passes its checks", restored.status === 0, s.shown(restored));
+    check("...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts and DMs older than the recorded ages", restored.status === 0, s.shown(restored));
     const rc = await connect({ servers: server });
     const jsm = await jetstreamManager(rc);
-    const info = await jsm.streams.info(chatStream(space));
-    check("...then holds the recorded age and count", info.config.max_age === nanos(recorded.maxAgeMs) && info.config.max_msgs_per_subject === recorded.perSender, limitOf(info.config));
-    let messages = info.state.messages;
-    for (let i = 0; i < 50 && messages !== 0; i++) { await wait(200); messages = (await jsm.streams.info(chatStream(space))).state.messages; }
-    check("...and the broker deletes the posts older than it", messages === 0, messages);
-    const plane3 = await Promise.all([inboxStream(space), dlvStream(space)].map(async (name) => (await jsm.streams.info(name)).config));
-    check("INBOX and DLV come back with their own bound", plane3.every((c) => c.max_msgs_per_subject === PLANE3_MAX_MSGS_PER_SUBJECT && c.max_age === 0), plane3.map((c) => [c.name, c.max_msgs_per_subject, c.max_age]));
+    const held = Object.fromEntries(await Promise.all(STREAMS.map(async (stream) => [stream, limitOf((await jsm.streams.info(historyLimitStreamName(space, stream))).config)] as const))) as Record<HistoryLimitStream, HistoryLimit>;
+    check("...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count", STREAMS.every((stream) => same(held[stream], recorded[stream])), held);
+    let left = -1;
+    for (let i = 0; i < 50 && left !== 0; i++) {
+      left = (await jsm.streams.info(chatStream(space))).state.messages + (await jsm.streams.info(dmStream(space))).state.messages;
+      if (left !== 0) await wait(200);
+    }
+    check("...and the broker deletes the posts and DMs older than their ages", left === 0, left);
+    const inbox = (await jsm.streams.info(inboxStream(space))).config;
+    check("control: the inbox keeps its own two-hour age", inbox.max_age === nanos(2 * HOUR), inbox.max_age);
     await rc.close();
   } catch (e) {
     // A throw ends the scenario, not the suite, so the next one still runs and the summary prints.
@@ -176,7 +198,7 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
   const server = `nats://127.0.0.1:${port}`;
   const space = "chl_restore_old";
   const artifact = join(s.root, "backup");
-  const old = { maxAgeMs: 0, perSender: 1000 };
+  const old = { maxAgeMs: 0, perSubject: 1000 };
   let up = false;
   try {
     const started = s.run("up", "--detach", "--open", "--server", server, "--space", space);
@@ -193,9 +215,12 @@ const same = (a: ChatHistoryLimit, b: ChatHistoryLimit) => a.maxAgeMs === b.maxA
     up = restored.status === 0;
     check("control: the restore succeeds", up, s.shown(restored));
     const rc = await connect({ servers: server });
-    const after = await (await jetstreamManager(rc)).streams.info(chatStream(space));
+    const rjsm = await jetstreamManager(rc);
+    const after = await rjsm.streams.info(chatStream(space));
+    const others = await Promise.all([inboxStream(space), dlvStream(space), dmStream(space)].map(async (name) => limitOf((await rjsm.streams.info(name)).config)));
     await rc.close();
     check("a backup on the old settings, no age and 1000 per sender, restores on them", same(limitOf(after.config), old) && after.state.messages === 1, { limit: limitOf(after.config), messages: after.state.messages });
+    check("...with INBOX and DLV at 1000 per agent and DM with no count, as every space before their limits were configurable", same(others[0], { maxAgeMs: 0, perSubject: 1000 }) && same(others[1], { maxAgeMs: 0, perSubject: 1000 }) && same(others[2], { maxAgeMs: 0, perSubject: -1 }), others);
 
     const stopped = s.run("down");
     up = stopped.status !== 0;

@@ -60,7 +60,7 @@ import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
-import { PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
+import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT, PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
   jetstream,
   jetstreamManager,
@@ -200,6 +200,19 @@ export { isPermissionDenied };
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
+/** How long the trusted writer reuses its read of the DLV count before reading it again. */
+const DELIVERY_LIMIT_READ_MS = 5_000;
+
+/** The DLV count a stored copy was written under, from its {@link DELIVERY_LIMIT_HEADER} (SPEC §8):
+ *  a whole number of at least 1, null for `none`, and 1000 when the header is absent, since only a
+ *  daemon from before the count was configurable writes a copy without it and its count was 1000.
+ *  Throws on any other value. */
+export function deliveryLimitOf(value: string | undefined): number | null {
+  if (value === undefined || value === "") return PLANE3_MAX_MSGS_PER_SUBJECT;
+  if (value === "none") return null;
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`plane-3 delivery: ${DELIVERY_LIMIT_HEADER} ${JSON.stringify(value)} is not a count`);
+  return Number(value);
+}
 
 interface Plane3DeliveryFrame {
   version: 1;
@@ -491,9 +504,10 @@ export interface TransportState {
  * terminal close). Lets an in-process agent track connectedness off the endpoint's own (re)binds
  * instead of an imperative flag the self-heal path can't reach; "transport" ({ connected, server? })
  * is the lower-level NATS socket edge, true before the full bind finishes and false during an internal
- * nats.js reconnect without changing `connection` readiness. "stored-copies-full" (no payload): a stored
- * copy arrived with the store at its {@link PLANE3_MAX_MSGS_PER_SUBJECT}-copy limit, so the limit may have
- * discarded older copies before this session read them; emitted for each such copy.
+ * nats.js reconnect without changing `connection` readiness. "stored-copies-full" ({ limit: number }): a
+ * stored copy arrived with the store at the count the copy was written under ({@link deliveryLimitOf}),
+ * so the store may have discarded older copies before this session read them; emitted for each such
+ * copy. A lowering of the count or an age set on the store removes copies without this event.
  *
  * Callers MUST attach an "error" listener before `start()`: async faults (incl. NATS
  * permission denials, surfaced via `watchStatus`) are emitted as "error", and Node throws
@@ -6522,6 +6536,19 @@ export class CotalEndpoint extends EventEmitter {
     m.ack();
   }
 
+  private deliveryLimitRead?: { at: number; stamp: string };
+
+  /** The DLV count the trusted writer stamps on a copy (SPEC §8): the stream's `max_msgs_per_subject`,
+   *  read at most {@link DELIVERY_LIMIT_READ_MS} before the write, as a whole number or `none`. */
+  private async deliveryLimitStamp(): Promise<string> {
+    const at = Date.now();
+    if (this.deliveryLimitRead && at - this.deliveryLimitRead.at < DELIVERY_LIMIT_READ_MS) return this.deliveryLimitRead.stamp;
+    const count = (await this.jsm!.streams.info(dlvStream(this.space))).config.max_msgs_per_subject;
+    const stamp = count === HISTORY_NO_COUNT || count < 1 ? "none" : String(count);
+    this.deliveryLimitRead = { at, stamp };
+    return stamp;
+  }
+
   /** Trusted-reader loop: bind the single privileged `reader` durable over `dinbox.>` and re-authorize
    *  + transfer each entry. */
   private async runReader(): Promise<void> {
@@ -6653,6 +6680,7 @@ export class CotalEndpoint extends EventEmitter {
       };
       const frameHeaders = headers();
       frameHeaders.set(PLANE3_FRAME_HEADER, "1");
+      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
@@ -6705,11 +6733,15 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
-        // A copy with a full store behind it means the store held its limit, so older copies may have
-        // been discarded unread (#5404); NATS gives no notice of the discard itself. Checked on every
-        // delivery, ahead of the checks below and the connector's id dedupe, so a copy the agent also
-        // got live cannot hide it. The connector folds repeats into one notice.
-        if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit("stored-copies-full");
+        // A copy with a full store behind it means the store held its count, so older copies may have
+        // been discarded unread (#5404); NATS gives no notice of the discard itself. The count is the
+        // one the trusted writer stamped on this copy. Checked on every delivery, ahead of the checks
+        // below and the connector's id dedupe, so a copy the agent also got live cannot hide it. The
+        // connector folds repeats into one notice.
+        let limit: number | null;
+        try { limit = deliveryLimitOf(m.headers?.get(DELIVERY_LIMIT_HEADER)); }
+        catch (e) { this.emit("error", e as Error); limit = null; }
+        if (limit !== null && m.info.pending >= limit - 1) this.emit("stored-copies-full", { limit });
         // The header is minted only by the trusted DLV writer. A body-only discriminator is
         // insufficient because old Cotal envelopes permit unknown fields and could imitate it.
         if (m.headers?.get(PLANE3_FRAME_HEADER) !== "1") {
