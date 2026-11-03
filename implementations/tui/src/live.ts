@@ -1,5 +1,6 @@
-import { chatWildcard } from "@cotal-ai/core"
+import { chatWildcard, DEV_OWNER, parsePrincipalKey, principalKey } from "@cotal-ai/core"
 import { connectOrThrow, isCommandFailure, isConnectRefusal, oneLine, userViewAuth } from "@cotal-ai/workspace"
+import { controlPs, type ControlClient, type ControlCtx, type ManagedRow } from "@cotal-ai/workspace/control"
 import { MeshView, openObserver, type MeshSnapshot } from "@cotal-ai/workspace/view"
 import { createSignal, type Accessor } from "solid-js"
 
@@ -17,9 +18,22 @@ export type Conn =
   | { phase: "closed"; space?: string }
   | { phase: "failed"; space?: string; message: string; remedy?: string }
 
-export type Session = { conn: Accessor<Conn>; close: () => Promise<void> }
+/** What the space's managers last said about the seats they run, keyed by the seat's presence card id.
+ *  A failed read is `unavailable` until a later read succeeds. `partial` names the managers that did
+ *  not answer, whose seats are missing from `byId`. */
+export type Managed =
+  | { phase: "loading" }
+  | { phase: "rows"; byId: ReadonlyMap<string, ManagedRow>; readAt: number; partial?: string }
+  | { phase: "unavailable"; reason: string }
+
+export type Session = { conn: Accessor<Conn>; managed: Accessor<Managed>; close: () => Promise<void> }
 
 const OBSERVER_NAME = "tui"
+const PS_POLL_MS = 10_000
+
+// A manager names an open- or static-mode seat by its bare actor id, while its presence card carries
+// the principal `local.<actor>`; a user-mode seat's id is already the principal.
+const principalOf = (row: ManagedRow) => (parsePrincipalKey(row.id) ? row.id : principalKey(DEV_OWNER, row.id).key)
 
 // MeshView hands out the same feed entry and presence objects until they change, so each is cleaned
 // once and keeps its identity, and Solid redraws only rows that changed.
@@ -48,8 +62,32 @@ function failed(space: string | undefined, e: unknown): Conn {
  *  would pick. The observer is invisible to peers and nothing is written to the registry. */
 export function openSpace(space?: string): Session {
   const [conn, setConn] = createSignal<Conn>({ phase: "connecting", space })
+  const [managed, setManaged] = createSignal<Managed>({ phase: "loading" })
   let view: MeshView | undefined
+  let ctx: ControlCtx | undefined
+  let timer: ReturnType<typeof setInterval> | undefined
+  let reading = false
   let closed = false
+
+  const client: ControlClient = {
+    versionSkew: (detail, undeclared, managerVersion) =>
+      `${detail}. The manager does not declare "${undeclared}", so it runs another Cotal release than this app${managerVersion ? ` (the manager reports ${managerVersion})` : " and did not report its version"}. Run both at the same release.`,
+    roster: async () => view?.snapshot().agents ?? [],
+  }
+
+  const readManaged = async () => {
+    if (reading || !ctx || closed) return
+    reading = true
+    try {
+      const r = await controlPs(client, ctx)
+      if (closed) return
+      if (!r.ok) return void setManaged({ phase: "unavailable", reason: safe(r.error) })
+      const missing = [...r.failed.map((f) => `${f.instanceId}: ${f.error}`), ...(r.silent.length ? [`${r.silent.length} manager(s) gave no answer: ${r.silent.join(", ")}`] : [])]
+      setManaged({ phase: "rows", byId: new Map(r.rows.map((row) => [principalOf(row), safe(row)])), readAt: Date.now(), ...(missing.length ? { partial: safe(missing.join("; ")) } : {}) })
+    } finally {
+      reading = false
+    }
+  }
 
   void (async () => {
     try {
@@ -70,6 +108,9 @@ export function openSpace(space?: string): Session {
       }
       v.on("change", show)
       show(v.snapshot())
+      ctx = { space: c.space, server: c.server }
+      void readManaged()
+      timer = setInterval(() => void readManaged(), PS_POLL_MS)
     } catch (e) {
       if (!closed) setConn(failed(space, e))
     }
@@ -77,9 +118,11 @@ export function openSpace(space?: string): Session {
 
   return {
     conn,
+    managed,
     close: async () => {
       if (closed) return
       closed = true
+      clearInterval(timer)
       setConn({ phase: "closed", space: conn().space })
       await view?.stop()
     },
