@@ -207,7 +207,9 @@ export function setRecipient(state: ChatState, recipient: Recipient): ChatState 
 /** `/reply`: answer the latest received DM or role task still in the transcript. */
 export function replyToLatest(state: ChatState): ChatState {
   const m = latestDirected(state.transcript.flatMap((e) => (e.kind === "message" ? [e.message] : [])));
-  return m ? { ...state, recipient: replyRecipient(m) ?? state.recipient } : notice(state, "hint", "nothing to reply to: no direct message or role task is in this session's transcript");
+  if (!m) return notice(state, "hint", "nothing to reply to: no direct message or role task is in this session's transcript");
+  const to = replyRecipient(m, state.identity.principal);
+  return "refused" in to ? notice(state, "hint", to.refused) : { ...state, recipient: to };
 }
 
 export function applyEnded(state: ChatState, close: CloseReport): ChatState {

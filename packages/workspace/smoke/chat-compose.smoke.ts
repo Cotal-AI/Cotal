@@ -2,14 +2,15 @@
  * Chat composer rules pure smoke (no broker, no session).
  *
  * SCOPE, stated honestly: this checks the pure rules in `chat/compose.ts` that every human chat
- * front end shares: slash parsing, typed recipients, the reply recipient and the close summary.
+ * front end shares: slash parsing, typed recipients, the reply recipient, the publish routing, the
+ * publish outcome and the close summary.
  * The CLI's own suites cover how `cotal chat` folds the Enter, publish and slash rules into its
  * state. Nothing here opens a session or proves any native behavior.
  *
  * Run: pnpm smoke:chat-compose
  */
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { closeSummary, parseRecipient, parseSlash, replyRecipient, runsOffline, type CloseReport, type SessionIdentity, type SessionMessage } from "../src/chat/index.js";
+import { closeSummary, parseRecipient, parseSlash, publish, recipientLabel, replyRecipient, runsOffline, settlePublish, type AdmittedChatSession, type CloseReport, type PublishResult, type Recipient, type SessionIdentity, type SessionMessage } from "../src/chat/index.js";
 
 const { check, finish } = createSuite();
 
@@ -53,18 +54,60 @@ console.log("2. closeSummary: open mode claims routing only");
   check("static close with an unconfirmed connection names the credential's validity", new RegExp(new Date(until).toISOString()).test(closeSummary(st, { retirement: "requested", connectionClosed: "not-confirmed", credentialValidUntil: until, message: "" })));
 }
 
-console.log("3. a reply addresses the sender's principal");
+console.log("3. a reply goes where the message came from, quoting its id");
 {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const self = identity.principal;
   const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "u_a.alice", name: "alice" } });
-  const r = replyRecipient(task);
+  const r = replyRecipient(task, self);
   check("a reply to a role task addresses its sender's principal and quotes the task id",
-    JSON.stringify(r) === JSON.stringify({ kind: "peer", principal: "u_a.alice", name: "alice", replyTo: "t1" }), r);
-  const dm = replyRecipient(msg({ id: "d1", from: { id: "u_b.alice", name: "alice" } }));
-  check("a reply to a DM addresses its sender's principal", dm?.kind === "peer" && dm.principal === "u_b.alice" && dm.replyTo === "d1", dm);
-  check("a channel message has no reply recipient, so the current one stays", replyRecipient(msg({ kind: "channel", channel: "review" })) === undefined);
+    same(r, { kind: "peer", principal: "u_a.alice", name: "alice", replyTo: "t1" }), r);
+  const dm = replyRecipient(msg({ id: "d1", from: { id: "u_b.alice", name: "alice" } }), self);
+  check("a reply to a DM addresses its sender's principal", same(dm, { kind: "peer", principal: "u_b.alice", name: "alice", replyTo: "d1" }), dm);
+  const post = replyRecipient(msg({ id: "c1", kind: "channel", channel: "review" }), self);
+  check("a reply to a channel message is answered on its channel, quoting its id", same(post, { kind: "channel", channel: "review", replyTo: "c1" }), post);
+  const ownPost = replyRecipient(msg({ id: "c2", kind: "channel", channel: "review", from: { id: self, name: "me" } }), self);
+  check("your own channel message can be answered on its channel", same(ownPost, { kind: "channel", channel: "review", replyTo: "c2" }), ownPost);
+  const ownDm = replyRecipient(msg({ id: "d2", from: { id: self, name: "me" } }), self);
+  const ownTask = replyRecipient(msg({ id: "t2", kind: "anycast", from: { id: self, name: "me" } }), self);
+  check("a reply to your own DM or role task refuses", same(ownDm, { refused: "that is your own message" }) && same(ownTask, ownDm), { ownDm, ownTask });
+  check("a channel reply reads as a reply", recipientLabel({ kind: "channel", channel: "review", replyTo: "c1" }, "Tab") === "#review (reply)");
 }
 
-console.log("4. parseRecipient: a typed recipient");
+console.log("4. publish: the routing a draft takes through the session");
+{
+  const calls: unknown[][] = [];
+  const stored: PublishResult = { outcome: "stored", messageId: "x", channel: "general", registered: true };
+  const recording = {
+    send: async (...a: unknown[]) => { calls.push(["send", ...a]); return stored; },
+    dm: async (...a: unknown[]) => { calls.push(["dm", ...a]); return stored; },
+    anycast: async (...a: unknown[]) => { calls.push(["anycast", ...a]); return stored; },
+  } as unknown as AdmittedChatSession;
+  await publish(recording, { kind: "channel", channel: "general" }, "hi @planner and @coder-2 now");
+  check("a channel post carries the @names its text holds as mentions", JSON.stringify(calls.pop()) === JSON.stringify(["send", "hi @planner and @coder-2 now", "general", ["planner", "coder-2"], null]));
+  await publish(recording, { kind: "channel", channel: "general", replyTo: "c1" }, "agreed");
+  check("a channel reply carries its replyTo to the session", JSON.stringify(calls.pop()) === JSON.stringify(["send", "agreed", "general", [], "c1"]));
+  await publish(recording, { kind: "peer", principal: "u_a.alice", name: "alice", replyTo: "d1" }, "hi @planner");
+  check("a peer reply goes by principal with its replyTo", JSON.stringify(calls.pop()) === JSON.stringify(["dm", { principal: "u_a.alice" }, "hi @planner", "d1"]));
+}
+
+console.log("5. settlePublish: a stored reply is answered once");
+{
+  const stored: PublishResult = { outcome: "stored", messageId: "x", channel: "review", registered: true };
+  const reply: Recipient = { kind: "channel", channel: "review", replyTo: "c1" };
+  const after = settlePublish({ to: reply, draft: "ok" }, stored, { recipient: reply, draft: "ok" });
+  check("a stored channel reply drops its replyTo and stays on the channel", JSON.stringify(after.recipient) === JSON.stringify({ kind: "channel", channel: "review" }) && after.draft === "", after);
+  const peer: Recipient = { kind: "peer", principal: "u_a.alice", name: "alice", replyTo: "d1" };
+  const dmAfter = settlePublish({ to: peer, draft: "ok" }, { outcome: "stored", messageId: "y", recipient: { id: "u_a.alice", name: "alice" }, recipientStatusAtSend: "idle" }, { recipient: peer, draft: "ok" });
+  check("a stored peer reply drops its replyTo", JSON.stringify(dmAfter.recipient) === JSON.stringify({ kind: "peer", principal: "u_a.alice", name: "alice" }), dmAfter);
+  const other: Recipient = { kind: "channel", channel: "general" };
+  const changed = settlePublish({ to: reply, draft: "ok" }, stored, { recipient: other, draft: "next" });
+  check("a recipient changed during the send is kept, and so is a changed draft", changed.recipient === other && changed.draft === "next", changed);
+  const refused = settlePublish({ to: reply, draft: "ok" }, { outcome: "refused", code: "PERMISSION_DENIED", message: "no" }, { recipient: reply, draft: "ok" });
+  check("a refused reply keeps its replyTo and its draft", refused.recipient === reply && refused.draft === "ok", refused);
+}
+
+console.log("6. parseRecipient: a typed recipient");
 {
   const typed = (text: string) => { const parsed = parseRecipient(text); return parsed.ok ? undefined : parsed.error; };
   check("a typed channel holding * or > gets the sentence cotal send -c gives",

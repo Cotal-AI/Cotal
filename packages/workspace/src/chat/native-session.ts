@@ -271,14 +271,14 @@ export class NativeChatSession implements AdmittedChatSession {
 
   // ---- publish ---------------------------------------------------------------------------------
 
-  async send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult> {
+  async send(text: string, channel: string, mentions: readonly string[], replyTo?: string): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
     const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words);
     if (outside) return outside;
     let registered: boolean;
     try {
       registered = this.inputs.endpoint.getChannelConfig(channel) !== undefined;
-      const msg = await this.inputs.endpoint.multicast(text, { channel, ...(mentions.length ? { mentions: [...mentions] } : {}) });
+      const msg = await this.inputs.endpoint.multicast(text, { channel, ...(mentions.length ? { mentions: [...mentions] } : {}), ...(replyTo !== undefined ? { replyTo } : {}) });
       // Native multicast awaits the stream ack but does not return it (endpoint.ts:4231-4236): no seq.
       return { outcome: "stored", messageId: msg.id, channel, registered };
     } catch (e) {
