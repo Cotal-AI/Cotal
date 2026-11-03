@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, connect as tcpConnect, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
@@ -89,6 +90,37 @@ const thrown = async (fn: () => Promise<unknown>): Promise<unknown> => {
   try { await fn(); return undefined; } catch (e) { return e; }
 };
 
+/** A TCP hop to a broker. Armed, it holds every byte the broker sends a connection from the moment
+ *  that connection asks for DLV's stream info, until released: the daemon's count read hangs while
+ *  the cell acts. */
+async function hopTo(port: number): Promise<{ servers: string; arm(): void; holding(): boolean; release(): void; close(): void }> {
+  let armed = false, held = false;
+  const waiting: (() => void)[] = [];
+  const server: Server = createServer((client) => {
+    const upstream = tcpConnect(port, "127.0.0.1");
+    let holdingThis = false;
+    const parked: Buffer[] = [];
+    client.on("data", (chunk) => {
+      upstream.write(chunk);
+      if (armed && !held && /\$JS\.API\.STREAM\.INFO\.DLV_/.test(chunk.toString("latin1"))) {
+        held = holdingThis = true;
+        waiting.push(() => { holdingThis = false; for (const b of parked.splice(0)) client.write(b); });
+      }
+    });
+    upstream.on("data", (chunk) => { if (holdingThis) parked.push(chunk); else client.write(chunk); });
+    for (const [a, b] of [[client, upstream], [upstream, client]] as const) { a.on("error", () => b.destroy()); a.on("close", () => b.destroy()); }
+  });
+  const hopPort = await pickFreePort();
+  await new Promise<void>((resolve) => server.listen(hopPort, "127.0.0.1", resolve));
+  return {
+    servers: `nats://127.0.0.1:${hopPort}`,
+    arm() { armed = true; },
+    holding: () => held,
+    release() { armed = false; for (const go of waiting.splice(0)) go(); },
+    close() { server.close(); },
+  };
+}
+
 /** One broker on a free port over a store directory that outlives a restart. */
 async function broker(conf: (port: number, storeDir: string) => string): Promise<{ servers: string; restart(): Promise<void>; stop(): Promise<void> }> {
   const port = await pickFreePort();
@@ -124,6 +156,8 @@ const S = `chl${randomUUID().slice(0, 6)}`;
 const auth = await createSpaceAuth(S);
 const authBroker = await broker((port, storeDir) => serverConfig(auth, [auth], { port, host: "127.0.0.1", storeDir, transport: { kind: "plaintext" } }));
 const endpoints: CotalEndpoint[] = [];
+// The delivery daemon reaches the broker through the hop, so the last auth cell can hold its count read.
+const daemonHop = await hopTo(Number(new URL(authBroker.servers).port));
 try {
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
   const nc = await connect({ servers: authBroker.servers, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
@@ -181,7 +215,7 @@ try {
   // eviction from another channel's removal. SPEC §4 bounds the durable guarantee by the limit.
   console.log("\ndurable join catch-up over the stream's limits (auth mode):");
   const mgr = new CotalEndpoint({ space: S, servers: authBroker.servers, creds: provisioner, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
-  const daemon = new CotalEndpoint({ space: S, servers: authBroker.servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
+  const daemon = new CotalEndpoint({ space: S, servers: daemonHop.servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
   for (const ep of [mgr, daemon]) { ep.on("error", () => {}); await ep.start(); endpoints.push(ep); }
   await daemon.startPlane3((owner, lifecycleUid) => daemon.aclForOwner(owner, lifecycleUid));
   const posterId = newIdentity(), posterUid = mintLifecycleUid();
@@ -346,6 +380,19 @@ try {
   const read999 = await old999.read("old-998");
   check("999 copies without the stamp give no notice", read999.arrived && read999.notices.length === 0, { ...read999, notices: read999.notices.slice(0, 3) });
 
+  // The count read is broker I/O between the writer's shard fence and its write. A daemon that stands
+  // down while it waits must not write the copy: its successor transfers the entry.
+  const fenced = await agent("stamp.f");
+  await wait(STAMP_READ_MS);
+  daemonHop.arm();
+  await post("stamp.f", 1, "fenced");
+  const heldRead = await until(() => daemonHop.holding(), 10_000);
+  await daemon.quiescePlane3();
+  daemonHop.release();
+  await wait(2_000);
+  check("the rig: the writer's DLV count read was held while the daemon stood down", heldRead && daemon.plane3IsQuiesced(), { heldRead, quiesced: daemon.plane3IsQuiesced() });
+  check("a daemon that stands down during its count read writes no stored copy", await fenced.stored() === 0, await fenced.stored());
+
   await membership.close();
   await nc.close();
 } catch (e) {
@@ -353,6 +400,7 @@ try {
   check(`the auth phase ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
   for (const ep of endpoints.splice(0)) await ep.stop().catch(() => {});
+  daemonHop.close();
   await authBroker.stop();
 }
 

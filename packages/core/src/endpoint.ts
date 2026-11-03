@@ -6681,6 +6681,8 @@ export class CotalEndpoint extends EventEmitter {
       const frameHeaders = headers();
       frameHeaders.set(PLANE3_FRAME_HEADER, "1");
       frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());
+      // The count read above may be broker I/O, so the fence is asked again before the write.
+      if (!this.plane3MayAct()) return;
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).

@@ -6,7 +6,7 @@
   "command": "pnpm smoke:chat-history-limit",
   "completionMarker": "chat-history-limit:",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 77,
+  "minTicks": 79,
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/chat-history-limit.json",
   "why": [
     "The suite imports core from `src`, so no build is needed and each mutant is what the suite runs. Every cell",
@@ -191,6 +191,15 @@
       "replace": "    const cap = 1000;\n    let maxPerSubject = 0;",
       "expectRed": "recall reports a channel where a sender passed the stream's per-sender count",
       "cell": "recall reports a channel where a sender passed the stream's per-sender count"
+    },
+    {
+      "name": "the writer acts on its stamp read without asking the fence again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      // The count read above may be broker I/O, so the fence is asked again before the write.\n      if (!this.plane3MayAct()) return;\n",
+      "replace": "",
+      "expectRed": "a daemon that stands down during its count read writes no stored copy",
+      "cell": "a daemon that stands down during its count read writes no stored copy",
+      "note": "A daemon that lost the shard while it read the count would still write the copy, which is the write the fence exists to stop."
     }
   ]
 }
