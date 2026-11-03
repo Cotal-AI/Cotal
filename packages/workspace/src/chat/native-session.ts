@@ -85,15 +85,15 @@ const GAP_COALESCE_MS = 1_000;
 
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
- * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
- * and the refusal ends with the front end's way to open one that does. The broker remains the
- * enforcement point.
+ * refusal and its subject never reach the caller. A session opened on no channel holds no grant.
+ * Either refusal ends with the front end's way to open a session that holds the channel. The broker
+ * remains the enforcement point.
  */
 export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", words: ChatWords): Refused | undefined {
   if (channelInAllow([...grant], channel)) return undefined;
   const message = grant.length === 0
     ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. ${words.reopen(channel)}`
-    : `#${channel} is outside this session's ${use} grant`;
+    : `#${channel} is outside this session's ${use} grant. ${words.reopen(channel)}`;
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
 

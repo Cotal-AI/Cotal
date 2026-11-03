@@ -435,9 +435,13 @@ console.log("8. a channel outside the session's grant refuses before any effect"
   check("...says so and names the command that opens a session on the channel with this session's flags",
     /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("Leave and run `cotal chat review --stdio --space a2` to open"), none);
   const read = grantRefusal(["general"], "other", "read", words);
-  check("a channel outside a read grant refuses as a permission denial", read?.code === "PERMISSION_DENIED" && read.message === "#other is outside this session's read grant", read);
+  check("a channel outside a read grant refuses as a permission denial and names the reopen step",
+    read?.code === "PERMISSION_DENIED" && read.message === "#other is outside this session's read grant. Leave and run `cotal chat other --stdio --space a2` to open a session on it", read);
+  const post = grantRefusal(["general"], "ops", "post", words);
+  check("a post outside a non-empty grant names the reopen step too",
+    post?.code === "PERMISSION_DENIED" && post.message === "#ops is outside this session's post grant. Leave and run `cotal chat ops --stdio --space a2` to open a session on it", post);
   check("no refusal shows a broker subject or calls the session an agent",
-    [none, read].every((r) => !/cotal\.|subject|agent/i.test(r?.message ?? "")), [none, read]);
+    [none, read, post].every((r) => !/cotal\.|subject|agent/i.test(r?.message ?? "")), [none, read, post]);
   check("a granted channel, a matching wildcard and an open grant pass",
     grantRefusal(["general"], "general", "post", words) === undefined && grantRefusal(["team.>"], "team.a", "read", words) === undefined && grantRefusal([">"], "review", "post", words) === undefined);
 }
