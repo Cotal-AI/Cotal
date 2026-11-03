@@ -19,8 +19,8 @@ export type Conn =
   | { phase: "failed"; space?: string; message: string; remedy?: string }
 
 /** What the space's managers last said about the seats they run, keyed by the seat's presence card id.
- *  A failed read is `unavailable` until a later read succeeds. `partial` names the managers that did
- *  not answer, whose seats are missing from `byId`. */
+ *  A failed read is `unavailable` and stops the poll until the space reconnects. `partial` names the
+ *  managers that did not answer, whose seats are missing from `byId`. */
 export type Managed =
   | { phase: "loading" }
   | { phase: "rows"; byId: ReadonlyMap<string, ManagedRow>; readAt: number; partial?: string }
@@ -76,6 +76,7 @@ export function openSpace(space?: string): Session {
   let ctx: ControlCtx | undefined
   let timer: ReturnType<typeof setInterval> | undefined
   let reading = false
+  let again = false
   let closed = false
 
   const client: ControlClient = {
@@ -84,18 +85,33 @@ export function openSpace(space?: string): Session {
     roster: async () => view?.snapshot().agents ?? [],
   }
 
-  const readManaged = async () => {
-    if (reading || !ctx || closed) return
+  // One read at a time, so an older answer never lands after a newer one. A poll tick during a read
+  // is skipped; a refresh after a stop runs once the read in flight is done.
+  const readManaged = async (refresh = false) => {
+    if (!ctx || closed) return
+    if (reading) return void (again ||= refresh)
     reading = true
     try {
-      const r = await controlPs(client, ctx)
-      if (closed) return
-      if (!r.ok) return void setManaged({ phase: "unavailable", reason: safe(r.error) })
-      const missing = [...r.failed.map((f) => `${f.instanceId}: ${f.error}`), ...(r.silent.length ? [`${r.silent.length} manager(s) gave no answer: ${r.silent.join(", ")}`] : [])]
-      setManaged({ phase: "rows", byId: new Map(r.rows.map((row) => [principalOf(row), safe(row)])), readAt: Date.now(), ...(missing.length ? { partial: safe(missing.join("; ")) } : {}) })
+      do {
+        again = false
+        const r = await controlPs(client, ctx, { readOnly: true })
+        if (closed) return
+        if (!r.ok) {
+          clearInterval(timer)
+          timer = undefined
+          return void setManaged({ phase: "unavailable", reason: safe(r.error) })
+        }
+        const missing = [...r.failed.map((f) => `${f.instanceId}: ${f.error}`), ...(r.silent.length ? [`${r.silent.length} manager(s) gave no answer: ${r.silent.join(", ")}`] : [])]
+        setManaged({ phase: "rows", byId: new Map(r.rows.map((row) => [principalOf(row), safe(row)])), readAt: Date.now(), ...(missing.length ? { partial: safe(missing.join("; ")) } : {}) })
+      } while (again)
     } finally {
       reading = false
     }
+  }
+  const poll = () => {
+    if (timer || !ctx || closed) return
+    void readManaged()
+    timer = setInterval(() => void readManaged(), PS_POLL_MS)
   }
 
   void (async () => {
@@ -111,6 +127,7 @@ export function openSpace(space?: string): Session {
       if (closed) return void (await v.stop())
       const show = (raw: Mesh) => {
         if (closed) return
+        if (raw.status.connected && conn().phase === "reconnecting") poll()
         const mesh = safe(raw)
         const at = { space: c.space, server: c.server, mesh }
         setConn(raw.status.connected ? { phase: "live", ...at } : { phase: "reconnecting", ...at, ...(mesh.status.error ? { reason: mesh.status.error } : {}) })
@@ -118,8 +135,7 @@ export function openSpace(space?: string): Session {
       v.on("change", show)
       show(v.snapshot())
       ctx = { space: c.space, server: c.server }
-      void readManaged()
-      timer = setInterval(() => void readManaged(), PS_POLL_MS)
+      poll()
     } catch (e) {
       if (!closed) setConn(failed(space, e))
     }
@@ -132,7 +148,7 @@ export function openSpace(space?: string): Session {
       if (!ctx) return { ok: false, error: "the space is not open yet" }
       const r = await control(client, ctx, "stop", { name, graceful })
       if (!r.ok) return { ok: false, error: safe(r.error ?? "failed") }
-      void readManaged()
+      void readManaged(true)
       return { ok: true }
     },
     close: async () => {

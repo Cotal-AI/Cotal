@@ -142,12 +142,19 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     openWaiting(at + 1 < waiting().length ? at + 1 : 0)
   }
 
+  // The stop names the seat, so it is offered only for a seat a manager reports, under a name no
+  // other managed seat holds.
   const askStop = () => {
     const r = selection()
     if (r?.kind !== "peer" || r.presence.card.kind !== "agent") return toast.show({ variant: "info", message: "Select an agent to stop it" })
+    const m = managed()
+    const row = m.phase === "rows" ? m.byId.get(r.presence.card.id) : undefined
+    if (!row || m.phase !== "rows") return toast.show({ variant: "info", message: `No manager on this space reports running ${r.presence.card.name}` })
+    const name = row.name
+    const held = [...m.byId.values()].filter((o) => o.name === name).length
+    if (held > 1) return toast.show({ variant: "warning", message: `${held} managed agents are named ${name}, and the app stops an agent by name, so it cannot pick one` })
     const s = stop()
     if (s.phase === "stopping") return toast.show({ variant: "warning", message: `Still stopping ${s.name}` })
-    const name = r.presence.card.name
     setStop({ phase: "confirm", name })
     dialog.replace(
       () => <ConfirmStop name={name} answer={(a) => answerStop(name, a)} />,
@@ -487,7 +494,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
       <Show when={stopLine()}>
         {(line) => (
           <box flexShrink={0} paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.base}>
-            <text fg={line().fg}>{line().text}</text>
+            <text fg={line().fg}>{fit(line().text, dims().width - 2)}</text>
           </box>
         )}
       </Show>

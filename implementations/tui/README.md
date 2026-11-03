@@ -41,14 +41,17 @@ one, at every width. `?` lists the keys and `ctrl+p` opens the commands.
 
 While a space is open the app asks its managers every 10 seconds which agents they run. A managed
 agent's overview adds its runtime (such as `pty`), whether its process is running, and the uptime the
-manager counts, kept ticking between reads. An agent no manager runs says so, and a space whose
-managers cannot be asked shows the reason instead.
+manager counts, kept ticking between reads. An agent no manager runs says so. When a read fails the
+overview shows the reason, and the app stops asking until the space reconnects. The reads write
+nothing to the registry.
 
-`D` on a selected agent asks `Stop agent <name> via the manager?`. `y` stops it gracefully, `f`
-force-kills it, and `n`, esc or enter cancel. The line above the status bar shows `stopping <name>…`
+`D` on a selected agent that a manager reports running asks `Stop agent <name> via the manager?`.
+`y` stops it gracefully, `f` force-kills it, and `n`, esc or enter cancel. The stop names the agent,
+so `D` offers nothing for an agent no manager reports, even one that shares a managed agent's name,
+or for a name two managed agents share. The line above the status bar shows `stopping <name>…`
 or `force-killing <name>…` until the manager answers, then `stopped <name>`, `force-killed <name>` or
-`stop: <error>`. The stop names the agent and not one run of it, as `cotal stop` and the console do,
-so an agent restarted under the same name in the meantime is the one stopped.
+`stop: <error>`, cut to one line. The stop names the agent and not one run of it, as `cotal stop`
+and the console do, so an agent restarted under the same name in the meantime is the one stopped.
 
 The status bar shows the connection: connecting, live, reconnecting while the broker is away (the
 last model stays on screen), closed, or not connected with the reason in the middle.
@@ -79,7 +82,9 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   against an isolated HOME and asserts the frame text. `smoke/shell.smoke.ts` covers the catalog
   and a space that cannot be opened. `smoke/live.smoke.ts` starts its own broker and peers and
   covers the live screens and a broker restart. `smoke/control.smoke.ts` runs a real manager with two
-  seats and covers the overview, the confirm and both kinds of stop, and a space with no manager.
+  seats and covers the overview, the confirm and both kinds of stop, a stop refused for an unmanaged
+  agent and for a name two managers hold, a space with no manager, and a broker that turns auth on
+  while the app reads its managers, after which the space is still registered.
   They need Node 26.4, tmux and nats-server, and the control smoke needs the manager built, so they
   are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
