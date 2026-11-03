@@ -5932,7 +5932,8 @@ export class Manager {
         restart.recovering = false;
         restart.armed = false;
         let tail = "";
-        try { tail = await this.tail((replacement ?? a.handle).attach()); } catch { /* runtime has no readable tail */ }
+        try { tail = await this.tail((replacement ?? a.handle).attach()); }
+        catch (error) { console.error(`! ${a.name}: last output unavailable: ${rejectionText(error)}`); }
         console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${rejectionText(error)}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
         // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
@@ -8328,11 +8329,13 @@ export class Manager {
         // tells a deliberate stop from a launch failure.
         const deliberate = a.terminalizing === true;
         void (async () => {
-          // waitForExit may close the attach stream before this snapshot
+          // A closed stream or a reader failure must not prevent settlement, or read as empty output.
           let tail = "";
           try {
             if (s) tail = await this.tail(s);
-          } catch {}
+          } catch (error) {
+            console.error(`! ${a.name}: last output unavailable: ${rejectionText(error)}`);
+          }
           if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
