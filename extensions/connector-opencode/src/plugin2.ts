@@ -31,9 +31,12 @@ function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
 }
 
-/** Process-global guard, mirroring `plugin.ts`'s `guard.__cotalOpencodeHooks`: 2.x may call
- *  `setup` more than once per process (per location boot), and we want exactly one mesh agent. */
-const guard = globalThis as { __cotalOpencodeSetup?: boolean };
+/** One setup attempt or completed session per process, shared across location boots. */
+interface SetupState {
+  complete: boolean;
+  ready: Promise<() => Promise<void>>;
+}
+const guard = globalThis as { __cotalOpencodeSetup?: SetupState };
 
 /** The 2.x `/api/session/:id/message` shape is `{data:[{type, text|content, model, agent}]}` and
  *  the `content` element shape was not measured, so `agui-source.ts` cannot read it truthfully. */
@@ -84,12 +87,34 @@ async function verifyServerModel2(
  *  exported `settleWithin`, rather than a second copy of the tradeoff (see that file's note). */
 const EVENT_QUIESCE_MS = 10_000;
 
-/** The 2.x `setup(context)` entry point. */
+/** The 2.x `setup(context)` entry point. Concurrent callers share the attempt's result. A refused
+ *  attempt releases its slot; a completed one owns it until its teardown has finished. */
 export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<void>) | void> {
   if (!hasIdentity()) return; // no COTAL_* env — a plain `opencode`, stay inert (same rule as 1.x)
-  if (guard.__cotalOpencodeSetup) return; // one agent; a later boot in this process is a no-op
-  guard.__cotalOpencodeSetup = true;
+  const previous = guard.__cotalOpencodeSetup;
+  if (previous) return previous.complete ? undefined : previous.ready;
+  const state: SetupState = {
+    complete: false,
+    // Install ownership before the host can call back into setup from a registration hook.
+    ready: Promise.resolve().then(async () => {
+      const teardown = await setupSession(ctx);
+      state.complete = true;
+      let stopping: Promise<void> | undefined;
+      return () => stopping ??= teardown().then(() => {
+        if (guard.__cotalOpencodeSetup === state) delete guard.__cotalOpencodeSetup;
+      });
+    }),
+  };
+  guard.__cotalOpencodeSetup = state;
+  try { return await state.ready; }
+  catch (error) {
+    if (guard.__cotalOpencodeSetup === state) delete guard.__cotalOpencodeSetup;
+    throw error;
+  }
+}
 
+/** Validate and register one session before queuing its agent start. */
+async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>> {
   const config = configFromEnv();
   if (eventPlaneArmed(config)) {
     log(EVENTS_REFUSAL);

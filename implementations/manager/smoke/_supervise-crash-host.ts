@@ -1,8 +1,10 @@
-// One manager process for supervise-manager-crash.smoke.ts: it starts the manager, prints
-// REPRO_MANAGER, and waits to be SIGKILLed, which is the crash the suite grades. The suite spawns
-// the seat over the manager's own spawn command, so the suite is the seat's spawner.
+// One manager process for supervise-manager-crash.smoke.ts and supervise-crash-late-join.smoke.ts:
+// it starts the manager, prints REPRO_MANAGER, and waits to be SIGKILLed, which is the crash the suite
+// grades. The suite spawns the seat over the manager's own spawn command, so the suite is the seat's
+// spawner. REPRO_READINESS_MS sets the stub connector's readiness timeout, and REPRO_JOIN_DELAY_ONCE
+// with REPRO_JOIN_DELAY_MS delays one seat's join (see _join-delay.mjs).
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Manager } from "../src/manager.js";
 import { evictDeniedPrincipalWithCreds, registry, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 
@@ -12,8 +14,17 @@ const servers = process.env.REPRO_SERVERS!;
 const here = dirname(fileURLToPath(import.meta.url));
 const stub = join(here, "e2e-stub.mjs");
 const envFor = (o: LaunchOpts): Record<string, string> => ({ COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? servers), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: String(o.lifecycleUid), PATH: process.env.PATH ?? "" });
+const readinessTimeoutMs = process.env.REPRO_READINESS_MS ? Number(process.env.REPRO_READINESS_MS) : undefined;
+const delayOnce = process.env.REPRO_JOIN_DELAY_ONCE;
+const delay: { args: string[]; env: Record<string, string> } = delayOnce
+  ? { args: ["--import", pathToFileURL(join(here, "_join-delay.mjs")).href], env: { REPRO_JOIN_DELAY_ONCE: delayOnce, REPRO_JOIN_DELAY_MS: process.env.REPRO_JOIN_DELAY_MS ?? "0" } }
+  : { args: [], env: {} };
 // The space rides argv so the suite can find every seat it started by its command line.
-registry.register({ kind: "connector", name: "supervise-crash-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [stub, space], env: envFor(o) }) } as Connector);
+registry.register({
+  kind: "connector", name: "supervise-crash-stub", requires: ["node"],
+  ...(readinessTimeoutMs !== undefined ? { readinessTimeoutMs } : {}),
+  buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [...delay.args, stub, space], env: { ...envFor(o), ...delay.env } }),
+} as Connector);
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
 (manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   (principal) => evictDeniedPrincipalWithCreds({

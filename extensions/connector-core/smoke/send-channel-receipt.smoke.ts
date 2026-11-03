@@ -49,7 +49,7 @@ function stubAgent(opts: {
     },
     getChannelConfig: (channel: string) => (registered.has(channel) ? { description: "from registry" } : undefined),
   };
-  return { ep, joinedChannels: () => opts.joined, connected: true } as unknown as MeshAgentType;
+  return { ep, joinedChannels: () => opts.joined, readChannels: async () => {}, connected: true } as unknown as MeshAgentType;
 }
 
 const proto = MeshAgent.prototype as unknown as {

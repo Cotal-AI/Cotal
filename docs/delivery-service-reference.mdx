@@ -126,8 +126,8 @@ exception: the `lifecycleMemberships` inventory a retirement reads before it del
 agent's membership rows. That request is answered without waiting for the others, so a manager stop
 that retires many seats does not queue each inventory behind the other seats' evictions. Inventories
 that arrive together share one read of the members bucket, and each one's read begins after it
-arrived. Before the manager asks for a lifecycle's inventory, it narrows that lifecycle's read-ACL
-row to no reads. A durable join reads that row again just before it writes its membership row, and
+arrived. Before the manager, or the auth service retiring a chat session or a managed agent, asks for
+a lifecycle's inventory, it narrows that lifecycle's read-ACL row to no reads. A durable join reads that row again just before it writes its membership row, and
 once more after. When the channel is no longer allowed, the join writes nothing, or removes the row it
 just wrote, and is refused. A leave or an activation only updates a row that still exists. A row of the
 retiring lifecycle is then either in the inventory or gone, whichever daemon process wrote it. The

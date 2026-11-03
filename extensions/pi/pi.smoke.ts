@@ -96,6 +96,20 @@ class FakeMesh {
     return channel ? this.modes.get(channel) : undefined;
   }
 
+  /** Receive keys the driver holds in flight, and whether the next hold hits the ceiling. */
+  held = new Set<string>();
+  refuseHolds = false;
+
+  holdInFlight(keys: readonly string[]): boolean {
+    if (this.refuseHolds) return false;
+    for (const key of keys) this.held.add(key);
+    return true;
+  }
+
+  releaseInFlight(keys: readonly string[]): void {
+    for (const key of keys) this.held.delete(key);
+  }
+
   // The run-turn intake is two-phase on the real agent (peek is pure, commit arms). Nothing here
   // drives a turn, so the peek is empty and a commit would be a defect worth failing on.
   peekPendingTurns(): { text: string; goalIds: string[] } | undefined {
@@ -265,6 +279,22 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(mesh.drained.length === 0, "provider acceptance alone waits for a terminal agent boundary");
   driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
   ok(mesh.drained.join() === "m1", "a clean terminal boundary drains the exact confirmed prefix");
+  ok(mesh.held.size === 0, "the commit releases the batch it held in flight");
+}
+
+// A dispatched batch is held in flight until its turn commits it; at the hold ceiling nothing goes out.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  mesh.refuseHolds = true;
+  driver.onSessionStart(context());
+  ok(host.sent.length === 0 && mesh.drained.length === 0, "a batch the agent cannot hold in flight is deferred, not dispatched");
+  mesh.refuseHolds = false;
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "m1" && mesh.held.has(item("m1").recvKey), "once holds are available the batch is dispatched and held");
 }
 
 // Real Pi may expose the request context before all extensions observe message_start.
@@ -306,25 +336,25 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
 // A batch carrying a held role request takes only that batch, then goes out (SPEC §8.1).
 {
   class HeldMesh extends FakeMesh {
-    held: InboxItem[] = [];
+    gated: InboxItem[] = [];
     chosen: string[][] = [];
 
     override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
-      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.held)];
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
     }
 
     override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
       const picked = choose(this.inboxPreview(scope));
       this.chosen.push(picked.map((value) => value.recvKey));
       const keys = new Set(picked.map((value) => value.recvKey));
-      this.items.push(...this.held.filter((value) => keys.has(value.recvKey)));
-      this.held = this.held.filter((value) => !keys.has(value.recvKey));
+      this.items.push(...this.gated.filter((value) => keys.has(value.recvKey)));
+      this.gated = this.gated.filter((value) => !keys.has(value.recvKey));
       return [...picked];
     }
   }
   const mesh = new HeldMesh();
   mesh.items = [item("dm")];
-  mesh.held = Array.from({ length: 40 }, (_, i) => item(`req${i}`, { kind: "anycast", service: "worker" }));
+  mesh.gated = Array.from({ length: 40 }, (_, i) => item(`req${i}`, { kind: "anycast", service: "worker" }));
   const host = new FakeHost();
   const driver = new PiDriver(mesh as unknown as MeshAgent);
   driver.bind(host);
@@ -332,7 +362,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(host.sent.length === 0, "a batch holding a role request waits for its take before it goes out");
   await new Promise((resolve) => setImmediate(resolve));
   ok(mesh.chosen.length === 1 && mesh.chosen[0]!.length === 32, "the take covers only the 32 messages the batch carries");
-  ok(mesh.held.length === 9, "the role requests past the batch stay held and untaken");
+  ok(mesh.gated.length === 9, "the role requests past the batch stay held and untaken");
   ok(
     host.sent.length === 1 && host.sent[0]!.details.ids.length === 32 && host.sent[0]!.details.ids[0] === "dm",
     "the batch goes out once taken, carrying what it took",
@@ -342,7 +372,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
 // A take that leaves a batch with nothing that wakes, and a user turn that starts during a take.
 {
   class TakingMesh extends FakeMesh {
-    held: InboxItem[] = [];
+    gated: InboxItem[] = [];
     /** "out" is a take still waiting for its answer when the read's wait runs out: the request stays
      *  held and offered, as the real agent's does. */
     outcome: (key: string) => "taken" | "refused" | "out" = () => "taken";
@@ -355,7 +385,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     answer: Promise<void> = Promise.resolve();
 
     override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
-      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.held)];
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
     }
 
     override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
@@ -363,13 +393,13 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
       const picked = choose(this.inboxPreview(scope));
       await this.answer;
       for (const value of picked) {
-        if (!this.held.includes(value)) continue;
+        if (!this.gated.includes(value)) continue;
         const how = this.outcome(value.recvKey);
         if (how === "out") await new Promise((resolve) => setTimeout(resolve, this.waitMs));
-        if (how !== "out") this.held = this.held.filter((other) => other !== value);
+        if (how !== "out") this.gated = this.gated.filter((other) => other !== value);
         if (how === "taken") this.items.push(value);
       }
-      this.held.push(...this.arriving.splice(0));
+      this.gated.push(...this.arriving.splice(0));
       const showable = new Set(this.peekInbox(scope).map((value) => value.recvKey));
       return picked.filter((value) => showable.has(value.recvKey));
     }
@@ -381,7 +411,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     const mesh = new TakingMesh();
     mesh.attention = "dnd";
     mesh.items = [chatter];
-    mesh.held = [request("r1")];
+    mesh.gated = [request("r1")];
     mesh.outcome = () => "out";
     const host = new FakeHost();
     const driver = new PiDriver(mesh as unknown as MeshAgent);
@@ -396,7 +426,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     const mesh = new TakingMesh();
     mesh.attention = "dnd";
     mesh.items = [chatter];
-    mesh.held = [request("r1")];
+    mesh.gated = [request("r1")];
     mesh.outcome = (key) => (key === "r1" ? "refused" : "taken");
     mesh.arriving = [request("r2")];
     const host = new FakeHost();
@@ -413,7 +443,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   {
     const mesh = new TakingMesh();
     mesh.attention = "dnd";
-    mesh.held = [request("r1")];
+    mesh.gated = [request("r1")];
     mesh.outcome = () => "refused";
     let answer!: () => void;
     mesh.answer = new Promise((resolve) => { answer = resolve; });

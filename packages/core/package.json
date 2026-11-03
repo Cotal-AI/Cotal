@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/core",
   "description": "The Cotal protocol: endpoint, subjects, message types, the NATS client layer, and the extension contracts.",
-  "version": "0.135.0",
+  "version": "0.136.6",
   "license": "Apache-2.0",
   "keywords": [
     "cotal",
@@ -60,6 +60,10 @@
       "types": "./dist/subjects.d.ts",
       "import": "./dist/subjects.js"
     },
+    "./advisory-lock": {
+      "types": "./dist/advisory-lock.d.ts",
+      "import": "./dist/advisory-lock.js"
+    },
     "./browser-control": {
       "types": "./dist/browser-control.d.ts",
       "import": "./dist/browser-control.js"
@@ -72,7 +76,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm smoke:seat-idle-results && tsx smoke/native-nkey-signing.smoke.ts && tsx smoke/resolve.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls && node --test smoke/advisory-lock.test.mjs",
+    "test": "pnpm smoke:seat-idle-results && tsx smoke/presence-heartbeat.smoke.ts && tsx smoke/native-nkey-signing.smoke.ts && tsx smoke/resolve.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls && node --test smoke/advisory-lock.test.mjs",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
     "smoke:seat-idle-load": "tsx smoke/seat-idle-load.smoke.ts",
     "smoke:seat-idle-results": "tsx smoke/seat-idle-results.smoke.ts",

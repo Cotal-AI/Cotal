@@ -349,7 +349,17 @@ async function runTurn(text) {
     await new Promise((r) => setTimeout(r, 200));
     notify("turn/started", { threadId: THREAD, turn: { id: solo, status: "inProgress" } });
     journal({ ev: "soloTuiTurn", id: solo });
-    await new Promise((r) => setTimeout(r, 2500));
+    // What the human's agent does mid-turn (#5688): peek at the DM the host will not steer into a
+    // turn it did not start, then a clearing read, which must leave that DM to the turn loop.
+    const started = Date.now();
+    let peeked;
+    do {
+      await new Promise((r) => setTimeout(r, 100));
+      peeked = await mcpCall("cotal_inbox", { peek: true }).catch((e) => ({ error: String(e) }));
+    } while (!JSON.stringify(peeked).includes("stranded-during-tui") && Date.now() - started < 2500);
+    journal({ ev: "soloPeek", res: peeked });
+    journal({ ev: "soloPull", res: await mcpCall("cotal_inbox", {}).catch((e) => ({ error: String(e) })) });
+    await new Promise((r) => setTimeout(r, 300));
     notify("turn/completed", { threadId: THREAD, turn: { id: solo, status: "completed" } });
     return;
   }

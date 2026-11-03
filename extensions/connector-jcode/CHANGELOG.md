@@ -1,5 +1,121 @@
 # @cotal-ai/connector-jcode
 
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+No changes in this release.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+### Patch Changes
+
+- 027be45: A stopped or retired Jcode seat no longer keeps copies of the operator's credentials in its private home. Once a launch's stop has verified that no Jcode process of that lifecycle is left, the connector removes every credential destination its mirror can hold, through the same pinned-parent unlink the mirror uses: Jcode logins, provider `.env` files, external logins and the Cursor state extract. The home stays for its resume record, and the next launch mirrors the logins afresh. If the stop could not be verified, the copies stay. Homes left by earlier versions keep their copies until they are relaunched or removed by hand.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+No changes in this release.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+### Patch Changes
+
+- a5ab860: Stop the private Jcode daemon and MCP child on terminal hangup, including tmux self-despawn, through the existing ownership-checked shutdown path.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
 ## 0.135.0
 
 ### Minor Changes

@@ -205,7 +205,11 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
    *  and the host replays its answer, while a run after the change landed reads a new revision. */
   async function derived(request: ServiceHostRouteRequest<"caller-grant" | "caller-revoke">): Promise<ServiceEndpointCall> {
     const requestId = createHash("sha256").update(`cotal/service-endpoint/${request.operation}/v1\n${space}\n${canonicalJson(request.input)}`).digest("hex").slice(0, 32);
-    return { request: sub!, subject: subject!, requestId, answer: await post({ ...request, requestId }) };
+    const answer = await post({ ...request, requestId });
+    // The broker fixes a connection's permissions when it authenticates, so a live grantee does not see this grant yet.
+    if (request.operation !== "caller-grant" || answer.state !== "granted") return { request: sub!, subject: subject!, requestId, answer };
+    const { owner, actor } = request.input.grantee;
+    return { request: sub!, subject: subject!, requestId, answer, note: `a connection ${owner}.${actor} opened before this grant keeps its earlier permissions; it must reconnect before it can use these commands` };
   }
 }
 

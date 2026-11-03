@@ -156,6 +156,28 @@ function seatManagerInstance(space: string): string | undefined {
   return assertLifecycleToken(instanceId, "COTAL_MANAGER_INSTANCE");
 }
 
+/** The non-secret launch identity a managed seat's shell inherits, or `undefined` when it is not
+ *  enough for {@link resolveSeatControlTarget} to act as the seat. */
+function seatLaunchIdentity(): { name: string; actor: string; uid: string; seatSpace?: string; acceptedToken?: string } | undefined {
+  const name = process.env.COTAL_NAME?.trim();
+  const actor = process.env.COTAL_ID?.trim();
+  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const seatSpace = process.env.COTAL_SPACE?.trim() || undefined;
+  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim() || undefined;
+  if (!name || !actor || !uid || (!seatSpace && !acceptedToken)) return undefined;
+  return { name, actor, uid, seatSpace, acceptedToken };
+}
+
+/** The flags for a command that tries {@link resolveSeatControlTarget} and then, when it does not
+ *  apply, {@link resolveControlTarget} (#4018). With no space named, the seat resolve sweeps the
+ *  registry, so that sweep is taken here once and both resolves read its `offline` set: a record that
+ *  does not answer is probed once, and both judge the same registry state. Outside a managed seat,
+ *  or with a space named or a sweep already taken, the flags come back unchanged. */
+export async function sweepForSeatResolve<F extends ConnectFlags>(flags: F): Promise<F> {
+  if (flags.space || flags.offline !== undefined || !seatLaunchIdentity()) return flags;
+  return { ...flags, offline: (await pruneStaleMeshes(flags.server)).offline };
+}
+
 /**
  * The managed seat this process runs in, as THAT seat's own control target, or `undefined` outside
  * one. A seat that shells out to `cotal` must reach the manager as itself, not as a fresh operator
@@ -183,16 +205,14 @@ function seatManagerInstance(space: string): string | undefined {
  * carries the spawn set only when the seat's own credential holds it, and it expires in five minutes.
  */
 export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?: string): Promise<ControlTarget | undefined> {
-  const name = process.env.COTAL_NAME?.trim();
-  const actor = process.env.COTAL_ID?.trim();
-  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
-  const seatSpace = process.env.COTAL_SPACE?.trim();
-  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
-  if (!name || !actor || !uid || (!seatSpace && !acceptedToken)) return undefined;
+  const launch = seatLaunchIdentity();
+  if (!launch) return undefined;
+  const { name, actor, uid, seatSpace, acceptedToken } = launch;
   if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
   // Managed-seat resolution retains its sweep when no space is named, so a kept dead record is
-  // not a live candidate here. Operator resolution skips a sweep its selection does not read.
-  const offline = flags.space ? [] : (await pruneStaleMeshes(flags.server)).offline;
+  // not a live candidate here. Operator resolution skips a sweep its selection does not read. A sweep
+  // the caller already took ({@link sweepForSeatResolve}) is the one read.
+  const offline = flags.space ? [] : flags.offline ?? (await pruneStaleMeshes(flags.server)).offline;
   const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
   if (seatSpace && mesh.space !== seatSpace) return undefined;
   const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };

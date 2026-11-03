@@ -1,5 +1,242 @@
 # @cotal-ai/manager
 
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+  - @cotal-ai/seat@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+  - @cotal-ai/workspace@0.136.5
+  - @cotal-ai/seat@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.4
+  - @cotal-ai/seat@0.136.4
+  - @cotal-ai/workspace@0.136.4
+
+## 0.136.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.3
+  - @cotal-ai/seat@0.136.3
+  - @cotal-ai/workspace@0.136.3
+
+## 0.136.2
+
+### Patch Changes
+
+- e0e6506: A hosted seat's retirement on a participant now removes the actor token, sentinel credential and health file that its enrollment wrote to the participant's secret store and disk. Before, the host released the grant and the lifecycle retired, but those files stayed behind for every hosted seat, on despawn and on a spawn's orphan rollback. A removal that fails keeps the name held instead of completing the retirement.
+- @cotal-ai/core@0.136.2
+  - @cotal-ai/seat@0.136.2
+  - @cotal-ai/workspace@0.136.2
+
+## 0.136.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.1
+  - @cotal-ai/seat@0.136.1
+  - @cotal-ai/workspace@0.136.1
+
+## 0.136.0
+
+### Patch Changes
+
+- Updated dependencies [f5251ae]
+  - @cotal-ai/core@0.136.0
+  - @cotal-ai/workspace@0.136.0
+  - @cotal-ai/seat@0.136.0
+
+## 0.135.21
+
+### Patch Changes
+
+- Updated dependencies [a259571]
+  - @cotal-ai/core@0.135.21
+  - @cotal-ai/workspace@0.135.21
+  - @cotal-ai/seat@0.135.21
+
+## 0.135.20
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.20
+  - @cotal-ai/seat@0.135.20
+  - @cotal-ai/workspace@0.135.20
+
+## 0.135.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.19
+  - @cotal-ai/seat@0.135.19
+  - @cotal-ai/workspace@0.135.19
+
+## 0.135.18
+
+### Patch Changes
+
+- f609a37: `preparePreservation` now hands out an inventory that is its own copy. A caller that edited the plan it received, then aborted the attempt, no longer widened the running seat's subscribe and allow lists or changed its launch source in the next cut.
+- @cotal-ai/core@0.135.18
+  - @cotal-ai/seat@0.135.18
+  - @cotal-ai/workspace@0.135.18
+
+## 0.135.17
+
+### Patch Changes
+
+- Updated dependencies [55e8d0b]
+  - @cotal-ai/workspace@0.135.17
+  - @cotal-ai/core@0.135.17
+  - @cotal-ai/seat@0.135.17
+
+## 0.135.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.16
+  - @cotal-ai/seat@0.135.16
+  - @cotal-ai/workspace@0.135.16
+
+## 0.135.15
+
+### Patch Changes
+
+- 100eb59: A supervised seat that a successor manager restarts after a crash now stays supervised when it joins after its readiness window. The seat record counts the restart as soon as the replacement launches, so a later successor no longer grants one restart past the budget. When the seat joins, its restart is armed as for one that joined in time, so its next crash restarts it in place instead of retiring it. The late join is matched only against heartbeats newer than the dead seat's.
+- @cotal-ai/core@0.135.15
+  - @cotal-ai/seat@0.135.15
+  - @cotal-ai/workspace@0.135.15
+
+## 0.135.14
+
+### Patch Changes
+
+- e3d3c6e: A clean manager stop that starts while the broker connection is reconnecting now keeps trying to release its liveness lease for up to 5 s, instead of giving up after one 2 s read. An immediate same-root restart no longer waits out the rest of the lease TTL after a short outage. When the broker still does not answer, the stop prints the reason and leaves the lease to its TTL.
+- @cotal-ai/core@0.135.14
+  - @cotal-ai/seat@0.135.14
+  - @cotal-ai/workspace@0.135.14
+
+## 0.135.13
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.13
+  - @cotal-ai/seat@0.135.13
+  - @cotal-ai/workspace@0.135.13
+
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.12
+  - @cotal-ai/seat@0.135.12
+  - @cotal-ai/workspace@0.135.12
+
+## 0.135.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.11
+  - @cotal-ai/seat@0.135.11
+  - @cotal-ai/workspace@0.135.11
+
+## 0.135.10
+
+### Patch Changes
+
+- Updated dependencies [985dbc5]
+  - @cotal-ai/core@0.135.10
+  - @cotal-ai/workspace@0.135.10
+  - @cotal-ai/seat@0.135.10
+
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+  - @cotal-ai/seat@0.135.9
+  - @cotal-ai/workspace@0.135.9
+
+## 0.135.8
+
+### Patch Changes
+
+- Updated dependencies [0c09e47]
+  - @cotal-ai/core@0.135.8
+  - @cotal-ai/workspace@0.135.8
+  - @cotal-ai/seat@0.135.8
+
+## 0.135.7
+
+### Patch Changes
+
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+  - @cotal-ai/workspace@0.135.7
+  - @cotal-ai/seat@0.135.7
+
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+  - @cotal-ai/seat@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/seat@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/seat@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/seat@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/seat@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+  - @cotal-ai/seat@0.135.1
+
 ## 0.135.0
 
 ### Minor Changes

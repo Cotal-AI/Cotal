@@ -259,7 +259,12 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  a session end or a replaced session before the verdict seals them, so a late receipt cannot
    *  confirm a task whose turn already ended. */
   const awaitingVerdict = new Map<string, MeshAgent>();
+  /** Terminals so far: each turn end, session end or replaced session counts one. A frame still
+   *  being built when one arrives was missed by that terminal's seal, so it must not claim its once
+   *  task afterwards: the turn or session it was built for has already ended. */
+  let terminals = 0;
   const sealAwaiting = (): void => {
+    terminals++;
     for (const [id, agent] of awaitingVerdict) agent.releaseTurns([id]);
     awaitingVerdict.clear();
   };
@@ -359,10 +364,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
 
   /** One injectable frame. A once task takes the hook budget first; the card and briefing that still
    *  fit come next, then peer messages in what is left. The task is claimed once the text is fixed,
-   *  with nothing awaited between the claim and the reply. A task that does not fit, or whose claim
-   *  fails, leaves the frame without it, claimed by nothing. Taking the role requests the messages
-   *  carry is the one await, and it comes before the claim. */
-  const injectFrame = async (agent: MeshAgent, ev: HookEvent, event: string, extras: (string | undefined)[]): Promise<Record<string, unknown>> => {
+   *  with nothing awaited between the claim and the reply. A task that does not fit, whose claim
+   *  fails, or whose frame a terminal overtook since `begun` leaves the frame without it, claimed by
+   *  nothing. Taking the role requests the messages carry is the one await, and it comes before the
+   *  claim, so a terminal during it is one that overtook the frame. */
+  const injectFrame = async (agent: MeshAgent, ev: HookEvent, event: string, extras: (string | undefined)[], begun: number): Promise<Record<string, unknown>> => {
     const peek = agent.peekPendingTurns();
     if (peek?.once && peek.text.length <= HOOK_CONTEXT_CHARS) {
       const join = (parts: (string | undefined)[]): string => parts.filter(Boolean).join("\n\n");
@@ -370,7 +376,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       for (const x of extras) if (x && join([...kept, x, peek.text]).length <= HOOK_CONTEXT_CHARS) kept.push(x);
       const messages = await surfaceAutomatic(agent, ev, join([...kept, peek.text]).length + 2);
       const text = join([...kept, messages, peek.text]);
-      if (text.length <= HOOK_CONTEXT_CHARS && agent.claimTurns(peek.goalIds)) {
+      if (terminals === begun && text.length <= HOOK_CONTEXT_CHARS && agent.claimTurns(peek.goalIds)) {
         const rec = inFlight.get(ev);
         if (rec) rec.onceIds = peek.goalIds;
         else inFlight.set(ev, { ids: [], agent, onceIds: peek.goalIds });
@@ -417,6 +423,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         // before anything here awaits, so a late receipt for the old frame cannot confirm it.
         case "SessionStart": {
           sealAwaiting();
+          const begun = terminals;
           // `source` is the runtime's explicit new-vs-retained discriminator. A startup prompt may
           // already be in the file before this hook; resume/fork/clear/compact must still adopt at the
           // current boundary and never republish history. The holder carries the value opaquely to
@@ -450,9 +457,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Boot push: the orientation card, a one-line note per subscribed channel (if the
           // registry has loaded), plus any messages waiting and any turn. All advisory context.
           const card = await orientation();
-          return await injectFrame(agent, ev, event, [card, agent.channelBriefing()]);
+          return await injectFrame(agent, ev, event, [card, agent.channelBriefing()], begun);
         }
         case "UserPromptSubmit": {
+          const begun = terminals;
           turnOpen = true;
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
           promptOpen = false;
@@ -462,7 +470,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
           // `done` at the coming Stop).
           const card = cardOwed ? await orientation() : undefined;
-          return await injectFrame(agent, ev, event, [card]);
+          return await injectFrame(agent, ev, event, [card], begun);
         }
         case "PreToolUse":
           // A channel-started turn can reach its first tool without UserPromptSubmit. The

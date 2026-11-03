@@ -20,6 +20,9 @@ cotal spawn
 ```
 
 A bare spawn runs the default persona in this terminal. `--foreground` explicitly keeps that path.
+A catalog with no default persona, such as a Cloud space's before anything prepared it, gets the
+shipped one written on that first spawn, and the launch says so. A persona you named or saved as a
+preference is still refused when it is missing. `--dry-run` writes nothing and says the launch would.
 `--detach` launches through a manager and returns after the agent joins.
 `--on <instance>` launches through that manager and attaches this terminal when its runtime streams a terminal.
 The built-in `pty` runtime streams one; tmux, cmux, Orca, and Herdr provide their own terminal surfaces.

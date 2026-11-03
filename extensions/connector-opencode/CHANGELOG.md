@@ -1,5 +1,121 @@
 # @cotal-ai/connector-opencode
 
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+### Patch Changes
+
+- f5251ae: An OpenCode agent name now has one launcher at a time. Two launches that overlapped both passed the server-record check, which runs before the version probe and the spawn, so both started a server on the agent's SQLite database. The launcher now first claims the name with core's advisory lock, `launch.lock` in the agent's directory, and holds it until it exits. A second launch is refused as already running, and a claim left by a launcher that died is reclaimed. `@cotal-ai/core` exports the lock as `@cotal-ai/core/advisory-lock`, so the bundled launcher can use it without the barrel.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+### Patch Changes
+
+- 8e12fe0: Let `cotal_inbox` with `peek` show the connector-managed automatic messages still queued in Codex, Jcode and OpenCode seats, without clearing anything. A DM that arrives during a turn the operator started, or a plain channel post during any turn, can now be read before that turn ends. The connector still delivers and clears it at the end of the turn.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
 ## 0.135.0
 
 ### Minor Changes

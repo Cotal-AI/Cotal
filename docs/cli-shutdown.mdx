@@ -371,7 +371,10 @@ capability, its creation identity and the live stopper's identity and reservatio
 use `SIGTERM`. A `cotal supervise` that receives `SIGTERM` or `SIGINT` while it is still starting
 lets the start settle, then runs the same stop and exits without printing `manager up`, so its
 liveness lease is released and an immediate restart is not refused. When that start fails, the stop
-still releases the lease before the process prints the start error and exits 1. A process still running after 20s on the Windows cooperative path, or 15s after
+still releases the lease before the process prints the start error and exits 1. A stop that cannot
+reach the broker, for example while the connection is redialling, keeps trying to release the lease
+for up to 5s. If the broker still does not answer, the manager prints a warning and leaves the lease
+to lapse on its TTL, so a same-root restart before then waits for it. A process still running after 20s on the Windows cooperative path, or 15s after
 `SIGTERM`, receives `SIGKILL`. Ctrl-C stops the manager first; when that
 stop is refused or the manager's exit cannot be confirmed, Ctrl-C signals nothing else, prints the
 refusal with the reap route, and leaves the stack running; end it with `cotal down --with-agents`.

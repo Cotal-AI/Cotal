@@ -1,5 +1,119 @@
 # @cotal-ai/pi
 
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+No changes in this release.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+### Patch Changes
+
+- 24cd1ae: A pi seat now keeps the deliveries of a running turn in flight until the turn commits them, as the other connectors do. Before, a role request's ack wait could run out while the first holder was still working on it, and the broker handed the same request to a second holder of the role, so both worked on it. The batch is renewed for the length of the turn and released when its turn commits. When the in-flight ceiling is reached, a new batch waits instead of going out unprotected.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+No changes in this release.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
 ## 0.135.0
 
 ### Minor Changes

@@ -1,0 +1,48 @@
+{
+  "name": "@cotal-ai/tui",
+  "description": "Cotal terminal app: one full-screen workspace to watch, talk to and control agents, built on OpenCode's Solid and OpenTUI components.",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "implementations/tui"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=26.4.0"
+  },
+  "bin": {
+    "cotal-tui": "./bin/cotal-tui.mjs"
+  },
+  "scripts": {
+    "vendor": "node scripts/vendor.mjs",
+    "check:vendor": "node scripts/check-vendor.mjs",
+    "build": "node scripts/check-vendor.mjs && node scripts/build.mjs",
+    "typecheck": "node scripts/check-vendor.mjs && tsc -p tsconfig.json && tsc -p tsconfig.smoke.json",
+    "test": "node scripts/check-vendor.mjs",
+    "smoke": "pnpm run build && tsx smoke/shell.smoke.ts && tsx smoke/live.smoke.ts",
+    "measure:startup": "node scripts/measure-startup.mjs"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*",
+    "@opentui/core": "0.8.0",
+    "@opentui/keymap": "0.8.0",
+    "@opentui/solid": "0.8.0",
+    "effect": "4.0.6",
+    "fuzzysort": "3.1.0",
+    "get-east-asian-width": "1.6.0",
+    "remeda": "2.26.0",
+    "solid-js": "1.9.17",
+    "string-width": "7.2.0",
+    "strip-ansi": "7.1.2"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@babel/preset-typescript": "7.27.1",
+    "@cotal-ai/smoke-kit": "workspace:*",
+    "babel-preset-solid": "1.9.16"
+  }
+}

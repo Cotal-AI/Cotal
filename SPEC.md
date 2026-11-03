@@ -531,6 +531,11 @@ from out-of-band context. The same effective config MUST be the single source of
 join, durable fan-out, history read, and membership surfacing; an implementation MUST NOT resolve
 the class differently in different paths.
 
+A participant that reads presence on demand (§6) reads the registry the same way: batched Direct
+Gets over `$KV.cotal_channels_<space>.>`, which bind no consumer. It reads before it shows the
+registry and before it resolves a join's or leave's delivery class, so an entry written or removed
+after it started is not missed.
+
 Join subscribes the instance to the channel; leave unsubscribes it. A join target MUST be within
 the instance's read ACL (`allowSubscribe`, §9); a join outside it MUST be refused by the broker on
 subscribe. A client MUST NOT publish to wildcard channels, but a wildcard read ACL (`team.>`)
@@ -6792,7 +6797,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.FC.>`
 - `$KV.cotal_presence_<space>.<owner>.<actor>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
-- `$JS.API.DIRECT.GET.<CHKV>` (the one-shot registry read of the headless CLI commands, which connect on the user's bearer on a user-auth mesh; the same reply-subject vector as the consumer create below)
+- `$JS.API.DIRECT.GET.<CHKV>` (the on-demand registry read, §7, and the one-shot registry read of the headless CLI commands, which connect on the user's bearer on a user-auth mesh; the same reply-subject vector as the consumer create below)
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness; read-only, non-gating)
@@ -7098,6 +7103,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |
 | 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
 | 2026-11-01 | **Durable membership of a channel family (§7, §8, §9, Appendix B), additive except one refusal.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join, and any pattern in `subscribe`, lies within one `allowSubscribe` entry, so an agent definition whose `subscribe` pattern only matches an entry, such as `perm.>` under `perm.*`, is now refused. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
 | 2026-10-30 | **Anycast request status (§3, §4, §8.1, Appendix B), additive.** In auth mode a holder takes a role request on `cotal.<space>.take.<role>.<owner>.<actor>` just before it shows it, and only the requests it is about to show, and the delivery daemon records the take in `cotal_anycast_<space>`, one CAS-fenced row per request keyed by the `TASK` stream's creation time and the request's sequence. The sender gets a DM notice from the daemon naming the holder that took the request, and a second notice when a redelivery moves the take to another holder. The new `anycastStatus` and `anycastCancel` ops on the `delivery` control service read and cancel the caller's own request by seq; a cancel succeeds only while the request waits. JetStream deletes by stream and seq with no condition on the stream's creation time, so a `TASK` stream deleted and recreated between the daemon's read of that time and its delete loses the request the new stream stores at that seq, and the cancel reads `deleted`; operators stop every delivery daemon serving the space and wait until each has exited and its connection has closed before recreating `TASK`. A take carries the `TASK` stream's creation time as the holder read it, and one from a stream since recreated is refused. Agents with a role gain the take publish and its reply subscription. A holder on an auth mesh that cannot take holds the request unshown and reports why. An open mesh is unchanged and refuses status and cancel. |

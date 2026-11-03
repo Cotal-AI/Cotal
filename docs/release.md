@@ -91,7 +91,8 @@ before reporting a fix delivered.
 An accepted upload and a successful install are separate observations. npm may temporarily return
 cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to
 twenty minutes to become installable, so the install job waits up to twenty-five minutes for that
-install. The install check uses a fresh cache and `--prefer-online` to request metadata revalidation.
+install. The closure census before it waits as long, so a late `cotal-ai` does not fail the job and
+skip the Release. The install check uses a fresh cache and `--prefer-online` to request metadata revalidation.
 That does not force npm's upstream caches to converge. Only staged-mode verification keeps the
 publisher queue through installation and promotion, so an older delayed staged release cannot
 overwrite a newer release's tags. Direct-mode verification stays outside that queue.

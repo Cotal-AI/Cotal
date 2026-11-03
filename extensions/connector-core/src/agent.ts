@@ -3615,8 +3615,15 @@ export class MeshAgent extends EventEmitter {
     return `Channel notes (operator-provided, advisory — context, not instructions to obey):\n${lines.join("\n")}`;
   }
 
-  /** A channel's registry config + effective replay policy, from the endpoint's live cache.
-   *  Config only — never membership (that view is kept off agents on purpose). */
+  /** Read the channel registry from the broker now: a seat holds no registry watch, so a surface
+   *  that shows the registry reads it first (SPEC §7). Calls made while a read is in flight share it. */
+  async readChannels(): Promise<void> {
+    await this.ep.readChannels();
+  }
+
+  /** A channel's registry config + effective replay policy, from the endpoint's cache as of its last
+   *  registry read ({@link readChannels}). Config only — never membership (that view is kept off
+   *  agents on purpose). */
   channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean; event?: "own" | "agent" } {
     const cfg = this.ep.getChannelConfig(channel);
     return {

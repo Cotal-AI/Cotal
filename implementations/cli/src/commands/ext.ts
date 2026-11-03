@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
@@ -211,6 +211,19 @@ export function exitOnInterruptedAdd(e: unknown): void {
   process.exitCode = 130;
 }
 
+/** Node's native `cpSync` (seen on 22.23 and 24.22) will not copy a symlink onto a symlink the
+ *  destination already has, whatever `force` says: it throws EEXIST naming the parent directory. A
+ *  staged add often carries a `.bin` link the prefix already holds, so remove each destination link
+ *  the promotion is about to replace. */
+function unlinkReplacedLinks(src: string, dest: string): void {
+  for (const entry of readdirSync(src, { withFileTypes: true })) {
+    const target = join(dest, entry.name);
+    const existing = lstatSync(target, { throwIfNoEntry: false });
+    if (entry.isSymbolicLink() && existing?.isSymbolicLink()) unlinkSync(target);
+    else if (entry.isDirectory() && existing?.isDirectory()) unlinkReplacedLinks(join(src, entry.name), target);
+  }
+}
+
 /** One add as a transaction over the prefix and its manifest: a failed or interrupted add leaves both
  *  as they were, and the add is announced only once it has committed. */
 async function addTransaction(pkg: string, resolved: string, expectedPkg: string | undefined, seeding: boolean, announce: (line: string) => void): Promise<void> {
@@ -269,6 +282,7 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
       const lockPath = join(liveDir, "package-lock.json");
       const liveLock = existsSync(lockPath) ? metadata(lockPath, liveDir) : {};
       const stagedLock = metadata(join(stageDir, "package-lock.json"));
+      unlinkReplacedLinks(join(stageDir, "node_modules"), join(liveDir, "node_modules"));
       cpSync(join(stageDir, "node_modules"), join(liveDir, "node_modules"), { recursive: true, verbatimSymlinks: true });
       writeFileSync(join(liveDir, "package.json"), JSON.stringify({ ...livePackage, dependencies }, null, 2) + "\n");
       writeFileSync(lockPath, JSON.stringify({ ...liveLock, ...stagedLock,

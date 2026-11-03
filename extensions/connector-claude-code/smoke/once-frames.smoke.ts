@@ -5,7 +5,8 @@
  * (`UserPromptSubmit`, `SessionStart`) ahead of anything else, claim it once the frame's text is
  * fixed, and confirm it only on the relay's receipt that the frame reached Claude. Every other end
  * seals it and reports it: an undelivered frame, a relay with no handoff receipt, and a turn or
- * session that ends before the verdict. A task that cannot ride the frame is left unclaimed.
+ * session that ends before the verdict. A task that cannot ride the frame is left unclaimed, and so
+ * is one whose frame a turn or session end overtook while the frame was being built.
  *
  * No broker and no relay process: the shipped handle and onReply are driven directly with
  * synthesized frames over a scripted endpoint. Run: pnpm smoke:claude-once-frames
@@ -160,7 +161,43 @@ for (const end of ["Stop", "StopFailure", "SessionEnd", "SessionStart"]) {
     s.state() === "sealed" && s.reports.join() === "o1", { state: s.state(), reports: s.reports });
 }
 
-const EXPECTED_CELLS = 14;
+console.log("\n4. a terminal that arrives while a frame is still being built keeps the task off that frame");
+{
+  // Each case holds one await the frame makes before its claim, delivers the terminal, then
+  // releases the await and sends the old frame a delivered handoff receipt.
+  const hold = () => { let release!: () => void; const p = new Promise<void>((r) => (release = r)); return { p, release }; };
+  const frames = [
+    { label: "a SessionStart frame awaiting its orientation card", build: (_s: Awaited<ReturnType<typeof seat>>) => {
+      const h = hold();
+      return { claude: createClaudeHandle({ orientation: async () => { await h.p; return "card"; } }), ev: frame("SessionStart"), release: h.release };
+    } },
+    { label: "a UserPromptSubmit frame awaiting its presence write", build: (s: Awaited<ReturnType<typeof seat>>) => {
+      const h = hold();
+      let first = true;
+      (s.agent as unknown as { ep: { setStatus: () => Promise<void> } }).ep.setStatus = async () => { if (first) { first = false; await h.p; } };
+      return { claude: createClaudeHandle(), ev: frame("UserPromptSubmit"), release: h.release };
+    } },
+  ];
+  for (const f of frames) for (const end of ["SessionEnd", "Stop", "SessionStart"]) {
+    const s = await seat();
+    const { claude, ev, release } = f.build(s);
+    const building = claude.handle(s.agent, ev);
+    await tick();
+    // SessionStart here is a new session replacing the one the frame was built for; its own frame carries the task.
+    const terminal = claude.handle(s.agent, end === "SessionStart" ? { ...frame("SessionStart"), source: "resume" } : frame(end));
+    await tick();
+    release();
+    const replacement = contextOf(await terminal);
+    const old = contextOf(await building);
+    claude.onReply(ev, true, true);
+    await tick();
+    const elsewhere = end === "SessionStart" ? TASK.test(replacement) && s.state() === "claimed" : s.state() === "pending";
+    check(`${f.label}, ${end} during it: the old frame does not carry the task and its receipt confirms nothing`,
+      !TASK.test(old) && elsewhere && s.reports.length === 0, { old: old.slice(0, 120), state: s.state(), reports: s.reports });
+  }
+}
+
+const EXPECTED_CELLS = 20;
 const ran = pass + fail;
 console.log(`\nonce-frames.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

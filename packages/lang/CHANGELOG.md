@@ -1,5 +1,123 @@
 # @cotal-ai/lang
 
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+### Patch Changes
+
+- 102c2aa: A concurrency scope that fails with an `Error` now records the `L4000` `host` fault a `catch` receives for it live, so a resumed run catches the same kind instead of `scope-fault` and no longer diverges when it branches on it. An engine fault inside a scope, including a native `ReferenceError` in a branch, settles nothing, so the resume unwinds the same way the live run did.
+
+## 0.136.0
+
+No changes in this release.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+### Patch Changes
+
+- d90d949: A concurrency scope now hands the program the frozen copy of its value that its record carries, live as on resume. Before, it froze the value in place. A record a branch returned from outside the scope stayed frozen for the rest of the live run but writable on resume, so a resume of unchanged source could diverge with L5001.
+
+## 0.135.19
+
+### Patch Changes
+
+- 0fa57f9: A worker thread that sends the effect bridge a message its host does not expect now fails only its own run. Before, the bridge threw on the host's stack, an uncaught exception that ended the whole host process and every run on it. An in-place upgrade under a live manager was enough to trigger it.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+No changes in this release.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
 ## 0.135.0
 
 No changes in this release.
