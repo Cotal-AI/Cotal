@@ -2,7 +2,7 @@
   "suite": [
     "packages/core/smoke/chat-history-limit.smoke.ts"
   ],
-  "guard": "The chat stream's history limit: the provisioner may update the chat stream and no other message stream, `cotal up` moves only the legacy pair and only after every other setup check, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up copies what the stream holds without judging retention.",
+  "guard": "The chat stream's history limit: a new space starts with no age limit and 1000 per sender, `cotal up` leaves every existing stream's limit as it is and still refuses a chat stream that is not canonical apart from its limit, the provisioner may update the chat stream and no other message stream, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up copies what the stream holds without judging retention.",
   "command": "pnpm smoke:chat-history-limit",
   "completionMarker": "chat-history-limit:",
   "progressPattern": "^  [✓✗] ",
@@ -19,9 +19,9 @@
       "file": "packages/core/src/provision.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ]\n",
-      "expectRed": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
-      "cell": "cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender",
-      "note": "Without the grant every authed space dies on a permissions violation at its first start on this release."
+      "expectRed": "the provisioner may set the chat stream's limit",
+      "cell": "the provisioner may set the chat stream's limit",
+      "note": "Without the grant `cotal history limit` is refused on every authed space."
     },
     {
       "name": "the grant is widened to the DM stream",
@@ -32,13 +32,30 @@
       "cell": "the provisioner may not update DM_<space>"
     },
     {
-      "name": "cotal up moves any limit, not only the legacy pair",
+      "name": "the default goes back to 30 days",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "Object.freeze({ maxAgeMs: 0, perSender: 1000 })",
+      "replace": "Object.freeze({ maxAgeMs: 30 * 86_400_000, perSender: 1000 })",
+      "expectRed": "a new space's chat stream starts with no age limit and 1000 per sender",
+      "cell": "a new space's chat stream starts with no age limit and 1000 per sender"
+    },
+    {
+      "name": "cotal up moves a stream on the old settings to 30 days, as 0.134.0 did",
       "file": "packages/core/src/streams.ts",
-      "find": "  if (!isLegacyChatHistory(chatHistoryLimitOf(config as unknown as Record<string, unknown>))) return undefined;\n",
+      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
+      "replace": "    await readChatStreamConfig(jsm, opts.space);\n    { const { config } = await jsm.streams.info(chatStream(opts.space)); if (config.max_age === 0 && config.max_msgs_per_subject === 1000) await setChatHistoryLimit(jsm, opts.space, { maxAgeMs: 30 * 86_400_000, perSender: 1000 }); }\n",
+      "expectRed": "cotal up leaves a chat stream with no age and 1000 per sender (every stream's limit before 0.134.0) as it is",
+      "cell": "cotal up leaves a chat stream with no age and 1000 per sender (every stream's limit before 0.134.0) as it is",
+      "note": "The move deleted every post older than 30 days at an ordinary upgrade (#5643)."
+    },
+    {
+      "name": "setup stops checking an existing chat stream",
+      "file": "packages/core/src/streams.ts",
+      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
       "replace": "",
-      "expectRed": "cotal up leaves an operator's limit as it is",
-      "cell": "cotal up leaves an operator's limit as it is",
-      "note": "The mutant still migrates the legacy pair, so only the cell that runs setup over an operator's limit sees it overwritten."
+      "expectRed": "a chat stream with any setting other than its limit off canonical is refused",
+      "cell": "a chat stream with any setting other than its limit off canonical is refused",
+      "note": "`createSpaceStreams` skips an existing chat stream, so this read is the only check of one at `cotal up`."
     },
     {
       "name": "a permission refusal of the update is reported as an unknown outcome",
@@ -47,15 +64,6 @@
       "replace": "    if (e instanceof JetStreamApiError) throw e;",
       "expectRed": "a credential without the update grant is refused, not reported as an unknown outcome",
       "cell": "a credential without the update grant is refused, not reported as an unknown outcome"
-    },
-    {
-      "name": "cotal up moves the chat stream before setup's other checks",
-      "file": "packages/core/src/streams.ts",
-      "find": "    await createSpaceStreams(jsm, opts.space);\n",
-      "replace": "    await createSpaceStreams(jsm, opts.space);\n    await reconcileChatHistory(jsm, opts.space);\n",
-      "expectRed": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
-      "cell": "a setup the artifact store check refuses leaves a legacy chat stream as it was",
-      "note": "The move deletes posts, so a setup a later check refuses would delete them and report nothing."
     },
     {
       "name": "catch-up judges the per-sender count again",

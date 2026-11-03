@@ -49,7 +49,7 @@ function stubAgent(opts: {
     },
     getChannelConfig: (channel: string) => (registered.has(channel) ? { description: "from registry" } : undefined),
   };
-  return { ep, joinedChannels: () => opts.joined, connected: true } as unknown as MeshAgentType;
+  return { ep, joinedChannels: () => opts.joined, readChannels: async () => {}, connected: true } as unknown as MeshAgentType;
 }
 
 const proto = MeshAgent.prototype as unknown as {
@@ -407,7 +407,7 @@ const proto = MeshAgent.prototype as unknown as {
     return "existing channel";
   };
   const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
-  for (const pattern of ["team.>", "team.*.ci", ">", "*"]) {
+  for (const pattern of ["team.>", "ops.ci.>", "team.*.ci", ">", "*"]) {
     const refused = await send.run(agent, cfg, { text: "hi", channel: pattern });
     check(
       `cotal_send refuses the pattern ${pattern} before reading or sending`,
@@ -415,18 +415,33 @@ const proto = MeshAgent.prototype as unknown as {
       { refused, calls },
     );
     check(
+      `the refusal for ${pattern} says to post to each channel by name and where to list them`,
+      refused.text.includes("To reach several channels, post to each by name; cotal_channels lists the existing ones."),
+      refused.text,
+    );
+  }
+  // A family's followers that are away get stored copies on its durable channels (#5404), so its
+  // refusal says one post reaches them. Any other pattern's followers get a post only while connected.
+  for (const family of ["team.>", "ops.ci.>"]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: family });
+    check(
+      `the refusal for the family ${family} says one post to a channel it matches reaches its followers, away ones by stored copy`,
+      refused.text.includes(
+        `To reach the agents following ${family}, post once to one channel it matches: those connected then get it, and one that is away gets a stored copy if that channel is durable.`,
+      ) && !refused.text.includes("no stored copies"),
+      refused.text,
+    );
+  }
+  for (const pattern of ["team.*.ci", ">", "*"]) {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: pattern });
+    check(
       `the refusal for ${pattern} says one post to a channel it matches reaches its connected followers`,
       refused.text.includes(`To reach the agents connected and following ${pattern} now, post once to one channel it matches.`),
       refused.text,
     );
     check(
-      `the refusal for ${pattern} says a pattern follow has no durable backstop`,
-      refused.text.includes("A pattern follow has no durable backstop, so a follower that is offline then may miss it."),
-      refused.text,
-    );
-    check(
-      `the refusal for ${pattern} says to post to each channel by name and where to list them`,
-      refused.text.includes("To reach several channels, post to each by name; cotal_channels lists the existing ones."),
+      `the refusal for ${pattern} says such a pattern has no stored copies`,
+      refused.text.includes("A pattern with * or the root > has no stored copies, so a follower that is offline then may miss it."),
       refused.text,
     );
   }
@@ -435,7 +450,16 @@ const proto = MeshAgent.prototype as unknown as {
     check(
       "the whole refusal for team.> reads as written",
       refused.text ===
-        `Couldn't send: "team.>" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following team.> now, post once to one channel it matches. A pattern follow has no durable backstop, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`,
+        `Couldn't send: "team.>" is a pattern, and a post goes to one concrete channel. To reach the agents following team.>, post once to one channel it matches: those connected then get it, and one that is away gets a stored copy if that channel is durable. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`,
+      refused.text,
+    );
+  }
+  {
+    const refused = await send.run(agent, cfg, { text: "hi", channel: "team.*" });
+    check(
+      "the whole refusal for team.* reads as written",
+      refused.text ===
+        `Couldn't send: "team.*" is a pattern, and a post goes to one concrete channel. To reach the agents connected and following team.* now, post once to one channel it matches. A pattern with * or the root > has no stored copies, so a follower that is offline then may miss it. To reach several channels, post to each by name; cotal_channels lists the existing ones. Nothing was sent.`,
       refused.text,
     );
   }
@@ -512,7 +536,7 @@ const proto = MeshAgent.prototype as unknown as {
   check(
     "the advertised channel text names both ways to reach a family",
     described.includes(
-      "A pattern such as team.> is refused. To reach the agents connected and following team.> now, post once to one channel it matches, such as team.announce; to reach several channels, post to each by name (cotal_channels lists the existing ones).",
+      "A pattern such as team.> is refused. To reach the agents following team.>, post once to one channel it matches, such as team.announce: those connected then get it, and one that is away gets a stored copy if that channel is durable. To reach several channels, post to each by name (cotal_channels lists the existing ones).",
     ),
     described,
   );

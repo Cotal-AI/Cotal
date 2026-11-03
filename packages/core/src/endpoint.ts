@@ -59,7 +59,9 @@ import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
+import { nextHeartbeat } from "./presence-heartbeat.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
+import { PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
   jetstream,
   jetstreamManager,
@@ -164,13 +166,17 @@ import {
   chatWildcard,
   assertValidChannel,
   channelInAllow,
+  membershipInAllow,
   isConcreteChannel,
+  isChannelFamily,
+  familiesCovering,
   normalizeMentions,
   parseSubject,
   isPrincipalOwnerToken,
   assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
+  channelBucket,
   isPresenceRow, assertPresenceRow,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
@@ -365,10 +371,12 @@ export interface EndpointOptions {
    *  endpoint that only needs the roster when it acts sets this false and calls
    *  {@link CotalEndpoint.readPresence} instead (SPEC §6). */
   watchPresence?: boolean;
-  /** Open + watch the channel registry (default true). Independent of {@link watchPresence}: a
-   *  presence-only supervisor sets this false to track the roster WITHOUT opening the channel-registry
-   *  cache — so its cred needs no channel-registry read grant (residual 2). No effect when `consume` is
-   *  true: the join-time replay decision reads the registry, so a consumer always opens it. */
+  /** Keep the channel registry cache (default true). An endpoint that watches presence watches the
+   *  registry; a consumer that reads presence on demand reads the registry on demand too
+   *  ({@link CotalEndpoint.readChannels}), and any other endpoint keeps no cache. A presence-only
+   *  supervisor sets this false to track the roster WITHOUT opening the channel-registry cache — so
+   *  its cred needs no channel-registry read grant (residual 2). A consumer always opens the
+   *  registry, because the join-time replay decision reads it. */
   watchChannels?: boolean;
   /** Read presence and the channel registry ONCE at start instead of watching them (default false),
    *  for an endpoint that does one thing and stops (`cotal send`, a roster probe). Each read is a
@@ -487,7 +495,9 @@ export interface TransportState {
  * terminal close). Lets an in-process agent track connectedness off the endpoint's own (re)binds
  * instead of an imperative flag the self-heal path can't reach; "transport" ({ connected, server? })
  * is the lower-level NATS socket edge, true before the full bind finishes and false during an internal
- * nats.js reconnect without changing `connection` readiness.
+ * nats.js reconnect without changing `connection` readiness. "stored-copies-full" (no payload): a stored
+ * copy arrived with the store at its {@link PLANE3_MAX_MSGS_PER_SUBJECT}-copy limit, so the limit may have
+ * discarded older copies before this session read them; emitted for each such copy.
  *
  * Callers MUST attach an "error" listener before `start()`: async faults (incl. NATS
  * permission denials, surfaced via `watchStatus`) are emitted as "error", and Node throws
@@ -743,9 +753,15 @@ export class CotalEndpoint extends EventEmitter {
      *  connection. Absent means the composition has no such phase. */
     startupComplete?: () => boolean;
   };
-  /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
+  /** Local cache of the channel registry (key = channel token), kept by a KV watch or, on an
+   *  endpoint that reads it on demand, by {@link readChannels}. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
   private channelDefaults: ChannelDefaults = {};
+  /** The {@link readChannels} in flight; calls made before it settles share it. */
+  private channelRead?: Promise<void>;
+  /** Orders {@link readChannels} results: a read that settles after a newer one was applied is dropped. */
+  private channelReadGeneration = 0;
+  private channelReadApplied = 0;
   /** Serializes history reads ({@link collectHistory}): they share the fixed per-instance
    *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
   private histLock: Promise<unknown> = Promise.resolve();
@@ -1800,6 +1816,9 @@ export class CotalEndpoint extends EventEmitter {
     if (watchChannels || this.doConsume) {
       this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.authed });
       if (watchChannels) await (this.readOnce ? this.readChannelsOnce() : this.startChannelWatch());
+      // A seat reads the registry on demand, as it reads the roster; this first read fills the cache
+      // its boot briefing renders from.
+      else if (this.readsChannelsOnDemand) await this.readChannels();
     }
 
     // Rebind the daemon's lease-loss watch onto the fresh connection (#1596). The intent survived
@@ -1866,9 +1885,23 @@ export class CotalEndpoint extends EventEmitter {
           `presence registration failed for ${this.card.id}: the space's presence KV bucket "${presenceBucket(this.space)}" did not accept this endpoint's first write (${detail}). The bucket can be OPENED and WATCHED while refusing every write, so a healthy-looking connection does not rule this out; a broker whose store has latched refuses until it is restarted, and no client can clear it (#1356).`,
         );
       }
-      this.heartbeatTimer = setInterval(() => {
-        this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
-      }, this.heartbeatMs);
+      // Beat at this endpoint's own phase. A repeating timer re-arms from the instant its callback
+      // ran, and every timer run in one timers pass re-arms to the same instant, so the heartbeats of
+      // many endpoints in one process that once coincided stay coincident and the loop takes the whole
+      // batch in one tick (5088 endpoints in one process: 1 to 2 s stalls, with the put deadlines
+      // expiring inside them). Re-arming from the scheduled beat keeps each endpoint's phase.
+      const phase = Date.now();
+      let beat = 0;
+      const arm = () => {
+        const next = nextHeartbeat(phase, this.heartbeatMs, beat, Date.now());
+        beat = next.beat;
+        const handle = setTimeout(() => {
+          this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+          if (this.heartbeatTimer === handle) arm();
+        }, next.delayMs);
+        this.heartbeatTimer = handle;
+      };
+      arm();
     }
 
     // Caller-owned membership watches are INTENT rather than one-connection iterators. Re-open them
@@ -1967,6 +2000,10 @@ export class CotalEndpoint extends EventEmitter {
     this.emitPresenceViewIfChanged();
     this.channelConfigs.clear();
     this.channelDefaults = {};
+    // A read in flight on the old connection must not land in the new connection's cache.
+    this.channelRead = undefined;
+    this.channelReadGeneration++;
+    this.channelReadApplied = this.channelReadGeneration;
     for (const watch of this.membershipFeedWatches)
       watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
   }
@@ -3411,7 +3448,52 @@ export class CotalEndpoint extends EventEmitter {
 
   // ---- channel discovery ---------------------------------------------------
 
-  /** This channel's registry config from the live local cache (undefined if unset). */
+  /** A consumer that reads presence on demand reads the channel registry on demand too: it holds no
+   *  watch on either, so a seat binds no consumer per member on these buckets (SPEC §6, §7). */
+  private get readsChannelsOnDemand(): boolean {
+    return this.doConsume && this.doWatchChannels && !this.doWatch;
+  }
+
+  /**
+   * Read the channel registry from the broker now, for a consumer that reads presence on demand. One
+   * batched Direct Get that binds no consumer, decoded as the watch decodes; the result replaces the
+   * cache, so an entry removed since the last read is gone. {@link listChannels} and a join or leave
+   * read through here first; other cache readers see the last read.
+   *
+   * Calls made while a read is in flight share it, and every other call reads anew. A failed read
+   * throws and changes nothing. A credential that may not make the read is refused with the grant it lacks.
+   */
+  async readChannels(): Promise<void> {
+    if (!this.readsChannelsOnDemand)
+      throw new Error("readChannels is for a consumer that reads presence on demand; this endpoint watches the channel registry or keeps no cache of it");
+    const kv = this.channelKv;
+    if (!kv) throw new Error(this.notLiveMsg());
+    if (this.channelRead) return this.channelRead;
+    const generation = ++this.channelReadGeneration;
+    const read = (async () => {
+      let entries: KvEntry[];
+      try {
+        entries = await lastKvEntries(kv);
+      } catch (e) {
+        if (!isPublishPermissionDenied(e)) throw e;
+        throw new Error(
+          `channel registry read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${channelBucket(this.space)}, the on-demand registry read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
+          { cause: e },
+        );
+      }
+      if (generation <= this.channelReadApplied) return;
+      this.channelReadApplied = generation;
+      this.channelConfigs.clear();
+      this.channelDefaults = {};
+      for (const e of entries) this.handleChannelEntry(e);
+    })();
+    this.channelRead = read;
+    const settled = () => { if (this.channelRead === read) this.channelRead = undefined; };
+    read.then(settled, settled);
+    return read;
+  }
+
+  /** This channel's registry config from the local cache (undefined if unset). */
   getChannelConfig(channel: string): ChannelConfig | undefined {
     return this.channelConfigs.get(channel);
   }
@@ -3466,8 +3548,9 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Join a channel mid-session: open a native core subscription (manager-free live read, broker-
    * confirmed against `sub.allow`), capture the stream frontier as the join watermark, backfill its
-   * history if replay is on, and — for a `durable`-class channel when a delivery daemon is present —
-   * request a Plane-3 durable backstop (via `ctl.delivery`). Idempotent: re-joining is a no-op (no
+   * history if replay is on, and — for a `durable`-class channel or a family such as `review.>` when a
+   * delivery daemon is present — request a Plane-3 durable backstop (via `ctl.delivery`). Any other
+   * pattern stays live only, with a `reason`. Idempotent: re-joining is a no-op (no
    * re-backfill). Returns the backfill count + whether the durable backstop is active (+ a `reason`
    * when a durable channel couldn't get one).
    */
@@ -3477,6 +3560,8 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (this.channels.includes(channel))
       return { joined: false, backfilled: 0, durable: this.plane3Channels.has(channel) };
+    // The delivery class below comes from the cache, so a seat reads it current before joining.
+    if (this.readsChannelsOnDemand) await this.readChannels();
     // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
     // delivers post-subscribe live messages (> frontier), so the two never overlap.
     const armed = await this.armJoin([channel]);
@@ -3504,10 +3589,15 @@ export class CotalEndpoint extends EventEmitter {
     // channel, request a Plane-3 per-member backstop from the server-side delivery daemon (durableJoin via ctl.delivery) so a post reaches a
     // busy/offline turn — the core-sub stays as the live wake-hint, dedup-coalesced with the Plane-3
     // copy by id-dedup. No manager (open dev / manager-less) ⇒ joined LIVE only, surfaced via `reason`
-    // (never silent). A `live`-class channel takes no backstop (joined live is the contract).
+    // (never silent). A `live`-class channel takes no backstop (joined live is the contract). A family
+    // (`review.>`) always asks for its row: each channel under it decides its own class at fan-out
+    // (#5404). Any other pattern has no backstop, and says so.
     let durable = false;
     let reason: string | undefined;
-    if (effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
+    const family = isChannelFamily(channel);
+    if (!family && !isConcreteChannel(channel))
+      reason = "a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>";
+    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
       try {
         const r = await this.durableJoinChannel(channel);
         if (r.durable) {
@@ -3535,6 +3625,7 @@ export class CotalEndpoint extends EventEmitter {
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (!this.channels.includes(channel)) return { left: false };
+    if (this.readsChannelsOnDemand) await this.readChannels();
     // Auth + durable-class ⇒ a Plane-3 membership may exist; tombstone it BEFORE touching local state.
     // The join generation comes from the local mirror, but a BOOT membership whose hydration was missed
     // (daemon down at connect) is NOT in the mirror — so re-resolve it from the delivery service on
@@ -3542,7 +3633,7 @@ export class CotalEndpoint extends EventEmitter {
     // tombstone can't be confirmed propagates (live sub stays up, mirror intact) for the caller to retry
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
-    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
+    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable")) {
       let generation = this.plane3Channels.get(channel);
       if (generation === undefined)
         generation = (await this.fetchMemberships())?.find((m) => m.channel === channel)?.generation;
@@ -3600,6 +3691,7 @@ export class CotalEndpoint extends EventEmitter {
    *  observer endpoints (no consumers needed). */
   async listChannels(): Promise<{ channel: string; messages: number; config?: ChannelConfig }[]> {
     if (!this.nc) throw new Error(this.notLiveMsg());
+    if (this.readsChannelsOnDemand) await this.readChannels();
     const mgr = await jetstreamManager(this.nc);
     // Subjects carry the sender (chat.<sender>.<channel>), so collapse across senders: sum
     // each channel's counts regardless of who published.
@@ -3637,10 +3729,12 @@ export class CotalEndpoint extends EventEmitter {
    * joined with presence for liveness (a member whose peer is gone but lingering shows `live:false`,
    * not a phantom). Only CURRENT, ACTIVATED members (non-tombstoned, and past activation catch-up — a
    * join still completing or that failed catch-up reported durable:false and stays hidden here until
-   * confirmed, so this surface never overstates membership). A wildcard registry channel would count for
-   * the concrete channels it subsumes, but durable membership is per-concrete-channel, so records are
-   * concrete. `live`-class channels carry no durable record — membership there is the live core-sub,
-   * not tracked here. Privileged read (the members KV is manager-write/read; agents hold no grant), so
+   * confirmed, so this surface never overstates membership). A row is a concrete channel or a family
+   * (`review.>`, #5404). Asked for one channel, a family row counts when the channel is durable-class
+   * and under it, and a principal with several rows is listed once. The map of every channel keys each
+   * row as recorded, so a family's members sit under the family itself (`review.>`), not under each
+   * channel it covers. `live`-class channels carry no durable record — membership there
+   * is the live core-sub, not tracked here. Privileged read (the members KV is manager-write/read; agents hold no grant), so
    * it is served by the manager, not an agent capability.
    */
   async channelMembers(channel: string): Promise<ChannelMember[]>;
@@ -3661,11 +3755,15 @@ export class CotalEndpoint extends EventEmitter {
     };
     const byName = (a: ChannelMember, b: ChannelMember) => a.name.localeCompare(b.name);
 
-    if (channel !== undefined)
-      return members
-        .filter((r) => subjectMatches(r.channel, channel))
-        .map((r) => memberForId(r.owner))
-        .sort(byName);
+    if (channel !== undefined) {
+      const stored = (await this.deliveryClassFresh(channel)) === "durable";
+      const ids = new Set(
+        members
+          .filter((r) => r.channel === channel || (stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel)))
+          .map((r) => r.owner),
+      );
+      return [...ids].map(memberForId).sort(byName);
+    }
 
     const map = new Map<string, ChannelMember[]>();
     for (const r of members) {
@@ -5423,8 +5521,9 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Effective delivery class read AUTHORITATIVELY from the registry KV (not the watch cache) — so a
-   *  `live`→`durable` flip is seen by fan-out without a cache-propagation gap (red-team MED-3). */
-  private async deliveryClassFresh(channel: string): Promise<DeliveryClass> {
+   *  `live`→`durable` flip is seen by fan-out without a cache-propagation gap (red-team MED-3), and a
+   *  reader just started need not wait for the cache to fill. */
+  async deliveryClassFresh(channel: string): Promise<DeliveryClass> {
     if (!this.channelKv) return effectiveDeliveryClass(undefined, undefined);
     const [cfg, defaults] = await Promise.all([
       isConcreteChannel(channel) ? readChannelConfig(this.channelKv, channel) : Promise.resolve(undefined),
@@ -5441,27 +5540,32 @@ export class CotalEndpoint extends EventEmitter {
     return matches.length === 1 ? matches[0].card.id : undefined;
   }
 
-  /** Plane-3 publish-dedupe key for a fan-out/transfer entry (#673, SPEC §4: two `id: ""` posts
-   *  MUST NOT collapse to one delivery). An empty `msg.id` contributes NO msgID — a plain publish,
-   *  never an empty or salted one — so an id-less message is at-least-once on the durable plane (a
-   *  redelivery may reach the member twice; the receiver already treats each as its own delivery). */
-  private plane3MsgId(entry: Plane3Entry, keyPrefix: string): Partial<JetStreamPublishOptions> {
-    return entry.msg.id === "" ? {} : { msgID: `${entry.msg.id}:${keyPrefix}` };
+  /** Plane-3 publish-dedupe key for a fan-out/transfer entry: the message id plus the member
+   *  lifecycle (`keySuffix`). One message reaches one lifecycle once, whichever membership row and
+   *  whichever writer (fan-out or any row's catch-up) produced the copy (#5404), within the stream's
+   *  duplicate window. An empty `msg.id` contributes NO msgID (#673, SPEC §4: two `id: ""` posts MUST
+   *  NOT collapse to one delivery) — a plain publish, never an empty or salted one — so an id-less
+   *  message is at-least-once on the durable plane (a redelivery may reach the member twice; the
+   *  receiver already treats each as its own delivery). */
+  private plane3MsgId(entry: Plane3Entry, keySuffix: string): Partial<JetStreamPublishOptions> {
+    return entry.msg.id === "" ? {} : { msgID: `${entry.msg.id}:${keySuffix}` };
   }
 
   /** Publish one fan-out entry into a member LIFECYCLE's mixed inbox (`dinbox.<o>.<a>.<uid>`, SPEC
    *  §13.1: fan-out addresses the member row's RECORDED lifecycle, never the alias's current
-   *  occupant), idempotent via `Nats-Msg-Id` (`<msgId>:<principal>:<generation>`) so a catch-up copy
-   *  and a racing fan-out copy collapse. The `principal` is the member's owner+actor dot-form. */
+   *  occupant), idempotent via `Nats-Msg-Id` (`<msgId>:<principal>:<lifecycleUid>`) so a catch-up copy
+   *  and a racing fan-out copy collapse, from the same row or from two rows that both cover the post.
+   *  The `principal` is the member's owner+actor dot-form. */
   private async publishDinbox(principal: string, lifecycleUid: string, entry: Plane3Entry): Promise<void> {
     if (!this.js) return;
     const p = parsePrincipalKey(principal);
     if (!p) throw new Error(`publishDinbox: "${principal}" is not a valid member principal <owner>.<actor>`);
     await this.js.publish(dinboxSubject(this.space, p.owner, p.actor, lifecycleUid), JSON.stringify(entry), {
       // JetStream dedupe is STREAM-WIDE, so the id must carry the LIFECYCLE too: with an alias-keyed
-      // id, lifecycle A's copy would suppress a same-alias successor B's copy of the same message
-      // (both start at generation 1) — cross-lifecycle suppression, not dedup.
-      ...this.plane3MsgId(entry, `${principal}:${lifecycleUid}:${entry.generation}`),
+      // id, lifecycle A's copy would suppress a same-alias successor B's copy of the same message —
+      // cross-lifecycle suppression, not dedup. It carries no row generation: two rows of one
+      // lifecycle covering the post must collapse to one copy.
+      ...this.plane3MsgId(entry, `${principal}:${lifecycleUid}`),
     });
   }
 
@@ -5537,11 +5641,12 @@ export class CotalEndpoint extends EventEmitter {
     return { durable: true, generation };
   }
 
-  /** Whether one lifecycle's exact ACL row allows `channel` now. A leader-served read: the handle is
-   *  opened without direct reads, so a row narrowed before this read began is the row it returns. */
+  /** Whether one lifecycle's exact ACL row allows a membership on `channel` now (a family must lie
+   *  inside one entry, {@link membershipInAllow}). A leader-served read: the handle is opened without
+   *  direct reads, so a row narrowed before this read began is the row it returns. */
   private async aclAllows(owner: string, lifecycleUid: string, channel: string): Promise<boolean> {
     const row = await readAcl(await this.aclRegistry(), owner, lifecycleUid);
-    return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
+    return row !== undefined && membershipInAllow(row.record.allowSubscribe, channel);
   }
 
   /** The post-write half of {@link durableJoinFor}'s `aclFence`: keep the row just written (at
@@ -5586,12 +5691,26 @@ export class CotalEndpoint extends EventEmitter {
   /** Idempotently copy the eligible chat messages in `(fromSeqExcl, toSeqIncl]` for `channel` into the
    *  owner inbox, via a DEDICATED per-(owner,join) ephemeral consumer (NOT the agent-scoped
    *  `chathist_<id>`/`histLock` — red-team HIGH-8). It copies what the stream still holds in that
-   *  window; a post the history limit removed first is not copied and is not reported (SPEC §4). */
+   *  window; a post the history limit removed first is not copied and is not reported (SPEC §4).
+   *
+   *  A FAMILY row (`review.>`, #5404) reads the window on every channel under it and copies a post only
+   *  when that post's own channel is durable-class. Each copy names the post's own channel, never the
+   *  family, and it skips nothing another row of the lifecycle covers: two joins can both be pending
+   *  when a post lands, so neither proves the other copied it. The per-message, per-lifecycle dedupe id
+   *  keeps one copy. */
   private async catchupCopy(
     owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
   ): Promise<number> {
     if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return 0;
     const subject = chatSubject(this.space, "*", "*", channel);
+    const family = isChannelFamily(channel);
+    const durableClass = new Map<string, Promise<boolean>>();
+    const stored = (ch: string): Promise<boolean> => {
+      if (!family) return Promise.resolve(true);
+      let cls = durableClass.get(ch);
+      if (cls === undefined) durableClass.set(ch, (cls = this.deliveryClassFresh(ch).then((c) => c === "durable")));
+      return cls;
+    };
     // Consumer NAME must be JetStream-safe (no `.`) AND collision-free: use the principal DASH-form
     // (`<owner>-<actor>`, `-` reserved as the sole separator), NOT `token(owner)` — `token()` maps the
     // dot-form `.`→`_`, which is NOT collision-free (`_` is legal inside a token, so `a.b_c` and `a_b.c`
@@ -5621,7 +5740,10 @@ export class CotalEndpoint extends EventEmitter {
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
           if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === owner) continue;
-          await this.publishDinbox(owner, lifecycleUid, { msg, channel, seq: m.seq, reason: "durable-channel", generation });
+          if (!(await stored(parsed.rest))) continue;
+          await this.publishDinbox(owner, lifecycleUid, {
+            msg, channel: parsed.rest, seq: m.seq, reason: "durable-channel", generation, ...(family ? { row: channel } : {}),
+          });
           copied++;
         }
         if (got < want) break;
@@ -5698,20 +5820,28 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Validate the channel ARG shape only: non-blank, valid, concrete (NO ACL check, that is op-specific).
+   *  `family` also admits a channel family such as `review.>` (a membership join or leave, #5404).
    *  Returns the channel on success or a ControlReply error to short-circuit. */
-  private checkDurableChannelArg(args: Record<string, unknown>, op: string): string | ControlReply {
+  private checkDurableChannelArg(args: Record<string, unknown>, op: string, opts: { family?: boolean } = {}): string | ControlReply {
     const channel = typeof args.channel === "string" ? args.channel.trim() : "";
     if (!channel) return { ok: false, error: `${op}: channel must be a non-blank string` };
     try { assertValidChannel(channel); } catch (e) { return { ok: false, error: (e as Error).message }; }
+    if (opts.family && isChannelFamily(channel)) return channel;
     if (!isConcreteChannel(channel))
-      return { ok: false, error: `${op}: "${channel}" must be a concrete channel (durable membership is per-concrete-channel, not wildcard)` };
+      return {
+        ok: false,
+        error: opts.family
+          ? `${op}: "${channel}" stays live only: a durable membership takes a concrete channel or a family such as review.>, never the root > or a pattern with *`
+          : `${op}: "${channel}" must be a concrete channel (durable membership is per-concrete-channel, not wildcard)`,
+      };
     return channel;
   }
 
   /** JOIN requires the channel be within the caller's CURRENT read ACL (you can't durable-subscribe a
-   *  channel you may not read). */
+   *  channel you may not read). A family must lie inside one ACL entry, so every channel under it is
+   *  readable. */
   private async deliveryJoin(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
-    const channel = this.checkDurableChannelArg(args, "durableJoin");
+    const channel = this.checkDurableChannelArg(args, "durableJoin", { family: true });
     if (typeof channel !== "string") return channel; // a ControlReply error
     // The caller arrives as an ALIAS (the control subject carries owner+actor, never a uid): resolve
     // its single live lifecycle-keyed ACL row SERVER-SIDE — the trusted registry, never a caller
@@ -5722,7 +5852,7 @@ export class CotalEndpoint extends EventEmitter {
     catch (e) { return { ok: false, error: (e as Error).message }; }
     if (acl === undefined)
       return { ok: false, error: `durableJoin: no read ACL on record for ${caller} (not provisioned for durable delivery)` };
-    if (!channelInAllow(acl.allowSubscribe, channel))
+    if (!membershipInAllow(acl.allowSubscribe, channel))
       return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
     const uid = acl.lifecycleUid;
     // The lookup above may be stale by the time the row is written (a retirement can fence and purge
@@ -5770,7 +5900,7 @@ export class CotalEndpoint extends EventEmitter {
    *  (the join epoch — without it a stale/replayed leave could tombstone a newer rejoin), and an EXISTING
    *  own membership; `durableLeaveFor` → `tombstoneMember` then enforces the generation match. */
   private async deliveryLeave(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
-    const channel = this.checkDurableChannelArg(args, "durableLeave");
+    const channel = this.checkDurableChannelArg(args, "durableLeave", { family: true });
     if (typeof channel !== "string") return channel; // a ControlReply error
     if (typeof args.generation !== "number" || !Number.isFinite(args.generation))
       return { ok: false, error: "durableLeave: a finite generation is required (fail-closed stale-leave guard)" };
@@ -6431,7 +6561,9 @@ export class CotalEndpoint extends EventEmitter {
     // and again return without acking so the entry redelivers rather than being consumed here.
     if (!this.plane3MayAct()) return;
     if ((await this.deliveryClassFresh(channel)) === "durable") {
-      for (const rec of await listMembers(await this.membersRegistry(), { channel })) {
+      // The channel's own rows and every family row above it (`review.>`). A lifecycle holding two of
+      // them gets two publishes and keeps one copy: the dedupe id is per message and lifecycle (#5404).
+      for (const rec of await listMembers(await this.membersRegistry(), { covering: channel })) {
         if (rec.owner === msg.from.id) continue;      // never backstop the sender's own post
         if (!durableEligible(rec, seq)) continue;     // routing fast-filter (reader re-checks)
         // Address the member row's RECORDED lifecycle: a retired row (tombstone pending) routes to the
@@ -6443,7 +6575,10 @@ export class CotalEndpoint extends EventEmitter {
         // stopping late is not - the entry is never acked here, so the successor redelivers it and
         // re-sends the whole set; publishDinbox is idempotent per (owner, lifecycle, msgID).
         if (!this.plane3MayAct()) return;
-        await this.publishDinbox(rec.owner, rec.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation });
+        await this.publishDinbox(rec.owner, rec.lifecycleUid, {
+          msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation,
+          ...(rec.channel !== channel ? { row: rec.channel } : {}),
+        });
       }
     } else {
       for (const name of msg.mentions ?? []) {
@@ -6481,6 +6616,17 @@ export class CotalEndpoint extends EventEmitter {
         catch (e) { if (!this.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+  }
+
+  /** Whether one of the lifecycle's rows covering concrete `channel`, the channel's own or a family
+   *  above it, is eligible for the post at `seq`. One exact read per row, the channel's own first. */
+  private async lifecycleCoversPost(owner: string, lifecycleUid: string, channel: string, seq: number): Promise<boolean> {
+    const kv = await this.membersRegistry();
+    for (const row of [channel, ...familiesCovering(channel).reverse()]) {
+      const rec = await readMember(kv, row, owner, lifecycleUid);
+      if (rec && durableEligible(rec.record, seq)) return true;
+    }
+    return false;
   }
 
   /** Remove a retired lifecycle's member row for `channel`, when one exists. Best effort: the row
@@ -6546,7 +6692,7 @@ export class CotalEndpoint extends EventEmitter {
         // every later message on the channel into this inbox until it goes, and this reader then
         // removes each copy. Remove the row where that cost is paid, by its exact key, only when it
         // exists: a purge of an absent key would write a marker per dropped entry.
-        if (entry.reason === "durable-channel") await this.removeRetiredMemberRow(entry.channel, owner, pr.lifecycleUid);
+        if (entry.reason === "durable-channel") await this.removeRetiredMemberRow(entry.row ?? entry.channel, owner, pr.lifecycleUid);
         if (!this.plane3MayAct()) return;
         m.ack();
         return;
@@ -6568,12 +6714,10 @@ export class CotalEndpoint extends EventEmitter {
     // KNOWN owner whose CURRENT ACL no longer covers the channel — a revocation/narrowing. Drop: the
     // entry is no longer authorized (SPEC §7 current-ACL gate before surfacing).
     if (!channelInAllow(acl, entry.channel)) { m.ack(); return; }
-    if (entry.reason === "durable-channel") {
-      const rec = await readMember(await this.membersRegistry(), entry.channel, owner, pr.lifecycleUid);
-      // INTERVAL re-auth (not a current-member boolean): a pre-leave entry (seq ≤ leaveCursor) stays
-      // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut.
-      if (!rec || !durableEligible(rec.record, entry.seq)) { m.ack(); return; }
-    }
+    // INTERVAL re-auth (not a current-member boolean): a pre-leave entry (seq ≤ leaveCursor) stays
+    // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut. Any of the
+    // lifecycle's rows that cover the channel may hold the post, whichever row addressed the copy.
+    if (entry.reason === "durable-channel" && !(await this.lifecycleCoversPost(owner, pr.lifecycleUid, entry.channel, entry.seq))) { m.ack(); return; }
     // COMMIT-POINT FENCE. Everything above this line is broker I/O - the ACL read and the member
     // re-read - so the entry check at the top of the handler is stale by now if this unit was
     // descheduled inside either. The transfer below is the effect that must not happen on behalf of
@@ -6593,7 +6737,7 @@ export class CotalEndpoint extends EventEmitter {
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
       await this.js!.publish(dlvSubject(this.space, pr.owner, pr.actor, pr.lifecycleUid), JSON.stringify(frame), {
-        ...this.plane3MsgId(entry, `${owner}:${pr.lifecycleUid}:${entry.generation}`),
+        ...this.plane3MsgId(entry, `${owner}:${pr.lifecycleUid}`),
         headers: frameHeaders,
       });
     } catch {
@@ -6641,6 +6785,11 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
+        // A copy with a full store behind it means the store held its limit, so older copies may have
+        // been discarded unread (#5404); NATS gives no notice of the discard itself. Checked on every
+        // delivery, ahead of the checks below and the connector's id dedupe, so a copy the agent also
+        // got live cannot hide it. The connector folds repeats into one notice.
+        if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit("stored-copies-full");
         // The header is minted only by the trusted DLV writer. A body-only discriminator is
         // insufficient because old Cotal envelopes permit unknown fields and could imitate it.
         if (m.headers?.get(PLANE3_FRAME_HEADER) !== "1") {
@@ -6737,7 +6886,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Agent-side, first connect (auth): SELF-JOIN this session's durable boot channels via the
    *  server-side delivery daemon — replacing the old manager-written boot membership. Each concrete
-   *  `durable`-class boot channel gets a `durableJoin` whose returned generation seeds the leave mirror
+   *  `durable`-class boot channel, and each family such as `review.>`, gets a `durableJoin` whose
+   *  returned generation seeds the leave mirror
    *  + durable-state surface; an already-active membership (a relaunch) is idempotent (no re-catch-up).
    *  If the daemon is down/absent at first connect (or reports a transient `durable:false`), the channel
    *  is handed to {@link reconcileBootJoin} for capped-backoff retry — so the backstop is RESTORED once
@@ -6745,11 +6895,16 @@ export class CotalEndpoint extends EventEmitter {
    *  degraded in `cotal_channels` ({@link hasDurableMembership}). */
   private async armBootDurableMemberships(): Promise<void> {
     for (const channel of this.channels) {
-      if (!isConcreteChannel(channel) || this.plane3Channels.has(channel)) continue;
-      // A missing channel row legitimately resolves through the defaults. A failed/denied registry
-      // read does not prove the channel is live-only, so let it fail startup loudly.
-      const cls = await this.deliveryClassFresh(channel);
-      if (cls !== "durable") continue;
+      if (this.plane3Channels.has(channel)) continue;
+      // A family (`review.>`) asks for its row whatever the default class: each channel under it decides
+      // its own at fan-out (#5404). Any other pattern has no durable membership.
+      if (!isChannelFamily(channel)) {
+        if (!isConcreteChannel(channel)) continue;
+        // A missing channel row legitimately resolves through the defaults. A failed/denied registry
+        // read does not prove the channel is live-only, so let it fail startup loudly.
+        const cls = await this.deliveryClassFresh(channel);
+        if (cls !== "durable") continue;
+      }
       try {
         const r = await this.durableJoinChannel(channel);
         if (r.durable) this.plane3Channels.set(channel, r.generation ?? 0);

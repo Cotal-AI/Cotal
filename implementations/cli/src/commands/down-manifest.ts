@@ -27,6 +27,7 @@ import {
   realDirNoSymlink,
   resolveAuthProvider,
   subjectMatches,
+  durableCovers,
   unlinkFileNoFollow,
   type EpCaller,
 } from "@cotal-ai/core";
@@ -181,7 +182,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
           }
           if (snapshot) {
             const others = snapshot.members.filter(
-              (m) => !ownedIds.has(m.id) && (m.durable.includes(ch) || m.live.some((p) => subjectMatches(p, ch))),
+              (m) => !ownedIds.has(m.id) && (durableCovers(m.durable, ch) || m.live.some((p) => subjectMatches(p, ch))),
             );
             if (others.length) {
               skipped.push({ channel: ch, why: `members present (${others.length})` });

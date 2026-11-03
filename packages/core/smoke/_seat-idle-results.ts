@@ -78,3 +78,53 @@ export function nativeErrorObserver(emit: (row: { epochMs: number; source: Nativ
     summary() { return { total, emitted, dropped: total - emitted, counts: Object.fromEntries(counts), contexts: Object.fromEntries(contexts) }; },
   };
 }
+
+/** Watch a process's own event loop with a 100 ms timer and report every tick that arrives late by
+ *  `stallMs` or more (a stall), at most `limit` times; returns the stop function. The loop delay
+ *  histogram gives the size of the worst stall, this gives its time. */
+export function loopStallWatch(emit: (row: { epochMs: number; stallMs: number }) => void, stallMs = 1000, limit = 50, intervalMs = 100): () => void {
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("loop stall row limit must be nonnegative");
+  let emitted = 0, last = performance.now();
+  const timer = setInterval(() => {
+    const now = performance.now(), late = now - last - intervalMs;
+    last = now;
+    if (late >= stallMs && emitted < limit) { emitted++; emit({ epochMs: Date.now(), stallMs: Math.round(late) }); }
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
+
+/** Latency statistics (ms) over the probe puts since the previous `take`. */
+export interface PutProbeStats { n: number; failed: number; p50Ms: number; p99Ms: number; maxMs: number }
+
+/** Time real presence writes from inside a seat process. Every `intervalMs` one of `publishers`
+ *  (round robin, never two in flight) republishes its own presence record, the same put the
+ *  heartbeat makes on the same connection and bucket, and the round trip is recorded. A put that
+ *  takes `slowMs` or more, or fails, is reported at once (at most `limit` rows); `take` returns the
+ *  distribution since the previous take. A probe failure is its own row and is never counted as
+ *  the endpoint's own heartbeat failing. */
+export function putLatencyProbe(publishers: Array<() => Promise<void>>, emit: (row: { epochMs: number; ms: number; failed?: string }) => void, slowMs = 500, limit = 50, intervalMs = 250): { take(): PutProbeStats; stop(): void } {
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("put probe row limit must be nonnegative");
+  if (publishers.length === 0) throw new Error("put probe needs at least one publisher");
+  let emitted = 0, next = 0, inFlight = false, samples: number[] = [], failed = 0;
+  const report = (row: { epochMs: number; ms: number; failed?: string }) => { if (emitted < limit) { emitted++; emit(row); } };
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    const publish = publishers[next++ % publishers.length];
+    const started = performance.now();
+    publish().then(
+      () => { const ms = performance.now() - started; samples.push(ms); if (ms >= slowMs) report({ epochMs: Date.now(), ms: Math.round(ms) }); },
+      (e: unknown) => { const ms = performance.now() - started; samples.push(ms); failed++; report({ epochMs: Date.now(), ms: Math.round(ms), failed: nativeErrorClass(e) }); },
+    ).finally(() => { inFlight = false; });
+  }, intervalMs);
+  return {
+    take() {
+      const sorted = [...samples].sort((a, b) => a - b);
+      const at = (p: number) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor((sorted.length * p) / 100))] : 0;
+      const stats = { n: sorted.length, failed, p50Ms: at(50), p99Ms: at(99), maxMs: sorted.length ? sorted[sorted.length - 1] : 0 };
+      samples = []; failed = 0;
+      return stats;
+    },
+    stop() { clearInterval(timer); },
+  };
+}

@@ -40,12 +40,22 @@ import {
   accountDisconnectSubject,
   channelFromChatSubscription,
   principalFromConnz,
+  isChannelFamily,
+  subjectMatches,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
 import type { ChannelMembership } from "./types.js";
+
+/** Whether a feed record's `durable` list covers `channel`: the channel's own row, or a family row
+ *  above it (`team.>`, #5404). A family stores copies only for the durable-class channels under it, so
+ *  a display that knows `channel` is live-class passes `familyStores` false. A removal safeguard leaves
+ *  it true and counts a family follower on every channel under the family. Display-only, like the feed. */
+export function durableCovers(durable: readonly string[], channel: string, familyStores = true): boolean {
+  return durable.some((row) => row === channel || (familyStores && isChannelFamily(row) && subjectMatches(row, channel)));
+}
 
 export interface MembershipFeedOpts {
   servers: string;

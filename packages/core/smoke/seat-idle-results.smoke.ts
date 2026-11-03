@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import type { Presence } from "../src/index.js";
-import { nativeLoadFailures, readRosterSample, nativeErrorClass, nativeErrorObserver, nativeErrorContext } from "./_seat-idle-results.js";
+import { nativeLoadFailures, readRosterSample, nativeErrorClass, nativeErrorObserver, nativeErrorContext, loopStallWatch, putLatencyProbe } from "./_seat-idle-results.js";
 
 let checks = 0;
 const clean = { requested: 12, up: 12, failed: 0, missingMid: 0, missingEnd: 0, staleMid: 0, staleEnd: 0, endpointErrors: 0, apiErrors: 0, slowConsumers: 0, brokerWarnings: 0 };
@@ -70,4 +70,57 @@ contextual.note("warning", presenceWarning); contextual.note("warning", timeout)
 assert.deepEqual(contextual.summary(), { total: 2, emitted: 1, dropped: 1, counts: { "warning:TimeoutError": 2 }, contexts: { "presence-write": 1, unclassified: 1 } }); checks++;
 assert.equal((contextualRows[0] as { context: string }).context, "presence-write"); checks++;
 assert.ok(!JSON.stringify(contextualRows).includes("private")); checks++;
+
+// The stall watch runs in this process: block the loop for longer than the threshold and one row
+// names the stall; block it for less and nothing is emitted; the row limit holds.
+const block = (ms: number) => { const until = performance.now() + ms; while (performance.now() < until) { /* hold the loop */ } };
+const settle = () => new Promise((r) => setTimeout(r, 250));
+const stalls: Array<{ epochMs: number; stallMs: number }> = [];
+const stopStalls = loopStallWatch((row) => stalls.push(row), 300, 1, 50);
+await settle();
+assert.equal(stalls.length, 0); checks++;
+block(100); await settle();
+assert.equal(stalls.length, 0); checks++;
+const before = Date.now();
+block(400); await settle();
+assert.equal(stalls.length, 1); checks++;
+assert.ok(stalls[0].stallMs >= 300 && stalls[0].stallMs < 1000, `stall ${stalls[0].stallMs} ms`); checks++;
+assert.ok(stalls[0].epochMs >= before + 300, "stall stamped after the block"); checks++;
+block(400); await settle();
+assert.equal(stalls.length, 1, "row limit holds"); checks++;
+stopStalls();
+block(400); await settle();
+assert.equal(stalls.length, 1, "stopped watch is silent"); checks++;
+assert.throws(() => loopStallWatch(() => {}, 300, -1)); checks++;
+
+// put probe: round robin over publishers, one in flight, slow and failed rows, stats per take
+{
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const calls: string[] = [];
+  const rows: Array<{ epochMs: number; ms: number; failed?: string }> = [];
+  const probe = putLatencyProbe([
+    async () => { calls.push("fast"); await sleep(2); },
+    async () => { calls.push("slow"); await sleep(60); },
+    async () => { calls.push("bad"); await sleep(1); throw Object.assign(new Error("private detail"), { name: "TimeoutError" }); },
+  ], (row) => rows.push(row), 40, 2, 10);
+  await sleep(260);
+  probe.stop();
+  const stats = probe.take();
+  assert.ok(calls.length >= 4 && calls.length <= 26, `calls ${calls.length}`); checks++;
+  assert.deepEqual(calls.slice(0, 3), ["fast", "slow", "bad"]); checks++;
+  assert.equal(stats.n, calls.length); checks++;
+  assert.equal(stats.failed, calls.filter((c) => c === "bad").length); checks++;
+  assert.ok(stats.maxMs >= 60 && stats.p50Ms <= stats.p99Ms && stats.p99Ms <= stats.maxMs, JSON.stringify(stats)); checks++;
+  assert.equal(rows.length, 2, "row limit"); checks++;
+  assert.ok(rows[0].ms >= 60 && rows[0].failed === undefined, JSON.stringify(rows[0])); checks++;
+  assert.equal(rows[1].failed, "TimeoutError"); checks++;
+  assert.ok(!JSON.stringify(rows).includes("private detail")); checks++;
+  const after = probe.take();
+  assert.deepEqual(after, { n: 0, failed: 0, p50Ms: 0, p99Ms: 0, maxMs: 0 }); checks++;
+  const before = calls.length;
+  await sleep(40);
+  assert.equal(calls.length, before, "stopped probe issues no puts"); checks++;
+}
+assert.throws(() => putLatencyProbe([async () => {}], () => {}, 500, -1)); checks++;
+assert.throws(() => putLatencyProbe([], () => {})); checks++;
 console.log(`seat-idle-results: ${checks} assertions passed`);

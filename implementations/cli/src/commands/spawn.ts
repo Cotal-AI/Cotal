@@ -136,6 +136,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { callerHarness, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
 import { attachSeat } from "./agents.js";
@@ -1299,22 +1300,37 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const personaProject = resolvePath(target.personaRoot, "..", "..");
   const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(personaProject, ref);
+  // The product default of a catalog nothing prepared, as a Cloud space's is until a spawn, is
+  // written from the shipped template here and launched. A named or preferred persona is the
+  // user's own choice, so one that is missing is still refused.
+  const implicitDefault = ref === "default" && personaFrom === undefined && values.config === undefined && handoffText === undefined && redeemedEnrollment === undefined;
   let def: AgentDef;
   try {
     def = loadLaunchPersonaFile(path);
   } catch (e) {
-    if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, remedy: "use `cotal team deploy <file>` for a Mesh manifest; use a native persona file for spawn" });
     const code = (e as NodeJS.ErrnoException).code;
-    // The not-found text names the mesh's space and server, which for a handoff are its values.
-    if (handoffText !== undefined) {
-      stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
-    } else if (code === "ENOENT") {
-      const missing = missingPersona(target, ref, personaFrom, path);
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
-    } else {
-      stderrLine("✗ ", `${(e as Error).message}`, c.red);
+    if (!(implicitDefault && code === "ENOENT")) {
+      if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, remedy: "use `cotal team deploy <file>` for a Mesh manifest; use a native persona file for spawn" });
+      // The not-found text names the mesh's space and server, which for a handoff are its values.
+      if (handoffText !== undefined) {
+        stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
+      } else if (code === "ENOENT") {
+        const missing = missingPersona(target, ref, personaFrom, path);
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
+      } else {
+        stderrLine("✗ ", `${(e as Error).message}`, c.red);
+      }
+      process.exit(1);
     }
-    process.exit(1);
+    let written: string | undefined;
+    try {
+      written = writeDefaultPersonaForLaunch(personaProject);
+    } catch (writeError) {
+      const missing = missingPersona(target, ref, personaFrom, path);
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(writeError as Error).message}`, { target: { space, path }, remedy: missing.remedy });
+    }
+    if (written !== undefined) provenance.wrote("default persona", written);
+    def = loadLaunchPersonaFile(path);
   }
 
   // Provenance: say which persona file WON resolution (--config > positional > preference > default)

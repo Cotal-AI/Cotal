@@ -1,6 +1,7 @@
 /**
  * The chat stream's history limit on a real broker: the age and per-sender count a space keeps its
- * channel posts for, set by `cotal up` and `cotal history limit`.
+ * channel posts for. A new space starts with no age limit and 1000 per sender, `cotal up` changes no
+ * existing stream's limit, and `cotal history limit` sets it.
  *
  * Every cell runs against a live nats-server, because each claim is the broker's: the provisioner's
  * permission to update one stream and no other, the expiry the broker runs once an age lands, and a
@@ -19,7 +20,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { Objm } from "@nats-io/obj";
 import { connect, nanos, type NatsConnection } from "@nats-io/transport-node";
 import {
   CHAT_HISTORY_DEFAULT,
@@ -27,7 +27,6 @@ import {
   ChatHistoryUpdateUnknown,
   CotalEndpoint,
   DEV_OWNER,
-  LEGACY_CHAT_HISTORY,
   PLANE3_MAX_MSGS_PER_SUBJECT,
   artifactBucket,
   canonicalBackupStreamConfig,
@@ -101,7 +100,7 @@ async function broker(conf: (port: number, storeDir: string) => string): Promise
 const chatLimit = async (jsm: JetStreamManager, space: string) => limitOf((await jsm.streams.info(chatStream(space))).config);
 
 // ── auth mode: the scoped credentials ────────────────────────────────────────────────────────────
-console.log("the provisioner's grant and cotal up's migration (auth mode):");
+console.log("the provisioner's grant and the default limit (auth mode):");
 const S = `chl${randomUUID().slice(0, 6)}`;
 const auth = await createSpaceAuth(S);
 const authBroker = await broker((port, storeDir) => serverConfig(auth, [auth], { port, host: "127.0.0.1", storeDir, transport: { kind: "plaintext" } }));
@@ -110,13 +109,12 @@ try {
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
   const nc = await connect({ servers: authBroker.servers, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
   const jsm = await jetstreamManager(nc);
-  // A space from before the limit was configurable: its chat stream on the legacy pair.
-  await jsm.streams.add(canonicalBackupStreamConfig(S, chatStream(S), LEGACY_CHAT_HISTORY));
   const first = await thrown(() => setupSpaceStreams({ servers: authBroker.servers, space: S, creds: provisioner }));
-  const migrated = first === undefined ? await chatLimit(jsm, S) : undefined;
-  check("cotal up's setup, as the provisioner, moves a legacy chat stream to 30 days and 1000 per sender", first === undefined && same(migrated, CHAT_HISTORY_DEFAULT), first ?? migrated);
-  const repeat = await setupSpaceStreams({ servers: authBroker.servers, space: S, creds: provisioner });
-  check("a repeat setup changes nothing and reports no migration", repeat.chatHistory === undefined && same(await chatLimit(jsm, S), CHAT_HISTORY_DEFAULT), repeat);
+  const created = first === undefined ? (await jsm.streams.info(chatStream(S))).config : undefined;
+  // The literal pair, not CHAT_HISTORY_DEFAULT, so a default that drifts is caught here.
+  check("a new space's chat stream starts with no age limit and 1000 per sender", first === undefined && created?.max_age === 0 && created.max_msgs_per_subject === 1000, first ?? (created && limitOf(created)));
+  const repeat = await thrown(() => setupSpaceStreams({ servers: authBroker.servers, space: S, creds: provisioner }));
+  check("a repeat setup changes nothing", repeat === undefined && same(await chatLimit(jsm, S), CHAT_HISTORY_DEFAULT), repeat);
   const plane3 = await Promise.all([inboxStream(S), dlvStream(S)].map(async (name) => (await jsm.streams.info(name)).config));
   check("INBOX and DLV keep their own 1000 per subject and no age", plane3.every((c) => c.max_msgs_per_subject === PLANE3_MAX_MSGS_PER_SUBJECT && c.max_age === 0), plane3.map((c) => [c.name, c.max_msgs_per_subject, c.max_age]));
 
@@ -156,7 +154,7 @@ try {
   for (const ep of [mgr, daemon]) { ep.on("error", () => {}); await ep.start(); endpoints.push(ep); }
   await daemon.startPlane3((owner, lifecycleUid) => daemon.aclForOwner(owner, lifecycleUid));
   const posterId = newIdentity(), posterUid = mintLifecycleUid();
-  const joinChannels = ["elsewhere", "held", "full", "capped", "gone"];
+  const joinChannels = ["elsewhere", "held", "full", "fam.full", "capped", "gone"];
   const posterCreds = await provisionAgent(mgr, auth, posterId, { allowSubscribe: joinChannels, allowPublish: joinChannels, subscribe: [], lifecycleUid: posterUid });
   const poster = new CotalEndpoint({ space: S, servers: authBroker.servers, creds: posterCreds, channels: [], consume: false, lifecycleUid: posterUid, watchPresence: false, registerPresence: false, card: { id: posterId.id, name: "poster", role: "agent", kind: "agent" } });
   poster.on("error", () => {});
@@ -211,6 +209,13 @@ try {
   await wait(300);
   const fullJoin = await join("full", await pending("full", fullCursor));
   check("a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts", fullJoin.open && fullJoin.copies === 2, fullJoin);
+  // The same on a family row (#5639): its window reads every channel under the family.
+  const familyCursor = await lastSeq();
+  await poster.multicast("other 4", { channel: "elsewhere" });
+  for (const i of [1, 2]) await poster.multicast(`fam ${i}`, { channel: "fam.full" });
+  await wait(300);
+  const familyJoin = await join("fam.>", await pending("fam.>", familyCursor));
+  check("a family join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts", familyJoin.open && familyJoin.copies === 2, familyJoin);
   // Past the count: the sender's two oldest posts in the window are evicted.
   const capCursor = await lastSeq();
   for (const i of [1, 2, 3, 4]) await poster.multicast(`capped ${i}`, { channel: "capped" });
@@ -236,7 +241,7 @@ try {
 }
 
 // ── open mode: the helper, the migration boundary, recall, expiry ────────────────────────────────
-console.log("\nthe limit, the migration boundary and recall (open mode):");
+console.log("\nthe limit, what cotal up leaves alone, and recall (open mode):");
 const open = await broker((port, storeDir) => openServerConfig({ port, host: "127.0.0.1", storeDir, transport: { kind: "plaintext" } }));
 try {
   const nc: NatsConnection = await connect({ servers: open.servers });
@@ -261,28 +266,18 @@ try {
   for (const subject of copySubjects) await js.publish(subject, JSON.stringify({ copy: true }));
   const writtenAt = Date.now();
 
-  // The boundary of cotal up's migration.
-  for (const [space, limit, what] of [["chlcustomcount", { maxAgeMs: 0, perSender: 500 }, "no age and another count"], ["chlweek", { maxAgeMs: 7 * DAY, perSender: 1000 }, "an age of 7 days"]] as const) {
+  // An existing chat stream keeps whatever limit it holds through cotal up's setup.
+  for (const [space, limit, what] of [["chlold", { maxAgeMs: 0, perSender: 1000 }, "no age and 1000 per sender (every stream's limit before 0.134.0)"], ["chlcustomcount", { maxAgeMs: 0, perSender: 500 }, "no age and another count"], ["chlweek", { maxAgeMs: 7 * DAY, perSender: 1000 }, "an age of 7 days"], ["chlmonth", { maxAgeMs: 30 * DAY, perSender: 1000 }, "an age of 30 days"]] as const) {
     await jsm.streams.add(canonicalBackupStreamConfig(space, chatStream(space), limit));
-    const r = await setupSpaceStreams({ servers: open.servers, space });
-    check(`cotal up leaves a chat stream with ${what} as it is`, r.chatHistory === undefined && same(await chatLimit(jsm, space), limit), r);
+    const r = await thrown(() => setupSpaceStreams({ servers: open.servers, space }));
+    check(`cotal up leaves a chat stream with ${what} as it is`, r === undefined && same(await chatLimit(jsm, space), limit), r ?? await chatLimit(jsm, space));
   }
   const drifted = "chldrift";
-  await jsm.streams.add({ ...canonicalBackupStreamConfig(drifted, chatStream(drifted), LEGACY_CHAT_HISTORY), max_bytes: 10 * 1024 * 1024 });
+  await jsm.streams.add({ ...canonicalBackupStreamConfig(drifted, chatStream(drifted), CHAT_HISTORY_DEFAULT), max_bytes: 10 * 1024 * 1024 });
   const refusal = await thrown(() => setupSpaceStreams({ servers: open.servers, space: drifted }));
   const after = (await jsm.streams.info(chatStream(drifted))).config;
-  check("a legacy chat stream with any other drift is refused, not migrated", refusal instanceof Error && refusal.message.includes("max_bytes"), refusal);
+  check("a chat stream with any setting other than its limit off canonical is refused", refusal instanceof Error && refusal.message.includes("max_bytes"), refusal);
   check("...and left as it was", after.max_age === 0 && after.max_bytes === 10 * 1024 * 1024, { max_age: after.max_age, max_bytes: after.max_bytes });
-  // A setup that a later check refuses deletes nothing: the move runs after every other check.
-  const late = "chllate";
-  await jsm.streams.add(canonicalBackupStreamConfig(late, chatStream(late), LEGACY_CHAT_HISTORY));
-  await new Objm(js).create(artifactBucket(late), { max_bytes: 1024 });
-  const lateRefusal = await thrown(() => setupSpaceStreams({ servers: open.servers, space: late }));
-  check("a setup the artifact store check refuses leaves a legacy chat stream as it was", lateRefusal instanceof Error && lateRefusal.message.includes("max_bytes is 1024") && same(await chatLimit(jsm, late), LEGACY_CHAT_HISTORY), { refusal: lateRefusal, limit: await chatLimit(jsm, late) });
-  const store = (await jsm.streams.info(objectStoreStream(artifactBucket(late)))).config;
-  await jsm.streams.update(store.name, { ...store, max_bytes: -1 });
-  const lateRetry = await setupSpaceStreams({ servers: open.servers, space: late });
-  check("...and once that drift is gone, setup moves it and reports the move", same(lateRetry.chatHistory?.to, CHAT_HISTORY_DEFAULT) && same(await chatLimit(jsm, late), CHAT_HISTORY_DEFAULT), lateRetry);
 
   // The helper.
   const V = "chlhelper";
@@ -294,8 +289,10 @@ try {
   const moved = await thrown(() => setChatHistoryLimit(jsm, V, { maxAgeMs: DAY, perSender: 10 }, { maxAgeMs: 7 * DAY, perSender: 10 }));
   check("a stream that holds another limit than the caller read is refused", moved instanceof ChatHistoryChanged && same(moved.found, CHAT_HISTORY_DEFAULT), moved);
   check("...and nothing was written", same(await chatLimit(jsm, V), CHAT_HISTORY_DEFAULT));
-  const noop = await setChatHistoryLimit(jsm, V, CHAT_HISTORY_DEFAULT, CHAT_HISTORY_DEFAULT);
-  check("setting the limit a stream holds is a no-op", noop === undefined);
+  const week = { maxAgeMs: 7 * DAY, perSender: 1000 };
+  await setChatHistoryLimit(jsm, V, week, CHAT_HISTORY_DEFAULT);
+  const noop = await setChatHistoryLimit(jsm, V, week, week);
+  check("setting the limit a stream holds is a no-op", noop === undefined && same(await chatLimit(jsm, V), week), noop);
 
   // Recall: the cap rule and the head rule.
   const R = "chlrecall";

@@ -202,7 +202,7 @@ try {
     // shard 3 reddened on a handler that behaved correctly. What every handler owes is a terminal
     // outcome in the log; silence is the defect. The refusal itself stays asserted twice over, by
     // `refusals >= 1` above and by the aggregate below.
-    const refused = (label: string) => new RegExp(`manager ${label} re-dial attempt failed: .*another owner`);
+    const refused = (label: string) => new RegExp(`manager ${label} re-dial attempt failed: .*not serve principal`);
     // The three terminal shapes `boundedReconnect`'s callers actually emit. The pre-re-dial
     // `manager <label> connection closed: ...` line is deliberately NOT one of them: matching it
     // would make this cell vacuous, since it is logged before any attempt is made.
@@ -216,7 +216,7 @@ try {
     if (!adopted) {
       assert.equal(m.remoteSupervisorCreds, initial.supervisor);
       assert.equal(m.remoteExecutorCreds, initial.executor);
-      assert.match(m.remoteRenewalDebt!.reason, /another owner/);
+      assert.match(m.remoteRenewalDebt!.reason, /not serve principal/);
     }
   });
   await cell("the next attempt adopts the repaired family for the same nkeys and every standing connection serves again", async () => {

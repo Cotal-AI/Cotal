@@ -1,3 +1,5 @@
+import type { EpEffectOutcome } from "./endpoint-error.js";
+
 /**
  * Cotal wire types (v0.2).
  *
@@ -222,7 +224,8 @@ export type MembershipState = "live-confirmed" | "durable-active";
  * deterministically); a rejoin bumps {@link generation} and takes a fresh {@link joinCursor}.
  */
 export interface MembershipRecord {
-  /** Concrete channel (never a wildcard — wildcard ACLs grant live breadth, durable is per-channel). */
+  /** A concrete channel, or a channel family such as `team.>` covering the durable-class channels under
+   *  it (#5404). Never the root `>` or a pattern with `*`, which grant live breadth only. */
   channel: string;
   /** The subscribing **principal** in dot-form `<owner>.<actor>` (= `principalKey().key`) under the
    *  owner+actor grammar. NB: the field NAME is legacy — it holds the full principal (both tokens), not
@@ -302,8 +305,12 @@ export interface Plane3Entry {
   /** Why this owner was fanned to: a `durable` channel's member (interval-gated) vs a `live` channel
    *  `@mention` to an authorized target (ACL-only, no membership). */
   reason: "durable-channel" | "live-mention";
-  /** The owner's membership generation at fan-out (idempotency-key component + diagnostics). */
+  /** The addressing row's membership generation (provenance and diagnostics; not part of the
+   *  dedupe id, which is per message and lifecycle). */
   generation: number;
+  /** The membership row that addressed a `durable-channel` copy when it is not `channel` itself: the
+   *  family above it (`review.>`). Absent for the channel's own row. */
+  row?: string;
 }
 
 /**
@@ -320,8 +327,10 @@ export interface ChannelMembership {
    *  (e.g. `team.>`) — expanded to concrete channels only by the consumer at read time, so a channel
    *  *creation* never rewrites a wildcard-subscriber's record. Empty when the agent has no live connection. */
   live: string[];
-  /** Concrete durable channels from the privileged members registry (authoritative for the durable arm,
-   *  incl. reconnect-grace) — a member here whose presence is offline is "member, currently offline". */
+  /** Durable channels from the privileged members registry (authoritative for the durable arm, incl.
+   *  reconnect-grace) — a member here whose presence is offline is "member, currently offline". A family
+   *  row is kept as recorded (`team.>`), as `live` keeps wildcards; it stores copies only for the
+   *  durable-class channels under it (#5404). */
   durable: string[];
   /** Epoch ms this record was last (re)written — a per-agent "last changed" caption. Feed-wide freshness
    *  is the separate {@link MEMBERSHIP_FEED_KEY} heartbeat (refreshed every poll); ordering is the native
@@ -510,6 +519,8 @@ export interface ControlReply {
   /** The endpoint's error code when the reply carried one. A caller that decides on a refusal keys
    *  on it, because the message is rendered prose and the code is the only stable half. */
   code?: string;
+  /** Effect outcome carried by the endpoint reply or envelope error. Absent means unknown. */
+  outcome?: EpEffectOutcome;
   /** Structured §13.3 details when the manager named a cause the string cannot carry
    *  (lifecycle-blocked spawn refusals, #873). Optional so every existing `{ok,error}`
    *  producer stays valid. */

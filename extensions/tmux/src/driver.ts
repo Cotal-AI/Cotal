@@ -152,28 +152,44 @@ export function paneWindow(paneId: string): string | undefined {
 
 export type PaneState = "running" | "exited";
 
-/** Authoritative process state for a stable pane ID. A successful full-server listing that no
- * longer contains the pane proves exit; `pane_dead=1` also handles `remain-on-exit` configurations.
- * Provider/permission failures throw instead of turning uncertainty into a false exit. */
-export function paneState(paneId: string): PaneState {
+/** A missing or different server proves exit only when the recorded server is gone too. */
+function missingServerState(paneId: string, server: string | undefined): PaneState {
+  if (server === undefined) return "exited";
   try {
-    const panes = execFileSync("tmux", ["-u", "list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"], {
+    process.kill(Number(server), 0);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ESRCH") return "exited";
+    throw err;
+  }
+  throw new Error(`tmux: couldn't prove pane ${paneId} exited: recorded server ${server} still runs but does not answer here`);
+}
+
+/** Authoritative process state for a stable pane ID, optionally bound to its opening server.
+ * A successful listing that no longer contains the pane proves exit; `pane_dead=1` also handles
+ * `remain-on-exit`. The server identity is read in that same listing, so reused pane ids cannot
+ * name a replacement seat. Provider/permission failures still throw. */
+export function paneState(paneId: string, server?: string): PaneState {
+  let panes: string;
+  try {
+    const format = server === undefined ? "#{pane_id} #{pane_dead}" : "#{pid} #{pane_id} #{pane_dead}";
+    panes = execFileSync("tmux", ["-u", "list-panes", "-a", "-F", format], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
       killSignal: "SIGKILL",
     });
-    for (const line of panes.split("\n")) {
-      const [id, dead] = line.trim().split(/\s+/);
-      if (id === paneId) return dead === "1" ? "exited" : "running";
-    }
-    return "exited";
   } catch (err) {
-    // No tmux server means no pane can still exist. Other failures (including permission/socket
-    // errors) are unknown and must fail the preservation cut closed.
-    if (noServer(err)) return "exited";
+    // A missing socket is unknown, while tmux's own no-server answer can prove exit.
+    if (noServer(err)) return missingServerState(paneId, server);
     throw new Error(`tmux: couldn't prove pane ${paneId} exited: ${failureText(err)}`, { cause: err });
   }
+  for (const line of panes.split("\n").filter(Boolean)) {
+    const fields = line.trim().split(/\s+/);
+    if (server !== undefined && fields.shift() !== server) return missingServerState(paneId, server);
+    const [id, dead] = fields;
+    if (id === paneId) return dead === "1" ? "exited" : "running";
+  }
+  return "exited";
 }
 
 /** The text pane `paneId` (`%N`) of the server whose pid is `server` shows now, or undefined once it
@@ -202,13 +218,14 @@ export async function waitForPaneExit(
   opts: {
     timeoutMs?: number;
     pollMs?: number;
+    server?: string;
   } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? EXIT_WAIT_MS;
   const pollMs = opts.pollMs ?? EXIT_POLL_MS;
   const deadline = Date.now() + timeoutMs;
   while (true) {
-    if (paneState(paneId) === "exited") return;
+    if (paneState(paneId, opts.server) === "exited") return;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error(`tmux: pane ${paneId} did not exit within ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
@@ -406,11 +423,15 @@ export function privateLaunch(commandBody: string): { command: string; dir: stri
   return { command: `bash ${shellQuote(scriptPath)}`, dir };
 }
 
-/** Type literal text into a tmux target.
+/** Type literal text into a tmux target, on server `opts.server` only when given.
  *  `-l` bypasses tmux's key-name lookup; `--` guards against text starting with `-`. */
-export function send(text: string, target: string): void {
+export function send(text: string, target: string, opts: { timeoutMs?: number; server?: string } = {}): void {
   try {
-    execFileSync("tmux", ["-u", "send-keys", "-l", "-t", target, "--", text], { stdio: ["ignore", "ignore", "pipe"] });
+    execFileSync("tmux", ["-u", ...onServer(opts.server, ["send-keys", "-l", "-t", target, "--", text])], {
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: opts.timeoutMs,
+      killSignal: "SIGKILL",
+    });
   } catch (err) {
     throw new Error(`tmux: couldn't send text to ${target}: ${failureText(err)}`, { cause: err });
   }
