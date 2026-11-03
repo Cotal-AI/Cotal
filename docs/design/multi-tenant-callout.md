@@ -5,7 +5,7 @@ Status: implemented by #4819 and included in published version 0.103.1. `openCal
 `implementations/auth/src/callout-host.ts`, and the manifest parser and reconcile loop it runs on
 are `runSpaceHost` in `packages/workspace/src/space-host.ts`, shared with the delivery host
 ([multi-tenant-delivery.md](multi-tenant-delivery.md)). `cotal auth-service --callout-only --spaces
-<manifest>` is documented under [server daemons](../cli.md#server-daemons). SPEC §10 and Appendix B
+<manifest>` is documented under [server daemons](../cli.mdx#server-daemons). SPEC §10 and Appendix B
 were amended in the same change. `pnpm smoke:callout-multi-tenant:auth` drives three spaces through
 one process on a live broker. The shipped code settles or extends the text below in four places:
 

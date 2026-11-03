@@ -22,8 +22,10 @@ const conforms = (schema: object, value: unknown) => {
   assert(valid(JSON.parse(JSON.stringify(value))), JSON.stringify(valid.errors));
   checks++;
 };
-const responseSchema = (path: string, status: number) => {
-  const entry = spec.paths[path].get.responses[status];
+const responseSchema = (path: string, status: number, method = 'get') => {
+  const operation = spec.paths[path]?.[method];
+  assert(operation, `Undocumented operation: ${method.toUpperCase()} ${path}`);
+  const entry = operation.responses[status];
   assert(entry, `Undocumented response: ${path} ${status}`);
   const response = entry.$ref ? spec.components.responses[entry.$ref.split('/').at(-1)] : entry;
   return response.content['application/json'].schema;
@@ -84,7 +86,20 @@ try {
   assert.equal(spent.status, 401);
   conforms(responseSchema('/api/roster', 401), await spent.json());
   const headers = { cookie };
-  for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed')) {
+  const metadata = await fetch(base + '/api/meta', { headers });
+  assert.equal(metadata.status, 200);
+  const meta = await metadata.json();
+  assert(meta !== null && typeof meta === 'object');
+  assert('space' in meta && meta.space === space);
+  assert('channelDeleteSupported' in meta && meta.channelDeleteSupported === false, 'Native dashboard service is read-only');
+  conforms(responseSchema('/api/meta', 200), meta);
+  const deletion = await fetch(base + '/api/channel/delete', {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ channel: 'general' }),
+  });
+  assert.equal(deletion.status, 403, 'Native dashboard cannot acquire channel purge authority');
+  conforms(responseSchema('/api/channel/delete', 403, 'post'), await deletion.json());
+  for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed' && path !== '/api/meta' && spec.paths[path].get)) {
     const response = await fetch(base + path.replace('{channel}', 'general'), { headers });
     assert.equal(response.status, 200, `${path}: ${response.status}`);
     const body = await response.json();
@@ -116,9 +131,13 @@ try {
   const events = new Set<string>();
   const timeout = setTimeout(() => streamAbort.abort(), 10_000);
   await seed.multicast('live-contract', { channel: 'general' });
-  // A permitted publisher can send JSON that is not a wire message. The observer
-  // forwards it; the HTTP description must not claim it validated that payload.
+  // The tap enforces the subject's sender, but does not validate the whole wire message. Send a
+  // senderless frame first, then a sender-matched partial payload on the same subject. Seeing the
+  // latter bounds the refusal check without waiting for a frame the tap must drop.
   const rawSubject = chatSubject(space, 'local', 'raw_json', 'general');
+  const senderless = JSON.stringify({ probe: 'senderless' });
+  const rawMessage = { from: { id: 'local.raw_json' }, probe: 'partial-message' };
+  const rawPayload = JSON.stringify(rawMessage);
   await new Promise<void>((resolve, reject) => {
     const socket = connectTcp(brokerPort, '127.0.0.1');
     socket.setTimeout(5000, () => socket.destroy(new Error('Raw test publish timed out')));
@@ -129,7 +148,10 @@ try {
       if (reply.includes('-ERR')) { socket.destroy(); reject(new Error('Raw test publish refused')); }
       if (reply.includes('PONG')) { socket.end(); resolve(); }
     });
-    socket.once('connect', () => socket.write('CONNECT {}\r\nPUB ' + rawSubject + ' 2\r\n{}\r\nPING\r\n'));
+    socket.once('connect', () => socket.write(
+      `CONNECT {}\r\nPUB ${rawSubject} ${Buffer.byteLength(senderless)}\r\n${senderless}\r\n` +
+      `PUB ${rawSubject} ${Buffer.byteLength(rawPayload)}\r\n${rawPayload}\r\nPING\r\n`,
+    ));
   });
   let sawRaw = false;
   try {
@@ -147,7 +169,13 @@ try {
         assert(schema, `Undocumented SSE event ${name}`);
         const value = JSON.parse(data);
         conforms(schema, value);
-        if (name === 'message' && JSON.stringify(value.msg) === '{}') sawRaw = true;
+        if (name === 'message') {
+          assert(value.msg?.probe !== 'senderless', 'The tap must drop the frame without its subject sender');
+          if (value.msg?.probe === rawMessage.probe) {
+            assert.deepEqual(value.msg, { ...rawMessage, channel: 'general' });
+            sawRaw = true;
+          }
+        }
         events.add(name);
       }
     }

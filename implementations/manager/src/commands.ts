@@ -307,7 +307,7 @@ function foreignHostRefusal(space: string, root: string, server: string): Comman
 const UNCONFIRMED_START = "inspect the original full instance and its launch request before another start";
 
 /** The next step when a startup failure ends in a certificate this host does not trust, as the
- *  `--tls-cert` row of docs/cli.md gives it. */
+ *  `--tls-cert` row of docs/cli.mdx gives it. */
 const TRUST_CA = "trust the certificate's CA, or a self-signed certificate itself, by setting `NODE_EXTRA_CA_CERTS` to that PEM file for the command that starts the manager, then start it again";
 
 /** A native manager child's startup that did not confirm, wrapping `cause`, with one next step: the

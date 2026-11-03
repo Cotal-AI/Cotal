@@ -113,7 +113,7 @@ function desktop(cotal: readonly string[], add: boolean, signedIn?: SignedInSpac
   return `Claude Desktop ${state}${state === "current" ? "" : "; quit and reopen Claude Desktop to load it"}`;
 }
 
-const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
+const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.mdx";
 const MARKETPLACE = "cotal-mesh";
 
 /** Desktop includes a Code executable even when the person has not installed the terminal CLI. */

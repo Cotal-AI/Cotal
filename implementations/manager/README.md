@@ -9,10 +9,15 @@ credentialed local HTTP console.
 It owns process lifecycle and config, not the agents' work; agents still coordinate laterally
 over the mesh.
 
+When a launch or supervised recovery fails, an unreadable output snapshot is logged as
+`<name>: last output unavailable: <reason>`. Closed-session read failures and failed recovery
+attaches are reported too, rather than guessed to mean the child printed nothing. The original
+launch/recovery failure and retirement still proceed. An empty readable snapshot adds no warning.
+
 **Tier:** `implementations/` (a self-contained surface over core). Implementations never import
 each other; they meet at runtime over NATS.
 
-See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
+See [docs/architecture.mdx](../../docs/architecture.mdx) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 ## Load measurements
@@ -97,7 +102,8 @@ cleanup and alias reuse. The orphan OS process is not reaped by this reconciliat
 The admin control operations `preparePreservation {attemptId}` and
 `commitPreservation {attemptId}` form a crash-safe handshake. Prepare fences new lifecycle/control
 work, waits for already accepted work, and returns a `cotal-manager-resume/v2` non-secret inventory
-without stopping a child. The coordinator must fsync that inventory into its locked maintenance
+without stopping a child. The inventory is the caller's own copy: editing it changes no running
+seat. The coordinator must fsync that inventory into its locked maintenance
 attempt before commit hard-stops and authoritatively awaits managed children without deprovisioning.
 A failed child stop returns `ok: false` with the inventory and per-agent failures; callers must not
 publish a completed maintenance cut. `abortPreservation {attemptId}` returns an abandoned prepare to

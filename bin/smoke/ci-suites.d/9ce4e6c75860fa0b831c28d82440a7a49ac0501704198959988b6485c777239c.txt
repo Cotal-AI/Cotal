@@ -1,0 +1,2 @@
+# A once spawn on an auth mesh: the task is the seat's only turn, every way it ends stops the seat, and every way the seat ends first settles it.
+smoke:spawn-once

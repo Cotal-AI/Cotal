@@ -348,7 +348,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 
 // --- a refused manager read becomes the failure its catalog code names -----------------------------
 {
-  const { readFailure } = await import("../src/lib/control.js");
+  const { readFailure } = await import("../../../packages/workspace/dist/control/index.js");
   // The reply a request nobody answered carries: the deadline the caller waited out.
   const silent = readFailure({ error: "no describe reply from cotal.manager within 3000ms on the ep rail", code: "deadline-exceeded" }, { space: "s" });
   assert.equal(`${silent.outcome}/${silent.code}`, "refused/TARGET_UNAVAILABLE", "an unanswered read is an unavailable target");
@@ -1500,7 +1500,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   // A manager shows by the name it was started with, or by <host>/<runtime> without one. A `--on`
   // that picks no single manager is restated with the command again on each candidate, replacing
   // the `--on` the caller gave in either spelling.
-  const { ManagerPinUnmatched, managerChoiceFailure, managerLabel } = await import("../src/lib/manager-choice.js");
+  const { ManagerPinUnmatched, managerChoiceFailure } = await import("../src/lib/manager-choice.js");
+  const { managerLabel } = await import("@cotal-ai/workspace/control");
   const { displayCmd } = await import("../src/lib/self-exec.js");
   const row = (name: string, meta: Record<string, string>, activity?: string) => ({ card: { id: "u_own.manager_x", name, kind: "endpoint", role: "manager", meta }, status: "idle", ...(activity ? { activity } : {}), ts: 0 }) as unknown as import("@cotal-ai/core").Presence;
   assert.equal(managerLabel(row("factory", { host: "pc" }, "supervisor (tmux)")), "factory", "a named manager shows by its name");
@@ -1542,7 +1543,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   // <host>/<runtime> without one, most recently started first, with the instance id and host in each
   // hint. A roster read that is refused leaves the instance ids and says why above the question.
   const { CommandFailure } = await import("@cotal-ai/workspace");
-  const { managerOptions, severalLive } = await import("../src/lib/manager-choice.js");
+  const { managerOptions } = await import("../src/lib/manager-choice.js");
+  const { severalLive } = await import("@cotal-ai/workspace/control");
   const [tmuxNew, named, orca, tmuxOld] = ["2xs0pq4rk85tv8jbn3u5141f5cx943m", "66m64nqra6qn8q6xlakgpiwelikogaw", "ggpyg3ywn99ar1oj6bm0x96x4i3a2l", "r28s306ioyo368fsrkdhro2bxjb6b36"];
   const selection = `signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found 4 live remote manager candidates for owner u_own (${tmuxNew}, ${named}, ${orca}, ${tmuxOld}); exactly one is required, so name one with --on <instanceId>`;
   const refusal = new CommandFailure("refused", "PERMISSION_DENIED", selection);
@@ -1599,7 +1601,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 {
   // A host that granted a managed agent other channels than it asked for: the receipt shows what was
   // granted on one line, and the result `--json` writes carries both lists.
-  const { managedLaunchAcl, managedLaunchView } = await import("../src/commands/spawn.js");
+  const { managedLaunchView } = await import("../src/commands/spawn.js");
+  const { managedLaunchAcl } = await import("@cotal-ai/workspace/launch");
   const { renderReport } = await import("@cotal-ai/workspace");
   const acl = { requested: { allowSubscribe: [">"], allowPublish: [">"] }, effective: { allowSubscribe: ["general"], allowPublish: [] } };
   assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");

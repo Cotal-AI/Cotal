@@ -638,14 +638,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     await reachableOrThrow(flags.server, {});
     return { server: flags.server, space: flags.space, tls: false };
   }
-  let target: MeshTarget;
-  if (opts.readOnly) {
-    try { target = resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }); }
-    catch (e) {
-      if (isWorkspaceTargetError(e)) throw workspaceRefusal({ kind: "target", error: e }, { cause: e, kind: e.code === "no-meshes" || e.code === "unknown-space" || e.code === "not-started" ? "transient" : "permanent", code: targetErrorCode(e.code) });
-      throw e;
-    }
-  } else target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline });
+  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, readOnly: opts.readOnly });
   return connectTargetOrThrow(target, role, opts);
 }
 
@@ -975,9 +968,10 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
  *  The selection and this project's registration pick the target without it. A caller that already swept
  *  for these flags passes its `offline` set instead, so one resolve chain reads one liveness
  *  verdict. A named `--space` is resolved + preflighted directly, so the sweep cannot hide a
- *  dead-recorded mesh the operator is recovering with a live `--server` override. */
+ *  dead-recorded mesh the operator is recovering with a live `--server` override. A `readOnly`
+ *  resolve takes no sweep and keeps a stale entry. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const offline = flags.offline ?? (resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(flags.server)).offline : []);
+  const offline = flags.offline ?? (!flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(flags.server)).offline : []);
   let target: MeshTarget;
   try {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline });

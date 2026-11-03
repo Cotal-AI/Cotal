@@ -66,7 +66,7 @@ import { resolve } from "node:path";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { VOID_SCHEMA, CotalEndpoint, dialerFor, deprovisionAgent, fenceLifecycleAcl, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, parseSpaceManifest, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, type SpaceSettingsManifest, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -85,7 +85,7 @@ import { grantCoordinates } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, isRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
-import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerGate, assertCurrentManagerRegistration, authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
@@ -109,6 +109,7 @@ import { openRecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, planeClaimRefusal, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor, makeDeliveryAdminHolderEvictor } from "./barrier-evict.js";
+import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
@@ -402,7 +403,6 @@ type RemoteRetirementGate = Pick<EpGateState, "state" | "principal" | "processEp
  * this after deriving the owner and manager actors; broker-free smokes exercise the same decision. */
 export function authorizeRemoteManagerRetirement(args: {
   owner: string;
-  serveActor: string;
   instanceId: string;
   targetOwner: string;
   serveEpoch: number;
@@ -410,13 +410,7 @@ export function authorizeRemoteManagerRetirement(args: {
 }): void {
   if (args.targetOwner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager-service retirement may target only its authenticated owner ${args.owner}, not ${args.targetOwner}`);
-  if (!args.gate || args.gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `manager-service retirement found no current open manager gate for instance ${args.instanceId}`);
-  const servePrincipal = principalKey(args.owner, args.serveActor).key;
-  if (args.gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
-  if (args.gate.processEpoch !== args.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${args.gate.processEpoch}`);
+  assertCurrentManagerGate(args.gate, args.instanceId, args.serveEpoch, args.owner, "manager-service retirement");
 }
 
 /** The §13.9 name authority in static mode: the plane holds the space signing seed, so it
@@ -1065,11 +1059,34 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     return observed !== undefined && observed.expires > Date.now() ? observed.request : undefined;
   };
   // A managed lifecycle's broker footprint, released under a deprovisioner pinned to that uid, so
-  // no call here can reach a same-name successor's durables.
+  // no call here can reach a same-name successor's durables. The caller names the grant's concrete
+  // channels. A family row, or a row on a channel only a wildcard grants, comes from the delivery
+  // daemon's lifecycle-exact inventory, read after the lifecycle's ACL row is fenced, as the
+  // manager's teardown does (#5638). An inventory that cannot be read still removes what the caller
+  // named, then throws, so the caller's retry removes the rest.
   const deprovisionManagedFootprint = async (owner: string, actor: string, lifecycleUid: string, memberChannels: string[]): Promise<void> => {
     const targetId = principalKey(owner, actor).key;
-    const creds = await mintCreds(issuerAuth(), newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid, memberChannels } });
-    await deprovisionAgent({ servers: server, space, targetId, lifecycleUid, memberChannels, creds });
+    const pinned = async (channels: string[]) => await mintCreds(issuerAuth(), newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid, memberChannels: channels } });
+    const channels = new Set(memberChannels);
+    const missed: string[] = [];
+    try {
+      await fenceLifecycleAcl({ servers: server, space, targetId, lifecycleUid, creds: await pinned([]) });
+    } catch (e) {
+      missed.push(`the ACL fence was not written (${(e as Error).message})`);
+    }
+    try {
+      const r = await withDeliveryAdminEndpoint({ space, server, dataAccount, onConnection }, "endpoint-evictor", "auth-retire-inventory", (ep) =>
+        ep.requestDeliveryAdmin("lifecycleMemberships", { principal: targetId, lifecycleUid }, 5_000));
+      const listed = r.ok ? (r.data as { complete?: unknown; channels?: unknown } | undefined) : undefined;
+      if (listed?.complete !== true || !Array.isArray(listed.channels) || !listed.channels.every((c) => typeof c === "string" && (isConcreteChannel(c) || isChannelFamily(c))))
+        missed.push(r.ok ? "the inventory reply is malformed" : `the delivery daemon refused the inventory: ${r.error ?? "(no error copy)"}`);
+      else for (const c of listed.channels as string[]) channels.add(c);
+    } catch (e) {
+      missed.push(`the inventory could not be read (${(e as Error).message})`);
+    }
+    await deprovisionAgent({ servers: server, space, targetId, lifecycleUid, memberChannels: [...channels], creds: await pinned([...channels]) });
+    if (missed.length > 0)
+      throw new Error(`membership inventory incomplete (${missed.join("; ")}); rows on channels outside the grant stay for uid ${lifecycleUid}`);
   };
   // A chat session's footprint (admission a7): its own bind-only DM and DELIVER durables and the
   // read-ACL row the delivery daemon authorizes its history and durable joins from, written by a
@@ -1313,15 +1330,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             return issued;
           };
           if (r.operation === "renew") {
+            // `renew` carries no epoch on the wire, so its staleness is the proof's to refuse.
             const gate = managerIssuanceGate(r.instanceId);
-            const observed = await gate.observe();
-            if (!observed || observed.state !== "open")
-              throw new EpEnvelopeError("failed-precondition", "manager-service renewal found no current open manager gate");
-            if (observed.principal !== remoteManagerServePrincipal(owner, r.instanceId))
-              throw new EpEnvelopeError("permission-denied", "manager-service renewal gate does not belong to this authenticated owner and instance");
-            const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
-            if (r.registrationProof !== expectedProof)
-              throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current host registration");
+            await assertCurrentManagerRegistration(r, undefined, {
+              owner, proofSecret: dataAccount.signingSeed, observeManagerGate: async () => await gate.observe(),
+            }, "manager-service renewal");
           }
           if (r.operation === "prepare" || r.operation === "renew") {
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
@@ -1376,7 +1389,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             authorizeRemoteManagerRetirement({
-              owner, serveActor: actors.serve, instanceId: r.instanceId,
+              owner, instanceId: r.instanceId,
               targetOwner: retirement.target.owner, serveEpoch: retirement.serveEpoch, gate: observed,
             });
             credentials.retirementRequester = await mintPublicUserJwt(
@@ -4198,7 +4211,11 @@ async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerR
   const peerThrottled = policy.throttled(ctx, peer);
   let envelope: ReturnType<typeof parseServiceAuthorityEnvelope>;
   try { envelope = parseServiceAuthorityEnvelope(await readJsonBody(req, SERVICE_AUTHORITY_MAX_BYTES)); }
-  catch (e) { return sendRequestError(res, e); }
+  catch (e) {
+    // The parser's bad-request names the caller's own malformed envelope, so it stays a named 400.
+    if (e instanceof EpEnvelopeError && e.code === "bad-request") return send(res, 400, { error: e.message });
+    return sendRequestError(res, e);
+  }
   const { request, proof } = envelope;
   const answer = (r: { status: number; body: unknown }) => send(res, r.status, r.body, noStore);
   if (request.space !== door.space || request.accountPublicKey !== door.accountPublicKey) return answer(serviceAuthorityDenied(request, "account-mismatch"));

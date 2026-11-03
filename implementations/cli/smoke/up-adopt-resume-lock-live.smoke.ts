@@ -111,6 +111,7 @@ type Journal = {
   state?: string;
   listenerProof?: { processOwner?: { pid?: number } };
   managerCommit?: { state?: string };
+  ordinaryResume?: { attemptId?: string };
 };
 const journal = (): Journal =>
   existsSync(journalPath) ? (JSON.parse(readFileSync(journalPath, "utf8")) as Journal) : {};
@@ -191,6 +192,28 @@ try {
   ok("…and its bound listener is ALIVE (the adopt precondition)", alive(boundPid), { boundPid });
   ok("the bare resume re-renders the preserved store cap", openConfJetStream() === cappedBlock, openConfJetStream());
 
+  const attemptId = committed.ordinaryResume?.attemptId;
+  let pausedLog: string | undefined;
+  if (process.platform === "win32") {
+    console.log("  SKIP: the listener INFO timeout control needs POSIX SIGSTOP/SIGCONT");
+  } else {
+    ok("the journal holds an ordinary attempt and no restore", typeof attemptId === "string" && !("restore" in committed));
+    // Pause only the listener this interrupted resume owns. Restore it before any assertion or
+    // teardown, then use the existing successful recovery below as the positive control.
+    process.kill(boundPid!, "SIGSTOP");
+    let paused: ReturnType<typeof runSync>;
+    try {
+      paused = runSync(["up", "--detach", "--server", server, "--space", space]);
+    } finally {
+      process.kill(boundPid!, "SIGCONT");
+    }
+    pausedLog = `${paused.stdout ?? ""}${paused.stderr ?? ""}`;
+    ok("the paused listener refuses at its INFO timeout with outcome unknown",
+      paused.status === 3 && pausedLog.includes("OPERATION_UNKNOWN") && pausedLog.includes("listener INFO timed out"),
+      { status: paused.status, log: pausedLog });
+    ok("the failed read leaves the ordinary journal committed", journal().state === "resume-committed");
+  }
+
   console.log("\n2) SUBJECT: the recovering `cotal up` ADOPTS that live listener under the inherited lock");
   const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
   const log = `${recovered.stdout ?? ""}${recovered.stderr ?? ""}`;
@@ -204,6 +227,11 @@ try {
   ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
   ok("…and the attach host and the session ceiling", recorded(space)?.attachHost === "127.0.0.1" && recorded(space)?.maxSessions === 7, recorded(space));
 
+  if (pausedLog !== undefined) {
+    ok("the INFO failure names the ordinary resume attempt, not a restore",
+      pausedLog.includes(`resume attempt ${attemptId} listener INFO timed out`) && !pausedLog.includes("restore listener"),
+      pausedLog);
+  }
   runSync(["down"]);
   console.log(`\nUP ADOPT RESUME LOCK SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

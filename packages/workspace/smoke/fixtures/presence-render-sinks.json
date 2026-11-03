@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 739,
-    "honest-text": 38,
-    "presence-only-glyph/count": 57,
+    "total": 784,
+    "honest-text": 42,
+    "presence-only-glyph/count": 60,
     "command-ack": 11,
-    "non-render/control": 633
+    "non-render/control": 671
   },
   "renderers": [
     {
@@ -519,7 +519,7 @@
     {
       "path": "implementations/cli/src/commands/history.ts",
       "kind": "status-token",
-      "anchor": " there are gone`, tone: \"waiting\" });\n  }\n  if (r.dms) no",
+      "anchor": "ere may be gone`, tone: \"waiting\" });\n  }\n  if (r.dms) no",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1675,42 +1675,42 @@
       }
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[a.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[b.status]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "counts[p.status as keyof StatusCounts]",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n    return {\n      co",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "d.id === id)?.status ?? \"offline\";\n    const roleOf = (id",
       "class": "non-render/control",
@@ -1782,7 +1782,7 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`<div class=\"peer ${p.status}${nav}\"${attrs}>\n    <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\">\n        <span class=\"name\">${esc(p.name)}</span>\n        ${p.harness ? harnessBadge(p.harness, { compact: true }) : \"\"}\n        ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n        ${attentionChip(p.attention, { compact: true })}\n        ${p.tag ? `<span class=\"tag\">${esc(p.tag)}</span>` : \"\"}\n      </div>\n      ${p.act ? `<div class=\"act\" title=\"${esc(p.act)}\">${esc(p.act)}</div>` : \"\"}\n    </div>\n  </div>`",
+      "anchor": "`<div class=\"peer ${p.status}${nav}\"${attrs}>\n    <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\">\n        <span class=\"name\">${esc(p.name)}</span>\n        ${p.harness ? harnessBadge(p.harness, { compact: true }) : \"\"}\n        ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n        ${attentionChip(p.attention, { compact: true })}\n        ${p.tag ? `<span class=\"tag\">${esc(p.tag)}</span>` : \"\"}\n      </div>\n      ${p.act ? `<div class=\"act\" title=\"${esc(p.act)}\">${esc(p.act)}</div>` : \"\"}\n      ${p.facts ? `<div class=\"presence-facts\">${esc(p.facts)}</div>` : \"\"}\n    </div>\n  </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1936,7 +1936,7 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`\n    <div class=\"detail${waiting ? \" amber\" : \"\"}\">\n      <div class=\"d-head\">\n        <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"●\"}</span>\n        <span class=\"d-status\">${esc(waiting ? \"WAITING\" : p.status)}</span>\n        <span class=\"d-age\">${since}</span>\n      </div>\n      <div class=\"d-who\">${who}</div>\n      ${badges ? `<div class=\"d-badges\">${badges}</div>` : \"\"}\n      ${desc}\n      ${blocked}\n      ${sec(\"Channel attention\", channelModes)}\n      ${sec(\"Tags\", tags)}\n      ${sec(\"Skills\", skills)}\n      ${sec(\"Metadata\", metaKv)}\n      <div class=\"d-foot\"><span class=\"d-foot-item id\">${esc(card.id)}</span>${proto}</div>\n    </div>`",
+      "anchor": "`\n    <div class=\"detail${waiting ? \" amber\" : \"\"}\">\n      <div class=\"d-head\">\n        <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"●\"}</span>\n        <span class=\"d-status\">${esc(waiting ? \"WAITING\" : p.status)}</span>\n        <span class=\"d-age\">${since}</span>\n      </div>\n      <div class=\"d-who\">${who}</div>\n      ${badges ? `<div class=\"d-badges\">${badges}</div>` : \"\"}\n      ${desc}\n      ${presenceFacts(p) ? `<div class=\"presence-facts\">${esc(presenceFacts(p))}</div>` : \"\"}\n      ${blocked}\n      ${sec(\"Channel attention\", channelModes)}\n      ${sec(\"Tags\", tags)}\n      ${sec(\"Skills\", skills)}\n      ${sec(\"Metadata\", metaKv)}\n      <div class=\"d-foot\"><span class=\"d-foot-item id\">${esc(card.id)}</span>${proto}</div>\n    </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -2377,7 +2377,7 @@
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
+      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${presenceFacts(sel) ? `<div class=\"presence-facts\">${esc(presenceFacts(sel))}</div>` : \"\"}\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -2388,7 +2388,7 @@
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "`<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
+      "anchor": "`<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${presenceFacts(sel) ? `<div class=\"presence-facts\">${esc(presenceFacts(sel))}</div>` : \"\"}\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -2656,7 +2656,7 @@
       "rationale": "Persistence payload: serializes the status into a checkpoint file; no terminal or DOM rendering."
     },
     {
-      "path": "implementations/cli/src/view/mesh-view.ts",
+      "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "derived-output",
       "anchor": "pe.lastTs = Math.max(pe.lastTs, c.last)",
       "class": "non-render/control",
@@ -3088,56 +3088,56 @@
       "rationale": "Comparison operand that selects the /who roster line's working branch, whose text names unknown progress; the token itself is not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "pe: \"join\" | \"update\" | \"offline\"; presence: Presence }) ",
       "class": "non-render/control",
       "rationale": "Chat session presence handler type: \"offline\" is a presence event type in the listener signature; not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": " \"joined\" : ev.type === \"offline\" ? \"left\" : \"updated\" })",
       "class": "non-render/control",
       "rationale": "Chat session event shaping: maps the presence event type to a joined, left or updated change; the token is not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "\"idle\"",
       "class": "non-render/control",
       "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "\"working\"",
       "class": "non-render/control",
       "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "derived-output",
       "anchor": "this.inputs.endpoint.setStatus(status, activity)",
       "class": "non-render/control",
       "rationale": "Chat session lifecycle: publishes the user's own status update to the endpoint; no rendering."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\").map((p) => p.card.id))",
       "class": "non-render/control",
       "rationale": "Chat session roster: keeps present participants to tell joins from leaves; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/chat/native-session.ts",
+      "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "rn;\n    if (ev.type === \"offline\") this.rows.delete(row.i",
       "class": "non-render/control",
@@ -3211,77 +3211,77 @@
       "rationale": "Plain chat session-ending notice: \"waiting\" is the color tone; the text is about this session's own expiry, not a peer's presence."
     },
     {
-      "path": "implementations/cli/src/chat/session.ts",
+      "path": "packages/workspace/src/chat/session.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Chat session interface signature: excludes offline from the statuses the user may set; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "mintControlInstrument(mesh, \"privileged\", instanceId)",
       "class": "non-render/control",
       "rationale": "Static chat control path: mints the manager control instrument for the pinned space record (mesh); no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "preflightOrThrow(mesh, undefined, true)",
       "class": "non-render/control",
       "rationale": "Static chat control path: runs the broker preflight for the pinned space record after a failed call; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askPinned(mesh, \"chatSessionOpen\", {\n      subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,\n    }, options.instanceId, \"admit a chat session\")",
+      "anchor": "askPinned(control, mesh, \"chatSessionOpen\", {\n      subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,\n    }, options.instanceId, \"admit a chat session\")",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned manager to open the chat session; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "managerFailure(reply, \"chat-session-open\", { space: mesh.space })",
       "class": "non-render/control",
       "rationale": "Static chat control path: turns a refused session-open reply into a command failure; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askPinned(mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS)",
+      "anchor": "askPinned(control, mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId, undefined, STATIC_CHAT_RETIRE_TIMEOUT_MS)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned manager to retire the chat session; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "retireReport(answer, managerInstanceId, slot.expiresAt)",
       "class": "non-render/control",
       "rationale": "Static chat control path: shapes the manager's retire answer into the close report; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "return session;",
       "class": "non-render/control",
       "rationale": "Static chat control path: returns the opened session to the caller; nothing is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "refuseWithoutLiveManager(mesh.space, mesh.server, auth, { space: mesh.space }, purpose)",
       "class": "non-render/control",
       "rationale": "Static chat control path: refuses before asking when no live manager answers for the pinned space record (mesh); no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askManager(mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
+      "anchor": "askManager(control, mesh.space, mesh.server, op, args, auth, \"owner\", timeoutMs, instanceId !== undefined ? { instanceId } : undefined)",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned space's manager; no presence is rendered."
     },
     {
-      "path": "implementations/cli/src/chat/static-session.ts",
+      "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
       "anchor": "`chat-session-open was not sent: ${reply.error}`",
       "class": "non-render/control",
@@ -5165,9 +5165,9 @@
       "rationale": "Manager choice: tests whether a live peer holds the name; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/lib/manager-choice.ts",
+      "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
+      "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
     },
@@ -5272,7 +5272,14 @@
     {
       "path": "implementations/cli/src/commands/spawn.ts",
       "kind": "derived-output",
-      "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(reply.managerInstanceId)}`",
+      "anchor": "readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target)",
+      "class": "non-render/control",
+      "rationale": "Reads the manager's launch receipt with caller-held mesh coordinates; this call renders no peer presence or work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(result.managerInstanceId)}`",
       "class": "non-render/control",
       "rationale": "Spawn remedy shaping: builds the target flags for the ps command; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
@@ -5345,6 +5352,330 @@
       "anchor": "jetstreamManager(nc)",
       "class": "non-render/control",
       "rationale": "Live-lease down control path: opens the JetStream manager for the lease read; no rendering."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "indexed-map",
+      "anchor": "({ working: theme.text.feedback.success.base, waiting: theme.text.feedback.warning.base, idle: theme.text.muted, offline: theme.text.faint })[p.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "App tree row: the status glyph color; presence emphasis only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "indexed-map",
+      "anchor": "STATUS[p.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "App tree row: the status glyph alone, beside the agent name; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "App tree row: dims an offline row's name; styling only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "peerOf(p.mesh, id)",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "feedFor(p.mesh, open())",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{title()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{`  ${p.mesh.status.space}`}",
+      "class": "non-render/control",
+      "rationale": "App header: the open space's name from the connection status; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "`  ${p.mesh.status.space}`",
+      "class": "non-render/control",
+      "rationale": "App header: the open space's name from the connection status; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={peer()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{peer()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`◐ ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\"}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
+      "class": "honest-text",
+      "rationale": "App peer header: a waiting agent's own question, then the overview fields whose status names working progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={pr().status === \"waiting\"}",
+      "class": "non-render/control",
+      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{pr().status === \"waiting\"}",
+      "class": "non-render/control",
+      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={feed().length}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{feed().length}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "each={feed()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{feed()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "fallback={<Show when={mesh()}>{(m) => <Conversation mesh={m()} />}</Show>}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{<Show when={mesh()}>{(m) => <Conversation mesh={m()} />}</Show>}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "when={mesh()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh()}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{(m) => <Conversation mesh={m()} />}",
+      "class": "non-render/control",
+      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "fallback={\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
+      "class": "non-render/control",
+      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
+      "class": "non-render/control",
+      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}",
+      "class": "non-render/control",
+      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "derived-output",
+      "anchor": "v.on(\"change\", show)",
+      "class": "non-render/control",
+      "rationale": "App connection: forwards each MeshView change to the app's state signal; nothing is rendered here."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "ter((a) => a.status !== \"offline\").length\n  items.push({ ",
+      "class": "non-render/control",
+      "rationale": "App agents header: the offline filter feeding the live-agent count; routing only."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "`${live}/${mesh.agents.length}`",
+      "class": "presence-only-glyph/count",
+      "rationale": "App agents header: an aggregate live/total agent count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "ing: { mark: \"●\", word: \"working\" },\n  waiting: { mark: \"",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "\"idle\"",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "ine: { mark: \"⨯\", word: \"offline\" },\n} as const\n\nexport f",
+      "class": "non-render/control",
+      "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "`${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}`",
+      "class": "honest-text",
+      "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "indexed-map",
+      "anchor": "el: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status",
+      "class": "honest-text",
+      "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "indexed-map",
+      "anchor": "TATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"wo",
+      "class": "honest-text",
+      "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "us].word}${p.status === \"working\" ? \" · progress unknown\"",
+      "class": "non-render/control",
+      "rationale": "App overview status: the working check that adds the unknown-progress qualifier; routing only."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": " 0))\n    : p.status !== \"offline\" && p.runtime\n      ? du",
+      "class": "non-render/control",
+      "rationale": "App overview uptime: the offline check picks the unmanaged uptime branch; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "row.uptimeMs + (row.status === \"running\" && managed.phase === \"rows\" ? now - managed.readAt : 0)",
+      "class": "non-render/control",
+      "rationale": "App overview uptime: the manager row's process state extends a running seat's uptime; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "*/\ntype Stop = { phase: \"idle\" } | { phase: \"confirm\";",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "teSignal<Stop>({ phase: \"idle\" })\n  const clockTimer =",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "})\n    setStop({ phase: \"idle\" })\n    await old?.close",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "== \"confirm\" ? { phase: \"idle\" } : cur)),\n    )\n  }\n  ",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "cur === done ? { phase: \"idle\" } : cur)), STOP_NOTICE_",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
     }
   ]
 }

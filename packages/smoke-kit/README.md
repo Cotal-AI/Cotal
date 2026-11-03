@@ -78,3 +78,10 @@ environment. The reaper reports when its platform cannot enumerate brokers.
 The serial shard runner sets the scope before launching each suite. Existing environment
 inheritance stays unchanged, including caller-supplied test pins, budgets and private paths.
 Each suite remains responsible for isolating the environments of its own children.
+
+Use `backdateMessages(streamMsgsDir(storeDir, stream), stream, ages)` to give a suite messages older
+than the broker it runs on. The broker dates a message by its own clock, so this rewrites the
+timestamps in a stopped broker's file store and writes each changed record's checksum again
+(HighwayHash-64, checked against minio's vectors in the package test). Start the broker afterwards
+and read the messages back: a record with a wrong checksum is dropped with every record after it.
+It does not handle an encrypted or compressed store.

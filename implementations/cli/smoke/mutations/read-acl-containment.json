@@ -1,0 +1,28 @@
+{
+  "suite": [
+    "implementations/cli/smoke/operation-space.smoke.ts"
+  ],
+  "guard": "an agent file whose subscribe names a pattern wider than every allowSubscribe entry is refused at load (#5404)",
+  "command": "pnpm smoke:operation-space",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/read-acl-containment.json",
+  "why": [
+    "The suite drives cotal persona create --file in a sandboxed root, so the refusal comes from the shipped loader.",
+    "",
+    "A1 checks a subscribe pattern by matching, so perm.> passes under perm.*, as cotal_join refused it already.",
+    "",
+    "The command builds the cotal-ai closure, core included, so A1's afterRestore rebuilds it, leaving no dist/ compiled from the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "A1 a subscribe pattern is checked by matching",
+      "file": "packages/core/src/subjects.ts",
+      "find": "    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch))\n",
+      "replace": "    if (!channelInAllow(allow, ch))\n",
+      "expectRed": "a --file with a family wider than every read entry is SCHEMA_INVALID naming the file and the reason",
+      "cell": "a --file with a family wider than every read entry is SCHEMA_INVALID naming the file and the reason",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "An agent file could then ask for a family its credential can never read in full."
+    }
+  ]
+}

@@ -1,5 +1,266 @@
 # @cotal-ai/workspace
 
+## 0.138.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.138.1
+
+## 0.138.0
+
+### Patch Changes
+
+- 3473992: Move terminal attach from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/attach`: the detach key, the terminal hold, the session client over a mesh session (`attachClient`, `meshSessionTransport`), and the attach loop that establishes a session, re-establishes it when the link drops and hands back abandoned sessions (`attachSeat`). A caller passes a `ControlClient`, the command a seat-miss refusal names, an optional remedy for a seat with no terminal, and an optional sink for the notices the loop prints, so the library never imports CLI code. `cotal attach`, the console's attach and spawn-then-attach behave as before.
+- 789c904: Move the chat session layer from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/chat`: the session contract, the participant engine, the native session, and the open, static and user-mode adapters. `openChatSession` admits a session through the adapter the target's recorded mode names, and a caller passes a `ControlClient` for the manager calls a static session makes at its open and its retirement, so the library never imports CLI code. `cotal chat` and `cotal channels` behave as before.
+- Updated dependencies [534382c]
+- Updated dependencies [85f288b]
+  - @cotal-ai/core@0.138.0
+
+## 0.137.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.137.0
+
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.4
+
+## 0.136.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.3
+
+## 0.136.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.2
+
+## 0.136.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.1
+
+## 0.136.0
+
+### Patch Changes
+
+- Updated dependencies [f5251ae]
+  - @cotal-ai/core@0.136.0
+
+## 0.135.21
+
+### Patch Changes
+
+- Updated dependencies [a259571]
+  - @cotal-ai/core@0.135.21
+
+## 0.135.20
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.20
+
+## 0.135.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.19
+
+## 0.135.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.18
+
+## 0.135.17
+
+### Patch Changes
+
+- 55e8d0b: A `cotal run` from a managed seat with no `--space` now probes the recorded brokers once. Before, the seat resolve swept the registry, and when it did not apply (an open mesh, or a seat whose own space was down) the operator resolve swept it again, so each record that did not answer was probed twice and the two resolves could judge different registry states. `resolveSeatControlTarget` now reads a sweep its caller hands in, and the new `sweepForSeatResolve` takes that sweep once when the seat resolve would.
+- @cotal-ai/core@0.135.17
+
+## 0.135.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.16
+
+## 0.135.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.15
+
+## 0.135.14
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.14
+
+## 0.135.13
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.13
+
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.12
+
+## 0.135.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.11
+
+## 0.135.10
+
+### Patch Changes
+
+- Updated dependencies [985dbc5]
+  - @cotal-ai/core@0.135.10
+
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+
+## 0.135.8
+
+### Patch Changes
+
+- Updated dependencies [0c09e47]
+  - @cotal-ai/core@0.135.8
+
+## 0.135.7
+
+### Patch Changes
+
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- b3b4bf1: The `cotal-ai` package ships the connectors' docs data once instead of once per connector, which cuts the packed tarball from 16.8 MB to 6.7 MB. The seed puts a copy back in every installed connector, and `cotal update` verifies those copies against the shipped one.
+- @cotal-ai/core@0.135.1
+
+## 0.135.0
+
+### Minor Changes
+
+- a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
+  
+  `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
+  
+  An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
+  
+  `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+
+### Patch Changes
+
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+
+## 0.134.0
+
+### Patch Changes
+
+- Updated dependencies [4ee7ede]
+- Updated dependencies [86de17e]
+- Updated dependencies [4272b2e]
+  - @cotal-ai/core@0.134.0
+
+## 0.133.13
+
+### Patch Changes
+
+- c21c940: `MeshView` now reports disconnected while the broker is down. It used to follow only the endpoint's `connection` event, which stays true while the NATS client reconnects on its own, so `cotal console` showed a green dot and `cotal watch` read "live" through the outage. It now also follows the endpoint's `transport` edge, and `cotal watch` reads "Reconnecting" during an outage. Feed entries also carry the wire's `replyTo`, `mentions` and `contextId` when the sender set them, so `cotal watch --json` rows include those fields. A unicast burst coalesces only when those fields match.
+- 6fcac9f: Move the managed launch request from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/launch`. `requestManagedLaunch` sends a `ManagedLaunchRequest` as the manager's `start` command, and `readManagedLaunch` reads the joined agent from its reply as a `ManagedLaunchResult`. `cotal spawn --detach` sends the same request and prints the same output as before. `@cotal-ai/cli` never exported these from its package entry, so no public export is removed.
+- ddd3253: Move the manager control calls from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/control`: the requests to a space's manager and their typed replies (`askManager`, `scatterManager` and the registry reads beside them), the seat lookup that pins a targeted verb to the manager hosting the seat (`locateSeat`), and the console's control helpers (`control`, `controlPs`, `deleteChannel` and the managed-row poller). A caller passes a `ControlClient` that supplies its own version wording and roster read, so the library never imports CLI code. `staleStoreHint` and `nativeEndpointRefusal` move to the `@cotal-ai/workspace` root with it. Every command that calls the manager behaves as before.
+- 331f050: Move `MeshView`, the live model of a space, from `@cotal-ai/cli` into `@cotal-ai/workspace`, exported as `@cotal-ai/workspace/view`. The same entry adds `openObserver`, which builds the read-only observer endpoint that `cotal console` and `cotal watch` each used to construct inline. Console and watch behave as before. `@cotal-ai/cli` never exported `MeshView` from its package entry, so no public export is removed.
+- @cotal-ai/core@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- Updated dependencies [13499c0]
+  - @cotal-ai/core@0.133.12
+
 ## 0.133.11
 
 ### Patch Changes

@@ -8,7 +8,7 @@ protocol, the `retirement-requester` profile and `managedRetirementOpId` live in
 broker-free authority policy, and `pnpm smoke:hosted-retirement-order` checks the manager's release
 ordering and that an incomplete host release blocks the terminal request. This page does not claim
 that each regression listed below has its own cell. The
-hosted host's own release journal stays the host's to build. [Embedding](../embedding.md) describes
+hosted host's own release journal stays the host's to build. [Embedding](../embedding.mdx) describes
 the shipped contract. The rest of this page is the design as written.
 
 ## Current gap

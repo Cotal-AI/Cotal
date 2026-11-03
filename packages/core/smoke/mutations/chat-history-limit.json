@@ -1,0 +1,94 @@
+{
+  "suite": [
+    "packages/core/smoke/chat-history-limit.smoke.ts"
+  ],
+  "guard": "The chat stream's history limit: a new space starts with no age limit and 1000 per sender, `cotal up` leaves every existing stream's limit as it is and still refuses a chat stream that is not canonical apart from its limit, the provisioner may update the chat stream and no other message stream, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up copies what the stream holds without judging retention.",
+  "command": "pnpm smoke:chat-history-limit",
+  "completionMarker": "chat-history-limit:",
+  "progressPattern": "^  [✓✗] ",
+  "minTicks": 43,
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/chat-history-limit.json",
+  "why": [
+    "The suite imports core from `src`, so no build is needed and each mutant is what the suite runs. Every cell",
+    "runs against a live broker, so a mutation is graded by the broker's own permission checks, expiry and stored",
+    "config. Each mutation reddens a different named cell."
+  ],
+  "mutations": [
+    {
+      "name": "the provisioner loses its chat stream update grant",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ]\n",
+      "expectRed": "the provisioner may set the chat stream's limit",
+      "cell": "the provisioner may set the chat stream's limit",
+      "note": "Without the grant `cotal history limit` is refused on every authed space."
+    },
+    {
+      "name": "the grant is widened to the DM stream",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DM]\n",
+      "expectRed": "the provisioner may not update DM_",
+      "cell": "the provisioner may not update DM_<space>"
+    },
+    {
+      "name": "the default goes back to 30 days",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "Object.freeze({ maxAgeMs: 0, perSender: 1000 })",
+      "replace": "Object.freeze({ maxAgeMs: 30 * 86_400_000, perSender: 1000 })",
+      "expectRed": "a new space's chat stream starts with no age limit and 1000 per sender",
+      "cell": "a new space's chat stream starts with no age limit and 1000 per sender"
+    },
+    {
+      "name": "cotal up moves a stream on the old settings to 30 days, as 0.134.0 did",
+      "file": "packages/core/src/streams.ts",
+      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
+      "replace": "    await readChatStreamConfig(jsm, opts.space);\n    { const { config } = await jsm.streams.info(chatStream(opts.space)); if (config.max_age === 0 && config.max_msgs_per_subject === 1000) await setChatHistoryLimit(jsm, opts.space, { maxAgeMs: 30 * 86_400_000, perSender: 1000 }); }\n",
+      "expectRed": "cotal up leaves a chat stream with no age and 1000 per sender (every stream's limit before 0.134.0) as it is",
+      "cell": "cotal up leaves a chat stream with no age and 1000 per sender (every stream's limit before 0.134.0) as it is",
+      "note": "The move deleted every post older than 30 days at an ordinary upgrade (#5643)."
+    },
+    {
+      "name": "setup stops checking an existing chat stream",
+      "file": "packages/core/src/streams.ts",
+      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
+      "replace": "",
+      "expectRed": "a chat stream with any setting other than its limit off canonical is refused",
+      "cell": "a chat stream with any setting other than its limit off canonical is refused",
+      "note": "`createSpaceStreams` skips an existing chat stream, so this read is the only check of one at `cotal up`."
+    },
+    {
+      "name": "a permission refusal of the update is reported as an unknown outcome",
+      "file": "packages/core/src/streams.ts",
+      "find": "    if (e instanceof JetStreamApiError || isPublishPermissionDenied(e)) throw e;",
+      "replace": "    if (e instanceof JetStreamApiError) throw e;",
+      "expectRed": "a credential without the update grant is refused, not reported as an unknown outcome",
+      "cell": "a credential without the update grant is refused, not reported as an unknown outcome"
+    },
+    {
+      "name": "catch-up judges the per-sender count again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n",
+      "replace": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n    { const info = await this.jsm!.streams.info(chatStream(this.space), { subjects_filter: chatSubject(this.space, \"*\", \"*\", channel) }); if (Object.values(info.state.subjects ?? {}).some((n) => n >= info.config.max_msgs_per_subject)) { await tombstoneMember(kv, channel, owner, lifecycleUid, fence, this.card.id, generation); return { durable: false, reason: \"activation catch-up window partially evicted by retention\", generation }; } }\n",
+      "expectRed": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
+      "cell": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",
+      "note": "Stream state cannot tell this channel's eviction from another channel's removal, so a sender at the count proves nothing; the mutant tombstones a join that lost nothing."
+    },
+    {
+      "name": "recall ignores the stream head",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (info.state.first_seq > sinceSeq + 1) return true;\n",
+      "replace": "",
+      "expectRed": "recall reports a channel whose posts are all gone, with the stream head past the watermark",
+      "cell": "recall reports a channel whose posts are all gone, with the stream head past the watermark"
+    },
+    {
+      "name": "recall judges the count against the compiled 1000, not the stream's limit",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const cap = info.config.max_msgs_per_subject;\n    let maxPerSubject = 0;",
+      "replace": "    const cap = 1000;\n    let maxPerSubject = 0;",
+      "expectRed": "recall reports a channel where a sender passed the stream's per-sender count",
+      "cell": "recall reports a channel where a sender passed the stream's per-sender count"
+    }
+  ]
+}

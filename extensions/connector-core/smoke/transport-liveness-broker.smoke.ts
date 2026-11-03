@@ -1029,7 +1029,7 @@ try {
     const healthySend = await invoke("cotal_send", { channel: "publish-timeout", text: "owned-publish-control" });
     check(
       "the channel publish control succeeds before its stream is removed",
-      healthySend.startsWith("Sent to #publish-timeout"), healthySend,
+      healthySend.startsWith("Posted to #publish-timeout"), healthySend,
     );
     await manager.streams.update(dmName, { no_ack: true });
     let dmError: Error | undefined;
@@ -1070,7 +1070,7 @@ try {
     const recoveredSend = await invoke("cotal_send", { channel, text: "owned-recreated-chat" });
     check(
       "recreating the missing stream restores the same REAL channel publish path",
-      recoveredPublish.isError !== true && recoveredSend.startsWith(`Sent to #${channel}`),
+      recoveredPublish.isError !== true && recoveredSend.startsWith(`Posted to #${channel}`),
       { recoveredPublish, recoveredSend },
     );
   } finally { await publishConnection.close(); }

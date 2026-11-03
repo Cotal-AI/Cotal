@@ -282,7 +282,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
 /** Write an agent definition back to disk in the form {@link loadAgentFile} reads:
  *  the set frontmatter fields followed by the persona body. Round-trips through the
- *  parser; creates parent dirs. The runtime persona-definition path uses this to
+ *  parser and refuses, writing nothing, a file it would not load; creates parent dirs. The runtime persona-definition path uses this to
  *  persist a peer-defined agent as config. The file is written 0o600 and never through a
  *  symlink ({@link writePrivateRecord}). */
 export function saveAgentFile(path: string, def: AgentDef): void {
@@ -333,8 +333,20 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.meta) for (const [k, v] of Object.entries(def.meta)) fm[k] = v;
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
+  const text = `---\n${frontmatter}\n---\n\n${body}`;
+  // A persona that saves must load. A file the reader refuses, such as one whose subscribe entry no
+  // allowSubscribe entry contains, made every later load, spawn and redefine of that name fail.
+  // The message reaches an agent as the reason its definition was refused, so it names the rule the
+  // file broke and not this function or the path of a file that was never written.
+  try {
+    parseAgentFileSource(text, path);
+  } catch (e) {
+    const reason = (e as Error).message;
+    const prefix = `agent file ${path}: `;
+    throw new Error(`it would not load: ${reason.startsWith(prefix) ? reason.slice(prefix.length) : reason}`);
+  }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writePrivateRecord(path, `---\n${frontmatter}\n---\n\n${body}`);
+  writePrivateRecord(path, text);
 }
 
 /** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */

@@ -4,7 +4,7 @@ Status: implemented. `openAuthServiceLane`, `authHostSettings` and `runAuthServi
 `implementations/auth/src/service.ts`; the version 2 manifest grammar, the startup policy option and
 the `<manifest>.applied` acknowledgment are in `runSpaceHost` in
 `packages/workspace/src/space-host.ts`, which the callout host and the delivery host also run on.
-`cotal auth-service --spaces <manifest>` is documented under [server daemons](../cli.md#server-daemons).
+`cotal auth-service --spaces <manifest>` is documented under [server daemons](../cli.mdx#server-daemons).
 SPEC §10, §13.13 and Appendix B were amended in the same change. `pnpm
 smoke:auth-service-multi-space:auth` drives the real daemon over three spaces on a live broker.
 

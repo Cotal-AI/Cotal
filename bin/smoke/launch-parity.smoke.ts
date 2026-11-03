@@ -44,6 +44,9 @@ const START_OP_KEYS = new Set(SPAWN_INPUT_KEYS);
 // Routing chooses the manager that receives the request; it does not describe the seat passed to
 // the manager `start` op. Keep this exception paired with the CLI's spawn-only `--on` flag.
 const SPAWN_ROUTING_PARAMS = new Set(["instance"]);
+/** MCP tool param → op key: the tool takes a once task's deadline as a duration beside `once`, and
+ *  folds it into the op's `once.deadlineMs`. */
+const toolParamToOpKey: Record<string, string> = { deadline: "once" };
 
 /** CLI kebab flag → op key. `no-events` folds into the `events` tri-state; `--name` is
  *  the presence-identity OVERRIDE (op `identity`) — the persona REF rides the positional as op
@@ -85,7 +88,7 @@ assert.ok(spawnTool, "cotal_spawn tool spec exists");
 const toolParams = Object.keys(spawnTool.schema.shape);
 for (const p of toolParams) {
   assert.ok(
-    START_OP_KEYS.has(p) || SPAWN_ROUTING_PARAMS.has(p),
+    START_OP_KEYS.has(toolParamToOpKey[p] ?? p) || SPAWN_ROUTING_PARAMS.has(p),
     `cotal_spawn param "${p}" is neither a start-op key nor a routing parameter — vocabulary drift`,
   );
 }

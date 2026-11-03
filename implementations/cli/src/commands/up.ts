@@ -203,6 +203,7 @@ import {
   canonicalLocalProcessPath,
   DELIVERY_LOGFILE,
   terminalWidth,
+  type ControlAuth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
@@ -272,7 +273,6 @@ import { assertStoreDirArgument, configuredStoreDir, lastServedStore, missingSto
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
-import { askManager, type ControlAuth } from "../lib/control.js";
 import {
   bindPreparedRestoreListener,
   isManagerCommitResult,
@@ -300,6 +300,8 @@ import {
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
 const pendingRestores = new Map<string, PreparedRestore>();
 
@@ -2671,7 +2673,7 @@ function sameRestoreListenerProof(a: RestoreListenerProof, b: RestoreListenerPro
     a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target);
 }
 
-function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<string, unknown>> {
+function readNatsInfo(label: string, endpoint: string, timeoutMs = 2_000): Promise<Record<string, unknown>> {
   return new Promise((resolveInfo, rejectInfo) => {
     let settled = false;
     let socket: ReturnType<typeof createConnection> | undefined;
@@ -2686,7 +2688,7 @@ function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<strin
     try {
       url = new URL(endpoint);
     } catch {
-      rejectInfo(new Error(`invalid restore listener endpoint ${endpoint}`));
+      rejectInfo(new Error(`${label} has an invalid listener endpoint ${endpoint}`));
       return;
     }
     socket = createConnection({ host: url.hostname, port: Number(url.port) || 4222 });
@@ -2694,25 +2696,25 @@ function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<strin
     let input = "";
     socket.on("data", (chunk: Buffer) => {
       input += chunk.toString("utf8");
-      if (input.length > 64 * 1024) return finish(new Error("restore listener INFO exceeds 64 KiB"));
+      if (input.length > 64 * 1024) return finish(new Error(`${label} listener INFO exceeds 64 KiB`));
       const newline = input.indexOf("\r\n");
       if (newline < 0) return;
       const line = input.slice(0, newline);
       const brace = line.indexOf("{");
       if (!/^INFO\b/.test(line) || brace < 0)
-        return finish(new Error("restore listener did not present a NATS INFO greeting"));
+        return finish(new Error(`${label} listener did not present a NATS INFO greeting`));
       try {
         const info = JSON.parse(line.slice(brace)) as unknown;
         if (!info || typeof info !== "object" || Array.isArray(info))
           throw new Error("INFO is not an object");
         finish(undefined, info as Record<string, unknown>);
       } catch (error) {
-        finish(new Error(`restore listener presented invalid NATS INFO: ${(error as Error).message}`));
+        finish(new Error(`${label} listener presented invalid NATS INFO: ${(error as Error).message}`));
       }
     });
-    socket.on("timeout", () => finish(new Error("restore listener INFO timed out")));
-    socket.on("error", (error) => finish(new Error(`restore listener INFO failed: ${error.message}`)));
-    socket.on("close", () => finish(new Error("restore listener closed before NATS INFO")));
+    socket.on("timeout", () => finish(new Error(`${label} listener INFO timed out`)));
+    socket.on("error", (error) => finish(new Error(`${label} listener INFO failed: ${error.message}`)));
+    socket.on("close", () => finish(new Error(`${label} listener closed before NATS INFO`)));
   });
 }
 
@@ -2759,7 +2761,7 @@ async function proveBoundListener(
   if (mesh && (mesh.server !== attempt.server || mesh.root !== attempt.root || mesh.mode !== attempt.mode))
     throw new Error(`${label} conflicts with the recorded mesh identity`);
 
-  const info = await readNatsInfo(proof.serverEndpoint);
+  const info = await readNatsInfo(label, proof.serverEndpoint);
   if (info.server_name !== proof.serverName)
     throw new Error(`${label} reached a foreign NATS server name/nonce`);
 
@@ -2838,7 +2840,7 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
   try {
     if (journal.state === "resume-intent" || journal.state === "commit-intent") {
       await startControllerMembers(lock, root, space, launch.serverName);
-      const brokerInfo = await readNatsInfo(launch.server);
+      const brokerInfo = await readNatsInfo(`${restoring ? "restore" : "resume"} attempt ${attemptId}`, launch.server);
       if (brokerInfo.server_name !== launch.serverName) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the resumed broker reports another server name than this attempt recorded; nothing further was started", { target: { root, space } });
       bindControllerBroker(lock, root, space, launch);
       await startControllerMember(lock, root, space, "manager", managerResumeAttempt(root));
@@ -2970,9 +2972,10 @@ function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<Re
 /** Light wire check for a freshly SPAWNED ordinary-resume listener: the greeted server must carry
  *  the attempt's exact name/nonce (the full seven-point prove is for adopting a survivor). */
 async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
-  const info = await readNatsInfo(pending.server);
+  const label = `resume attempt ${pending.attemptId}`;
+  const info = await readNatsInfo(label, pending.server);
   if (info.server_name !== pending.serverName)
-    throw new Error(`resume attempt ${pending.attemptId} spawned listener reports a foreign NATS server name`);
+    throw new Error(`${label} spawned listener reports a foreign NATS server name`);
 }
 
 /** Adopts a listener its resume or restore attempt has proved over the wire: records the mesh,
@@ -3092,7 +3095,7 @@ async function completeResumeActivation(
   const auth = await resumeControlAuth(pending.root, pending.mode);
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
-    const ready = await askManager(pending.space, server, "ps", undefined, auth, "any", 2_000);
+    const ready = await askManager(cliControl, pending.space, server, "ps", undefined, auth, "any", 2_000);
     // Wait only while nothing ANSWERS (the manager is still coming up). Any answer, including a
     // refusal, ends the wait: a refusal will not heal by waiting, and the resume call right after
     // this fails loud on it with its own message.
@@ -3118,6 +3121,7 @@ async function completeResumeActivation(
     }
   };
   const resumed = await askManager(
+    cliControl,
     pending.space,
     server,
     "resumePreserved",
@@ -3157,6 +3161,7 @@ async function completeResumeActivation(
   }
   if (!managerCommit) {
     const committed = await askManager(
+      cliControl,
       pending.space,
       server,
       "commitResume",
@@ -3191,6 +3196,7 @@ async function completeResumeActivation(
     if (process.env.COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT === "1") process.exit(89);
   } else {
     const recommitted = await askManager(
+      cliControl,
       pending.space,
       server,
       "commitResume",
@@ -3212,6 +3218,7 @@ async function completeResumeActivation(
   }
 
   const finalized = await askManager(
+    cliControl,
     pending.space,
     server,
     "finalizeResume",

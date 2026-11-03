@@ -7,9 +7,9 @@ The shared MCP-bridge runtime: the mesh agent, the `cotal_*` tool specs (includi
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
-See [docs/connectors.md](../../docs/connectors.md) for how the adapters compare,
-[docs/mcp-tools.md](../../docs/mcp-tools.md) for the tool catalog generated from these specs,
-[docs/connect-claude.md](../../docs/connect-claude.md) for how a session joins, and the
+See [docs/connectors.mdx](../../docs/connectors.mdx) for how the adapters compare,
+[docs/mcp-tools.mdx](../../docs/mcp-tools.mdx) for the tool catalog generated from these specs,
+[docs/connect-claude.mdx](../../docs/connect-claude.mdx) for how a session joins, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 Attribution fields use core's `peerLabel` sanitizer, the same policy as roster labels:

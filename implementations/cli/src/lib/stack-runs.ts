@@ -3,7 +3,8 @@
  *  only reader is the broker and it is stopped by then. */
 import type { RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
 import { localRecordObject, oneLine, resolveControlTarget } from "@cotal-ai/workspace";
-import { askManager } from "./control.js";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "./control.js";
 
 /** A run that had not finished, with the steps it was waiting on. `waiting` is null when its
  *  journal could not be read. */
@@ -35,13 +36,13 @@ export async function readStackRuns(space: string): Promise<StackRuns> {
   const observedAt = new Date().toISOString();
   try {
     const t = await resolveControlTarget({ space }, "control-caller-privileged", undefined, { onRefusal: "throw" });
-    const list = await askManager(t.space, t.server, "runPs", undefined, t.auth, "owner", 10_000);
+    const list = await askManager(cliControl, t.space, t.server, "runPs", undefined, t.auth, "owner", 10_000);
     if (!list.ok || !Array.isArray(list.data)) return { observedAt, read: false, reason: clip(list.error ?? "the manager returned no run list") };
     const rows = list.data as RunListRow[];
     const open = rows.filter((row): row is RunListRow & { state: "running" | "released" } => row.state === "running" || row.state === "released");
     const runs: StackRunRow[] = [];
     for (const row of open.slice(0, STACK_RUNS_LIMIT.runs)) {
-      const status = await askManager(t.space, t.server, "runStatus", { runId: row.runId }, t.auth, "owner", 10_000);
+      const status = await askManager(cliControl, t.space, t.server, "runStatus", { runId: row.runId }, t.auth, "owner", 10_000);
       const view = status.ok ? status.data as RunStatusView | undefined : undefined;
       runs.push({ runId: clip(row.runId), state: row.state, waiting: Array.isArray(view?.journal) ? waitingSteps(view.journal) : null });
     }

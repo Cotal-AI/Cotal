@@ -4,7 +4,7 @@ import { Kvm } from "@nats-io/kv";
 import { JetStreamApiCodes } from "@nats-io/jetstream";
 import {
   CHANNEL_DEFAULTS_KEY, MEMBERSHIP_FEED_KEY, assertValidChannel, channelBucket, contractDigest, decodeChannelEntry, dialerFor,
-  isConcreteChannel, isJetStreamMissing, liveKvEntries, membershipBucket, standaloneConnectOpts, subjectMatches,
+  isConcreteChannel, isJetStreamMissing, liveKvEntries, membershipBucket, standaloneConnectOpts, subjectMatches, durableCovers,
   type ChannelConfig, type ChannelDefaults,
 } from "@cotal-ai/core";
 import { canonicalRoot } from "@cotal-ai/workspace";
@@ -228,7 +228,7 @@ export async function readChannelMemberImpact(server: string, space: string, tls
           members.push({ id: row.key, live: Array.isArray(value.live) ? value.live.filter((item): item is string => typeof item === "string") : [], durable: Array.isArray(value.durable) ? value.durable.filter((item): item is string => typeof item === "string") : [] });
         } catch { /* An undecodable row lowers the bound further. */ }
       }
-      return { asOf, channels: names.map((name) => ({ name, observedMembers: members.filter((row) => row.durable.includes(name) || row.live.some((pattern) => subjectMatches(pattern, name))).map((row) => row.id).slice(0, 100) })) };
+      return { asOf, channels: names.map((name) => ({ name, observedMembers: members.filter((row) => durableCovers(row.durable, name) || row.live.some((pattern) => subjectMatches(pattern, name))).map((row) => row.id).slice(0, 100) })) };
     } finally { await nc.close(); }
   } catch { return null; }
 }

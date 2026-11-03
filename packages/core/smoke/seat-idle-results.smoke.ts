@@ -1,0 +1,126 @@
+import assert from "node:assert/strict";
+import { mock } from "node:test";
+import type { Presence } from "../src/index.js";
+import { nativeLoadFailures, readRosterSample, nativeErrorClass, nativeErrorObserver, nativeErrorContext, loopStallWatch, putLatencyProbe } from "./_seat-idle-results.js";
+
+let checks = 0;
+const clean = { requested: 12, up: 12, failed: 0, missingMid: 0, missingEnd: 0, staleMid: 0, staleEnd: 0, endpointErrors: 0, apiErrors: 0, slowConsumers: 0, brokerWarnings: 0 };
+assert.deepEqual(nativeLoadFailures(clean), []); checks++;
+for (const key of ["failed", "missingMid", "missingEnd", "staleMid", "staleEnd", "endpointErrors", "apiErrors", "slowConsumers", "brokerWarnings"] as const) {
+  assert.ok(nativeLoadFailures({ ...clean, [key]: 1 }).length, key); checks++;
+}
+assert.ok(nativeLoadFailures({ ...clean, up: 11 }).length); checks++;
+const actual = nativeLoadFailures({ ...clean, requested: 6144, up: 6143, failed: 1, missingEnd: 1, apiErrors: 21, brokerWarnings: 7, endpointErrors: 2427 });
+assert.deepEqual(actual, ["starts 6143/6144, failed 1", "missingEnd=1", "endpointErrors=2427", "apiErrors=21", "brokerWarnings=7"]); checks++;
+
+mock.timers.enable({ apis: ["Date"], now: 1000 });
+try {
+  const roster: Presence[] = [{ card: { id: "peer", name: "peer", kind: "agent" }, status: "idle", ts: 1200 }];
+  const first = await readRosterSample({ readPresence: async () => { await Promise.resolve(); mock.timers.tick(250); return roster; } });
+  assert.equal(first.sampledAt, 1250); checks++;
+  const second = await readRosterSample({ readPresence: async () => { mock.timers.tick(500); return []; } });
+  assert.equal(second.sampledAt, 1750); checks++;
+  assert.equal(first.roster, roster); checks++;
+  assert.equal(first.sampledAt - first.roster[0].ts, 50); checks++;
+  const error = new Error("native read failed");
+  await assert.rejects(readRosterSample({ readPresence: async () => { throw error; } }), (e) => e === error); checks++;
+} finally { mock.timers.reset(); }
+const timeout = Object.assign(new Error("private subject and credential"), { name: "TimeoutError" });
+assert.equal(nativeErrorClass(timeout), "TimeoutError"); checks++;
+assert.equal(nativeErrorClass(Object.assign(new Error("Authentication Timeout: private"), { name: "AuthorizationError" })), "AuthenticationTimeout"); checks++;
+assert.equal(nativeErrorClass(Object.assign(new Error("private"), { name: "private-name" })), "other"); checks++;
+assert.equal(nativeErrorClass("private"), "unknown"); checks++;
+assert.equal(nativeErrorClass(new Error("timeout")), "TimeoutError"); checks++;
+assert.equal(nativeErrorClass(Object.assign(new Error("private"), { name: "AuthorizationError" })), "AuthorizationError"); checks++;
+const wrapped = new Error("private wrapper and subject", { cause: timeout });
+assert.equal(nativeErrorClass(wrapped), "TimeoutError"); checks++;
+const cycle = new Error("private cycle"); cycle.cause = cycle;
+assert.equal(nativeErrorClass(cycle), "other"); checks++;
+let deep: Error = timeout;
+for (let i = 0; i < 4; i++) deep = new Error("private deep wrapper", { cause: deep });
+assert.equal(nativeErrorClass(deep), "other"); checks++;
+assert.equal(nativeErrorClass(new Error("private", { cause: "private non-error" })), "other"); checks++;
+const rows: unknown[] = [];
+const observation = nativeErrorObserver((row) => rows.push(row), 2);
+observation.note("warning", timeout); observation.note("warning", timeout); observation.note("warning", timeout);
+assert.equal(rows.length, 2); checks++;
+assert.deepEqual(observation.summary(), { total: 3, emitted: 2, dropped: 1, counts: { "warning:TimeoutError": 3 }, contexts: { unclassified: 3 } }); checks++;
+assert.ok(!JSON.stringify(rows).includes("private")); checks++;
+assert.deepEqual(Object.keys(rows[0] as object).sort(), ["category", "context", "epochMs", "source"]); checks++;
+assert.throws(() => nativeErrorObserver(() => {}, -1)); checks++;
+const silent = nativeErrorObserver(() => { throw new Error("must not emit"); }, 0);
+silent.note("start", timeout);
+assert.equal(silent.summary().dropped, 1); checks++;
+const presenceSuffix = ". The presence write outcome is unknown: the broker may have stored the update. Read the roster before retrying.";
+const presenceWarning = new Error(`private${presenceSuffix}`, { cause: timeout });
+assert.equal(nativeErrorContext(presenceWarning), "presence-write"); checks++;
+assert.equal(nativeErrorContext(new Error("private wrapper", { cause: presenceWarning })), "presence-write"); checks++;
+assert.equal(nativeErrorContext(timeout), "unclassified"); checks++;
+assert.equal(nativeErrorContext(new Error(`private${presenceSuffix}`)), "unclassified"); checks++;
+assert.equal(nativeErrorContext(new Error(`private${presenceSuffix}extra`, { cause: timeout })), "unclassified"); checks++;
+assert.equal(nativeErrorContext(Object.assign(new Error("private bucket"), { name: "PresenceWriteStuckError", code: "presence-write-stuck" })), "presence-write"); checks++;
+assert.equal(nativeErrorContext(Object.assign(new Error("private"), { name: "PresenceWriteStuckError" })), "unclassified"); checks++;
+assert.equal(nativeErrorContext(cycle), "unclassified"); checks++;
+let nested = presenceWarning;
+for (let i = 0; i < 4; i++) nested = new Error("private", { cause: nested });
+assert.equal(nativeErrorContext(nested), "unclassified"); checks++;
+const contextualRows: unknown[] = [];
+const contextual = nativeErrorObserver((row) => contextualRows.push(row), 1);
+contextual.note("warning", presenceWarning); contextual.note("warning", timeout);
+assert.deepEqual(contextual.summary(), { total: 2, emitted: 1, dropped: 1, counts: { "warning:TimeoutError": 2 }, contexts: { "presence-write": 1, unclassified: 1 } }); checks++;
+assert.equal((contextualRows[0] as { context: string }).context, "presence-write"); checks++;
+assert.ok(!JSON.stringify(contextualRows).includes("private")); checks++;
+
+// The stall watch runs in this process: block the loop for longer than the threshold and one row
+// names the stall; block it for less and nothing is emitted; the row limit holds.
+const block = (ms: number) => { const until = performance.now() + ms; while (performance.now() < until) { /* hold the loop */ } };
+const settle = () => new Promise((r) => setTimeout(r, 250));
+const stalls: Array<{ epochMs: number; stallMs: number }> = [];
+const stopStalls = loopStallWatch((row) => stalls.push(row), 300, 1, 50);
+await settle();
+assert.equal(stalls.length, 0); checks++;
+block(100); await settle();
+assert.equal(stalls.length, 0); checks++;
+const before = Date.now();
+block(400); await settle();
+assert.equal(stalls.length, 1); checks++;
+assert.ok(stalls[0].stallMs >= 300 && stalls[0].stallMs < 1000, `stall ${stalls[0].stallMs} ms`); checks++;
+assert.ok(stalls[0].epochMs >= before + 300, "stall stamped after the block"); checks++;
+block(400); await settle();
+assert.equal(stalls.length, 1, "row limit holds"); checks++;
+stopStalls();
+block(400); await settle();
+assert.equal(stalls.length, 1, "stopped watch is silent"); checks++;
+assert.throws(() => loopStallWatch(() => {}, 300, -1)); checks++;
+
+// put probe: round robin over publishers, one in flight, slow and failed rows, stats per take
+{
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const calls: string[] = [];
+  const rows: Array<{ epochMs: number; ms: number; failed?: string }> = [];
+  const probe = putLatencyProbe([
+    async () => { calls.push("fast"); await sleep(2); },
+    async () => { calls.push("slow"); await sleep(60); },
+    async () => { calls.push("bad"); await sleep(1); throw Object.assign(new Error("private detail"), { name: "TimeoutError" }); },
+  ], (row) => rows.push(row), 40, 2, 10);
+  await sleep(260);
+  probe.stop();
+  const stats = probe.take();
+  assert.ok(calls.length >= 4 && calls.length <= 26, `calls ${calls.length}`); checks++;
+  assert.deepEqual(calls.slice(0, 3), ["fast", "slow", "bad"]); checks++;
+  assert.equal(stats.n, calls.length); checks++;
+  assert.equal(stats.failed, calls.filter((c) => c === "bad").length); checks++;
+  assert.ok(stats.maxMs >= 60 && stats.p50Ms <= stats.p99Ms && stats.p99Ms <= stats.maxMs, JSON.stringify(stats)); checks++;
+  assert.equal(rows.length, 2, "row limit"); checks++;
+  assert.ok(rows[0].ms >= 60 && rows[0].failed === undefined, JSON.stringify(rows[0])); checks++;
+  assert.equal(rows[1].failed, "TimeoutError"); checks++;
+  assert.ok(!JSON.stringify(rows).includes("private detail")); checks++;
+  const after = probe.take();
+  assert.deepEqual(after, { n: 0, failed: 0, p50Ms: 0, p99Ms: 0, maxMs: 0 }); checks++;
+  const before = calls.length;
+  await sleep(40);
+  assert.equal(calls.length, before, "stopped probe issues no puts"); checks++;
+}
+assert.throws(() => putLatencyProbe([async () => {}], () => {}, 500, -1)); checks++;
+assert.throws(() => putLatencyProbe([], () => {})); checks++;
+console.log(`seat-idle-results: ${checks} assertions passed`);

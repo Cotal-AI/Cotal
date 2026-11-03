@@ -36,7 +36,7 @@ import { skipSuite, assertSmokeSandboxDown, awaitBrokerReady, freePort, recordSm
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
-  // operator's auth.json — docs/connect-codex.md). Same stated limitation as the other codex smokes.
+  // operator's auth.json — docs/connect-codex.mdx). Same stated limitation as the other codex smokes.
   skipSuite("managed Codex agents are POSIX-only");
 }
 

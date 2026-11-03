@@ -22,10 +22,11 @@ import { cotalAuthProvider, deriveOwnerForIdpSubject, grantActor, grantManagedAc
   loadOwnerSecret, newActorToken, runAuthService, saveIdpSession } from "@cotal-ai/auth";
 import { Manager, type ManagerStatus } from "@cotal-ai/manager";
 import { formatSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { askManager } from "../../cli/src/lib/control.js";
 import { writeStamp } from "../../cli/src/seed/authority.js";
 import { pickFreePort } from "./_free-port.js";
 import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "../../cli/src/lib/control.js";
 
 if (process.argv[2] === "auth-service") {
   const primary = process.argv[3] === "primary";
@@ -160,7 +161,7 @@ try {
   const nativePs = async (bearer: string, op = "ps") => {
     const claims = decodeJwt(bearer) as { sub: string; act: { actor: string; lifecycleUid: string; managerInstanceId: string } };
     const callout = await import("@cotal-ai/auth").then(m => m.loadCalloutAuth(store, space));
-    return askManager(space, server, op, undefined, { bearer, sentinelCreds: callout!.sentinelCreds,
+    return askManager(cliControl, space, server, op, undefined, { bearer, sentinelCreds: callout!.sentinelCreds,
       epCaller: { owner: claims.sub, actor: claims.act.actor, uid: claims.act.lifecycleUid }, managerInstanceId: claims.act.managerInstanceId }, "owner");
   };
   const oldPs = await nativePs(pinned.body.token!);

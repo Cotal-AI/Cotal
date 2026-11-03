@@ -89,10 +89,10 @@ type Resolved = {
 };
 type Link = { mode: "bare"; tls: boolean } | { mode: "session-caller"; tls: boolean; creds: string };
 
-const agentsMod = (await import("../../implementations/cli/dist/commands/agents.js")) as Record<string, unknown>;
-const decide = agentsMod.attachSessionMaterial as ((t: Target) => Material) | undefined;
-const connectOptsFor = agentsMod.redeemConnectOpts as ((l: Link) => Record<string, unknown>) | undefined;
-const controlMod = (await import("../../implementations/cli/dist/lib/control.js")) as Record<string, unknown>;
+const attachMod = (await import("@cotal-ai/workspace/attach")) as Record<string, unknown>;
+const decide = attachMod.attachSessionMaterial as ((t: Target) => Material) | undefined;
+const connectOptsFor = attachMod.redeemConnectOpts as ((l: Link) => Record<string, unknown>) | undefined;
+const controlMod = (await import("@cotal-ai/workspace/control")) as Record<string, unknown>;
 const scatterProbe = controlMod.scatterProbeMaterial as
   | ((auth: { creds?: string; bearer?: string }, spaceAuth?: SpaceAuth) => { kind: string })
   | undefined;

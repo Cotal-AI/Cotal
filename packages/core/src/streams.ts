@@ -3,6 +3,7 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
+  JetStreamApiError,
   StorageType,
   type ConsumerConfig,
   type JetStreamClient,
@@ -11,7 +12,7 @@ import {
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
 import { tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
-import { dialerFor } from "./endpoint.js";
+import { dialerFor, isPublishPermissionDenied } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
@@ -57,9 +58,12 @@ import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
 import {
-  BACKUP_MAX_MSGS_PER_SUBJECT,
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
   canonicalBackupStreamConfig,
+  chatHistoryLimitOf,
+  chatHistoryLimitProblem,
+  validateCanonicalBackupStreamConfig,
+  type ChatHistoryLimit,
 } from "./backup-config.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
@@ -71,11 +75,6 @@ const PRESENCE_TTL_MS = 6_000;
  *  registering bind) until the broker restarts. Storage class is fixed at stream creation, so a bucket
  *  created file-backed by an older cotal stays file-backed until it is recreated. */
 export const PRESENCE_STORAGE = StorageType.Memory;
-
-/** Per-(sender,channel)-subject retention cap on the chat stream — the bound past which the
- *  oldest message on a subject is discarded (`DiscardPolicy.Old`). Also the horizon of focus
- *  recall: only the last {@link MAX_MSGS_PER_SUBJECT} per sender-subject are recallable. */
-export const MAX_MSGS_PER_SUBJECT = BACKUP_MAX_MSGS_PER_SUBJECT;
 
 /** JetStream message-dedup window on the Plane-3 streams: a `Nats-Msg-Id`
  *  (`<msgId>:<owner>:<generation>`) repeated within this window is collapsed. Sized generous (2h) so
@@ -302,7 +301,104 @@ export async function createSpaceStreams(
   jsm: JetStreamManager,
   space: string,
 ): Promise<void> {
-  for (const definition of spaceMessageStreamConfigs(space)) await jsm.streams.add(definition);
+  for (const definition of spaceMessageStreamConfigs(space)) {
+    // The chat stream's history limit is the operator's (`cotal history limit`), so an existing
+    // stream is left as it is: an add over a different limit would refuse, and this also runs on
+    // every open-mode connect. `setupSpaceStreams` checks the stream's other settings.
+    if (definition.name === chatStream(space)) {
+      try {
+        await jsm.streams.info(definition.name);
+        continue;
+      } catch (e) {
+        if (!isStreamNotFound(e)) throw e;
+      }
+    }
+    await jsm.streams.add(definition);
+  }
+}
+
+/** A chat history limit change the broker acknowledged and reported back. */
+export interface ChatHistoryChange {
+  stream: string;
+  from: ChatHistoryLimit;
+  to: ChatHistoryLimit;
+}
+
+/** The STREAM.UPDATE was submitted and neither its reply nor the read back confirmed the requested
+ *  limit, so it may or may not have changed. Not retried. */
+export class ChatHistoryUpdateUnknown extends Error {
+  constructor(readonly stream: string, readonly requested: ChatHistoryLimit, cause: unknown) {
+    super(`the history limit update of ${stream} was submitted without a confirmed outcome, so it may or may not have taken effect`, { cause });
+  }
+}
+
+/** The chat stream's limit moved between the caller's read and this write. */
+export class ChatHistoryChanged extends Error {
+  constructor(readonly stream: string, readonly expected: ChatHistoryLimit, readonly found: ChatHistoryLimit) {
+    super(`the history limit of ${stream} changed since it was read: expected ${describeChatHistory(expected)}, found ${describeChatHistory(found)}`);
+  }
+}
+
+/** `30d, 1000 per sender`, or `no age limit, 1000 per sender`. */
+export function describeChatHistory(limit: ChatHistoryLimit): string {
+  return `${limit.maxAgeMs === 0 ? "no age limit" : formatChatAge(limit.maxAgeMs)}, ${limit.perSender} per sender`;
+}
+
+/** An age in the largest whole unit of `d`, `h`, `m` or `s`, the form `--max-age` takes. */
+export function formatChatAge(ms: number): string {
+  for (const [unit, size] of [["d", 86_400_000], ["h", 3_600_000], ["m", 60_000]] as const)
+    if (ms % size === 0) return `${ms / size}${unit}`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+/** The chat stream's config, refused unless every field but the history limit is canonical and the
+ *  limit is one a stream may hold. */
+async function readChatStreamConfig(jsm: JetStreamManager, space: string): Promise<StreamConfig> {
+  const { config } = await jsm.streams.info(chatStream(space));
+  validateCanonicalBackupStreamConfig(space, chatStream(space), config as unknown as Record<string, unknown>);
+  return config;
+}
+
+/**
+ * Set the chat stream's history limit to `limit`. Only `max_age` and `max_msgs_per_subject` change,
+ * over the config read for this write, after the whole of that config was checked. Both are read
+ * back. `expected` is the limit the caller showed the operator: a stream found holding another one
+ * is refused with {@link ChatHistoryChanged}. That read and the update are not one atomic step, so
+ * two writers racing past the read can still overwrite each other.
+ *
+ * A lower limit takes effect at once: the broker expires every post older than the age and each
+ * sender's posts past the count. Returns undefined when the stream already holds `limit`.
+ */
+export async function setChatHistoryLimit(
+  jsm: JetStreamManager,
+  space: string,
+  limit: ChatHistoryLimit,
+  expected?: ChatHistoryLimit,
+): Promise<ChatHistoryChange | undefined> {
+  const problem = chatHistoryLimitProblem(limit);
+  if (problem) throw new Error(`invalid chat history limit: ${problem}`);
+  const stream = chatStream(space);
+  const config = await readChatStreamConfig(jsm, space);
+  const from = chatHistoryLimitOf(config as unknown as Record<string, unknown>);
+  if (expected && (from.maxAgeMs !== expected.maxAgeMs || from.perSender !== expected.perSender))
+    throw new ChatHistoryChanged(stream, expected, from);
+  if (from.maxAgeMs === limit.maxAgeMs && from.perSender === limit.perSender) return undefined;
+  try {
+    await jsm.streams.update(stream, { ...config, max_age: nanos(limit.maxAgeMs), max_msgs_per_subject: limit.perSender });
+  } catch (e) {
+    // A refusal the broker answered, or a publish it denied, changed nothing; anything else may have.
+    if (e instanceof JetStreamApiError || isPublishPermissionDenied(e)) throw e;
+    throw new ChatHistoryUpdateUnknown(stream, limit, e);
+  }
+  let after: ChatHistoryLimit;
+  try {
+    after = chatHistoryLimitOf((await readChatStreamConfig(jsm, space)) as unknown as Record<string, unknown>);
+  } catch (e) {
+    throw new ChatHistoryUpdateUnknown(stream, limit, e);
+  }
+  if (after.maxAgeMs !== limit.maxAgeMs || after.perSender !== limit.perSender)
+    throw new ChatHistoryUpdateUnknown(stream, limit, new Error(`${stream} read back ${describeChatHistory(after)}`));
+  return { stream, from, to: limit };
 }
 
 /**
@@ -747,6 +843,9 @@ export async function setupSpaceStreams(opts: {
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
+    // An existing chat stream keeps the history limit it holds, so the create above skips it. Every
+    // other setting of it must still be canonical (SPEC §8), or setup refuses.
+    await readChatStreamConfig(jsm, opts.space);
     // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open
     // them. Idempotent. The TTL'd ones come from `ttlBuckets` and ONLY from there, so a new one
     // cannot be created on this path without also being reconciled on the upgrade path; the
@@ -974,7 +1073,8 @@ export async function deprovisionAgent(opts: {
   space: string;
   targetId: string;
   lifecycleUid: string;
-  /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
+  /** Concrete channels or families (`team.>`) whose membership rows to purge; must equal the cred's
+   *  `memberChannels`. */
   memberChannels?: readonly string[];
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {

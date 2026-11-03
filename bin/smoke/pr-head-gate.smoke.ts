@@ -35,10 +35,18 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 // "Cold setup" too: cold-setup.yml (c2fa6f30a) declares pull_request with no filter. The #1087
 // fixture's run row for it is added beside the others, as for Mutation reproof.
 // "Attribution" left the set when attribution.yml was removed (9cc9117c6).
-const expectedNames = ["CI", "Cold setup", "Docs", "Mutation reproof", "Windows"];
+// Remotion's workflow includes package.json, which every recorded case here changes.
+const expectedNames = ["CI", "Cold setup", "Docs", "Mutation reproof", "Remotion typecheck", "Windows"];
+const positive = fixture.cases.find((c: { pr: number }) => c.pr === 1087);
+// Synthetic pending run for the newer declaration; this is not a historical GitHub run. Keep the
+// recorded fixture file intact while exercising a complete current-workflow positive control.
+positive.runs.push({
+  id: -1, name: "Remotion typecheck", event: "pull_request", head_sha: positive.headSha,
+  status: "pending", conclusion: null, pull_requests: [{ number: positive.pr }],
+});
 check(
   "path-filtered workflows are included only when a changed path matches their declaration",
-  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Cold setup", "Mutation reproof", "Windows"]) &&
+  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Cold setup", "Mutation reproof", "Remotion typecheck", "Windows"]) &&
     JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Cold setup", "Installer", "Mutation reproof", "Windows"]),
 );
 let repositoryWorkflowsParsed = false;
@@ -51,10 +59,10 @@ check(
   "paths-ignore skips a workflow only when every changed path is ignored",
   JSON.stringify(expectedPullRequestWorkflows({
     "ignore.yml": "name: Ignore\non:\n  pull_request:\n    paths-ignore: ['docs/**']\n",
-  }, ["docs/cli.md"])) === "[]" &&
+  }, ["docs/cli.mdx"])) === "[]" &&
     JSON.stringify(expectedPullRequestWorkflows({
       "ignore.yml": "name: Ignore\non:\n  pull_request:\n    paths-ignore: ['docs/**']\n",
-    }, ["docs/cli.md", "package.json"])) === '["Ignore"]',
+    }, ["docs/cli.mdx", "package.json"])) === '["Ignore"]',
 );
 check(
   "ordinary YAML comments after a flow event list preserve pull_request",
@@ -171,7 +179,7 @@ let unsupportedPatternRefused = false;
 try {
   expectedPullRequestWorkflows({
     "unknown.yml": "name: Unknown\non:\n  pull_request:\n    paths:\n      - 'docs/{api,cli}.md'\n",
-  }, ["docs/cli.md"]);
+  }, ["docs/cli.mdx"]);
 } catch (error) {
   unsupportedPatternRefused = /unsupported workflow path pattern/.test(String(error));
 }
@@ -199,7 +207,6 @@ for (const c of fixture.cases) {
   }
 }
 
-const positive = fixture.cases.find((c: { pr: number }) => c.pr === 1087);
 const succeeded = positive.runs.map((run: Record<string, unknown>) =>
   run.event === "pull_request" ? { ...run, status: "completed", conclusion: "success" } : run,
 );

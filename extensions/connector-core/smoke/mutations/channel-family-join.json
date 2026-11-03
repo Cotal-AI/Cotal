@@ -1,0 +1,102 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/channel-family-join.smoke.ts"
+  ],
+  "guard": "cotal_join tells a family follow from a live-only pattern, refuses a name that is no channel name, and checks a pattern's read ACL by containment",
+  "command": "pnpm smoke:channel-family:join",
+  "completionMarker": "CHANNEL-FAMILY-JOIN SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/channel-family-join.json",
+  "why": [
+    "J1 drops the channel-name check, so team.** reaches joinChannel, which rewrites it onto another subject.",
+    "",
+    "J2 checks a pattern's read ACL by matching instead of containment, so perm.> passes under perm.*.",
+    "",
+    "J3 gives a family with its membership the concrete channel's headline, which promises a replay of every offline post.",
+    "",
+    "J4 gives a pattern with * the LIVE only headline of a channel whose backstop failed.",
+    "",
+    "J5 gives a family whose backstop failed the headline of a pattern with *, hiding the failure.",
+    "",
+    "J6 drops the pattern's registry line, so a family reads as a name a prior send invented.",
+    "",
+    "J7 drops the sentence on what a family keeps from the cotal_join description.",
+    "",
+    "NO BUILD STEP: the suite imports ../src.",
+    "",
+    "J8 drops the name check from cotal_channel_info, so team.>.x is described as a pattern."
+  ],
+  "mutations": [
+    {
+      "name": "J1 a name that is no channel name reaches joinChannel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const notName = notAChannelName(channel, \"Nothing was joined.\");\n        if (notName !== undefined) return err(`Couldn't join: ${notName}`);\n",
+      "replace": "",
+      "expectRed": "\"team.**\" is refused as no channel name before anything joins",
+      "cell": "\"team.**\" is refused as no channel name before anything joins",
+      "note": "The endpoint would subscribe to team.__ while the tool reports #team.**."
+    },
+    {
+      "name": "J2 a pattern's read ACL is checked by matching, so perm.> passes under perm.*",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "(isConcreteChannel(channel) ? channelInAllow : patternInAllow)(config.allowSubscribe, channel)",
+      "replace": "channelInAllow(config.allowSubscribe, channel)",
+      "expectRed": "perm.> is refused as outside the read ACL (perm.* covers one segment under perm)",
+      "cell": "perm.> is refused as outside the read ACL (perm.* covers one segment under perm)",
+      "note": "perm.> matches perm.a.b, which perm.* does not cover; the broker would refuse the subscription after the tool let it through."
+    },
+    {
+      "name": "J3 a family with its membership gets the concrete channel's headline",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "            ? isChannelFamily(channel)\n              ? `Joined #${channel} (stored copies on",
+      "replace": "            ? false\n              ? `Joined #${channel} (stored copies on",
+      "expectRed": "a family joined with its membership says stored copies are on for its durable channels",
+      "cell": "a family joined with its membership says stored copies are on for its durable channels",
+      "note": "The concrete headline promises every offline post replays; a family keeps stored copies only on its durable channels."
+    },
+    {
+      "name": "J4 a pattern with * gets the LIVE only headline of a failed backstop",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "              ? isConcreteChannel(channel) || isChannelFamily(channel)\n",
+      "replace": "              ? true\n",
+      "expectRed": "a pattern with * joined says live only and why",
+      "cell": "a pattern with * joined says live only and why",
+      "note": "A pattern with * has no backstop to fail; its headline says it is live only by design."
+    },
+    {
+      "name": "J5 a family whose backstop failed gets the headline of a pattern with *",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "              ? isConcreteChannel(channel) || isChannelFamily(channel)\n",
+      "replace": "              ? isConcreteChannel(channel)\n",
+      "expectRed": "a family joined without its membership says live only and that offline posts are not kept",
+      "cell": "a family joined without its membership says live only and that offline posts are not kept",
+      "note": "A family follower whose membership failed must hear that its offline posts are not kept."
+    },
+    {
+      "name": "J6 a pattern's info says a prior send may have invented it",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (!isConcreteChannel(channel))\n    lines.push(\"  • a pattern: it has no registry entry of its own, and each channel it matches keeps its own.\");\n  else if (!info.registered)",
+      "replace": "  if (!info.registered)",
+      "expectRed": "the family's info says a pattern has no registry entry of its own",
+      "cell": "the family's info says a pattern has no registry entry of its own",
+      "note": "A send cannot create a pattern, so the unregistered-name line misleads."
+    },
+    {
+      "name": "J7 the cotal_join description drops what a family keeps",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        \"Under a family such as review.>, posts on its durable channels are kept for you while you are offline, from the join on, and its live channels reach you only while you are connected. \" +\n",
+      "replace": "",
+      "expectRed": "the cotal_join description says what a family keeps",
+      "cell": "the cotal_join description says what a family keeps",
+      "note": "An agent reads the description before it joins."
+    },
+    {
+      "name": "J8 cotal_channel_info describes a malformed pattern as a pattern",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const notName = notAChannelName(channel, \"Nothing was looked up.\");\n        if (notName !== undefined) return err(`Couldn't look up the channel: ${notName}`);\n",
+      "replace": "",
+      "expectRed": "cotal_channel_info refuses a malformed pattern as no channel name",
+      "cell": "cotal_channel_info refuses a malformed pattern as no channel name",
+      "note": "team.>.x is no channel name, so describing it as a pattern misleads the agent."
+    }
+  ]
+}

@@ -13,20 +13,28 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+      - 'tools/docs-content/**'
       - 'docs/**'
       - 'spec/**'
       - 'implementations/web/openapi.json'
       - 'implementations/auth/openapi.json'
+      - 'implementations/auth/host.openapi.json'
+      - 'implementations/manager/openapi.json'
+      - 'implementations/delivery/openapi.json'
       - 'SPEC.md'
       - 'assets/**'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'website/**'
+      - 'tools/docs-content/**'
       - 'docs/**'
       - 'spec/**'
       - 'implementations/web/openapi.json'
       - 'implementations/auth/openapi.json'
+      - 'implementations/auth/host.openapi.json'
+      - 'implementations/manager/openapi.json'
+      - 'implementations/delivery/openapi.json'
       - 'SPEC.md'
       - 'assets/**'
       - '.github/workflows/docs.yml'

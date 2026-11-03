@@ -1,5 +1,295 @@
 # @cotal-ai/delivery
 
+## 0.138.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.138.1
+  - @cotal-ai/workspace@0.138.1
+
+## 0.138.0
+
+### Patch Changes
+
+- Updated dependencies [534382c]
+- Updated dependencies [85f288b]
+- Updated dependencies [3473992]
+- Updated dependencies [789c904]
+  - @cotal-ai/core@0.138.0
+  - @cotal-ai/workspace@0.138.0
+
+## 0.137.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.137.0
+  - @cotal-ai/workspace@0.137.0
+
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+  - @cotal-ai/workspace@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+  - @cotal-ai/workspace@0.136.7
+
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+  - @cotal-ai/workspace@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.4
+  - @cotal-ai/workspace@0.136.4
+
+## 0.136.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.3
+  - @cotal-ai/workspace@0.136.3
+
+## 0.136.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.2
+  - @cotal-ai/workspace@0.136.2
+
+## 0.136.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.1
+  - @cotal-ai/workspace@0.136.1
+
+## 0.136.0
+
+### Patch Changes
+
+- Updated dependencies [f5251ae]
+  - @cotal-ai/core@0.136.0
+  - @cotal-ai/workspace@0.136.0
+
+## 0.135.21
+
+### Patch Changes
+
+- Updated dependencies [a259571]
+  - @cotal-ai/core@0.135.21
+  - @cotal-ai/workspace@0.135.21
+
+## 0.135.20
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.20
+  - @cotal-ai/workspace@0.135.20
+
+## 0.135.19
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.19
+  - @cotal-ai/workspace@0.135.19
+
+## 0.135.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.18
+  - @cotal-ai/workspace@0.135.18
+
+## 0.135.17
+
+### Patch Changes
+
+- Updated dependencies [55e8d0b]
+  - @cotal-ai/workspace@0.135.17
+  - @cotal-ai/core@0.135.17
+
+## 0.135.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.16
+  - @cotal-ai/workspace@0.135.16
+
+## 0.135.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.15
+  - @cotal-ai/workspace@0.135.15
+
+## 0.135.14
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.14
+  - @cotal-ai/workspace@0.135.14
+
+## 0.135.13
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.13
+  - @cotal-ai/workspace@0.135.13
+
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.12
+  - @cotal-ai/workspace@0.135.12
+
+## 0.135.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.11
+  - @cotal-ai/workspace@0.135.11
+
+## 0.135.10
+
+### Patch Changes
+
+- Updated dependencies [985dbc5]
+  - @cotal-ai/core@0.135.10
+  - @cotal-ai/workspace@0.135.10
+
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+  - @cotal-ai/workspace@0.135.9
+
+## 0.135.8
+
+### Patch Changes
+
+- Updated dependencies [0c09e47]
+  - @cotal-ai/core@0.135.8
+  - @cotal-ai/workspace@0.135.8
+
+## 0.135.7
+
+### Patch Changes
+
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+  - @cotal-ai/workspace@0.135.7
+
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+
+## 0.135.0
+
+### Patch Changes
+
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+  - @cotal-ai/workspace@0.135.0
+
+## 0.134.0
+
+### Patch Changes
+
+- Updated dependencies [4ee7ede]
+- Updated dependencies [86de17e]
+- Updated dependencies [4272b2e]
+  - @cotal-ai/core@0.134.0
+  - @cotal-ai/workspace@0.134.0
+
+## 0.133.13
+
+### Patch Changes
+
+- Updated dependencies [c21c940]
+- Updated dependencies [6fcac9f]
+- Updated dependencies [ddd3253]
+- Updated dependencies [331f050]
+  - @cotal-ai/workspace@0.133.13
+  - @cotal-ai/core@0.133.13
+
+## 0.133.12
+
+### Patch Changes
+
+- 13499c0: Support authored MDX documentation in the release bundle. Preserve complete Markdown for offline `cotal_docs` page reads and search. Resolve exported documentation links, including MDX paths and heading references. Expand HTTP references to cover dashboard metadata and deletion, host-only auth, the manager console and feedback intake.
+- 13499c0: Rewrite the Messaging concepts as direct MDX and move detailed endpoint and daemon contracts into focused references. Preserve complete Markdown in offline documentation and update source links and documentation checks for the renamed pages.
+- Updated dependencies [13499c0]
+  - @cotal-ai/core@0.133.12
+  - @cotal-ai/workspace@0.133.12
+
 ## 0.133.11
 
 ### Patch Changes

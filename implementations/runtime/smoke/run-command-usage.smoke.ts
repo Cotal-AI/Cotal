@@ -2,7 +2,7 @@
  * `cotal run`'s verb gate, with no broker: an invocation the dispatcher cannot route is refused as a
  * usage error before any plane is opened, with exit 1, and every verb the gate routes is a declared
  * `run` subcommand or alias that the command's usage line names. Bare `cotal run` is the list
- * command, so it is not a refusal (docs/cli.md, "Workflow command forms").
+ * command, so it is not a refusal (docs/cli.mdx, "Workflow command forms").
  *
  * This is the runtime package's own `test` script, which the Windows required job runs on a box
  * with no nats-server, so everything here must stay off the wire. Every other runtime suite drives

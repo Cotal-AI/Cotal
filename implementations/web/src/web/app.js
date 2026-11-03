@@ -7,6 +7,8 @@
 // list; members fold into the header), and a Direct-messages lens (per-peer roll-up in
 // the sidebar → a thread in the centre). `?demo` renders the fixed reference scene.
 
+import { ago, presenceFacts } from "./presence.js";
+
 const $ = (id) => document.getElementById(id);
 const STATUS = ["working", "waiting", "idle", "offline"];
 // Status as shape *and* colour (never colour alone).
@@ -76,14 +78,7 @@ const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minu
 // Shared with graph.js via parts.js (loaded before this file). It names a part kind it cannot
 // draw instead of rendering it as the empty string, which read as "nothing arrived".
 const bodyText = (msg) => window.COTAL_PARTS.partsToText(msg.parts);
-function ago(ts) {
-  const s = Math.max(0, (Date.now() - ts) / 1000);
-  if (s < 45) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)}m`;
-  if (s < 86400) return `${Math.round(s / 3600)}h`;
-  return `${Math.round(s / 86400)}d`;
-}
-const agoShort = (ts) => (ago(ts) === "just now" ? "now" : ago(ts));
+const agoShort = ago;
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 // Markdown rendering lives in md.js (window.COTAL_MD) — marked + DOMPurify, one source for every
@@ -206,6 +201,7 @@ function peerRow(p) {
         ${p.tag ? `<span class="tag">${esc(p.tag)}</span>` : ""}
       </div>
       ${p.act ? `<div class="act" title="${esc(p.act)}">${esc(p.act)}</div>` : ""}
+      ${p.facts ? `<div class="presence-facts">${esc(p.facts)}</div>` : ""}
     </div>
   </div>`;
 }
@@ -253,6 +249,7 @@ function rosterRows() {
       role: p.card.role,
       status: p.status,
       act: p.activity,
+      facts: presenceFacts(p),
       harness: p.card.meta?.connector,
       host: p.card.meta?.host,
       attention: p.attention, // open/absent both render as nothing
@@ -702,6 +699,7 @@ function cardHTML(c) {
     </div>
     <div class="title">${esc(c.title)}${c.role ? `<span class="crole">${esc(c.role)}</span>` : ""}</div>
     <div class="desc">${esc(c.desc)}</div>
+    ${c.facts ? `<div class="presence-facts">${esc(c.facts)}</div>` : ""}
     ${c.primary ? `<div class="btns"><span class="btn primary">${esc(c.primary)}</span>${c.secondary ? `<span class="btn secondary">${esc(c.secondary)}</span>` : ""}</div>` : ""}
   </div>`;
 }
@@ -722,6 +720,7 @@ function waitingCards() {
       role: p.card.role,
       // p.activity is the Claude Code Notification text (the actual blocking prompt/permission).
       desc: p.activity || "waiting for input",
+      facts: presenceFacts(p),
       id: p.card.id, // makes the card a clickable drill-down into the Agent Detail view
     }));
 }
@@ -746,7 +745,7 @@ function renderRail() {
     el.onclick = () => selectAgent(el.dataset.agent);
 }
 
-// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/watch-a-mesh.md) ──
+// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/watch-a-mesh.mdx) ──
 function selectAgent(id) {
   agentSel = id;
   dmSel = null;
@@ -826,6 +825,7 @@ function renderAgentDetail() {
       <div class="d-who">${who}</div>
       ${badges ? `<div class="d-badges">${badges}</div>` : ""}
       ${desc}
+      ${presenceFacts(p) ? `<div class="presence-facts">${esc(presenceFacts(p))}</div>` : ""}
       ${blocked}
       ${sec("Channel attention", channelModes)}
       ${sec("Tags", tags)}

@@ -195,7 +195,7 @@ export const codexConnector: Connector = {
     // decides there (one setting for every codex agent it supervises), while a foreground spawn
     // reads the shell that ran it. Passing it through the spawn request instead would make it a
     // per-agent launch option, which is a bigger surface than a display toggle earns; the split is
-    // documented in docs/connect-codex.md rather than half-wired.
+    // documented in docs/connect-codex.mdx rather than half-wired.
     const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
     if (tuiPref) env.COTAL_CODEX_TUI = tuiPref;
 

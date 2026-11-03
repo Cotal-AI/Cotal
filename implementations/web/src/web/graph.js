@@ -14,6 +14,8 @@
  *
  * Stability: messages drive *glow*, not layout. The simulation cools to a rest state (alpha decay) and
  * only gently re-heats when the node/edge SET changes — so nodes don't wander on every message. */
+import { presenceFacts } from "./presence.js";
+
 (() => {
   const $ = (id) => document.getElementById(id);
   const canvas = $("graph");
@@ -92,7 +94,8 @@
   }
   /** Expand an agent's {live patterns, durable channels} → { channels: channel→kind, wide }. Bounded
    *  wildcards (`team.>`) expand against the KNOWN channel set (registry hubs); concrete patterns stand
-   *  alone; `live` wins over `durable`. A WHOLE-BREADTH pattern (`>` or `*` — e.g. the default persona's
+   *  alone; `live` wins over `durable`. A durable family row (`team.>`) expands only over the known hubs
+   *  whose class is durable, the channels it stores copies for. A WHOLE-BREADTH pattern (`>` or `*` — e.g. the default persona's
    *  read-everything grant) is NOT expanded to a spoke per hub (that's a dandelion); it sets `wide`, and
    *  the agent renders as a "reads-all" node badge instead — truthful without per-channel noise. */
   function memberChannels(live, durable, known) {
@@ -103,7 +106,10 @@
       if (isWild(pat)) { for (const ch of known) if (patternMatches(pat, ch)) out.set(ch, "live"); }
       else out.set(pat, "live");
     }
-    for (const ch of durable || []) if (!out.has(ch)) out.set(ch, "durable");
+    for (const ch of durable || []) {
+      if (!isWild(ch)) { if (!out.has(ch)) out.set(ch, "durable"); }
+      else for (const k of known) if (!out.has(k) && hubs.get(k)?.deliveryClass === "durable" && patternMatches(ch, k)) out.set(k, "durable");
+    }
     return { channels: out, wide };
   }
 
@@ -213,6 +219,10 @@
     let toName = null;
     if (mode === "chat" && msg.channel) {
       const h = ensureHub(msg.channel);
+      if (h) {
+        if (!h.deliveryClass && !h.heard) rereadChannels();
+        h.heard = true;
+      }
       if (from) chatHit(from, msg.channel, now()).heat = 1;
       // inbound: sender → hub, then the hub flashes and fans the post back out to every other member on
       // the channel (their spokes glow as the wave reaches them) — a real broadcast.
@@ -253,6 +263,8 @@
       a.attention = p.attention; // open/absent both mean receives-all; only dnd/focus render
       // Card legibility fields the detail panel renders (same source as the Monitor's Agent Detail).
       a.description = p.card.description; a.tags = p.card.tags; a.channelModes = p.channelModes;
+      a.condition = p.condition; a.statusSince = p.statusSince;
+      a.activitySince = p.activitySince; a.activeAt = p.activeAt;
       a.ts = p.ts;
       a.present = true; // in the roster = a live presence (the authority for isOffline)
       seen.add(a.id);
@@ -299,15 +311,24 @@
     feed.asOf = snap.asOf;
     feed.available = snap.asOf !== undefined || (Array.isArray(snap.members) && snap.members.length > 0);
     setFeed();
+    lastMembers = snap.members || [];
+    drawMembers(lastMembers);
+  }
+  // A durable family row reaches only the hubs whose class is durable (`memberChannels`), and a class can
+  // land after the snapshot naming the family: the feed's first snapshot comes before `/api/channels`
+  // answers, and a channel first seen in a member's row or a message has no class until that read runs
+  // again. So the last snapshot's members are kept and drawn again whenever classes land.
+  let lastMembers = null;
+  function drawMembers(members) {
     const known = [...hubs.keys()];
     const present = new Set();
-    for (const m of snap.members || []) {
+    for (const m of members) {
       const a = ensureAgent({ id: m.id });
       present.add(a.id);
       a.live = m.live || []; a.durable = m.durable || [];
       const mc = memberChannels(a.live, a.durable, known);
       a.memberOf = mc.channels; a.wideReader = mc.wide;
-      for (const [ch, kind] of mc.channels) { ensureHub(ch); const e = ensureEdge(a, ch); e.mem = true; e.durableOnly = kind === "durable"; }
+      for (const [ch, kind] of mc.channels) { if (!hubs.has(ch)) rereadChannels(); ensureHub(ch); const e = ensureEdge(a, ch); e.mem = true; e.durableOnly = kind === "durable"; }
       pruneMemberEdges(a, mc.channels);
     }
     // An agent that dropped out of the feed entirely is no longer a member of anything (incl. a wide reader,
@@ -658,6 +679,7 @@
         <div class="d-kind">agent</div>
         <div class="d-who">${esc(sel.name)}${sel.role ? `<span class="role">${esc(sel.role)}</span>` : ""}</div>
         <div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>
+        ${presenceFacts(sel) ? `<div class="presence-facts">${esc(presenceFacts(sel))}</div>` : ""}
         ${descBlock}
         <div class="d-section"><div class="d-label">activity</div><div class="d-block ${sel.activity ? "" : "muted"}">${esc(sel.activity || "no current activity")}</div></div>
         ${(harnessRow || modelRow || attRow) ? `<div class="d-rows">${harnessRow}${modelRow}${attRow}</div>` : ""}
@@ -737,6 +759,24 @@
   }
 
   // ── boot ──
+  const channelsSource = { name: "channels", read: async () => window.COTAL_SNAPSHOT.readJson(await fetch("/api/channels"), "channels"),
+    apply: (chans) => {
+      for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; }
+      if (lastMembers) drawMembers(lastMembers);
+    } };
+  // A hub that appears in a member's row or a message reads `/api/channels` again for its class, and so
+  // does the first post on a hub still without one, since a post can put a channel on that list. A
+  // channel the list never names is read for once, not once per post. One read answers for every hub
+  // that appears within the wait.
+  let channelsReread = 0;
+  function rereadChannels() {
+    if (channelsReread) return;
+    channelsReread = setTimeout(async () => {
+      channelsReread = 0;
+      const stale = await window.COTAL_SNAPSHOT.refreshAll([channelsSource]);
+      markStale("channels", stale[0] || null);
+    }, 250);
+  }
   async function load() {
     // ── ONE REFUSED READ MUST NOT EMPTY THE PAGE ────────────────────────────────────────────────
     //
@@ -756,8 +796,7 @@
     const stale = await SNAP.refreshAll([
       { name: "space", read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
         apply: (meta) => { $("space").textContent = "· " + meta.space; } },
-      { name: "channels", read: async () => SNAP.readJson(await fetch("/api/channels"), "channels"),
-        apply: (chans) => { for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; } } },
+      channelsSource,
       { name: "peers", read: async () => SNAP.readJson(await fetch("/api/roster"), "peers"),
         apply: supersededByFeed("peers", (roster) => updateRoster(roster)) },
       // `.catch(() => ({members: []}))` here turned a failed fetch into an empty snapshot, which the

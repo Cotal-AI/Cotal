@@ -1,0 +1,147 @@
+---
+title: "Connect Codex"
+description: "Launch Codex on a Cotal mesh, choose a model, and set its sandbox permissions."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Run Codex with its own terminal interface and the shared `cotal_*` tools.
+Peer messages start turns. Directed messages steer connector-started turns; external turns defer automatic delivery until the turn boundary.
+First [start a mesh](run-a-mesh.mdx).
+
+<Callout type="warn" title="Beta connector">
+Session resume and extra MCP servers are unsupported.
+Managed Codex agents require a POSIX system and use your Codex credentials.
+Read [the sandbox defaults](#sandbox-autonomy) before launching an agent.
+</Callout>
+
+## Prepare Codex [#install]
+
+Install the `codex` binary on the execution host and authenticate it using [OpenAI's authentication guide](https://developers.openai.com/codex/auth/).
+Use file-based login credentials or `OPENAI_API_KEY`.
+The connector cannot use credentials held only in the OS keyring.
+Its app-server listener requires codex-cli 0.145.0 or later, although a newer release can still need a connector update.
+
+The Cotal CLI seeds `@cotal-ai/connector-codex` automatically.
+If the connector is missing, add it explicitly:
+
+```bash
+cotal ext add @cotal-ai/connector-codex
+```
+
+Do not install the `cotal` plugin from the `cotal-mesh` marketplace inside Codex.
+That plugin is the Claude Code adapter.
+This connector needs no Codex-side plugin.
+
+## Launch Codex [#spawn-it]
+
+From the space's project folder, run:
+
+```bash
+cotal spawn --harness codex
+```
+
+A bare spawn runs Codex in this terminal. `--on <instance>` selects a manager and attaches where supported.
+To launch a `reviewer` persona without opening its terminal, run:
+
+```bash
+cotal spawn reviewer --harness codex --detach
+cotal ps
+cotal attach reviewer
+```
+
+Use `cotal spawn --harness codex --foreground` for direct execution in your terminal.
+To select a persona file, use `cotal spawn --file ./reviewer.md --harness codex`.
+You can also set `agent: codex` in an [agent file](agent-files.mdx) or a [team manifest](manifest.mdx).
+See [Launch agents](launch-agents.mdx) for persona selection and terminal controls.
+
+## Choose a model [#choose-a-model]
+
+List the models and reasoning efforts available to the execution host's Codex account:
+
+```bash
+cotal models --harness codex
+```
+
+Choose values from that catalog:
+
+```bash
+cotal spawn --harness codex --model <model-id> --variant <reasoning-effort>
+```
+
+You can also set `model:` and `variant:` in the agent file.
+Explicit flags override those fields.
+The connector passes model IDs and reasoning efforts through to Codex without local validation, so unsupported values fail when Codex handles the request.
+An unspecified effort remains absent from presence rather than showing a guessed default.
+
+## Inspect the integration [#how-it-binds]
+
+The connector runs `codex app-server` and attaches Codex's TUI to the same thread that receives mesh messages.
+Each agent has a private `CODEX_HOME` under the manager workspace's `.cotal/codex/` directory.
+Your normal hooks, MCP servers, and configuration do not load into that home.
+Your `auth.json` is linked into it so token refresh uses the same credential file.
+
+See the [Codex connector reference](codex-connector-reference.mdx) for message delivery, authentication boundaries, presence, headless operation, and diagnostic logs.
+
+## Watch structured events [#event-plane]
+
+Codex publishes run boundaries, assistant text, reasoning summaries, and supported tool activity to `events.<owner>.<actor>` by default.
+It withholds user text, peer messages, developer instructions, tool arguments, and tool results.
+Use [Watch a mesh](watch-a-mesh.mdx) to observe agents and the [event reference](codex-connector-reference.mdx#event-plane) to understand stream gaps and recovery.
+
+On a space that permits opting out, add `--no-events` to a spawn.
+A registration that requires events refuses that option.
+
+## Set sandbox permissions [#sandbox-autonomy]
+
+The connector defaults to `approval_policy="never"`, `sandbox_mode="workspace-write"`, and network access enabled inside that sandbox.
+Codex runs commands without asking for approval.
+Interactive approval policies are refused.
+
+<Callout type="warn" title="Peer messages can cause commands">
+The default sandbox restricts local writes outside the workspace.
+It does not isolate readable credentials, prevent data disclosure, or prevent actions through network services.
+A peer-driven turn can use accessible credentials to push code, delete data, or deploy software.
+Run mutually distrusted agents under separate OS users or on separate machines.
+</Callout>
+
+To restrict writes, select the read-only sandbox:
+
+```bash
+cotal spawn --harness codex --opt sandbox_mode=read-only
+```
+
+To keep the workspace-write sandbox and disable its network access, run:
+
+```bash
+cotal spawn --harness codex --opt 'sandbox_workspace_write={network_access=false}'
+```
+
+Disabling network access does not make readable files private.
+See [Sandbox options](codex-connector-reference.mdx#sandbox-options) for override rules and the unsandboxed mode.
+
+## Check the limits [#limits]
+
+- Session resume and exact-session continuation are unsupported. A resumed thread does not receive the required MCP tools.
+- Extra MCP servers through `connectors.codex.mcpServers` are unsupported. The `mcp_servers` launch option is reserved.
+- The app-server and tool endpoints use loopback addresses and authentication tokens. Agents running as the same OS user can access each other's credentials.
+- The native TUI's app-server connection is local. Use `cotal attach` to view a manager-supervised agent on another host.
+- The private home requires a symbolic link to the operator's authentication file. Managed Codex agents are supported on POSIX systems.
+
+See [Compatibility and trust](codex-connector-reference.mdx#trust-boundaries) for the full boundaries.
+
+### Keep the managed conversation
+
+Only the thread driven by the host can use its Cotal tools. Codex native request metadata identifies that thread, including TUI turns.
+`/new` opens another thread without migrating the managed conversation. Tool calls there are refused with the managed thread ID.
+Return to that thread or launch another Cotal seat. Native filesystem tools are not serialized across threads by Cotal.
+
+## Continue [#see-also]
+
+- [Connector comparison](connectors.mdx)
+- [Define a team](define-a-team.mdx)
+- [MCP tools](mcp-tools.mdx)
+- [Codex connector reference](codex-connector-reference.mdx)
+- [Connect OpenCode](connect-opencode.mdx)

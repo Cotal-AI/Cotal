@@ -6,8 +6,8 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
-import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
-import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
+import { mirrorJcodeCredentials, removeJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
+import { captureProcessIdentity, launchIdentityEnv, recordLaunch, recordOnceLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { connectSteerClient, softInterruptWithLateReply } from "./steer-replies.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
 import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
@@ -17,6 +17,8 @@ import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
   JcodeConnectorError,
+  JcodeModelMismatch,
+  JcodeCursorStateUnreadable,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
@@ -49,19 +51,16 @@ import {
   eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
-  ORIENTATION_BOOTSTRAP,
-  MESH_FIRST_STEER,
-  WORKFLOW_STEER,
-  CHANNEL_GUIDANCE,
+  briefing,
   configFromEnv,
   controlFromEnv,
   envFlag,
   eventPlaneArmed,
-  feedbackLine,
   fmtChannel,
   fmtFrom,
   formatInjection,
   parseToolArgs,
+  registerOnceExit,
   scrubLaunchMaterial,
   startControlServer,
   cotalToolSpecs,
@@ -289,11 +288,7 @@ function ensureRelayDirectory(endpoint: RelayEndpoint): void {
 }
 
 function instructions(config: AgentConfig, persona: string | undefined): string {
-  const mesh =
-    `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
-    `${ORIENTATION_BOOTSTRAP} ${feedbackLine(config)}${MESH_FIRST_STEER} ` +
-    `${WORKFLOW_STEER} ${CHANNEL_GUIDANCE} ` +
-    "Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm (privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); use cotal_roster to see who is present and cotal_status to report what you are doing. Reply only when a reply is actually needed — silent acknowledgement is correct, and @-mention a peer only when you need that peer to act now.";
+  const mesh = briefing(config, "jcode");
   return persona ? `${persona}\n\n${mesh}` : mesh;
 }
 
@@ -405,6 +400,10 @@ export async function runJcodeHost(): Promise<void> {
   const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
   const tuiOverride = envFlag(process.env, "COTAL_JCODE_TUI");
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
+  // A once seat records each native launch under its uid, and stops its Jcode tree before anything
+  // else when it exits, so neither a stalled teardown nor its own death leaves the task running.
+  const onceUid = process.env.COTAL_JCODE_ONCE === "1" ? config.lifecycleUid : undefined;
+  if (process.env.COTAL_JCODE_ONCE === "1" && !onceUid) throw new Error("jcode connector: a once seat has no lifecycle uid");
   // Startup owns the kickoff until the Harness request is invoked. Any return before that boundary
   // is provably unsent and safe to defer; after invocation acceptance is not knowable, so it is
   // consumed and never guessed back into the queue.
@@ -449,11 +448,22 @@ export async function runJcodeHost(): Promise<void> {
     }
     socketHome = shortSocketHome(home);
   } catch (error) {
+    // Cursor's refusal carries its own public code and connector-owned text.
+    if (error instanceof JcodeCursorStateUnreadable) throw error;
     // These refusals name local paths, which the public startup diagnostic never renders, so
     // without their own code they all reported as `(unknown)` and an operator could not tell a
     // wedged seat from a broken connector (#1211).
     throw new JcodeConnectorError("private_state", "jcode connector: the seat's private Jcode state could not be prepared", { cause: error });
   }
+  /** Only after a verified stop: nothing of this lifecycle can read the seat's credential copies any
+   *  more, and the next launch mirrors them afresh (#5641). The home itself stays for its resume record. */
+  const removeCredentials = (): void => {
+    try {
+      removeJcodeCredentials(home);
+    } catch (error) {
+      writeJcodeDiagnostic(`[cotal-jcode] the seat's credential copies could not be removed: ${(error as Error).message}\n`);
+    }
+  };
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
@@ -839,6 +849,7 @@ export async function runJcodeHost(): Promise<void> {
     // Written before the tree exists so a launch that dies mid-spawn still names what it may have
     // created. The next launch of this home reads it to tell an orphan from a live seat (#1211).
     recordLaunch(home, { identity: launchBound.value, host: captureProcessIdentity(process.pid) });
+    if (onceUid) recordOnceLaunch(home, onceUid, { identity: launchBound.value, host: captureProcessIdentity(process.pid) });
     instance = await launchInstance({
       binary,
       jcodeHome: socketHome.jcodeHome,
@@ -887,9 +898,20 @@ export async function runJcodeHost(): Promise<void> {
     tui.once("exit", (code) => void shutdown(code ?? 0));
   };
 
-  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM"): Promise<void> => {
+  const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    // A once seat's tree goes first, before the event joins, the broker or the client close can hold
+    // the teardown. What this misses, its manager's retireAfterExit finds.
+    let exit = code;
+    if (onceUid) {
+      try {
+        await stopPrivateJcode({ skipClientClose: true });
+      } catch (error) {
+        writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
+        exit = 1;
+      }
+    }
     agent.releaseInFlight(surfacedIds);
     surfacedIds = [];
     for (const batch of heldReservations) agent.releaseInFlight([...batch]);
@@ -905,7 +927,6 @@ export async function runJcodeHost(): Promise<void> {
       /* already gone */
     }
     await retireRelay(relayServer, relay);
-    let exit = code;
     try {
       closeEventRun();
       await events?.settled();
@@ -917,6 +938,7 @@ export async function runJcodeHost(): Promise<void> {
     await releaseEventLock();
     try {
       await stopPrivateJcode();
+      removeCredentials();
     } catch (error) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
       exit = 1;
@@ -1112,9 +1134,8 @@ export async function runJcodeHost(): Promise<void> {
       // load-bearing in both directions.
       //
       // It must be gated at all because `run()` calls `sendMessage()` internally, which waits on the
-      // very same session-scoped `message_accepted` (jcode-sdk client.js:317). I checked rather than
-      // assumed: a run dispatched while a handover is awaiting its acknowledgement is exactly the
-      // second listener that makes one event ambiguous, and it is the path a reviewer measured.
+      // same session-scoped `message_accepted` (jcode-sdk client.js:317). A run dispatched while a
+      // handover awaits its acknowledgement adds a second listener, making one event ambiguous.
       //
       // It must NOT hold the gate for the whole turn, because `run()` does not return until the turn
       // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
@@ -1132,6 +1153,10 @@ export async function runJcodeHost(): Promise<void> {
         // Read before this send exists: while a lapsed send is still open, an acknowledgement may
         // be that send's, and it cannot prove the Harness took these run turns.
         const attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
+        // The turns' permit, after the gate's wait and right before the send: a once task its
+        // manager settled meanwhile, or a seat that began stopping, sends nothing.
+        if (stopping || !agent.claimTurns(turnIds))
+          throw new Error("the once task ended, or the seat began stopping, while its send waited at the dispatch gate; nothing was sent");
         const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
@@ -1167,6 +1192,9 @@ export async function runJcodeHost(): Promise<void> {
         } finally {
           turnClient!.off("message_accepted", noteAccepted);
         }
+        // A once task this send cannot show the Harness took is never offered again: it is sealed
+        // and reported, and a late acceptance confirms nothing.
+        if (!attributable || !acknowledgedHere) agent.releaseTurns(turnIds);
         // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
         // can still emit its acceptance after the next dispatch has begun, which is precisely how a
         // reviewer produced an acknowledgement for a send that never received one. Releasing the
@@ -1271,10 +1299,10 @@ export async function runJcodeHost(): Promise<void> {
         if (!injection) return;
         const current: JcodeClient = client;
         // Reserve BEFORE the write, and reserve in the RESERVATION set rather than the accepted
-        // ledger. Review's correction to my first attempt, and it matters: `surfacedIds` is what the
-        // turn boundary acks, and `sendMessage`/`softInterrupt` resolving does not by itself prove the
-        // session took the text (the SDK's acceptance wait RESOLVES on timeout). Reserving here makes
-        // the batch unselectable by any concurrent path without claiming it was accepted.
+        // ledger. `surfacedIds` is what the turn boundary acks. Resolving `sendMessage`/`softInterrupt`
+        // does not by itself prove the session took the text (the SDK's acceptance wait RESOLVES on
+        // timeout). Reserving here makes the batch unselectable by concurrent paths without claiming
+        // acceptance.
         const keys = items.map((item) => item.recvKey);
         const releaseReservation = reserveForHandover(keys);
         if (!releaseReservation) return;
@@ -1289,11 +1317,8 @@ export async function runJcodeHost(): Promise<void> {
         // request's own id, so its acceptance is ALREADY correlated and cannot be satisfied by
         // another send's event. Only the uncorrelated `message_accepted` path needs exclusivity.
         //
-        // Gating it anyway is not free and I measured the cost: a run can hold the dispatch gate for
-        // its acceptance window, so a gated steer waits behind it, and #910's mid-turn delivery suite
-        // timed out waiting for short/4KiB/64KiB DMs to reach the session before the turn ended. That
-        // is the exact delivery this connector exists to provide, so the gate must not stand in front
-        // of the one path that was never ambiguous.
+        // A run can hold the dispatch gate for its acceptance window. Gating a steer behind it
+        // would delay mid-turn delivery, so this already-correlated path must remain ungated.
         const pending = softInterruptWithLateReply(current, sessionId, injection, (accepted) => {
           // The SDK emits a correlated reply as an event after its waiter times out. Only this
           // still-owned request's positive reply promotes it; the normal turn boundary still acks.
@@ -1386,7 +1411,7 @@ export async function runJcodeHost(): Promise<void> {
     const items = unservedAutomatic();
     if (!items.length) return;
     // A LAPSED SEND HAS POISONED ACCEPTANCE ON THIS CONNECTION, and the two obvious responses are
-    // both wrong, which is worth stating because I shipped each of them in turn.
+    // both unsafe.
     //
     // Keep re-delivering and every attempt is accepted and EXECUTED by a healthy Harness, so the
     // same non-idempotent instruction runs once a minute forever; a reviewer measured three
@@ -1463,14 +1488,8 @@ export async function runJcodeHost(): Promise<void> {
         // The run is unsettleable, so the connection boundary is the answer -- BUT ONLY IF THERE IS
         // ONE LEFT TO TAKE. `recoverBridge` is one-shot: once spent it does not replace anything, it
         // calls `shutdown(1)` and the seat exits. Forcing the boundary here on a spent recovery
-        // would answer a starvation report by killing the seat, which is worse than either failure
-        // this repair exists to prevent, and a reviewer named it before I had measured it.
-        //
-        // So when no recovery remains, keep DELIVERING instead. The batch is genuinely owed, the
-        // bridge is healthy, and the only cost of an unattributable acceptance is that the batch
-        // stays unacked and may be delivered again -- late and possibly twice, which is the stance
-        // this tier already takes everywhere else: late delivery beats loss, and a live seat that
-        // repeats beats a dead seat that cannot be steered at all.
+        // would kill the seat rather than restore delivery. When no recovery remains, the branch
+        // below stops the queued-turn tier and leaves the batch unacked for redelivery elsewhere.
         if (exhaustedDeferralAction(!bridgeRecoveryUsed) === "replace-bridge") {
           acceptanceSuspectUntilBridgeReplaced = true;
           writeJcodeDiagnostic(
@@ -1483,9 +1502,8 @@ export async function runJcodeHost(): Promise<void> {
         // NO RECOVERY LEFT, AND NEITHER OBVIOUS ANSWER IS SAFE. Forcing the boundary calls into a
         // spent `recoverBridge`, which does not replace anything: it calls `shutdown(1)` and the
         // seat exits, answering a starvation report by killing the seat. Continuing to WRITE is no
-        // better, and a reviewer corrected me when I claimed it was: the send is refused as
-        // unattributable exactly as before, the batch stays owed, and the level-triggered loop
-        // re-sends once a minute for as long as the run stays open, while the Harness accepts and
+        // better: the send is refused as unattributable, the batch stays owed, and the level-triggered
+        // loop re-sends once a minute for as long as the run stays open, while the Harness accepts and
         // RUNS each copy. Nothing caps that at two. It is the measured 4-executions defect reached
         // through the last remaining door.
         //
@@ -1935,6 +1953,9 @@ export async function runJcodeHost(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown(0, "SIGINT"));
   process.on("SIGTERM", () => void shutdown(0, "SIGTERM"));
+  process.on("SIGHUP", () => void shutdown(0, "SIGHUP"));
+  // A once seat that must end itself, because its task's handoff could not be reported.
+  registerOnceExit(() => void shutdown(1));
 
   try {
     client = await launchPrivateJcode();
@@ -1951,6 +1972,10 @@ export async function runJcodeHost(): Promise<void> {
       // An operator fork names its session. It is never chosen by size among the home's others,
       // which may be left from an earlier seat of the same name.
       prior = { session_id: fork.forkId };
+    } else if (onceUid !== undefined) {
+      // A once seat is never restarted, so it has no session of its own to come back to. A session
+      // in its home is an earlier seat's of the same name, and that seat's task is not this one.
+      writeJcodeDiagnostic(`[cotal-jcode] a once seat starts a fresh session, never an earlier seat's\n`);
     } else if (isEmptyStoredSessionsDirectory(stored)) {
       writeJcodeDiagnostic(
         `[cotal-jcode] stored sessions directory is empty (${stored.path}); starting fresh without listing\n`,
@@ -2049,10 +2074,7 @@ export async function runJcodeHost(): Promise<void> {
     const effectiveModel = config.model ?? runtime?.model;
     const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;
     if (config.variant && (!effectiveModel || !route || !route.provider))
-      throw new JcodeConnectorError(
-        "model_mismatch",
-        `jcode connector: the Harness API did not identify the active provider route for model ${JSON.stringify(effectiveModel ?? "(the provider default)")} — refusing to apply launch settings to an unverified route`,
-      );
+      throw new JcodeModelMismatch(config.model, config.variant, runtime);
     if (effectiveModel && runtime) {
       writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
       const provider = effectiveProvider(runtime, effectiveModel);
@@ -2296,6 +2318,7 @@ export async function runJcodeHost(): Promise<void> {
     // hands the manager a retired seat while an unverified daemon would keep running (#839).
     try {
       await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
+      removeCredentials();
     } catch (teardown) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(teardown as Error).message}\n`);
     }
