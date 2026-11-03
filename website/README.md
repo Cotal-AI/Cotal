@@ -86,7 +86,10 @@ The existing workflow publishes PR previews, production, and release snapshots.
 not run Pages middleware or redirects; use the Pages preview for compatibility checks.
 
 Build checks verify installer safety, skill digests, page exports, legacy redirects,
-and local links and assets. Existing unresolved fragment links await page cleanup.
+and local links and assets. The link check parses HTML and Markdown destinations,
+including reference definitions and image candidates. Code samples remain literal text;
+relative targets are refused regardless of their directory name.
+Existing unresolved fragment links await page cleanup.
 Verify a preview deployment before production cutover.
 
 ## HTTP references

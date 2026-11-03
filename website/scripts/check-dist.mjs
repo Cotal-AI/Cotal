@@ -10,6 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'parse5';
 import { AGENT_PROMPT } from '@cotal-ai/docs-content/agent-prompt';
+import { assertPublishedLinks } from './check-links.mjs';
 
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const fail = (msg) => {
@@ -96,7 +97,6 @@ for (const cmd of ['npx cotal-ai setup --destination local --harness claude --pr
   if (!setupSkill.includes(cmd)) fail(`cotal-setup skill lost its command: ${cmd}`);
 }
 
-const BAD = /(?:(?:href|src|srcset)="|\]\()(?:\.\.\/|docs\/|spec\/|packages\/|extensions\/|implementations\/|examples\/)/;
 function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
@@ -104,9 +104,13 @@ function scan(dir) {
       if (entry.name !== '_next') scan(p);
       continue;
     }
-    if (!/\.(html|md|txt)$/.test(entry.name)) continue;
-    const hit = readFileSync(p, 'utf8').match(BAD);
-    if (hit) fail(`repo-relative link leaked into ${p}: ${hit[0]}`);
+    // Next's .txt flight payloads are serialized data, not Markdown documents.
+    if (!/\.(html|md)$/.test(entry.name) && !/^llms(?:-[a-z]+)?\.txt$/.test(entry.name)) continue;
+    try {
+      assertPublishedLinks(readFileSync(p, 'utf8'), p);
+    } catch (error) {
+      fail(error.message);
+    }
   }
 }
 scan(dist);
