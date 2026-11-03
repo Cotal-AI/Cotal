@@ -1,5 +1,7 @@
 # Publishing a release
 
+> **Project** (non-normative maintainer notes) · **For:** maintainers shipping Cotal
+
 Cotal releases with pnpm, Changesets, and one GitHub Actions workflow, `changesets.yml`. The fixed
 group in [`.changeset/config.json`](../.changeset/config.json) versions the public packages
 together. Examples are private and never publish.

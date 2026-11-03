@@ -1,5 +1,7 @@
 # Roadmap
 
+> **Project** (non-normative) · Direction and deferred designs; nothing here is shipped
+
 Cotal is pre-1.0, and the v0.x wire contract can still change under the
 [change process](../SPEC.md#11-versioning-and-extensibility). This page lists what is not built
 yet and where each area is headed. Nothing here is shipped behavior unless a linked page

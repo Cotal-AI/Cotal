@@ -1,5 +1,7 @@
 # Upgrading a running deployment
 
+> **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Interface stability](stability.md), [Run a mesh](run-a-mesh.mdx), [Identity and auth](identity-and-auth.mdx)
+
 [Interface stability](stability.md) says what the version numbers promise. This page says what to
 do when a deployment already exists, holds credentials, and cannot be torn down and recreated. Every
 release that breaks a running deployment gets a section here. Each section names what migrates on
