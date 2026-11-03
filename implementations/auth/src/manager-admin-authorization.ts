@@ -4,17 +4,15 @@ import {
   assertPrincipalOwnerToken,
   assertLifecycleToken,
   assertValidOwnerToken,
-  remoteManagerServePrincipal,
   parseRemoteManagerEnvelope,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
   type PlatformControlAssignment,
 } from "@cotal-ai/core";
-import { timingSafeEqual } from "node:crypto";
 import { findActorUnified } from "./ledger.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder } from "./platform-control.js";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 
 const bad = (message: string): never => { throw new EpEnvelopeError("bad-request", `manager admin authorization request ${message}`); };
 
@@ -62,14 +60,7 @@ export async function requireCurrentServeTimeManager(
     request.instanceId,
     `${what} needs manager scope "supervise"`,
   );
-  const gate = await args.observeManagerGate(request.instanceId);
-  if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${request.instanceId}`);
-  const expectedPrincipal = remoteManagerServePrincipal(args.managerOwner, request.instanceId);
-  if (gate.principal !== expectedPrincipal) throw new EpEnvelopeError("permission-denied", `${what} gate belongs to ${gate.principal}, not ${expectedPrincipal}`);
-  if (gate.processEpoch !== request.serveEpoch) throw new EpEnvelopeError("conflict", `${what} serve epoch ${request.serveEpoch} is stale; current is ${gate.processEpoch}`);
-  const proof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.managerOwner, request, gate);
-  if (!timingSafeEqual(Buffer.from(request.registrationProof), Buffer.from(proof)))
-    throw new EpEnvelopeError("permission-denied", `${what} proof does not match the current host registration`);
+  await assertCurrentManagerRegistration(request, request.serveEpoch, { ...args, owner: args.managerOwner }, what);
 }
 
 export async function authorizeRemoteManagerAdmin(args: ServeTimeManagerArgs & {

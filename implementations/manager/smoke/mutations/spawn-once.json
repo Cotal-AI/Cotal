@@ -1,0 +1,164 @@
+{
+  "suite": [
+    "implementations/manager/smoke/spawn-once.smoke.ts"
+  ],
+  "guard": "a once spawn's task ends its seat, every way the seat ends first settles the task, the seat takes no other turn, admission refuses what cannot carry a once task, and a connector's retirement proof gates the debt",
+  "command": "pnpm smoke:spawn-once",
+  "completionMarker": "SPAWN ONCE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-once.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "S1 and S2 keep the seat running after its task yielded or reached its deadline: the helper this",
+    "feature exists to end. S3 lets a run hand a once seat a second turn. S4 admits a connector that",
+    "cannot be woken for the task, which then sits until its deadline. S5 leaves a task whose seat",
+    "was despawned open, with nothing left to end it. S6 leaves a seat that never joined running with",
+    "nothing to do. S7 clears the debt without the connector's proof that the seat's launched",
+    "processes are gone. S8 stops a seat that never joined only after its spawn's terminal is",
+    "published, so a stalled publish leaves it running. S9 drops a deadline whose terminal write was",
+    "refused, and S10 leaves that seat running past its deadline. S11 settles a never-served task's",
+    "debt at the readiness verdict, before the seat's exit and its connector's proof.",
+    "",
+    "S12 admits a Claude-style connector on a runtime that cannot report its startup outcome, so the",
+    "seat's task would be served on no evidence of channels. S13 and S14 move the turn-frame bound one",
+    "character each way, and S15 measures the task without the deadline line it can carry. S16 serves a",
+    "seat whose startup skipped the channel prompt, S17 serves it at its join before its notice, and",
+    "S18 serves a task whose spawn has no succeeded terminal, which a successor reads as never served. S19 names",
+    "a seat its failed startup watch stopped `seat-exited` when its exit lands before the launch reads the outcome."
+  ],
+  "mutations": [
+    {
+      "name": "S1 a yield no longer stops the seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (p.once) this.endOnceSeat(p, `yielded ${status}`);\n",
+      "replace": "",
+      "expectRed": "the seat is gone: its process exited and its slot was freed"
+    },
+    {
+      "name": "S2 the deadline no longer stops the seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (p.once) this.endOnceSeat(p, \"turn-deadline\");\n      else await clearGoalIndex(gw.ctx, p.ref);\n",
+      "replace": "      if (!p.once) await clearGoalIndex(gw.ctx, p.ref);\n",
+      "expectRed": "...and the seat is gone at its deadline"
+    },
+    {
+      "name": "S3 a once seat accepts a second turn",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (target.kind === \"managed\" && target.agent.once)\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a second turn to a once seat is refused"
+    },
+    {
+      "name": "S4 a connector without the relay is admitted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (!connector.supportsTurnRelay)\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a connector without the turn relay is refused, with its own reason"
+    },
+    {
+      "name": "S5 the proved exit no longer cancels the task",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      await this.commitOnceCancel(owed.ref, owed.reason);\n",
+      "replace": "",
+      "expectRed": "a despawn ends it: the task is cancelled `despawned` at the proved exit"
+    },
+    {
+      "name": "S6 a seat that never joined is left running",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          this.stopOnceSeat(managed, \"readiness-timeout\");\n",
+      "replace": "",
+      "expectRed": "...and the seat is stopped, never left running with nothing to do"
+    },
+    {
+      "name": "S7 the debt clears without the connector's proof",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const retired = owed.retire === undefined ? undefined : await this.retireOnceSeat(owed.retire);",
+      "replace": "      const retired = undefined as { discard(): Promise<void> } | undefined;",
+      "expectRed": "a refused proof keeps the debt"
+    },
+    {
+      "name": "S8 the readiness stop waits for the spawn's terminal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
+      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n",
+      "expectRed": "a seat that never joins is stopped while its spawn's terminal cannot be published"
+    },
+    {
+      "name": "S9 a refused deadline write is not written again",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        this.pendingTurns.set(key, p);\n        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "replace": "        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "expectRed": "...and the deadline terminal is written again while the manager runs"
+    },
+    {
+      "name": "S10 a refused deadline write leaves the seat running",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        this.pendingTurns.set(key, p);\n        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "replace": "        this.pendingTurns.set(key, p);\n",
+      "expectRed": "a refused deadline write still stops the seat at its deadline"
+    },
+    {
+      "name": "S11 a readiness cancel clears the debt before the seat exits",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (this.onceWatched.has(goalKey(onceRef))) void this.commitOnceCancel(",
+      "replace": "        if (false) void this.commitOnceCancel(",
+      "expectRed": "a seat that never joins: its task is cancelled at once, and its debt is kept while its process still runs"
+    },
+    {
+      "name": "S12 a connector that needs a confirmed startup is admitted on a runtime that cannot report it",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)\n      return `once: runtime \"${runtime.kind}\" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;\n",
+      "replace": "",
+      "expectRed": "a Claude seat on a runtime that does not report how its startup ended is refused, naming the runtime"
+    },
+    {
+      "name": "S13 a task that fits the turn frame exactly is refused",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (text.length > connector.turnFrameLimit)\n",
+      "replace": "      if (text.length >= connector.turnFrameLimit)\n",
+      "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"
+    },
+    {
+      "name": "S14 a task one character over the turn frame is admitted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (text.length > connector.turnFrameLimit)\n",
+      "replace": "      if (text.length > connector.turnFrameLimit + 1)\n",
+      "expectRed": "...and one character over it is refused, naming both sizes"
+    },
+    {
+      "name": "S15 the turn frame is measured without the deadline line",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "payload, spawner: this.spawnerName(spawner), ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS } : {}) });",
+      "replace": "payload, spawner: this.spawnerName(spawner) });",
+      "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"
+    },
+    {
+      "name": "S16 a startup that skipped the prompt serves the task",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        if (startup !== \"confirmed\") {\n",
+      "replace": "        if (startup !== \"confirmed\" && startup !== \"ready\") {\n",
+      "expectRed": "a startup that opened its input screen without the prompt fails, saying why"
+    },
+    {
+      "name": "S17 the readiness verdict does not wait for the startup outcome",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);\n",
+      "replace": "        const startup = \"confirmed\" as StartupOutcome;\n",
+      "expectRed": "while the notice is awaited the seat has joined, but its pull finds no task"
+    },
+    {
+      "name": "S18 the task is served before its spawn's succeeded terminal is written",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);\n      else if (onceTask) {\n",
+      "replace": "      if (onceTask) this.openOnceDelivery(onceTask.ref);\n      if (onceTask && committed !== true) {\n",
+      "expectRed": "a confirmed spawn whose succeeded terminal cannot be written never serves its task: its seat is stopped"
+    },
+    {
+      "name": "S19 a seat its failed startup watch stopped is cancelled as a seat that exited",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "once.stopReason ?? (a.handle.startupOutcome?.() === \"failed\" ? \"launch-failed\" : \"seat-exited\")",
+      "replace": "once.stopReason ?? \"seat-exited\"",
+      "expectRed": "is cancelled `launch-failed` though its seat's exit landed first"
+    }
+  ]
+}

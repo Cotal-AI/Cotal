@@ -30,27 +30,30 @@ if (process.argv[2] === "--restore") {
     if (value) passed++; else failed++;
     console.log(`  ${value ? "✓" : "✗"} ${name}`);
   };
+  // A private home, config prefix and npm configuration under `dir`, and the built CLI run inside it.
+  const sandbox = (dir: string) => {
+    const home = join(dir, "home");
+    const xdg = join(dir, "xdg");
+    mkdirSync(join(dir, ".cotal"), { recursive: true });
+    mkdirSync(home, { mode: 0o700 });
+    mkdirSync(xdg, { mode: 0o700 });
+    for (const file of ["user.npmrc", "global.npmrc"]) writeFileSync(join(dir, file), "");
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
+      HOME: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"),
+      TMPDIR: dir, TMP: dir, TEMP: dir, DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
+      npm_config_cache: join(dir, "npm-cache"), npm_config_userconfig: join(dir, "user.npmrc"),
+      npm_config_globalconfig: join(dir, "global.npmrc"), npm_config_update_notifier: "false",
+    };
+    const child = (args: string[]) => spawnSync(process.execPath, args, { cwd: dir, env, encoding: "utf8", timeout: 180_000 });
+    return { prefix: join(xdg, "cotal", "extensions"), child, cli: (args: string[]) => child([binary, ...args]) };
+  };
   try {
     for (const arm of ["remove", "restore"] as const) {
       const dir = join(root, arm);
-      const home = join(dir, "home");
-      const xdg = join(dir, "xdg");
-      mkdirSync(join(dir, ".cotal"), { recursive: true });
-      mkdirSync(home, { mode: 0o700 });
-      mkdirSync(xdg, { mode: 0o700 });
-      for (const file of ["user.npmrc", "global.npmrc"]) writeFileSync(join(dir, file), "");
-      const env: NodeJS.ProcessEnv = {
-        PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
-        HOME: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"),
-        TMPDIR: dir, TMP: dir, TEMP: dir, DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
-        npm_config_cache: join(dir, "npm-cache"), npm_config_userconfig: join(dir, "user.npmrc"),
-        npm_config_globalconfig: join(dir, "global.npmrc"), npm_config_update_notifier: "false",
-      };
-      const child = (args: string[]) => spawnSync(process.execPath, args, { cwd: dir, env, encoding: "utf8", timeout: 180_000 });
-      const cli = (args: string[]) => child([binary, ...args]);
+      const { prefix, child, cli } = sandbox(dir);
       const added = cli(["ext", "add", source]);
       assert.equal(added.status, 0, `${arm}: stock connector install failed: ${added.stderr.slice(-800)}`);
-      const prefix = join(xdg, "cotal", "extensions");
       const kept = join(prefix, "node_modules", "@cotal-ai", "connector-claude-code");
       check(`${arm}: built-in starts as a copy`, !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
       const before = digest(join(kept, "dist", "index.js"));
@@ -80,10 +83,39 @@ if (process.argv[2] === "--restore") {
       check(`${arm}: source package remains unchanged`, digest(join(source, "dist", "index.js")) === sourceDigest);
       check(`${arm}: retained core peer matches the running CLI`, realpathSync(join(kept, "node_modules", "@cotal-ai", "core")) === realpathSync(join(repo, "packages", "core")));
     }
+    // Two extensions that depend on one package with a bin. The second add's stage carries the bin
+    // link the prefix already holds, so its promotion copies a link onto an existing one (#5669).
+    {
+      const dir = join(root, "shared-bin");
+      const { prefix, cli } = sandbox(dir);
+      const lib = join(dir, "shared-bin-lib");
+      mkdirSync(join(lib, "bin"), { recursive: true });
+      writeFileSync(join(lib, "package.json"), JSON.stringify({ name: "shared-bin-lib", version: "1.0.0", bin: { "shared-bin": "bin/shared-bin.js" } }));
+      writeFileSync(join(lib, "bin", "shared-bin.js"), "#!/usr/bin/env node\n");
+      const extension = (name: string): string => {
+        const pkg = join(dir, name);
+        mkdirSync(pkg);
+        writeFileSync(join(pkg, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" }, dependencies: { "shared-bin-lib": `file:${lib}` } }));
+        writeFileSync(join(pkg, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "${name}", summary: "fixture", run: async () => {} });\n`);
+        return pkg;
+      };
+      const link = join(prefix, "node_modules", ".bin", "shared-bin");
+      const symlinked = (): boolean => process.platform === "win32" || lstatSync(link, { throwIfNoEntry: false })?.isSymbolicLink() === true;
+      const first = cli(["ext", "add", extension("cotal-ext-bin-first")]);
+      check("shared bin: the first add leaves the bin link in the prefix", first.status === 0 && symlinked());
+      const second = cli(["ext", "add", extension("cotal-ext-bin-second")]);
+      if (second.status !== 0) console.log(second.stderr.slice(-800));
+      check("shared bin: an add whose stage carries a link the prefix holds commits", second.status === 0);
+      const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")) as { extensions: { pkg: string }[] };
+      check("shared bin: both extensions are recorded and installed",
+        manifest.extensions.map((e) => e.pkg).sort().join(",") === "cotal-ext-bin-first,cotal-ext-bin-second" &&
+          existsSync(join(prefix, "node_modules", "cotal-ext-bin-first")) && existsSync(join(prefix, "node_modules", "cotal-ext-bin-second")));
+      check("shared bin: the bin link still reaches the shared package", symlinked() && existsSync(link));
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, 19, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, 23, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

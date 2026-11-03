@@ -172,6 +172,9 @@ export class PiDriver {
     const batch = this.batches.find((candidate) => candidate.id === details.batchId);
     if (!batch || batch.ids.length !== details.ids.length || !batch.ids.every((id, i) => id === details.ids[i])) return;
     batch.started = true;
+    // The batch is in Pi's session now. Its acceptance comes with the provider's answer, which a once
+    // task's handoff bound does not measure.
+    if (batch.turnIds) this.mesh.noteTurnsDispatched(batch.turnIds);
     if (this.contextBatchIds.has(batch.id)) {
       this.requestBatchIds.add(batch.id);
       this.terminalEvidenceBatchIds.add(batch.id);
@@ -324,12 +327,18 @@ export class PiDriver {
       const items = this.inbox.select(reserved, BATCH_LIMIT);
       if (items.length === 0 && !turnPeek) return;
       ids = items.map((item) => item.recvKey);
+      // The batch stays this seat's until its turn commits it: unheld, a role request's ack wait runs
+      // out mid-turn and the broker hands it to another holder (#5637). At the hold ceiling, defer.
+      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;
       content = items.length > 0 ? formatInjection(items) : undefined;
     }
-    if (turnPeek) content = content ? `${content}\n\n${turnPeek.text}` : turnPeek.text;
+    // The turns' permit, right before the dispatch with no await between. Without it, a once task
+    // already handed over stays out of the batch.
+    const turns = turnPeek && this.mesh.claimTurns(turnPeek.goalIds) ? turnPeek : undefined;
+    if (turns) content = content ? `${content}\n\n${turns.text}` : turns.text;
     if (!content) return;
 
-    const batch: Batch = { id: randomUUID(), ids, content, started: false, confirmed: false, ...(turnPeek ? { turnIds: turnPeek.goalIds } : {}) };
+    const batch: Batch = { id: randomUUID(), ids, content, started: false, confirmed: false, ...(turns ? { turnIds: turns.goalIds } : {}) };
     this.batches.push(batch);
     this._state = "dispatching";
     this.dispatch(batch);
@@ -374,6 +383,7 @@ export class PiDriver {
     const confirmed = this.batches.filter((batch) => batch.confirmed);
     const ids = confirmed.flatMap((batch) => batch.ids);
     this.inbox.commitConfirmed(ids);
+    this.mesh.releaseInFlight(ids);
     this.batches = this.batches.filter((batch) => !batch.confirmed);
 
     if (this.batches.length > 0) {
@@ -402,6 +412,9 @@ export class PiDriver {
     if (this._state !== "held" || !this.pendingContinuation || !this.host) return;
     const batch = this.batches.find((candidate) => !candidate.confirmed);
     if (!batch) return;
+    // A re-dispatch takes the permit again. A once task's permit was spent on the first dispatch, so
+    // its batch stays held: the manager ends that task and stops this seat.
+    if (batch.turnIds && !this.mesh.claimTurns(batch.turnIds)) return;
     batch.started = false;
     this.dispatch(batch);
   }
@@ -411,6 +424,9 @@ export class PiDriver {
     this._state = "held";
     this.heldReason = reason;
     this.clearWatchdogs();
+    // A once task in a batch Pi has not confirmed may have run in part: it is sealed and reported,
+    // never dispatched again.
+    for (const batch of this.batches) if (!batch.confirmed && batch.turnIds) this.mesh.releaseTurns(batch.turnIds);
     this.enqueuePresence("waiting", reason);
     if (this.context?.hasUI) this.context.ui.notify(`Cotal delivery held: ${reason}`, "warning");
   }

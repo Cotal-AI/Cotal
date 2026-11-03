@@ -26,6 +26,7 @@ import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { acquireLock } from "@cotal-ai/core/advisory-lock";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
@@ -147,6 +148,18 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   if (!dataRoot) throw new Error("COTAL_OPENCODE_HOME is not set — the connector must pin the agent's data root");
   const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
+
+  // One launcher of a name at a time. The check below reads the serve records, and a serve records
+  // itself only after the version probe and the spawn, so two overlapping launches both passed it and
+  // both started a serve on this database (#3040). The claim is core's advisory lock, held until this
+  // process exits: a launcher that died leaves a claim the next launch reclaims, and any serve it
+  // left behind is still found by its record below.
+  const claim = acquireLock(join(agentHome, "launch.lock"), {
+    waitMs: 0,
+    label: `agent "${name}"'s launch`,
+    onTimeout: (owner) => new Error(`agent "${name}" is already running (launcher pid ${owner.pid}) — kill it first`),
+  });
+  process.on("exit", () => claim.release());
 
   // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. Each
   // launch records its serve at a path of its own, and `serve.pid` is the record of a serve an

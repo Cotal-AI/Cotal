@@ -117,7 +117,9 @@ export async function startSetupLocalStack(root: string, space: string): Promise
       finish(code === 0 && signal === null && !receipt && !invalidReceipt ? undefined : unknown("the native startup command did not return a matching classified result; partial stack startup was not treated as no effect"));
     });
   });
-  const manager = loadManagerInstanceIdentity(root, space);
+  let manager: ReturnType<typeof loadManagerInstanceIdentity>;
+  try { manager = loadManagerInstanceIdentity(root, space); }
+  catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native up returned, but this root's manager instance identity does not read; no readiness was inferred", { target: { root, space, coordinator }, remedy: "inspect the selected space and original startup before another attempt" }); }
   if (!manager) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native up returned, but this root has no manager instance for a safe launch pin; no class or sibling fallback was used", { target: { root, space, coordinator }, remedy: "inspect the selected space and original startup before another attempt" });
   return { kind: "native-setup-stack-command", commandReturned: true, exitCode: 0, readinessEstablished: false, managerInstanceId: manager.instanceId, coordinator };
 }

@@ -25,7 +25,7 @@ async function main() {
   const { nativeRemoteManager } = await import("./_native-remote-manager.js");
   const { nativeAccountConnections } = await import("./_native-account-connections.js");
   const { remoteManagerClient } = await import("../dist/index.js");
-  const { meshSessionTransport } = await import("../../cli/src/lib/attach-client.js");
+  const { meshSessionTransport } = await import("../../../packages/workspace/src/attach/attach-client.js");
   await import("../../runtime/dist/index.js");
   const { emitSentinel } = await import("@cotal-ai/smoke-kit");
   const { openAuthorityClient } = await import("../../auth/dist/authority-client.js");

@@ -1,0 +1,2 @@
+# Native tmux attach instructions follow the seat's pane after moves (#3743).
+smoke:tmux-attach-hint

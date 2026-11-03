@@ -84,7 +84,7 @@ export const NatsAttention: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[CH_PATH, DM_PATH]} glow={[chatWakes, dmWakes]} />
+      <Wires wires={[{ d: CH_PATH, glow: chatWakes }, { d: DM_PATH, glow: dmWakes }]} />
 
       {MODES.map((m, i) => (
         <ModePill key={m.name} index={i} name={m.name} active={i === mode ? 1 : 0} />

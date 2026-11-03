@@ -35,7 +35,7 @@
     {
       "name": "runtime door skips the current-registration check",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  await assertCurrentManagerRegistration(r, args, what);\n",
+      "find": "  await assertCurrentManagerRegistration(r, r.serveEpoch, args, what);\n",
       "replace": "",
       "expectRed": "FAIL: runtime-create: a forged registration proof is refused",
       "cell": "runtime-create: a forged registration proof is refused"

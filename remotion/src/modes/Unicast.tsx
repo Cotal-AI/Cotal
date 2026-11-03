@@ -83,7 +83,7 @@ export const ModeUnicast: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[PATH1, path2]} glow={[glow1, glow2]} />
+      <Wires wires={[{ d: PATH1, glow: glow1 }, { d: path2, glow: glow2 }]} />
 
       <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
       <AgentNode {...bob} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />

@@ -85,6 +85,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "run-operator": () => one("run-operator", { runOperator: { endpoint: "manager", takeoverId: "take0001" } }),
     "endpoint-evictor": () => one("endpoint-evictor"),
     issuer: () => one("issuer"),
+    "registry-reader": () => one("registry-reader"),
     "run-admitter": () => one("run-admitter", { runAdmitter: { endpoint: "manager", runId: "census-run" } }),
     "transfer-writer": () => one("transfer-writer", { transferWriter: { instanceId: instance, hex: "0".repeat(64) } }),
     "transfer-reader": () => one("transfer-reader", { transferReader: { instanceId: instance } }),
@@ -258,6 +259,8 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
+  // The registry's reads: the evidence store stream-wide, so never a peer's.
+  "registry-reader",
   // Manager-only infrastructure duties, like remote-manager. This classification is not
   // an isolation proof; host admission and the child UID boundary remain separate requirements.
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
@@ -307,7 +310,10 @@ export function hasIssuedRailLiteral(source: string): boolean {
 /** The same closed shipped-source inventory used by the full census and its focused gate. */
 export function issuedRailSourceCensus(root: string): { files: string[]; unexpected: string[] } {
   const builders = new Set(["packages/core/src/endpoint-subjects.ts", "packages/core/src/endpoint-grants.ts",
-    "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts"]);
+    "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts",
+    // The registry's coverage projection labels the issued rail but builds its requests through
+    // epRequestSubject; its output schema names the same rail in an enum. Neither builds a grant.
+    "packages/core/src/endpoint-coverage.ts", "packages/core/src/registry-contract.ts"]);
   const files = shippedSources(root);
   const unexpected = files.filter((file) => relative(root, file).split("\\").join("/") !== "extensions/connector-core/src/docs-bundle.generated.ts"
     && hasIssuedRailLiteral(readFileSync(file, "utf8")))

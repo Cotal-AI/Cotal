@@ -27,7 +27,7 @@ const source = 'log("foreign-error");';
 let result;
 if (route === "bridge") {
   const { port1, port2 } = new MessageChannel();
-  const host = serviceBridge(port1, { handler: new SimHandler({}), store: { append: async () => { throw Function(`return ${selected.expression}`)(); } } });
+  const host = serviceBridge(port1, { handler: new SimHandler({}), store: { append: async () => { throw Function(`return ${selected.expression}`)(); } } }, (e) => { throw e; });
   try {
     const remote = bridgedSeam(port2, host.clock);
     try { await remote.store.append({}); assert.fail("foreign throw unexpectedly succeeded"); }

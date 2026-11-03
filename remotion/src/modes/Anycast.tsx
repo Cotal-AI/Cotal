@@ -89,8 +89,7 @@ export const ModeAnycast: React.FC = () => {
   return (
     <Card>
       <Wires
-        paths={[PATH1, ...OUT_PATHS]}
-        glow={[inGlow, ...OUT_PATHS.map((_, i) => (i === claimer ? claimGlow : 0))]}
+        wires={[{ d: PATH1, glow: inGlow }, ...OUT_PATHS.map((d, i) => ({ d, glow: i === claimer ? claimGlow : 0 }))]}
       />
 
       {/* the role: a quiet bracket around the pool, labelled on its top edge */}

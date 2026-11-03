@@ -25,7 +25,7 @@ import { Detail, type DetailTarget } from "../src/console/ui/Detail.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
 import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
 import { clipText, fmtTime, sidePaneSize, wrapFacts, wrapText } from "../src/console/ui/theme.js";
-import type { FeedEntry, MembershipView } from "../src/view/mesh-view.js";
+import type { FeedEntry, MembershipView } from "@cotal-ai/workspace/view";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -111,7 +111,7 @@ console.log("3. the topology header draws the membership pill, in each of its fo
   const agents: Presence[] = [];
   const feed: FeedEntry[] = [];
   const topo = (membership: MembershipView | undefined) => (
-    <Topo feed={feed} agents={agents} membership={membership} channels={[{ channel: "general", messages: 0 }]}
+    <Topo feed={feed} agents={agents} membership={membership} channels={[{ channel: "general", messages: 0, deliveryClass: "live" }]}
       variant={0} width={200} height={12} blocked={false}
       onFocus={() => {}} onOpenAgent={() => {}} onOpenMessage={() => {}} />
   );
@@ -144,6 +144,7 @@ console.log("4. every send waits for the same participant start, and a refusal r
     async stop() {}
     getRoster(): Presence[] { return []; }
     tap() {}
+    channelDeliveryClass() { return "live"; }
     async listChannels() { return [{ channel: "general", messages: 0 }]; }
     async channelHistory() { return []; }
     async dmHistory() { return []; }
@@ -235,6 +236,7 @@ console.log("5. a peer's control sequences reach the screen as escapes, not as t
     async stop() {}
     getRoster(): Presence[] { return []; }
     tap() {}
+    channelDeliveryClass() { return "live"; }
     async listChannels() { return [{ channel: "general", messages: 1 }]; }
     async channelHistory() { return [{ id: "m1", ts: Date.now(), from: { id: "local.peer", name: "peer\x1b[31m" }, channel: "general", parts: [{ kind: "text", text: body }] }]; }
     async dmHistory() { return []; }
@@ -281,7 +283,7 @@ console.log("6. every topology lens labels a peer as the roster does");
     labels.join(",") === "ada/ada,eve/ops x y,bob,cy/reviewer", labels);
   for (const [variant, lens] of (["sequence", "matrix", "map"] as const).entries()) {
     const out = await paint(
-      <Topo feed={feed} agents={agents} channels={[{ channel: "general", messages: feed.length }]}
+      <Topo feed={feed} agents={agents} channels={[{ channel: "general", messages: feed.length, deliveryClass: "live" }]}
         variant={variant as TopoVariant} width={200} height={20} blocked={false}
         onFocus={() => {}} onOpenAgent={() => {}} onOpenMessage={() => {}} />,
     );
@@ -379,6 +381,7 @@ console.log("8. the roster and DM lens share pane geometry without changing thei
       }));
     }
     tap() {}
+    channelDeliveryClass() { return "live"; }
     async listChannels() { return [{ channel: "general", messages: 0 }]; }
     async channelHistory() { return []; }
     async dmHistory() {
@@ -481,6 +484,7 @@ console.log("9. wide text wraps by terminal columns, so the feed paints all of i
         condition: { code: condition } }] as unknown as Presence[];
     }
     tap() {}
+    channelDeliveryClass() { return "live"; }
     async listChannels() { return [{ channel: "general", messages: 2 }]; }
     async channelHistory() {
       return [["cjk", cjk], ["emoji", emoji]].map(([name, text], i) => ({ id: "wide-" + name, ts: Date.now() - 2000 + i,
@@ -604,6 +608,7 @@ console.log("11. a detail returns the feed to the message and viewport it left")
       this.deliver?.(chatSubject(this.space, "local", "cx", "general"), { id: "place-" + n, ts: Date.now(),
         from: { id: "local.cx", name: "cx" }, channel: "general", parts: [{ kind: "text", text: `m${n} ` + "word ".repeat(20) }] });
     }
+    channelDeliveryClass() { return "live"; }
     async listChannels() { return [{ channel: "general", messages: 5 }]; }
     async channelHistory() {
       return [1, 2, 3, 4, 5].map((n) => ({ id: "place-" + n, ts: Date.now() - 5000 + n,

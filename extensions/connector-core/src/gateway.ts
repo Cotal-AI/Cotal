@@ -23,7 +23,8 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
-import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { briefing } from "./briefing.js";
 import type { MeshAgent, NativeTurnParticipationLease } from "./agent.js";
 import type { AgentConfig } from "./config.js";
 import { renderInboxPreview, type RenderedInboxPreview } from "./framing.js";
@@ -274,8 +275,8 @@ const ADVERTISED: AgentConfig = {
  *  default channel. Connections can read different channels, so the advertised text names none. */
 const SEND_CHANNEL =
   "Channel to send on. Omit it to use this connection's default, the first concrete channel it reads and " +
-  "may post to (cotal_orientation lists both); with none, an omitted channel is refused. Concrete only, not " +
-  "a wildcard like team.>; reply on the channel you received a message on.";
+  "may post to (cotal_orientation lists both); with none, an omitted channel is refused. " +
+  `${PATTERN_SEND_HELP} Reply on the channel you received a message on.`;
 
 const CONNECTION_ID = z
   .string()
@@ -499,8 +500,11 @@ export function registerCotalGatewayTools(
           watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
           const listening = wake ? `\n${wake.listening(c)}` : "";
+          // A conversation that joins here had no launch-time system prompt, so the connect result
+          // is where it is handed its bearings: the orientation card, then the shared briefing.
+          const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
           return toContent({
-            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}`,
+            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
           });
         } catch (e) {
           if (e instanceof ApprovalRequired) {

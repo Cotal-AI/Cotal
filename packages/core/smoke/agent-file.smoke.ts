@@ -274,5 +274,18 @@ let slashNameErr = "";
 try { new CotalEndpoint({ space: "main", servers: "nats://127.0.0.1:1", card: { name: "a/b", kind: "agent" } }); } catch (e) { slashNameErr = (e as Error).message; }
 ok("CotalEndpoint still refuses a reserved '/' in card.name", /invalid name "a\/b"/.test(slashNameErr), slashNameErr);
 
+// 13) A persona that saves must load. The loader refuses a subscribe family that no single
+//     allowSubscribe entry contains, such as perm.> under perm.*, which cannot read perm.a.b. The
+//     writer used to save it anyway, and every later load, spawn and redefine of that name failed.
+const wide = join(dir, "wide.md");
+let wideErr = "";
+try { saveAgentFile(wide, { name: "wide", persona: "x", subscribe: ["perm.>"], allowSubscribe: ["perm.*"] }); } catch (e) { wideErr = (e as Error).message; }
+ok("saveAgentFile refuses a family wider than every read entry and writes no file",
+  wideErr.includes('subscribe "perm.>" is not within allowSubscribe [perm.*]') && !existsSync(wide), wideErr);
+// The refusal reaches an agent through cotal_persona as "Couldn't define <name>: <this>", so it states
+// the rule once and names neither this function nor the path of a file that was never written.
+ok("the refusal reads as the rule the file broke",
+  wideErr === 'it would not load: subscribe "perm.>" is not within allowSubscribe [perm.*]', wideErr);
+
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

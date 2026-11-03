@@ -6,8 +6,8 @@
  * could misread), a live holder is yielded to, a provably dead holder's stale slot is reclaimed
  * exactly once, an EMPTY slot (impossible to produce under the protocol; a pre-protocol crash
  * shape) is reclaimed once rather than wedging forever, and GARBLED content is NEVER stolen.
- * It also proves a start the re-exec guard refuses (#1629) touches no pid record at all.
- * Broker-free.
+ * It also proves a start the re-exec guard refuses (#1629) touches no pid record at all, and that
+ * a readiness failure keeps its reason and names the record its wait read (#3715). Broker-free.
  *
  * Run: pnpm smoke:auth-pidfile
  */
@@ -117,6 +117,39 @@ try {
   check("CONTROL: a slot this process does claim reads as a running auth service",
     held !== undefined && "fd" in held && authServiceUp(SPACE));
   if (held !== undefined && "fd" in held) closeSync(held.fd);
+
+  // 7. #3715: a readiness failure names the record the wait read, resolved once. The service reads
+  //    as running (the canonical record names this live process), so nothing is launched and the
+  //    provider's ready() is the only step. What it does to the records before it rejects must not
+  //    change the reason the caller sees, nor which file the message names.
+  const REASON = "probe: the provider never became ready";
+  const notReady = async (before: () => void): Promise<string> => {
+    writeFileSync(PID_FILE, String(process.pid));
+    const failing: AuthPrepared = {
+      extraAccounts: [],
+      publicAuth: {},
+      service: { command: "auth-service", ready: async () => { before(); throw new Error(REASON); } },
+    };
+    try {
+      await ensureAuthService({ space: SPACE, server: "nats://127.0.0.1:1", stateDir: tmp, prepared: failing });
+      return "ensureAuthService returned";
+    } catch (e) {
+      return (e as Error).message;
+    } finally {
+      rmSync(PID_FILE, { force: true });
+      rmSync(LEGACY_FILE, { force: true });
+    }
+  };
+  const named = (message: string, file: string) => message.includes(`the daemon's pid is recorded at ${file},`);
+  const plain = await notReady(() => {});
+  check("CONTROL: a readiness failure carries the provider's reason and names the record it read",
+    plain.startsWith(REASON) && named(plain, PID_FILE), plain);
+  const beside = await notReady(() => writeFileSync(LEGACY_FILE, String(process.pid)));
+  check("a pre-hex record written beside it during the wait does not replace the readiness reason",
+    beside.startsWith(REASON) && named(beside, PID_FILE), beside);
+  const moved = await notReady(() => { writeFileSync(LEGACY_FILE, readFileSync(PID_FILE, "utf8")); rmSync(PID_FILE); });
+  check("a record moved to the pre-hex name during the wait is still named as the file the wait read",
+    moved.startsWith(REASON) && named(moved, PID_FILE) && !moved.includes(LEGACY_FILE), moved);
 } finally {
   process.chdir(prevCwd);
   rmSync(tmp, { recursive: true, force: true });

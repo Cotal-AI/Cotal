@@ -16,6 +16,7 @@ class Observer extends EventEmitter {
   async stop() {}
   getRoster(): Presence[] { return []; }
   tap() {}
+  channelDeliveryClass() { return "live"; }
   async listChannels() { return [{ channel: "general", messages: 0 }]; }
   async channelHistory() { return []; }
   async dmHistory() { return []; }

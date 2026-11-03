@@ -50,7 +50,7 @@ const {
 } = await import("@cotal-ai/core");
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../../manager/src/manager.js");
-const { managerRailGone, pinnedLivenessProbe, scatterResolveCommands } = await import("../src/lib/control.js");
+const { managerRailGone, pinnedLivenessProbe, scatterResolveCommands } = await import("../../../packages/workspace/dist/control/index.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
 const EXPECTED_CELLS = 29; // +1: multi-manager ps resolves only ps + status closures; predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal, +1 for section 9's unanswered describe

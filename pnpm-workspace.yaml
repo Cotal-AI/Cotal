@@ -5,6 +5,8 @@ packages:
   - "examples/*"
   - "examples/*/*"
   - "bin"
+  - "desktop"
+  - "tools/docs-content"
 allowBuilds:
   "@google/genai": false
   esbuild: true

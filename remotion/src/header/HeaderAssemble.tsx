@@ -84,12 +84,6 @@ const ctrlFor = (a: Pt, b: Pt): [Pt, Pt] => {
 // hairlines meet the rounded squares rather than spear through them.
 const rim = (from: Pt, to: Pt): Pt => lerp(from, to, 0.18);
 
-const WIRE_PATHS: string[] = EDGES.map(([a, b]) => {
-  const p0 = rim(RING[a]!, RING[b]!);
-  const p1 = rim(RING[b]!, RING[a]!);
-  return wirePath(p0, ...ctrlFor(p0, p1), p1);
-});
-
 // Per-edge beam: walk along the same curve as the wire.
 const beamPos = (a: number, b: number) => {
   const p0 = rim(RING[a]!, RING[b]!);
@@ -110,13 +104,15 @@ export const HeaderAssemble: React.FC = () => {
   const frame = useCurrentFrame();
 
   // --- per-edge wire afterglow (rests gold once a beam has crossed it) --------
-  const glow: number[] = EDGES.map((_, i) => {
+  const wires = EDGES.map(([a, b], i) => {
+    const p0 = rim(RING[a]!, RING[b]!);
+    const p1 = rim(RING[b]!, RING[a]!);
     const isChord = i >= RING_EDGES.length;
     const s = isChord ? chordStart : ringStart(i);
     // ramp up as the beam reveals, then ease back to ink before converge starts.
     const up = prog(frame, s, s + BEAM_DUR);
     const down = 1 - prog(frame, 128, 138);
-    return up * down;
+    return { d: wirePath(p0, ...ctrlFor(p0, p1), p1), glow: up * down };
   });
 
   // Per-node flash: pops when a beam arrives at it (end of an incident edge).
@@ -139,7 +135,7 @@ export const HeaderAssemble: React.FC = () => {
       >
         {/* Mesh hairlines — only present once gathering is essentially done. */}
         {frame >= MESH_START - 6 && frame < 150 ? (
-          <WireLines paths={WIRE_PATHS} glow={glow} />
+          <WireLines wires={wires} />
         ) : null}
 
         {/* Agents: scatter -> ring (gather), hold (mesh), ring -> center (converge). */}
@@ -180,7 +176,7 @@ export const HeaderAssemble: React.FC = () => {
           return (
             <BeamLine
               key={`beam-${i}`}
-              d={WIRE_PATHS[i]!}
+              d={wires[i]!.d}
               pos={beamPos(a, b)}
               t={t}
               visible={t > 0 && t < 1}

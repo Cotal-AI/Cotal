@@ -5,8 +5,8 @@ import { chatWildcard, type ParsedArgs } from "@cotal-ai/core";
 import { colorEnabled } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { runLog } from "../render.js";
-import type { ObserverAuth } from "../console/root.js";
-import type { ControlCtx } from "../console/control.js";
+import { openObserver, type ObserverAuth } from "@cotal-ai/workspace/view";
+import type { ControlCtx } from "@cotal-ai/workspace/control";
 
 /** The TUI and Ink. Ink colors through chalk, which settles its color level once, when it is first
  *  imported, from `FORCE_COLOR` before anything else, and does not read `NO_COLOR`. So they load
@@ -17,8 +17,8 @@ async function loadTui() {
   const forced = process.env.FORCE_COLOR;
   if (!colorEnabled()) process.env.FORCE_COLOR = "0";
   try {
-    const [{ render }, { Root, makeObserver }] = await Promise.all([import("ink"), import("../console/root.js")]);
-    return { render, Root, makeObserver };
+    const [{ render }, { Root }] = await Promise.all([import("ink"), import("../console/root.js")]);
+    return { render, Root };
   } finally {
     if (forced === undefined) delete process.env.FORCE_COLOR;
     else process.env.FORCE_COLOR = forced;
@@ -29,16 +29,12 @@ async function loadTui() {
  * `cotal console` — the live protocol view. A real terminal gets the lazygit-style Ink TUI; a pipe
  * or `--plain` gets the passive line stream. With no `--space` on an open mesh it opens an admin
  * overview of every space first (pick one to drill in, `b` to come back); `--space X` goes straight
- * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/mesh-view.md.
+ * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/mesh-view.mdx.
  */
 export async function console_(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; plain?: boolean; creds?: string };
   // Resolve WHICH running mesh (server + trust material) from any directory — same as `spawn`/`web`.
-  // Auth mode self-mints an admin god-view cred (the console shows DMs/anycast, which the narrower
-  // `observer` profile denies → NATS Authorization Violation); an authed server hosts exactly one
-  // space, so we enter it directly. Open mode connects bare; with no --space, the TTY shows the
-  // space overview. An explicit --creds wins. USER MODE rides an exchange-gated "admin" VIEW
-  // bearer (ledger scope "admin") with a bearer source, same standing shape as the separately configured dashboard service.
+  // Admin authentication does not widen the console's chat-only tap.
   const conn = await connectOrExit(values, "admin");
   const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
   const { server, space: resolvedSpace, creds, auth } = conn;
@@ -69,13 +65,13 @@ export async function console_(args: ParsedArgs): Promise<void> {
   const controlCtx: Omit<ControlCtx, "space"> = { server: values.server };
   // Never at module top: Ink's yoga-layout wasm initialization can fail on macOS with large
   // argv/environment (#4088). The shared loader also applies the requested color mode first.
-  const { render, Root, makeObserver } = await loadTui();
+  const { render, Root } = await loadTui();
 
   // No TTY (piped/headless) or --plain → the passive line stream; Ink needs a real terminal, and a
   // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
   if (values.plain || process.stdout.isTTY !== true) {
     const s = space ?? resolvedSpace;
-    await runLog(makeObserver(s, server, observerAuth, operator), s, creds || user ? chatWildcard(s) : undefined, values.plain === true, conn);
+    await runLog(openObserver({ space: s, server, auth: observerAuth, name: operator, operator: true }), s, creds || user ? chatWildcard(s) : undefined, values.plain === true, conn);
     return;
   }
 

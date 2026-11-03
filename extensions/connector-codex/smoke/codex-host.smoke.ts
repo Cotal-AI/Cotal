@@ -37,7 +37,7 @@ import { skipSuite, SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSi
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
-  // operator's auth.json — see docs/connect-codex.md), so there is no Windows Codex case in the
+  // operator's auth.json — see docs/connect-codex.mdx), so there is no Windows Codex case in the
   // suite at all. This skip records that limitation; it is not covered elsewhere.
   skipSuite("managed Codex agents are POSIX-only");
 }
@@ -75,6 +75,8 @@ interface LogEntry {
   httpStatus?: number;
   mcpTokenPresent?: boolean;
   cotalLeak?: string[];
+  /** The fake's own MCP tool call, as `mcpCall` returned it. */
+  res?: { body?: { result?: { content?: { text?: string }[] } } };
 }
 function readJsonLines<T>(path: string): T[] {
   if (!existsSync(path)) return [];
@@ -534,6 +536,22 @@ try {
     turnStarts().find((t) => t.includes("stranded-during-tui")),
   );
   check("a DM arriving during a standalone TUI turn is driven when that turn ends", pumped !== undefined, pumped);
+  // #5688: while that turn runs, the agent can read the DM with a peek, which clears nothing — the
+  // drive above is the proof the peek left it to the turn loop.
+  const toolText = (e: LogEntry | undefined) =>
+    (e?.res?.body?.result?.content ?? []).map((c) => c.text ?? "").join("\n");
+  const soloPeek = logEntries().find((e) => e.ev === "soloPeek");
+  check(
+    "a peek during an externally started turn shows the queued DM and clears nothing",
+    toolText(soloPeek).includes("stranded-during-tui") && toolText(soloPeek).includes("peek: nothing cleared"),
+    soloPeek,
+  );
+  const soloPull = logEntries().find((e) => e.ev === "soloPull");
+  check(
+    "a clearing read after the peek leaves that DM queued for the turn loop",
+    toolText(soloPull).includes("1 connector-managed automatic message is still queued; peek to read it now."),
+    soloPull,
+  );
   check(
     "automatic DM delivery does not steer an externally started turn",
     !logEntries().some(
@@ -753,7 +771,7 @@ try {
   // private stdio pipe. The listener is what makes the real Codex TUI attachable to this very
   // thread; the capability token is what keeps other OS users and off-box callers from driving
   // the agent through it (the listener has no auth of its own). It is NOT a boundary against a
-  // same-uid sibling — see docs/connect-codex.md#limits.
+  // same-uid sibling — see docs/connect-codex.mdx#limits.
   const argvText = argv.join(" ");
   check("child argv: the app-server listens on a loopback websocket", argvText.includes("--listen ws://127.0.0.1:0"), argv);
   check(

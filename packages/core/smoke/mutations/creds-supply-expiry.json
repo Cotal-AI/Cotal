@@ -34,7 +34,7 @@
     {
       "name": "the wire getter is unchecked again (the reported defect: internal reconnects read the raw cache)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined",
+      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
       "replace": "creds: this.credsSource ? () => this.currentCreds! : this.currentCreds",
       "expectRed": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
       "cell": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
@@ -61,8 +61,8 @@
     {
       "name": "the dial gate tests the cached cred for TRUTHINESS again (an empty credential dials anonymously)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined",
-      "replace": "creds: this.currentCreds || this.credsSource ? () => this.credsForWire() : undefined",
+      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
+      "replace": "creds: this.currentCreds || this.credsSource ? () => this.presentCreds() : undefined",
       "expectRed": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
       "cell": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
       "note": "A one-character weakening that reads as a harmless falsiness idiom. Under it an empty creds string is indistinguishable from 'no creds configured', so the endpoint dials with no auth material and the broker answers `Authorization Violation` -- a permissions-shaped error for what is a supply mistake. The named cell asserts BOTH that the refusal names the empty credential AND that the broker's violation text is absent, so a red here cannot be satisfied by any failure that merely happened. Its accepting twin (no creds at all still connects) stays green under this mutation, which is what confines the mutation to the empty case rather than to anonymity."

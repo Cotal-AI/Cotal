@@ -1,0 +1,229 @@
+---
+title: The cotal-lang card
+description: Effect signatures, result shapes, concurrency rules, and common refusals for cotal-lang programs.
+kind: Reference
+audience: workflow authors
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A cotal-lang program is one restricted JavaScript module, with no imports, classes,
+`Promise`, or host globals. The [language specification](../spec/cotal-lang.md) is normative.
+
+Runs start through `cotal run start --file <program>` or `cotal_run`. The manager reports
+validation problems before execution. See the [run commands](cli-runs.mdx) and [workflows](workflows.mdx).
+
+<Callout type="info" title="Replay and host requirements">
+Effects have journalled step keys. Resume reexecutes the program, replaying settled results
+and recovering pending steps. The mesh host requires explicit placement for a host-local
+`cwd`. Existing seats keep their placement. A missing host capability holds the run for a capable host.
+</Callout>
+
+## Effects
+
+Option bags are closed. An unknown key raises L3011 with the accepted signature.
+Effects obey the [await rule](#the-await-rule-l2013).
+
+| Effect | Call | Returns |
+| --- | --- | --- |
+| `participant` | `await participant({ name? })` | an admitted personal native session handle |
+| `spawn` | `await spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? })` | `{ agent, persona, worktree?, role? }` |
+| `turn` | `await turn(agent, { name, deadline? })` | `{ status: "done" \| "blocked" \| "handoff", to?, note?, at }` |
+| `ask` | `await ask(agent, { name, schema, deadline?, attempts? })` | the record the agent published |
+| `checkpoint` | `await checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? })` | a resolved or expired result, as described below |
+| `sleep` | `await sleep("10m", { name? })` | `null` |
+| `wait` | `await wait(event, { name?, timeout? })` | the event value, or `null` on timeout |
+| `waitUntil` | `await waitUntil(probe, { name, every, deadline, terminal? })` | the terminal observation |
+| `notify` | `await notify(agents, fact, { name? })` | `null` |
+| `monitor` | `await monitor(agent, { name? })` | `null` |
+
+### Call rules
+
+`participant()` binds the exact owner, actor, and lifecycle admitted for an approved personal native conversation. It cannot select another session and grants no stop, attach, or process custody.
+
+Step names are kebab-case tokens of 1 to 64 characters, matching
+`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`. Malformed names raise L3014.
+Required names must be string literals, or it is L3013. A missing required `name` option is
+L3012. A missing positional checkpoint name is L3013. Optional names may be computed and
+are checked when the key is created. `spawn` defaults to the persona name.
+Names and branch keys cannot contain `/`, `#`, or `:`, as reported by L3025.
+
+Durations are a whole number and one unit, `ms`, `s`, `m`, `h`, or `d`.
+Examples are `"250ms"`, `"30s"`, `"10m"`, `"4h"`, and `"2d"`. Other forms do not parse.
+
+A literal with a bare number or another form refuses before start with L2034. There is no default unit.
+
+`sleep` is durable. Resume does not repeat an elapsed sleep. Malformed durations fail at the call.
+
+### Agent options
+
+`spawn` accepts a persona name or `{ persona, model?, variant? }`. Two live agents cannot
+share a worktree, as reported by L3022 or L4008.
+
+On the mesh host, `cwd` requires an existing absolute directory and
+`placement: { endpoint, instanceId }` on the run's bound endpoint. The serving manager
+canonicalizes the directory. `worktree` is a separate logical identity.
+
+The host meters `permits: { turns?, wallClock? }`. Violations raise L4001.
+`supervise: { restarts, window? }` restarts the process under the same handle until its budget
+is spent, with default window `"10m"`. Counts are positive integers and time spans are durations.
+Unsupported budget or policy keys are refused.
+
+`events: false` starts a seat without an event plane, for a connector that publishes none,
+such as Hermes. If omitted, the host's default applies.
+
+`runtime` selects this seat's terminal runtime. Omission uses the serving manager's runtime.
+
+`onFork` defaults to `"respawn"`. `"adopt"` shares the parent's seat. The current mesh host
+refuses a fork prefix containing a spawn with `"respawn"`, with L5019.
+
+### Event waits
+
+The [event constructors](../spec/cotal-lang.md#66-events) build descriptors for `wait`.
+
+`waitUntil` calls `probe` until `terminal(observation)` holds, by default when the observation
+is not `null`. `every` and `deadline` are required. A zero cadence or one longer than the
+deadline is L3047. The first observation has no cadence delay.
+
+Pending waits observe again on resume. Only a terminal observation settles the result.
+An elapsed deadline raises catchable L4023. A non-canonical observation or non-boolean
+terminal result is L4024.
+
+`notify` records a bounded decision notice before an addressee's next turn. Its
+[fact contract](../spec/cotal-lang.md#68-the-notify-bound) is separate from channel messages.
+
+## Results you branch on
+
+A `turn` returns the agent's status. An `ask` returns the agent's published record.
+The language hashes `schema` and passes it to the handler unchanged. The `ask` shorthand
+maps required top-level fields to `"string"`, `"number"`, `"boolean"`, `"array"`, `"record"`,
+or `"null"`. Extra fields are allowed. An empty schema accepts any record.
+
+The simulator and mesh host enforce the shorthand. An unreadable schema raises L4022.
+Each non-conforming reply consumes an attempt. `attempts` defaults to 1. Exhaustion raises
+L4006, as does an expired ask deadline on the mesh host. Checkpoint schemas remain uninterpreted.
+
+A checkpoint is a durable pause raced against a durable timer:
+
+| Outcome | Program result |
+| --- | --- |
+| Resolved | `{ status: "resolved", value?, by?, at, artifact? }` |
+| Expired with `onExpiry: "proceed"` | `{ status: "expired", at }` |
+| Expired with `onExpiry: "fail"`, the default | Throws L4007, naming whether the deadline came from this checkpoint or the run default. |
+| Expired with `onExpiry: "escalate"` | Opens one further checkpoint addressed to `to`. If that expires too, returns `{ status: "expired", at }`. There is no third hop. |
+
+`to` is legal only with `onExpiry: "escalate"`, or it is L3044. The journal stores the raw
+outcome. The interpreter applies the current expiry policy on both live execution and replay.
+
+```js
+const gate = await checkpoint("ship-gate", "Ship 1.4.0 to npm?", { timeout: "4h", onExpiry: "proceed" })
+if (gate.status === "resolved") {
+	log(gate.value, gate.by)
+} else {
+	log("expired, holding")
+}
+```
+
+## The await rule (L2013)
+
+A call that starts an effect must be awaited where it appears, returned from a function, or
+used as a scope's branch thunk. Other uses raise L2013. This rule also covers user functions
+declared `async`.
+
+```js
+// refused: L2013
+const timer = sleep("10m")
+```
+
+Valid forms include `await sleep("10m")`, `return sleep("10m")` inside a function, and
+`race({ timeout: () => sleep("10m"), reply: () => turnSomeone() })` with branch thunks.
+The scope call itself must also obey the await rule.
+
+## Concurrency
+
+`parallel`, `race`, `fanOut`, and `conclave` are concurrency scopes.
+`once` is an additional scope that bounds dispatches.
+
+| Scope | Signature | Result and settlement |
+| --- | --- | --- |
+| `parallel` | `await parallel(branches, { name? })` | Results keyed like the branches. A rejection fails the scope and cancels siblings. |
+| `race` | `await race(branches, { name? })` | `{ index, value }`. `index` is the winning branch key. The earliest logical settlement wins, with ties in declaration order. A rejection can win. |
+| `fanOut` | `await fanOut(items, fn, { name, key? })` | Results in item order. A rejection fails the scope and cancels siblings. |
+| `conclave` | `await conclave(members, fn, { name, channel? })` | The value from `fn(channelHandle)`, with members joined to a scoped channel. |
+
+`parallel` and `race` take a record of unevaluated thunks. Record keys survive reordering.
+Array indices shift on insertion, with warning L3023. `fanOut` calls `fn(item, index)` per
+item, keyed by `key(item)` or the item's string `id`. Missing keys refuse at runtime with L3021. Validation warns with L3021 only for a list written directly in the call. A variable can change before the call, so the run decides its keys. Duplicates are L3024.
+
+```js
+async function review(pr) {
+	const seat = await spawn("reviewer", { worktree: pr.id })
+	return await turn(seat, { name: "review", deadline: "30m" })
+}
+const prs = [{ id: "pr-11" }, { id: "pr-12" }]
+const results = await fanOut(prs, (pr) => review(pr), { name: "review-all", key: (pr) => pr.id })
+log(results)
+```
+
+A cancelled branch performs no new effect. An in-flight agent reply may finish and be ignored.
+A branch cannot write outside itself, including through aliases, as reported by L2032.
+Values return through the scope's result. The same restriction covers `conclave`, `once`,
+and `waitUntil` probes and predicates.
+
+```js
+// refused: L2032
+let seen = 0
+await parallel({
+	a: async () => { seen = 1 },
+	b: async () => { seen = 2 },
+})
+```
+
+### At-most-once dispatch
+
+`await once(fn, { name })` returns the value from `fn`. Only `ask` effects may run inside
+it. Validation refuses another effect in the body or a function it calls by name with L2033. Other effects reached at runtime refuse with L4028 before their entries begin.
+
+Each accepted step dispatches at most once. If a resume finds a step pending, it opens a
+hold for a person to answer instead of dispatching the ask again. The hold's answer becomes
+the step's result. An expired hold raises catchable L4027. A refused call performed nothing
+and may be attempted again. Handler retries within one call remain possible. `once` bounds
+dispatches, and cannot guarantee a single write by the far side.
+
+## Values across effects
+
+Effect arguments and results, including replay and scope results, are deep-frozen.
+Mutation raises L2031. A fresh copy, such as `{ ...record, field: value }` or `[...list, item]`,
+is writable by its creating frame.
+
+Effect arguments must have a canonical JSON form. `undefined`, non-finite numbers, opaque objects,
+sparse arrays, cycles, and own `__proto__` fields raise L3041. Functions used as effect arguments
+raise L3042. Scope bodies and probes remain program code.
+
+`json.stringify` produces the canonical form with sorted keys and no spaces. A value with
+no canonical form raises L4016 instead of being dropped from the output.
+
+Host stack exhaustion, from deep recursion or a deeply nested `json.stringify`, halts the run.
+It bypasses `catch` and `finally` because its threshold depends on the host.
+
+The [configured limits](../spec/cotal-lang.md#12-limits) cover steps per walk, effects per run,
+and journal payloads.
+
+## Top refusals
+
+| Code | What it refuses | Write instead |
+|---|---|---|
+| L2013 | an effect call nothing awaits | `await` it, `return` it, or pass a thunk branch |
+| L2032 | a branch writing outside itself | return from the branch, read the scope's result |
+| L2031 | writing a value that crossed an effect | copy into a fresh record, then write |
+| L2012 | a host global by name | the replacement in the message, e.g. `json.stringify` |
+| L2011 | `Promise` | the four scopes |
+| L1025 | `==`, `!=` | `===`, `!==` |
+| L1001 | `class` | records and functions |
+| L4018 | a record, array or function where a primitive is needed; a non-number under `++`/`--` | convert explicitly |
+| L3013 | a computed step name where a literal is required | a string literal |
+| L3011 | an unknown option key | the signature in the refusal |
+| L2034 | a literal that is not a duration, such as `sleep(5000)` or `"1.5s"` | a whole number and a unit, `"5s"` |
+
+The [error catalog](../spec/cotal-lang.md#appendix-a-the-error-catalog) lists every code.
+A refusal's heading uses that code's catalog title.

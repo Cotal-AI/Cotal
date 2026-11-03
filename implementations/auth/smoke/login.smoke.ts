@@ -704,6 +704,100 @@ console.log("C2) advertised space catalog cache");
   catalog.close();
 }
 
+// ---- one listed space the catalog cannot serve: its siblings keep serving ----
+console.log("C3) a catalog entry marked unavailable");
+{
+  const REASON = "space \"held\" is unavailable: journal-held; an operator must release it";
+  let held: "registered" | "unavailable" | "both" | "empty" = "registered";
+  let heldBase = "";
+  const heldHome = mkdtempSync(join(tmpdir(), "cotal-login-catalog-held-"));
+  const registration = (slug: string, i: number) => ({
+    space: slug,
+    server: `nats://127.0.0.1:${55201 + i}`,
+    tlsRequired: false,
+    userAuth: { provider: "cotal", idp: { url: `${heldBase}/api/auth`, issuer: "http://127.0.0.1", audience: "catalog" }, endpoints: { url: `${heldBase}/exchange` } },
+    sentinelCreds: `held-sentinel-${slug}`,
+  });
+  const row = (slug: string) => ({ id: `id-${slug}`, slug, name: `Space ${slug}`, kind: "team", role: "member" });
+  const server = createServer((req, res) => {
+    if (req.url === "/api/auth/token") {
+      res.writeHead(200, { "content-type": "application/json", link: `<${heldBase}/spaces>; rel="https://cotal.ai/relations/space-catalog"` });
+      return void res.end(JSON.stringify({ token: "eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwOi8vMTI3LjAuMC4xIiwic3ViIjoiY2F0LXVzZXIifQ." }));
+    }
+    if (req.url === "/spaces") {
+      const spaces: Record<string, unknown>[] = [{ ...row("sibling"), registration: registration("sibling", 0) }];
+      if (held === "registered") spaces.push({ ...row("held"), registration: registration("held", 1) });
+      else if (held === "both") spaces.push({ ...row("held"), registration: registration("held", 1), unavailable: REASON });
+      else spaces.push({ ...row("held"), unavailable: held === "empty" ? "" : REASON }, { ...row("never_seen"), unavailable: REASON });
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ v: 1, account: { idpUrl: `${heldBase}/api/auth`, issuer: "http://127.0.0.1", sub: "cat-user" }, spaces }));
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  heldBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const heldIdp = `${heldBase}/api/auth`;
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = heldHome;
+  saveIdpSession(heldHome, heldIdp, { token: "catalog-session", expiresAt: Date.now() / 1000 + 600, sub: "cat-user" });
+  const { prepareCatalogCommand, prepareCatalogTargets } = await import("../../cli/src/commands/sync.js");
+  const { findMesh, getCurrent, setCurrent } = await import("@cotal-ai/workspace");
+  const cacheFile = join(heldHome, "space-catalogs.json");
+  // The lazy path refetches only once the five-second window has passed, as a command run a little
+  // later does; ageing the cached fetch is that later command without the wait.
+  const makeStale = () => {
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+    for (const account of Object.values(cached.accounts as Record<string, { fetchedAt?: string }>)) account.fetchedAt = new Date(0).toISOString();
+    writeFileSync(cacheFile, JSON.stringify(cached));
+  };
+  const outcome = (run: Promise<unknown>) => run.then(() => undefined, (e: Error & { code?: string }) => ({ message: e.message, code: e.code }));
+  const seeded = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+  const heldBefore = findMesh("held");
+  const heldCreds = heldBefore?.userAuth?.sentinelCredsPath ? readFileSync(heldBefore.userAuth.sentinelCredsPath, "utf8") : undefined;
+  check("both listed spaces are recorded while each is registered",
+    seeded.diffs[0]?.added.join(",") === "held,sibling" && heldCreds === "held-sentinel-held" && findMesh("sibling") !== undefined, seeded);
+
+  held = "unavailable";
+  setCurrent("sibling");
+  makeStale();
+  const sibling = await outcome(prepareCatalogCommand({ positionals: [], values: {}, raw: [] }));
+  const heldAfter = findMesh("held");
+  check("a sibling of an unavailable space refreshes its account and serves", sibling === undefined && getCurrent() === "sibling", sibling);
+  check("the unavailable space keeps its registration and credential, and carries the catalog's reason",
+    heldAfter?.server === heldBefore?.server && heldAfter?.catalogError === REASON && heldAfter?.userAuth?.sentinelCredsPath !== undefined &&
+      readFileSync(heldAfter.userAuth.sentinelCredsPath, "utf8") === heldCreds,
+    heldAfter);
+  check("an unavailable space this machine never held is not recorded", findMesh("never_seen") === undefined, findMesh("never_seen"));
+  const targeted = await outcome(prepareCatalogCommand({ positionals: [], values: { space: "held" }, raw: [] }));
+  check("a command targeting the unavailable space refuses with the catalog's reason inside the freshness window",
+    targeted?.code === "DEPENDENCY_UNAVAILABLE" && targeted.message.includes(REASON), targeted);
+  const unseen = await outcome(prepareCatalogCommand({ positionals: [], values: { space: "never_seen" }, raw: [] }));
+  check("a command naming an unavailable space it never held refuses with the reason, not as unknown",
+    unseen?.code === "DEPENDENCY_UNAVAILABLE" && unseen.message.includes(REASON), unseen);
+  const synced = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+  check("sync lists both as unavailable, keeps the held registration unchanged and removes nothing",
+    synced.diffs[0]?.unavailable.join(",") === "held,never_seen" && synced.diffs[0]?.unchanged.join(",") === "held,sibling" &&
+      synced.diffs[0]?.removed.length === 0 && synced.diffs[0]?.added.length === 0,
+    synced.diffs[0]);
+
+  for (const malformed of ["both", "empty"] as const) {
+    held = malformed;
+    const refused = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+    check(`an entry ${malformed === "both" ? "both registered and unavailable" : "with an empty reason"} refuses the whole snapshot`,
+      refused.results[0]?.state === "failed" && findMesh("held")?.server === heldBefore?.server, refused.results[0]);
+  }
+
+  held = "registered";
+  const restored = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+  check("the space serving again clears its reason and keeps its credential",
+    restored.results[0]?.state === "updated" && findMesh("held")?.catalogError === undefined && restored.diffs[0]?.unavailable.length === 0 &&
+      readFileSync(findMesh("held")!.userAuth!.sentinelCredsPath!, "utf8") === heldCreds,
+    { result: restored.results[0], held: findMesh("held") });
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
+  server.close();
+}
+
 // ---- the reject matrix ----
 console.log("D) denies, expiry, revocation");
 await rejects("a client id the operator didn't pin is refused at /device/code",

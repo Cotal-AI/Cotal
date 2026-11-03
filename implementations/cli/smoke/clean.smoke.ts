@@ -614,7 +614,7 @@ try {
 
   // A retained bare `down` reaches its pidfile sweep only for one registration that `cotal up`
   // started at this root, and refuses when another registration names the same broker address
-  // (docs/cli.md, `down`). `up` records `origin: "up"` and the broker it started, so every stack the
+  // (docs/cli.mdx, `down`). `up` records `origin: "up"` and the broker it started, so every stack the
   // `down` cells below stop is recorded that way, each on its own closed loopback port. "main" keeps
   // port 1 from the `clean all` cells above.
   const upEntry = (space: string, root: string, port: number) =>

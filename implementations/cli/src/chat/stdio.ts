@@ -1,6 +1,6 @@
 /**
  * `cotal chat --stdio`: the versioned NDJSON participant protocol, documented for programs in
- * docs/cli.md under "The --stdio protocol".
+ * docs/cli.mdx under "The --stdio protocol".
  *
  * Pure protocol. It parses and validates one request per line, dispatches a valid request to an
  * already admitted {@link AdmittedChatSession}, and serializes responses and unsolicited records
@@ -22,7 +22,7 @@
  */
 import { assertValidRole, MAX_NAME_LENGTH } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
-import type { AdmittedChatSession, CloseReport, PublishResult, Result, SessionEvent, SessionMessage } from "./session.js";
+import type { AdmittedChatSession, CloseReport, PublishResult, Result, SessionEvent, SessionMessage } from "@cotal-ai/workspace/chat";
 import { concreteChannelProblem } from "../lib/concrete-channel.js";
 
 export const STDIO_SCHEMA_VERSION = 1;

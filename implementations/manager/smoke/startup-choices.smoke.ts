@@ -37,7 +37,10 @@ try {
   else console.log(`SKIP custody: Linux-only seat transport (host: ${process.platform})`);
   if (tmuxAvailable()) runtimes.push(["tmux", new TmuxRuntime(session)]);
   else console.log("SKIP tmux: tmux is not installed; pane startup is not exercised");
-  const cases = runtimes.flatMap(([runtimeName, runtime]) => ["normal", "trusted", "missing", "ready", "ready-trusted", "unknown"].map((mode) => {
+  // The notice modes declare Claude's registration notice. The custodial runtime reports no
+  // outcome and spawns no new seat, so it is not given them.
+  const NOTICE_MODES = ["notice", "notice-early", "silent", "ready-notice"];
+  const cases = runtimes.flatMap(([runtimeName, runtime]) => ["normal", "trusted", "missing", "ready", "ready-trusted", "unknown", ...(runtimeName === "custody" ? [] : NOTICE_MODES)].map((mode) => {
     if (runtimeName === "tmux" && !ownsTmux) {
       assert.throws(() => execFileSync("tmux", ["has-session", "-t", session], { stdio: "ignore" }));
       ownsTmux = true;
@@ -48,17 +51,28 @@ try {
       command: process.execPath, args: [fixture, path, mode], env: { PATH: process.env.PATH! },
       confirm: "WARNING: Loading development channels", confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES,
       confirmReady: CLAUDE_READY_TEXTS,
+      ...(NOTICE_MODES.includes(mode) ? { confirmNotice: "messages from server:cotal inject directly in this session" } : {}),
     }, root);
     handles.push(handle);
     return { name, path, handle, mode };
   }));
-  // The final-confirmation deadline is 15 s and graceful-stop escalation is 3 s. Check after both,
-  // so a timer left armed kills a supposedly ready seat and a missing final cannot pass as ready.
-  await sleep(20_000);
+  // The final-confirmation deadline is 15 s, the notice's is 15 s from the Enter, and graceful-stop
+  // escalation is 3 s. Check after all of them, so a timer left armed kills a supposedly ready seat
+  // and a missing final or notice cannot pass as ready.
+  await sleep(25_000);
   for (const test of cases) {
     try {
       const observed = rows(test.path);
-      if (test.mode === "missing") {
+      if (test.mode === "silent") {
+        assert.equal(test.handle.status(), "exited", `${test.name}: an answered prompt without its notice fails bounded`);
+        assert.deepEqual(observed, [{ key: "Enter", phase: "final" }], `${test.name}: the prompt is answered once, and nothing after`);
+      } else if (test.mode === "notice" || test.mode === "notice-early") {
+        assert.equal(test.handle.status(), "running", `${test.name}: the notice after the answer disarms the deadline`);
+        assert.deepEqual(observed, [{ key: "Enter", phase: "final" }], `${test.name}: the prompt is answered once`);
+      } else if (test.mode === "ready-notice") {
+        assert.equal(test.handle.status(), "running", `${test.name}: the ready screen disarms the deadline`);
+        assert.deepEqual(observed, [], `${test.name}: the ready screen gets no key`);
+      } else if (test.mode === "missing") {
         assert.equal(test.handle.status(), "exited", `${test.name}: absent final prompt fails bounded`);
         assert.deepEqual(observed, [{ key: "Down", phase: "trust" }, { key: "Enter", phase: "trust" }], `${test.name}: no tool-approval key after trust`);
       } else if (test.mode === "unknown") {
@@ -74,6 +88,13 @@ try {
           { key: "Down", phase: "trust" }, { key: "Enter", phase: "trust" }, { key: "Enter", phase: "final" },
         ], `${test.name}: exact startup responses and none after done`);
       }
+      // A runtime that declares it reports the outcome reports the one from the read that ended the watch.
+      const outcome = test.handle.startupOutcome?.();
+      if (test.name.startsWith("custody-")) assert.equal(outcome, undefined, `${test.name}: the custodial runtime claims no outcome`);
+      else assert.equal(outcome, {
+        normal: "confirmed", trusted: "confirmed", missing: "failed", ready: "ready", "ready-trusted": "ready", unknown: "failed",
+        notice: "confirmed", "notice-early": "confirmed", silent: "failed", "ready-notice": "ready",
+      }[test.mode], `${test.name}: the startup outcome`);
       console.log(`PASS ${test.name}`);
     } catch (error) { const message = (error as Error).message; failures.push(message); console.error(`FAIL ${message}`); }
   }

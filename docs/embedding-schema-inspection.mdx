@@ -1,0 +1,148 @@
+---
+title: Space schema inspection
+description: Resource definitions, bounded read-only observations, and the limits of schema and initialization comparisons.
+kind: Reference
+audience: integrators
+---
+
+Schema inspection compares declared space resources with bounded broker observations.
+The catalog, observers, and comparisons do not authorize writes.
+Revision-bound initialization, privileged apply, and stack or update integration are unsupported.
+
+## Resource definitions [#resource-definitions]
+
+`spaceResourceDefinitions` collects native creation inputs for message and control streams,
+durable registries, TTL and membership buckets, contract and authority stores, session stores,
+and artifacts. Bootstrap uses the same builders.
+Native retention, shadow, immutability, leader-read, and artifact checks remain in force.
+The owned-stream inventory and backup inventory are independent of this catalog.
+
+`spaceResourceCreationConfig` produces a desired creation configuration.
+It shares the first-party stream baseline, native subjects, validated public scalar KV defaults,
+explicit creation options, and hardening fields. Unexpanded inputs refuse.
+Hardening belongs in the creation request, before any existing bucket could be adopted.
+Producing this value opens no connection and creates or repairs no resource.
+
+## Resource observations [#resource-observations]
+
+`spaceSchemaReadPort` exposes only stream-info on an existing JetStream manager.
+It creates no connection and exposes no mutation methods.
+Its caller owns credentials, connection custody, and target validation.
+A supplied port or authority label establishes neither the server, account, nor authentication mode.
+
+`observeSpaceResources` keeps permission denial, reported not-found, target mismatch,
+failed reads, and unvisited resources distinct.
+A shared five-second budget bounds the pass. Expiry labels later resources unvisited;
+it does not prove cancellation of an in-flight request.
+The observer does not retry through broader credentials.
+A reported not-found result does not establish authoritative absence.
+
+## Schema comparison [#schema-comparison]
+
+`diffSpaceResources` compares declared stream fields and post-create hardening.
+It also calls the pure native checks for backup streams, contract stores, authority and session stores,
+issued and admission stores, and artifacts.
+Native creators use those same checks.
+The lifecycle binder and schema inspection share the primary, Limits-retention,
+and no-global-eviction check for authority stores.
+No lifecycle operation or store access moves into core as part of the comparison.
+
+Authority-store shape checks identify the first failing invariant's fields.
+Other native verification failures can report no fields.
+Raw observations and diff rows are private planning data and can contain expected and observed configuration values.
+The prepared public summary omits those values and native diagnostic text.
+Raw results require that projection before public exposure.
+The native bind error retains its class, message, and check order.
+A native-invariant match covers that check, not the complete effective schema or target authority.
+
+Fields outside the declarative comparison remain visible as uncompared fields.
+Extra observed fields on direct streams are compared with the first-party baseline.
+Unknown fields and nondefault undeclared settings block the row without exposing their values.
+Reserved NATS metadata follows the existing backup policy.
+Missing observed fields are never filled from desired values.
+Unspecified SDK defaults are not expanded.
+
+KV and Object Store creation options map to their backing-stream wire fields,
+including TTL units, marker TTL, and post-create hardening.
+An unsupported option blocks the row.
+The extra-field policy also covers those backing streams and reads only public scalar KV input defaults.
+The comparison does not call an SDK constructor or claim a complete effective SDK configuration.
+It preserves two native policies: artifact stores may use either direct-read setting,
+and TTL buckets may retain a smaller existing duplicate window.
+
+The reconciliation classification names only these native guard families:
+
+- TTL enforcement, including its write canary.
+- The stock legacy artifact cap, using the shared native cap constant.
+- Contract hardening, including its shadow check and shared hardening fields.
+
+Other changed fields require migration.
+A required guard is not an accepted action.
+Inspection calls no migration or write canary and cannot prove a contract stream clean from configuration alone.
+Apply would require a fresh privileged barrier, native guards, and readback.
+SDK and server defaults, runtime checks, and complete field policy remain outside this partial schema.
+
+## Initialization observations [#initialization-observations]
+
+`spaceInitializationDefinitions` shares native seed ordering, field-merge inputs,
+and profile-default precedence. An explicit existing delivery class wins over the profile default.
+These definitions do not validate patches, observe revisions, or make legacy seeding revision guarded.
+Patch text stays out of public operation diagnostics.
+
+`observeSpaceInitialization` validates native profile and patch inputs before reading keys.
+It checks the selected read handle's native bucket and stream names without opening a bucket itself.
+`spaceInitializationReadPort` separately opens an existing bucket with bind-only semantics.
+Neither operation creates or repairs the bucket.
+
+The observer retains revisions and tombstones and distinguishes missing, unavailable, denied,
+mismatched, malformed, and unvisited rows.
+Its five-second and 8 MiB budgets do not cancel in-flight requests.
+Each seed map accepts at most 1,024 concrete, nonreserved channel keys.
+A row above 64 KiB fails observation.
+Existing registry values are private planning data, which can contain model-facing text.
+Successful native field validation is not complete field policy.
+A null read or tombstone grants no creation or write authority.
+
+`diffSpaceInitialization` uses the same seed-before-profile definitions.
+Known fields are closed over the native channel and defaults types and validated without changing legacy validators.
+Unmodeled fields block the comparison.
+A valid existing row can produce a private candidate with its observed revision.
+Missing, deleted, or unreadable rows produce no candidate.
+Explicit seed fields overwrite existing fields before the profile fills an absent delivery class.
+
+The public projection shows state, changed field names, and revisions, never candidate values.
+No revision guard has run. A candidate is not an accepted write plan.
+
+## Prepared CLI adapter [#prepared-cli-adapter]
+
+`inspectExistingSpaceSchema` is a prepared internal CLI adapter.
+No public command invokes it.
+It resolves one existing registered open or static-auth target and validates native profile and patch
+inputs before preparing authority. User-auth and off-registry targets refuse.
+
+Static mode loads the full current trust chain and uses one temporary native provisioner connection
+with its own scoped inbox. A stripped static trust projection refuses.
+Explicit open mode loads no signer, mints no identity, and uses no credentials.
+Both branches preserve the registered TLS requirement.
+The branch is selected before connection. An authentication refusal never triggers a different branch.
+A reported broker-mode mismatch refuses.
+
+Before static schema reads, a bounded native `$SYS.REQ.USER.INFO` query must match the minted user,
+selected account, and connected server. It uses the provisioner's own connection and inbox,
+without a system credential or an arbitrary-user query.
+The broker requires a configured system account for this service.
+Unavailable, denied, or mismatched identity refuses without fallback.
+Returned permissions and expiry are not an issued ceiling or lifecycle proof.
+Open mode invents no account identity and does not require that system service.
+
+The adapter uses bind-only open/get and stream-info, without create or repair.
+A reported server ID alone is not account proof.
+Local reader closure does not prove credential revocation.
+The native identity observation authorizes no apply and establishes no definitive resource absence.
+
+Its prepared public projection and shared terminal view omit raw configurations, registry values,
+private patches, unknown extra-field names, and native diagnostic bodies.
+They label non-atomic reads and incomplete policy.
+They make no readiness or successful-apply claim.
+
+See [Space provisioning](embedding-provisioning.mdx) for the separate creation and signing boundaries.
