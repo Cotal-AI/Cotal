@@ -515,7 +515,10 @@ const SEAMS: Seam[] = [
   // plaintext loopback broker and states `tls: false`.
   // 371/289 -> 372/290: the run-ps latency smoke's caller dials its suite's plaintext loopback
   // broker and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 372, untypecheckedSites: 290 },
+  // 372/290 -> 375/293: three smokes each add one call: auth/smoke/retire-member-rows (6eed69fd4),
+  // manager/smoke/supervise-crash-late-join (100eb59fe) and core/smoke/delete-space-auth
+  // (803c0f94c). Each dials its suite's plaintext loopback broker and states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 375, untypecheckedSites: 293 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
