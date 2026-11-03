@@ -2959,6 +2959,19 @@ let n = 1;
     );
     ok("an unknown message kind is refused, not read as the run's answer", odd instanceof Error, JSON.stringify(odd).slice(0, 140));
     ok("and the refusal names the kind and says the two sides disagree", String((odd as Error).message).includes("trace") && String((odd as Error).message).includes("disagree"), String((odd as Error).message).slice(0, 120));
+    // THE BRIDGE'S SIDE OF THE SAME AGREEMENT (#3216). Its listener runs on this process's own
+    // stack, so a throw there was uncaught and ended the host with every run on it, before any cell
+    // below could grade it. The thread never answers, so only the host refusing the run ends it.
+    for (const [runId, named] of [["odd-bridge", "hello"], ["odd-bind", "bind 99"]] as const) {
+      const bridged = await caught(() =>
+        runInWorker(
+          { source: `log("x", 1);\n`, module: `(ctx) => async () => { await ctx.fuel(); return 1; }`, runId, handler: "bridged" },
+          { entry: new URL("./_odd-bridge-entry.mjs", import.meta.url), bridge: { handler: new SimHandler({}), store: { append: async () => {} } } },
+        ).done,
+      );
+      ok(`a thread's unexpected bridge message (${named}) fails its own run, and this process lives to say so`, bridged instanceof Error, String(bridged).slice(0, 140));
+      ok(`and that refusal names ${named} and says the two sides disagree`,String((bridged as Error).message).includes(named) && String((bridged as Error).message).includes("disagree"), String((bridged as Error).message).slice(0, 160));
+    }
 
     const workerData = [...new Set([...hostSrc.matchAll(/workerData: \{ ([^}]+) \}/g)].flatMap((m) => String(m[1]).split(",").map((x) => x.trim())))].sort();
     ok(`and the host hands the thread exactly the ${WORKER_DATA.length} things this table cells`, JSON.stringify(workerData) === JSON.stringify(WORKER_DATA), { declared: WORKER_DATA, found: workerData });
