@@ -2,9 +2,8 @@
  * PERSONA ROLE/CAPABILITY GUARD smoke (issue #966) — a seat labelled `manager` that cannot spawn
  * is refused at spawn-accept, loudly, instead of joining and failing silently on first use.
  *
- * THE DEFECT. `cotal_persona` takes content only (`name`/`prompt`/`model`); capabilities are POLICY
- * with no slot on the wire write path (P6 — `smoke:persona-input-closed` guards that closure, and
- * it names capabilities as exactly the vector it exists to catch). So every persona a peer defines
+ * THE DEFECT. `cotal_persona` writes `capabilities` only when its definer names them and holds them
+ * (P6: define-persona bounds them against the definer). So a persona a peer defines without them
  * lands with NO `capabilities:` line. `cotal_spawn` takes a free-form `role`, and nothing reconciles
  * the label with the grant: a wire-defined persona spawned with `role: "manager"` joins presenting
  * as a manager (role is the presence label AND the anycast address other agents route on) while its
@@ -21,7 +20,8 @@
  *      gap is real, and the spawn is where it must be caught.
  *   2. THE REFUSAL (the cell the mutation must redden). `cotal_spawn(name, role: "manager")` on
  *      that persona is REFUSED: `reply.ok === false`, naming the persona, the missing capability,
- *      and the remediation for BOTH authors (an operator edits the file; a peer must ask one).
+ *      and the remediation for BOTH authors (an operator edits the file; the persona's owner redefines
+ *      it with the grant only if the owner holds spawn).
  *   3. THE FILE'S OWN ROLE TOO. A persona file with `role: manager` in frontmatter and no
  *      capabilities is refused identically — the guard keys on the EFFECTIVE role, which the file
  *      supplies when no override is passed.
@@ -52,7 +52,9 @@ import {
   CotalEndpoint,
   createSpaceAuth,
   isReachable,
+  mintAcceptedToken,
   mintCreds,
+  mintGeneration,
   mintLifecycleUid,
   newIdentity,
   provisionAgent,
@@ -60,6 +62,7 @@ import {
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
+  withIssuerSession,
   type Connector,
   type LaunchOpts,
 } from "@cotal-ai/core";
@@ -179,13 +182,24 @@ try {
   const chACL = { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] };
   const definerId = newIdentity();
   const definerUid = mintLifecycleUid();
-  const definerCreds = await provisionAgent(provisioner, auth, definerId, {
-    ...chACL,
-    role: "worker",
-    lifecycleUid: definerUid,
-    capabilities: ["spawn"],
-    endpointCapabilities: [{ endpoint: "manager", command: "define-persona" }, { endpoint: "manager", command: "spawn" }],
-  });
+  // The definer spawns a persona that names `spawn`, so its credential is an issuance (SPEC 13.15):
+  // a spawner with no issued evidence hands on no grant. It holds `role:manager` too, so the
+  // manager-role personas below pass the role bound and reach the capability check under test.
+  const definerExp = Math.floor(Date.now() / 1000) + 600;
+  const definerIssued = { generation: mintGeneration(definerExp), acceptedToken: mintAcceptedToken() };
+  const prov = provisioner;
+  const definerCreds = await withIssuerSession({ servers: SERVERS, space, auth, tls: false }, (s) =>
+    provisionAgent(prov, auth, definerId, {
+      ...chACL,
+      role: "worker",
+      lifecycleUid: definerUid,
+      capabilities: ["spawn", "role:manager"],
+      endpointCapabilities: [{ endpoint: "manager", command: "define-persona" }, { endpoint: "manager", command: "spawn" }],
+      expiresAt: definerExp,
+      issued: definerIssued,
+      issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
+    }),
+  );
   const cfg: AgentConfig = {
     space,
     name: "definer",
@@ -196,8 +210,9 @@ try {
     kind: "agent",
     tls: false,
     id: definerId.id,
-    capabilities: ["spawn"],
+    capabilities: ["spawn", "role:manager"],
     lifecycleUid: definerUid,
+    acceptedToken: definerIssued.acceptedToken,
   };
   definer = new MeshAgent(cfg);
   definer.on("error", () => {});
@@ -226,7 +241,7 @@ try {
   check("the persona file is on disk", existsSync(wireFile));
   const wireRaw = readFileSync(wireFile, "utf8");
   check(
-    "the wire-defined persona has NO capabilities line (the write path is content-only by design)",
+    "a definition that names no capabilities writes no capabilities line",
     !/^capabilities:/m.test(wireRaw),
   );
   check(
@@ -252,12 +267,12 @@ try {
   check("the refusal names the missing spawn capability", rt.includes("no spawn capability"), rt);
   check(
     "the refusal tells an operator the file remedy (capabilities: [spawn])",
-    rt.includes("capabilities: [spawn]"),
+    rt.includes(`An operator adds \`capabilities: [spawn]\` to ${wireFile}`),
     rt,
   );
   check(
-    "the refusal tells a peer author to ask an operator (it cannot self-serve the grant)",
-    rt.includes("ask an operator"),
+    "the refusal tells the persona's owner it can add the grant only if it holds spawn",
+    rt.includes("the persona's owner redefines it") && rt.includes("if the owner holds spawn"),
     rt,
   );
 
@@ -289,6 +304,42 @@ try {
     "only the four defined persona files exist (no side-effect file minted by the refusal)",
     filesAfter === expected,
     { got: filesAfter, want: expected },
+  );
+
+  // ---- 6. an inline persona through the tool: its model is audited as the manager records it ----
+  // The tool's own handler, a real MeshAgent on an issued credential, the real manager and a seat
+  // that joins. The MCP host's schema check is one layer up and has its own cells in spawn-args.
+  console.log("6. an inline persona through the tool, its pin audited as sent");
+  // Joined means the plain success result (neither no-join phrasing, no partial payload) and the
+  // seat's own presence on the roster, which the stub publishes once it connects.
+  const inlineSpawn = async (name: string, extra: Record<string, unknown>) => {
+    const r = await spawnTool.run(definer!, cfg, { name, agent: "p966-stub", events: false, ...extra });
+    const text = String(r.text ?? "");
+    let present = false;
+    for (let i = 0; i < 25 && !present; i++) {
+      present = (await definer!.readRoster()).roster.some((p) => p.card.name === name && p.status !== "offline");
+      if (!present) await sleep(200);
+    }
+    const joined = r.isError !== true && !text.includes("did not join") && !text.includes("has not joined") && (r as { structured?: unknown }).structured === undefined && present;
+    return { ...r, text, present, joined };
+  };
+  const landed = await inlineSpawn("p966-inline-pin", { persona: { prompt: "An inline helper.", model: "grok-4.6" } });
+  check(
+    "an inline spawn joins with its model recorded, and the result names the pin",
+    landed.joined && landed.text.includes('recorded model "grok-4.6"'),
+    landed,
+  );
+  const padded = await inlineSpawn("p966-inline-padded", { persona: { prompt: "An inline helper.", model: " grok-4.6 " } });
+  check(
+    "an accepted inline spawn whose model carries spaces joins and is not reported as a dropped pin",
+    padded.joined && padded.text.includes('recorded model " grok-4.6 "'),
+    padded,
+  );
+  const overridden2 = await inlineSpawn("p966-inline-override", { model: "sonnet", persona: { prompt: "An inline helper.", model: "grok-4.6" } });
+  check(
+    "a top-level model wins over the inline one, the seat joins, and the audit reads the winner",
+    overridden2.joined && overridden2.text.includes('recorded model "sonnet"'),
+    overridden2,
   );
 
   console.log(`\n  ${pass} checks passed`);

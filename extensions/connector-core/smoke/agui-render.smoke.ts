@@ -123,6 +123,19 @@ c("RUN_ERROR reports the message and the code",
   draw(ev("RUN_ERROR", { message: "boom", code: "E42" })) === "✗ run error [E42]: boom");
 c("CUSTOM names the custom event", draw(ev("CUSTOM", { name: "cotal.x" })) === "• custom cotal.x");
 
+// The tool result marker draws as the result line it stands in for, with no content because it
+// carries none. A marker of any other shape is not trusted to say how a call ended.
+const marker = (value: unknown) => ev("CUSTOM", { name: "cotal.toolResult", value });
+c("a tool result marker draws as `  ↳ done`",
+  draw(marker({ toolCallId: "t1", isError: false })) === "  ↳ done", draw(marker({ toolCallId: "t1", isError: false })));
+c("a marker that says isError draws as `  ↳ failed`",
+  draw(marker({ toolCallId: "t1", isError: true })) === "  ↳ failed", draw(marker({ toolCallId: "t1", isError: true })));
+c("a malformed marker draws as `• custom cotal.toolResult`",
+  draw(marker({ toolCallId: "t1" })) === "• custom cotal.toolResult" &&
+    draw(marker({ toolCallId: "t1", isError: false, content: "x" })) === "• custom cotal.toolResult" &&
+    draw(marker("t1")) === "• custom cotal.toolResult",
+  [draw(marker({ toolCallId: "t1" })), draw(marker("t1"))]);
+
 // ── NOTHING IS SKIPPED, because a skipped event is a hole in a transcript that looks complete ─
 const unknownEvent = draw(ev("SOMETHING_FROM_THE_FUTURE"));
 c("an event type this build does not know is NAMED, not dropped",

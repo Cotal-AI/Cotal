@@ -17,8 +17,8 @@
     {
       "name": "M1 scope to the caller even when the persona names channels",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      const scoped = !personaNamesChannels && opts.callerAcl ? {",
-      "replace": "      const scoped = opts.callerAcl ? {",
+      "find": "        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== \"none\" ? {",
+      "replace": "        scoped = opts.callerAcl && bound.kind !== \"none\" ? {",
       "expectRed": "a persona naming only subscribe keeps its empty post ACL despite callerAcl"
     },
     {
@@ -29,10 +29,10 @@
       "expectRed": "the seat joins only what join named"
     },
     {
-      "name": "M3 carry the spawner's event channel into the child's read ACL",
+      "name": "M3 carry the spawner's event channel into the child's ACL",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        allowSubscribe: opts.callerAcl.allowSubscribe.filter((ch) => eventChannelPrincipal(ch) === null),",
-      "replace": "        allowSubscribe: opts.callerAcl.allowSubscribe,",
+      "find": "        const own = channels.filter((ch) => eventChannelPrincipal(ch) === null);",
+      "replace": "        const own = channels;",
       "expectRed": "a channel-less persona spawns under its spawner's ACL"
     }
   ]

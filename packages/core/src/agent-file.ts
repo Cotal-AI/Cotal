@@ -30,7 +30,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
-import { writePrivateRecord } from "./secret-fs.js";
+import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
@@ -284,8 +284,9 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
  *  the set frontmatter fields followed by the persona body. Round-trips through the
  *  parser and refuses, writing nothing, a file it would not load; creates parent dirs. The runtime persona-definition path uses this to
  *  persist a peer-defined agent as config. The file is written 0o600 and never through a
- *  symlink ({@link writePrivateRecord}). */
-export function saveAgentFile(path: string, def: AgentDef): void {
+ *  symlink ({@link writePrivateRecord}). `createOnly` refuses a name that already exists, a symlink
+ *  included, and leaves it as it was ({@link createPrivateRecord}). */
+export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: boolean } = {}): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
   if (def.kind !== undefined) assertValidKind(def.kind, "saveAgentFile");
@@ -336,16 +337,39 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   const text = `---\n${frontmatter}\n---\n\n${body}`;
   // A persona that saves must load. A file the reader refuses, such as one whose subscribe entry no
   // allowSubscribe entry contains, made every later load, spawn and redefine of that name fail.
+  // The message reaches an agent as the reason its definition was refused, so it names the rule the
+  // file broke and not this function or the path of a file that was never written.
   try {
     parseAgentFileSource(text, path);
   } catch (e) {
-    throw new Error(`saveAgentFile: "${def.name}" was not saved because it would not load: ${(e as Error).message}`);
+    const reason = (e as Error).message;
+    const prefix = `agent file ${path}: `;
+    throw new Error(`it would not load: ${reason.startsWith(prefix) ? reason.slice(prefix.length) : reason}`);
   }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writePrivateRecord(path, text);
+  if (opts.createOnly) createPrivateRecord(path, text);
+  else writePrivateRecord(path, text);
 }
 
-/** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
+/** An inline persona (SPEC 13.7): the helper's definition, carried on the spawn instead of read
+ *  from the catalog. `prompt` is the persona body, never the first-turn kickoff. A channel field
+ *  that is omitted and one that is `[]` stay apart, as in a file. `save` also writes a create-only
+ *  catalog copy under the requested name. */
+export interface InlinePersona {
+  prompt: string;
+  role?: string;
+  model?: string;
+  variant?: string;
+  description?: string;
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+  capabilities?: string[];
+  save?: boolean;
+}
+
+/** What a peer may name on `define-persona`: content, plus `capabilities`, which the manager bounds
+ *  against the definer before it writes. `owner` has no slot. */
 export type WirePersonaArgs = {
   name: string;
   /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
@@ -357,6 +381,7 @@ export type WirePersonaArgs = {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  capabilities?: string[];
 };
 
 /**
@@ -393,7 +418,8 @@ function dropWireDefaultIfScoped(def: AgentDef): void {
 /**
  * Build the AgentDef `definePersona` writes. A leading frontmatter block in `prompt` is parsed
  * and merged: explicit tool arguments win; grants, role, and agent from the prompt survive;
- * `capabilities` and `owner` from the prompt never do. The result is always one frontmatter block
+ * `capabilities` and `owner` from the prompt never do, and only an explicit `capabilities`
+ * argument sets capabilities. The result is always one frontmatter block
  * once {@link saveAgentFile} writes it. On redefine, prompt grants are not applied (the stored
  * file's policy is preserved) except where an explicit tool argument names a field.
  */
@@ -408,6 +434,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     if (args.subscribe !== undefined) def.subscribe = args.subscribe;
     if (args.allowSubscribe !== undefined) def.allowSubscribe = args.allowSubscribe;
     if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
+    if (args.capabilities !== undefined) def.capabilities = args.capabilities;
     def.persona = parsed.body;
     dropWireDefaultIfScoped(def);
     return def;
@@ -424,6 +451,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     subscribe,
     allowSubscribe: args.allowSubscribe ?? fromPrompt?.allowSubscribe,
     allowPublish: args.allowPublish ?? fromPrompt?.allowPublish,
+    capabilities: args.capabilities,
     description: fromPrompt?.description,
     tags: fromPrompt?.tags,
     variant: fromPrompt?.variant,

@@ -1,5 +1,98 @@
 # @cotal-ai/tmux
 
+## 0.141.1
+
+No changes in this release.
+
+## 0.141.0
+
+No changes in this release.
+
+## 0.140.8
+
+No changes in this release.
+
+## 0.140.7
+
+No changes in this release.
+
+## 0.140.6
+
+No changes in this release.
+
+## 0.140.5
+
+No changes in this release.
+
+## 0.140.4
+
+No changes in this release.
+
+## 0.140.3
+
+No changes in this release.
+
+## 0.140.2
+
+No changes in this release.
+
+## 0.140.1
+
+No changes in this release.
+
+## 0.140.0
+
+No changes in this release.
+
+## 0.139.1
+
+No changes in this release.
+
+## 0.139.0
+
+No changes in this release.
+
+## 0.138.2
+
+No changes in this release.
+
+## 0.138.1
+
+No changes in this release.
+
+## 0.138.0
+
+No changes in this release.
+
+## 0.137.0
+
+### Patch Changes
+
+- 6aacd51: Native attach guidance now selects the seat's window and pane using its stable pane ID.
+  The instructions keep reaching the seat after its pane moves or its window is renamed,
+  including when another pane is active in the destination window. This applies to spawned
+  and adopted handles.
+
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
 ## 0.136.3
 
 No changes in this release.

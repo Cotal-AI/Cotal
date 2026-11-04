@@ -61,6 +61,7 @@ import {
   taskDurable,
   dlvDurable,
   presenceBucket,
+  presenceKeySubject,
   channelBucket,
   membersBucket,
   aclBucket,
@@ -97,7 +98,7 @@ import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, isIssuedCaller, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedStoreStreamNames, prepareListing, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef, type ListingBinding, type ListingSeam, type PreparedListing } from "./issued-authority.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedPermitsPattern, issuedStoreStreamNames, prepareListing, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef, type ListingBinding, type ListingSeam, type PreparedListing } from "./issued-authority.js";
 import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runSubmissionKey } from "./run-submission.js";
@@ -987,8 +988,26 @@ export async function provisionAgentDurables(
   if (opts.durableMembership !== false) {
     await provisioner.reissueAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
   }
-  if (opts.role) await provisioner.provisionTaskQueue(opts.role);
+  for (const role of taskRoles(opts.role, opts.capabilities)) await provisioner.provisionTaskQueue(role);
   return allowSubscribe;
+}
+
+const ROLE_CAPABILITY = /^role:([A-Za-z0-9_-]+)$/;
+
+/** The role a `role:<r>` capability token names, or `undefined` for any other token. */
+export function capabilityRole(token: string): string | undefined {
+  return ROLE_CAPABILITY.exec(token)?.[1];
+}
+
+/** The roles whose task queue an agent credential binds: its own role, and the role of each
+ *  `role:<r>` token in its capabilities, which lets it hand that role on (SPEC 13.15). */
+export function taskRoles(role: string | undefined, capabilities: readonly string[] | undefined): string[] {
+  const roles = new Set<string>(role ? [role] : []);
+  for (const token of capabilities ?? []) {
+    const r = capabilityRole(token);
+    if (r !== undefined) roles.add(r);
+  }
+  return [...roles];
 }
 
 
@@ -1130,6 +1149,11 @@ async function releaseIssuance(
     await seam.finalize?.(credentialId);
     return;
   }
+  // The spawn bound reads an issuance with no source and no presence key of its own as an operator
+  // instrument (grant-bound.ts, issuedSpawnerStanding), so only an instrument profile is issued that
+  // way. Any other profile issued without a source must carry its own presence key.
+  if (seam.sources.length === 0 && !INSTRUMENT_PROFILES.has(profile) && !issuedPermitsPattern(permissions.publish, presenceKeySubject(space, pr.owner, pr.actor)))
+    throw new Error(`mintCreds: a "${profile}" issuance with no source must carry its own presence key, or the spawn bound would read it as an operator instrument (SPEC 13.15)`);
   const prepared = await seam.store.stage({
     version: 1,
     ref,
@@ -1236,6 +1260,8 @@ export async function mintServiceCalloutJwt(
 /** The profiles whose credential carries caller rails, and can therefore be minted as an
  *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
 const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer", "manager-caller"]);
+/** The operator instruments: the only profiles issued with no source and no presence key of their own. */
+const INSTRUMENT_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["control-caller-privileged", "control-caller-admin", "deployer"]);
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
@@ -1545,7 +1571,7 @@ export function permissionsFor(
   const uid = assertLifecycleToken(pr.lifecycleUid);
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only)
-  const svcD = opts.role ? taskDurable(opts.role) : undefined;
+  const svcDs = taskRoles(opts.role, opts.capabilities).map(taskDurable);
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
@@ -1620,15 +1646,15 @@ export function permissionsFor(
     // cannot be pinned, and a stream-wide delete reaches every peer's watch cursor (#691). A
     // rebuild's refused predecessor delete leaves that consumer to the broker's inactive threshold.
     "$JS.FC.>",
-    `$KV.${presenceBucket(space)}.${pk.key}`, // own presence key (owner+actor) only — can't spoof peers
+    presenceKeySubject(space, pr.owner, pr.actor), // own presence key (owner+actor) only — can't spoof peers
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
     // No `$KV.${channelBucket(space)}.*` publish — privileged-write, default-deny gives that free.
     `$JS.API.STREAM.MSG.GET.${CHKV}`,
-    // The one-shot CLI reads the registry once with a batched Direct Get, whose request subject is
-    // the bare stream (#4091). On a user-auth mesh those commands connect on the user's bearer, which
-    // the auth service mints with these rows, so the row is what lets them leave no watch consumer
-    // behind. The same reply-subject reasoning as the presence read above: the consumer create below
-    // already grants that vector on this world-readable bucket.
+    // A seat reads the registry on demand, and the one-shot CLI reads it once, each with a batched
+    // Direct Get whose request subject is the bare stream (SPEC §7, #4091). On a user-auth mesh the
+    // CLI connects on the user's bearer, which the auth service mints with these rows, so the row is
+    // what lets it leave no watch consumer behind. The same reply-subject reasoning as the presence
+    // read above: the consumer create below already grants that vector on this world-readable bucket.
     `$JS.API.DIRECT.GET.${CHKV}`,
     `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
     `$JS.API.CONSUMER.INFO.${CHKV}.>`,
@@ -1643,18 +1669,20 @@ export function permissionsFor(
     // by OMISSION (default-deny on the un-granted `KV_cotal_manager_*` stream + `$KV.cotal_manager_*.>`),
     // so do NOT add a broad `KV_*` / `$KV.<space>.>` grant that would silently re-open it.
   ];
-  if (svcD) {
-    // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
-    // create-time filter_subject isn't reliably ACL-constrainable, so no create path is
-    // allowed — the privileged provisioner pre-creates svc_<role> filtered to svc.<role>.>.
-    // STREAM.INFO rides the SAME role gate as the bind rows: a role-less agent holds no TASK grant
-    // at all, so it can neither read the task stream's state nor enumerate its subjects.
-    pubAllow.push(
-      `$JS.API.STREAM.INFO.${TASK}`,
-      `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
-      `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
-      `$JS.ACK.${TASK}.${svcD}.>`,
-    );
+  if (svcDs.length > 0) {
+    // TASK consumer: BIND ONLY the pre-created durable (svc_<role>) of its own role and of each
+    // `role:<r>` token it holds. Like DM, the create-time filter_subject isn't reliably
+    // ACL-constrainable, so no create path is allowed — the privileged provisioner pre-creates
+    // svc_<role> filtered to svc.<role>.>. STREAM.INFO rides the SAME role gate as the bind rows: a
+    // role-less agent holds no TASK grant at all, so it can neither read the task stream's state
+    // nor enumerate its subjects.
+    pubAllow.push(`$JS.API.STREAM.INFO.${TASK}`);
+    for (const svcD of svcDs)
+      pubAllow.push(
+        `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
+        `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
+        `$JS.ACK.${TASK}.${svcD}.>`,
+      );
   }
   // Spawn / admin capability control reach rides the v0.4 ep rows below (the manager `ctl` rail is
   // deleted) — the spawn set (owner-mode manager lifecycle) and the admin instrument set
@@ -2454,14 +2482,14 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
  *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
- *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY ten streams and no others:
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY thirteen streams and no others:
  *  the three TTL'd KV buckets (presence + the two leases, #286: an existing bucket's `max_age` cannot be
  *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it), the four hardened
  *  authority stores (records, issued, accepted, admission), each updated once at creation, and the
  *  membership KV and artifact Object Store, whose legacy `max_bytes` values setup reconciles to -1 (the
  *  reservation a positive cap holds against the broker's `max_file_store` is what stopped a tenth space
- *  from being provisioned; `Objm.create` cannot fix an existing bucket's cap either), and the chat
- *  stream, whose history limit `cotal history limit` writes (`setChatHistoryLimit`).
+ *  from being provisioned; `Objm.create` cannot fix an existing bucket's cap either), and the CHAT,
+ *  INBOX, DLV and DM streams, whose history limits `cotal history limit` writes (`setHistoryLimit`).
  *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
  *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
  *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
@@ -2507,8 +2535,8 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // never updates an existing bucket's config, so a bucket created by a cotal that predates the `max_age`
   // TTL keeps NO expiry forever — dead presence records (and stale leases) never age out. `setupSpaceStreams`
   // reconciles their `max_age` via STREAM.UPDATE at every `cotal up`, which needs this grant. Scoped to these
-  // three streams here. The durable dm/task/inbox/dlv streams and the channel/members/acl registries
-  // are never updated (the chat stream's history limit is the one exception, below), and there is
+  // three streams here. The durable task stream and the channel/members/acl registries are never
+  // updated (the history limits of the four message streams are the exception, below), and there is
   // still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
   // denial; this widening is provisioning-only.
   // Derived from the SAME inventory that creates and reconciles them, not a third hand-kept copy.
@@ -2525,10 +2553,11 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // Still CREATE/INFO/UPDATE only:
   // no publish, no CONSUMER.CREATE (a push consumer's caller-chosen `deliver_subject` would export
   // every artifact in the space), no DELETE/PURGE.
-  // ...plus the chat stream, the one durable message stream this credential updates: `cotal history
-  // limit` sets its history limit (SPEC §8) and writes only `max_age` and `max_msgs_per_subject`
-  // (`setChatHistoryLimit`). DM, TASK, INBOX and DLV stay create-only.
-  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]
+  // ...plus the CHAT, INBOX, DLV and DM streams: `cotal history limit` sets their history limits
+  // (SPEC §8). STREAM.UPDATE is a whole-config write, so the grant reaches every setting of them;
+  // `setHistoryLimit` changes only `max_age` and `max_msgs_per_subject` and refuses a read back that is
+  // not canonical apart from those two. TASK stays create-only.
+  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]
     .map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // #404: one EXACT reserved key on each TTL bucket is the post-update enforcement canary. The
   // provisioner still cannot write presence identities or lease keys; it can only write this fixed

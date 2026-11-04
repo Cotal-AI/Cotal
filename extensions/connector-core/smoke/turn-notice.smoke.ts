@@ -57,7 +57,8 @@ const brokerPort = Number(new URL(broker.servers).port);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-turn-notice-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["seata", "seatb"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+// No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+for (const n of ["seata", "seatb"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\n---\n`);
 
 // The seats' hop to the broker. `cut` drops every seat connection and refuses new ones until
 // `restore`, so the seats are offline while the manager stays connected.

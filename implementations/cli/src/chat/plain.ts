@@ -24,7 +24,7 @@ import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { oneLine } from "@cotal-ai/core";
 import { plainPunctuation } from "@cotal-ai/workspace";
-import type { AdmittedChatSession, SessionEvent } from "./session.js";
+import type { AdmittedChatSession, SessionEvent } from "@cotal-ai/workspace/chat";
 import {
   addNotice,
   applyEvent,

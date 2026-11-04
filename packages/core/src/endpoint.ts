@@ -61,7 +61,7 @@ import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
-import { PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
+import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT, PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
   jetstream,
   jetstreamManager,
@@ -135,6 +135,7 @@ import {
 import { isCasLoss } from "./endpoint-records.js";
 import {
   anycastSubject,
+  assertValidOwnerToken,
   assertValidRole,
   CHANNEL_DEFAULTS_KEY,
   chatStream,
@@ -176,6 +177,7 @@ import {
   assertInboxConnId,
   type ParsedSubject,
   presenceBucket,
+  channelBucket,
   isPresenceRow, assertPresenceRow,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
@@ -201,6 +203,19 @@ export { isPermissionDenied };
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
+/** How long the trusted writer reuses its read of the DLV count before reading it again. */
+const DELIVERY_LIMIT_READ_MS = 5_000;
+
+/** The DLV count a stored copy was written under, from its {@link DELIVERY_LIMIT_HEADER} (SPEC §8):
+ *  a whole number of at least 1, null for `none`, and 1000 when the header is absent, since only a
+ *  daemon from before the count was configurable writes a copy without it and its count was 1000.
+ *  Throws on any other value. */
+export function deliveryLimitOf(value: string | undefined): number | null {
+  if (value === undefined || value === "") return PLANE3_MAX_MSGS_PER_SUBJECT;
+  if (value === "none") return null;
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`plane-3 delivery: ${DELIVERY_LIMIT_HEADER} ${JSON.stringify(value)} is not a count`);
+  return Number(value);
+}
 
 interface Plane3DeliveryFrame {
   version: 1;
@@ -370,10 +385,12 @@ export interface EndpointOptions {
    *  endpoint that only needs the roster when it acts sets this false and calls
    *  {@link CotalEndpoint.readPresence} instead (SPEC §6). */
   watchPresence?: boolean;
-  /** Open + watch the channel registry (default true). Independent of {@link watchPresence}: a
-   *  presence-only supervisor sets this false to track the roster WITHOUT opening the channel-registry
-   *  cache — so its cred needs no channel-registry read grant (residual 2). No effect when `consume` is
-   *  true: the join-time replay decision reads the registry, so a consumer always opens it. */
+  /** Keep the channel registry cache (default true). An endpoint that watches presence watches the
+   *  registry; a consumer that reads presence on demand reads the registry on demand too
+   *  ({@link CotalEndpoint.readChannels}), and any other endpoint keeps no cache. A presence-only
+   *  supervisor sets this false to track the roster WITHOUT opening the channel-registry cache — so
+   *  its cred needs no channel-registry read grant (residual 2). A consumer always opens the
+   *  registry, because the join-time replay decision reads it. */
   watchChannels?: boolean;
   /** Read presence and the channel registry ONCE at start instead of watching them (default false),
    *  for an endpoint that does one thing and stops (`cotal send`, a roster probe). Each read is a
@@ -492,9 +509,10 @@ export interface TransportState {
  * terminal close). Lets an in-process agent track connectedness off the endpoint's own (re)binds
  * instead of an imperative flag the self-heal path can't reach; "transport" ({ connected, server? })
  * is the lower-level NATS socket edge, true before the full bind finishes and false during an internal
- * nats.js reconnect without changing `connection` readiness. "stored-copies-full" (no payload): a stored
- * copy arrived with the store at its {@link PLANE3_MAX_MSGS_PER_SUBJECT}-copy limit, so the limit may have
- * discarded older copies before this session read them; emitted for each such copy.
+ * nats.js reconnect without changing `connection` readiness. "stored-copies-full" ({ limit: number }): a
+ * stored copy arrived with the store at the count the copy was written under ({@link deliveryLimitOf}),
+ * so the store may have discarded older copies before this session read them; emitted for each such
+ * copy. A lowering of the count or an age set on the store removes copies without this event.
  *
  * Callers MUST attach an "error" listener before `start()`: async faults (incl. NATS
  * permission denials, surfaced via `watchStatus`) are emitted as "error", and Node throws
@@ -750,9 +768,15 @@ export class CotalEndpoint extends EventEmitter {
      *  connection. Absent means the composition has no such phase. */
     startupComplete?: () => boolean;
   };
-  /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
+  /** Local cache of the channel registry (key = channel token), kept by a KV watch or, on an
+   *  endpoint that reads it on demand, by {@link readChannels}. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
   private channelDefaults: ChannelDefaults = {};
+  /** The {@link readChannels} in flight; calls made before it settles share it. */
+  private channelRead?: Promise<void>;
+  /** Orders {@link readChannels} results: a read that settles after a newer one was applied is dropped. */
+  private channelReadGeneration = 0;
+  private channelReadApplied = 0;
   /** Serializes history reads ({@link collectHistory}): they share the fixed per-instance
    *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
   private histLock: Promise<unknown> = Promise.resolve();
@@ -1807,6 +1831,9 @@ export class CotalEndpoint extends EventEmitter {
     if (watchChannels || this.doConsume) {
       this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.authed });
       if (watchChannels) await (this.readOnce ? this.readChannelsOnce() : this.startChannelWatch());
+      // A seat reads the registry on demand, as it reads the roster; this first read fills the cache
+      // its boot briefing renders from.
+      else if (this.readsChannelsOnDemand) await this.readChannels();
     }
 
     // Rebind the daemon's lease-loss watch onto the fresh connection (#1596). The intent survived
@@ -1988,6 +2015,10 @@ export class CotalEndpoint extends EventEmitter {
     this.emitPresenceViewIfChanged();
     this.channelConfigs.clear();
     this.channelDefaults = {};
+    // A read in flight on the old connection must not land in the new connection's cache.
+    this.channelRead = undefined;
+    this.channelReadGeneration++;
+    this.channelReadApplied = this.channelReadGeneration;
     for (const watch of this.membershipFeedWatches)
       watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
   }
@@ -3432,7 +3463,52 @@ export class CotalEndpoint extends EventEmitter {
 
   // ---- channel discovery ---------------------------------------------------
 
-  /** This channel's registry config from the live local cache (undefined if unset). */
+  /** A consumer that reads presence on demand reads the channel registry on demand too: it holds no
+   *  watch on either, so a seat binds no consumer per member on these buckets (SPEC §6, §7). */
+  private get readsChannelsOnDemand(): boolean {
+    return this.doConsume && this.doWatchChannels && !this.doWatch;
+  }
+
+  /**
+   * Read the channel registry from the broker now, for a consumer that reads presence on demand. One
+   * batched Direct Get that binds no consumer, decoded as the watch decodes; the result replaces the
+   * cache, so an entry removed since the last read is gone. {@link listChannels} and a join or leave
+   * read through here first; other cache readers see the last read.
+   *
+   * Calls made while a read is in flight share it, and every other call reads anew. A failed read
+   * throws and changes nothing. A credential that may not make the read is refused with the grant it lacks.
+   */
+  async readChannels(): Promise<void> {
+    if (!this.readsChannelsOnDemand)
+      throw new Error("readChannels is for a consumer that reads presence on demand; this endpoint watches the channel registry or keeps no cache of it");
+    const kv = this.channelKv;
+    if (!kv) throw new Error(this.notLiveMsg());
+    if (this.channelRead) return this.channelRead;
+    const generation = ++this.channelReadGeneration;
+    const read = (async () => {
+      let entries: KvEntry[];
+      try {
+        entries = await lastKvEntries(kv);
+      } catch (e) {
+        if (!isPublishPermissionDenied(e)) throw e;
+        throw new Error(
+          `channel registry read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${channelBucket(this.space)}, the on-demand registry read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
+          { cause: e },
+        );
+      }
+      if (generation <= this.channelReadApplied) return;
+      this.channelReadApplied = generation;
+      this.channelConfigs.clear();
+      this.channelDefaults = {};
+      for (const e of entries) this.handleChannelEntry(e);
+    })();
+    this.channelRead = read;
+    const settled = () => { if (this.channelRead === read) this.channelRead = undefined; };
+    read.then(settled, settled);
+    return read;
+  }
+
+  /** This channel's registry config from the local cache (undefined if unset). */
   getChannelConfig(channel: string): ChannelConfig | undefined {
     return this.channelConfigs.get(channel);
   }
@@ -3499,6 +3575,8 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (this.channels.includes(channel))
       return { joined: false, backfilled: 0, durable: this.plane3Channels.has(channel) };
+    // The delivery class below comes from the cache, so a seat reads it current before joining.
+    if (this.readsChannelsOnDemand) await this.readChannels();
     // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
     // delivers post-subscribe live messages (> frontier), so the two never overlap.
     const armed = await this.armJoin([channel]);
@@ -3562,6 +3640,7 @@ export class CotalEndpoint extends EventEmitter {
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     if (!this.channels.includes(channel)) return { left: false };
+    if (this.readsChannelsOnDemand) await this.readChannels();
     // Auth + durable-class ⇒ a Plane-3 membership may exist; tombstone it BEFORE touching local state.
     // The join generation comes from the local mirror, but a BOOT membership whose hydration was missed
     // (daemon down at connect) is NOT in the mirror — so re-resolve it from the delivery service on
@@ -3627,6 +3706,7 @@ export class CotalEndpoint extends EventEmitter {
    *  observer endpoints (no consumers needed). */
   async listChannels(): Promise<{ channel: string; messages: number; config?: ChannelConfig }[]> {
     if (!this.nc) throw new Error(this.notLiveMsg());
+    if (this.readsChannelsOnDemand) await this.readChannels();
     const mgr = await jetstreamManager(this.nc);
     // Subjects carry the sender (chat.<sender>.<channel>), so collapse across senders: sum
     // each channel's counts regardless of who published.
@@ -3949,11 +4029,10 @@ export class CotalEndpoint extends EventEmitter {
         } else {
           const closedEpoch = err instanceof ClosedConnectionError;
           const timeout = err instanceof TimeoutError;
-          const dyingEpochTimeout = timeout && (this.reconnecting || !this.nc || this.nc.isClosed());
           // Cleanup of an ordered consumer: a delete timeout means the broker did not answer in time,
           // not that the endpoint is unusable. The broker reaps an idle/ephemeral consumer anyway.
           // Throwing here killed a live observer over a slow VPN (#1047). Catch, surface, continue.
-          if (timeout || closedEpoch || dyingEpochTimeout) {
+          if (timeout || closedEpoch) {
             this.emit("error", err as Error);
           } else {
             throw err;
@@ -3986,15 +4065,26 @@ export class CotalEndpoint extends EventEmitter {
    *  reclaims its ephemeral consumer before the promise rejects. Returns `HistoryMessage[]`
    *  (#1413): every field present on a row was checked by the drain before the row was
    *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
-   *  returned with that member silently `undefined`. */
+   *  returned with that member silently `undefined`.
+   *
+   *  `publisher` reads only what that one principal published on the channel, by filtering on its
+   *  own subject (`chat.<owner>.<actor>.<channel>`). The subject's sender slots are what the
+   *  broker's publish permissions police, so on a mesh with permissions every row of such a read was
+   *  published by that principal: the same guarantee a live subscription to that subject gives.
+   *  Without it the read is the channel from any sender. */
   async channelHistory(
     channel: string,
-    opts?: { limit?: number; signal?: AbortSignal },
+    opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
   ): Promise<HistoryMessage[]> {
-    // history from any sender
+    const from = opts?.publisher;
+    // A publisher is one principal. A `*` in either slot would widen the read back to any sender
+    // while the caller believes it narrowed it, so both slots are checked as concrete tokens.
+    const subject = from === undefined
+      ? chatSubject(this.space, "*", "*", channel)
+      : chatSubject(this.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);
     return (await this.streamHistory(
       chatStream(this.space),
-      [chatSubject(this.space, "*", "*", channel)],
+      [subject],
       opts?.limit ?? 100,
       undefined,
       opts?.signal,
@@ -6537,6 +6627,19 @@ export class CotalEndpoint extends EventEmitter {
     m.ack();
   }
 
+  private deliveryLimitRead?: { at: number; stamp: string };
+
+  /** The DLV count the trusted writer stamps on a copy (SPEC §8): the stream's `max_msgs_per_subject`,
+   *  read at most {@link DELIVERY_LIMIT_READ_MS} before the write, as a whole number or `none`. */
+  private async deliveryLimitStamp(): Promise<string> {
+    const at = Date.now();
+    if (this.deliveryLimitRead && at - this.deliveryLimitRead.at < DELIVERY_LIMIT_READ_MS) return this.deliveryLimitRead.stamp;
+    const count = (await this.jsm!.streams.info(dlvStream(this.space))).config.max_msgs_per_subject;
+    const stamp = count === HISTORY_NO_COUNT || count < 1 ? "none" : String(count);
+    this.deliveryLimitRead = { at, stamp };
+    return stamp;
+  }
+
   /** Trusted-reader loop: bind the single privileged `reader` durable over `dinbox.>` and re-authorize
    *  + transfer each entry. */
   private async runReader(): Promise<void> {
@@ -6668,6 +6771,9 @@ export class CotalEndpoint extends EventEmitter {
       };
       const frameHeaders = headers();
       frameHeaders.set(PLANE3_FRAME_HEADER, "1");
+      // The count read may be broker I/O, so the fence is asked again before the write.
+      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());
+      if (!this.plane3MayAct()) return;
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
@@ -6720,11 +6826,15 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
-        // A copy with a full store behind it means the store held its limit, so older copies may have
-        // been discarded unread (#5404); NATS gives no notice of the discard itself. Checked on every
-        // delivery, ahead of the checks below and the connector's id dedupe, so a copy the agent also
-        // got live cannot hide it. The connector folds repeats into one notice.
-        if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit("stored-copies-full");
+        // A copy with a full store behind it means the store held its count, so older copies may have
+        // been discarded unread (#5404); NATS gives no notice of the discard itself. The count is the
+        // one the trusted writer stamped on this copy. Checked on every delivery, ahead of the checks
+        // below and the connector's id dedupe, so a copy the agent also got live cannot hide it. The
+        // connector folds repeats into one notice.
+        let limit: number | null;
+        try { limit = deliveryLimitOf(m.headers?.get(DELIVERY_LIMIT_HEADER)); }
+        catch (e) { this.emit("error", e as Error); limit = null; }
+        if (limit !== null && m.info.pending >= limit - 1) this.emit("stored-copies-full", { limit });
         // The header is minted only by the trusted DLV writer. A body-only discriminator is
         // insufficient because old Cotal envelopes permit unknown fields and could imitate it.
         if (m.headers?.get(PLANE3_FRAME_HEADER) !== "1") {

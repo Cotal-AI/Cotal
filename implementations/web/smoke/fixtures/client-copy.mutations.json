@@ -1,0 +1,193 @@
+{
+  "command": "pnpm smoke:web-client-copy",
+  "suite": [
+    "implementations/web/smoke/client-copy.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "a section heading is set in uppercase",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-sec { display: flex;",
+      "replace": ".ui-sec { text-transform: uppercase; display: flex;",
+      "expectRed": "no uppercase text-transform",
+      "cell": "no uppercase text-transform"
+    },
+    {
+      "name": "the space name gains positive letter-spacing",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-space { font-size: 16px; }",
+      "replace": ".ui-space { font-size: 16px; letter-spacing: 0.02em; }",
+      "expectRed": "no letter-spacing above 0",
+      "cell": "no letter-spacing above 0"
+    },
+    {
+      "name": "the base font becomes Geist",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "font: 400 14px/1.5 var(--body); font-feature-settings",
+      "replace": "font: 400 14px/1.5 Geist, sans-serif; font-feature-settings",
+      "expectRed": "no Geist or Work Sans",
+      "cell": "no Geist or Work Sans"
+    },
+    {
+      "name": "a colour literal replaces a token in app.css",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "background: var(--gold); color: var(--on-gold); font: 600 10px/16px",
+      "replace": "background: var(--gold); color: #3A2C05; font: 600 10px/16px",
+      "expectRed": "app.css holds no colour literal, only tokens",
+      "cell": "app.css holds no colour literal, only tokens"
+    },
+    {
+      "name": "app.css reads a token that tokens.css does not define",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "color: var(--on-gold); font: 600 10px/16px",
+      "replace": "color: var(--on-golden); font: 600 10px/16px",
+      "expectRed": "every var() in app.css names a token",
+      "cell": "every var() in app.css names a token"
+    },
+    {
+      "name": "the Night palette loses its data-theme selector",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": ":root[data-theme=\"dark\"] {",
+      "replace": ":root[data-theme=\"darker\"] {",
+      "expectRed": "tokens.css defines the Night palette on :root[data-theme=\"dark\"]",
+      "cell": "tokens.css defines the Night palette on :root[data-theme=\"dark\"]"
+    },
+    {
+      "name": "system stops following the OS dark setting",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": "@media (prefers-color-scheme: dark) {",
+      "replace": "@media (prefers-color-scheme: light) {",
+      "expectRed": "tokens.css gives system the Night palette",
+      "cell": "tokens.css gives system the Night palette"
+    },
+    {
+      "name": "the system block drifts from the dark block",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": "    --warn-bg: #2C2818; --err-bg: #2E1D1C; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;",
+      "replace": "    --warn-bg: #2C2818; --err-bg: #2E1D1D; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;",
+      "expectRed": "the system block and the dark block carry the same declarations",
+      "cell": "the system block and the dark block carry the same declarations"
+    },
+    {
+      "name": "a component calls fetch outside api/",
+      "file": "implementations/web/client/src/theme.ts",
+      "find": "const KEY = \"cotal.theme\";",
+      "replace": "const KEY = \"cotal.theme\"; void fetch(\"/x\");",
+      "expectRed": "no fetch( or new EventSource( outside api/",
+      "cell": "no fetch( or new EventSource( outside api/"
+    },
+    {
+      "name": "a comment gains an em dash",
+      "file": "implementations/web/client/src/icons/Icon.tsx",
+      "find": "Stroke Rounded at stroke 1.5:",
+      "replace": "Stroke Rounded \\u2014 at stroke 1.5:",
+      "expectRed": "no em or en dash anywhere outside the pinned fallback string",
+      "cell": "no em or en dash anywhere outside the pinned fallback string"
+    },
+    {
+      "name": "the pinned fallback loses its dash",
+      "file": "implementations/web/client/src/lib/parts.ts",
+      "find": "kind)} \\u2014 no renderer",
+      "replace": "kind)} - no renderer",
+      "expectRed": "the pinned fallback string is still in lib/parts.ts, once",
+      "cell": "the pinned fallback string is still in lib/parts.ts, once"
+    },
+    {
+      "name": "a rule is scoped under .v3 again",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-me { font: 600 11px/1 var(--body); }",
+      "replace": ".v3 .ui-me { font: 600 11px/1 var(--body); }",
+      "expectRed": "app.css has no .v3 scope",
+      "cell": "app.css has no .v3 scope"
+    },
+    {
+      "name": "a lib module reaches for document",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "import type { RosterEntry } from \"../api/types.js\";",
+      "replace": "import type { RosterEntry } from \"../api/types.js\";\nvoid document;",
+      "expectRed": "lib/ and state/ stay free of window, document, storage, fetch and EventSource",
+      "cell": "lib/ and state/ stay free of window, document, storage, fetch and EventSource"
+    },
+    {
+      "name": "a copied shadcn badge is set in uppercase",
+      "file": "implementations/web/client/src/ui/shadcn/badge.tsx",
+      "find": "\"group/badge inline-flex",
+      "replace": "\"group/badge uppercase inline-flex",
+      "expectRed": "no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest in ui/shadcn",
+      "cell": "no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest in ui/shadcn"
+    },
+    {
+      "name": "a product part writes a Tailwind utility class",
+      "file": "implementations/web/client/src/ui/Skeleton.tsx",
+      "find": "<div className=\"ui-skel-row\">",
+      "replace": "<div className=\"flex\">",
+      "expectRed": "no Tailwind utility class outside ui/shadcn",
+      "cell": "no Tailwind utility class outside ui/shadcn"
+    },
+    {
+      "name": "shadcn focus rings take the multicast blue instead of the focus token",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": "--ring: var(--focus);",
+      "replace": "--ring: var(--multi);",
+      "expectRed": "tokens.css's :root defines each bridged shadcn name as var(--ours) per the map",
+      "cell": "tokens.css's :root defines each bridged shadcn name as var(--ours) per the map"
+    },
+    {
+      "name": "the typing caret keeps blinking under reduced motion",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "  .ui-caret { animation: none; }\n",
+      "replace": "",
+      "expectRed": "every class rule in app.css with a running animation also has a reduced-motion rule",
+      "cell": "every class rule in app.css with a running animation also has a reduced-motion rule"
+    },
+    {
+      "name": "the working dot's halo is dropped under reduced motion",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "  .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }",
+      "replace": "  .ui-st-working::after { animation: none; }",
+      "expectRed": "under reduced motion the working dot stops breathing and keeps a still 2.5px halo, so its shape still differs",
+      "cell": "under reduced motion the working dot stops breathing and keeps a still 2.5px halo, so its shape still differs"
+    },
+    {
+      "name": "the topology arc keeps circling under reduced motion",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "  .ui-orbit { animation: none; }\n",
+      "replace": "",
+      "expectRed": "under reduced motion the topology arc, the working spokes and the working line's shimmer stop",
+      "cell": "under reduced motion the topology arc, the working spokes and the working line's shimmer stop"
+    },
+    {
+      "name": "the spokes and the copied spinner keep turning while the roster is stale",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "[data-presence=\"stale\"] .ox-spin, [data-presence=\"stale\"] [data-slot=\"spinner\"], [data-presence=\"stale\"] .ui-orbit { animation: none; }",
+      "replace": "[data-presence=\"stale\"] .ui-orbit { animation: none; }",
+      "expectRed": "while the roster is only last seen nothing moves: the spokes, the copied spinner and the arc stop, the dot keeps its still halo, and both shimmers are plain",
+      "cell": "while the roster is only last seen nothing moves: the spokes, the copied spinner and the arc stop, the dot keeps its still halo, and both shimmers are plain"
+    },
+    {
+      "name": "a phone Agents row keeps its host",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-phone .ox-host { display: none; }\n",
+      "replace": "",
+      "expectRed": "only a working Agents row keeps room for View work, and on a phone a row hides its host",
+      "cell": "only a working Agents row keeps room for View work, and on a phone a row hides its host"
+    },
+    {
+      "name": "the composer's pickers no longer shrink",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-crow > span.ui-pick { min-width: 0; overflow: hidden; text-overflow: ellipsis; }\n",
+      "replace": "",
+      "expectRed": "the composer's pickers and a phone header's title shrink rather than push the page sideways",
+      "cell": "the composer's pickers and a phone header's title shrink rather than push the page sideways"
+    },
+    {
+      "name": "reduced motion leaves the short transitions running",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ", .ox-code-acts { transition: none; }",
+      "replace": ", .ox-code-acts { transition-delay: 0s; }",
+      "expectRed": "under reduced motion the short transitions stop: the copied parts' own, their pseudo-elements and the code block's Copy button",
+      "cell": "under reduced motion the short transitions stop: the copied parts' own, their pseudo-elements and the code block's Copy button"
+    }
+  ]
+}

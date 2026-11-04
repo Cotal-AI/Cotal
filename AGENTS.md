@@ -88,8 +88,10 @@ they self-register into. The wire standard — depends on nothing else in the re
 - `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator and client-surface
 layer over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
 helpers, the command-copy renderer, and what terminal surfaces share: the live space model
-(`MeshView`, `openObserver`), the manager control calls (`@cotal-ai/workspace/control`), and the
-managed-launch request (`requestManagedLaunch`). Depends on core; not part of the wire standard.
+(`MeshView`, `openObserver`), the manager control calls (`@cotal-ai/workspace/control`), the
+managed-launch request (`requestManagedLaunch`), the chat session (`@cotal-ai/workspace/chat`), and
+the terminal attach (`@cotal-ai/workspace/attach`).
+Depends on core; not part of the wire standard.
 - `**@cotal-ai/smoke-kit**` (`packages/smoke-kit`): private test-only helpers shared by the smoke
 suites — the broker ownership that kills a spawned `nats-server` when a suite is
 *signalled* rather than only when it returns, and the spawn-site census behind
@@ -105,8 +107,8 @@ program with no broker. Depends on nothing else in the repo; it knows about effe
 - `**@cotal-ai/seat**` (`packages/seat`): local PTY seat custody. A one-shot launcher starts one
 detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
 screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
-Unix socket. Depends on nothing else in the repo; it knows about PTYs, not about NATS. Linux is
-the only platform this package supports; others throw from it. The built-in `pty` runtime does not
+Unix socket. Depends on nothing else in the repo; it knows about host processes, not about NATS.
+Custody is Linux only; its host primitives for the daemon endpoint build on Linux, macOS and Windows. The built-in `pty` runtime does not
 launch through it: the manager spawns pty seats in-process on every platform, and uses this
 package only to adopt and reap seats that an earlier manager left under a custodian (on Linux;
 elsewhere `adopt` throws).
@@ -145,6 +147,11 @@ Herdr session (they survive the manager's terminal going away).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
 time) and self-registers its command.
+- `**@cotal-ai/tui**` (`implementations/tui`): the terminal app, one full-screen workspace that
+lists this machine's spaces and opens one read-only. Built on OpenCode's Solid and OpenTUI
+components, vendored under `vendor/opencode/` and held to their recorded hashes by
+`scripts/check-vendor.mjs`. Private, needs Node 26.4 or newer, and depends on core and workspace.
+The `cotal` binary does not start it yet.
 - `**@cotal-ai/linear**` (`implementations/linear`): serves the official Linear MCP server as a
 registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, plus the
 `cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +

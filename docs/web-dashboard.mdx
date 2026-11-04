@@ -63,26 +63,96 @@ An old cached web command needs the matching extension update, rather than an im
 
 ### Choose a dashboard view
 
-Each view keeps navigation on the left, content in the center, and the NEEDS-YOU view on the right.
+The rail on the left picks a view; the sidebar lists the places in that view with counts and unread
+marks; the content sits in the center; the panel on the right has Members, Agent and Topology tabs.
+On a phone the sidebar and the panel open as sheets.
 
 | View | What it shows |
 | --- | --- |
-| Monitor | Activity with delivery-mode filters and pause, the roster, and working, waiting, idle, offline, and stalest-live-heartbeat signal tiles. |
-| Channel | One channel's messages and members. |
-| Direct messages | One summary per peer, expandable into threads. |
-| Agent detail | The peer's name, role, harness, model, capabilities, activity, and blocked state. |
-| Graph at `/graph` | Agents and channels connected by channel membership, with links that glow as messages flow. |
+| Activity | Every message across the space with delivery-mode filters and pause. |
+| Channels | One channel's messages, its working members, and the members tab. |
+| Direct messages | The newest 500 direct messages across the space, one conversation per peer. A conversation whose earlier messages are not loaded says so on its first line. The sidebar lists the ten most recent conversations plus the open one; a button lists the rest. |
+| Agents | Every agent grouped by status or by host, with each working agent's running step. |
+| Topology | Agents and channels connected by channel membership, with links that glow as messages flow. |
+| Agent page | One agent at `#/agent/<id>`, with Work, Messages and Profile tabs. |
 
 The roster shows status by shape and color, role, activity, and harness.
-It groups peers by the host they report, with counts. Peers without a host appear under `host not reported`.
+The agent page, the panel's Agent tab and the waiting cards also show reported conditions,
+how long the status has stood, when the activity was set, and when the last work event occurred.
+Missing stamps stay undated. Ages use the same whole-unit rounding down as the CLI; a heartbeat
+90 seconds old reads `1m`. Heartbeat age is not time spent waiting or proof of work progress.
+The Agents view groups peers by the host they report, with counts. Peers without a host appear under `host not reported`.
 Seats do not report their owning manager, so the roster does not group them by manager.
 DM threads use authenticated ids, and names, roles, and statuses come from the roster rather than message payloads.
 
-Graph membership comes from the delivery daemon's broker connection view combined with the durable-members registry.
+**Telling agents apart.** Agents on one harness share a character, so each avatar also carries a
+badge. The badge holds the first letter of the agent's name, plus its number when the name ends in
+one (`reviewer_2` reads R2), on one of eight colours chosen from the name. When two live agents land
+on one colour, the one later in name order takes the next free colour, so every browser draws the
+same colours for the same agents. When two live agents share a first letter, both badges take two
+letters (`lead` and `logic` read Le and Lo). An offline agent's badge turns grey and keeps its
+letter. Below 26 pixels the badge is a colour dot with no letter. A message read from history has no
+verified sender, so its row gets no badge.
+
+**What moves while an agent works.** A working agent's status dot breathes a ring out from it, and
+its working icon turns wherever its status shows. Under a channel's messages, the working line names
+each member that is working, with its activity and View work, which opens the agent's Work. The
+channel header and each sidebar channel row count the working members. All of this follows presence
+alone, so waiting, idle and offline agents never move, and nothing moves while the dashboard only
+has a last-seen roster. The Agents view reads the event plane of at most 12 working agents while it
+is on screen to show each one's running step, and drops each read when that agent stops working,
+the roster goes stale or the view closes. With your system set to reduce motion, nothing turns,
+breathes, shimmers or circles, and every shape and word stays.
+
+**An agent's page.** Each agent has a page at `#/agent/<id>` with three tabs: Work, Messages and
+Profile. The address names the tab (`#/agent/<id>/messages`, `#/agent/<id>/profile`), so back and
+reload keep it. You reach the page by picking an agent in a channel (the panel's Agent tab shows a
+peek with the last three steps of its current turn and `Open <name>'s page`), by choosing View work
+on a live message from an agent on the roster (the page opens on Work at that message,
+`#/agent/<id>/work/<message id>`), or by opening the channel `events.<owner>.<actor>` by name. A
+message read from history gets no View work.
+
+Work shows what the agent publishes on its [event plane](claude-connector-reference.mdx#event-plane):
+its turns with how long each took, its tool calls grouped when no text sits between them, its text,
+and its own posts and direct messages, placed by time with a link back to where they were sent. When
+the agent's connector sends the result marker, each call says whether it is running, done or failed
+and how long it took, and a group says how many failed. Code in its text is highlighted once it is on
+screen. Work does not show tool inputs, tool output, error text or reasoning. A connector that sends
+no result marker says which tools it called and nothing more, and Work says so above the list. A
+failed turn says the turn failed and that the event plane does not say why; it quotes a reason only
+when presence reports one. Messages lists the agent's own verified channel posts and direct messages,
+newest first. Profile is the agent's card: its status and conditions, the attach and stop commands,
+its harness, model, host, heartbeat, channels and skills, and whether it publishes work events.
+
+The dashboard reads an agent's events only while its page or its peek is open, unless its card says
+it publishes no work events. It reads the newest 200 messages on the agent's event channel first;
+Load earlier reads 200 more each time, up to 2,000, and the browser then says `Showing the newest
+2,000 events`. While the page or the peek is open, the server sends that agent's new events to the
+browser as they arrive. One browser tab may watch at most 64 agents at once. A browser that falls
+more than 1 MiB behind on its live feed is disconnected; it reconnects and reads the agents it shows
+again.
+
+The card tells the page whether to expect events: `meta["ai.cotal.events"]` is `on` or `off`
+([connector reference](claude-connector-reference.mdx#event-plane)). Work meets these states:
+
+- `<name> hasn't started a turn yet`: the card says `on` and no turn has arrived.
+- `<name> publishes no work events, so Work shows only what <name> posted.`: the card says `off`.
+- `Nothing has arrived from <name> yet`: the card does not say.
+- `This dashboard can't read <name>'s work`: the broker refused the read. Work quotes the refusal
+  and, where a grant would help, gives the mesh owner the command to copy.
+- `<name>'s work didn't load`: the read failed another way. Try again reads it again.
+
+Both the live feed and the history read check who sent a frame by its subject. The check is only as
+strong as the mesh's publish permissions: on a mesh with auth only the agent holds the grant to
+publish on its own subject, and on an open mesh any raw NATS client can publish there. The card's
+value is advisory: a seat launched under a registration that requires events may say `on` and
+publish nothing when its harness has no event emitter.
+
+Topology membership comes from the delivery daemon's broker connection view combined with the durable-members registry.
 Silent subscribers therefore appear too. The feed starts as the page loads.
 Live updates take precedence over older startup reads, including older reads that later fail.
 A member following a channel family such as `team.>` links to each durable channel under it, the channels its stored copies cover.
-The graph draws those links once it has read each channel's delivery class, including for a channel it first sees after the page loads, in a post or in a membership row that names it.
+The view draws those links once it has read each channel's delivery class, including for a channel it first sees after the page loads, in a post or in a membership row that names it.
 Use **hide-offline** to hide durable members that are away.
 
 | Feed state | Meaning |
@@ -98,7 +168,9 @@ Broker-reported membership requires the delivery daemon and is provisioned by a 
 
 A failed poll keeps the last successful values and marks the affected sources stale.
 For example, `stale: peers, activity` names the sources; hover for the server's reason.
-The next successful read replaces those values and clears the mark.
+While a refusal stands the dashboard reads again, first after five seconds, then after twice the
+last wait, up to a minute. The next successful read replaces those values, clears the mark, and
+starts the wait at five seconds again.
 
 If the entire presence watch is silent for longer than the presence TTL, the header shows `stale: roster` and the reason `observer presence watch silent since T`.
 The last-known online roster remains visible until the watch resumes.
@@ -141,10 +213,8 @@ Raw HTML is removed. Links permit only HTTP, HTTPS, and mailto targets.
 Peer names, roles, and activities remain plain text, including attribute values such as hover titles.
 Use **show more** for a long message or **expand / collapse all** for a whole channel.
 
-The `?demo` URL, such as `http://127.0.0.1:7799/?demo`, opens a static design reference without a mesh.
-Its intent badges, approval requests, and task-failed alerts are demo content, not live dashboard interactions.
-The wire already supports reported `approval` and `failed` presence conditions.
-Live mode shows only data the observer can read.
+The wire supports reported `approval` and `failed` presence conditions, which the waiting cards and
+the agent page show. The dashboard shows only data the observer can read.
 
 ## Check visibility limits
 

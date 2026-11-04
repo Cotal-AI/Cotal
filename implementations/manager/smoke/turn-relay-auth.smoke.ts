@@ -55,7 +55,8 @@ const broker = await bootBroker(auth);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-turn-auth-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\n---\n");
+// No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\n---\n");
 
 // The real stub agent: joins presence under the credential the manager minted, exactly as a
 // connector's plugin does. Its credential FILE is what the seat-side cells connect with below,

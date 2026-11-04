@@ -2,11 +2,11 @@
   "suite": [
     "bin/smoke/chat-history-restore-live.smoke.ts"
   ],
-  "guard": "An existing space keeps its posts older than 30 days, on the limit it had, through a `cotal up` that starts its broker, and a new space starts with no age limit and 1000 per sender. A restore holds the chat stream at the recorded count and no age through every check of the restored state, then sets the age the backup recorded on the target and reads it back, and a backup on the old settings keeps them at the next start. A `cotal setup --start` whose manager identity does not read afterwards reports an unknown outcome with that reason.",
+  "guard": "An existing space keeps its posts older than 30 days, on the limit it had, through a `cotal up` that starts its broker, and a new space starts with no age limit and 1000 per sender. A restore holds CHAT, INBOX, DLV and DM at the recorded count and no age through every check of the restored state, then sets each age the backup recorded on the target, one stream at a time, and reads it back; a failure applying a later age fails the attempt and leaves the cut ready for the same restore. A backup on the old settings keeps them at the next start. A `cotal setup --start` whose manager identity does not read afterwards reports an unknown outcome with that reason.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build && pnpm smoke:chat-history-restore:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 27,
+  "minTicks": 32,
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/chat-history-restore.json",
   "why": [
     "The suite drives `tsx bin/cotal.ts`, which loads core and the CLI from their built dist, so each mutation",
@@ -14,33 +14,52 @@
     "posts in the stopped broker's store and then starts it with `cotal up`, so a start that moved the limit to an",
     "age would watch the broker delete them. The suite sets the old settings on the stream itself before that stop, so",
     "the cell turns red only when the second up moves an existing stream. The recorded-age scenario's posts are older than the recorded age when",
-    "the restore checks them, so a restore that set the age first would watch the broker delete them during its",
-    "own checks."
+    "the restore checks them, and so are its DMs, so a restore that set an age first would watch the broker delete them during its",
+    "own checks. The fault cell fails the last age in the manifest's order through the restore's own smoke hook, after the others landed."
   ],
   "mutations": [
     {
-      "name": "the restore stages the chat stream at the recorded age",
+      "name": "the restore stages each stream at the recorded age",
       "file": "packages/core/src/backup-config.ts",
-      "find": "  return { maxAgeMs: 0, perSender: recorded.perSender };",
-      "replace": "  return { maxAgeMs: recorded.maxAgeMs, perSender: recorded.perSender };",
-      "expectRed": "a restore whose posts are older than the recorded age passes its checks",
-      "cell": "a restore whose posts are older than the recorded age passes its checks",
+      "find": "  return { maxAgeMs: 0, perSubject: recorded.perSubject };",
+      "replace": "  return { maxAgeMs: recorded.maxAgeMs, perSubject: recorded.perSubject };",
+      "expectRed": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
+      "cell": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "the restore never sets the recorded age",
+      "name": "the restore stages INBOX and DLV at the recorded age",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "  return { maxAgeMs: 0, perSubject: recorded.perSubject };",
+      "replace": "  return { maxAgeMs: stream === \"inbox\" || stream === \"dlv\" ? recorded.maxAgeMs : 0, perSubject: recorded.perSubject };",
+      "expectRed": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
+      "cell": "...and leaves the preserved cut ready, so the same restore runs again and passes its checks over posts, DMs and copies older than the recorded ages",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
+      "note": "Only the INBOX and DLV copies are older than those two streams' ages, so this mutant reaches the restore's checks through them alone."
+    },
+    {
+      "name": "the restore never sets the recorded ages",
       "file": "implementations/cli/src/lib/restore.ts",
-      "find": "    if (chatRecord && wanted.includes(chatRecord.stream)) await applyRecordedChatAge(broker, journal.space, chatRecord);\n",
+      "find": "      if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);\n",
       "replace": "",
-      "expectRed": "...then holds the recorded age and count",
-      "cell": "...then holds the recorded age and count",
+      "expectRed": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
+      "cell": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the restore sets only the chat stream's age, as before",
+      "file": "implementations/cli/src/lib/restore.ts",
+      "find": "      if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);\n",
+      "replace": "      if (wanted.includes(record.stream) && historyLimitStreamOf(journal.space, record.stream) === \"chat\") await applyRecordedAge(broker, journal.space, record);\n",
+      "expectRed": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
+      "cell": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "cotal up moves a stream on the old settings to 30 days, as 0.134.0 did",
       "file": "packages/core/src/streams.ts",
-      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
-      "replace": "    await readChatStreamConfig(jsm, opts.space);\n    { const { config } = await jsm.streams.info(chatStream(opts.space)); if (config.max_age === 0 && config.max_msgs_per_subject === 1000) await setChatHistoryLimit(jsm, opts.space, { maxAgeMs: 30 * 86_400_000, perSender: 1000 }); }\n",
+      "find": "    for (const stream of [\"chat\", \"inbox\", \"dlv\", \"dm\"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);\n",
+      "replace": "    for (const stream of [\"chat\", \"inbox\", \"dlv\", \"dm\"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);\n    { const { config } = await jsm.streams.info(chatStream(opts.space)); if (config.max_age === 0 && config.max_msgs_per_subject === 1000) await setHistoryLimit(jsm, opts.space, \"chat\", { maxAgeMs: 30 * 86_400_000, perSubject: 1000 }); }\n",
       "expectRed": "an existing space keeps every post older than 30 days through cotal up",
       "cell": "an existing space keeps every post older than 30 days through cotal up",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build",
@@ -49,8 +68,8 @@
     {
       "name": "the default goes back to 30 days",
       "file": "packages/core/src/backup-config.ts",
-      "find": "Object.freeze({ maxAgeMs: 0, perSender: 1000 })",
-      "replace": "Object.freeze({ maxAgeMs: 30 * 86_400_000, perSender: 1000 })",
+      "find": "Object.freeze({ maxAgeMs: 0, perSubject: 1000 })",
+      "replace": "Object.freeze({ maxAgeMs: 30 * 86_400_000, perSubject: 1000 })",
       "expectRed": "a new space starts with no age limit and 1000 per sender",
       "cell": "a new space starts with no age limit and 1000 per sender",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"

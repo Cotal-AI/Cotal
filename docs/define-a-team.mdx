@@ -67,6 +67,9 @@ The check resolves personas and access rules without a broker.
 The boot command starts a fresh stack using the prepared root.
 Inspect `cotal ps` to confirm which requested agents joined; a started manager alone does not prove every agent is ready.
 Native `up -f` returns before those launches settle. If an agent is absent from `ps`, inspect the manager log under `.cotal/` for its launch failure.
+If its output cannot be read, the log names the agent and says `last output unavailable` with the
+reader's reason. This is distinct from a child that printed nothing; the launch still fails and
+cleanup proceeds. The same diagnostic applies to failed supervised recovery.
 Use [Watch a mesh](watch-a-mesh.mdx) to inspect activity.
 
 Before the first managed Claude launch, run `claude` once as the same user, choose a text style, and log in.

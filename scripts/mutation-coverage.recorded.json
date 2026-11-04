@@ -1,15 +1,7 @@
 {
-  "bin/smoke/fixtures/agui-render-parity.mutations.json": {
-    "sha256": "f16aebbd95796a88dd1ead2bdeb282810123203d004eb86f3bd411675ffec04a",
-    "refusal": "mutation \"P1 the browser copy goes back to falsiness on the tool result, which is the divergence this pair actually shipped with: an empty result printed (no content) in the dashboard and nothing in the console, for the same frame\" is missing \"cell\""
-  },
   "bin/smoke/fixtures/mutation-fixtures.mutations.json": {
     "sha256": "124fea3753d0ce6a17aa3bda465f9ccedbc7bd638ca76212b194695419d6f1f1",
     "refusal": "mutation \"an anchor goes dead - the source moved and the find no longer matches\" targets scripts/mutations/restore-mtime.json, which none of [bin/smoke/mutation-fixtures.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in scripts/mutations that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "bin/smoke/mutations/attach-user-mode.json": {
-    "sha256": "74ff08800b07f18eaaa63962bc5596b2bd0044d5bb7de9268725b5e19d31b6ad",
-    "refusal": "mutation \"the CLI falls back to the seed on a user mesh\" targets implementations/cli/src/commands/agents.ts, which none of [implementations/auth/smoke/user-spawn.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "bin/smoke/mutations/broker-disclosure.json": {
     "sha256": "4a6a533ab28241921d9023662a9bf5c7f2cba6762edfa2e85b8a051a9e80c6ac",
@@ -34,10 +26,6 @@
   "bin/smoke/mutations/goal-follow-subscription.json": {
     "sha256": "1ae2bdd3416c91a0117c6764faa0ffed3000916356eba020a21387f9b6ffc766",
     "refusal": "mutation \"the subscription error is discarded again, so a denied caller is handed a timeout\" targets packages/core/src/endpoint-invoke.ts, which none of [bin/smoke/goal-follow.smoke.ts, implementations/auth/smoke/user-spawn.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "bin/smoke/mutations/lang-supervise-live.json": {
-    "sha256": "e5f0f0dca7b9502b1796392321c1d63871e589159237516459d431b7e252eac0",
-    "refusal": "mutation \"a supervised exit follows the ordinary terminal path\" targets implementations/manager/src/manager.ts, which none of [bin/smoke/lang-supervise-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/manager that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "bin/smoke/mutations/live-job-conclusion.json": {
     "sha256": "a539d7366aaea2dae98c51306aaba8ec501e0df17e3de09da4b52bb58f310fbc",
@@ -139,14 +127,6 @@
     "sha256": "09edc98f6291d06627797299705438477cff1764b6c87528b3190492c9957bfa",
     "refusal": "mutation \"P1 the suffix match becomes a prefix match, letting one thread's emitter consume another's bytes\" is missing \"cell\""
   },
-  "extensions/connector-core/smoke/fixtures/agui-conformance.mutations.json": {
-    "sha256": "992c631bc5fff063328e20ede6c497596ef0330c84c6e37187ccc0e9d48b5a2b",
-    "refusal": "mutation \"M10 the reasoning constructor drops the required role literal, the defect the first draft actually shipped\" is missing \"cell\""
-  },
-  "extensions/connector-core/smoke/fixtures/agui-render.mutations.json": {
-    "sha256": "1b59a4b6fb0c18eb24564d6d75886148f10ca7a24aa9eb600329baa6ad79e642",
-    "refusal": "mutation \"R1 the renderer stops registering, so every surface goes back to the marker while the module still exports a perfectly good render function\" is missing \"cell\""
-  },
   "extensions/connector-core/smoke/fixtures/agui-wal-path.mutations.json": {
     "sha256": "9d9ea4400e6d2de235c8b6e89a8c2d93f7ba3b9065e381ddcb45bade07d99a20",
     "refusal": "mutation \"L1 the principal lock goes back to being a computed path with nothing acquired, which is the exact state a review drove two logs onto one file from\" is missing \"cell\""
@@ -166,10 +146,6 @@
   "extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json": {
     "sha256": "ba68b5d67464980390b056267f4abc43539af1ddec9dee84b23c3d3bbb819061",
     "refusal": "mutation \"old status iterators may overwrite the current connection epoch\" targets packages/core/src/endpoint.ts, which none of [extensions/connector-core/smoke/transport-liveness.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "extensions/connector-core/smoke/mutations/agui-egress-closed-schema.json": {
-    "sha256": "714a4f377e9b1e7160c8af33b63cfd21e3d62742c0f3db3fd291d89c8957cd45",
-    "refusal": "mutation \"T-SCHEMA-BYPASS the extraPropertyPath check is removed from frozenBodyEgressVerdict so the fence reverts to event-kind-only control\" is missing \"cell\""
   },
   "extensions/connector-core/smoke/mutations/agui-holder.json": {
     "sha256": "f98004ee4864329b28220d2d0ce2f072961bb9a74c33eec22879a1b6d3ec97d9",
@@ -363,10 +339,6 @@
     "sha256": "d7b91115b7a62b71451f447310d8032f0ee28cec202b45598b907212cc7fdb3c",
     "refusal": "mutation \"W1 seed history with a provisioner credential that cannot publish chat\" is missing \"cell\""
   },
-  "implementations/cli/smoke/mutations/console-attach.json": {
-    "sha256": "6e5beccfd444e2d71f73213a9f104036e2b5ed28e486cbd45636fddf4bd04470",
-    "refusal": "mutation \"A1 compare the detach key on the raw stream\" targets implementations/cli/src/lib/attach-client.ts, which none of [implementations/cli/smoke/console-attach.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/cli/smoke/mutations/console-gaps.json": {
     "sha256": "087ec5c20b17d140dc799641874ee9801a0112deb64ae79ef528af55a91ce199",
     "refusal": "mutation \"G1 viewing a channel does not pin its watermark\" targets implementations/cli/src/console/app.tsx, which none of [implementations/cli/smoke/console-gaps.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -503,6 +475,10 @@
     "sha256": "4e7b572dec3fa50e75b9b4ec5bb09bdb1b88c26b01a6a3daf069ef98af3c5698",
     "refusal": "mutation \"raw driver gains a stream-wide records read\" targets packages/core/src/run-driver-grants.ts, which none of [implementations/runtime/smoke/run-driver-auth.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
+  "implementations/runtime/smoke/mutations/run-refusal-rail.json": {
+    "sha256": "1941ffefb75a18d7abc2118fc1cbd57cb45400dff055c137abce0fc29a4a91f0",
+    "refusal": "mutation \"the refusal returns to one rail-blind sentence, with the question and the --local remedy on every rail\" is missing \"cell\""
+  },
   "implementations/web/smoke/fixtures/agui-frame-dispatch.mutations.json": {
     "sha256": "a7adfd0ba36dba3f02cd87ebdf744c9cf54cee8ccb923fba29885e3bfc23c28d",
     "refusal": "mutation \"D1 the own-property guard is dropped, so a part whose kind is an inherited method name resolves Object.prototype.toString as its renderer and the body draws [object Window] with no kind named and no failure reported\" is missing \"cell\""
@@ -518,30 +494,6 @@
   "implementations/web/smoke/fixtures/channel-alias.mutations.json": {
     "sha256": "5bb3479c848fe2c5dc8a8f4d4dc48248254b2a610b01201a1a696a11ae699d20",
     "refusal": "mutation \"A1 the history route stops asking whether the name is the one the wire uses, so a bidi-altered name reads the channel it aliases onto and the dashboard reports back the name that was typed\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/channel-authority.mutations.json": {
-    "sha256": "786a66e3739f5038b577be8b87fc2c94290e8707bd4c224e78c899adc11d716b",
-    "refusal": "mutation \"A1 the graph page's activity source stops handing its read to the backfill, which is the link between the page's own boot and the attribution loop the rest of this suite drives: the loop would still be correct and would no longer be reached by anything a browser does\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/echo-escaping.mutations.json": {
-    "sha256": "858cd78f1c0b097c9bc119dd481adff6100aa90603174966197666aa65ecc50d",
-    "refusal": "mutation \"E1 the quoter stops escaping anything and becomes the bare `JSON.stringify` that shipped, so DEL, the C1 controls, the bidi marks and the line/paragraph separators go back to arriving raw in the value an operator reads\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/event-order.mutations.json": {
-    "sha256": "d64eec7afb91e62ac98c1c75de60b5f5f092cc4e116ee66f51ddd1f3c3bb784d",
-    "refusal": "mutation \"O1 the baseline is taken from the batch's first row instead of its minimum, so a history batch sorted by timestamp rather than by seq baselines on whichever frame the producer stamped earliest and manufactures a gap beneath it\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/graph-boot.mutations.json": {
-    "sha256": "4b65c5484f8737ef38b17295179772ad3a53583c6fd3a3df7a156e4e7df6580a",
-    "refusal": "mutation \"G1 the feed goes back to being chained behind the bootstrap, so it is guaranteed to RUN but not to run SOON and the pill reads disconnected for the whole load window on a slow link\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/history-limit.mutations.json": {
-    "sha256": "28d69d5ccaa70d2a43fea08078820a1951c6695e331f00307a93cc767aed3726",
-    "refusal": "mutation \"H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/snapshot-retention.mutations.json": {
-    "sha256": "f99685c00f7c5e7347da9524b6de7233102a04d0fa7a88ea59dedecf8dac22f0",
-    "refusal": "mutation \"W1 the state-retention is reverted: a refused read applies anyway, with an empty value standing in for the snapshot it could not fetch, which is the wipe the issue reports written as a fallback\" is missing \"cell\""
   },
   "implementations/web/smoke/fixtures/web-events-filter.mutations.json": {
     "sha256": "294cebdc274e69b63d33ed9982db4f6f3baea12e8a74cbe302d7d2074934ce3f",

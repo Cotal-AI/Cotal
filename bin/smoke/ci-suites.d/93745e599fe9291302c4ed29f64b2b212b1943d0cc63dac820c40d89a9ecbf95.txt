@@ -1,0 +1,2 @@
+# A seat reads the channel registry on demand and binds no consumer on it (#5738).
+smoke:seat-channel-registry

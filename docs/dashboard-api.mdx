@@ -861,6 +861,49 @@ Each named event carries the following JSON data schema.
   },
   "message": {
     "$ref": "#/components/schemas/LiveMessage"
+  },
+  "hello": {
+    "description": "The first event of a feed: its id, which every watch request names. Sent before the roster so a browser can watch an agent at once.",
+    "type": "object",
+    "properties": {
+      "feed": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "feed"
+    ],
+    "additionalProperties": false
+  },
+  "agent-frame": {
+    "description": "A frame an agent published on its own event channel, sent only to the feeds watching that agent. `id` is the agent's roster id, the subject's verified publisher.",
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "msg": {
+        "description": "The frame as the agent published it, unvalidated publisher JSON forwarded by the dashboard tap; consumers validate it before treating it as a wire message."
+      }
+    },
+    "required": [
+      "id",
+      "msg"
+    ],
+    "additionalProperties": false
+  },
+  "overflow": {
+    "description": "The feed fell more than the server's buffer ceiling behind, so the server closed it; the browser reconnects to resume.",
+    "type": "object",
+    "properties": {
+      "reason": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "reason"
+    ],
+    "additionalProperties": false
   }
 }
 ```
@@ -1101,6 +1144,517 @@ Content type: `application/json`.
 #### HTTP 500
 
 The request failed. The body names the failure; a failed read does not terminate the dashboard.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+## Watch an agent's event frames on a feed [#watch-agent]
+
+```http
+POST /api/agents/{agent}/watch
+```
+
+Subscribe one open feed to the agent's event-plane frames, which then arrive on that feed as agent-frame events. No body: a watch is a row in this process's map, which the feed's close removes. It changes no mesh state. Watching again is still 204. Other methods fall through to 404.
+
+### Parameters
+
+| Name  | Location | Required | Schema                                             |
+| ----- | -------- | -------- | -------------------------------------------------- |
+| agent | path     | yes      | `{"type":"string","minLength":3,"maxLength":4096}` |
+| feed  | query    | yes      | `{"type":"string","minLength":1}`                  |
+
+**agent:** The agent's id, \<owner>.\<actor> with each part in \[A-Za-z0-9\_], percent-encoded as one URL path component. Any other text is refused with 400.
+
+**feed:** The id the feed's hello event named. A missing id, or one that is not an open feed of this process, is refused with 400.
+
+### Responses
+
+#### HTTP 204
+
+Recorded. No body.
+
+#### HTTP 302
+
+A valid one-use k query token is exchanged for a dashboard session. The response redirects to the same path without its query. A valid existing cookie takes precedence over k.
+
+`Location`: The requested path without the query string.
+
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+
+#### HTTP 400
+
+The agent id or the feed id was refused.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+No valid session, an invalid launch token, or a spent launch token. The readiness credential does not authorize these routes.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/AuthenticationError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "unauthenticated"
+}
+```
+
+#### HTTP 403
+
+Origin is checked before session authentication. An origin outside this listener's allowed origins is refused.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/OriginError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "cross-origin"
+}
+```
+
+#### HTTP 500
+
+The request failed. The body names the failure; a failed read does not terminate the dashboard.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+## Stop watching an agent's event frames on a feed [#unwatch-agent]
+
+```http
+POST /api/agents/{agent}/unwatch
+```
+
+Remove the feed's watch of the agent. No body, no mesh state. Unwatching an agent the feed does not watch is still 204. Other methods fall through to 404.
+
+### Parameters
+
+| Name  | Location | Required | Schema                                             |
+| ----- | -------- | -------- | -------------------------------------------------- |
+| agent | path     | yes      | `{"type":"string","minLength":3,"maxLength":4096}` |
+| feed  | query    | yes      | `{"type":"string","minLength":1}`                  |
+
+**agent:** The agent's id, \<owner>.\<actor> with each part in \[A-Za-z0-9\_], percent-encoded as one URL path component. Any other text is refused with 400.
+
+**feed:** The id the feed's hello event named. A missing id, or one that is not an open feed of this process, is refused with 400.
+
+### Responses
+
+#### HTTP 204
+
+Recorded. No body.
+
+#### HTTP 302
+
+A valid one-use k query token is exchanged for a dashboard session. The response redirects to the same path without its query. A valid existing cookie takes precedence over k.
+
+`Location`: The requested path without the query string.
+
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+
+#### HTTP 400
+
+The agent id or the feed id was refused.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+No valid session, an invalid launch token, or a spent launch token. The readiness credential does not authorize these routes.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/AuthenticationError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "unauthenticated"
+}
+```
+
+#### HTTP 403
+
+Origin is checked before session authentication. An origin outside this listener's allowed origins is refused.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/OriginError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "cross-origin"
+}
+```
+
+#### HTTP 500
+
+The request failed. The body names the failure; a failed read does not terminate the dashboard.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+## Read an agent's recent event frames [#read-agent-events]
+
+```http
+GET /api/agents/{agent}/events
+```
+
+Read the newest frames on the agent's event channel, bounded like its siblings: a read that does not finish within the aggregation deadline, or that fails, returns HTTP 503 saying which. A read the broker refuses is answered 200 with the refusal and, when known, the grant that would allow it. Other methods are refused with 405 and an Allow header naming GET.
+
+### Parameters
+
+| Name  | Location | Required | Schema                                                                    |
+| ----- | -------- | -------- | ------------------------------------------------------------------------- |
+| agent | path     | yes      | `{"type":"string","minLength":3,"maxLength":4096}`                        |
+| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":200}` |
+
+**agent:** The agent's id, \<owner>.\<actor> with each part in \[A-Za-z0-9\_], percent-encoded as one URL path component. Any other text is refused with 400.
+
+**limit:** Maximum requested frames. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+
+### Responses
+
+#### HTTP 200
+
+The page, or the broker's refusal of the read.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/AgentEventsPage"
+}
+```
+
+#### HTTP 302
+
+A valid one-use k query token is exchanged for a dashboard session. The response redirects to the same path without its query. A valid existing cookie takes precedence over k.
+
+`Location`: The requested path without the query string.
+
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+
+#### HTTP 400
+
+The agent id or the limit was refused.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+No valid session, an invalid launch token, or a spent launch token. The readiness credential does not authorize these routes.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/AuthenticationError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "unauthenticated"
+}
+```
+
+#### HTTP 403
+
+Origin is checked before session authentication. An origin outside this listener's allowed origins is refused.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/OriginError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "cross-origin"
+}
+```
+
+#### HTTP 413
+
+These read routes accept no request body. An announced body is refused before it is read; the connection is closed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+The request failed. The body names the failure; a failed read does not terminate the dashboard.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 503
+
+The history read failed or did not finish within 8000 ms.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+## Post as the operator [#send-as-operator]
+
+```http
+POST /api/send
+```
+
+Post one message as the operator the process holds: \{kind: "msg", channel, text} to one concrete channel, or \{kind: "dm", to, text} to one roster member. The body is read before any refusal, so the 8192-byte cap bounds what a refused post costs, and every check runs before the poster starts, so a refused post never puts the operator on the roster. A wildcard or alias channel, an id not on the roster, an empty text, another kind, or a body that is not a JSON object is refused with 400. A read-only service, an expired operator credential and a cross-origin request answer 403 with the reason. A publish the broker refuses answers 502 with the refusal. Other methods fall through to 404.
+
+### Parameters
+
+No operation parameters.
+
+### Request body
+
+The request uses the schema below.
+
+Required: yes.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "msg",
+        "dm"
+      ]
+    },
+    "channel": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The channel, for kind msg. One concrete channel; no wildcard."
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The roster member's agent id, for kind dm."
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The message. Trimmed; an empty text is refused."
+    }
+  },
+  "required": [
+    "kind",
+    "text"
+  ]
+}
+```
+
+Example: channel
+
+```json
+{
+  "kind": "msg",
+  "channel": "general",
+  "text": "Ship it."
+}
+```
+
+Example: dm
+
+```json
+{
+  "kind": "dm",
+  "to": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS",
+  "text": "How long until the smoke is green?"
+}
+```
+
+### Responses
+
+#### HTTP 200
+
+The post went out.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/SendAnswer"
+}
+```
+
+#### HTTP 302
+
+A valid one-use k query token is exchanged for a dashboard session. The response redirects to the same path without its query. A valid existing cookie takes precedence over k.
+
+`Location`: The requested path without the query string.
+
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+
+#### HTTP 400
+
+The target, the text, the kind or the body was refused; the error names which.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+No valid session, an invalid launch token, or a spent launch token. The readiness credential does not authorize these routes.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/AuthenticationError"
+}
+```
+
+Example:
+
+```json
+{
+  "error": "unauthenticated"
+}
+```
+
+#### HTTP 403
+
+A browser origin was refused (cross-origin), the service is read-only (post is off in /api/meta), or the operator credential expired.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 413
+
+These read routes accept no request body. An announced body is refused before it is read; the connection is closed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+The request failed. The body names the failure; a failed read does not terminate the dashboard.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 502
+
+The broker refused the publish; the error carries the refusal as it came.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 503
+
+The dashboard is shutting down, so it no longer posts.
 
 Content type: `application/json`.
 
@@ -1520,12 +2074,56 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
     },
     "channelDeleteSupported": {
       "type": "boolean"
+    },
+    "post": {
+      "description": "Whether this dashboard can post as the operator. `participant` posts as one operator for the life of the process; `off` says why posting is unavailable.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "participant"
+              ]
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "off"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "operatorId": {
+      "type": "string",
+      "description": "The operator's own roster id once the dashboard has posted, so the browser can tell its own messages apart."
     }
   },
   "required": [
     "space",
     "pid",
-    "channelDeleteSupported"
+    "channelDeleteSupported",
+    "post"
   ],
   "additionalProperties": false
 }
@@ -1556,6 +2154,88 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
     "channel",
     "purged",
     "removed"
+  ],
+  "additionalProperties": false
+}
+```
+
+### AgentEventsPage
+
+```json
+{
+  "description": "The newest frames on the agent's event channel, oldest first, or the broker's refusal of that read.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Message"
+          }
+        },
+        "more": {
+          "type": "boolean",
+          "description": "Whether older frames exist beyond this page."
+        }
+      },
+      "required": [
+        "frames",
+        "more"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "refused": {
+          "type": "string",
+          "description": "The broker's refusal, as it came."
+        },
+        "grant": {
+          "type": "string",
+          "description": "The command that grants this dashboard the read, when one is known."
+        }
+      },
+      "required": [
+        "refused"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
+```
+
+### SendAnswer
+
+```json
+{
+  "type": "object",
+  "description": "A post that went out. seq is a DM's stored sequence, the broker's proof that it kept the message; a channel post has none.",
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    },
+    "id": {
+      "type": "string",
+      "description": "The message id."
+    },
+    "operatorId": {
+      "type": "string",
+      "description": "The operator's agent id, the same id /api/meta reports."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "ok",
+    "id",
+    "operatorId"
   ],
   "additionalProperties": false
 }

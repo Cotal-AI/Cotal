@@ -231,16 +231,17 @@ per-message metadata (`MessageMeta` need not carry it); it MUST NOT assume one c
   that member's next connection or turn, remaining pending until acked. A crash or `ack_wait` expiry
   redelivers the durable copy. At-least-once is bounded by the space's chat history limit (§8): a
   message the chat stream removes before its durable copy is taken may be lost, and the guarantee is
-  not unbounded. A durable copy already taken is not removed by that limit.
+  not unbounded. A durable copy already taken is not removed by that limit; the backstop's own limit
+  bounds it (§8).
 
-Unicast (`to`) and anycast (`toService`) are at-least-once via their own DM/TASK consumers (§8);
-they have no channel membership and are not subject to the per-channel delivery-class mechanism. An
-`@mention` (§5) on a `live` channel additionally writes a durable copy to each mentioned target
-**authorized to read that channel** (its `allowSubscribe` covers the channel), so an authorized but
-offline target still receives it; an `@mention` MUST NOT deliver channel content to a target outside
-its read ACL. Durable mention routing resolves each lowercased name to a unique current instance id
-from presence at publish time; an ambiguous (multiple live matches) or unresolvable name yields no
-durable copy, and authorization is checked against the resolved id's current `allowSubscribe`. A
+Unicast (`to`) and anycast (`toService`) are at-least-once via their own DM/TASK consumers (§8),
+unicast within the space's DM history limit (§8). They have no channel membership and are not subject
+to the per-channel delivery-class mechanism. An `@mention` (§5) on a `live` channel additionally
+writes a durable copy to each mentioned target **authorized to read that channel** (its
+`allowSubscribe` covers the channel), so an authorized but offline target still receives it; an
+`@mention` MUST NOT deliver channel content to a target outside its read ACL. Durable mention
+routing resolves each lowercased name to a unique current instance id from presence at publish time;
+an ambiguous (multiple live matches) or unresolvable name yields no durable copy, and authorization is checked against the resolved id's current `allowSubscribe`. A
 target authorized for a channel is **mention-reachable** there whether or not it is currently joined; this is intentional (an `@mention` can pull an authorized peer in) and is distinct
 from membership; a client SHOULD distinguish "joined" (actively subscribed) from "readable /
 mention-reachable" (in `allowSubscribe`) so an unjoined channel is not treated as "cannot reach me
@@ -527,6 +528,11 @@ from out-of-band context. The same effective config MUST be the single source of
 join, durable fan-out, history read, and membership surfacing; an implementation MUST NOT resolve
 the class differently in different paths.
 
+A participant that reads presence on demand (§6) reads the registry the same way: batched Direct
+Gets over `$KV.cotal_channels_<space>.>`, which bind no consumer. It reads before it shows the
+registry and before it resolves a join's or leave's delivery class, so an entry written or removed
+after it started is not missed.
+
 Join subscribes the instance to the channel; leave unsubscribes it. A join target MUST be within
 the instance's read ACL (`allowSubscribe`, §9); a join outside it MUST be refused by the broker on
 subscribe. A client MUST NOT publish to wildcard channels, but a wildcard read ACL (`team.>`)
@@ -626,20 +632,24 @@ mode.
 | Stream | Captures | Retention | Required config |
 | --- | --- | --- | --- |
 | `CHAT_<space>` | `cotal.<space>.chat.>` | Limits | file storage, `max_age` and `max_msgs_per_subject` from the chat history limit below, `discard=Old`, `allow_msg_ttl=false`, `allow_direct=true` |
-| `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
+| `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, `max_age` and `max_msgs_per_subject` from the DM history limit below, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
-**Chat history limit.** One limit per space sets how long `CHAT_<space>` keeps a channel post: until
-its sender has posted the limit's count (`max_msgs_per_subject`) newer ones on that channel, or, when
-the limit has an age (`max_age`), until the post is older than that age, whichever comes first. A
-chat subject is one sender on one channel, so the count holds per sender per channel. The broker
-removes a post past either bound, and lowering the limit on a live stream removes the posts past the
-new one at once. A new space starts with no age limit and 1000 per sender, and setting up an
-existing space MUST NOT change its limit. An operator MAY set an age from 2 minutes (the stream's
-duplicate window) to 3650 days in whole seconds, and a count of at least 1. A reader MUST accept no
-age with any count. `allow_msg_ttl` stays false on the stream: once on it cannot be turned off, and a
-per-message TTL of `never` escapes `max_age`. Copies the Plane 3 backstop already took into its own
-streams are bounded by those streams, not by this limit.
+**History limits.** A space has one history limit for `CHAT_<space>` and one for `DM_<space>`. Each
+keeps an entry until the limit's count (`max_msgs_per_subject`) of newer entries share its subject,
+or, when the limit has an age (`max_age`), until the entry is older than that age, whichever comes
+first. A chat subject is one sender on one channel, so the chat count holds per sender per channel. A
+DM subject is one sender to one recipient, so the DM count holds per sender per recipient. Either part
+may be none: no age is `max_age` 0 and no count is `max_msgs_per_subject` -1. With none for both, only
+the server's storage limit bounds the stream, and a full store refuses new messages. The broker
+removes an entry past either bound, and lowering a limit on a live stream removes the entries past
+the new one at once, read or not. A new space's chat stream starts with no age limit and 1000 per
+sender, and its DM stream with no age limit and no count limit. Setting up an existing space MUST NOT
+change either limit. An operator MAY set an age from 2 minutes (the stream's duplicate window) to 3650
+days in whole seconds, or none, and a count of at least 1, or none. A reader MUST accept any limit an
+operator may set. `allow_msg_ttl` stays false on the chat stream: once on it cannot be turned off, and
+a per-message TTL of `never` escapes `max_age`. Copies the Plane 3 backstop already took into its own
+streams are bounded by those streams' limit, not by the chat limit.
 
 **Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
 JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
@@ -721,11 +731,21 @@ differently as long as the §4 guarantee and the §9 checks hold.
 
 In the reference, fan-out writes a post on a concrete channel for every member whose row is that
 channel or a family covering it, and each copy's `Nats-Msg-Id` is `<id>:<principal>:<lifecycleUid>`,
-so the covering rows of one member collapse into one copy within the duplicate window. A member's
-`dlv` subject keeps its newest 1000 copies (`max_msgs_per_subject=1000`, `discard=Old`), and the broker
-reports no discard. A client that receives a backstop copy with 999 or more copies still pending
-behind it SHOULD tell the member that earlier copies may have been dropped, and that ACL-bounded
-history may still hold them.
+so the covering rows of one member collapse into one copy within the duplicate window. The
+reference's INBOX and DLV streams share one operator-set limit, with the parts and bounds of the
+history limits above, except that an age is at least 2 hours, their duplicate window. A subject there
+is one member lifecycle. A new space starts with no age limit and 1000 copies per lifecycle, and setting
+up an existing space leaves the limit as it is. They are two streams, so a change that stops partway can leave them on different limits. A member's `dlv`
+subject keeps its newest copies up to that count (`discard=Old`), delivered ones included, and the
+broker reports no discard. The trusted writer stamps each copy with the DLV count in force when it
+wrote the copy, in a `Cotal-Delivery-Limit` header holding a whole number or `none`; the reference
+reads the count at most 5 seconds before the write. A copy without the header comes from a writer that
+predates it, whose count was always 1000, so its count is 1000. A client that receives a backstop copy
+with its stamped count minus one, or more, copies still pending behind it SHOULD tell the member that
+earlier copies may have been dropped, and that ACL-bounded history may still hold them; a copy stamped
+`none` never does. The stamp is the count when the copy was written, so the notice covers evictions
+under that count. Lowering the count, or an age expiring copies, removes copies without a notice to
+the member; the reference shows the operator what such a change removes before it is made.
 
 The absence of a usable receiver dedup key does not relax acknowledgement ownership: a
 JetStream-consumed copy with `id: ""` that is surfaced or handled MUST be acknowledged
@@ -2131,11 +2151,30 @@ These two operations mutate host-owned storage, so an implementation that owns n
 refuse them with `unimplemented` rather than answering a manager-lifecycle phase for them. An auth
 service that owns the actor ledger and the space's provisioning authority answers both itself, after
 the same decision. Its enrollment writes the managed grant at a fresh host-minted lifecycle UID with
-the request's supervising actor as the grant's parent, so the ledger's delegation envelope bounds it,
-and then provisions that UID's durables; a provisioning failure revokes the grant and releases the
-footprint before the refusal. An enrollment whose token digest matches the agent's standing grant is
-a retry of that enrollment: it walks the held grant through the supervising actor's current
-delegation envelope and refuses as a fresh enrollment would when the grant falls outside it;
+a parent the ledger's delegation envelope bounds it by, and then provisions that UID's durables. The
+grant's read is the set those durables read: `target.allowSubscribe`, or `target.subscribe` when
+that list is omitted or empty, and the bound measures the same set. The
+parent is the request's supervising actor unless the request carries `spawn: { served, runId? }`, the
+manager `spawn` request subject the participant served and, for a run's spawn, the run id. The host
+reads every manager `spawn` request subject published in the space and takes the caller from a
+subject it observed, never from the request's word: the broker locks the caller and a per-call nonce
+into that subject. Each observed subject enrolls one helper: the first enrollment to name it within
+the observation window takes it for that enrollment's helper (`target.actor`) and token digest, and a
+later request naming the same helper under the same digest is that enrollment retried and is answered
+again. A subject the host did not observe, or one taken for another helper or digest, MUST be refused
+with `permission-denied`, as MUST one whose caller belongs to another owner. Without `runId` the
+observed caller is the parent. With it, the run MUST be admitted on the requesting instance and not
+revoked, and the caller MUST be that run's driver
+(§14.8); the parent is then the run's starter, and the admission's `delegation` bounds the helper as
+well. On the static path the manager bounds a helper by its caller's evidence instead (§13.15). A
+provisioning failure revokes the grant and releases the footprint before the refusal. An enrollment
+whose token digest matches the agent's standing grant is a retry of that enrollment and reads no
+observation. It resolves its read set as a fresh enrollment does and MUST be refused with `conflict`
+when that set is not the held grant's read, telling the caller to retire that lifecycle and enroll
+again. A grant an older host wrote for a target that named only a subscribe set records no read, so
+a retry of it is refused. A retry walks the held grant through its parent's
+current delegation envelope and refuses
+as a fresh enrollment would when the grant falls outside it;
 otherwise it answers the held UID and provisions it again, and its failure leaves that grant in
 place. While the agent holds a grant with another digest, enrollment MUST be refused
 with `conflict` until that lifecycle's retirement is prepared, so a successor never takes a running
@@ -2149,8 +2188,13 @@ decision alone from the auth service's loopback door
 `POST /manager-service-authority/verify-enrollment`, which carries the same loopback guards as the
 managed-retire door (POST only, no `Origin`, JSON, the per-start capability, a closed
 `{ owner, request }` body). That door MUST derive the caller's capability scope from its own ledger
-and MUST NOT accept a scope from the caller. It decides only: it mints nothing, writes nothing, and
-returns no secret.
+and MUST NOT accept a scope from the caller. For an enrollment it decides the parent as above, bounds
+the target by that parent through the ledger's delegation envelope and, for a run's spawn, by the
+admission's `delegation`, refuses an over-wide target, and answers `parent`. It measures a list the
+target omits as empty, so a host that fills an omitted list MUST fill it from no more than the
+parent's grant. The host MUST record the parent on the grant it writes, so that narrowing or revoking
+the parent reaches the helper. The door decides only: it mints nothing, writes nothing, and returns no
+secret.
 
 Two further host-owned kinds address the hosted runtime of an already-enrolled managed agent:
 `manager-managed-agent-runtime-create` and `manager-managed-agent-runtime-status`. Each carries the
@@ -3787,6 +3831,35 @@ declared extension inventory before the package is imported. A missing declarati
 as true. A client that knows the space requires events can therefore refuse a connector with
 `eventPlane: false` before spawn. The launch path's existing policy refusal remains authoritative.
 
+**Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
+record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
+`subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`. The top-level `prompt`
+stays the first-turn kickoff. With `persona`, `name` is the helper's name, numbered on a collision
+as a persona identity is, and the request MUST NOT carry `config` or `identity`. The manager MUST
+read the record as it reads a catalog file: the same validation, the same rule that a record naming
+no channel field takes the caller's default while one that names `[]` takes none, the same
+delegation bound (§13.15), and a top-level override still wins. The body is literal text, so a body
+that starts with `---` names no field. The manager writes the record to a private snapshot keyed by
+the seat's lifecycle uid after the grant and before the launch, and the seat launches from it. An
+in-place restart MUST refuse a snapshot that changed after the launch, and the snapshot is removed
+when the lifecycle retires. A static manager whose removal fails keeps the name held and retries it
+with the retirement; an open or user-auth manager logs the failure and leaves the file. A spawn
+that names a snapshot as its persona file MUST be refused. With
+`save: true` the manager also writes a create-only catalog copy under the requested name. The copy
+holds the grant that was checked (every channel field named, `[]` included, and the capabilities),
+never the helper's own event channel, plus role, model, variant, description and body. Its owner is
+the one `define-persona` would record for the spawner, and for a run's spawn the run's starter, whose
+catalog reads then find it. A name the catalog already holds is refused before anything starts, and a
+refused grant leaves neither file. A copy that loses a create race after that check fails the spawn,
+and its grant is rolled back. The `spawn` input also takes `runId`, which a workflow run's driver
+sends on each spawn so that a static manager that does not host the run can bound the helper by the
+run's admission (§14.8).
+`define-persona` also takes `capabilities`. The manager MUST refuse, before it writes, a capability
+the persona would carry that the definer does not hold under the same delegation bound (§13.15). That
+includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
+same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 45 of the manager cluster adds both fields; both inputs
+are closed, so a revision-44 contract rejects either.
+
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
 **Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
@@ -5268,7 +5341,13 @@ a resolution takes, because the horizon is checked again after the last read. A 
 on a generation by a static issuer (a static incarnation's credential, an operator instrument)
 expires no later than the horizon. A static incarnation's generation has a horizon 30 days after
 its issuance; each renewal of its credential is capped at it, none is minted at or after it, and
-the incarnation is respawned to continue. A run admitted under a generation keeps its ceiling in
+the incarnation is respawned to continue. An agent seat a terminal starts on a static space (a
+foreground spawn, a bare join) is issued against its own §13.1 lifecycle, activated before the mint
+with `terminal` as its minting authority. Its generation's horizon is the expiry the person set, or
+the furthest a generation can name (`0xffffffff`, 2106-02-07); its credential expires with it and is
+never renewed. When the seat leaves cleanly the terminal retires the lifecycle, retiring its
+issuances with the gate frozen, as a static terminal does. A seat that ends without a clean exit
+leaves its gate open, so its evidence resolves until its horizon. A run admitted under a generation keeps its ceiling in
 its admission (§14.8), so removing the generation's rows after the horizon ends no run.
 
 **Renewal.** A renewal of an issued credential keeps its generation only when the ceiling being
@@ -5371,6 +5450,32 @@ door reports `platform supervisor assignment for owner <owner> has ended`. The m
 broker connection lives until its capped expiry: its gate row is writable under its own grant, so
 a client that bypasses stock registration can still rewrite that one row. Live eviction remains the
 host's retirement barrier.
+
+**Delegation bound.** On a static space, a manager that mints a credential for an agent a caller
+spawned MUST first resolve that caller's issued authority and bound the grant it hands on against
+the evidence. The grant is every channel the helper may read, its subscribe set included,
+every channel it may post to, its role, and every capability token. Each part is projected through the agent
+mint at the spawner's own coordinate, the projection of an empty grant is subtracted, and every
+remaining row MUST be covered by the evidence's `permissions` with no overlapping deny. A part
+whose projection adds no row is refused, so a token no agent mint maps is never read as an empty
+grant. `run` carries the whole `spawn` set, so a `run` holder may hand on `spawn`. A role, and a
+`role:<r>` token, project to the rows that bind the role's task-queue durable. An agent mint grants
+those rows for the agent's own role and for each `role:<r>` token in its capabilities, so a spawner
+hands on a role it was given either way. The helper's own
+event channel is minted after allocation, keyed on a principal that does not exist when the bound
+runs, so it is measured as the spawner's own: a spawn that arms the helper's event plane is within
+only when the evidence permits a publish on the spawner's own event channel. A caller whose
+authority does not resolve, a legacy-rail caller included, hands on no grant: a spawn that names
+any part is refused. Two callers are exempt. One is an operator instrument, whose evidence has no
+`sources` and does not permit a publish on its own presence key, which every agent mint carries.
+The other is a spawner whose evidence holds the admin set. A spawn the manager starts on its own
+behalf, with no caller, is not bounded. A spawn a hosted workflow run makes is bounded by the run's
+admission instead of by the driver's own credential (§14.8). A refusal names each part it refuses
+and happens before any name, credential or durable exists. A user-auth space bounds the same grant
+on its actor ledger, at the managed row's write and at every bearer exchange. There a scope token is
+within when the spawner's scope lists it, or when it is `spawn` and the scope lists `run`, and a
+role needs the spawner's scope to list `role:<r>`. On a user-auth space a `role:<r>` scope token
+mints no task-queue row: the agent binds only its row's own role.
 
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`
 and `run-cancel`, §14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
@@ -6330,7 +6435,7 @@ recorded once per run, and never widened afterwards.
 **The record.** Before the driver is launched and before a successful start reply, the hosting
 endpoint writes `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>`, create-only,
 under a one-shot `run-admitter` credential pinned to that one run:
-`{ version: 1, space, endpoint, runId, instanceId, caller, ceiling, provenance, admittedAt }`.
+`{ version: 1, space, endpoint, runId, instanceId, caller, ceiling, provenance, admittedAt, spawnExempt?, delegation? }`.
 The store is write-once per key at the broker (§13.12: one message per subject under `discard:
 new`, no rollup header, no message delete, no purge), so the admitter's own key row can neither
 replace the admission nor remove it once written, and a marker, once written, stays.
@@ -6349,14 +6454,51 @@ publish requires `chat.<owner>.<actor>.<channel>` under the caller's own triple 
 `ceiling.publish`; a read requires every subject `chat.*.*.<channel>` matches to be covered by
 `ceiling.subscribe`. Deny wins; an explicit `none` is deny-all; a generated channel name is
 checked after it is derived and no wildcard is invented to admit it. `notify` writes agent-
-addressed notices and is not channel publication; spawn and turn keep their separately checked
-delegated authority.
+addressed notices and is not channel publication; turn keeps its separately checked delegated
+authority.
+
+**Spawn.** On a static mesh every spawn a hosted run makes is bounded by its admission (§13.15's
+spawn bound): the helper's channels, role, capabilities and own event plane must be held by `ceiling` at
+the admitted caller's coordinate, so a grant the caller gained after admission is never handed on.
+`spawnExempt: true` is written at admission when the caller's evidence then classified it as an
+operator instrument or as holding the admin set, and the run's spawns are then exempt, as that
+caller's own are. The verdict is recorded rather than re-derived because an instrument's evidence
+expires minutes after issue and a run's spawns may come hours later. An admission without the field
+is bounded. A reader that predates the field refuses an admission carrying it as an unsupported
+field. A local admission records no generation. Its `ceiling` is the rows the admitted channels add
+to an agent credential at the admitting coordinate, the shape issued evidence states, and its
+caller's `uid` is a lifecycle token so that coordinate can be minted. A spawn whose run's admission
+records a caller `uid` that is not one, as a local admission written before this rule does, is
+refused by name before anything is minted. A local run's helper
+therefore gets channels within them and no capability or role, and its own event plane is measured
+as one more channel. A program whose helpers need a capability or role runs hosted.
+
+A run's spawn names its run in `runId` (§13.7), so a static manager that does not host the run bounds
+the helper the same way, whether the program placed the spawn there or the class queue delivered it.
+That manager MUST refuse the spawn unless its caller is the run's driver, whose actor and uid derive
+from the run id. It then reads the run's admission and revocation marker leader-served and bounds the
+helper by the admission as the hosting manager does. A spawn that names a run its caller does not
+drive, or a run whose admission the manager cannot read, is refused before anything is minted. A
+manager on a user-auth or open mesh does not read `runId`; on a user-auth mesh the issuing host
+bounds the helper, as the next paragraph says.
+
+On a user-auth mesh the issuing host bounds a hosted run's spawns through the ledger. When it admits
+a run for a participant manager it writes `delegation: { scope, allowSubscribe, allowPublish }`, the
+starter's ledger row as it stands at admission, and omits it when the starter has no row. Each
+helper the run spawns is enrolled with the starter as its parent (§13.6) and MUST fall within both
+the starter's current row, through the ledger walk, and `delegation`, by the same per-link rule, so a
+grant the starter gained after the run began is never handed on. A `delegation` whose scope holds
+`admin` bounds nothing, as an admin spawner bounds nothing in the walk. An admission without the
+field hands on no channel and no capability.
 
 **Revocation.** `revoked.v1.<endpoint>.<runId>` is the run's revocation marker: create-only,
 idempotent, written under the same `run-admitter` profile, never removed. A revoked run performs
 no further channel effect, its open waits refuse at their next fetch (the linearization point is
 the leader-served read the host makes before returning any channel bytes), and no resume,
-takeover or boot reconcile continues it. An answer to one of its open checkpoints or asks MUST be
+takeover or boot reconcile continues it. A spawn it makes after the marker MUST be refused before
+anything is minted: a static manager, the run's host or another one the run's spawn reaches, reads the
+marker leader-served before it bounds the spawn and refuses one it cannot read, and on a user-auth mesh the issuing host refuses the enrollment (§13.6).
+An answer to one of its open checkpoints or asks MUST be
 refused before anything is filed: the host reads the marker leader-served before it files the
 answer record, and that read orders the answer against the revocation. A marker the host cannot
 read refuses the answer too. Revocation authorizes no new resource and no cleanup
@@ -6636,7 +6778,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.FC.>`
 - `$KV.cotal_presence_<space>.<owner>.<actor>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
-- `$JS.API.DIRECT.GET.<CHKV>` (the one-shot registry read of the headless CLI commands, which connect on the user's bearer on a user-auth mesh; the same reply-subject vector as the consumer create below)
+- `$JS.API.DIRECT.GET.<CHKV>` (the on-demand registry read, §7, and the one-shot registry read of the headless CLI commands, which connect on the user's bearer on a user-auth mesh; the same reply-subject vector as the consumer create below)
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness; read-only, non-gating)
@@ -6934,8 +7076,16 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-03 | **History limits for DMs and the backstop, and none (§4, §8).** `DM_<space>` gets a history limit like the chat stream's, with no age limit and no count limit by default, and unicast is at-least-once within it. Either part of a limit may be none (`max_age` 0, `max_msgs_per_subject` -1), and a reader MUST accept any limit an operator may set. In the reference the INBOX and DLV streams share an operator-set limit with a 2-hour age floor and 1000 per lifecycle by default, the trusted writer stamps each DLV copy with the count it wrote under (`Cotal-Delivery-Limit`, 1000 when absent), and the stored-copies notice compares against that stamp. |
+| 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |
 | 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
 | 2026-11-01 | **Durable membership of a channel family (§7, §8, §9, Appendix B), additive except one refusal.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join, and any pattern in `subscribe`, lies within one `allowSubscribe` entry, so an agent definition whose `subscribe` pattern only matches an entry, such as `perm.>` under `perm.*`, is now refused. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
+| 2026-10-30 | **A terminal-started static seat is issued (§13.15).** A foreground spawn or a bare join on a static space minted an unissued credential, so its seat held no evidence and handed on no grant. The terminal now activates the seat's own §13.1 lifecycle and issues the credential against its gate. The generation's horizon is the expiry the person set, or `0xffffffff` (2106-02-07) when none; the credential is never renewed; and a clean exit retires the lifecycle and its issuances. Additive. |
+| 2026-10-30 | **A static spawn bounds the helper's role, and a static agent mint maps `role:<r>` (§13.15), breaking.** A static spawner could hand its helper any role, because the role was outside the bound. The bound now measures the role as the rows that bind its task-queue durable, and the agent mint grants those rows for each `role:<r>` token in the agent's capabilities as well as for its own role, so a spawner hands on a role it was given either way. A spawn that hands on a role its spawner was not given is refused, naming the `role:<r>` token. A user-auth mint is unchanged. No wire change. |
+| 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn. It refuses a subject it did not observe, or one another enrollment took for another helper or token digest, and answers a retry of the same enrollment again. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. The loopback `verify-enrollment` door decides the same parent and bound and answers `parent`, which a host platform that writes its own grants must record, filling an omitted list from no more than the parent's grant. A grant's read is the set its durables read, so a target that names only a subscribe set is measured as reading it, and an enrollment retry whose read set is not its grant's is refused with `conflict`. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |
+| 2026-10-30 | **A hosted run's spawns are bounded by its admission (§13.15, §14.8), breaking.** A workflow run's spawns were exempt from the static spawn bound, so a caller holding `run` could start a run and spawn a helper the direct spawn door refuses. Each spawn a run makes on a static mesh is now bounded by the admitted ceiling at the admitted caller's coordinate, so a grant the caller gained after admission is never handed on. The admission gains `spawnExempt: true`, written when the caller was an operator instrument or held the admin set at admission; such a run's spawns stay exempt. A local run's helpers get only channels within the ceiling its operator named. A spawn after the run's revocation marker, or with a marker the manager cannot read, is refused. A reader that predates the field refuses an admission carrying it. |
+| 2026-10-30 | **`spawn` takes an inline persona (§13.7).** An agent defines its helper on the spawn itself: the persona body, role, model, channels and capabilities, bounded as a catalog file is. The manager keeps the record in a private per-lifecycle snapshot written after the grant, refuses a restart once the snapshot changed, and removes it at retirement. `save: true` writes a create-only catalog copy of the checked grant under the requested name, owned as `define-persona` would own it for the spawner, or by the run's starter for a run's spawn. `define-persona` takes `capabilities`, bounded against the definer before the write. A run's spawn names its run (`runId`), so a static manager that does not host the run bounds it by the run's admission. The manager cluster advances to revision 45. Additive. |
+| 2026-10-30 | **A static spawn is bounded against the spawner's issued evidence (§13.15), breaking.** A caller that could spawn on a static space could hand its helper any channel or capability, because nothing compared the grant with what the caller held. The manager now resolves the caller's issued authority and refuses, by name, every channel and capability token the evidence does not cover, measured at the caller's own coordinate. A caller with no resolvable authority hands on no grant. Operator instruments and admin spawners are exempt. The helper's role and a workflow run's spawns are outside the bound in this revision. The user-auth ledger's own scope rule learns that `run` carries `spawn`. No wire change. |
 | 2026-10-30 | **The chat stream's history limit is configurable per space (§4, §7, §8).** `CHAT_<space>` keeps a post until it is older than the space's age or its sender has posted the space's count of newer ones on that channel, whichever comes first. A new space starts at 30 days and 1000 per sender. A stream with no age and any count, as every stream before this change was created, stays valid. The durable guarantee is bounded by this limit, and `replayWindow` is a read horizon that removes nothing. The reference implementation moves a stream still on no age and 1000 per sender to the default when `cotal up` starts its broker, which deletes posts older than 30 days. |
 | 2026-10-30 | **A registry lists the endpoints a caller can call (§13.15, §13.20), additive.** A space MAY run a registry, a registered endpoint named `registry` whose `endpoints` command lists the registered endpoints the caller holds a command on, with the request forms its recorded ceiling covers. It leaves out every endpoint the ceiling covers nothing of. On a space with a permission system the question rides `ep.v1`, and a credential on the legacy rail MAY carry a listing generation for it: three rows that reach only `registry` `endpoints` and the listing's own accepted row, with evidence recording the credential's complete ceiling. An issued credential MAY carry the same request row on its own generation, fixed at its first issuance. The registry reads that ceiling with a disclosure read that checks no source liveness and admits no effect. |
 | 2026-10-29 | **Manager connector status declares event-plane support (§13.7), additive.** Every `status.connectors` row now requires `eventPlane: boolean`, including rows built from the declared extension inventory before its package is imported. The fact is true only when the connector declares its event channel; it is never defaulted to true. The reference Manager cluster advances to revision 42. |

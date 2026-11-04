@@ -1,0 +1,783 @@
+/* Product rules for the dashboard, transcribed from the approved mock (design/web/mocks/web.html,
+   the ui-* and v3-* rules). Colours come from tokens.css. The mock scoped its round 3 rules under a
+   v3 class on the frame; here that prefix is dropped and each rule sits where the mock put it, so the
+   later rule wins a tie as in the mock. The v3 root rule is the body rule below.
+   Type rules: no uppercase, no positive letter-spacing, mono only for code, commands, ids and model names. */
+
+/* Element resets sit in the base layer, so a Tailwind utility on a copied shadcn part (an outline
+   button's border, say) wins over them. Every class rule below stays unlayered and wins over both. */
+@layer base {
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); font-feature-settings: "cv11", "ss01"; font-optical-sizing: auto; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  code { font: 500 12.5px/1 var(--mono); background: var(--code); padding: 2px 5px; border-radius: 5px; }
+  pre { margin: 6px 0 2px; font: 400 12.5px/1.6 var(--mono); background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+}
+
+/* Hugeicons: Stroke Rounded at 1.5. The mock's round 3 blanket size (18) beat the earlier per-context
+   sizes of the space chevron, the section button and the rail button, so those sit here as 18 and 22. */
+.ui-ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.ui-mono { font-family: var(--mono); }
+/* ---------- rail ---------- */
+.ui-rail { background: var(--side); color: var(--rail-ink); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; border-right: 1px solid var(--side-line); min-height: 0; }
+.ui-rail-mark { width: 26px; height: 26px; margin-bottom: 12px; color: var(--mark); }
+.ui-rail-mark svg { width: 100%; height: 100%; display: block; }
+.ui-rail-btn { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; position: relative; }
+.ui-rail-btn:hover { background: var(--side-hover); }
+.ui-rail-btn[aria-current="page"] { background: var(--side-sel); color: var(--side-ink); }
+.ui-rail-btn .ui-ic { width: 22px; height: 22px; }
+.ui-rail-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 2px var(--side); }
+.ui-rail-count { position: absolute; top: 2px; right: 0; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--gold); color: var(--on-gold); font: 600 10px/16px var(--mono); box-shadow: 0 0 0 2px var(--side); }
+.ui-grow { flex: 1; }
+
+/* ---------- sidebar ---------- */
+.ui-side { background: var(--side); color: var(--side-ink); display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--side-line); }
+.ui-side-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 14px 12px 6px 16px; }
+.ui-space { display: flex; align-items: center; gap: 6px; font: 600 17px/1 var(--body); letter-spacing: -0.01em; padding: 5px 6px; margin-left: -6px; border-radius: 7px; }
+.ui-space:hover { background: var(--side-hover); }
+.ui-space .ui-ic { color: var(--side-dim); }
+.ui-head-tools { display: flex; gap: 2px; color: var(--side-dim); }
+.ui-head-tools button { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; }
+.ui-head-tools button:hover { background: var(--side-hover); }
+.ui-side-scroll { overflow-y: auto; overflow-x: hidden; flex: 1; padding: 4px 8px 12px; min-height: 0; }
+.ui-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 8px; border-radius: 7px; text-align: left; color: var(--side-ink); white-space: nowrap; overflow: hidden; }
+.ui-row:hover { background: var(--side-hover); }
+.ui-row[aria-current="page"] { background: var(--side-sel); }
+.ui-row .ui-ic { color: var(--side-dim); }
+.ui-row-lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ui-row-n { font: 500 11px/1 var(--mono); color: var(--side-dim); }
+.ui-row-sub { font-size: 12px; color: var(--side-dim); }
+.ui-row-bold .ui-row-lbl { font-weight: 600; }
+.ui-row-off .ui-row-lbl { color: var(--side-dim); }
+.ui-row-hash { width: 16px; text-align: center; color: var(--side-dim); font: 500 14px/1 var(--mono); }
+.ui-badge-gold { font: 600 11px/1 var(--mono); padding: 3px 6px; border-radius: 999px; background: var(--gold); color: var(--on-gold); }
+.ui-badge-blue { font: 600 11px/1 var(--mono); padding: 3px 6px; border-radius: 999px; background: var(--multi); color: var(--on-multi); }
+.ui-att { font: 500 10.5px/1 var(--mono); color: var(--side-dim); display: inline-flex; align-items: center; gap: 3px; }
+.ui-att-dnd { color: var(--uni-ink); }
+.ui-att-focus { color: var(--multi-ink); }
+.ui-you { font: 500 10.5px/1 var(--mono); padding: 2px 5px; border-radius: 4px; background: var(--side-hover); color: var(--side-dim); }
+.ui-sec { display: flex; align-items: center; justify-content: space-between; padding: 16px 8px 4px; font: 500 12.5px/1 var(--body); color: var(--side-dim); }
+.ui-sec button { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; }
+.ui-host { display: flex; align-items: center; gap: 6px; padding: 8px 8px 2px; font: 500 11px/1 var(--mono); color: var(--side-dim); }
+.ui-host .ui-ic { width: 12px; height: 12px; }
+.ui-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px 0 4px; }
+.ui-tile { display: grid; gap: 4px; padding: 7px 8px; border-radius: 8px; background: var(--side-hover); }
+.ui-tile b { font: 600 15px/1 var(--body); display: flex; align-items: center; gap: 5px; }
+.ui-tile span { font: 500 10.5px/1 var(--mono); color: var(--side-dim); }
+.ui-beat { font: 500 11px/1.3 var(--mono); color: var(--side-dim); padding: 2px 8px 0; }
+.ui-side-foot { border-top: 1px solid var(--side-line); padding: 10px 12px; display: flex; align-items: center; gap: 9px; }
+.ui-me { width: 26px; height: 26px; border-radius: 50%; background: var(--me-bg); color: var(--me-ink); display: grid; place-items: center; font: 600 11px/1 var(--mono); flex: none; }
+.ui-side-foot .ui-who { flex: 1; line-height: 1.25; min-width: 0; }
+.ui-side-foot .ui-who b { font-weight: 600; font-size: 13px; display: block; }
+.ui-side-foot .ui-who span { font-size: 11.5px; color: var(--side-dim); }
+.ui-live { display: inline-flex; align-items: center; gap: 6px; font: 500 11px/1 var(--mono); color: var(--side-dim); }
+.ui-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--any); box-shadow: 0 0 0 3px color-mix(in srgb, var(--any) 20%, transparent); }
+
+/* ---------- avatars and status dots ---------- */
+.ui-av { --s: 32px; width: var(--s); height: var(--s); position: relative; flex: none; display: grid; place-items: center; }
+.ui-av svg { width: 100%; height: 100%; overflow: visible; display: block; }
+.ui-av-off svg { filter: grayscale(1); opacity: .5; }
+.ui-av .ui-st { position: absolute; right: -2px; bottom: -1px; }
+.ui-av-ep { border-radius: 8px; background: var(--side-hover); color: var(--side-dim); }
+.ui-st { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; box-shadow: 0 0 0 2px var(--ring-bg, var(--bg)); }
+.ui-side .ui-st { --ring-bg: var(--side); }
+.ui-st-working { background: var(--any); }
+.ui-st-waiting { background: linear-gradient(90deg, var(--gold) 50%, var(--ring-bg, var(--bg)) 50%); border: 1.6px solid var(--gold); }
+.ui-st-idle { background: var(--ring-bg, var(--bg)); border: 1.6px solid var(--idle); }
+.ui-st-offline { background: var(--ring-bg, var(--bg)); border: 1.6px dashed var(--faint); }
+.ui-stack .ui-av .ui-st { width: 8px; height: 8px; right: -1px; bottom: -1px; }
+.ui-stack { display: flex; }
+.ui-stack .ui-av { margin-left: -6px; }
+.ui-stack .ui-av:first-child { margin-left: 0; }
+/* The initial badge (mock B2), bottom left of the avatar; the status dot keeps bottom right. Under
+   26px it is a colour dot with no letter (`ui-idb-dot`). Offline greys the fill and keeps the letter.
+   Its ring takes the colour behind it, as the status dot's does. */
+.ui-idb { position: absolute; left: -3px; bottom: -2px; width: max(12px, calc(var(--s) * .46)); height: max(12px, calc(var(--s) * .46)); border-radius: 50%;
+  background: var(--bf); color: var(--id-ink); display: grid; place-items: center; font: 700 max(8px, calc(var(--s) * .28))/1 var(--body);
+  font-feature-settings: "tnum"; box-shadow: 0 0 0 2px var(--ring-bg, var(--bg)), inset 0 0 0 1px color-mix(in srgb, var(--id-ink) 20%, transparent); font-style: normal; letter-spacing: 0; }
+.ui-idb-2 { font-size: max(7px, calc(var(--s) * .22)); }
+.ui-idb-dot { font-size: 0; }
+.ui-idb-off { background: var(--id-off); }
+.ui-side .ui-idb { --ring-bg: var(--side); }
+.ui-sline .ui-idb { --ring-bg: var(--soft); }
+.v3-arow[aria-current="true"] .ui-idb { --ring-bg: var(--soft); }
+.ui-msg:hover .ui-idb { --ring-bg: var(--hover); }
+.ui-msg-mention .ui-idb, .ui-msg-mention:hover .ui-idb { --ring-bg: var(--mention); }
+/* The same badge on a Topology node, outside the greyscale of an offline node. */
+.ui-tidb circle { stroke: var(--bg); stroke-width: 2; }
+.ui-tidb text { fill: var(--id-ink); font-family: var(--body); font-weight: 700; }
+/* ---------- centre ---------- */
+.ui-center { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+.ui-bar { height: 52px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 22px; border-bottom: 1px solid var(--line); min-width: 0; }
+.ui-bar h1, .ui-bar .ui-h1 { margin: 0; font: 600 16px/1 var(--body); letter-spacing: -0.01em; white-space: nowrap; }
+.ui-topic { color: var(--dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ui-sp { flex: 1; }
+.ui-chip { display: inline-flex; align-items: center; gap: 5px; font: 500 11.5px/1 var(--mono); color: var(--dim); padding: 4px 7px; border-radius: 6px; background: var(--soft); white-space: nowrap; }
+.ui-chip i { width: 7px; height: 7px; border-radius: 50%; }
+.ui-tool { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: var(--dim); flex: none; }
+.ui-tool:hover { background: var(--hover); color: var(--ink); }
+.ui-members { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 4px; border-radius: 8px; color: var(--dim); font: 500 12px/1 var(--mono); }
+.ui-members:hover { background: var(--hover); }
+.ui-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.ui-col { max-width: 820px; margin: 0 auto; padding: 14px 28px 10px; }
+.ui-day { display: flex; align-items: center; gap: 12px; color: var(--dim); font: 500 12px/1 var(--body); margin: 10px 0 8px; }
+.ui-day::before, .ui-day::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.ui-msg { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 12px; padding: 6px 10px; margin: 0 -10px; border-radius: 10px; }
+.ui-msg:hover { background: var(--hover); }
+.ui-msg-cont { padding-top: 1px; }
+.ui-msg-cont .ui-gut { visibility: hidden; height: 0; }
+.ui-msg-mention { background: var(--mention); }
+.ui-msg-mention:hover { background: var(--mention); }
+.ui-msg-own .ui-mh b::after { content: " (you)"; font-weight: 400; color: var(--dim); }
+.ui-gut { padding-top: 2px; }
+.ui-mh { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.ui-mh b { font-weight: 600; }
+.ui-mh .ui-role { color: var(--dim); font-size: 12.5px; }
+.ui-hz { font: 500 10.5px/1 var(--mono); color: var(--dim); padding: 2px 5px; border-radius: 4px; background: var(--soft); }
+.ui-mh time { font: 400 11.5px/1 var(--mono); color: var(--faint); }
+.ui-unverified { font-size: 12px; color: var(--faint); text-decoration: underline dotted; cursor: help; }
+.ui-tx { margin-top: 1px; overflow-wrap: anywhere; }
+.ui-tx p { margin: 0 0 4px; }
+.ui-tx ul { margin: 2px 0 6px; padding-left: 20px; }
+.ui-route { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font: 500 11.5px/1 var(--mono); padding: 5px 8px; border-radius: 6px; background: var(--soft); color: var(--dim); }
+.ui-route i { width: 7px; height: 7px; border-radius: 50%; }
+.ui-route-any { color: var(--any-ink); }
+.ui-route-any i { background: var(--any); }
+.ui-route-sep { opacity: .6; }
+.ui-route-uni { color: var(--uni-ink); }
+.ui-route-uni i { background: var(--uni); }
+.ui-at { color: var(--multi-ink); font-weight: 600; }
+.ui-evt { display: flex; align-items: center; gap: 10px; padding: 3px 0 3px 46px; color: var(--dim); font-size: 12.5px; }
+.ui-evt time { font: 400 11.5px/1 var(--mono); color: var(--faint); }
+.ui-more { font-size: 12.5px; font-weight: 500; color: var(--multi-ink); margin-top: 2px; }
+.ui-clamp { max-height: 6.2em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+
+/* ---------- dock: notice card + composer ---------- */
+.ui-dock { flex: none; padding: 0 28px 16px; }
+.ui-dock-in { max-width: 820px; margin: 0 auto; display: grid; gap: 10px; }
+.ui-card { background: var(--card); border: 1px solid var(--card-line); border-radius: 14px; box-shadow: var(--card-shadow); }
+.ui-needs { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 12px 14px 12px 16px; }
+.ui-needs .ui-av { --s: 34px; }
+.ui-needs b { display: block; font-weight: 600; }
+.ui-needs span.ui-nd { color: var(--dim); font-size: 13px; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ui-dock .ui-needs span.ui-nd { min-height: 2.8em; }
+.ui-btns { display: flex; gap: 6px; align-items: center; }
+.ui-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--card-line); background: var(--card); color: var(--ink); font-weight: 500; font-size: 13px; white-space: nowrap; }
+.ui-btn:hover { background: var(--hover); }
+.ui-btn-primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
+.ui-btn-primary:hover { background: var(--primary); filter: brightness(1.1); }
+.ui-btn-danger { color: var(--red-ink); }
+.ui-btn-danger-solid { background: var(--danger-solid); border-color: var(--danger-solid); color: var(--danger-solid-ink); }
+.ui-btn[disabled] { background: var(--soft); border-color: var(--card-line); color: var(--faint); cursor: not-allowed; filter: none; }
+.ui-x { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 6px; color: var(--dim); }
+.ui-x:hover { background: var(--hover); }
+/* composer: one fixed size for live, disabled and sending, so nothing moves when auth posting ships */
+.ui-composer { height: 98px; padding: 12px 12px 10px 16px; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+.ui-input { color: var(--faint); padding-top: 2px; overflow: hidden; }
+.ui-input-typed { color: var(--ink); }
+.ui-caret { display: inline-block; width: 1.5px; height: 1.1em; background: var(--ink); vertical-align: -2px; margin-left: 1px; animation: ui-caret 1s steps(1) infinite; }
+@keyframes ui-caret { 50% { opacity: 0; } }
+.ui-crow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ui-pick { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--dim); padding: 4px 8px; border-radius: 7px; white-space: nowrap; }
+.ui-pick:hover { background: var(--hover); }
+.ui-pick .ui-ic { width: 13px; height: 13px; }
+.ui-mode-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.ui-send { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--primary); color: var(--primary-ink); flex: none; }
+.ui-send[disabled] { background: var(--soft); color: var(--faint); box-shadow: inset 0 0 0 1px var(--card-line); cursor: not-allowed; }
+.ui-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: ui-spin .8s linear infinite; }
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+.ui-reason { color: var(--dim); font-size: 13px; display: flex; gap: 8px; align-items: flex-start; }
+.ui-reason .ui-ic { color: var(--faint); margin-top: 2px; }
+.ui-pending { opacity: .6; }
+.ui-pending time::after { content: " sending"; }
+
+/* copyable CLI command */
+.ui-cmd { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--soft); border: 1px solid var(--card-line); border-radius: 7px; padding: 4px 4px 4px 9px; white-space: nowrap; }
+.ui-cmd code { background: none; padding: 0; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ui-cmd button { display: inline-flex; align-items: center; gap: 4px; font: 500 11.5px/1 var(--body); color: var(--dim); padding: 4px 6px; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--card-line); flex: none; }
+.ui-cmd button:hover { color: var(--ink); }
+.ui-cmd button .ui-ic { width: 12px; height: 12px; }
+.ui-cmd-wide { display: flex; }
+.ui-cmd-wide code { flex: 1; }
+
+/* watching bar */
+.ui-watch { display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 14px; border-radius: 12px; background: var(--soft); color: var(--dim); font-size: 13px; }
+.ui-watch .ui-ic { color: var(--dim); }
+.ui-watch b { color: var(--ink); font-weight: 600; }
+/* ---------- right pane ---------- */
+.ui-pane { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); }
+.ui-tabs { height: 52px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.ui-tab { padding: 6px 10px; border-radius: 7px; color: var(--dim); font-weight: 500; font-size: 13px; }
+.ui-tab:hover { background: var(--hover); }
+.ui-tab[aria-selected="true"] { background: var(--soft); color: var(--ink); }
+.ui-pane-body { overflow-y: auto; flex: 1; padding: 18px 18px 24px; min-height: 0; }
+.ui-big { width: 72px; height: 72px; margin-bottom: 8px; }
+.ui-big svg { width: 100%; height: 100%; overflow: visible; display: block; }
+.ui-sline { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; padding: 9px 11px; border-radius: 10px; background: var(--soft); width: 100%; font-size: 13px; }
+.ui-sline .ui-st { --ring-bg: var(--soft); margin-top: 4px; }
+.ui-sline { flex-wrap: wrap; }
+.ui-sline .ui-facts { flex-basis: 100%; font-size: 12px; color: var(--dim); }
+.ui-nd.ui-facts { color: var(--dim); }
+.ui-sline { flex-wrap: wrap; row-gap: 2px; }
+.ui-sline > span { flex: 1; min-width: 0; }
+.ui-sline small { color: var(--dim); flex-basis: 100%; padding-left: 18px; font: 400 11.5px/1.5 var(--mono); }
+.ui-actions { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; width: 100%; }
+.ui-actions .ui-cmd { width: 100%; }
+.ui-actions .ui-cmd code { flex: 1; }
+.ui-kv { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px 10px; font-size: 13px; padding: 14px 0; border-top: 1px solid var(--line); margin: 0; }
+.ui-kv dt { color: var(--dim); }
+.ui-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.ui-nr { color: var(--dim); font-style: italic; }
+.ui-pane h5 { margin: 0; padding: 14px 0 8px; font: 500 12px/1 var(--body); color: var(--dim); border-top: 1px solid var(--line); }
+.ui-chrow { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+.ui-chrow span:last-child { font: 500 11px/1 var(--mono); color: var(--dim); }
+.ui-tags { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 12px; }
+/* ---------- freshness: stale and partial marker, membership pill ---------- */
+.ui-stale { display: flex; align-items: flex-start; gap: 8px; margin: 2px 8px 4px; padding: 7px 9px; border-radius: 8px; background: var(--warn-bg); color: var(--ink); font-size: 12px; line-height: 1.35; }
+.ui-stale .ui-ic { width: 14px; height: 14px; color: var(--gold-ink); margin-top: 1px; }
+.ui-stale b { font: 600 11.5px/1.35 var(--mono); display: block; }
+.ui-stale span { color: var(--dim); }
+.ui-stale[hidden] { display: none; }
+.ui-mpill { display: inline-flex; align-items: center; gap: 6px; font: 500 11.5px/1 var(--mono); color: var(--dim); padding: 5px 8px; border-radius: 999px; background: var(--soft); white-space: nowrap; }
+.ui-mpill i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.ui-mpill-live i { background: var(--any); }
+.ui-mpill-stale i { background: linear-gradient(90deg, var(--gold) 50%, transparent 50%); border: 1.5px solid var(--gold); }
+.ui-mpill-traffic i { border: 1.5px solid var(--idle); }
+.ui-mpill-unread { color: var(--red-ink); background: var(--err-bg); }
+.ui-mpill-unread i { border-radius: 2px; background: none; position: relative; }
+.ui-mpill-unread i::before, .ui-mpill-unread i::after { content: ""; position: absolute; left: 4px; top: -1px; width: 1.6px; height: 11px; background: var(--red); transform: rotate(45deg); }
+.ui-mpill-unread i::after { transform: rotate(-45deg); }
+
+/* ---------- dialog ---------- */
+.ui-dialog { width: 440px; max-width: 100%; height: 292px; padding: 20px 20px 16px; display: grid; grid-template-rows: auto auto auto 1fr auto; gap: 10px; }
+.ui-dialog h4 { margin: 0; font: 600 16px/1.3 var(--body); }
+.ui-dialog p { margin: 0; color: var(--dim); font-size: 13px; }
+.ui-dialog label { font-size: 12.5px; color: var(--dim); display: grid; gap: 6px; }
+.ui-field { height: 36px; border-radius: 8px; border: 1px solid var(--card-line); background: var(--bg); padding: 0 10px; display: flex; align-items: center; font: 500 13px/1 var(--mono); color: var(--ink); }
+.ui-field-focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
+.ui-field-empty { color: var(--faint); }
+.ui-dialog .ui-btns { justify-content: flex-end; align-self: end; }
+.ui-scrim { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 5; }
+
+/* ---------- loading and empty ---------- */
+.ui-skel { display: block; height: 10px; border-radius: 5px; background: var(--skel); position: relative; overflow: hidden; }
+.ui-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--shimmer), transparent); transform: translateX(-100%); animation: ui-shimmer 1.4s infinite; }
+@keyframes ui-shimmer { to { transform: translateX(100%); } }
+.ui-skel-row { display: flex; gap: 9px; align-items: center; padding: 7px 8px; }
+.ui-skel-av { width: 20px; height: 20px; border-radius: 6px; background: var(--skel); flex: none; }
+.ui-skel-msg { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 8px 0; }
+.ui-skel-msg .ui-skel-av { width: 34px; height: 34px; border-radius: 10px; }
+.ui-empty { display: grid; justify-items: center; text-align: center; gap: 10px; padding: 60px 20px; color: var(--dim); }
+.ui-empty svg { width: 150px; height: 150px; overflow: visible; }
+.ui-empty b { color: var(--ink); font-size: 16px; font-weight: 600; }
+
+/* ---------- topology ---------- */
+.ui-topo svg { width: 100%; height: auto; display: block; }
+.ui-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; font: 500 11.5px/1 var(--mono); color: var(--dim); padding-top: 10px; }
+.ui-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.ui-legend i { width: 16px; height: 2px; border-radius: 2px; }
+/* The graph's lines and nodes, from the mock's `topo()`: a faint line for a member, the accent for a
+   link with a message flowing on it, dashes for what is kept for an offline member. */
+.ui-topo-svg { cursor: grab; touch-action: none; }
+.ui-topo-svg:active { cursor: grabbing; }
+.ui-tl { stroke: var(--faint); stroke-width: 1.4; opacity: .45; }
+.ui-tl-durable { stroke-dasharray: 4 4; }
+.ui-tl-off { stroke-dasharray: 1.5 4; stroke-linecap: round; }
+.ui-tl-traffic { stroke: var(--any); stroke-dasharray: 6 5; opacity: .75; }
+.ui-tl-hot { stroke: var(--multi); stroke-width: 2; opacity: 1; }
+.ui-tn rect { fill: var(--card); stroke: var(--card-line); stroke-width: 1.4; }
+.ui-tn-hot rect { stroke: var(--multi); }
+.ui-tn text { fill: var(--ink); font: 400 11px var(--body); }
+.ui-ta-off .ui-ta-art { opacity: .5; filter: grayscale(1); }
+.ui-ta-name { fill: var(--ink); font: 600 11.5px var(--body); }
+.ui-wide rect { fill: var(--soft); stroke: var(--card-line); }
+.ui-wide text { fill: var(--dim); font: 500 10px var(--body); }
+.ui-wide-key { font: 500 10px/1 var(--body); color: var(--dim); background: var(--soft); border: 1px solid var(--card-line); border-radius: 6px; padding: 2px 6px; }
+.ui-lg-member { background: var(--faint); opacity: .7; }
+.ui-lg-durable { background: repeating-linear-gradient(90deg, var(--faint) 0 4px, transparent 4px 8px); }
+.ui-lg-offline { background: repeating-linear-gradient(90deg, var(--faint) 0 2px, transparent 2px 5px); }
+.ui-lg-traffic { background: repeating-linear-gradient(90deg, var(--any) 0 6px, transparent 6px 11px); }
+.ui-lg-hot { background: var(--multi); }
+.ui-lg-working { background: var(--any); }
+/* A node's status dot, drawn as the avatars draw it, and a working node's faint ring and arc. */
+.ui-tst circle { stroke-width: 1.6; }
+.ui-tst-working circle { fill: var(--any); stroke: var(--bg); stroke-width: 2; }
+.ui-tst-waiting .ui-tst-bg { fill: var(--bg); stroke: var(--bg); stroke-width: 2; }
+.ui-tst-waiting path { fill: var(--gold); }
+.ui-tst-waiting .ui-tst-ring { fill: none; stroke: var(--gold); }
+.ui-tst-idle circle { fill: var(--bg); stroke: var(--idle); }
+.ui-tst-offline circle { fill: var(--bg); stroke: var(--faint); stroke-dasharray: 2 2; }
+.ui-orbit-ring { fill: none; stroke: var(--any); stroke-width: 2; opacity: .18; }
+.ui-orbit { fill: none; stroke: var(--any); stroke-width: 2; stroke-linecap: round; transform-box: fill-box; transform-origin: center; animation: ox-rot 3.2s linear infinite; }
+.ui-col-wide { max-width: 1040px; }
+.ui-btn-sm { padding: 5px 9px; font-size: 12.5px; }
+.ui-btn[aria-pressed="true"] { background: var(--soft); }
+
+.ui-cnote { font-size: 12px; line-height: 1.4; color: var(--dim); padding: 0 6px; margin-top: -4px; height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-cmd button { min-width: 64px; justify-content: center; }
+/* ---------- type rules, on top of the shared parts ---------- */
+.ui-row-n, .ui-tile span, .ui-hz, .ui-mh time, .ui-host, .ui-att, .ui-you, .ui-live, .ui-mpill,
+.ui-badge-gold, .ui-badge-blue, .ui-rail-count, .ui-sline small, .ui-chrow span:last-child,
+.ui-beat, .ui-route, .ui-chip, .ui-members, .ui-evt time, .ui-cmd button {
+  font-family: var(--body); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.ui-chip { font-size: 12px; font-weight: 500; padding: 4px 8px; }
+.ui-hz { font-size: 11.5px; font-weight: 500; padding: 2px 6px; }
+.ui-mh time, .ui-evt time { font-size: 12px; font-weight: 400; }
+.ui-row-n, .ui-live, .ui-mpill, .ui-sline small { font-size: 12px; font-weight: 400; }
+.ui-badge-gold, .ui-badge-blue { font-size: 11.5px; font-weight: 600; padding: 2px 7px; }
+.ui-route { font-size: 12px; }
+.ui-sline small { padding-left: 24px; }
+.ui-num { font-variant-numeric: tabular-nums; }
+.ui-space { font-size: 16px; }
+/* Hugeicons sizes: 22 rail, 18 sidebar and header (the .ui-ic rule above), 16 inline status */
+.ui-ic.ui-ic16, .ui-pick .ui-ic, .ui-host .ui-ic { width: 16px; height: 16px; }
+.ui-cmd button .ui-ic { width: 14px; height: 14px; }
+.ui-rail-btn { width: 38px; height: 38px; }
+
+/* status colours: shape (the icon) plus colour, never colour alone */
+.v3-s-waiting { color: var(--gold-ink); } .v3-s-working { color: var(--any-ink); }
+.v3-s-idle { color: var(--dim); } .v3-s-offline { color: var(--dim); }
+.v3-spill { display: inline-flex; align-items: center; gap: 6px; font: 500 13px/1 var(--body); white-space: nowrap; }
+.v3-spill-soft { padding: 5px 9px 5px 7px; border-radius: 999px; background: var(--soft); }
+
+/* Agents view */
+.v3-ahead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.v3-toggle { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--soft); }
+.v3-toggle button { padding: 5px 10px; border-radius: 6px; font-size: 12.5px; color: var(--dim); }
+.v3-toggle button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: var(--toggle-shadow), 0 0 0 1px var(--card-line); }
+.v3-ghead { display: flex; align-items: center; gap: 8px; padding: 18px 12px 6px; font: 600 13.5px/1 var(--body); color: var(--ink); }
+.v3-ghead:first-child { padding-top: 6px; }
+.v3-ghead .ui-ic { width: 16px; height: 16px; }
+.v3-by-host .v3-ghead .ui-ic, .v3-epsec .v3-ghead .ui-ic { color: var(--dim); }
+.v3-ghead[data-focused="true"] { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 8px; }
+.v3-count { color: var(--dim); font-weight: 500; font-variant-numeric: tabular-nums; }
+.v3-arow { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; gap: 4px 14px; align-items: center; padding: 9px 12px; border-radius: 10px; width: 100%; text-align: left; }
+.v3-arow:hover { background: var(--hover); }
+.v3-arow[aria-current="true"] { background: var(--soft); }
+.v3-arow .ui-av { --s: 36px; }
+.v3-aname { display: flex; align-items: baseline; gap: 8px; min-width: 0; white-space: nowrap; }
+.v3-aname b { font-weight: 600; }
+.v3-aname span { color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.v3-aact { color: var(--dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v3-arow-off .v3-aname b { color: var(--dim); }
+.v3-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12.5px; white-space: nowrap; }
+.v3-meta .ui-ic { width: 16px; height: 16px; }
+.v3-epsec { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--line); }
+.v3-eprow { display: flex; align-items: center; gap: 10px; padding: 7px 12px; color: var(--dim); font-size: 13px; }
+.v3-eprow b { color: var(--ink); font-weight: 500; }
+.v3-eprow .ui-av { --s: 24px; }
+/* status strip */
+.v3-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+.v3-seg { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--card-line); background: var(--card); text-align: left; }
+.v3-seg .ui-ic { width: 20px; height: 20px; }
+.v3-seg b { font: 600 15px/1 var(--body); font-variant-numeric: tabular-nums; color: var(--ink); }
+.v3-seg span { color: var(--dim); font-size: 13px; }
+.v3-seg[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+/* Members tab */
+.v3-mhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--dim); font-size: 13px; }
+.v3-mrow { display: flex; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 8px; width: 100%; text-align: left; }
+.v3-mrow:hover { background: var(--hover); }
+.v3-mrow .ui-av { --s: 28px; }
+.v3-mrow .v3-mname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v3-mrow .v3-mname span { color: var(--dim); font-size: 12.5px; margin-left: 6px; }
+.v3-mrow .ui-ic { width: 16px; height: 16px; }
+.v3-arow > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
+.ui-sline > .v3-spill { flex: none; }
+.ui-cmd { padding-left: 8px; }
+.ui-mpill { font-size: 12px; }
+.ui-me { font: 600 11px/1 var(--body); }
+/* sent receipt on the operator's own message (auth mesh) */
+.ui-sent { display: inline-flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 12px; color: var(--dim); }
+/* partial banner */
+.s-banner { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; background: var(--warn-bg); font-size: 13px; margin-bottom: 10px; }
+.s-banner .ui-ic { color: var(--gold-ink); margin-top: 1px; }
+.s-banner b { font: 600 12.5px/1.4 var(--mono); }
+.s-banner span { color: var(--dim); }
+.ui-stale b { font: 600 12px/1.4 var(--mono); }
+.ui-stale .ui-ic { width: 16px; height: 16px; }
+.s-lastseen .v3-arow { opacity: .62; }
+/* phone bottom tab bar */
+.v3-tabbar { height: 60px; flex: none; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); background: var(--bg); }
+.v3-tabbar button { display: grid; justify-items: center; align-content: center; gap: 3px; font-size: 11.5px; color: var(--dim); position: relative; }
+.v3-tabbar button .ui-ic { width: 22px; height: 22px; }
+.v3-tabbar button[aria-current="page"] { color: var(--ink); font-weight: 500; }
+.v3-tabbar .ui-badge-gold { position: absolute; top: 6px; left: calc(50% + 6px); font-size: 10.5px; padding: 1px 5px; }
+.ui-dialog { height: 300px; }
+
+/* ---------- app shell (the mock's frame was a fixed demo box, so the page grid is written here) ---------- */
+.ui-app { height: 100vh; display: grid; grid-template-columns: 52px 264px minmax(0, 1fr) 360px; background: var(--bg); }
+.ui-app.no-pane { grid-template-columns: 52px 264px minmax(0, 1fr); }
+.ui-rail-btn { color: inherit; text-decoration: none; }
+.ui-rail-btn[aria-disabled="true"], .ui-rail-btn:disabled { opacity: .4; cursor: default; }
+.ui-rail-btn:disabled:hover, .ui-rail-btn[aria-disabled="true"]:hover { background: none; }
+.ui-row { color: inherit; text-decoration: none; }
+/* The space name has no menu yet, so it does not answer a hover as a button would. */
+.ui-space-static { cursor: default; }
+.ui-space-static:hover { background: none; }
+.ui-beat-empty { padding: 4px 8px; font-size: 12.5px; }
+/* The sidebar's "Show all" toggle under the conversations: a row, quieter than the rows it lists. */
+.ui-row-more .ui-row-lbl { color: var(--side-dim); }
+/* The DM view's first line when the conversation may start before the messages the page holds. */
+.ui-cutoff { color: var(--dim); font-size: 12.5px; text-align: center; margin: 0 0 12px; }
+/* A feed that is down: a hollow dashed dot in place of the filled green one, so the state is its shape and its word. */
+.ui-live-down i { background: transparent; border: 1.5px dashed var(--faint); box-shadow: none; }
+/* A view fills the centre with the mock's bar, scroll and dock. The phase 1 roster list that still
+   stands in for the views not built yet scrolls with padding. */
+.ui-center > .ui-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* The Needs card's Message button is a link to the DM view, drawn as the mock's button. */
+a.ui-btn { text-decoration: none; }
+/* A member stack drawn with no panel to open is disabled and does not answer a hover. */
+.ui-members:disabled { cursor: default; }
+.ui-members:disabled:hover { background: none; }
+/* The Activity header's copy of the stale marker sits in the bar, not under the space name. */
+.ui-bar .ui-stale { margin: 0; padding: 5px 8px; }
+/* ---------- right panel ---------- */
+/* A tab with nothing to show (Members off a channel, Agent before a pick) does not answer a hover. */
+.ui-tab:disabled { opacity: .45; cursor: default; }
+.ui-tab:disabled:hover { background: none; }
+/* The attach and stop rows lead with their icon, dimmed as the mock draws it. */
+.ui-cmd > .ui-ic { color: var(--dim); flex: none; }
+/* A message's avatar and name open the sender's Agent tab. */
+.ui-msg .ui-who { display: inline-flex; border-radius: 6px; }
+.ui-msg .ui-who:hover b { text-decoration: underline; }
+/* The delete dialog's field is a real input, focused as the mock's focused field. */
+input.ui-field { width: 100%; outline: none; }
+input.ui-field:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
+/* A refusal sits in the dialog's own row, so the dialog keeps its size. */
+.ui-dialog-err { color: var(--red-ink); font-size: 12.5px; overflow: hidden; }
+/* ---------- states (mock section B) ---------- */
+/* The marker's plain sentences sit under its label, one to a line. The Activity header has room for
+   the label only. */
+.ui-stale span { display: block; }
+.ui-bar .ui-stale span { display: none; }
+/* Focus rings: 2px in the accent, offset from the fill. A row clips what spills past its edge, so its
+   ring sits just inside, as the mock's focused sidebar row does. */
+.ui-row:focus-visible, .v3-mrow:focus-visible, .ui-menu button:focus-visible { outline-offset: -2px; }
+
+/* ---------- Settings menu: the theme, from the rail ---------- */
+.ui-rail-set { position: relative; }
+.ui-menu { position: absolute; left: calc(100% + 10px); bottom: 0; z-index: 6; min-width: 168px; padding: 6px; display: grid; gap: 2px; color: var(--ink); }
+.ui-menu-h { padding: 4px 8px; font-size: 12px; font-weight: 500; color: var(--dim); }
+.ui-menu button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; font-size: 13px; text-align: left; }
+.ui-menu button:hover { background: var(--hover); }
+.ui-menu button[aria-checked="true"] { font-weight: 500; }
+.ui-menu-gap { width: 16px; flex: none; }
+
+/* ---------- phone, below 768px (mock section F) ---------- */
+/* The centre over the bottom tab bar. The sizes are the mock's phone frame (.d-screen) rules. */
+.ui-app.ui-phone { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.ui-phone > .ui-center { flex: 1; }
+.ui-phone .ui-bar { padding: 0 8px; gap: 4px; }
+.ui-phone .ui-bar h1 { font-size: 16px; margin-left: 2px; }
+.ui-phone .ui-bar .ui-topic, .ui-phone .ui-bar .ui-chip { display: none; }
+.ui-phone .ui-col { padding: 8px 16px; }
+.ui-phone .ui-msg { grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
+.ui-phone .ui-dock { padding: 0 10px 12px; }
+.ui-phone .ui-dock-in { gap: 8px; }
+.ui-phone .ui-needs { grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; padding: 11px 12px; }
+.ui-phone .ui-needs .ui-btns { grid-column: 1 / -1; }
+.ui-phone .ui-needs .ui-btns .ui-btn { flex: 1; justify-content: center; }
+.ui-phone .ui-composer { height: 92px; padding: 10px 10px 9px 14px; }
+/* A long channel or agent name shrinks with an ellipsis rather than pushing the page sideways. */
+.ui-crow > span.ui-pick { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ui-phone .ui-bar h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The tab bar's tabs are links, and a tab with nowhere to go yet is a disabled button. */
+.v3-tabbar > a { display: grid; justify-items: center; align-content: center; gap: 3px; font-size: 11.5px; color: var(--dim); position: relative; text-decoration: none; }
+.v3-tabbar > [aria-current="page"] { color: var(--ink); font-weight: 500; }
+.v3-tabbar > [aria-disabled="true"] { opacity: .4; cursor: default; }
+/* The places sheet over the page, and the panel over the whole page. */
+.ui-sheet-scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 3; }
+.ui-side.ui-sheet { position: fixed; top: 0; left: 0; bottom: 0; width: 308px; max-width: calc(100vw - 48px); z-index: 4; border-right: 0; box-shadow: var(--sheet-shadow); }
+.ui-pane.ui-pane-full { position: fixed; inset: 0; z-index: 4; border-left: 0; }
+
+/* ---------- composer (phase 3 posting) ----------
+   The box is a real textarea in the mock's input slot. A refusal rings the card in red and says why
+   in the note, which keeps its one-line height so the dock does not move. `.ui-sr` holds text for
+   screen readers only, such as the footer line's reason. */
+textarea.ui-input { display: block; width: 100%; height: 100%; margin: 0; border: 0; padding: 2px 0 0; background: none; color: var(--ink); font: inherit; line-height: 1.45; resize: none; outline: none; }
+textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
+.ui-composer:focus-within { box-shadow: 0 0 0 1px var(--focus), var(--card-shadow); }
+.ui-composer-err, .ui-composer-err:focus-within { box-shadow: 0 0 0 1px var(--red), var(--card-shadow); }
+.ui-cnote.ui-cnote-err { color: var(--red-ink); }
+.ui-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+/* ---------- session parts (agents round 1: sections S, C and E) ----------
+   The header, notes, prompt, run error and empty states around an agent's work. The work itself is
+   the work block at the end of this file. */
+.ui-crumb { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 13px; padding: 5px 8px 5px 4px; border-radius: 7px; margin-left: -10px; white-space: nowrap; text-decoration: none; }
+.ui-crumb:hover { background: var(--hover); color: var(--ink); }
+.ui-crumb .ui-ic { width: 16px; height: 16px; }
+.ui-plane { display: flex; gap: 8px; align-items: flex-start; color: var(--dim); font-size: 12.5px; line-height: 1.45; padding: 8px 10px; border-radius: 9px; background: var(--soft); margin: 2px 0 6px; }
+.ui-plane .ui-ic { width: 16px; height: 16px; flex: none; margin-top: 1px; color: var(--faint); }
+.ui-prompt { border: 1px solid var(--card-line); border-radius: 12px; padding: 9px 12px 8px; margin: 4px 0 6px; background: var(--card); }
+.ui-prompt > span { display: block; font-size: 12px; color: var(--dim); margin-bottom: 2px; }
+.ui-prompt .ui-tx { font-size: 13.5px; }
+.ui-prompt code { font-size: 12.5px; }
+.ui-runerr { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 2px 9px; padding: 10px 12px; border-radius: 10px; background: var(--err-bg); font-size: 13px; margin: 8px 0; }
+.ui-runerr .ui-ic { width: 18px; height: 18px; color: var(--red-ink); grid-row: span 3; margin-top: 1px; }
+.ui-runerr b { font-weight: 600; color: var(--red-ink); }
+.ui-runerr span { color: var(--dim); }
+.ui-sess-empty { display: grid; justify-items: center; text-align: center; gap: 8px; padding: 46px 24px; color: var(--dim); font-size: 13.5px; }
+.ui-sess-empty b { color: var(--ink); font-size: 15px; font-weight: 600; }
+.ui-sess-empty .ui-ic { width: 26px; height: 26px; color: var(--faint); }
+.ui-sess-empty p { margin: 0; max-width: 460px; }
+.ui-sess-empty .ui-cmd { margin-top: 4px; }
+.ui-sess-empty code, .ui-plane code { white-space: nowrap; }
+/* Agent tab: the peek's heading */
+.ui-lt-head { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding: 14px 0 6px; }
+.ui-lt-head h5 { border: 0; padding: 0; flex: 1; }
+.ui-pane .ui-lt-head h5 { border-top: 0; padding: 0; }
+/* Session motion (agents mock G). Only what arrives after the view is on screen moves: a history read,
+   Load earlier and the first paint never carry ui-in, and a cross-fade waits for its text to change. */
+.ui-in { animation: ui-rise 180ms ease-out both; }
+@keyframes ui-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.ui-xfade { animation: ui-fade 160ms ease-out both; }
+@keyframes ui-fade { from { opacity: 0; } to { opacity: 1; } }
+/* Reduced motion stops every animation here. The caret and spinner stand still, and the skeleton bar
+   keeps its fill without the sweep. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .ui-in, .ui-xfade { animation: none; }
+  .ui-caret { animation: none; }
+  .ui-spin { animation: none; }
+  .ui-skel::after { animation: none; }
+}
+/* ---------- message actions (agents round 1: sections S, C, D and E) ----------
+   The Session action on a verified roster agent's message. It is in the tab order, so it shows on
+   hover and while it holds focus rather than being display: none. A phone has no hover; a long press
+   opens the sheet instead. */
+.ui-msg { position: relative; }
+.ui-msg-acts { position: absolute; top: -12px; right: 8px; display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--card); border: 1px solid var(--card-line); box-shadow: var(--card-shadow); opacity: 0; pointer-events: none; }
+.ui-msg-acts:focus-within { opacity: 1; pointer-events: auto; }
+@media (hover: hover) {
+  .ui-msg:hover .ui-msg-acts { opacity: 1; pointer-events: auto; }
+}
+.ui-msg-acts a { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 7px; font-size: 12.5px; color: var(--dim); text-decoration: none; }
+.ui-msg-acts a:hover { background: var(--hover); color: var(--ink); }
+.ui-msg-acts .ui-ic { width: 15px; height: 15px; }
+/* A long press on a phone opens the sheet, so the row starts no text selection or callout of its own;
+   the sheet's Copy text copies the message. */
+@media (hover: none) {
+  .ui-msg:has(> .ui-msg-acts) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+}
+.ui-msg-scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 5; }
+.ui-msg-sheet { position: fixed; left: 10px; right: 10px; bottom: 16px; max-width: 480px; margin: 0 auto; z-index: 6; padding: 6px; }
+.ui-msg-sheet-h { display: flex; align-items: center; gap: 10px; padding: 8px 10px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; line-height: 1.3; }
+.ui-msg-sheet-sub { color: var(--dim); font-size: 12.5px; }
+.ui-msg-sheet .ui-row { color: var(--ink); padding: 11px 10px; }
+
+/* ---------- work (overhaul mock B1, C, E and G) ----------
+   An agent's work drawn on shadcn's Trace: turns, groups of calls, tool lines, prose with its code
+   blocks, posts and the footer. These rules are unlayered, so they win over a copied part's own
+   Tailwind classes; each is the mock's ox-* or sh-* look, on a class passed through className or on a
+   part's data-slot. Colours are tokens, and durations use --dim (6.06 in Night), never --faint. */
+.ox-work { gap: 12px; padding-bottom: 8px; font-size: 14px; }
+.ox-turn { gap: 12px; }
+.ox-calls { gap: 6px; }
+.ox-step { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; }
+/* a line: icon, title, then the description, which cuts first; the title cuts only when it alone is
+   wider than the line, less the icon and its gap */
+.ox-line { font-size: 13.5px; line-height: 20px; }
+.ox-line > [data-slot="trace-title"] { flex: 0 0 auto; max-width: calc(100% - 24px); }
+.ox-line > [data-slot="trace-title"] b { font-weight: 500; color: var(--foreground); }
+.ox-line[data-status="error"] > [data-slot="trace-title"] b { color: inherit; }
+.ox-line > [data-slot="trace-description"] { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-size: 12.5px; }
+.ox-line[data-status="error"] > [data-slot="trace-description"] { color: inherit; }
+.ox-line [data-slot="trace-description"] code { font: 400 12px/1 var(--mono); background: none; padding: 0; color: inherit; }
+.ox-fail { color: var(--destructive); white-space: nowrap; }
+.ox-fail svg { display: inline-block; width: 14px; height: 14px; margin-right: 3px; vertical-align: -2px; }
+.ox-live { color: var(--any-ink); }
+/* a turn's or a group's trigger, and a failed call's tooltip trigger */
+.ox-trig { gap: 4px; padding: 2px 6px; margin: -2px 0 -2px -6px; border-radius: 8px; }
+.ox-trig:hover { background: var(--accent); }
+.ox-trig > [data-slot="trace-icon"]:last-child svg { width: 14px; height: 14px; }
+.ox-tip { display: flex; width: fit-content; max-width: 100%; min-width: 0; border-radius: 6px; text-align: left; }
+.ox-trig:focus-visible, .ox-tip:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; box-shadow: none; }
+.ox-tipc { max-width: 280px; line-height: 1.4; }
+.ox-work .ui-runerr { margin: 0; }
+.ox-think { font-size: 13px; color: var(--muted-foreground); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* prose */
+.ox-said { color: var(--foreground); line-height: 1.6; overflow-wrap: anywhere; font-size: 14px; min-width: 0; }
+.ox-said p, .ox-post .ui-tx p { margin: 0 0 6px; }
+.ox-prose > :last-child { margin-bottom: 0; }
+.ox-said ul, .ox-said ol { margin: 2px 0 6px; padding-left: 20px; }
+.ox-said code { font-size: 12.5px; }
+.ox-said hr, .ox-post hr { border-top: 1px solid var(--line); margin: 8px 0; }
+/* code in prose (sh-code): the header with the language and Copy, the code capped at 132px */
+.ox-code { margin: 6px 0 8px; }
+.ox-code-h { padding: 9px 12px 0; font-size: 12px; font-weight: 500; color: var(--muted-foreground); }
+.ox-code-acts { opacity: 0; transition: opacity .16s; }
+.ox-code:hover .ox-code-acts, .ox-code:focus-within .ox-code-acts { opacity: 1; }
+@media (pointer: coarse) { .ox-code-acts { opacity: 1; } }
+.ox-copy { height: 24px; padding: 0 7px; gap: 4px; border-radius: 6px; font-size: 12px; font-weight: 400; color: var(--muted-foreground); background: var(--background); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent); }
+.ox-copy svg { width: 14px; height: 14px; }
+.ox-code-c { margin: 0; padding: 8px 12px 10px; background: none; border-radius: 0; font: 400 12.5px/1.6 var(--mono); max-height: 132px; overflow: auto; }
+.ox-code-c > code { font: inherit; background: none; padding: 0; }
+/* the agent's own post (blue rule) or direct message (orange rule) */
+.ox-post { position: relative; margin: 2px 0; padding: 7px 12px 8px; border-radius: 10px; background: var(--card); border: 1px solid var(--card-line); min-width: 0; }
+.ox-post::before { content: ""; position: absolute; left: -1px; top: 9px; bottom: 9px; width: 2px; border-radius: 2px; background: var(--multi); }
+.ox-post-dm::before { background: var(--uni); }
+.ox-post-hl { background: color-mix(in srgb, var(--multi) 8%, var(--card)); border-color: color-mix(in srgb, var(--multi) 35%, var(--card-line)); }
+.ox-post-h { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted-foreground); min-width: 0; }
+.ox-post-h svg { width: 15px; height: 15px; flex: none; }
+.ox-post-h > span:not(.ui-sp) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-post-h time { font-variant-numeric: tabular-nums; }
+.ox-post .ui-tx { font-size: 13.5px; margin-top: 3px; color: var(--foreground); }
+.ox-act { display: inline-flex; align-items: center; gap: 3px; color: var(--multi-ink); font-size: 12.5px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+.ox-act:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ox-act svg { width: 14px; height: 14px; }
+/* the footer from presence */
+.ox-foot { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 0 2px; border-top: 1px dashed var(--border); font-size: 12.5px; color: var(--muted-foreground); white-space: nowrap; }
+.ox-foot b { color: var(--foreground); font-weight: 600; }
+.ox-foot > span:last-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ox-foot .v3-spill { font-size: 12.5px; }
+.ox-foot .v3-spill .ui-ic { width: 15px; height: 15px; }
+.ox-foot-wait { color: var(--gold-ink); }
+/* the panel's peek: a group is its title line, and only a running call keeps its description */
+.ox-compact { gap: 8px; font-size: 13px; }
+.ox-compact .ox-said { font-size: 13px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ox-compact .ox-post .ui-tx { font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ox-compact .ox-line:not(:has([data-slot="spinner"])) > [data-slot="trace-description"] { display: none; }
+.ox-compact .ui-plane { font-size: 12px; }
+/* A finished run's lines fold into its group: the group cross-fades in (ui-xfade) where the first line
+   was, and the lines after it fold up beneath it over 160ms. */
+.ox-fold { --fold-n: 1; display: flex; flex-direction: column; gap: 6px; overflow: hidden; animation: ox-foldup 160ms ease-in forwards; }
+@keyframes ox-foldup { from { opacity: 1; max-height: calc(var(--fold-n) * 26px); } to { opacity: 0; max-height: 0; margin-top: -6px; } }
+/* Reduced motion: the fold is not drawn, and the spinner and the shimmer stop in their own parts. */
+@media (prefers-reduced-motion: reduce) {
+  .ox-fold { animation: none; display: none; }
+}
+
+/* ---------- the agent page (overhaul mock B1, C, D, E and W) ----------
+   An agent as a place: the header with the status Badge and Message, the Work, Messages and Profile
+   tabs on shadcn's Tabs, Work in shadcn's Message Scroller, and the Agent tab's peek in the panel.
+   Unlayered, so these win over the copied parts' own Tailwind classes. */
+.ox-head { height: 56px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 22px; min-width: 0; }
+.ox-head h1 { margin: 0; font: 600 16px/1 var(--body); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ox-sep { width: 1px; height: 18px; background: var(--border); flex: none; }
+/* the status Badge, coloured per status; the icon sits in a span so the Badge's own icon size skips it */
+.ox-badge { height: 22px; padding: 0 8px; gap: 4px; border: 0; border-radius: 999px; font-size: 12px; font-weight: 500; flex: none; }
+.ox-badge-i { display: inline-flex; }
+.ox-badge-i svg { width: 14px; height: 14px; }
+.ox-badge-working { background: color-mix(in srgb, var(--any) 12%, var(--bg)); color: var(--any-ink); }
+.ox-badge-waiting { background: var(--warn-bg); color: var(--gold-ink); }
+.ox-badge-idle, .ox-badge-offline { background: var(--secondary); color: var(--muted-foreground); }
+/* Message, Open <name>'s page */
+.ox-btn { height: 26px; gap: 6px; padding: 0 9px; border-radius: 8px; font-size: 12.5px; text-decoration: none; }
+.ox-btn[data-variant="outline"] { border-color: var(--input); color: var(--foreground); }
+.ox-btn svg { width: 16px; height: 16px; }
+/* the tabs: a line under the header, the selected tab underlined in the ink */
+.ox-tabs { flex: 1; min-height: 0; gap: 0; }
+.ox-tablist { width: 100%; height: 40px; flex: none; justify-content: flex-start; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--border); border-radius: 0; }
+.ox-tab { flex: none; height: 100%; gap: 6px; padding: 0 10px; border-radius: 8px 8px 0 0; font-size: 13.5px; font-weight: 500; color: var(--muted-foreground); background: none; }
+.ox-tab:hover, .ox-tab[data-state="active"] { color: var(--foreground); }
+.ox-tab::after { inset-inline: 8px; bottom: -1px; height: 2px; border-radius: 2px; }
+.ox-tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ring); }
+.ox-n { font-size: 12px; font-weight: 500; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+/* a tab's panel fills the page; a hidden one stays hidden, which a display rule would undo */
+.ox-tabc { min-height: 0; flex-direction: column; font-size: inherit; }
+.ox-tabc:not([hidden]) { display: flex; }
+.ox-col { max-width: 760px; width: 100%; margin: 0 auto; padding: 18px 28px 10px; }
+.ox-skel .ui-skel { margin-bottom: 12px; }
+/* Work: the scroller fills the tab, and its button counts the steps that arrived below */
+.ox-scroller { flex: 1; min-height: 0; }
+.ox-viewport { outline: none; }
+.ox-viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
+.ox-scrollc { gap: 0; }
+.ox-newsteps { position: absolute; left: 50%; bottom: 14px; z-index: 3; transform: translateX(-50%); width: auto; height: 30px; gap: 6px; padding: 0 12px 0 9px; border: 1px solid var(--input); border-radius: 999px; background: var(--background); color: var(--foreground); box-shadow: var(--card-shadow); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.ox-newsteps svg { width: 16px; height: 16px; }
+/* Messages: a marker per place, then its rows */
+.ox-marker { gap: 8px; margin: 16px 0 6px; font-size: 13px; color: var(--muted-foreground); }
+.ox-msg-group:first-child .ox-marker { margin-top: 2px; }
+.ox-marker b { color: var(--foreground); font-weight: 600; }
+.ox-marker::after { content: ""; flex: 1 0 24px; height: 1px; background: var(--border); margin-left: 4px; }
+.ox-marker [data-slot="marker-content"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-msgs-more { margin: 12px 0 0; color: var(--dim); font-size: 12.5px; }
+/* Profile: the Agent tab at reading width */
+.ox-profile { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 20px; align-items: start; }
+.ox-profile .ui-big { width: 88px; height: 88px; }
+.ox-profile .ui-sline { margin-top: 0; }
+.ox-profile .ui-kv { margin-top: 14px; }
+/* the peek: who, the status line, Now, and the way to the page */
+.ox-peek-who { display: flex; gap: 12px; align-items: center; }
+.ox-peek-who b { font-size: 16px; font-weight: 600; }
+.ox-peek-who .ui-sub { color: var(--dim); font-size: 13px; }
+.ox-now-head { margin-top: 12px; }
+.ox-now-t { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ox-peek .ui-actions { margin-top: 14px; }
+.ui-ta[data-pick] { cursor: pointer; }
+/* the phone: the crumb is the back button, Message an icon, and the tabs stay under the header */
+.ui-phone .ox-head { padding: 0 8px; gap: 6px; }
+.ui-phone .ox-tablist { padding: 0 8px; }
+.ui-phone .ox-col { padding: 12px 16px; }
+.ui-phone .ox-profile { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+/* Reduced motion: the new-steps button appears and leaves with no transition. */
+@media (prefers-reduced-motion: reduce) {
+  .ox-newsteps { transition: none; }
+}
+
+/* ---------- working, everywhere (overhaul mock W, D and G) ----------
+   Something moves only while presence says the agent is working: the spokes turn, the dot breathes,
+   the activity shimmers and a topology node's arc circles. Waiting, idle and offline never move. */
+.ox-spin { animation: ox-rot 1.6s linear infinite; }
+@keyframes ox-rot { to { transform: rotate(360deg); } }
+/* the working dot breathes a ring out to 5px and fades; the dot itself never changes */
+.ui-st-working { position: relative; }
+.ui-st-working::after { content: ""; position: absolute; inset: -1px; border-radius: 50%; animation: ui-breathe 2.4s ease-out infinite; }
+@keyframes ui-breathe { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--any) 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--any) 0%, transparent); } }
+/* the activity on the working line, with the ink as the band, as Trace's running title */
+.ox-shimmer {
+  --sp: calc(3ch + 40px);
+  background-image: linear-gradient(110deg, currentColor calc(50% - var(--sp)), color-mix(in srgb, var(--ink) 55%, currentColor) calc(50% - var(--sp) * .5), var(--ink) 50%, color-mix(in srgb, var(--ink) 55%, currentColor) calc(50% + var(--sp) * .5), currentColor calc(50% + var(--sp)));
+  background-size: calc(200% + var(--sp) * 2) 100%; background-repeat: no-repeat; background-position: 0 0;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  animation: ox-shim 2.4s linear infinite;
+}
+@keyframes ox-shim { from { background-position: 100% 0; } to { background-position: 0 0; } }
+/* the working line under a channel or a conversation, one Marker per working agent */
+.ox-typing { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 2px 2px; }
+.ox-wline { gap: 8px; min-width: 0; font-size: 12.5px; color: var(--dim); }
+.ox-wline .ui-av { --s: 18px; }
+.ox-wline-c { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-wline-c b { color: var(--ink); font-weight: 600; }
+.ox-wmore { padding-left: 26px; color: var(--dim); font-size: 12.5px; }
+/* the channel header's working chip, the sidebar's and the phone tab's working counts */
+.ox-hchip { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 4px 9px 4px 7px; border-radius: 999px; background: color-mix(in srgb, var(--any) 10%, var(--bg)); color: var(--any-ink); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ox-hchip .ui-ic { width: 15px; height: 15px; }
+.ox-sbw { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--any-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ox-sbw .ui-ic { width: 14px; height: 14px; }
+.v3-tabbar .ox-tabw { position: absolute; top: 6px; left: calc(50% + 8px); }
+/* the Agents view: View work beside a working row, and the live step under its activity */
+/* View work sits in the host's place on a working row (mock W): only that row keeps room for it */
+.ox-arow { position: relative; min-width: 0; }
+.ox-arow > .v3-arow { align-items: start; }
+.ox-arow-w > .v3-arow { padding-right: 96px; }
+.ox-arow > .v3-arow > .v3-spill, .ox-arow > .v3-arow > .v3-meta { margin-top: 9px; }
+.ox-arow > .ox-act { position: absolute; top: 18px; right: 12px; padding: 0 4px; border-radius: 6px; }
+.ox-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ui-phone .ox-host { display: none; }
+.ox-arow > .ox-act:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.ox-now { font-size: 12.5px; line-height: 18px; }
+.ox-now > [data-slot="trace-icon"] svg { width: 14px; height: 14px; }
+.ox-now-w { display: block; min-width: 0; }
+/* A roster the page only last saw cannot say anyone works now, so while it is stale nothing moves:
+   the shell carries data-presence="stale", and the copied Spinner and Trace's shimmer stop too. */
+[data-presence="stale"] .ox-spin, [data-presence="stale"] [data-slot="spinner"], [data-presence="stale"] .ui-orbit { animation: none; }
+[data-presence="stale"] .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }
+[data-presence="stale"] .ox-shimmer, [data-presence="stale"] [data-slot="trace-title"] { animation: none; background-image: none; -webkit-text-fill-color: currentColor; }
+/* Reduced motion: no spin, no breathing (the dot keeps a still halo, so its shape still differs), no
+   shimmer, and the arc stays. The clocks keep counting. */
+@media (prefers-reduced-motion: reduce) {
+  .ox-spin { animation: none; }
+  .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }
+  .ox-shimmer { animation: none; background-image: none; -webkit-text-fill-color: currentColor; }
+  .ui-orbit { animation: none; }
+}
+/* Reduced motion also stops the short transitions: the copied parts' (the trace arrow, the tab
+   underline, the badge and the button) and the code block's Copy button, which fade or turn at once. */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot], [data-slot] *, [data-slot]::before, [data-slot]::after, [data-slot] *::before, [data-slot] *::after, .ox-code-acts { transition: none; }
+}

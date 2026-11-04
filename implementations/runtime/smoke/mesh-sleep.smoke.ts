@@ -42,7 +42,7 @@ import {
 } from "@cotal-ai/core";
 import { MeshHandler, EpfSettleWatcher, MeshHandler as ShippedMeshHandler } from "@cotal-ai/runtime";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshsleep";
 const EP = "manager";
@@ -54,22 +54,6 @@ const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "a".repeat(26) };
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops. A bare `await`
- *  on a pause that never expires hangs the whole file, which scores as a timeout — graded on the
- *  harness's patience rather than on the code, and indistinguishable from a broker that never came
- *  up. So every wait that is asserting termination carries its own deadline. */
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}meshsleep-`));
@@ -268,8 +252,8 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   // checkpoint plane expires a pause when somebody delivers its fire, which was never the question:
   // the question is whether the run's own watcher takes one. Without that, a sleep whose fire has
   // been published sits `waiting` with no settle fact and the effect pending, durably and forever.
-  await withDeadline(sleeping, 20_000, "the sleep effect");
-  c("and the effect returns on its own: taking the fire is the handler's job, not a caller's", true);
+  const ended = await withDeadline(sleeping.then(() => true), 20_000, "the sleep effect");
+  c("and the effect returns on its own: taking the fire is the handler's job, not a caller's", ended === true);
   const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN });
   c("the settle fact is the expiry, not an answer: a sleep is a checkpoint nobody answers",
     settle?.settle === "expired", settle?.settle);
@@ -323,8 +307,8 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   // a test that recomputed it would be asserting against its own arithmetic.
   await waitPast(before!.value.deadline);
   c("the broker published one fire, for the one timer that was armed", await brokerFired(TOKEN2));
-  await withDeadline(Promise.all([first, second]), 20_000, "both waiters");
-  c("and BOTH waiters return: they were waiting on one fact, not two", true);
+  const ended = await withDeadline(Promise.all([first, second]).then(() => true), 20_000, "both waiters");
+  c("and BOTH waiters return: they were waiting on one fact, not two", ended === true);
 }
 
 // ── 3) a resume that arrives AFTER the deadline it is resuming, with the timer never armed ────
@@ -365,7 +349,8 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   c("the overdue resume is not refused: a past deadline is reconciled, not re-minted", refused === undefined, refused);
   c("and it asked for the schedule again, which is now the only thing that can still arm it",
     (await armPending(8)) === 1);
-  await withDeadline(resumed, 20_000, "the overdue sleep");
+  c("the overdue sleep ended within its deadline",
+    await withDeadline(resumed.then(() => true), 20_000, "the overdue sleep") === true);
   const settle3 = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN3 });
   c("the pause ends as an expiry, on the deadline it recorded before the crash", settle3?.settle === "expired", settle3?.settle);
 }

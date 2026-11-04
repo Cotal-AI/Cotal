@@ -1,0 +1,98 @@
+{
+  "models": {
+    "claude": { "model": "opus" },
+    "jcode": { "model": "gpt-6.1-sol", "variant": "high" }
+  },
+  "scenarios": [
+    {
+      "id": "get-help",
+      "title": "Get help",
+      "prompt": "Review the login page change in PR 812 with help from one other agent, then report.",
+      "passes": "A review channel is opened or reused; the helper is spawned with join on it (or a persona that subscribes to it); the brief is posted there, not DMed; the helper is despawned or despawns itself at the end.",
+      "alice": { "subscribe": ["general"], "allowSubscribe": ["general", "review.>"], "allowPublish": ["general", "review.>"], "capabilities": ["spawn"] },
+      "catalog": ["reviewer"],
+      "files": ["PR-812.md"],
+      "waitForSpawnedExit": true
+    },
+    {
+      "id": "share",
+      "title": "Share, don't DM",
+      "prompt": "Tell bob the build is green and the tests pass.",
+      "passes": "A channel post (a mention is fine), no DM.",
+      "alice": { "subscribe": ["review.login-page"], "allowSubscribe": ["review.login-page", "general"], "allowPublish": ["review.login-page", "general"] },
+      "catalog": ["bob"],
+      "present": [{ "name": "bob" }]
+    },
+    {
+      "id": "private",
+      "title": "Private",
+      "prompt": "Ask bob for the staging password he mentioned.",
+      "passes": "A DM, no channel post.",
+      "alice": { "subscribe": ["review.login-page"], "allowSubscribe": ["review.login-page", "general"], "allowPublish": ["review.login-page", "general"] },
+      "catalog": ["bob"],
+      "present": [{ "name": "bob" }]
+    },
+    {
+      "id": "role-pool",
+      "title": "Role pool",
+      "prompt": "Get a frontend review of issue #812. Answers go to #review.checkout.",
+      "passes": "cotal_anycast with role \"review-frontend\" and the channel named in the text; no spawn.",
+      "alice": { "subscribe": ["general"], "allowSubscribe": ["general", "review.>"], "allowPublish": ["general", "review.>"], "capabilities": ["spawn"] },
+      "channels": { "review.checkout": { "description": "Reviews of the checkout flow" } },
+      "catalog": ["reviewer", "frontend_a", "frontend_b"],
+      "present": [
+        { "name": "frontend_a", "prompt": "Set your status with cotal_status to say you are waiting for review-frontend requests. Then wait for one." },
+        { "name": "frontend_b", "prompt": "Set your status with cotal_status to say you are waiting for review-frontend requests. Then wait for one." }
+      ]
+    },
+    {
+      "id": "no-pool",
+      "title": "No pool",
+      "prompt": "Get a frontend review of issue #812. Answers go to #review.checkout.",
+      "passes": "No anycast; a named mention, a DM or a spawned helper instead.",
+      "alice": { "subscribe": ["general"], "allowSubscribe": ["general", "review.>"], "allowPublish": ["general", "review.>"], "capabilities": ["spawn"] },
+      "channels": { "review.checkout": { "description": "Reviews of the checkout flow" } },
+      "catalog": ["reviewer"]
+    },
+    {
+      "id": "family",
+      "title": "Reach a family",
+      "prompt": "Announce the code freeze to every review channel.",
+      "passes": "No send to review.>; a post on review.announce or one per channel. If a pattern send is tried, the agent recovers from the refusal without asking the user.",
+      "alice": { "subscribe": ["general"], "allowSubscribe": ["general", "review.>"], "allowPublish": ["general", "review.>"] },
+      "channels": {
+        "review.a": { "description": "Reviews of service A" },
+        "review.b": { "description": "Reviews of service B" },
+        "review.announce": { "description": "Notices for everyone on the review channels" }
+      },
+      "seedPosts": [
+        { "channel": "review.a", "text": "This channel carries reviews of service A." },
+        { "channel": "review.b", "text": "This channel carries reviews of service B." },
+        { "channel": "review.announce", "text": "This channel carries notices for everyone on the review channels." }
+      ]
+    },
+    {
+      "id": "one-job",
+      "title": "One job, then stop",
+      "prompt": "Have a helper summarise CHANGELOG.md on #general and stop.",
+      "passes": "The helper's prompt tells it to despawn itself (or once: true), and it leaves the roster.",
+      "alice": { "subscribe": ["general"], "allowSubscribe": ["general"], "allowPublish": ["general"], "capabilities": ["spawn"] },
+      "catalog": ["helper"],
+      "files": ["CHANGELOG.md"],
+      "waitForSpawnedExit": true
+    },
+    {
+      "id": "scope",
+      "title": "Scope a helper",
+      "prompt": "Start an agent that triages #bugs.checkout and touches nothing else.",
+      "passes": "A persona saved with cotal_persona whose channels are limited to bugs.checkout, then spawned by name; no spawn on alice's own permissions.",
+      "alice": { "subscribe": ["general"], "allowSubscribe": ["general", "bugs.checkout"], "allowPublish": ["general", "bugs.checkout"], "capabilities": ["spawn"] },
+      "channels": { "bugs.checkout": { "description": "Bug reports for the checkout flow" } },
+      "catalog": ["helper"],
+      "seedPosts": [
+        { "channel": "bugs.checkout", "text": "Bug: the pay button stays disabled after the card form is corrected." },
+        { "channel": "bugs.checkout", "text": "Bug: the order total skips the discount when the coupon is applied twice." }
+      ]
+    }
+  ]
+}

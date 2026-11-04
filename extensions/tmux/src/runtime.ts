@@ -133,7 +133,7 @@ export class TmuxRuntime implements Runtime {
       attach: () => {
         throw new Error(
           `tmux runtime: attach natively — \`tmux attach-session -t ${this.session}\`, then ` +
-            `\`tmux select-window -t ${windowId}\` (window "${name}")`,
+            `\`tmux select-window -t ${paneId}\` and \`tmux select-pane -t ${paneId}\``,
         );
       },
     };

@@ -14,7 +14,7 @@
  *       other port, and the same definition starts once the port is free;
  *     - the running dashboard refuses an unauthenticated request, exchanges its single-use launch
  *       link (read from the private bootstrap file its log names) for a session, serves / and
- *       /app.js, reads the sent message back through its broker-backed history and activity
+ *       the page's script under /assets/, reads the sent message back through its broker-backed history and activity
  *       routes, and refuses channel delete as read-only;
  *     - a second start is a no-op, `ext remove` refuses while it runs, and `service stop` ends it;
  *     - the private bootstrap record preserves the listener's bound host and port;
@@ -183,8 +183,9 @@ try {
     const page = await web("/", { headers: authed });
     const html = await page.text();
     ok("dashboard page is the real asset (packaged via files:[dist])", page.status === 200 && /<html|<!doctype/i.test(html) && html.length > 200, html.slice(0, 120));
-    const appJs = await web("/app.js", { headers: authed });
-    ok("static asset /app.js serves", appJs.status === 200 && /javascript/.test(appJs.headers.get("content-type") ?? ""), appJs.headers.get("content-type"));
+    const script = /(?:src)="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
+    const asset = script === undefined ? undefined : await web(script, { headers: authed });
+    ok("the page's script under /assets/ serves as JavaScript", asset?.status === 200 && (asset.headers.get("content-type") ?? "").startsWith("text/javascript"), { script, status: asset?.status, type: asset?.headers.get("content-type") });
     const metaRes = await web("/api/meta", { headers: authed });
     const meta = (await metaRes.json()) as { space?: string; pid?: number; channelDeleteSupported?: boolean };
     ok("/api/meta names the space and serving pid, and no channel delete", metaRes.status === 200 && meta.space === SPACE && meta.pid === webPid && meta.channelDeleteSupported === false, { meta, webPid });

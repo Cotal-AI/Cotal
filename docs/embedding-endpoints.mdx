@@ -67,6 +67,8 @@ Agent seats call `CotalEndpoint.readPresence()` when a tool needs a roster. Batc
 
 A failed read leaves a last-known roster. A DM or mention with a name that the failed read cannot verify refuses with that same reason. A name verified by an earlier read remains accepted. Watching managers, delivery, chat, and dashboard endpoints retain their transition watches.
 
+A consuming endpoint that reads presence on demand reads the channel registry on demand too. It reads once at connect, and `listChannels()`, `joinChannel()` and `leaveChannel()` read again first. Call `CotalEndpoint.readChannels()` before `getChannelConfig()` or `channelReplay()` when the answer must be current. It needs `$JS.API.DIRECT.GET.KV_cotal_channels_<space>`, which issuers mint from 0.116.0; an older credential is refused with the grant named.
+
 ## Presence diagnosis [#presence-view-and-write-diagnosis]
 
 `presenceView()` reports the trust state of this endpoint's local presence watch.

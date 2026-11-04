@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { writePrivateRecord } from "@cotal-ai/core";
+import { writePrivateRecord, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { personaDir } from "@cotal-ai/workspace";
 
 /** The name the seeded default persona's agents launch under, as its template declares. */
@@ -79,6 +79,22 @@ export function seedDefaultPersona(root: string): { what: string; path: string }
   const seeded = reconcileDefaultAgent(path);
   if (seeded === "unchanged") return undefined;
   return { what: seeded === "seeded" ? "default persona" : "updated default persona permissions", path };
+}
+
+/** Write the shipped default persona into `<root>/.cotal/agents/default.md` for a launch of the
+ *  implicit default that found none there, as a catalog no setup or up prepared has none. Create-only:
+ *  a file that appears meanwhile is kept and loaded as it stands. Returns the path written, or
+ *  undefined when the file was already there. */
+export function writeDefaultPersonaForLaunch(root: string): string | undefined {
+  const path = join(personaDir(root), "default.md");
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  try {
+    writeSecretFileCreateOnly(path, DEFAULT_AGENT);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+    throw e;
+  }
+  return path;
 }
 
 /** The command that puts a missing default persona back into a space's catalog. A space this

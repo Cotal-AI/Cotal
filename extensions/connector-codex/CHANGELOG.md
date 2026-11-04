@@ -1,5 +1,93 @@
 # @cotal-ai/connector-codex
 
+## 0.141.1
+
+No changes in this release.
+
+## 0.141.0
+
+No changes in this release.
+
+## 0.140.8
+
+No changes in this release.
+
+## 0.140.7
+
+No changes in this release.
+
+## 0.140.6
+
+No changes in this release.
+
+## 0.140.5
+
+No changes in this release.
+
+## 0.140.4
+
+No changes in this release.
+
+## 0.140.3
+
+No changes in this release.
+
+## 0.140.2
+
+No changes in this release.
+
+## 0.140.1
+
+No changes in this release.
+
+## 0.140.0
+
+No changes in this release.
+
+## 0.139.1
+
+No changes in this release.
+
+## 0.139.0
+
+No changes in this release.
+
+## 0.138.2
+
+No changes in this release.
+
+## 0.138.1
+
+No changes in this release.
+
+## 0.138.0
+
+No changes in this release.
+
+## 0.137.0
+
+No changes in this release.
+
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
 ## 0.136.3
 
 No changes in this release.
