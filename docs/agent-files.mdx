@@ -126,6 +126,7 @@ Such a persona still starts on no channel unless the spawn passes `join`, and ea
 A complete agent file in `prompt` is merged into one frontmatter block.
 For a new definition, its grants, role, and agent survive unless an explicit tool argument overrides them.
 On redefinition, existing fields remain unless an explicit tool argument changes them; the prompt replaces the body.
+Explicit `model`, `role` and `agent` arguments must be nonblank strings. Empty or whitespace-only values are refused with `bad-request` naming the field before any file is written. Omit a field to retain its inherited value.
 Malformed leading frontmatter is refused with `prompt-frontmatter`.
 A definition the manager could not load back is refused and nothing is written, for example one whose `subscribe` names a channel or family that no `allowSubscribe` entry contains.
 `capabilities` is policy: only an explicit `capabilities` argument sets it, and the manager's `define-persona` command checks it against the definer before it writes.

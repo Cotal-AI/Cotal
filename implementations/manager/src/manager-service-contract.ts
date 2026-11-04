@@ -468,9 +468,9 @@ const INSPECT_INPUT_SCHEMA = {
   properties: { name: { type: "string", minLength: 1 } },
 } as const;
 
-/** An optional `spawn` field that is present must say something: the persona fills an omitted
- *  field, so a blank one read as omitted would launch on a value the caller did not ask for. A
- *  fresh object per field, because the canonical serializer refuses a shared reference as circular. */
+/** Optional persona and spawn strings must be nonblank when present. Omission can inherit a value;
+ *  a blank string must not silently select that value. A fresh object per field is needed because
+ *  the canonical serializer refuses a shared reference as circular. */
 const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
 
 /** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the
@@ -796,9 +796,9 @@ const PERSONA_INPUT_SCHEMA = {
   properties: {
     name: { type: "string", minLength: 1 },
     persona: { type: "string", minLength: 1 },
-    model: { type: "string" },
-    role: { type: "string" },
-    agent: { type: "string" },
+    model: nonBlank(),
+    role: nonBlank(),
+    agent: nonBlank(),
     subscribe: CHANNEL_LIST,
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
@@ -1483,9 +1483,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task.
  *
  *  45 = `spawn` takes an inline `persona` record and a run's `runId`, and `define-persona` takes
- *  `capabilities`. Both input schemas are closed, so a revision-44 contract rejects either. */
+ *  `capabilities`. Both input schemas are closed, so a revision-44 contract rejects either.
+ *
+ *  46 = `define-persona` refuses empty or whitespace-only model, role and agent arguments.
+ *  The changed input schema advances the described surface without adding a command. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 45, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 46, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

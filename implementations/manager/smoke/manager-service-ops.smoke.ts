@@ -701,6 +701,34 @@ try {
     const rStaticShow = await A.call("show-persona", { name: "epstatic" });
     check("and its show-persona is not-found", rStaticShow.reply.ok === false && rStaticShow.reply.error?.code === "not-found", rStaticShow.reply);
 
+    const omitted = loadAgentFile(staticPath);
+    check("omitted persona model, role and agent stay absent",
+      omitted.model === undefined && omitted.role === undefined && omitted.agent === undefined);
+    const pins = { model: "vendor/model", role: "reviewer", agent: "e2e-stub" };
+    const valid = await A.call("define-persona", { name: "epvalidpins", persona: "Explicit pins.", ...pins });
+    const validPath = join(workspaceRoot, ".cotal", "agents", "epvalidpins.md");
+    check("nonblank persona pins are accepted", valid.reply.ok === true && existsSync(validPath), valid.reply);
+    const savedPins = existsSync(validPath) ? loadAgentFile(validPath) : undefined;
+    for (const field of ["model", "role", "agent"] as const) {
+      check(`the explicit persona ${field} is preserved`, savedPins?.[field] === pins[field], savedPins?.[field]);
+      for (const [index, value] of ["", "   ", "\t\n", "  ", null, 7].entries()) {
+        const name = `epblank-${field}-${index}`;
+        const path = join(workspaceRoot, ".cotal", "agents", `${name}.md`);
+        let refusal: string | undefined;
+        try {
+          const reply = (await A.call("define-persona", { name, persona: "Invalid pin probe.", [field]: value })).reply;
+          if (!reply.ok) refusal = `${reply.error?.code}: ${reply.error?.message}`;
+        } catch (error) {
+          if (!(error instanceof EpEnvelopeError)) throw error;
+          refusal = `${error.code}: ${error.message}`;
+        }
+        check(`persona ${field} ${JSON.stringify(value)} is bad-request naming the field`,
+          refusal?.startsWith("bad-request:") === true && refusal.includes(`/${field}`), refusal);
+        check(`refused persona ${field} ${JSON.stringify(value)} writes no file`, !existsSync(path),
+          existsSync(path) ? { savedValue: loadAgentFile(path)[field] } : undefined);
+      }
+    }
+
     // One of the manager's own seats keeps its principal for its life, so what it defines is its own.
     // Started by the composition root with A as its spawner: A holds no issued evidence, so a spawn
     // A sends hands on no grant (SPEC 13.15), and this seat needs `spawn` to define. A still stops it
