@@ -19,7 +19,7 @@ import {
   AgentNode,
   BeamLine,
   CreamStage,
-  Wordmark,
+  Logo,
   WireLines,
   bez,
   fade,
@@ -185,7 +185,7 @@ export const HeaderAssemble: React.FC = () => {
         })}
 
         {/* Closing wordmark resolves as the nodes converge into the center. */}
-        <Wordmark frame={frame} appear={150} tagline="connect them all" size={96} />
+        <Logo frame={frame} appear={150} tagline="connect them all" size={96} />
       </div>
     </CreamStage>
   );

@@ -25,7 +25,7 @@ import {
   Ripple,
   useCurrentFrame,
   WireLines,
-  Wordmark,
+  Logo,
   type Pt,
 } from "./shared";
 
@@ -276,7 +276,7 @@ export const HeaderMorph: React.FC = () => {
         <Caption text="peer-to-peer" opacity={capPeer} top={28} />
 
         {/* resolve: wordmark + tagline */}
-        <Wordmark
+        <Logo
           frame={frame}
           appear={180}
           tagline="one protocol, any topology"
