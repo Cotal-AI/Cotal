@@ -1,0 +1,45 @@
+name: Custody lifetime
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  lifetime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install CI-pinned broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/custody-broker"
+          mkdir -p "$work"
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.12.12/nats-server-v2.12.12-linux-amd64.tar.gz -o "$work/nats-server.tar.gz"
+          tar -xzf "$work/nats-server.tar.gz" -C "$work"
+          echo "$work/nats-server-v2.12.12-linux-amd64" >> "$GITHUB_PATH"
+      - run: pnpm build
+      - name: Full custody lifetime qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          export TMPDIR="$RUNNER_TEMP/custody-lifetime"
+          mkdir -p "$TMPDIR"
+          pnpm smoke:tool-result-custody-lifetime

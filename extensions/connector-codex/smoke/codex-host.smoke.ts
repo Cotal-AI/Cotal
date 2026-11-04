@@ -33,14 +33,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey, type PresenceCondition } from "@cotal-ai/core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { skipSuite, SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
-  // operator's auth.json — see docs/connect-codex.md), so there is no Windows Codex case in the
+  // operator's auth.json — see docs/connect-codex.mdx), so there is no Windows Codex case in the
   // suite at all. This skip records that limitation; it is not covered elsewhere.
-  console.log("SKIP codex host smoke — managed Codex agents are POSIX-only (symlinked auth.json)");
-  process.exit(0);
+  skipSuite("managed Codex agents are POSIX-only");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -76,6 +75,8 @@ interface LogEntry {
   httpStatus?: number;
   mcpTokenPresent?: boolean;
   cotalLeak?: string[];
+  /** The fake's own MCP tool call, as `mcpCall` returned it. */
+  res?: { body?: { result?: { content?: { text?: string }[] } } };
 }
 function readJsonLines<T>(path: string): T[] {
   if (!existsSync(path)) return [];
@@ -493,6 +494,14 @@ try {
     presenceLog.find((e) => e.condition?.source === "item/commandExecution/requestApproval")?.condition,
   );
   check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
+  // #3840: the request is declined in the same call that announces it, so the wait is over at
+  // once. The seat must go back to `working` (clearing the condition) before the turn ends, or
+  // the turn ends waiting→idle and the working→idle boundary never fires.
+  const afterWait = await waitFor("presence after the approval wait", () => {
+    const i = presenceLog.findIndex((e) => e.condition?.source === "item/commandExecution/requestApproval");
+    return i < 0 ? undefined : presenceLog.slice(i + 1).find((e) => e.status !== "waiting");
+  });
+  check("an auto-declined request returns the seat to working before the turn ends", afterWait.status === "working", afterWait);
 
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
   // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A
@@ -516,7 +525,7 @@ try {
   await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
 
   // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
-  // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the
+  // lands mid-turn. steerPending declines (we have no connector-started turn) so it buffers — and the
   // foreign terminal is not our boundary, so nothing else is coming. The host must still pump at
   // that edge, or the message sits in the inbox until unrelated traffic happens to wake the loop.
   await sleep(300);
@@ -527,6 +536,33 @@ try {
     turnStarts().find((t) => t.includes("stranded-during-tui")),
   );
   check("a DM arriving during a standalone TUI turn is driven when that turn ends", pumped !== undefined, pumped);
+  // #5688: while that turn runs, the agent can read the DM with a peek, which clears nothing — the
+  // drive above is the proof the peek left it to the turn loop.
+  const toolText = (e: LogEntry | undefined) =>
+    (e?.res?.body?.result?.content ?? []).map((c) => c.text ?? "").join("\n");
+  const soloPeek = logEntries().find((e) => e.ev === "soloPeek");
+  check(
+    "a peek during an externally started turn shows the queued DM and clears nothing",
+    toolText(soloPeek).includes("stranded-during-tui") && toolText(soloPeek).includes("peek: nothing cleared"),
+    soloPeek,
+  );
+  const soloPull = logEntries().find((e) => e.ev === "soloPull");
+  check(
+    "a clearing read after the peek leaves that DM queued for the turn loop",
+    toolText(soloPull).includes("1 connector-managed automatic message is still queued; peek to read it now."),
+    soloPull,
+  );
+  check(
+    "automatic DM delivery does not steer an externally started turn",
+    !logEntries().some(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) =>
+          (i.text ?? "").includes("stranded-during-tui"),
+        ),
+    ),
+  );
   await sleep(500);
   await dm("after-solo");
   const tSolo = await waitFor("post-solo turn", () => turnStarts().find((t) => t.includes("after-solo")));
@@ -735,7 +771,7 @@ try {
   // private stdio pipe. The listener is what makes the real Codex TUI attachable to this very
   // thread; the capability token is what keeps other OS users and off-box callers from driving
   // the agent through it (the listener has no auth of its own). It is NOT a boundary against a
-  // same-uid sibling — see docs/connect-codex.md#limits.
+  // same-uid sibling — see docs/connect-codex.mdx#limits.
   const argvText = argv.join(" ");
   check("child argv: the app-server listens on a loopback websocket", argvText.includes("--listen ws://127.0.0.1:0"), argv);
   check(

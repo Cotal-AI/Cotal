@@ -87,6 +87,7 @@ export function assertIdToken(v: string, what = "id"): string {
   return v;
 }
 
+
 /** The provisioner-assigned grant id `<gid>` (§13.9). Deliberately SEPARATOR-FREE ([a-z0-9]):
  *  the `eve_<uid>-<e>-<gid>-<n>` and `rec_<uid>-<gid>-<n>` reader-durable names carry it adjacent
  *  to other soft components across `-`, so a `-` (or `_`) inside `<gid>` would make the name
@@ -176,6 +177,13 @@ export function callerTokens(caller: EpCaller): string[] {
   ];
 }
 
+/** Per-goal live progress read row (§13.9 "Live event progress", reserved `goal` topic):
+ *  `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>` — the caller identity in the subject gives
+ *  mint-time read containment; delivered on the caller's own core subscription only. */
+export function epGoalProgressGrantRow(space: string, endpoint: string, caller: EpCaller): string {
+  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerTokens(caller).join(".")}.>`;
+}
+
 /** A caller that rides the versioned rail (SPEC 13.15): the triple plus its accepted generation.
  *  Every subject and grant builder emits the `ep.v1` form exactly when the caller carries this
  *  field, so one caller value decides both the subject a client publishes and the rows a mint
@@ -214,14 +222,36 @@ export const EP_RAIL_V1 = "v1";
  *  names carry no owner tokens). */
 export type EpRoute = { mode: "one" | "all" } | { mode: "inst"; instanceId: string };
 
+/** Shared request head. Callers supply either a validated instance id or the observer's `*`. */
+function requestHead(space: string, plane: readonly string[], route: EpRoute, endpoint: string, command: string): string[] {
+  const parts = [spacePrefix(space), ...plane, route.mode, endpointToken(endpoint)];
+  if (route.mode === "inst") parts.push(route.instanceId);
+  parts.push(assertCommandToken(command));
+  return parts;
+}
+
+/** Trusted-host observation of one command's class or any-instance requests. This is a read
+ *  filter, never a peer grant or proof of caller origin. It spans target and caller suffixes;
+ *  the observer must still parse and authorize each request. No scatter route is admitted. */
+export function epRequestObservationFilter(
+  space: string,
+  req: { route: "one" | "inst"; endpoint: string; command: string; issued: boolean },
+): string {
+  if ((req.route !== "one" && req.route !== "inst") || typeof req.issued !== "boolean")
+    throw new Error("request observation needs an explicit rail and a one or inst route");
+  const route: EpRoute = req.route === "inst" ? { mode: "inst", instanceId: "*" } : { mode: "one" };
+  const plane = req.issued ? ["ep", EP_RAIL_V1] : ["ep"];
+  return assertSized([...requestHead(space, plane, route, req.endpoint, req.command), ">"].join("."));
+}
+
 /** Build a request subject (class, scatter, or instance form; targeted iff `target` is given). */
 export function epRequestSubject(
   space: string,
   req: { route: EpRoute; endpoint: string; command: string; target?: EpTarget; caller: EpCaller; nonce: string },
 ): string {
-  const parts = [spacePrefix(space), ...epPlaneTokens(req.caller), req.route.mode, endpointToken(req.endpoint)];
-  if (req.route.mode === "inst") parts.push(assertLifecycleToken(req.route.instanceId, "instanceId"));
-  parts.push(assertCommandToken(req.command));
+  const route: EpRoute = req.route.mode === "inst"
+    ? { mode: "inst", instanceId: assertLifecycleToken(req.route.instanceId, "instanceId") } : req.route;
+  const parts = requestHead(space, epPlaneTokens(req.caller), route, req.endpoint, req.command);
   if (req.target) parts.push(...targetTokens(req.target));
   parts.push(...callerRailTokens(req.caller), assertNonce(req.nonce));
   return assertSized(parts.join("."));

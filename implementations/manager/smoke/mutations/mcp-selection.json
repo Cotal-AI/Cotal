@@ -1,0 +1,27 @@
+{
+  "suite": [
+    "implementations/manager/smoke/start-overrides.smoke.ts",
+    "implementations/cli/smoke/spawn-foreground-events.smoke.ts"
+  ],
+  "guard": "Actual foreground and manager entry points retain explicit MCP selection intent",
+  "command": "pnpm exec tsx implementations/manager/smoke/start-overrides.smoke.ts && pnpm smoke:spawn-foreground-events",
+  "why": [
+    "The command chains two suites. A manager failure intentionally skips the foreground suite; each expected red names its assertion without requiring both success-only completion lines."
+  ],
+  "mutations": [
+    {
+      "name": "drop manager explicit isolation intent",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "mcpServersExclusive: shareTools !== undefined,",
+      "replace": "mcpServersExclusive: false,",
+      "expectRed": "named shareTools requests exclusive MCP discovery"
+    },
+    {
+      "name": "drop foreground explicit isolation intent",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "mcpServersExclusive: shareTools !== undefined,",
+      "replace": "mcpServersExclusive: false,",
+      "expectRed": "foreground --share-tools none reaches the connector as an exclusive empty selection"
+    }
+  ]
+}

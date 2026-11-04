@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, type Cell, type Dot } from "../_shared";
+import { C, currentPhase, fontFamily, gridLine, horizontalPath, pick, spliceWordmark, type Cell, type Dot } from "../_shared";
 import { Grid, Tagline } from "../components";
 
 // Short, wide logo banner: wordmark left, a compact peer+bus diagram right.
@@ -29,12 +29,7 @@ const down = (col: number): Cell[] => [
   { row: 2, col },
   { row: 3, col },
 ];
-const busRun = (c1: number, c2: number): Cell[] => {
-  const step = c2 >= c1 ? 1 : -1;
-  const out: Cell[] = [];
-  for (let c = c1; c !== c2 + step; c += step) out.push({ row: 3, col: c });
-  return out;
-};
+const busRun = (c1: number, c2: number) => horizontalPath(3, c1, c2);
 
 function flowDots(mode: string, t: number): Dot[] {
   const [A, B, Cc] = TAP as [number, number, number];

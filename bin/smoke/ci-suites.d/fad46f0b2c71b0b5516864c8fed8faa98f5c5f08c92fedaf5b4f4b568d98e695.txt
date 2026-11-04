@@ -1,0 +1,2 @@
+# The full run-ps list from a manager whose broker link adds latency answers inside the CLI budget (#5672).
+smoke:run-ps-latency

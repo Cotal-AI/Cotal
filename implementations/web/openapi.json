@@ -1,0 +1,1507 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Dashboard HTTP API",
+    "version": "1",
+    "description": "HTTP interface of the @cotal-ai/web reference implementation. This description covers read operations, readiness metadata and the legacy channel deletion route; it does not establish a separate stable product or Cloud management API. Start the dashboard using the web service preset described in the operator guide. The server defaults to 127.0.0.1:7799; use the host and port configured for your dashboard.\n\nOpen the owner-private launch URL once to exchange its k query token for the cotal_web_session cookie. Keep the session on the same host. With the default bind, the permitted browser origins are http://127.0.0.1:<port>, http://localhost:<port> and http://cotal.localhost:<port>. A custom host uses its own HTTP origin. A cross-origin request is refused before session checks. The readiness nonce only opens /api/meta.\n\nRead operations use GET and take no request body. Some read handlers also accept other bodyless methods; this description does not promise a 405 response for them. The native web service is read-only and always refuses channel deletion with 403. Legacy direct dashboard instances can enable deletion; /api/meta reports channelDeleteSupported. Description version 1 identifies this document, not the wire or npm package version.",
+    "license": {
+      "name": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://{host}:{port}",
+      "description": "Your dashboard listener. Broker TLS does not encrypt this HTTP connection.",
+      "variables": {
+        "host": {
+          "default": "127.0.0.1"
+        },
+        "port": {
+          "default": "7799"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "DashboardSession": []
+    },
+    {
+      "LaunchToken": []
+    }
+  ],
+  "externalDocs": {
+    "description": "Dashboard setup and access limits",
+    "url": "https://docs.cotal.ai/watch-a-mesh/#web-dashboard"
+  },
+  "paths": {
+    "/api/roster": {
+      "get": {
+        "operationId": "list-roster",
+        "summary": "List the roster",
+        "description": "Return the dashboard observer's current presence roster. Rows can include offline peers; freshness is reported separately by the presence-view SSE event.",
+        "responses": {
+          "200": {
+            "description": "The current snapshot or history page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RosterEntry"
+                  }
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/membership": {
+      "get": {
+        "operationId": "read-membership",
+        "summary": "Read channel membership",
+        "description": "Return broker-sourced live and durable channel membership. asOf is absent when no membership heartbeat has been written. Use this for display, not authorization.",
+        "responses": {
+          "200": {
+            "description": "The current snapshot or history page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Membership"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/MembershipUnavailable"
+          }
+        }
+      }
+    },
+    "/api/channels": {
+      "get": {
+        "operationId": "list-channels",
+        "summary": "List chat channels",
+        "description": "List chat channels with message counts and effective replay and delivery policies. Event channels are excluded. description and replayWindow are absent when unset.",
+        "responses": {
+          "200": {
+            "description": "The current snapshot or history page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Channel"
+                  }
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/activity": {
+      "get": {
+        "operationId": "read-activity",
+        "summary": "Read recent activity",
+        "description": "Merge the newest chat messages selected by stream sequence with recent direct messages, order by message timestamp and retain the newest limit. partial, missing and reasons identify sources that failed or exceeded the shared 8000 ms deadline. A partial page is still HTTP 200. Failure to obtain the channel list is HTTP 500.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "allowEmptyValue": true,
+            "description": "Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 200
+            },
+            "example": 20
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current snapshot or history page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityPage"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/api/dms": {
+      "get": {
+        "operationId": "read-dms",
+        "summary": "Read direct-message history",
+        "description": "Return recent direct messages visible to the dashboard observer. A failed or late read returns HTTP 503 instead of a partial array.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "allowEmptyValue": true,
+            "description": "Maximum requested messages. Absent or empty uses 500. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 500
+            },
+            "example": 20
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current snapshot or history page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Message"
+                  }
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReadUnavailable"
+          }
+        }
+      }
+    },
+    "/api/channels/{channel}/history": {
+      "get": {
+        "operationId": "read-channel-history",
+        "summary": "Read channel history",
+        "description": "Percent-decode the channel once and validate it using the core channel grammar. Invalid names are refused without rewriting them to another channel. A failed or late read returns HTTP 503.",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "description": "Channel name or pattern accepted by the core channel grammar. Encode it as one URL path component.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "example": "general"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "allowEmptyValue": true,
+            "description": "Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 200
+            },
+            "example": 20
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current snapshot or history page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Message"
+                  }
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReadUnavailable"
+          }
+        }
+      }
+    },
+    "/feed": {
+      "get": {
+        "operationId": "watch-feed",
+        "summary": "Watch live dashboard events",
+        "description": "Open a Server-Sent Events stream. Each frame has event: <name> and data: <JSON>, followed by a blank line. The initial frames contain roster and presence-view, then membership or membership-read-failed. Later frames carry roster, presence-view, membership, membership-read-failed and message updates. The stream provides no event IDs or replay cursor; reconnect and read history for backfill. An unhandled request failure after headers have been sent closes the stream. Membership read failures are sent as events and leave the stream open. The schemas under x-sse-events describe decoded data payloads.\n\n| Event | JSON data |\n|---|---|\n| `roster` | Array of presence records, with optional dashboard progress. |\n| `presence-view` | `state` and `fresh`, plus `staleSince` for a stale observer. |\n| `membership` | Optional `asOf` and an array of `members` with live and durable channels. |\n| `membership-read-failed` | An object with a `reason` string. |\n| `message` | `mode` and `msg`, with subject-derived `senderId` and chat `channel` when available. |\n\nDecoded payload schemas are also included under `x-sse-events` in the [downloadable specification](https://docs.cotal.ai/dashboard.openapi.json).\n\nThe message event forwards publisher JSON without wire-message validation. Treat msg.from as advisory; senderId is derived from the broker subject. A malformed publisher payload can still appear in the feed.",
+        "responses": {
+          "200": {
+            "description": "An open UTF-8 SSE stream. Authentication and origin checks run before streaming begins.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-cache"
+                }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "event: roster\ndata: []\n\nevent: presence-view\ndata: {\"state\":\"current\",\"fresh\":true}\n\n"
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "x-sse-events": {
+          "roster": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RosterEntry"
+            }
+          },
+          "presence-view": {
+            "$ref": "#/components/schemas/PresenceView"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/Membership"
+          },
+          "membership-read-failed": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          },
+          "message": {
+            "$ref": "#/components/schemas/LiveMessage"
+          },
+          "hello": {
+            "description": "The first event of a feed: its id, which every watch request names. Sent before the roster so a browser can watch an agent at once.",
+            "type": "object",
+            "properties": {
+              "feed": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "feed"
+            ],
+            "additionalProperties": false
+          },
+          "agent-frame": {
+            "description": "A frame an agent published on its own event channel, sent only to the feeds watching that agent. `id` is the agent's roster id, the subject's verified publisher.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "msg": {
+                "description": "The frame as the agent published it, unvalidated publisher JSON forwarded by the dashboard tap; consumers validate it before treating it as a wire message."
+              }
+            },
+            "required": [
+              "id",
+              "msg"
+            ],
+            "additionalProperties": false
+          },
+          "overflow": {
+            "description": "The feed fell more than the server's buffer ceiling behind, so the server closed it; the browser reconnects to resume.",
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "/api/meta": {
+      "get": {
+        "operationId": "read-dashboard-meta",
+        "summary": "Read dashboard metadata",
+        "description": "Return the space, process ID and whether channel deletion is supported. An authenticated browser session, one-use launch token or the private readiness nonce can access this route. The readiness nonce is accepted only here and does not mint a session. Query strings are accepted. Other bodyless methods also reach this read handler; no 405 behavior is promised.",
+        "security": [
+          {
+            "DashboardSession": []
+          },
+          {
+            "LaunchToken": []
+          },
+          {
+            "ReadinessNonce": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardMeta"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/channel/delete": {
+      "post": {
+        "operationId": "delete-dashboard-channel",
+        "summary": "Delete a legacy dashboard channel",
+        "description": "Legacy direct dashboard operation. The native lifecycle web service always returns 403 before reading the body because it has no channel-purger authority. Check channelDeleteSupported in /api/meta. A legacy instance deletes one concrete canonical channel and its content using its configured purger authority. Wildcards, aliases and missing channels are refused. The body limit is 8192 bytes. JSON is parsed without a Content-Type check. Other methods fall through to 404.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "channel"
+                ]
+              },
+              "example": {
+                "channel": "general"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel content was purged and its configuration removed as reported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or non-canonical channel, malformed JSON, or deletion refusal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "A browser origin was refused, or the native service is configured read-only. A read-only refusal includes code PERMISSION_DENIED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "PERMISSION_DENIED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/agents/{agent}/watch": {
+      "post": {
+        "operationId": "watch-agent",
+        "summary": "Watch an agent's event frames on a feed",
+        "description": "Subscribe one open feed to the agent's event-plane frames, which then arrive on that feed as agent-frame events. No body: a watch is a row in this process's map, which the feed's close removes. It changes no mesh state. Watching again is still 204. Other methods fall through to 404.",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "description": "The agent's id, <owner>.<actor> with each part in [A-Za-z0-9_], percent-encoded as one URL path component. Any other text is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 4096
+            },
+            "example": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS"
+          },
+          {
+            "name": "feed",
+            "in": "query",
+            "required": true,
+            "description": "The id the feed's hello event named. A missing id, or one that is not an open feed of this process, is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Recorded. No body."
+          },
+          "400": {
+            "description": "The agent id or the feed id was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/agents/{agent}/unwatch": {
+      "post": {
+        "operationId": "unwatch-agent",
+        "summary": "Stop watching an agent's event frames on a feed",
+        "description": "Remove the feed's watch of the agent. No body, no mesh state. Unwatching an agent the feed does not watch is still 204. Other methods fall through to 404.",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "description": "The agent's id, <owner>.<actor> with each part in [A-Za-z0-9_], percent-encoded as one URL path component. Any other text is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 4096
+            },
+            "example": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS"
+          },
+          {
+            "name": "feed",
+            "in": "query",
+            "required": true,
+            "description": "The id the feed's hello event named. A missing id, or one that is not an open feed of this process, is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Recorded. No body."
+          },
+          "400": {
+            "description": "The agent id or the feed id was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/agents/{agent}/events": {
+      "get": {
+        "operationId": "read-agent-events",
+        "summary": "Read an agent's recent event frames",
+        "description": "Read the newest frames on the agent's event channel, bounded like its siblings: a read that does not finish within the aggregation deadline, or that fails, returns HTTP 503 saying which. A read the broker refuses is answered 200 with the refusal and, when known, the grant that would allow it. Other methods are refused with 405 and an Allow header naming GET.",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "description": "The agent's id, <owner>.<actor> with each part in [A-Za-z0-9_], percent-encoded as one URL path component. Any other text is refused with 400.",
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 4096
+            },
+            "example": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "allowEmptyValue": true,
+            "description": "Maximum requested frames. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 200
+            },
+            "example": 20
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page, or the broker's refusal of the read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentEventsPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The agent id or the limit was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReadUnavailable"
+          }
+        }
+      }
+    },
+    "/api/send": {
+      "post": {
+        "operationId": "send-as-operator",
+        "summary": "Post as the operator",
+        "description": "Post one message as the operator the process holds: {kind: \"msg\", channel, text} to one concrete channel, or {kind: \"dm\", to, text} to one roster member. The body is read before any refusal, so the 8192-byte cap bounds what a refused post costs, and every check runs before the poster starts, so a refused post never puts the operator on the roster. A wildcard or alias channel, an id not on the roster, an empty text, another kind, or a body that is not a JSON object is refused with 400. A read-only service, an expired operator credential and a cross-origin request answer 403 with the reason. A publish the broker refuses answers 502 with the refusal. Other methods fall through to 404.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "msg",
+                      "dm"
+                    ]
+                  },
+                  "channel": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The channel, for kind msg. One concrete channel; no wildcard."
+                  },
+                  "to": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The roster member's agent id, for kind dm."
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The message. Trimmed; an empty text is refused."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "text"
+                ]
+              },
+              "examples": {
+                "channel": {
+                  "value": {
+                    "kind": "msg",
+                    "channel": "general",
+                    "text": "Ship it."
+                  }
+                },
+                "dm": {
+                  "value": {
+                    "kind": "dm",
+                    "to": "local.UACCAXW2KQKIQGMNYJFHWTWZSKA3J2TF7EFCABLCXS5UIZATMT345EWS",
+                    "text": "How long until the smoke is green?"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The post went out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The target, the text, the kind or the body was refused; the error names which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/LaunchExchange"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "A browser origin was refused (cross-origin), the service is read-only (post is off in /api/meta), or the operator credential expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/BodyRefused"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "The broker refused the publish; the error carries the refusal as it came.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The dashboard is shutting down, so it no longer posts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "DashboardSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "cotal_web_session",
+        "description": "Process-local dashboard session issued by the one-use launch URL."
+      },
+      "LaunchToken": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "k",
+        "description": "One-use bootstrap token from the owner-private launch URL. It returns HTTP 302 with a session cookie rather than the requested data."
+      },
+      "ReadinessNonce": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-cotal-readiness",
+        "description": "Private startup readiness nonce, accepted only by /api/meta. It does not create a browser session."
+      }
+    },
+    "schemas": {
+      "Message": {
+        "$ref": "../../spec/cotal.schema.json#/definitions/CotalMessage"
+      },
+      "RosterEntry": {
+        "allOf": [
+          {
+            "$ref": "../../spec/cotal.schema.json#/definitions/Presence"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "progress": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "unknown",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Presence plus an optional progress signal. Working rows currently report progress.kind as unknown because the dashboard has no session-store observer."
+      },
+      "Membership": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "number"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "live": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "durable": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "observedAt": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "live",
+                "durable",
+                "observedAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "members"
+        ]
+      },
+      "Channel": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": {
+            "type": "string"
+          },
+          "replay": {
+            "type": "boolean"
+          },
+          "replayWindow": {
+            "type": "string"
+          },
+          "deliveryClass": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "messages",
+          "replay",
+          "deliveryClass"
+        ]
+      },
+      "ActivityEntry": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "chat",
+                "type": "string"
+              },
+              "channel": {
+                "type": "string"
+              },
+              "msg": {
+                "$ref": "#/components/schemas/Message"
+              }
+            },
+            "required": [
+              "mode",
+              "channel",
+              "msg"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "unicast",
+                "type": "string"
+              },
+              "msg": {
+                "$ref": "#/components/schemas/Message"
+              }
+            },
+            "required": [
+              "mode",
+              "msg"
+            ]
+          }
+        ]
+      },
+      "ActivityPage": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityEntry"
+            }
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "read": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "of": {
+            "type": "integer",
+            "const": 2
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "chat",
+                "direct messages"
+              ]
+            }
+          },
+          "reasons": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "deadlineMs": {
+            "type": "integer",
+            "const": 8000
+          }
+        },
+        "required": [
+          "entries",
+          "partial",
+          "read",
+          "of",
+          "missing",
+          "reasons",
+          "deadlineMs"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "AuthenticationError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "unauthenticated",
+              "launch-token-already-used"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "OriginError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "cross-origin"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "MembershipError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "membership-read-failed"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "reason"
+        ]
+      },
+      "PresenceView": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "current",
+                "type": "string"
+              },
+              "fresh": {
+                "const": true,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "state",
+              "fresh"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "unpopulated",
+                "type": "string"
+              },
+              "fresh": {
+                "const": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "state",
+              "fresh"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "stale",
+                "type": "string"
+              },
+              "fresh": {
+                "const": false,
+                "type": "boolean"
+              },
+              "staleSince": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "state",
+              "fresh",
+              "staleSince"
+            ]
+          }
+        ]
+      },
+      "LiveMessage": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "unicast",
+              "anycast"
+            ]
+          },
+          "senderId": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "msg": {
+            "description": "Unvalidated publisher JSON forwarded by the dashboard tap. Well-formed wire messages use the Message schema in this description. Consumers must validate the payload before treating it as a wire message; msg.from is advisory and senderId comes from the broker subject."
+          }
+        },
+        "required": [
+          "mode",
+          "msg"
+        ]
+      },
+      "DashboardMeta": {
+        "type": "object",
+        "properties": {
+          "space": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "channelDeleteSupported": {
+            "type": "boolean"
+          },
+          "post": {
+            "description": "Whether this dashboard can post as the operator. `participant` posts as one operator for the life of the process; `off` says why posting is unavailable.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "participant"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "off"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "operatorId": {
+            "type": "string",
+            "description": "The operator's own roster id once the dashboard has posted, so the browser can tell its own messages apart."
+          }
+        },
+        "required": [
+          "space",
+          "pid",
+          "channelDeleteSupported",
+          "post"
+        ],
+        "additionalProperties": false
+      },
+      "ChannelDeleted": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "channel": {
+            "type": "string"
+          },
+          "purged": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "channel",
+          "purged",
+          "removed"
+        ],
+        "additionalProperties": false
+      },
+      "AgentEventsPage": {
+        "description": "The newest frames on the agent's event channel, oldest first, or the broker's refusal of that read.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "frames": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              },
+              "more": {
+                "type": "boolean",
+                "description": "Whether older frames exist beyond this page."
+              }
+            },
+            "required": [
+              "frames",
+              "more"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "refused": {
+                "type": "string",
+                "description": "The broker's refusal, as it came."
+              },
+              "grant": {
+                "type": "string",
+                "description": "The command that grants this dashboard the read, when one is known."
+              }
+            },
+            "required": [
+              "refused"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "SendAnswer": {
+        "type": "object",
+        "description": "A post that went out. seq is a DM's stored sequence, the broker's proof that it kept the message; a channel post has none.",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The message id."
+          },
+          "operatorId": {
+            "type": "string",
+            "description": "The operator's agent id, the same id /api/meta reports."
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "ok",
+          "id",
+          "operatorId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "LaunchExchange": {
+        "description": "A valid one-use k query token is exchanged for a dashboard session. The response redirects to the same path without its query. A valid existing cookie takes precedence over k.",
+        "headers": {
+          "Location": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The requested path without the query string."
+          },
+          "Set-Cookie": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "cotal_web_session=<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP."
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "No valid session, an invalid launch token, or a spent launch token. The readiness credential does not authorize these routes.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AuthenticationError"
+            },
+            "example": {
+              "error": "unauthenticated"
+            }
+          }
+        }
+      },
+      "CrossOrigin": {
+        "description": "Origin is checked before session authentication. An origin outside this listener's allowed origins is refused.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OriginError"
+            },
+            "example": {
+              "error": "cross-origin"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "The query or percent-encoded channel name is invalid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "BodyRefused": {
+        "description": "These read routes accept no request body. An announced body is refused before it is read; the connection is closed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "The request failed. The body names the failure; a failed read does not terminate the dashboard.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "ReadUnavailable": {
+        "description": "The history read failed or did not finish within 8000 ms.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "MembershipUnavailable": {
+        "description": "The membership snapshot could not be read. A missing snapshot is not an empty successful one.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MembershipError"
+            }
+          }
+        }
+      }
+    }
+  }
+}

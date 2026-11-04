@@ -12,9 +12,12 @@ import {
   dmStream,
   isConsumerNotFound,
   parsePrincipalKey,
+  parseSubject,
+  peerLabel,
   resolvePeer,
   standaloneConnectOpts,
   unicastSubject,
+  type EndpointRef,
   type ParsedArgs,
   type Presence,
 } from "@cotal-ai/core";
@@ -49,7 +52,7 @@ function notFoundDurable(durable: string, space: string): never {
  *  (also `-`-free), so splitting the part after the well-known `dm_` prefix on `-` is unambiguous
  *  exactly when it yields three parts each matching its own token grammar; anything else (a name
  *  typed by hand, a different durable kind) is reported as unparseable rather than guessed at. */
-function parseDmDurable(durable: string): { owner: string; actor: string } | null {
+export function parseDmDurable(durable: string): { owner: string; actor: string } | null {
   if (!durable.startsWith("dm_")) return null;
   const parts = durable.slice(3).split("-");
   if (parts.length !== 3) return null;
@@ -171,8 +174,19 @@ export async function runPending(args: ParsedArgs): Promise<void> {
           let seen = 0;
           try {
             for await (const m of iter) {
-              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from: string; ts: number };
-              console.log(`  ${body.id}  from=${body.from}  ts=${body.ts}`);
+              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from?: Partial<EndpointRef>; ts: number };
+              if (values.json) {
+                // Keep the legacy --json output unchanged, including its candidate lines.
+                console.log(`  ${body.id}  from=${String(body.from)}  ts=${body.ts}`);
+              } else {
+                // `from=` is the sender principal the broker bound into the stored subject. The card is
+                // the sender's own claim, so its name and role print last, as a label and nothing more.
+                const sender = parseSubject(m.subject)?.sender;
+                if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
+                const card = body.from;
+                const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
+                console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
+              }
               seen++;
               if (seen >= pendingCandidates) break;
             }

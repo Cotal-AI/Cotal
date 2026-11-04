@@ -115,6 +115,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "channel-writer": via("channel-writer"),
   "channel-purger": via("channel-purger"),
   teardown: via("teardown"),
+  "issued-store-recreate": via("issued-store-recreate"),
   "control-caller-privileged": via("control-caller-privileged"),
   "control-caller-admin": via("control-caller-admin"),
   deployer: via("deployer"),
@@ -127,6 +128,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   },
   "goal-writer": via("goal-writer", { goalWriter: { endpoint: EP } }),
   "session-caller": via("session-caller", { sessionCaller: { endpoint: EP, sessionId: MINE, epoch: EPOCH } }),
+  "dm-reader": via("dm-reader"),
   "session-ledger": via("session-ledger"),
   "session-serving": via("session-serving", { sessionServing: { endpoint: EP, sessionId: MINE, epoch: EPOCH } }),
   "run-driver": via("run-driver", { runDriver: { endpoint: EP, runId: "run-sweep", takeoverId: "tk000001", instanceId: IID, epoch: EPOCH } }),
@@ -134,6 +136,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "run-operator": via("run-operator", { runOperator: { endpoint: EP, runId: "run-sweep", takeoverId: "tk000002" } }),
   "endpoint-evictor": via("endpoint-evictor"),
   issuer: via("issuer"),
+  "registry-reader": via("registry-reader"),
   "run-admitter": via("run-admitter", { runAdmitter: { endpoint: EP, runId: "run-sweep" } }),
   "transfer-writer": via("transfer-writer", { transferWriter: { instanceId: IID, hex: "0".repeat(64) } }),
   "transfer-reader": via("transfer-reader", { transferReader: { instanceId: IID } }),
@@ -142,8 +145,8 @@ const PRODUCERS: Record<Profile, () => string[]> = {
 // ── exhaustiveness: the table's key set IS the profile set, proven at runtime ──────────────────
 console.log("A. exhaustiveness: every mint profile is swept, none skipped");
 {
-  // The two CredentialKind members that are NOT Profiles ($SYS creds minted outside permissionsFor).
-  const NON_PROFILE_KINDS = ["membership-observer", "connection-evictor"];
+  // The CredentialKind members that are NOT Profiles ($SYS creds minted outside permissionsFor).
+  const NON_PROFILE_KINDS = ["membership-observer", "account-census", "connection-evictor"];
   const declared = Object.keys(CREDENTIAL_LIFETIMES).filter((k) => !NON_PROFILE_KINDS.includes(k)).sort();
   const swept = Object.keys(PRODUCERS).sort();
   const missing = declared.filter((k) => !swept.includes(k));

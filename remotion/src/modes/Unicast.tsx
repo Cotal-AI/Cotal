@@ -19,30 +19,32 @@ import {
   lerp,
   MODE_ALICE,
   MODE_PEERS,
+  NODE_R,
   prog,
-  wirePath,
+  straightWire,
   Wires,
   type Pt,
 } from "./scene";
 
-// bob is the addressee, picked by name so reordering the shared cast cannot move
-// the delivery to another peer; the others are present but unaddressed. The inbox
-// sits on the alice -> bob route.
-const BOB = MODE_PEERS.find((p) => p.name === "bob");
-if (!BOB) throw new Error("the unicast card's addressee bob is not in MODE_PEERS");
-const INBOX: Pt = { x: 400, y: 325 };
+const INBOX_R = 36;
+const WIRE_GAP = 3;
 
-const SEG1: [Pt, Pt] = [
-  { x: MODE_ALICE.at.x + 50, y: MODE_ALICE.at.y - 13 },
-  { x: INBOX.x - 38, y: INBOX.y + 9 },
-];
-const SEG2: [Pt, Pt] = [
-  { x: INBOX.x + 38, y: INBOX.y - 9 },
-  { x: BOB.at.x - 48, y: BOB.at.y + 12 },
-];
+// Leave the square centered on p along the route, with a small gap from its edge.
+function leave(p: Pt, to: Pt, radius: number): Pt {
+  const span = Math.max(Math.abs(to.x - p.x), Math.abs(to.y - p.y));
+  if (span === 0) throw new Error("the unicast route requires distinct node positions");
+  return lerp(p, to, (radius + WIRE_GAP) / span);
+}
 
-const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
-const PATH2 = wirePath(SEG2[0], lerp(...SEG2, 0.4), lerp(...SEG2, 0.6), SEG2[1]);
+// One calculation supplies the inbox, resting wires and both traveling beams.
+export function unicastRoute(from: Pt, to: Pt): { inbox: Pt; seg1: [Pt, Pt]; seg2: [Pt, Pt] } {
+  const inbox = lerp(from, to, 0.5);
+  return {
+    inbox,
+    seg1: [leave(from, to, NODE_R), leave(inbox, from, INBOX_R)],
+    seg2: [leave(inbox, to, INBOX_R), leave(to, from, NODE_R)],
+  };
+}
 
 const T = {
   sendStart: 14,
@@ -58,6 +60,15 @@ export const UNICAST_DURATION = 168;
 
 export const ModeUnicast: React.FC = () => {
   const frame = useCurrentFrame();
+  // bob is the addressee, picked by name so reordering the shared cast cannot move
+  // the delivery to another peer; the others are present but unaddressed. Checked
+  // here, not at import: Root imports every card, so a module-scope throw would
+  // also refuse the cards that never address bob.
+  const bob = MODE_PEERS.find((p) => p.name === "bob");
+  if (!bob) throw new Error("the unicast card's addressee bob is not in MODE_PEERS");
+  const { inbox, seg1, seg2 } = unicastRoute(MODE_ALICE.at, bob.at);
+  const path1 = straightWire(...seg1);
+  const path2 = straightWire(...seg2);
 
   const t1 = prog(frame, T.sendStart, T.sendEnd);
   const t2 = prog(frame, T.deliverStart, T.deliverEnd);
@@ -81,11 +92,11 @@ export const ModeUnicast: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[PATH1, PATH2]} glow={[glow1, glow2]} />
+      <Wires wires={[{ d: path1, glow: glow1 }, { d: path2, glow: glow2 }]} />
 
       <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
-      <AgentNode {...BOB} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />
-      {MODE_PEERS.filter((p) => p !== BOB).map((p) => (
+      <AgentNode {...bob} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />
+      {MODE_PEERS.filter((p) => p !== bob).map((p) => (
         <AgentNode key={p.name} {...p} type={CARD_TYPE} />
       ))}
 
@@ -93,10 +104,10 @@ export const ModeUnicast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: INBOX.x - 36,
-          top: INBOX.y - 36,
-          width: 72,
-          height: 72,
+          left: inbox.x - INBOX_R,
+          top: inbox.y - INBOX_R,
+          width: INBOX_R * 2,
+          height: INBOX_R * 2,
           borderRadius: 20,
           border: `1.5px solid ${parked ? GOLD : INK.ring}`,
           background: INK.fill,
@@ -108,8 +119,8 @@ export const ModeUnicast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: INBOX.x - 70 * CARD_TYPE,
-          top: INBOX.y + 48,
+          left: inbox.x - 70 * CARD_TYPE,
+          top: inbox.y + 48,
           width: 140 * CARD_TYPE,
           textAlign: "center",
           fontSize: 20 * CARD_TYPE,
@@ -121,15 +132,15 @@ export const ModeUnicast: React.FC = () => {
       </div>
 
       {parked ? (
-        <Dot at={INBOX} breath={breath} />
+        <Dot at={inbox} breath={breath} />
       ) : (
         <>
-          <Beam d={PATH1} pos={(t) => lerp(...SEG1, t)} t={t1} visible={t1 > 0 && t1 < 1} />
-          <Beam d={PATH2} pos={(t) => lerp(...SEG2, t)} t={t2} visible={t2 > 0 && t2 < 1} />
+          <Beam d={path1} pos={(t) => lerp(...seg1, t)} t={t1} visible={t1 > 0 && t1 < 1} />
+          <Beam d={path2} pos={(t) => lerp(...seg2, t)} t={t2} visible={t2 > 0 && t2 < 1} />
         </>
       )}
 
-      <Labels mode="unicast" caption="deliver to one, durably" subject={`cotal.demo.inst.${BOB.name}`} type={CARD_TYPE} />
+      <Labels mode="unicast" caption="deliver to one, durably" subject={`cotal.demo.inst.${bob.name}`} type={CARD_TYPE} />
     </Card>
   );
 };

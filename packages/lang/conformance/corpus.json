@@ -57,6 +57,12 @@
       "heading": "9.1 What a program can catch",
       "source": "const builder = await spawn(\"builder\")\ntry {\n  await turn(builder, { name: \"build\", deadline: \"10m\" })\n} catch (e) {\n  if (e.code === \"L4003\") {\n    await notify([builder], { decision: \"build\", outcome: \"timed-out\" })\n  } else {\n    throw e\n  }\n}\n",
       "verdict": "accepted"
+    },
+    {
+      "index": 9,
+      "heading": "10.2 Keys",
+      "source": "const reviewer = await spawn(\"reviewer\")\nasync function review(agent) {\n  return await turn(agent, { name: \"review\" })\n}\nconst first = await parallel({ call: () => review(reviewer) }, { name: \"panel-one\" })\nconst second = await parallel({ call: () => review(reviewer) }, { name: \"panel-two\" })\nlog(first.call.status, second.call.status)\n",
+      "verdict": "accepted"
     }
   ]
 }

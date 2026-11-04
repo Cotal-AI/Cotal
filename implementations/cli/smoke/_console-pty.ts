@@ -5,14 +5,19 @@
  * send them. It is the manager's dependency (its `pty` runtime), not this package's: the CLI ships
  * no pty code, so the smokes borrow the manager's installed copy through that package's own
  * resolution rather than adding a test-only dependency to a published package.
+ *
+ * Every session starts node itself with tsx's loader, so the same argv runs the binary under a
+ * Linux or macOS pty and under Windows ConPTY. The `.bin/tsx` shim is a shell script on POSIX and a
+ * `.cmd` file on Windows, and a pty runs one executable, not a shell.
  */
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-export const TSX = join(repoRoot, "node_modules", ".bin", "tsx");
 export const COTAL = join(repoRoot, "bin", "cotal.ts");
+// tsx's own loader, by file URL, so the pty child resolves it from any working directory.
+const TSX_LOADER = import.meta.resolve("tsx");
 
 export interface Pty {
   onData(cb: (data: string) => void): void;
@@ -28,9 +33,58 @@ type PtySpawn = (
 const managerRequire = createRequire(join(repoRoot, "implementations", "manager", "package.json"));
 export const ptySpawn = (managerRequire("@lydell/node-pty") as { spawn: PtySpawn }).spawn;
 
+export interface PtyOptions {
+  cwd: string;
+  env: Record<string, string>;
+  cols?: number;
+  rows?: number;
+  /** The terminal name, which the child sees as `TERM`. */
+  name?: string;
+}
+
+/** Run node under a real pty with tsx's loader registered, so `args` may name a `.ts` entry. */
+export function nodePty(args: string[], opts: PtyOptions): Pty {
+  return ptySpawn(process.execPath, ["--import", TSX_LOADER, ...args], {
+    name: opts.name ?? "xterm-256color",
+    cols: opts.cols ?? 120,
+    rows: opts.rows ?? 32,
+    cwd: opts.cwd,
+    env: opts.env,
+  });
+}
+
+/** Run the repo's `cotal` binary under a real pty. */
+export const cotalPty = (args: string[], opts: PtyOptions): Pty => nodePty([COTAL, ...args], opts);
+
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 /** Strip CSI sequences so a marker can be matched through Ink's repaints. */
 export const clean = (s: string): string => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+
+const { Terminal } = managerRequire("@xterm/headless") as {
+  Terminal: new (options: { cols: number; rows: number; scrollback: number; allowProposedApi: boolean }) => {
+    write(data: string, done: () => void): void;
+    buffer: { active: { length: number; getLine(index: number): { isWrapped: boolean; translateToString(trim: boolean): string } | undefined } };
+    dispose(): void;
+  };
+};
+
+/** The display `raw` leaves on a `cols` by `rows` terminal, a line the terminal wrapped joined back
+ *  into one, so a line wider than the terminal reads as wider. ConPTY can encode padding as cursor
+ *  moves, so read the display, not a CSI-stripped byte stream. */
+export async function screen(raw: string, cols: number, rows: number): Promise<string> {
+  const terminal = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
+  try {
+    await new Promise<void>((done) => terminal.write(raw, done));
+    const lines: string[] = [];
+    for (let i = 0; i < terminal.buffer.active.length; i++) {
+      const line = terminal.buffer.active.getLine(i);
+      const text = line?.translateToString(!terminal.buffer.active.getLine(i + 1)?.isWrapped) ?? "";
+      if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines.join("\n").trimEnd();
+  } finally { terminal.dispose(); }
+}
 
 /** One `cotal console` session under a real pty: cumulative output plus a marker poll. */
 export class ConsoleSession {
@@ -38,8 +92,7 @@ export class ConsoleSession {
   exited: { code: number } | undefined;
   private readonly p: Pty;
   constructor(args: string[], home: string, extraEnv: Record<string, string> = {}, size = { cols: 120, rows: 32 }) {
-    this.p = ptySpawn(TSX, [COTAL, "console", ...args], {
-      name: "xterm-256color",
+    this.p = cotalPty(["console", ...args], {
       cols: size.cols,
       rows: size.rows,
       cwd: repoRoot,
@@ -76,15 +129,15 @@ export class ConsoleSession {
     this.p.write(s);
     await wait(settleMs);
   }
-  /** Type one `:` palette line and submit it. The palette is CONFIRMED open before the line is
-   *  typed: an overlay (a detail card, help) eats the first `:` to close itself, and a line typed
+  /** Open Ctrl+P, type one palette line and submit it. The palette is CONFIRMED open before the line is
+   *  typed: an overlay (a detail card, help) eats the first key to close itself, and a line typed
    *  into the global keys instead of the palette would toggle lenses or, worse, reach `D`. */
   async command(line: string): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
       let from = this.out.length;
-      this.write(":");
-      if (!(await this.waitFor("Enter runs", 3_000, from))) {
-        if (attempt === 2) throw new Error(`the : palette did not open for ${JSON.stringify(line)}`);
+      this.write("\x10");
+      if (!(await this.waitFor("Commands", 3_000, from))) {
+        if (attempt === 2) throw new Error(`the Ctrl+P palette did not open for ${JSON.stringify(line)}`);
         await wait(300);
         continue;
       }
@@ -105,7 +158,7 @@ export class ConsoleSession {
       this.write("\x1b"); // drop the line that did not run, so the retry starts from a known state
       await wait(300);
     }
-    throw new Error(`the : palette did not run ${JSON.stringify(line)}`);
+    throw new Error(`the Ctrl+P palette did not run ${JSON.stringify(line)}`);
   }
 
   /** Open the compose prompt, wait for its input to paint, then submit once. Like `command`, every
@@ -144,7 +197,7 @@ export class ConsoleSession {
   private async paletteRepaintedOpen(): Promise<boolean> {
     const from = this.out.length;
     await wait(600);
-    return clean(this.out.slice(from)).includes("Enter runs");
+    return clean(this.out.slice(from)).includes("Commands");
   }
   private async composeRepaintedOpen(): Promise<boolean> {
     const from = this.out.length;

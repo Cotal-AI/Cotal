@@ -33,7 +33,7 @@ export function emitSentinel(counts: { passed: number; failed: number; cells?: n
 /** A skip is not a cell: the shard lists the suite with `reason` and adds nothing to its total. */
 export function skipSuite(reason: string): never {
   const line = `${SENTINEL_PREFIX} skipped=${reason}`;
-  // The shard grades the last sentinel it reads, so a reason with a line break could end in a tally.
+  // Read back the whole reason so a line break cannot add a terminal record or discard text.
   const read = parseSentinel(line);
   if (read?.kind !== "skipped" || read.reason !== reason) {
     throw new Error(`skipSuite reason must read back as one skip line: ${JSON.stringify(reason)}`);
@@ -47,14 +47,16 @@ export type ParsedSentinel =
   | { cells: number; passed: number; failed: number; kind: "canonical" | "legacy" }
   | { cells: 0; passed: 0; failed: 0; kind: "skipped"; reason: string };
 
+/** Structured count/skip records win over legacy tallies; the last record in either group wins. */
 export function parseSentinel(text: string): ParsedSentinel | null {
   let last: ParsedSentinel | null = null;
+  let structured: ParsedSentinel | null = null;
   for (const raw of String(text).split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
     const canonical = line.match(/^COTAL_SMOKE_SENTINEL cells=(\d+) passed=(\d+) failed=(\d+)$/);
     if (canonical) {
-      last = {
+      structured = {
         cells: Number(canonical[1]),
         passed: Number(canonical[2]),
         failed: Number(canonical[3]),
@@ -64,7 +66,7 @@ export function parseSentinel(text: string): ParsedSentinel | null {
     }
     const skipped = line.match(/^COTAL_SMOKE_SENTINEL skipped=(\S.*)$/);
     if (skipped) {
-      last = { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: skipped[1] };
+      structured = { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: skipped[1] };
       continue;
     }
     // A legacy banner must own the whole line. Trailing `;…` or a double-space
@@ -178,6 +180,7 @@ export function parseSentinel(text: string): ParsedSentinel | null {
       continue;
     }
   }
+  if (structured) return structured;
   if (last) return last;
   const passed =
     (String(text).match(/^\s*✓/gm) ?? []).length +

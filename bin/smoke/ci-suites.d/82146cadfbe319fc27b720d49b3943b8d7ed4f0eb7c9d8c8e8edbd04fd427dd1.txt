@@ -1,0 +1,4 @@
+# Remote gateway surface: real broker, real Streamable HTTP MCP server and SDK client. Collision-only
+# renames, no fallback for a missing or foreign connection_id, independent connections and
+# disconnect isolation. Mutation-proofed - bin/smoke/mutations/gateway.json.
+smoke:gateway

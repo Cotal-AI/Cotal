@@ -1,0 +1,24 @@
+{
+  "command": "pnpm smoke:view-transport",
+  "mutations": [
+    {
+      "name": "T1 the view stops following the transport edge, so a broker outage that nats.js rides out by reconnecting reads as connected on every surface",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "        connected: this.bound && this.transport,",
+      "replace": "        connected: this.bound,",
+      "expectRed": "the view reports disconnected while the broker is down",
+      "cell": "the view reports disconnected while the broker is down"
+    },
+    {
+      "name": "T2 the transport edge is recorded as always up, so the outage again reads as connected",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "    this.transport = s.connected;",
+      "replace": "    this.transport = true;",
+      "expectRed": "the view reports disconnected while the broker is down",
+      "cell": "the view reports disconnected while the broker is down"
+    }
+  ],
+  "suite": [
+    "packages/workspace/smoke/view-transport.smoke.ts"
+  ]
+}

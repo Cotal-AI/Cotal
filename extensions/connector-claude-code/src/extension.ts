@@ -3,7 +3,10 @@ import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
-import { CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
+import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
+import { claudeUserMcpEnvKeys } from "./user-mcp.js";
+import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
+import { HOOK_CONTEXT_CHARS } from "./hooks.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -11,7 +14,7 @@ const MCP_SERVER_NAME = "cotal";
 /** Auth and provider-routing env `claude` actually reads for a headless or container seat.
  *  Drawn from Anthropic's authentication precedence
  *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
- *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.md` and
+ *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.mdx` and
  *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
  *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
  *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides
@@ -97,8 +100,7 @@ export const CLAUDE_PROVIDER_KEYS = [
 ] as const;
 /** Channel ref for `--dangerously-load-development-channels`, which turns on the cotal MCP server's
  *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. Because
- *  we isolate the session with --strict-mcp-config the plugin's own MCP server is suppressed and
- *  cotal is re-supplied via --mcp-config, so the ref is the manually-configured server tagged
+ *  cotal is supplied explicitly through --mcp-config, the ref is the configured server tagged
  *  `server:<name>` (the CLI rejects a plugin ref or a bare name here). The plugin stays installed
  *  for its hooks, which do message delivery independent of this wake nudge. */
 const CHANNEL_REF = `server:${MCP_SERVER_NAME}`;
@@ -106,9 +108,11 @@ const CHANNEL_REF = `server:${MCP_SERVER_NAME}`;
 /** Package root (parent of dist/), which doubles as the installable plugin dir: it carries
  *  .claude-plugin/, .mcp.json, hooks/ and the dist/*.cjs bundles. */
 const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
-/** The cotal MCP server bundle, supplied explicitly so a spawned session can run with ONLY this
- *  MCP server (see buildLaunch's --strict-mcp-config). */
-const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
+/** The explicit mesh server remains available when a launch restricts native MCP discovery. It
+ *  names the seat entry, which enables Node's compile cache and then loads `dist/mcp.cjs`. */
+const SEAT_ENTRY = resolve(PLUGIN_ROOT, "dist", "seat.cjs");
+/** Preserve the operator's documented native MCP switches without choosing new values. */
+const CLAUDE_MCP_KEYS = ["ENABLE_CLAUDEAI_MCP_SERVERS", "ENABLE_TOOL_SEARCH", "MCP_TIMEOUT", "MCP_CONNECTION_NONBLOCKING"] as const;
 
 /**
  * Refuse a model this connector cannot serve, at LAUNCH, the way an unsupported `variant` is
@@ -163,13 +167,25 @@ export const claudeConnector: Connector = {
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
+  // A session wakes for a relayed task while idle only with channels on, and Claude reports that only
+  // on its startup screen: the development-channels gate, then its registration notice for this
+  // server (confirmNotice below). A once seat is served its task only when its startup watch saw
+  // both; the hooks hand it over at most once (hooks.ts).
+  supportsTurnRelay: true,
+  onceNeedsConfirmed: "its startup did not show channels on (Claude's development-channels prompt and its notice that server:cotal messages reach the session)",
+  turnFrameLimit: HOOK_CONTEXT_CHARS,
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
+  // `--opt resume=` renders a bare `--resume`, which opens Claude's session picker; the session joins
+  // the mesh only after the operator picks one. `--opt resume=<id>` resumes that session directly.
+  waitsForOperator: (launchOptions) => (launchOptions?.resume === "" ? "Claude's session picker" : undefined),
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent: the cotal config's list (see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
+    const exclusive = opts.mcpServersExclusive === true || opts.carried !== undefined;
+    const nativeEnvKeys = exclusive ? [] : claudeUserMcpEnvKeys();
     // Auth is CLAUDE_PROVIDER_KEYS: CLAUDE_CODE_OAUTH_TOKEN (the deploy-doc promise, required in
     // a container with no Keychain), ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, and the cloud-provider
     // flags plus their credential vars. Host-session markers stay off that list. mcpKeys still
@@ -190,11 +206,8 @@ export const claudeConnector: Connector = {
     // `claude` first. Tracked separately rather than guessed at here.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),
+      ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS], envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
-      // shells, builds and third-party CLIs this session runs no longer inherit live authority.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
@@ -222,7 +235,12 @@ export const claudeConnector: Connector = {
     }
     // A carried resume needs credentials its private home can use. Managed workspace trust is
     // accepted through the native startup dialog below, without rewriting the manager's config.
-    const binary = opts.resolvedBinaries?.claude ?? "claude";
+    // A once launch starts the absolute real path of `claude` and passes it on, so the seat can tell
+    // its parent is that file before its once exit signals it (once-exit.ts).
+    const named = opts.resolvedBinaries?.claude ?? "claude";
+    const hostExe = opts.once ? resolveHostExe(named, env) : undefined;
+    if (hostExe !== undefined) env[HOST_EXE_ENV] = hostExe;
+    const binary = hostExe ?? named;
     if (opts.carried) refuseCarriedLaunch(binary, env);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
@@ -246,8 +264,7 @@ export const claudeConnector: Connector = {
     // nothing at all. `--plugin-dir` is the host's supported way to load a plugin (hooks
     // included) for one session; verified live that it fires SessionStart/UserPromptSubmit/
     // Stop/SessionEnd with this exact hooks.json. The plugin's own .mcp.json riding along is
-    // harmless: --strict-mcp-config scopes servers to --mcp-config, where `cotal` is already
-    // named.
+    // deduplicated by Claude against the explicit server with the same command and arguments.
     const args = prompt
       ? [prompt, "--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT]
       : ["--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT];
@@ -257,16 +274,10 @@ export const claudeConnector: Connector = {
     // mid-demo. Additive under the default permission mode — leaves other tools as-is.
     args.push("--allowedTools", "WebFetch(domain:github.com),WebFetch(domain:raw.githubusercontent.com)");
 
-    // Scope the spawned session's MCP. --strict-mcp-config drops every ambient MCP source, the
-    // plugin's own copy of the cotal server among them, so the ONLY servers that load are the ones we
-    // name in --mcp-config: cotal (always, for its tools + presence) plus the cotal config's share list
-    // (`shared`). First-run setup seeds that list with the operator's own ~/.claude.json servers so a
-    // seat keeps their tools; each boots once per spawn, and several spawns of a heavy one (a headless
-    // Chromium, a DB server) can starve memory before the session registers presence, which is why
-    // the list stays the operator's to trim.
-    // The plugin itself stays enabled (its hooks + the dev-channels wake path are unaffected).
+    // Keep Claude's native MCP sources and policy by default. Explicit sharing selections and
+    // carried private homes remain isolated. The plugin stays enabled for hooks and channel wakes.
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
-    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
+    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: ["--optimize-for-size", "--max-semi-space-size=1", SEAT_ENTRY] } };
     // Every refusal below runs before the first private file is written, so a refused launch leaves
     // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus a
     // persona, which can only be applied to a `claude` session at launch.
@@ -280,6 +291,10 @@ export const claudeConnector: Connector = {
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     const artifacts: string[] = [];
+    // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
+    // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its
+    // directory is the first artifact, so a later writeLaunchArtifact failure removes it too.
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
     // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
     // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
     // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved
@@ -298,7 +313,8 @@ export const claudeConnector: Connector = {
       // removes after the child exits.
       mcpConfig = writeLaunchArtifact(artifacts, "cotal-mcp-", "mcp.json", JSON.stringify({ mcpServers }, null, 2));
     }
-    args.push("--strict-mcp-config", "--mcp-config", mcpConfig);
+    if (exclusive) args.push("--strict-mcp-config");
+    args.push("--mcp-config", mcpConfig);
 
     if (agentFile) env.COTAL_AGENT_FILE = agentFile;
     if (def?.persona) {
@@ -329,9 +345,11 @@ export const claudeConnector: Connector = {
     // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
     // A managed seat has no human at its terminal, so a permission prompt under the default mode
     // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-    // to its peers. Bypass is the default; an operator who wants prompts back passes
+    // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
+    // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
+    // answers its prompts there. An operator who wants another mode passes
     // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-    if (!passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
+    if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
       args.push("--permission-mode", "bypassPermissions");
     for (const [k, val] of passthrough) {
       if (val === "") args.push(`--${k}`);
@@ -345,7 +363,14 @@ export const claudeConnector: Connector = {
       // The dev-channels flag shows this one-time gate. Use its unique title rather than the generic
       // "Enter to confirm" footer, which the workspace-trust dialog also renders with a different
       // default action. The runtime presses Enter once when this connector-owned text appears.
+      // Claude skips the gate when channels are off for the session, and opens its input screen.
       confirm: "WARNING: Loading development channels",
+      // Answering the gate is not registration: Claude then prints this line for an admitted
+      // channel server, and a policy warning in its place for a blocked one. Only a once seat waits
+      // for it, because only a once seat's spawn depends on it; a missed notice stops the seat.
+      ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),
+      confirmReady: CLAUDE_READY_TEXTS,
+      confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
       ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
       control,
       ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),

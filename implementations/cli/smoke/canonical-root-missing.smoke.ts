@@ -2,7 +2,8 @@
  * WHAT DOES `canonicalRoot` DO WHEN THE ROOT IS NOT ON DISK?
  *
  * `canonicalRoot` (`packages/workspace/src/mesh-registry.ts`) is about to be put on a RESOLUTION
- * path (`mesh-target.ts:355`, `:372`), where it runs against registry records that may name roots
+ * path (`resolveMeshTarget`'s recorded-root lookup and its default-port test, in `mesh-target.ts`),
+ * where it runs against registry records that may name roots
  * since deleted, renamed, or unmounted. Before that happens the question has to be MEASURED, not
  * read off the doc comment: if it throws, or returns something surprising, the fix would convert a
  * silent mis-resolution into a CRASH on a path that previously worked — strictly worse than the
@@ -103,7 +104,7 @@ async function main(): Promise<void> {
     danglingOut.threw ? danglingOut.error : danglingOut.value);
 
   // Case 4: a non-normalized spelling of a missing root — the fallback must still normalize,
-  // or the fix would be strictly WORSE than the `resolve()` it replaces at `mesh-target.ts:355`.
+  // or the fix would be strictly WORSE than the `resolve()` it replaces in that recorded-root lookup.
   const messy = join(tmp, "deleted-project", "..", "deleted-project", ".");
   const messyOut = callCanonicalRoot(messy);
   check("MEASURED: the fallback still NORMALIZES — `..`/`.` segments of a missing root collapse",
@@ -129,7 +130,7 @@ async function main(): Promise<void> {
   // ---- THE ASYMMETRY, which is what a RESOLUTION PATH actually feels ---------------------------
   // The doc comment stops at "falls back". The consequence it does not state: when one side of a
   // comparison resolves and the other falls back, the SAME directory can compare UNEQUAL. Here the
-  // live root exists (it must — `mesh-target.ts:343` gates on `isGenuineSpace(root)`), and the
+  // live root exists (it must — `resolveMeshTarget` gates on `isGenuineSpace(root)`), and the
   // RECORD's root is a dangling symlink to it. Both name one directory in the operator's head.
   const liveRoot = physical;
   const recordRoot = join(tmp, "record-link"); // a symlink the operator typed, target since removed
@@ -145,10 +146,10 @@ async function main(): Promise<void> {
     afterRemoval === false,
     `equal=${afterRemoval} — ${canonicalRoot(recordRoot)} vs ${canonicalRoot(doomed)}`);
   // What this means for the two sites, stated so no reader has to infer it:
-  //   `:355` — a false MISS. The record is skipped, the project reads as unrecorded, and resolution
-  //            falls through to `localTarget(root, DEFAULT_SERVER)` at `:380`. SILENT.
-  //   `:372` — a false "different root", so a foreign-mesh refusal (`default-occupied`) can fire
-  //            for our OWN record. LOUD.
+  //   the recorded-root lookup — a false MISS. The record is skipped, the project reads as
+  //            unrecorded, and resolution falls through to `localTarget(root, DEFAULT_SERVER)`. SILENT.
+  //   the default-port test — a false "different root", so a foreign-mesh refusal
+  //            (`default-occupied`) can fire for our OWN record. LOUD.
   // Both are ALSO what the outgoing `resolve()` spelling does for this input, so the fix does not
   // introduce the asymmetry — it inherits it. Asserted directly, because "no worse than before" is
   // the claim the fix rests on and it must not be left to the reader:

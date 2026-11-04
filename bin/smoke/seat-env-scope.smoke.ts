@@ -26,6 +26,8 @@
  *   A9  the discard removes its own file always, and its own directory only when it can prove it
  *       wrote it: never recursively, never outside the OS temp root
  *   A10 every COTAL_ name a connector's launch emits is one the operator-env-keep census parses
+ *   A11 the material's private directory is on the spec's artifacts, and a real child started
+ *       through reclaimWithChild removes it when it exits
  *
  * A2 is the one that could not have been faked by reading the same object the assertion was written
  * against: the seat is a real `node` process started with the connector's env, and the observer is a
@@ -49,7 +51,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchArtifacts, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchArtifacts, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, reclaimWithChild, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, OPERATOR_ENV_KEEP, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
@@ -181,6 +183,25 @@ for (const name of CONNECTORS) {
     assert.equal(controlFromEnv(env)?.path, spec.control.path, `A3: ${name} control socket path mismatch`);
   }
 
+  // A11 - the material's private directory is one of the launch's artifacts, so the launcher that
+  // spawns the spec removes it once the child has exited. Claude and Hermes keep the file for later
+  // readers, and before #4089 nothing removed it after the seat stopped.
+  const materialDir = dirname(materialPath);
+  assert.ok(
+    spec.artifacts?.includes(materialDir),
+    `A11: the ${name} connector's launch material directory ${materialDir} is not on the spec's artifacts, so it outlives the seat`,
+  );
+  // And a real child started through reclaimWithChild takes it with it on exit. One connector is
+  // enough for the removal leg; the membership check above is what each connector owes.
+  if (name === "claude" && process.platform !== "win32") {
+    const launched = reclaimWithChild({ command: process.execPath, args: ["-e", ""], artifacts: spec.artifacts });
+    const child = spawnSync(launched.command, launched.args, { stdio: "ignore" });
+    assert.equal(child.status, 0, `A11: the reclaim-wrapped child did not exit cleanly (${child.status ?? child.signal})`);
+    const deadline = Date.now() + 15_000;
+    while (existsSync(materialDir) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+    assert.equal(existsSync(materialDir), false, `A11: the ${name} launch material directory survived its child's exit`);
+  }
+
   // A10 - every COTAL_ name a launch emits is one the operator-env-keep census parses.
   //
   // That census reads assignments out of source, so it is silent about any spelling its patterns
@@ -202,7 +223,8 @@ for (const name of CONNECTORS) {
       `A10: the ${name} connector's launch emits ${key}, but the operator-env-keep census parses no assignment ` +
         `of it, so that census cannot see it on the keep list. Teach the census the spelling this connector uses.`,
     );
-  console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file; every COTAL_ name it emits is parsed by the census`);
+  discardLaunchArtifacts(spec.artifacts);
+  console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file; the material directory is a launch artifact; every COTAL_ name it emits is parsed by the census`);
 }
 
 // A4 - a material file other local users can read is refused, not read. Without this the carrier

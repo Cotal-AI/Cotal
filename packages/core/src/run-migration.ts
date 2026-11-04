@@ -19,10 +19,10 @@
  * advanced the run. Two drivers racing to apply one migration both find no status and both write;
  * the store decides and the loser gets a conflict rather than a second belief.
  */
-import { createHash } from "node:crypto";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { assertIdToken } from "./endpoint-subjects.js";
+import { digestIdToken } from "./digest-id.js";
 import {
   RECORD_KINDS,
   createRecordEntry,
@@ -30,6 +30,7 @@ import {
   recordSpecKey,
   recordStatusKey,
   assertStatusValue,
+  decodeRecordJson,
 } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
 import { walkKvEntries } from "./kv-scan.js";
@@ -82,11 +83,6 @@ function qualifiers(endpoint: string, runId: string, migrationId: string): strin
   return [endpoint, runId, migrationId];
 }
 
-/** base64url of the sha256, truncated to 43 — an `<id-token>` by construction, as elsewhere. */
-function digestId(canonical: string): string {
-  return createHash("sha256").update(canonical, "utf8").digest("base64url").slice(0, 43);
-}
-
 /**
  * The id one migration is filed under: a digest of the report itself.
  *
@@ -95,7 +91,7 @@ function digestId(canonical: string): string {
  * or what was overridden and it is a different migration, which is exactly right — it is.
  */
 export function runMigrationId(value: Omit<RunMigrationSpecValue, "at">): string {
-  return digestId(canonicalJson(value));
+  return digestIdToken(canonicalJson(value));
 }
 
 function parseSpec(raw: unknown, key: string): RunMigrationSpecValue {
@@ -170,7 +166,7 @@ export async function writeRunMigration(
     const existing = await kv.get(key);
     if (!existing || existing.operation !== "PUT")
       throw new EpEnvelopeError("internal", `migration ${key} lost its create CAS but is not readable; reconcile the store`);
-    const parsed = parseSpec(JSON.parse(new TextDecoder().decode(existing.value)), key);
+    const parsed = parseSpec(decodeRecordJson(existing.value, key), key);
     if (canonicalJson(parsed) !== canonicalJson(value))
       throw new EpEnvelopeError("conflict", `migration ${key} already exists with a different report; a migration id is derived from what the check found, so a differing one under the same id is never overwritten`);
     return { key, created: false };

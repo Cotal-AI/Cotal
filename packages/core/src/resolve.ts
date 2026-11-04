@@ -11,6 +11,11 @@
  * See .internal/plans/peer-addressing.md.
  */
 import type { Presence, PresenceStatus } from "./types.js";
+import { LINE_BREAK } from "./peer-label.js";
+import { peerLabel } from "./peer-label.js";
+import { isWellFormedUnicode } from "./canonical-json.js";
+
+export { peerLabel };
 
 /** A peer that matched an ambiguous name — structural, so each surface renders it itself.
  *  The full `id` is the authoritative, routable address. */
@@ -37,19 +42,6 @@ export class AmbiguousPeerError extends Error {
     );
     this.name = "AmbiguousPeerError";
   }
-}
-
-/**
- * The label every surface prints for a peer: `name/role`, or the bare name when it has no role.
- * A role equal to the name is still printed, because a bare name is how a peer with no role reads
- * and the role is what an anycast addresses.
- *
- * Line breaks and brackets become a space. A role is checked only as a string, and every surface
- * prints the label on one line beside bracketed fields of its own (message attribution sits inside
- * brackets), so a role holding `]` or a newline would end that syntax early and forge what follows.
- */
-export function peerLabel(card: { name: string; role?: string }): string {
-  return (card.role ? `${card.name}/${card.role}` : card.name).replace(/[\r\n\v\f\u0085\u2028\u2029[\]]+/g, " ");
 }
 
 function candidate(p: Presence): PeerCandidate {
@@ -102,27 +94,6 @@ export function resolvePeer(
   throw new AmbiguousPeerError(target, pool.map(candidate));
 }
 
-/**
- * Is every UTF-16 surrogate in `s` properly paired?
- *
- * `String.prototype.isWellFormed()` does exactly this, but it is ES2024 and this package targets an
- * earlier lib; raising the target repo-wide to gain one predicate would be a build-config change
- * reaching every package, for a check that is eight lines here. A high surrogate must be followed by
- * a low one, and a low surrogate must not appear on its own.
- */
-function isWellFormedUtf16(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 0xdc00 && c <= 0xdfff) return false; // a low surrogate reached without its high
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = s.charCodeAt(i + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false; // high surrogate unpaired (or at end: NaN)
-      i++; // consume the pair
-    }
-  }
-  return true;
-}
-
 /** Maximum length of a display name, in UTF-16 code units.
  *
  *  Derived from the transport budget, not picked. The client's CONNECT line carries the user JWT
@@ -136,6 +107,9 @@ function isWellFormedUtf16(s: string): boolean {
  *  (event-channel.ts), so this bound guards the payload side of the budget.
  */
 export const MAX_NAME_LENGTH = 128;
+
+export { LINE_BREAK } from "./peer-label.js";
+
 
 /**
  * Validate a display name. A name must be non-empty, single-line, and free of surrounding
@@ -151,7 +125,7 @@ export function assertValidName(name: string): void {
       `invalid name ${JSON.stringify(name.slice(0, 32))}…: ${name.length} characters exceeds the ` +
         `${MAX_NAME_LENGTH}-character limit (the CONNECT line budget that carries it)`,
     );
-  if (/[\r\n]/.test(name))
+  if (LINE_BREAK.test(name))
     throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line`);
   if (name.includes("/"))
     throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)`);
@@ -169,7 +143,7 @@ export function assertValidName(name: string): void {
   //     idea of its own name can differ from the parent's while both believe they agree.
   // Refusing here is the only fix that covers both; a consumer that hashes injectively still cannot
   // stop the name itself from changing shape as it crosses a process boundary.
-  if (!isWellFormedUtf16(name))
+  if (!isWellFormedUnicode(name))
     throw new Error(
       `invalid name ${JSON.stringify(name)}: contains an unpaired UTF-16 surrogate. Such a name ` +
         `cannot survive UTF-8 encoding — it is replaced with U+FFFD — so distinct names would ` +

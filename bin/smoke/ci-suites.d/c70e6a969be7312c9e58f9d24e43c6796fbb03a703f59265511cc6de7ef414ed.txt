@@ -1,0 +1,3 @@
+# One auth service process serving several spaces as their full primary: each lane exchanges, signs
+# and connects only inside its own space, and removing a space is acknowledged only once nothing serves it.
+smoke:auth-service-multi-space:auth

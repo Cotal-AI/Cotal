@@ -34,8 +34,8 @@
     {
       "name": "M1 the gate-only predicate: the widened branch's gate-state test never matches (the shipped #878 defect, behaviorally)",
       "file": "implementations/auth/src/service.ts",
-      "find": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"retired\" && gate.row.op?.opId === it.opId) {",
-      "replace": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"frozen-by-a-foreign-op\" && gate.row.op?.opId === it.opId) {",
+      "find": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"retired\" && gate.row.op.opId === it.opId) {",
+      "replace": "    if (!owed && it.kind === \"retirement\" && gate !== undefined && gate.row.state === \"frozen-by-a-foreign-op\" && gate.row.op.opId === it.opId) {",
       "expectRed": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
       "cell": "TRIGGER A REPAIRS: the boot resumed the intent and completed the head terminal (`retired`)",
       "note": "The widened owed-ness branch can never fire (no gate row is ever in the mutant's state), so retirement owed-ness past the freeze bar is exactly the shipped gate-only predicate: the staged crash window (gate retired, head retiring) is skipped, the boot resumes nothing, and the trigger-A head cell reddens with the head still retiring. The mutation is the reverted fix in behavior, one literal different from the shipped code."

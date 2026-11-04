@@ -47,7 +47,7 @@ the content hash of exactly this text, so there is no second file. Its **program
 
 Automatic semicolon insertion is allowed. The two constructs where a newline changes what a program
 means are refused (L1008): a value on the line after a bare `return`, and a line opening with `(`
-or `[` that continues the statement above it.
+or `[` that continues the statement above it. Source that does not parse is refused with L1008 too.
 
 ### 2.2 The syntax table
 
@@ -121,8 +121,9 @@ The validator MUST also refuse, before a program runs:
 
 - An identifier that is not declared in the program and is not a reserved name (L2001); a host
   global by name (L2012, with the language's replacement in the fix, §3); the name `Promise` (L2011).
-- A declaration, parameter or function name that shadows a reserved name (L2002); an assignment
-  to a `const` binding (L2003).
+- A declaration, parameter or function name that shadows a reserved name (L2002); a write to a
+  `const` binding (L2003), whether by plain assignment, as a destructuring assignment target or as
+  the target of a `for...of` with no declaration.
 - **A reference to a `let`/`const` binding above its declaration (L2004, the dead zone; §3)**, where
   straight-line code makes it visible. A reference from inside a nested function is not refused —
   the function may run after the declaration — and the same refusal moves to run time when the call
@@ -223,8 +224,9 @@ including `xs.length` — writing at `length` appends — and a write past the e
 Two writes are refused:
 
 - **L2031, a frozen value.** Every value that crosses an effect boundary in either direction is
-  deep-frozen: an effect's arguments, its result, the result of a concurrency scope, and the copy of
-  a value the program throws out of one (§9.1). What crossed is what the journal recorded, so it
+  deep-frozen: an effect's arguments, its result, and the copies a concurrency scope carries of the
+  value it returns and of a value the program throws out of it (§9.1). A record a branch returned
+  from outside the scope is not frozen by it. What crossed is what the journal recorded, so it
   cannot change afterwards — through a store too: a journal seeded from serialized entries freezes
   each recorded value on the way in, so a result replayed on resume is as frozen as it was live.
   Build a new value instead (`{ ...record, field: value }`, `[...list, item]`).
@@ -276,7 +278,10 @@ as Orc's `otherwise`.
 
 A duration is a string of a whole number and one unit: `ms`, `s`, `m`, `h`, `d` (`"30s"`, `"10m"`,
 `"4h"`, `"2d"`). Nothing else parses; there is no bare number and no default unit. `duration(text)`
-converts one to milliseconds.
+converts one to milliseconds. A validator MUST refuse a literal that is not a duration, with L2034,
+where the language reads one: the argument of `sleep` and `duration`, the second argument of `idle`,
+the `deadline` of `turn` and `ask`, the `timeout` of `checkpoint` and `wait`, and the `every` and
+`deadline` of `waitUntil`. A value computed at run time is refused where it is used.
 
 ## 5. The library
 
@@ -393,7 +398,8 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 
 | Primitive | Signature | Journal kind | Name |
 | --- | --- | --- | --- |
-| `spawn` | `spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle` | `spawn` | `name`, else the persona |
+| `participant` | `participant({ name? }) -> AgentHandle` | `participant` | optional |
+| `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle` | `spawn` | `name`, else the persona |
 | `turn` | `turn(agent, { name, deadline? }) -> { status, to?, note?, at }` | `turn` | required |
 | `ask` | `ask(agent, { name, schema, deadline?, attempts? }) -> record` | `ask` | required |
 | `checkpoint` | `checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? }) -> { status, value?, by?, at, artifact? }` | `checkpoint` | required, positional |
@@ -408,7 +414,12 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 | `conclave` | `conclave(members, fn, { name, channel? }) -> result` | scope `conclave` | required |
 | `once` | `once(fn, { name }) -> value` | scope `once` | required |
 
-`persona` in `spawn` is a persona name, or a record `{ persona, model?, variant? }`.
+`persona` in `spawn` is a persona name, a record `{ persona, model?, variant? }`, or an **inline
+persona**: `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?,
+allowPublish?, capabilities?, save? }`. A record with `prompt` is inline and a record with `persona`
+names the catalog. An inline record is closed: one that also names `persona`, carries another key,
+names no `name`, has a blank `prompt`, a string field that is blank, a list that is not of strings, or a
+`save` that is not a boolean is refused (L3049) before the step key is minted.
 
 ### 6.2 Step names
 
@@ -433,12 +444,14 @@ Each effect's **input hash** is `sha256:<hex>` over the canonical form of the pr
 which is exactly the set of inputs that decide whether a recorded result is still an answer to the
 question the program is asking. Everything else steers live execution and is reapplied from current
 source on a resume. An implementation MUST hash exactly these fields (an absent option is `null`; an
-absent `join` is `[]`); the reference implementation's option suite edits each one on a resumed run
-and requires exactly these to diverge (§11.1).
+absent `join` is `[]`; an absent `cwd` or `placement` on `spawn` contributes no key); the reference
+implementation's option suite edits each one on a resumed run and requires exactly these to diverge
+(§11.1).
 
 | Effect | Projection |
 | --- | --- |
-| `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }` |
+| `participant` | `{}` |
+| `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }`, plus `cwd` when the option bag carries it, `placement: { endpoint, instanceId }` when the option bag carries it, and `inline`, the whole definition as written, for an inline persona |
 | `turn` | `{ agent, deadline }` |
 | `ask` | `{ agent, schema, deadline, attempts }` |
 | `checkpoint` | `{ prompt, schema, timeout }`, plus `{ onExpiry: "escalate", to }` when and only when `onExpiry` is `"escalate"` |
@@ -456,15 +469,36 @@ Two rules in that table are deliberate. `deadline`, `timeout` and `attempts` **s
 asks a different question. And `onExpiry` is hashed **only** at `escalate`, because `fail` and
 `proceed` choose how to read a recorded expiry (a reapply that MUST replay clean) while `escalate`
 mints a second effect (a different question that MUST diverge). `permits`, `supervise`, `onFork`
-and `events` on `spawn` are policy over a result and are never hashed.
+and `events` on `spawn` are policy over a result and are never hashed. `runtime` is the same kind of
+policy: it names the terminal runtime of this one seat, and omitted leaves the serving manager's own.
+
+For an inline persona, `persona` is its `name` and `model` and `variant` are its own. The definition
+holds only the keys the program wrote, so an omitted list and an empty one hash differently, and a
+catalog spawn adds no `inline` key, so its hash is unchanged.
+
+`cwd` and `placement` were added after runs were recorded without them, so a spawn that omits both
+hashes the six-key object it hashed before. Adding or removing `cwd` or `placement`, or changing the
+canonical value of `cwd`, `placement.endpoint` or `placement.instanceId`, diverges (L5001). Other
+keys in a placement record are not projected, and key order never matters (§4.4).
 
 ### 6.5 Semantics of each primitive
 
+- **`participant`** resolves the personal native session whose exact issued caller admitted the
+  hosted run and returns a handle with `kind: "participant"`. Program text cannot choose its owner,
+  actor, lifecycle or display name. The host reads those from the immutable run admission, requires
+  one exact live presence row, and journals the owner, actor, lifecycle, name and manager instance.
+  Resume rebuilds the run roster from that entry and never selects a successor lifecycle. It creates
+  no seat, worktree, permits or process custody. A host without an issued personal admission refuses
+  it as L4000; an absent exact live presence is L4002.
 - **`spawn`** brings an agent into the run and returns its handle. `permits` are budgets whose
   violation the handler reports as a catchable failure (L4001); `supervise` is a declarative
   restart policy; `onFork` is `"respawn"` (default) or `"adopt"` (§11.3); `events: false` starts the
   agent without an event plane, for a connector that publishes none, and omitted leaves the host's
-  default. Two agents MUST NOT share a worktree concurrently (L3022, L4008).
+  default; `runtime` names the terminal runtime of this one seat, and omitted leaves the serving
+  manager's own. A runtime the serving manager cannot resolve refuses the spawn and starts nothing.
+  Two agents MUST NOT share a worktree concurrently (L3022, L4008). An inline persona is bound into
+  the entry's `external` as `inline: { definition, digest }` before anything is submitted, and every
+  later bind of the step restates it, so a resume submits the definition it recorded.
 - **`turn`** wakes an agent for one turn; it reads its own channels and speaks for itself. The
   result is its yield status: `done`, `blocked`, or `handoff` (with `to`), and `at`. The handler
   reports a handoff to an agent outside the run as L4005, one across worktrees as L4004, an elapsed
@@ -676,7 +710,9 @@ takes a path it never recorded with no divergence to catch it. Return the value 
 read it out of the scope's result. `conclave` and `once` raise the depth like a branch of
 `parallel`, though nothing runs beside their one body, because a settled `conclave` or `once` is
 replayed without entering its body (§7.5, §7.8), so a write from the body would happen live and never
-on resume.
+on resume. A `waitUntil` raises it for its probe and its `terminal` for the same reason: each
+observation calls them in its own frame (§6.5), and a settled `waitUntil` is replayed without
+calling either.
 
 ```js
 // refused: L2032
@@ -698,7 +734,9 @@ request id that does not end in a refusal. A refused call performed nothing, so 
 dispatches again as a fresh attempt; retries a handler performs inside one call are not
 dispatches, and neither are the hold's own calls, which run under the hold id. Under a `once`
 frame only `ask` may run, and every other effect MUST be refused before its entry begins, with
-L4028. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
+L4028. A validator MUST refuse such an effect called in the body of `once`, or in a function the
+body calls by name, with L2033, so a program that writes one does not start; L4028 refuses one the
+run reaches that the validator could not see. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
 key (a hold is itself a checkpoint, one observation per look, an open and a close that a resume
 calls again). A `spawn`, a `turn`, a `monitor` and a `notify` build run state inside that method
 (a seat, a handoff, a watched agent, a filed notice), which a settled answer cannot build. A
@@ -839,7 +877,8 @@ its place, live as well. A failure the runtime raised arrives as a **frozen reco
 failure as `{ code, kind, message, detail? }` (the recorded `EntryError`, §10.1) and an interpreter
 fault as `{ code, kind: "runtime", message }`. A program cannot construct an `Error`, so anything
 that is one came from the runtime or the host and is delivered as
-`{ code: "L4000", kind: "host", message }`.
+`{ code: "L4000", kind: "host", message }`. A scope it fails records it under that code and kind
+(§10.6), so a resume delivers the same.
 `finally` carries ECMAScript's completion semantics: a `return`, `break`, `continue` or `throw`
 that completes the finalizer replaces whatever the `try` or `catch` was completing with.
 
@@ -939,8 +978,8 @@ crossable, where it is written, and a resume MUST refuse a journal whose recorde
 `error.detail` is not crossable, with **L5024**. The refusal on load names the entry AND which of
 the two fields, because "this journal cannot load" is otherwise not actionable. A value refused
 where it is written is a failure of the handler's own dispatch and carries `L4000` with kind
-`handler-fault` (or `scope-fault` inside a scope); it is not a catalog code of its own, because the
-catalog already says exactly that. Inside a scope a classified refusal the language itself raised
+`handler-fault` (or `host` inside a scope, the kind its `catch` binds there, §9.1); it is not a
+catalog code of its own, because the catalog already says exactly that. Inside a scope a classified refusal the language itself raised
 (a `RuntimeFault`, which carries its own catalog code) settles under that code with kind `runtime`,
 because `L4000` is for failures the catalog does not name and this one it does. A failure whose
 `detail` is refused is recorded under `L4000` rather than under the code the handler chose, and
@@ -981,6 +1020,35 @@ effect never race for a counter. Both counters are allocated synchronously at th
 await, which is the whole determinism argument: the allocating code is either sequential or already
 inside a deterministic namespace.
 
+#### Reusable helpers
+
+A plain function call does not open a journal scope. Calls to a helper whose turn is named `review`
+use the enclosing occurrence sequence: `/turn:review#0`, `/turn:review#1`, and so on. Inserting
+another call before them shifts their occurrences; naming the turn alone does not give each
+helper instance a stable key.
+
+Instantiate a reusable helper inside a named, single-branch `parallel`. Give each instance a
+distinct scope name and use a record branch key, even though no concurrency is needed:
+
+```js
+const reviewer = await spawn("reviewer")
+async function review(agent) {
+  return await turn(agent, { name: "review" })
+}
+const first = await parallel({ call: () => review(reviewer) }, { name: "panel-one" })
+const second = await parallel({ call: () => review(reviewer) }, { name: "panel-two" })
+log(first.call.status, second.call.status)
+```
+
+The turns now key as `/parallel:panel-one#0/b:call/turn:review#0` and
+`/parallel:panel-two#0/b:call/turn:review#0`. An earlier instance with a different scope name does
+not renumber either. Each wrapper adds one scope entry, and its result is under `.call`.
+Reusing the same scope name still advances that scope's occurrence counter.
+
+Keep required step names literal inside the helper; L3013 is unchanged. This convention gives
+instances separate namespaces, not an exemption from input-hash checks or the migration rules
+(§11.2). `once` is not a general-purpose replacement: it has the effect restrictions in §7.8.
+
 ### 10.3 The digest
 
 `digest(value)` is `"sha256:" + hex(SHA-256(canonical(value)))` where `canonical` is RFC 8785. The
@@ -1013,11 +1081,13 @@ of that namespace; its branches live under it. On success `result` is `{ branche
 where `value` is the scope's result (`{ index, value }` for a `race`); on failure `branches` is
 carried as a fact. The settled `value` MUST have a canonical form (§4.4), exactly as an effect's
 result must: a value the record cannot carry is refused AT THE SETTLE, and the scope is recorded as
-a fault under `L4000` with kind `scope-fault` rather than settled `ok`. A failure the program
-itself caused (§9) keeps its own catalog code with kind `runtime`, and a failure the handler
-raised keeps its code and kind (§10.1); `L4000` `scope-fault` is for everything else. A value the
-program threw is recorded under that fault as a copy, `thrown: { value }`, `{}` for `undefined`,
-and the live run and a replay both hand `catch` that copy (§9.1). The copy is the value as the
+a fault under `L4000` with kind `host` rather than settled `ok`. A failure the program itself
+caused (§9) keeps its own catalog code with kind `runtime`, and a failure the handler raised keeps
+its code and kind (§10.1). Any other failure that is an `Error`, the refusal included, is recorded
+as the `L4000` `host` fault a `catch` binds for it live (§9.1), so a replay hands `catch` the same
+record. A value the program threw is recorded under `L4000` `scope-fault` as a copy,
+`thrown: { value }`, `{}` for `undefined`, and the live run and a replay both hand `catch` that
+copy (§9.1). The copy is the value as the
 journal's JSON reads it back, so a record the value holds at two places arrives as two records, live
 as on a resume from a durable store. A thrown value with no canonical form is recorded without
 `thrown`, with the crossing rule's refusal (§4.4) as its message. A resume refuses a loaded
@@ -1104,6 +1174,11 @@ never looks up are **orphans**, and what happens to each depends on what it did:
 | a scope (§7) | the **Orphaned on migrate** verdict in its §7 row |
 | any other kind | **rejected** (L5015): a kind with no policy is not waved through |
 
+A seat adopted under an override goes to the edited program's next spawn of the same persona name,
+and only when that spawn's inline definition has the recorded digest: a catalog seat goes only to a
+catalog spawn, and an inline seat only to a spawn of the same definition. Any other spawn of that name
+is refused, and the hand-over stays queued.
+
 A divergence inside a reached step is a rejection naming the step (L5001); an edit inside a losing
 arm of a recorded `race` diverges through the branch digest (§10.6). The decision is filed as a
 `migration` record (SPEC.md §14) whose id is a digest of the report itself, so a walk re-run after
@@ -1152,7 +1227,7 @@ time, L5xxx durability, L6xxx simulation.
 | L1005 | Forbidden syntax: generator |
 | L1006 | Forbidden syntax: `eval` or `Function` |
 | L1007 | Forbidden syntax: regular expression literal |
-| L1008 | Newline hazard |
+| L1008 | Invalid syntax or newline hazard |
 | L1009 | Unbraced branch |
 | L1010 | `switch` case does not terminate |
 | L1011 | Computed property name |
@@ -1184,6 +1259,8 @@ time, L5xxx durability, L6xxx simulation.
 | L2013 | An async call is not awaited |
 | L2031 | Mutation of a frozen value |
 | L2032 | Write from a concurrent branch to something declared outside it |
+| L2033 | Effect not admitted inside `once` |
+| L2034 | Literal is not a duration |
 | L3011 | Unknown option key |
 | L3012 | Missing required step name |
 | L3013 | Step name is not a literal |
@@ -1201,6 +1278,7 @@ time, L5xxx durability, L6xxx simulation.
 | L3046 | `waitUntil` needs a cadence and a deadline |
 | L3047 | `waitUntil` cadence is zero, or does not divide its deadline usefully |
 | L3048 | `spawn` placement is not an endpoint and instanceId pair |
+| L3049 | `spawn` inline persona is malformed |
 | L4001 | Permit exhausted |
 | L4002 | Agent down |
 | L4003 | Turn deadline elapsed |
@@ -1299,3 +1377,10 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-06 | The scopes and the three traits in which they differ are one table (§7): what a scope settles, its verdict when a migration orphans it, and whether a fork re-enters it when the cut lies inside it. §2.3, §6.5, §10.1, §10.6, §11.2 and §11.3 cite that table or §6.1 instead of listing or counting kinds, so a new scope is a row in §6.1 and a row in §7. §11.3 refused a cut inside "a scope whose outcome was already decided" without naming those scopes; it now re-enters `parallel`, `fanOut` and `once` and refuses `race` and `conclave` (L5020), as the reference already did, and refuses a cut inside a scope with no row. No behavior changes. |
 | 2026-10-06 | A `conclave` counts toward `effectCeiling` (§8.3): opening one is a dispatch, so it is counted once before its entry begins, and a resume's tally counts its recorded key. Before this a program whose only effect was `conclave` could open any number of them, live or across a resume, without reaching L4009. A resume that re-enters a pending or refused step no longer counts it a second time: its key is already in the tally, and counting it again faulted the resumed run at a step where a fresh run went on. |
 | 2026-10-07 | A value the program throws out of a concurrency scope reaches `catch` as itself on resume, as it does live (§9.1, §10.6): the scope's `L4000` `scope-fault` record carries it as `error.thrown` (§10.1), the live run, a replay and a migration's dry walk (§11.2) all deliver that recorded copy, deep-frozen like a scope's result (§4.3). The copy is the value as JSON reads it back, so a record held at two places in it arrives as two on the live run as on a resume from a durable store, and a resume refuses a loaded `error.thrown` that is not `{ value }` or `{}` (L5024). Measured before it: a `conclave` body that threw `"failure"` was caught as `"failure"` live and as `{ code: "L4000", kind: "scope-fault", message: "failure" }` on resume, on both engines, and a `notify` branching on the caught value diverged (L5001) on the resume of unchanged source. A thrown value with no canonical form is delivered as the record live as well. |
+| 2026-10-18 | A `waitUntil` probe and its `terminal` may not write outside themselves (L2032, §7.7): both engines already call them one level deeper and refuse the write at run time, and the validator now walks them as it walks a `once` body. Measured before it: a probe that assigned an outer `let` or pushed onto an outer array, and a `terminal` that assigned an outer `let`, passed `validate` and then failed with L2032 after the first observation of every run. |
+| 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
+| 2026-10-24 | An effect `once` does not admit, called in its body or in a function the body calls by name, is refused by the validator with L2033 (§7.8), and L4028 stays the run's refusal of one the validator could not see. Measured before it: `once(async () => { await sleep("1s") })`, directly and through a named helper, passed `validate` and a hosted start and then failed every run with L4028. |
+| 2026-10-24 | A literal that is not a duration, written where the language reads one, is refused by the validator with L2034 (§4.6). Measured before it: `sleep("5")`, `sleep(5000)`, `sleep("1.5s")`, `sleep("")`, a `checkpoint` `timeout` of `"PT5M"`, a `waitUntil` `every` of `"1.5s"` and `duration("5")` passed `validate` and a hosted start, and each run then failed when it reached the call. |
+| 2026-11-03 | A concurrency scope's value reaches the program as the deep-frozen copy its record carries, live as on resume (§4.3, §10.6), as a thrown value already does (§9.1). Measured before it: a `parallel` branch that returned a record built outside the scope froze that record for the rest of the live run, so a later write raised L2031 live and succeeded on resume, and the effect that depended on it diverged (L5001) on the resume of unchanged source. |
+| 2026-11-03 | An `Error` that fails a concurrency scope is recorded as the `L4000` `host` fault a `catch` binds for it live (§9.1, §10.1, §10.6), so a resume binds the same kind; a refused scope value is recorded the same way. Measured before it: a `parallel` branch returning a function, and a plain throw from a `conclave`'s dispatch, were caught as `{ code: "L4000", kind: "host" }` live and as kind `scope-fault` on resume, on both engines, and a `notify` carrying the kind diverged (L5001) on the resume of unchanged source. A value the program throws is still recorded as `scope-fault`. |
+| 2026-10-30 | `spawn` takes an inline persona, `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, save? }`, as its first argument (§6.1). The record is closed and a malformed one is refused before the step key is minted (L3049). The whole definition is hashed as `inline` and a catalog spawn's hash is unchanged (§6.4). The definition and its digest are bound into the entry before submission (§6.5), and a migration hands an adopted seat only to a spawn of the same definition (§11.2). |

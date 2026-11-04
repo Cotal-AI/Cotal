@@ -29,7 +29,7 @@
     },
     {
       "name": "core mints a nonce instead of honoring the pinned envelope id",
-      "file": "packages/core/src/endpoint-verbs.ts",
+      "file": "packages/core/src/endpoint-call.ts",
       "find": "  const requestId = op.id !== undefined ? assertIdToken(op.id, \"pinned envelope id\") : nonce();",
       "replace": "  const requestId = nonce();",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
@@ -50,11 +50,11 @@
     {
       "name": "the acceptance is never bound as the entry's external state",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "          ...(req.permits !== undefined ? { permits: req.permits } : {}),\n          spawnedAt: this.now(),\n        };\n        await ctx.bind(ext);",
-      "replace": "          ...(req.permits !== undefined ? { permits: req.permits } : {}),\n          spawnedAt: this.now(),\n        };",
+      "find": "          ...(req.placement !== undefined ? { host: req.placement.instanceId } : {}),\n          spawnedAt: this.now(),\n        };\n        await ctx.bind(ext);",
+      "replace": "          ...(req.placement !== undefined ? { host: req.placement.instanceId } : {}),\n          spawnedAt: this.now(),\n        };",
       "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
       "cell": "the acceptance floor is bound as the entry's external state before the terminal wait",
-      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor \u2014 the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
+      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor \u2014 the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed. Re-anchored 2026-10-19 on the code lines below the placement-host comment, so the anchor spans no prose; not re-measured."
     },
     {
       "name": "the discharge skips spawn entries",
@@ -104,11 +104,11 @@
     {
       "name": "an adopted seat is never handed to the migrated program's spawn",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    const adopted = ext === undefined ? this.adoptable.get(req.persona)?.shift() : undefined;",
-      "replace": "    const adopted = undefined;",
+      "find": "    const adoptions = ext === undefined ? this.adoptable.get(req.persona) : undefined;\n    const adopted = adoptions?.[0];",
+      "replace": "    const adoptions = ext === undefined ? this.adoptable.get(req.persona) : undefined;\n    const adopted = undefined;",
       "expectRed": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
       "cell": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
-      "note": "With the hand-over ignored the migrated program's spawn submits and mints a second seat: a --adopt recorded as honoured over a leak."
+      "note": "With the hand-over ignored the migrated program's spawn submits and mints a second seat: a --adopt recorded as honoured over a leak. Re-anchored 2026-10-19 on the peek-then-claim selection: the mutant never takes or claims the queued hand-over. Not re-measured."
     },
     {
       "name": "the adopted spawn binds no hand-over on its entry",
@@ -161,8 +161,8 @@
       "file": "packages/core/src/run-driver-grants.ts",
       "find": "export const PLACEMENT_COMMANDS: readonly string[] = Object.freeze([\"describe\", \"resolve-cwd\", \"spawn\"]);",
       "replace": "export const PLACEMENT_COMMANDS: readonly string[] = Object.freeze([\"describe\", \"spawn\"]);",
-      "expectRed": "an explicit placement target mints the instance rail for exactly describe, resolve-cwd and spawn",
-      "cell": "an explicit placement target mints the instance rail for exactly describe, resolve-cwd and spawn",
+      "expectRed": "an explicit placement target mints the instance rail for exactly describe, resolve-cwd, spawn and the caller-owner turn",
+      "cell": "an explicit placement target mints the instance rail for exactly describe, resolve-cwd, spawn and the caller-owner turn",
       "note": "REMOVES A REQUIRED GRANT (design: 'mutants that remove a required grant'). The credential still mints and every other row is identical, so only the cell that counts the pinned operations notices.",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -170,11 +170,11 @@
     {
       "name": "placement reach broadened back to the class anycast rail",
       "file": "packages/core/src/run-driver-grants.ts",
-      "find": "          endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [], instanceId: args.placement!.instanceId,",
-      "replace": "          endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [\"one\"], instanceId: args.placement!.instanceId,",
+      "find": "          ...PLACEMENT_COMMANDS.flatMap((command) => epRequestGrantRows(space, {\n            endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [], instanceId: args.placement!.instanceId,",
+      "replace": "          ...PLACEMENT_COMMANDS.flatMap((command) => epRequestGrantRows(space, {\n            endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [\"one\"], instanceId: args.placement!.instanceId,",
       "expectRed": "placement reach adds no anycast fallback, no wildcard and no second instance",
       "cell": "placement reach adds no anycast fallback, no wildcard and no second instance",
-      "note": "BROADENS REACH (design: 'or broaden reach'). The instance rows are still minted and the positive cell still passes; the widening is a extra class `one` row that would restore the anycast fallback the design forbids.",
+      "note": "BROADENS REACH (design: 'or broaden reach'). The instance rows are still minted and the positive cell still passes; the widening is a extra class `one` row that would restore the anycast fallback the design forbids. Re-anchored 2026-10-19 with the PLACEMENT_COMMANDS line, so only that mapping widens and the placed `turn` row is untouched; not re-measured.",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },

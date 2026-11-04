@@ -38,9 +38,10 @@ import type { KV } from "@nats-io/kv";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
 import { canonicalJson } from "./canonical.js";
 import { epfSubject, eptSubject, parseEpSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss, decodeRecordJson } from "./endpoint-records.js";
 import { epfStreamName, readLastFact } from "./endpoint-journal.js";
 import { eptReqStreamName, eptStreamName, timerWriterConsumerConfig, timerWriterDurable } from "./endpoint-binding.js";
 
@@ -359,7 +360,7 @@ export async function readCheckpointStatus(kv: KV, ref: CheckpointRef): Promise<
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the checkpoint status ${key} carries a ${entry.operation} marker; a deletion never erases a pause - reconcile the store (SPEC 13.6)`);
-  return { value: parseCpStatus(JSON.parse(new TextDecoder().decode(entry.value)), key), revision: entry.revision };
+  return { value: parseCpStatus(decodeRecordJson(entry.value, key), key), revision: entry.revision };
 }
 
 /** Publish a `.schedule` REQUEST onto the mediated timer plane — the ONLY timer publish an
@@ -440,7 +441,7 @@ export async function mintCheckpoint(
       throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" spec carries a ${existing.operation} marker; a deletion never erases a pause and a re-mint never rebinds its holder - reconcile the store (SPEC 13.6)`);
     if (!existing)
       throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" spec is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
-    const prior = parseCpSpec(JSON.parse(new TextDecoder().decode(existing.value)), ref, specKey);
+    const prior = parseCpSpec(decodeRecordJson(existing.value, specKey), ref, specKey);
     if (prior.holder.id !== holder.id || prior.holder.lifecycleUid !== holder.lifecycleUid
       || prior.initialDeadline !== deadline
       || (prior.goal === undefined) !== (goal === undefined)
@@ -483,10 +484,10 @@ export async function mintCheckpoint(
         throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" status carries a ${won.operation} marker; a deletion never erases a pause and a mint never resurrects one - reconcile the store (SPEC 13.6)`);
       if (!won)
         throw new EpEnvelopeError("conflict", `checkpoint "${ref.token}" status is not readable after a create conflict; reconcile the store (SPEC 13.6)`);
-      statusValue = parseCpStatus(JSON.parse(new TextDecoder().decode(won.value)), statusKey);
+      statusValue = parseCpStatus(decodeRecordJson(won.value, statusKey), statusKey);
     }
   } else {
-    statusValue = parseCpStatus(JSON.parse(new TextDecoder().decode(existingStatus.value)), statusKey);
+    statusValue = parseCpStatus(decodeRecordJson(existingStatus.value, statusKey), statusKey);
   }
   // Replay identity covers the DEADLINE too: a still-initial (generation-1 waiting) status must
   // carry exactly the requested deadline (a differing deadline is a different mint intent). A
@@ -538,8 +539,7 @@ async function ensureSettleFact(kv: KV, js: JetStreamClient, jsm: JetStreamManag
     await js.publish(subject, new TextEncoder().encode(JSON.stringify(fact)), { headers: h });
     return fact;
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    if (!isCasLoss(e)) throw e;
     const winner = await readCheckpointSettle(jsm, space, ref);
     if (winner === undefined)
       throw new EpEnvelopeError("internal", `checkpoint "${ref.token}" settle-fact CAS lost but no winner is readable; reconcile the store (SPEC 13.6)`);
@@ -624,7 +624,7 @@ export async function heartbeatCheckpoint(
 const SCHEDULING_HEADERS = ["Nats-Schedule", "Nats-Schedule-Target", "Nats-Schedule-Rollup", "Nats-Scheduler"] as const;
 
 /** The largest ms-epoch the broker's `@at <ISO>` schedule can represent (JS Date's ISO range). */
-const MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+export const MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
 
 /** The timer writer's RESOURCE-ATTESTED context: an OPAQUE token carrying only the ONE space
  *  this writer serves. The broker resources it operates with (the `.armed` publish rail and the
@@ -717,6 +717,9 @@ export async function startTimerWriter(
         throw e;
       }
       inFlight = batch;
+      // A stop() that landed while this fetch was being issued found nothing to close.
+      // Not awaited: close() queues its stop on the iterator and settles when the loop below reaches it.
+      if (stopped) void batch.close().catch(() => undefined);
       for await (const m of batch) {
         try {
           await armCheckpointTimer(ctx, { subject: m.subject, ...(m.headers !== undefined ? { headers: m.headers } : {}), data: m.data });
@@ -745,15 +748,10 @@ export async function startTimerWriter(
   };
 }
 
-/** Race the fresh-check against the writer's budget: a stuck status authority is a bounded
- *  `unavailable` refusal, never a hung writer. Races `Promise.resolve(p)` unconditionally so a
- *  non-native thenable cannot bypass the deadline. */
-async function withStatusBudget<T>(p: Promise<T> | T, budgetMs: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; the timer writer is bounded and fails closed (SPEC 13.2)`)), budgetMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
+/** Bound a writer read by the writer's budget: a stuck status authority is a bounded
+ *  `unavailable` refusal, never a hung writer. */
+function withStatusBudget<T>(p: Promise<T>, budgetMs: number, what: string): Promise<T> {
+  return withDeadline(p, budgetMs, () => new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; the timer writer is bounded and fails closed (SPEC 13.2)`));
 }
 
 /** LEADER-SERVED status read for the writer's fresh-check (distsys 8dcad72 M2): the fence the
@@ -993,7 +991,7 @@ export async function resumeCheckpoint(
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `checkpoint "${ref.token}" is unknown (or its spec carries a deletion marker); resume presents only a minted token (SPEC 13.6)`);
-  const spec = parseCpSpec(JSON.parse(new TextDecoder().decode(specEntry.value)), ref, specKey);
+  const spec = parseCpSpec(decodeRecordJson(specEntry.value, specKey), ref, specKey);
   if (spec.holder.id !== presenter.id || spec.holder.lifecycleUid !== presenter.lifecycleUid)
     throw new EpEnvelopeError("permission-denied", `resume of checkpoint "${ref.token}" is holder-bound to ${spec.holder.id}/${spec.holder.lifecycleUid}; the presenter ${presenter.id}/${presenter.lifecycleUid} is not the holder (SPEC 13.10)`);
 
@@ -1043,7 +1041,7 @@ export async function readCheckpointSpec(kv: KV, ref: CheckpointRef): Promise<Ch
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the checkpoint spec ${key} carries a ${entry.operation} marker; a deletion never erases a pause - reconcile the store (SPEC 13.6)`);
-  return parseCpSpec(JSON.parse(new TextDecoder().decode(entry.value)), ref, key);
+  return parseCpSpec(decodeRecordJson(entry.value, key), ref, key);
 }
 
 /** OWNER-forced expiry (§13.6): the pause's owner settles a DUE checkpoint `expired` without a

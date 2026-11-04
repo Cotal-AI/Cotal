@@ -34,10 +34,12 @@
  *      PASS-THROUGH (every byte still reaches the real child), because the sink is a concatenation
  *      and cannot tell `submit-me` + `\r` from `submit-me\r`.
  *   8. THE CLI PATH, end to end: the real binary as a subprocess runs
- *      `cotal input --name <seat> --text "/compact"`, exits 0, prints the acknowledged byte count,
- *      and the child receives `/compact\r`. A dropped runtime write instead exits non-zero, names
- *      the seat and prints no sent receipt. An external UI calls the CLI before anything else, and a
- *      defect anywhere in agents.ts -> control.ts -> the mint -> the subject leaves cells 2-7 green.
+ *      `cotal input --name <seat> --text "/compact"`, exits 0, prints a receipt naming the seat and
+ *      the acknowledged byte count, and the child receives `/compact\r`. A rejected or dropped
+ *      runtime write instead exits 3 as an unconfirmed outcome naming the agent and the manager's
+ *      reason, is not sent again, and prints no written receipt. An external UI calls the CLI
+ *      before anything else, and a defect anywhere in agents.ts -> control.ts -> the mint -> the
+ *      subject leaves cells 2-7 green.
  *
  * COVERAGE BOUNDARY, stated so it is not over-read. This is a STATIC-auth mesh, so cell 4's refusal
  * is the own-child arm of the shared `authorizeNamedControl` policy (the caller is not the
@@ -53,7 +55,7 @@
  *   `input-enter`: flip `args.enter !== false ? "\r" : ""` in `inputAuthorized` to always append
  *      -> cell 3 "enter:false types the text with NO trailing carriage return" goes red.
  *   `input-ack`: discard the runtime acknowledgement and restore intended-buffer arithmetic
- *      -> cell 8 "a dropped PTY write exits NON-ZERO" goes red.
+ *      -> cell 8 "a dropped PTY write exits 3 as an unconfirmed outcome" goes red.
  *   `input-submit`: fuse the return back onto the text (one `${text}\r` write) in `inputAuthorized`
  *      -> cell 10 "THE RETURN ARRIVED AS ITS OWN READ" goes red, while every byte-exact cell above
  *      stays green - which is exactly why #1649 shipped.
@@ -124,8 +126,9 @@ const sinkDir = join(dir, "sinks");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 mkdirSync(sinkDir, { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat"])
-  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat", "menuseat"])
+  // No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
@@ -172,10 +175,12 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVERS), COTAL_CREDS: String(o.creds),
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
   COTAL_INPUT_SINK: sinkFor(o.name), COTAL_INPUT_READY: readyFor(o.name),
+  ...(o.name === "menuseat" ? { COTAL_INPUT_MENU: "1" } : {}),
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 const echoCon: Connector = { kind: "connector", name: "input-echo", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
 registry.register(echoCon);
+registry.register({ ...echoCon, name: "claude" });
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 type PrivHandle = { status: () => "running" | "exited"; kind: string; write?: (data: string) => Promise<number> };
@@ -184,7 +189,7 @@ const M = mgr as unknown as {
   agents: Map<string, { id: string; lifecycleUid: string; handle: PrivHandle }>;
 };
 
-type Call = (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string } } }>;
+type Call = (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string; outcome?: string } } }>;
 
 /** `spawn` is an ACTION: its reply is the acceptance, returned before the child is live. Poll `ps`
  *  for the allocated row, which carries the id + lifecycle uid a targeted call needs. */
@@ -260,6 +265,18 @@ function mustHaveRun(r: Run, what: string): void {
   throw new Error(`FIXTURE FAILURE, not a product defect: ${what} ${why}, which fakes the pass shape.\n${r.out.slice(-800)}`);
 }
 const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
+/** One `Label: value` row of a CLI report. A piped child has no terminal width, so every row prints
+ *  on one line with its label padded; matching the whole line keeps `9` from matching `19`. */
+const field = (out: string, label: string, value: string): boolean =>
+  out.split("\n").some((line) => line.trim().startsWith(`${label}:`) && line.trim().slice(label.length + 1).trim() === value);
+/** The report `cotal input` prints when the manager did not confirm the write. Its message names the
+ *  agent and ends with the manager's own reason; the space and the answering manager attribute it. */
+const unconfirmed = (out: string, agent: string, reason: string): boolean => out.includes("Outcome unconfirmed")
+  && out.includes(`the manager did not confirm the outcome of terminal input for agent "${agent}"; it was not submitted again: ${reason}`)
+  && field(out, "Code", "OPERATION_UNKNOWN") && field(out, "Space", space) && field(out, "Manager", M.managerInstanceId)
+  && field(out, "Native code", "unavailable");
+/** Any part of the success receipt. */
+const written = (out: string): boolean => out.includes("Terminal input written") || out.includes("Bytes reported:");
 
 let stoppedCleanly = false;
 try {
@@ -420,6 +437,8 @@ try {
     check("input into a seat whose process is gone refuses (failed-precondition), naming the state",
       r.reply.ok === false && r.reply.error?.code === "failed-precondition"
       && String(r.reply.error?.message ?? "").includes("is not running"), r.reply);
+    // Refused before the first write, so the reply states that nothing ran (SPEC 13.3).
+    check("...and the refusal carries the not-executed outcome", r.reply.ok === false && r.reply.error?.outcome === "not-executed", r.reply);
     check("...and nothing was typed into it", sinkBytes(deadseat.name).length === 0, sinkBytes(deadseat.name).toString("hex"));
     await A.call("despawn", { graceful: false }, { actor: deadseat.id, lifecycleUid: deadseat.lifecycleUid });
   }
@@ -435,7 +454,8 @@ try {
     mustHaveRun(run, "`cotal input`");
     const out = strip(run.out);
     check("`cotal input --name <seat> --text \"/compact\"` exits 0", run.status === 0, { status: run.status, tail: out.slice(-400) });
-    check("...and reports what it delivered", /✓ sent 9 bytes to /.test(out) && out.includes(cliseat.name), out.slice(-400));
+    check("...and reports what it delivered", out.includes("Terminal input written") && field(out, "Agent", cliseat.name)
+      && field(out, "Bytes reported", "9") && field(out, "Enter requested", "yes"), out.slice(-400));
     const wantCompact = Buffer.from(`${PASTE_START}/compact${PASTE_END}\r`, "utf8");
     const got = await sinkReaches(cliseat.name, wantCompact.length);
     check("THE SEAT'S HARNESS RECEIVED EXACTLY `/compact` as a bracketed paste + `\\r`: a slash command typed in a UI reaches the child verbatim",
@@ -443,7 +463,10 @@ try {
 
     // The receipt is derived from the runtime acknowledgement, not from `data`. A dropped write that
     // resolves without an accepted-byte count is the mutation control from issue #1333: before the
-    // fix this exited 0 and printed `sent 9 bytes` while the child received nothing.
+    // fix this exited 0 and printed a 9-byte receipt while the child received nothing. Neither
+    // failure proves the child received nothing: a write that throws may have handed the custodian
+    // part of the paste, and the manager's error carries no effect outcome, which SPEC §13.3 reads
+    // as unknown. So both report an unconfirmed outcome and are not sent again.
     const dropseat = await spawnLive(A.call, { name: "dropseat", agent: "input-echo", cwd: repoRoot, events: false });
     const dropped = M.agents.get(dropseat.name);
     if (!dropped?.handle.write) throw new Error(`FIXTURE FAILURE: ${dropseat.name} has no writable managed handle`);
@@ -460,26 +483,27 @@ try {
     }
     mustHaveRun(rejectedRun, "`cotal input` with a rejected PTY write");
     const rejectedOut = strip(rejectedRun.out);
-    check("a rejected PTY write exits NON-ZERO, names the seat and the rejection, and prints NO `sent` receipt",
-      rejectedRun.status !== 0 && rejectedOut.includes(dropseat.name) && /failed: custodian write rejected/.test(rejectedOut)
-      && !/sent \d+ bytes/.test(rejectedOut), { status: rejectedRun.status, tail: rejectedOut.slice(-500) });
+    check("a rejected PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      rejectedRun.status === 3 && unconfirmed(rejectedOut, dropseat.name, `input for seat "${dropseat.name}" failed: custodian write rejected`)
+      && !written(rejectedOut), { status: rejectedRun.status, tail: rejectedOut.slice(-500) });
     mustHaveRun(droppedRun, "`cotal input` with a dropped PTY write");
     const droppedOut = strip(droppedRun.out);
-    check("a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
-      droppedRun.status !== 0 && droppedOut.includes(dropseat.name) && /failed: runtime accepted undefined of 9 bytes/.test(droppedOut)
-      && !/sent \d+ bytes/.test(droppedOut), { status: droppedRun.status, tail: droppedOut.slice(-500) });
+    check("a dropped PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      droppedRun.status === 3 && unconfirmed(droppedOut, dropseat.name, `input for seat "${dropseat.name}" failed: runtime accepted undefined of 9 bytes`)
+      && !written(droppedOut), { status: droppedRun.status, tail: droppedOut.slice(-500) });
     await wait(750);
     check("...and the dropped bytes never reached the child", sinkBytes(dropseat.name).length === 0,
       { hex: sinkBytes(dropseat.name).toString("hex") });
 
     // `--no-enter` through the same real binary, carrying the HARDEST payload: text that is itself
     // a flag spelling. `--text=<value>` is the form node's `parseArgs` requires for a dash-leading
-    // value, and it is what docs/cli.md tells the operator to use.
+    // value, and it is what docs/cli.mdx tells the operator to use.
     const before = sinkBytes(cliseat.name).length;
     const run2 = await cotal(["input", "--name", cliseat.name, `--text=--not-a-flag`, "--no-enter", "--space", space]);
     mustHaveRun(run2, "`cotal input --no-enter`");
     const out2 = strip(run2.out);
-    check("`--no-enter` exits 0 and reports only the text's bytes", run2.status === 0 && /✓ sent 12 bytes to /.test(out2), { status: run2.status, tail: out2.slice(-400) });
+    check("`--no-enter` exits 0 and reports only the text's bytes", run2.status === 0 && out2.includes("Terminal input written")
+      && field(out2, "Agent", cliseat.name) && field(out2, "Bytes reported", "12") && field(out2, "Enter requested", "no"), { status: run2.status, tail: out2.slice(-400) });
     const wantFlag = Buffer.from(`${PASTE_START}--not-a-flag${PASTE_END}`, "utf8");
     const got2 = await sinkReaches(cliseat.name, before + wantFlag.length);
     check("...and the child received EXACTLY `--not-a-flag`, unparsed and with no carriage return",
@@ -625,6 +649,40 @@ try {
     }
   }
 
+  console.log("\n11. Claude selection menus refuse text before it can confirm the highlighted answer");
+  {
+    const menu = await spawnLive(A.call, { name: "menuseat", agent: "claude", cwd: workspaceRoot, events: false });
+    const managed = M.agents.get(menu.name);
+    if (!managed?.handle.write) throw new Error("menu fixture has no writable handle");
+    const handle = managed.handle as PrivHandle & { attach(): { backlog(): Promise<Buffer>; write(data: string): void } };
+    const session = handle.attach();
+    for (let i = 0; i < 100; i++) {
+      if ((await session.backlog()).includes(Buffer.from("Enter to select"))) break;
+      await wait(100);
+    }
+    const writes: string[] = [];
+    const realWrite = handle.write!.bind(handle);
+    handle.write = async (data) => { writes.push(data); return realWrite(data); };
+    const outcomes: Run[] = [];
+    try {
+      for (const text of ["2", "3", "plain fixture answer"])
+        outcomes.push(await cotal(["input", "--name", menu.name, "--text", text, "--space", space]));
+      outcomes.push(await cotal(["input", "--name", menu.name, "--text", "2", "--no-enter", "--space", space]));
+      const refused = outcomes.every((r) => r.status === 2 && !r.timedOut && !r.signal
+        && strip(r.out).includes("input text cannot safely select an option") && !written(strip(r.out)));
+      const untouched = writes.length === 0 && sinkBytes(menu.name).length === 0;
+      // A real attach cancels the menu. Leave its footer in scrollback: history must not block chat.
+      session.write("\x1b");
+      await sinkReaches(menu.name, 1);
+      await wait(250);
+      const control = await cotal(["input", "--name", menu.name, "--text", "ordinary control", "--space", space]);
+      const want = Buffer.from(`\x1b${PASTE_START}ordinary control${PASTE_END}\r`);
+      const got = await sinkReaches(menu.name, want.length);
+      check("Claude menu input refuses 2, 3, plain text and no-enter without writing, but accepts chat after the menu leaves the viewport",
+        refused && untouched && control.status === 0 && got.equals(want), { outcomes, writes, control, hex: got.toString("hex") });
+    } finally { handle.write = realWrite; }
+  }
+
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
   // WITH agents, and nothing less (#1712). `stop()` without the flag is the DETACHED mode: it
@@ -654,7 +712,7 @@ try {
 // evidence without removing the green. Bumping this number is the deliberate edit that makes such
 // a drop impossible to miss. The count is read BEFORE this cell is tallied, so it is the number of
 // preceding cells (37), not 38.
-const EXPECTED_CELLS = 37;
+const EXPECTED_CELLS = 39;
 check(`every cell ran (a silently skipped cell must not read as green): expected ${EXPECTED_CELLS}`,
   pass + fail === EXPECTED_CELLS, { ran: pass + fail, expected: EXPECTED_CELLS });
 

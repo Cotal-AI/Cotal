@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const ANSI = /\x1b\[[0-9;]*m/g;
 
 export function unmeasurableFailure(run) {
+  if (run.error?.code === "ETIMEDOUT") return "command was killed at its timeout";
   if (run.error) return `command could not start: ${run.error.message}`;
   if (run.status === null || run.signal)
     return `command did not produce an exit status${run.signal ? ` (signal ${run.signal})` : ""}`;

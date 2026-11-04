@@ -1,0 +1,3 @@
+# cotal up refuses an invalid flag value or combination as usage, exit 1, before anything runs,
+# instead of an unconfirmed outcome.
+smoke:up-usage-refusal

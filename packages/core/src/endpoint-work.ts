@@ -36,8 +36,9 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
 import { epwSubject, epfSubject, assertBoundedOwner, assertLifecycleToken, type EpCaller } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry, openRecordsBucket } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry, openRecordsBucket, decodeRecordJson, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
 // The §13.12 resource names and consumer configs live in endpoint-binding.ts (the single source
 // of the stream/durable table: epwStreamName, poolDurable, poolConsumerConfig); this module is
@@ -204,8 +205,7 @@ export async function enqueueWorkItem(
     const pa = await ctx.js.publish(subject, bytes, { headers: h });
     return { enqueued: true, seq: pa.seq };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    if (!isCasLoss(e)) throw e;
     // A prior enqueue exists (or existed and was consumed). If a live entry remains, verify its
     // bytes match; a consumed-and-gone entry (no message) is a settled/in-flight item the caller
     // reconciles, not a mismatch.
@@ -360,14 +360,6 @@ function parseLease(raw: unknown, key: string): WorkLease {
   };
 }
 
-function decodeJson(value: Uint8Array, key: string): unknown {
-  try {
-    return JSON.parse(new TextDecoder().decode(value));
-  } catch (e) {
-    throw new EpEnvelopeError("internal", `record ${key} does not decode as JSON: ${(e as Error).message}`);
-  }
-}
-
 /** Issue (or idempotently re-issue) the item's lease for the owner's CURRENT delivery — the
  *  reserved `lease` command's handler seam, driven ONLY by the pool-owning endpoint after it
  *  fetched the item off its own durable (§13.5).
@@ -425,7 +417,7 @@ export async function leaseWorkItem(
       try { await createRecordEntry(ctx.kv, key, lease); return lease; }
       catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
     }
-    const stored = parseLease(decodeJson(entry.value, key), key);
+    const stored = parseLease(decodeRecordJson(entry.value, key), key);
     // Settlement DOMINATES every binding check: a never-leased expired settlement carries
     // sentinel coordinates (sourceSeq 0), so binding refusals on a settled item would mislead.
     if (stored.state === "settled")
@@ -616,7 +608,7 @@ export async function commitWorkItem(
   const entry = await ctx.kv.get(key);
   if (!entry || entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `no lease is recorded for this item (${key}); a commit settles only owner-assigned work (SPEC 13.5)`);
-  const stored = parseLease(decodeJson(entry.value, key), key);
+  const stored = parseLease(decodeRecordJson(entry.value, key), key);
 
   // A DUPLICATE (same worker, same lease tuple) always observes its cached terminal — the cache
   // lookup DOMINATES lease-expiry, so a slow-but-legitimate retry after its own commit never
@@ -647,7 +639,8 @@ export async function commitWorkItem(
     const budget = epochResolveBudgetMs ?? 5_000;
     if (!Number.isSafeInteger(budget) || budget <= 0)
       throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(epochResolveBudgetMs)}`);
-    const current = await resolveWithBudget(resolveCurrentEpoch(bound), budget);
+    const current = await withDeadline(Promise.resolve(resolveCurrentEpoch(bound)), budget,
+      () => new EpEnvelopeError("unavailable", `the fresh-epoch resolver did not answer within ${budget}ms; a stuck lifecycle authority is a bounded refusal, never a hung commit (SPEC 13.8)`));
     if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
       throw new EpEnvelopeError("internal", `the fresh-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.8)`);
     if (current === null)
@@ -667,7 +660,7 @@ export async function commitWorkItem(
     await updateRecordEntry(ctx.kv, key, settled, entry.revision);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-    const now2 = parseLease(decodeJson((await ctx.kv.get(key))!.value, key), key);
+    const now2 = parseLease(decodeRecordJson((await ctx.kv.get(key))!.value, key), key);
     if (now2.state === "settled" && now2.sourceSeq === tuple.sourceSeq && now2.attempt === tuple.attempt && sameWorker(now2.worker, caller))
       return publishTerminal(ctx, ref, terminalOf(ref, now2)); // our own settle raced in; idempotent
     if (now2.state === "settled")
@@ -677,18 +670,6 @@ export async function commitWorkItem(
   return publishTerminal(ctx, ref, terminalOf(ref, settled));
 }
 
-/** Bound the fresh-epoch resolver await: past the budget the commit REFUSES `unavailable`
- *  (fail-closed, retryable) instead of hanging on a stuck lifecycle authority. */
-async function resolveWithBudget(p: Promise<number | null> | number | null, budgetMs: number): Promise<number | null> {
-  // race Promise.resolve(p) UNCONDITIONALLY: a non-native/cross-realm thenable is not an
-  // `instanceof Promise`, and returning it directly would await it unbounded.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the fresh-epoch resolver did not answer within ${budgetMs}ms; a stuck lifecycle authority is a bounded refusal, never a hung commit (SPEC 13.8)`)), budgetMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
-}
-
 async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Uint8Array): Promise<{ won: boolean }> {
   const h = natsHeaders();
   h.set("Nats-Expected-Last-Subject-Sequence", "0");
@@ -696,8 +677,7 @@ async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Ui
     await js.publish(subject, bytes, { headers: h });
     return { won: true };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code === 10071 || code === 10164) return { won: false };
+    if (isCasLoss(e)) return { won: false };
     throw e;
   }
 }
@@ -756,7 +736,7 @@ export async function reconcileWorkItem(
     if (!entry) return undefined;
     if (entry.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `the lease record ${key} carries a ${entry.operation} marker; a deletion never resets an authoritative lease - reconcile the store (SPEC 13.5)`);
-    const rec = parseLease(decodeJson(entry.value, key), key);
+    const rec = parseLease(decodeRecordJson(entry.value, key), key);
     // The horizon is IDENTITY-BOUND (§13.8): whenever a record exists, the caller-supplied
     // workExpiry must equal the persisted one before ANY classification - a mis-wired
     // reconciliation must not expire a live lease early (or late) against a foreign horizon.
@@ -840,7 +820,7 @@ export async function retireWorkItem(
     const entry = await ctx.kv.get(key);
     if (entry !== undefined && entry !== null && entry.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `the lease record ${key} carries a ${entry.operation} marker; a deletion never resets an authoritative lease (SPEC 13.5)`);
-    const cur = entry === undefined || entry === null ? undefined : parseLease(decodeJson(entry.value, key), key);
+    const cur = entry === undefined || entry === null ? undefined : parseLease(decodeRecordJson(entry.value, key), key);
     if (cur?.state === "settled") return publishTerminal(ctx, ref, terminalOf(ref, cur));
     if (cur !== undefined && cur.workExpiry !== workExpiry)
       throw new EpEnvelopeError("conflict", `the lease binds workExpiry ${cur.workExpiry} but retirement supplies ${workExpiry}; the absolute work horizon is fixed at acceptance and never re-set (SPEC 13.8)`);

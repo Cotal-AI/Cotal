@@ -1,0 +1,3 @@
+# A nats-server the retained launcher starts that exits before it answers fails up OPERATION_FAILED,
+# naming the file, its exit code or signal, and its log. Broker-free: the stand-in never binds.
+smoke:up-broker-early-exit

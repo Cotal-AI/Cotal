@@ -36,6 +36,8 @@ agent: claude
 `;
 
 assert.equal(ok(`${HEAD}runtime: orca\nchannels: {}\n`).runtime, "orca");
+// An alias bomb is a located manifest problem, not an unclassified exception.
+fails(`${HEAD}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, "Excessive alias count");
 
 // --- happy path: inversion + allowSubscribe defaulting -----------------------------------------
 {
@@ -207,6 +209,26 @@ agents: { a: ./a.md }
 channels: { general: { subscribe: [a] } }
 `, "bind address");
 
+// Canonical workspace manifest schema accepts native broker logging and resolves its relative path.
+{
+  const m = ok(`${HEAD}
+broker:
+  logFile: ./logs/nats.log
+  logfileSizeLimit: 2048
+  logfileMaxNum: 3
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`);
+  assert.equal(m.broker?.logFile, rel("logs/nats.log"));
+  assert.equal(m.broker?.logfileSizeLimit, 2048);
+  assert.equal(m.broker?.logfileMaxNum, 3);
+}
+fails(`${HEAD}
+broker: { logfileSizeLimit: 2048 }
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`, "require broker.logFile");
+
 // inline agent with neither model nor instructions
 fails(`${HEAD}
 agents: { a: { description: just a blurb } }
@@ -228,6 +250,21 @@ spaces: [a, b]
 agents: { a: ./a.md }
 channels: { general: { subscribe: [a] } }
 `, "single-space");
+
+// a manifest saved as UTF-16 is refused by its encoding, not as a schema shape
+fails(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${HEAD}\nchannels: {}\n`, "utf16le")]).toString("utf8"), "it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8");
+// space: only a name `space create` takes, one routing token of 1 to 200 characters
+const spaced = (space: string) => `apiVersion: cotal/v1
+kind: Mesh
+space: ${space}
+agent: claude
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`;
+for (const space of ['"bad name"', "a/b", "x.y", "a".repeat(201)]) fails(spaced(space), "is not a space name: a space name is 1 to 200 letters");
+fails(spaced('"e\\u001b]0;X\\u0007c"'), 'space "e\\u001b]0;X\\u0007c" is not a space name');
+assert.equal(ok(spaced('"-lead"')).space, "-lead");
+assert.equal(ok(spaced("a".repeat(200))).space, "a".repeat(200));
 
 // duplicate map key (yaml unique-keys)
 fails(`${HEAD}

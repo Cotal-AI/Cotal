@@ -7,11 +7,11 @@
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { __setPublishLinkForTest, hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
+import { __setPublishLinkForTest, createPrivateRecord, hardenPrivate, mkSecretDir, openPrivateAppend, writePrivateRecord, writeSecretFile, writeSecretFileCreateOnly } from "../src/secret-fs.js";
 
 const isWin = process.platform === "win32";
 const statSafe = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
@@ -45,6 +45,32 @@ try {
 check("writeSecretFileCreateOnly REFUSES an existing file (EEXIST), never overwrites", exclusiveCode === "EEXIST");
 check("...and the first writer's bytes are unchanged", readSafe(exclusive) === "first-writer\n");
 
+// Native service phase records have a 233-byte basename. Appending the temp suffix to that
+// otherwise-valid name used to exceed the filesystem's component limit before publication.
+const longDir = join(dir, "long");
+mkSecretDir(longDir);
+const longDest = join(longDir, `${"x".repeat(228)}.json`);
+let longCode: string | undefined;
+try {
+  writeSecretFileCreateOnly(longDest, "first-phase\n");
+} catch (e) {
+  longCode = (e as NodeJS.ErrnoException).code;
+}
+check("a 233-byte destination publishes without extending its basename for the temp",
+  longCode === undefined && readSafe(longDest) === "first-phase\n");
+let longDuplicateCode: string | undefined;
+try {
+  writeSecretFileCreateOnly(longDest, "replacement-phase\n");
+} catch (e) {
+  longDuplicateCode = (e as NodeJS.ErrnoException).code;
+}
+check("a long destination still refuses replacement and preserves the first phase",
+  longDuplicateCode === "EEXIST" && readSafe(longDest) === "first-phase\n");
+check("long-destination publication and refusal leave no temp siblings",
+  readdirSync(longDir).filter((n) => n.endsWith(".tmp")).length === 0);
+if (!isWin) check("the long-destination phase remains private",
+  statSafe(longDest) && (statSync(longDest).mode & 0o777) === 0o600);
+
 // The TEMP write is exclusive too. A temp-name collision that plain-overwrote would destroy the
 // other creator's bytes, and the caller whose link then succeeded would return the candidate IT
 // minted while the file held the OTHER identity: the split, one step earlier.
@@ -52,12 +78,14 @@ check("...and the first writer's bytes are unchanged", readSafe(exclusive) === "
 // The temp name is internal (pid + clock + Math.random), so pin the clock and the RNG, compute the
 // exact name this call will choose, and squat it with another creator's bytes. The destination is
 // FRESH, so the publish would succeed: the only thing under test is the temp write itself.
-const squatDest = join(dir, "squat.secret");
+const squatDir = join(dir, "squat");
+mkSecretDir(squatDir);
+const squatDest = join(squatDir, "squat.secret");
 const realRandom = Math.random;
 const realNow = Date.now;
 Math.random = () => 0.5;
 Date.now = () => 1;
-const squattedTmp = `${squatDest}.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`;
+const squattedTmp = join(squatDir, `.cotal-create.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`);
 writeSecretFile(squattedTmp, "other-creator\n");
 let squatCode: string | undefined;
 try {
@@ -76,7 +104,9 @@ check("...and nothing was published at the destination on that refusal", !statSa
 
 // A loser must never destroy a live creator's temp. Publishing into an already-taken destination
 // fails, and leaves no litter of its own behind.
-const takenDest = join(dir, "taken.secret");
+const takenDir = join(dir, "taken");
+mkSecretDir(takenDir);
+const takenDest = join(takenDir, "taken.secret");
 writeSecretFileCreateOnly(takenDest, "incumbent\n");
 let secondPublish: string | undefined;
 try {
@@ -86,7 +116,7 @@ try {
 }
 check("REFUSE: publishing into a taken destination is EEXIST", secondPublish === "EEXIST");
 check("...and a failed create leaves no .tmp litter behind",
-  readdirSync(dir).filter((n) => n.endsWith(".tmp") && n.startsWith("taken.secret")).length === 0);
+  readdirSync(takenDir).filter((n) => n.endsWith(".tmp")).length === 0);
 check("...and the incumbent's bytes are intact", readSafe(takenDest) === "incumbent\n");
 
 // REFUSING an existing file is NOT the same property as being ATOMIC about it. A userspace
@@ -104,7 +134,9 @@ check("...and the incumbent's bytes are intact", readSafe(takenDest) === "incumb
 // write broken. On the temp path the raw write is the only guard, so this cell is the one that
 // actually grades it.
 const tmpVictim = join(dir, "tmp-symlink-victim");
-const danglingDest = join(dir, "dangling.secret");
+const danglingDir = join(dir, "dangling");
+mkSecretDir(danglingDir);
+const danglingDest = join(danglingDir, "dangling.secret");
 {
   // No platform gate on the ASSERTION: `lstatSync` makes the refusal portable, so EEXIST must hold
   // on every platform. Only the SETUP can be unavailable, since creating a symlink needs a privilege
@@ -115,7 +147,7 @@ const danglingDest = join(dir, "dangling.secret");
   const realNow2 = Date.now;
   Math.random = () => 0.5;
   Date.now = () => 1;
-  const danglingTmp = `${danglingDest}.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`;
+  const danglingTmp = join(danglingDir, `.cotal-create.${process.pid}.1.${(0.5).toString(36).slice(2)}.tmp`);
   try {
     symlinkSync(tmpVictim, danglingTmp);
   } catch {
@@ -250,7 +282,7 @@ check("...and that failure left no .tmp litter",
   const realRandom = Math.random;
   Date.now = () => 1700000000000;
   Math.random = () => 0.5;
-  const tmpName = `${dest}.${process.pid}.1700000000000.${(0.5).toString(36).slice(2)}.tmp`;
+  const tmpName = join(tempRaceDir, `.cotal-create.${process.pid}.1700000000000.${(0.5).toString(36).slice(2)}.tmp`);
   writeFileSync(tmpName, "squatter\n", { mode: 0o600 });
   let tempRaced: string | undefined;
   try {
@@ -361,6 +393,87 @@ if (!isWin) {
   const dirAcl = acl(sub);
   check("dir ACL strips Everyone / Authenticated Users / Users", broadGone(dirAcl));
   check("dir ACL grants owner SID + SYSTEM + Administrators", hasSafe(dirAcl));
+}
+
+if (!isWin) {
+  // An in-place write never goes through a name it did not prove is this user's regular file. A
+  // symlink planted at the target would otherwise have its TARGET truncated, re-moded and
+  // overwritten. Another user's file needs a second uid, so only symlinks and a directory run here.
+  const planted = mkdtempSync(join(dir, "planted-"));
+  const outside = join(planted, "outside");
+  writeFileSync(outside, "not yours\n", { mode: 0o644 });
+  chmodSync(outside, 0o644);
+  const errorOf = (act: () => void): NodeJS.ErrnoException | undefined => {
+    try { act(); return undefined; } catch (e) { return e as NodeJS.ErrnoException; }
+  };
+  const viaLink = join(planted, "server.conf");
+  symlinkSync(outside, viaLink);
+  const linked = errorOf(() => writeSecretFile(viaLink, "secret\n"));
+  check("REFUSE: writeSecretFile refuses a symlink at its target with EPERM", linked?.code === "EPERM");
+  check("...and the symlink's target keeps its bytes", readSafe(outside) === "not yours\n");
+  check("...and its mode", (statSync(outside).mode & 0o777) === 0o644);
+  check("...and the symlink itself is still there", lstatSync(viaLink).isSymbolicLink());
+
+  const dangling = join(planted, "dangling.conf");
+  const missing = join(planted, "missing");
+  symlinkSync(missing, dangling);
+  check("REFUSE: writeSecretFile refuses a dangling symlink", errorOf(() => writeSecretFile(dangling, "secret\n"))?.code === "EPERM");
+  check("...and creates nothing at the link's target", !statSafe(missing));
+
+  const directory = join(planted, "directory.conf");
+  mkdirSync(directory);
+  check("REFUSE: writeSecretFile refuses a directory at its target", errorOf(() => writeSecretFile(directory, "secret\n")) !== undefined);
+  check("...and the directory is still a directory", lstatSync(directory).isDirectory());
+
+  const loose = join(planted, "loose.conf");
+  writeFileSync(loose, "an older, longer configuration\n", { mode: 0o664 });
+  chmodSync(loose, 0o664);
+  writeSecretFile(loose, "new\n");
+  check("writeSecretFile sets an owned loose file to 0600 and replaces its bytes",
+    (statSync(loose).mode & 0o777) === 0o600 && readSafe(loose) === "new\n");
+
+  // The same open, appending, under a group-writable umask.
+  const umask = process.umask(0o002);
+  try {
+    const log = join(planted, "nats.log");
+    const appendLine = (path: string, line: string): void => {
+      const fd = openPrivateAppend(path);
+      try { writeSync(fd, line); } finally { closeSync(fd); }
+    };
+    appendLine(log, "first\n");
+    check("openPrivateAppend creates a log 0600 under umask 0002", (statSync(log).mode & 0o777) === 0o600);
+    chmodSync(log, 0o664);
+    appendLine(log, "second\n");
+    check("openPrivateAppend sets an owned 0664 log to 0600 and appends to it",
+      (statSync(log).mode & 0o777) === 0o600 && readSafe(log) === "first\nsecond\n");
+    const linkedLog = join(planted, "linked.log");
+    symlinkSync(outside, linkedLog);
+    check("REFUSE: openPrivateAppend refuses a symlink with EPERM", errorOf(() => appendLine(linkedLog, "x\n"))?.code === "EPERM");
+    check("...and the symlink's target keeps its bytes and mode",
+      readSafe(outside) === "not yours\n" && (statSync(outside).mode & 0o777) === 0o644);
+
+    // Records that are not secrets (pins, markers, publish temporaries) take the same open.
+    const record = join(planted, "web.pid.identity");
+    writePrivateRecord(record, "1 a\n");
+    check("writePrivateRecord creates a record 0600 under umask 0002", (statSync(record).mode & 0o777) === 0o600 && readSafe(record) === "1 a\n");
+    const linkedRecord = join(planted, "linked.identity");
+    symlinkSync(outside, linkedRecord);
+    check("REFUSE: writePrivateRecord refuses a symlink with EPERM", errorOf(() => writePrivateRecord(linkedRecord, "2 b\n"))?.code === "EPERM");
+    check("...and the symlink's target keeps its bytes and mode",
+      readSafe(outside) === "not yours\n" && (statSync(outside).mode & 0o777) === 0o644);
+
+    const fresh = join(planted, "nats.pid.publish.1.ab");
+    createPrivateRecord(fresh, "1");
+    check("createPrivateRecord creates a temporary 0600 under umask 0002", (statSync(fresh).mode & 0o777) === 0o600 && readSafe(fresh) === "1");
+    check("REFUSE: createPrivateRecord refuses a name that exists with EEXIST", errorOf(() => createPrivateRecord(fresh, "2"))?.code === "EEXIST" && readSafe(fresh) === "1");
+    const linkedTemp = join(planted, "nats.pid.publish.2.cd");
+    symlinkSync(outside, linkedTemp);
+    check("REFUSE: createPrivateRecord refuses a symlink with EEXIST", errorOf(() => createPrivateRecord(linkedTemp, "3"))?.code === "EEXIST");
+    check("...and the symlink's target keeps its bytes and mode",
+      readSafe(outside) === "not yours\n" && (statSync(outside).mode & 0o777) === 0o644);
+  } finally {
+    process.umask(umask);
+  }
 }
 
 rmSync(dir, { recursive: true, force: true, maxRetries: 10 });

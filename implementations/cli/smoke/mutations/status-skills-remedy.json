@@ -13,8 +13,8 @@
     {
       "name": "S1 restore unscoped Claude skills remedy",
       "file": "implementations/cli/src/lib/status.ts",
-      "find": "const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills` };",
-      "replace": "const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup` };",
+      "find": "const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills`,",
+      "replace": "const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup`,",
       "expectRed": "stale Claude skills recommend setup --skills",
       "cell": "stale Claude skills recommend setup --skills",
       "note": "Restores the issue's Claude skills row through the remedy the CLI hands every setup provider. Typecheck stays green. The status subprocess still prints the header.",
@@ -23,8 +23,8 @@
     {
       "name": "S2 restore unscoped .agents skills remedy",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return c.yellow(`${label} · ${displayCmd()} setup --skills`);",
-      "replace": "return c.yellow(`${label} · ${displayCmd()} setup`);",
+      "find": "  return cell(`${s.retired ? `${s.behind} to reconcile (${s.retired} retired)` : `${s.behind}/${s.total} out of date`} · ${remedy}`, \"waiting\");",
+      "replace": "  return cell(`${s.retired ? `${s.behind} to reconcile (${s.retired} retired)` : `${s.behind}/${s.total} out of date`} · ${displayCmd()} setup`, \"waiting\");",
       "expectRed": "stale .agents skills recommend setup --skills",
       "cell": "stale .agents skills recommend setup --skills",
       "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped.",
@@ -43,8 +43,8 @@
     {
       "name": "S4 allow --skills with --full",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "    if (values.full || values.demo) throw new Error(\"--skills cannot be combined with --full or --demo\");",
-      "replace": "    if (false && (values.full || values.demo)) throw new Error(\"--skills cannot be combined with --full or --demo\");",
+      "find": "    if (values.full || values.demo) throw usage(\"--skills cannot be combined with --full or --demo\");",
+      "replace": "    if (false && (values.full || values.demo)) throw usage(\"--skills cannot be combined with --full or --demo\");",
       "expectRed": "setup --skills --full is refused",
       "cell": "setup --skills --full is refused",
       "note": "Compile-clean no-op of the combination fence. First-run --full then writes personas.",

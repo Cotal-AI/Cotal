@@ -19,6 +19,9 @@ import {
   setupSpaceStreams,
   unicastSubject,
   chatSubject,
+  anycastSubject,
+  spacePrefix,
+  type CotalMessage,
   type Part,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -364,6 +367,79 @@ try {
   check("multiChannelHistory keeps the honest multicast", multi.some((r) => r.msg.id === chatHonest.id));
   check("multiChannelHistory drops a from.id mismatch", !multi.some((r) => r.msg.id === "chat-spoof-388"));
   check("multiChannelHistory tags the surviving row from the subject channel", multi.some((r) => r.msg.id === chatHonest.id && r.channel === "log"));
+
+  // ── #3219: an anycast reaches listeners with its routing fields derived from the svc subject,
+  //    the way the "to-spoof-388" DM cell above proves for `to`. The payload's toService/to/channel
+  //    are publisher-written; a listener that trusted them saw whatever role, DM or channel the
+  //    sender claimed. The subject is broker-policed, so the role it names is the only one that counts.
+  const worker = new CotalEndpoint({
+    space: SPACE, servers: SERVER, channels: [], registerPresence: false,
+    card: { name: "worker", kind: "endpoint", owner: "local", actor: "worker", role: "worker" },
+  });
+  worker.on("error", () => {});
+  const anycastSeen = new Promise<{ msg: CotalMessage; kind: string }>((resolve) => {
+    worker.on("message", (msg, delivery, meta) => {
+      if (msg.id !== "svc-spoof-3219") return;
+      delivery.ack();
+      resolve({ msg, kind: meta.kind });
+    });
+  });
+  await worker.start();
+  const rawSvc = await connect({ servers: SERVER });
+  rawSvc.publish(anycastSubject(SPACE, "worker", "local", "alice"), JSON.stringify(envelope({
+    id: "svc-spoof-3219",
+    toService: "reviewer",
+    to: "local.carol",
+    channel: "log",
+    parts: [{ kind: "text", text: "anycast-claims-another-role" }],
+  })));
+  await rawSvc.flush();
+  const anycast = await Promise.race([anycastSeen, wait(5000).then(() => undefined)]);
+  await rawSvc.close();
+  check("an anycast published on the worker role's svc subject reaches the worker's listener as anycast", anycast !== undefined && anycast.kind === "anycast", anycast);
+  check("the listener sees toService from the svc subject, not the payload's claimed role", anycast?.msg.toService === "worker", anycast?.msg.toService);
+  check("the payload's forged to and channel are stripped from the delivered anycast", anycast !== undefined && anycast.msg.to === undefined && anycast.msg.channel === undefined, anycast?.msg);
+  await worker.stop();
+
+  // ── #3741: the read-only tap (the console's live feed, `history --follow`, the dashboard) must
+  //    authenticate a messaging frame like the reads above: drop a from.id mismatch, take channel,
+  //    recipient and role from the subject. A frame off the messaging planes still arrives as sent.
+  const tapped = new Map<string, { subject: string; msg: CotalMessage | undefined }>();
+  let tapNulls = 0;
+  viewer.tap((subject, msg) => {
+    if (msg === null) tapNulls++;
+    else if (msg?.id) tapped.set(String(msg.id), { subject, msg });
+  });
+  await wait(200);
+  const rawTap = await connect({ servers: SERVER });
+  const tapChat = chatSubject(SPACE, "local", "alice", "log");
+  const tapDm = unicastSubject(SPACE, "local", "bob", "local", "alice");
+  const tapSvc = anycastSubject(SPACE, "worker", "local", "alice");
+  const offPlane = `${spacePrefix(SPACE)}.ep.tap-3741`;
+  const mallory = { id: "local.mallory", name: "Not Alice" };
+  rawTap.publish(tapChat, JSON.stringify(envelope({ id: "tap-chat-honest-3741", to: undefined, channel: "log" })));
+  rawTap.publish(tapChat, JSON.stringify(envelope({ id: "tap-chat-spoof-3741", to: undefined, from: mallory, channel: "log" })));
+  rawTap.publish(tapChat, JSON.stringify(envelope({ id: "tap-chat-channel-3741", to: undefined, channel: "other" })));
+  rawTap.publish(tapChat, "null");
+  rawTap.publish(tapDm, JSON.stringify(envelope({ id: "tap-dm-to-3741", to: "local.carol", channel: "log" })));
+  rawTap.publish(tapDm, JSON.stringify(envelope({ id: "tap-dm-spoof-3741", from: mallory })));
+  rawTap.publish(tapSvc, JSON.stringify(envelope({ id: "tap-svc-route-3741", to: undefined, toService: "reviewer" })));
+  rawTap.publish(tapSvc, JSON.stringify(envelope({ id: "tap-svc-spoof-3741", to: undefined, from: mallory, toService: "worker" })));
+  rawTap.publish(offPlane, JSON.stringify(envelope({ id: "tap-off-plane-3741", from: mallory, channel: "other" })));
+  await rawTap.flush();
+  await rawTap.close();
+  for (let i = 0; i < 50 && !tapped.has("tap-off-plane-3741"); i++) await wait(100);
+  const tapRow = (id: string) => tapped.get(id)?.msg;
+  check("the tap delivers an honest multicast unchanged", tapRow("tap-chat-honest-3741")?.from.id === alice.card.id && tapRow("tap-chat-honest-3741")?.channel === "log", tapRow("tap-chat-honest-3741"));
+  check("the tap drops a multicast whose payload sender is not the subject's", !tapped.has("tap-chat-spoof-3741"), [...tapped.keys()]);
+  check("the tap takes a multicast's channel from the subject, not the payload", tapRow("tap-chat-channel-3741")?.channel === "log", tapRow("tap-chat-channel-3741"));
+  check("the tap hands no JSON null on a messaging plane to its handler", tapNulls === 0, tapNulls);
+  const tapDmRow = tapRow("tap-dm-to-3741");
+  check("the tap takes a DM's recipient from the subject and strips its channel", tapDmRow?.to === bob.card.id && tapDmRow.channel === undefined, tapDmRow);
+  check("the tap drops a DM whose payload sender is not the subject's", !tapped.has("tap-dm-spoof-3741"), [...tapped.keys()]);
+  check("the tap takes an anycast's role from the subject, not the payload", tapRow("tap-svc-route-3741")?.toService === "worker", tapRow("tap-svc-route-3741"));
+  check("the tap drops an anycast whose payload sender is not the subject's", !tapped.has("tap-svc-spoof-3741"), [...tapped.keys()]);
+  check("a frame off the messaging planes still reaches the tap as sent", tapRow("tap-off-plane-3741")?.from.id === mallory.id && tapRow("tap-off-plane-3741")?.channel === "other", tapRow("tap-off-plane-3741"));
 
   await alice.stop();
   await bob.stop();

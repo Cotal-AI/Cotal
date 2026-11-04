@@ -1,0 +1,4 @@
+# Public service registration and serving over a hosted context on an owned broker: two unrelated services through
+# approved register, activate, a native callout connection, ready and renew; the proof matrix and bounds, ownership,
+# quota and persisted keys; simulated stop points with resume, current and cancel controls; replay and supersession.
+smoke:service-serving:auth

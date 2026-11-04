@@ -1,0 +1,209 @@
+name: Cold setup
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "Prepare a snapshot under this dist-tag without publishing it. Leave empty for a normal candidate."
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      snapshot:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: cold native (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cold-native-${{ matrix.arch }}
+          path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
+
+  workspace-native:
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
+
+  candidate:
+    needs: [native, workspace-native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm smoke:release-cold-contract
+      - name: Prepare the snapshot once before qualification
+        if: inputs.snapshot != ''
+        env:
+          SNAPSHOT: ${{ inputs.snapshot }}
+        run: pnpm changeset version --snapshot "$SNAPSHOT"
+      - run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          name: cold-native-x64
+          path: ${{ runner.temp }}/cold-native-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: cold-native-arm64
+          path: ${{ runner.temp }}/cold-native-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-darwin-*
+          path: ${{ runner.temp }}/seat-host-native
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-win32-*
+          path: ${{ runner.temp }}/seat-host-native
+      - run: node scripts/seat-assemble-natives.mjs
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/cold-native-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/cold-native-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/seat-host-native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-win32-arm64/peercred.node
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-x64
+          path: ${{ runner.temp }}/workspace-native-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-arm64
+          path: ${{ runner.temp }}/workspace-native-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-x64
+          path: ${{ runner.temp }}/workspace-native-darwin-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-darwin-arm64
+          path: ${{ runner.temp }}/workspace-native-darwin-arm64
+      - name: Assemble source-matched Windows and macOS process identity bindings
+        run: node scripts/workspace-assemble-natives.mjs
+        env:
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/workspace-native-darwin-arm64
+      - name: Probe package shape before publication is requested
+        run: node scripts/post-publish-install-probe.mjs
+      - name: Pack every public candidate package
+        run: node scripts/pack-cold-candidate.mjs cold-candidate
+      - name: Attest the manifest and its executed build source
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        id: build-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: cold-candidate/manifest.json
+      - name: Retain the public signature bundle with the candidate
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          QUALIFICATION_BUNDLE: ${{ steps.build-attestation.outputs.bundle-path }}
+        run: cp "$QUALIFICATION_BUNDLE" cold-candidate/qualification.sigstore.json
+      - name: Verify the live certificate and source/run rejection before qualification
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-qualification-attestation.mjs cold-candidate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cold-candidate
+          path: cold-candidate
+          if-no-files-found: error
+
+  lifecycle:
+    name: cold ${{ matrix.runner }} / Node ${{ matrix.node }}
+    needs: candidate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest, windows-11-arm]
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cold-candidate
+          path: cold-candidate
+      - name: Install packaged candidate and exercise two native lifecycles
+        run: npm run test:release-cold -- cold-candidate cold-result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cold-result-${{ matrix.runner }}-node${{ matrix.node }}
+          path: |
+            cold-result.json
+            cold-result.json.logs
+          if-no-files-found: error
+
+  cold-ok:
+    if: always()
+    needs: [native, workspace-native, candidate, lifecycle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cold-result-*
+          path: cold-results
+      - uses: actions/download-artifact@v4
+        with:
+          name: cold-candidate
+          path: cold-candidate
+      - name: Verify every receipt belongs to this source, candidate and platform
+        run: node scripts/verify-cold-results.mjs cold-results "$GITHUB_SHA" cold-candidate/manifest.json
+      - name: Require every cold setup
+        env:
+          NATIVE: ${{ needs.native.result }}
+          WORKSPACE_NATIVE: ${{ needs.workspace-native.result }}
+          CANDIDATE: ${{ needs.candidate.result }}
+          LIFECYCLE: ${{ needs.lifecycle.result }}
+        run: test "$NATIVE" = success && test "$WORKSPACE_NATIVE" = success && test "$CANDIDATE" = success && test "$LIFECYCLE" = success
+      - name: Seal the completed qualification for promotion
+        env:
+          SNAPSHOT: ${{ inputs.snapshot || '' }}
+        run: node scripts/release-qualification.mjs record cold-candidate cold-results qualification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cold-qualified
+          path: qualification.json
+          if-no-files-found: error

@@ -1,21 +1,23 @@
-# Announce a published GitHub Release on Discord. The embed carries the release body's
-# `## What changed` layer (one sentence per change) under the upgrade command and links to the
-# Release for the full text; scripts/release-announcement.mjs builds it and refuses a body without
-# that layer, so a release the Changesets workflow did not write is not announced as if it were.
-# The checkout is the default branch, not the released tag: the Release tags the oldest commit that
-# carried the version, which may predate the builder, while the event carries the body, tag and url.
+# Announce the release body's one-sentence highlights, linked to the full Release.
+# Use the formatter on the default branch; the body, tag and URL come from the release event.
 on:
   release:
     types: [published]
 
 jobs:
   announce:
+    # Only the version release is announced, never a per-package one.
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - name: Post the release on Discord
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
@@ -24,5 +26,21 @@ jobs:
           BODY: ${{ github.event.release.body }}
         run: |
           printf '%s' "$BODY" | node scripts/release-announcement.mjs "$TAG" "$URL" > "$RUNNER_TEMP/announcement.json"
-          curl --fail --silent --show-error -H 'Content-Type: application/json' \
-            --data @"$RUNNER_TEMP/announcement.json" "$WEBHOOK_URL"
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          try {
+            const body = await readFile(`${process.env.RUNNER_TEMP}/announcement.json`);
+            const response = await fetch(process.env.WEBHOOK_URL, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+              redirect: 'error', signal: AbortSignal.timeout(15_000),
+            });
+            if (!response.ok) {
+              console.error(`Discord rejected the announcement (HTTP ${response.status}); no retry was attempted.`);
+              process.exitCode = 1;
+            }
+          } catch {
+            // Fetch errors can include the credential-bearing URL. Do not print them.
+            console.error('Discord announcement request failed; delivery may be unknown. Check Discord before retrying.');
+            process.exitCode = 1;
+          }
+          NODE

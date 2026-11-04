@@ -1,0 +1,1 @@
+smoke:readonly-watch-cleanup:auth

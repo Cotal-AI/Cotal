@@ -1,7 +1,8 @@
 /**
- * The install-probe job must exist in changesets.yml and must depend on the version job.
- * The version job must contain the closure gate and the GitHub Release step. This file reads
- * the workflow text and checks structural invariants.
+ * The package-shape probe runs during preparation, before native lifecycle qualification.
+ * The publication job cuts one GitHub Release per version, and a job of its own then checks that the
+ * published CLI installs.
+ * This file reads the workflow text and checks structural invariants.
  *
  * Run: pnpm smoke:install-probe-ci
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/install-probe-ci.json
@@ -46,28 +47,15 @@ function jobs(text: string): Map<string, string> {
   return out;
 }
 
-function needsList(body: string): string[] {
-  const inline = body.match(/^\s+needs:\s*\[([^\]]*)\]/m);
-  if (inline) {
-    return inline[1].split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
-
 const csText = readFileSync(CHANGESETS, "utf8");
 const csJobs = jobs(csText);
 
-// A. The install-probe job exists
-const probeBody = csJobs.get("install-probe") ?? "";
-check("changesets.yml declares job install-probe", probeBody.length > 0);
+const coldJobs = jobs(readFileSync(join(ROOT, ".github/workflows/cold-setup.yml"), "utf8"));
+const probeBody = coldJobs.get("candidate") ?? "";
+check("cold setup owns the pre-publication package-shape probe", probeBody.length > 0 && !csJobs.has("install-probe"));
 
-// B. install-probe depends on version
-const probeNeeds = needsList(probeBody);
-check(
-  "install-probe needs the version job",
-  probeNeeds.includes("version"),
-  { probeNeeds },
-);
+const lifecycleNeeds = (coldJobs.get("lifecycle") ?? "").match(/^\s+needs:\s*(\S+)/m)?.[1];
+check("native qualification depends on the probed candidate", lifecycleNeeds === "candidate", { lifecycleNeeds });
 
 // C. install-probe runs the probe script
 check(
@@ -84,23 +72,64 @@ check(
   "build must come before probe",
 );
 
-// E. The version job cuts the GitHub Release
-const versionBody = csJobs.get("version") ?? "";
+// The maintained action pushes the per-package tags and creates no releases; the publish job cuts
+// none either, so nothing is announced from inside the publish queue.
+const publishBody = csJobs.get("publish") ?? "";
 check(
-  "the version job cuts the GitHub Release",
-  /gh release create/.test(versionBody),
-  versionBody.slice(0, 200),
+  "the publisher pushes the tags and cuts no GitHub Release itself",
+  /uses: changesets\/action\/publish@/.test(publishBody) &&
+    /create-github-releases: false/.test(publishBody) &&
+    !publishBody.includes("gh release create"),
+  publishBody.slice(0, 200),
+);
+// The public release job follows direct verification or successful serialized staged promotion.
+// No announcement is cut by the upload action itself.
+const verifyBody = csJobs.get("verify-install") ?? "";
+check(
+  "a successful publication is followed by a fresh install check, then the GitHub Release",
+  /^\s+published: \$\{\{ steps\.publish\.outputs\.published \}\}\s*$/m.test(publishBody) &&
+    /^\s+needs: publish\s*$/m.test(verifyBody) &&
+    /if: needs\.publish\.outputs\.published == 'true'/.test(verifyBody) &&
+    /verify-release-installable\.mjs/.test(publishBody) &&
+    /verify-release-installable\.mjs/.test(verifyBody) &&
+    verifyBody.indexOf("verify-release-installable.mjs") < verifyBody.indexOf("gh release create") &&
+    publishBody.indexOf("npm dist-tag add") > publishBody.indexOf("verify-release-installable.mjs") &&
+    verifyBody.includes("gh release create"),
+  "the install observation must follow publication and precede the Release",
 );
 
-// F. The version job has a closure gate that invokes verify-publish-closure.mjs
+const closureAt = publishBody.indexOf("verify-publish-closure.mjs");
+const installAt = publishBody.indexOf("verify-release-installable.mjs");
+const promoteAt = publishBody.indexOf("npm dist-tag add");
 check(
-  "the version job verifies publish closure before the Release",
-  /node scripts\/verify-publish-closure\.mjs/.test(versionBody) &&
-    versionBody.indexOf("node scripts/verify-publish-closure") < versionBody.indexOf("gh release create"),
-  "closure gate must come before release",
+  "latest promotion follows closure and real install verification inside the serialized publisher",
+  closureAt >= 0 && installAt > closureAt && promoteAt > installAt &&
+    /group:.*-publish/.test(publishBody) && !/continue-on-error: true|if:.*always\(/.test(publishBody),
+  { closureAt, installAt, promoteAt },
 );
 
-const EXPECTED = 6;
+// #3285: a census that gives up before the install check after it fails the job, and skips the
+// Release, for a version npm only served late. Both routes give the two the same deadline.
+const deadlineOf = (body: string, script: string): string | undefined =>
+  body.match(new RegExp(`${script} "\\$version"[^\\n]*--deadline-ms=(\\d+)`))?.[1];
+const deadlines = [publishBody, verifyBody].map((body) => [deadlineOf(body, "verify-publish-closure\\.mjs"), deadlineOf(body, "verify-release-installable\\.mjs")]);
+check(
+  "each closure census waits as long as the install check that follows it",
+  deadlines.every(([census, install]) => census !== undefined && census === install),
+  deadlines,
+);
+
+const packBody = csJobs.get("pack") ?? "";
+check("the selected complete plan is staged before the maintained pack action", packBody.indexOf("stage-release-plan.mjs stage") >= 0 && packBody.indexOf("stage-release-plan.mjs stage") < packBody.indexOf("changesets/action/pack@") && /publish-plan-artifact-id:.*steps\.staged-plan\.outputs\.artifact-id/.test(packBody));
+check("packing retains public builds and native assembly without repeated seat TypeScript compilation", /pnpm --filter '!\.\/examples\/\*\*' -r build/.test(csJobs.get("pack") ?? "") && /@cotal-ai\/seat build:native/.test(csJobs.get("native") ?? ""));
+check("the publisher installs frozen root tooling and consumes packed bytes without rebuilding", /pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts/.test(publishBody) && /cache: true/.test(publishBody) && !/pnpm (?:-r )?build/.test(publishBody));
+
+check("direct publishing is default and staging requires explicit opt-in without settings-read authority", /steps\.staged-plan\.outputs\.artifact-id \|\| steps\.plan\.outputs\.publish-plan-artifact-id/.test(packBody) && /if: steps\.publish\.outputs\.published == 'true' && needs\.release\.outputs\.staged == 'true'/.test(publishBody) && !publishBody.includes("preflight-npm-publish.mjs"));
+
+// The mode is frozen once, in the preparing run, and travels with the pack to the publishing run.
+check("direct verification runs outside the publisher queue and staging mode is frozen once", /if: needs\.publish\.outputs\.staged != 'true'/.test(verifyBody) && !/concurrency:/.test(verifyBody) && /published == 'true' && needs\.release\.outputs\.staged == 'true'/.test(publishBody) && (csText.match(/vars\.COTAL_STAGED_RELEASE/g) ?? []).length === 1 && /STAGED: \$\{\{ needs\.select\.outputs\.staged \}\}/.test(packBody) && /staged: \$\{\{ needs\.release\.outputs\.staged \}\}/.test(publishBody));
+
+const EXPECTED = 13;
 check(`every cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED, pass + fail);
 console.log(`\nINSTALL PROBE CI SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 console.log("SUITE COMPLETE");

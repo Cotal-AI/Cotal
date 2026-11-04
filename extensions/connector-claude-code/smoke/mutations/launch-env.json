@@ -20,8 +20,8 @@
     {
       "name": "drop Claude providerKeys so CLAUDE_CODE_OAUTH_TOKEN never reaches the child",
       "file": "extensions/connector-claude-code/src/extension.ts",
-      "find": "...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),",
-      "replace": "...launchEnv({ mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),",
+      "find": "...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS], envAllow: opts.envAllow }),",
+      "replace": "...launchEnv({ mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS], envAllow: opts.envAllow }),",
       "expectRed": "CLAUDE_CODE_OAUTH_TOKEN reached the child",
       "cell": "CLAUDE_CODE_OAUTH_TOKEN reached the child",
       "note": "The 0.30.1-allowlist regression: an allowlist that silently drops the credential the deploy docs promise. Host-session markers stay withheld either way, so the marker cell stays green and the two cells discriminate."

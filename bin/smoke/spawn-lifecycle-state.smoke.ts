@@ -34,15 +34,14 @@ const silentConn = {
 };
 
 const blocked = lifecycleBlocked("conflict",
-  `the issuance gate for "mgr-1" is frozen; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`,
+  `the issuance gate for "mgr-1" is frozen; another barrier holds it; if the holder is a dead predecessor, run: \`cotal reconcile-gate\` (SPEC 13.8)`,
   { blockedOp: "registration", gateState: "frozen", opId: OPID, remedy: "cotal reconcile-gate" });
 
 console.log("A. a failed goal terminal carries the lifecycle-blocked facts the manager already had");
 {
   const submit = () => Promise.resolve({
     reply: { ok: true as const, data: { goalId: GOAL } },
-    instanceId: "i1",
-    epoch: 0,
+    responder: { endpoint: "manager", instanceId: "i1", epoch: 0 },
   });
   // The terminal is already knowable: publish it by resolving submit after the
   // subscription is open, then deliver the event on the next tick through the
@@ -58,6 +57,8 @@ console.log("A. a failed goal terminal carries the lifecycle-blocked facts the m
   };
   const submitThenEmit = async () => {
     captured?.(null, {
+      // The accepting responder's own progress subject, as on the wire.
+      subject: `cotal.s.epe.manager.i1.0.goal.u_probe.cli.0123456789abcdefghijklmnopqrst.${GOAL}.progress`,
       data: new TextEncoder().encode(JSON.stringify({
         v: 1, goalId: GOAL, phase: "terminal", state: "failed",
         data: { error: blocked.message, details: blocked.details },
@@ -84,8 +85,7 @@ console.log("B. a refused-at-accept envelope keeps the facts (no terminal to wai
 {
   const refuse = () => Promise.resolve({
     reply: { ok: false as const, data: undefined, error: blocked.toEpError() },
-    instanceId: "i1",
-    epoch: 0,
+    responder: { endpoint: "manager", instanceId: "i1", epoch: 0 },
   });
   const r = await submitAndFollowGoal(silentConn as never, "s", "manager", CALLER, 5_000, refuse as never);
   const facts = lifecycleBlockedFrom(r.reply.error);

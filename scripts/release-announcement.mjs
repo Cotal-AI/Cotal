@@ -36,10 +36,11 @@ export const payload = (tag, url, body) => {
   const more = (n) => `\n…and ${n} more on the release page.`;
   let shown = bullets.length;
   let description = head + bullets.join("\n");
-  while (description.length > DESCRIPTION_LIMIT) {
+  while (description.length > DESCRIPTION_LIMIT && shown > 0) {
     shown -= 1;
     description = head + bullets.slice(0, shown).join("\n") + more(bullets.length - shown);
   }
+  if (description.length > DESCRIPTION_LIMIT) throw new Error("release heading exceeds the Discord description limit");
   return {
     content: "||@everyone||",
     username: "Cotal releases",
@@ -56,6 +57,9 @@ export const readText = async (stream) => {
 };
 
 const selfTest = async () => {
+  let checks = 0;
+  const check = Object.fromEntries(["equal", "ok", "throws"].map(method =>
+    [method, (...args) => { assert[method](...args); checks++; }]));
   const body = [
     "**Cotal 0.81.1 is out.**",
     "",
@@ -75,33 +79,35 @@ const selfTest = async () => {
     "* fix: something by @someone in https://github.com/Cotal-AI/Cotal/pull/1",
   ].join("\n");
   const p = payload("v0.81.1", "https://github.com/Cotal-AI/Cotal/releases/tag/v0.81.1", body);
-  assert.equal(p.embeds[0].title, "Cotal 0.81.1 is out");
-  assert.equal(p.embeds[0].url, "https://github.com/Cotal-AI/Cotal/releases/tag/v0.81.1");
-  assert.equal(
+  check.equal(p.embeds[0].title, "Cotal 0.81.1 is out");
+  check.equal(p.embeds[0].url, "https://github.com/Cotal-AI/Cotal/releases/tag/v0.81.1");
+  check.equal(
     p.embeds[0].description,
     "Upgrade: `npm i -g cotal-ai@0.81.1`\n\n- A seat never leaves the mesh because its event plane stopped.\n- `cotal spawn -f` now reports a failed launch as partial.",
     "the embed carries the upgrade command and the one-sentence layer only",
   );
-  assert.equal(p.content, "||@everyone||");
+  check.equal(p.content, "||@everyone||");
+  check.throws(() => payload(`v${"x".repeat(5000)}`, "u", body), /release heading exceeds/);
+  check.ok(payload("v1.0.0", "u", `## What changed\n- ${"x".repeat(5000)}`).embeds[0].description.includes("1 more"));
 
   const long = ["## What changed", "", ...Array.from({ length: 60 }, (_, i) => `- Change number ${i} ${"x".repeat(90)}.`)].join("\n");
   const capped = payload("v1.0.0", "u", long).embeds[0].description;
-  assert.ok(capped.length <= DESCRIPTION_LIMIT, "the description stays within Discord's limit");
-  assert.ok(/\n…and \d+ more on the release page\.$/.test(capped), "a cut list says how many changes it left out");
-  assert.ok(capped.includes("- Change number 0 "), "whole bullets are dropped from the end, the first stays");
-  assert.ok(!/\n- Change number \d+ x+$/.test(capped.replace(/\n…and.*$/, "x")), "no bullet is cut mid-line");
+  check.ok(capped.length <= DESCRIPTION_LIMIT, "the description stays within Discord's limit");
+  check.ok(/\n…and \d+ more on the release page\.$/.test(capped), "a cut list says how many changes it left out");
+  check.ok(capped.includes("- Change number 0 "), "whole bullets are dropped from the end, the first stays");
+  check.ok(!/\n- Change number \d+ x+$/.test(capped.replace(/\n…and.*$/, "x")), "no bullet is cut mid-line");
 
-  assert.throws(() => payload("v1.0.0", "u", "**Cotal 1.0.0 is out.**\n\n## What's Changed\n* a"), /no `## What changed` section/);
-  assert.throws(() => payload("v1.0.0", "u", "## What changed\n\n<details>\n- hidden\n</details>"), /lists no change/);
+  check.throws(() => payload("v1.0.0", "u", "**Cotal 1.0.0 is out.**\n\n## What's Changed\n* a"), /no `## What changed` section/);
+  check.throws(() => payload("v1.0.0", "u", "## What changed\n\n<details>\n- hidden\n</details>"), /lists no change/);
 
   const text = "## What changed\n- Safe reconnect \u{1F504}.\n";
   const bytes = Buffer.from(text, "utf8");
   const cut = bytes.indexOf(Buffer.from([0xf0, 0x9f, 0x94, 0x84])) + 2;
   // Readable.from hands the consumer one chunk per item, so the split lands on the decoder for sure.
   const chunks = [bytes.subarray(0, cut), bytes.subarray(cut)];
-  assert.equal(await readText(Readable.from(chunks, { objectMode: false })), text, "a code point split across stdin chunks decodes whole");
-  assert.equal(payload("v1.0.0", "u", await readText(Readable.from(chunks, { objectMode: false }))).embeds[0].description, "Upgrade: `npm i -g cotal-ai@1.0.0`\n\n- Safe reconnect \u{1F504}.");
-  console.log("release-announcement self-test: ok");
+  check.equal(await readText(Readable.from(chunks, { objectMode: false })), text, "a code point split across stdin chunks decodes whole");
+  check.equal(payload("v1.0.0", "u", await readText(Readable.from(chunks, { objectMode: false }))).embeds[0].description, "Upgrade: `npm i -g cotal-ai@1.0.0`\n\n- Safe reconnect \u{1F504}.");
+  console.log(`release-announcement self-test: ${checks} checks passed`);
 };
 
 const main = async (argv) => {

@@ -14,43 +14,26 @@
 import {
   EpEnvelopeError,
   managedRetirementOpId,
+  parseEpSubject,
+  principalKey,
+  runDriverCaller,
   parseRemoteManagedAgentEnrollmentRequest,
   parseRemoteManagedAgentPrepareRetirementRequest,
   parseRemoteManagedAgentRuntimeCreateRequest,
   parseRemoteManagedAgentRuntimeStatusRequest,
-  remoteManagerActors,
   type EpGateState,
   type RemoteManagedAgentEnrollmentRequest,
   type RemoteManagedAgentPrepareRetirementRequest,
   type RemoteManagedAgentRuntimeCreateRequest,
   type RemoteManagedAgentRuntimeStatusRequest,
+  type RunAdmission,
+  type RunDelegation,
 } from "@cotal-ai/core";
-import { timingSafeEqual } from "node:crypto";
 import { ledgerAuthorizeGrant } from "./ledger.js";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 
 /** The live manager gate the host observes for itself. A null answer is an absent registration. */
 export type ObserveManagerGate = (instanceId: string) => Promise<Pick<EpGateState, "state" | "principal" | "processEpoch" | "registrationRevision"> | null>;
-
-/** Every door here runs this one check after its own scope and target checks, so a change to the
- *  gate, principal, epoch, or proof rule reaches all of them at once. */
-async function assertCurrentManagerRegistration(
-  r: RemoteManagedAgentEnrollmentRequest | RemoteManagedAgentPrepareRetirementRequest | RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest,
-  args: { owner: string; proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate },
-  what: string,
-): Promise<void> {
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${r.instanceId}`);
-  const servePrincipal = `${args.owner}.${remoteManagerActors(r.instanceId).serve}`;
-  if (gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
-  if (gate.processEpoch !== r.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);
-  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
-    throw new EpEnvelopeError("permission-denied", `manager ${what} proof does not match current host registration`);
-}
 
 export interface AuthorizeRemoteManagedAgentEnrollmentArgs {
   request: RemoteManagedAgentEnrollmentRequest;
@@ -71,8 +54,50 @@ export async function authorizeRemoteManagedAgentEnrollment(
     throw new EpEnvelopeError("permission-denied", `enrollment request names space ${r.space}, not host space ${args.space}`);
   if (!args.scope.includes("supervise"))
     throw new EpEnvelopeError("permission-denied", 'managed agent enrollment needs scope "supervise"; spawn/admin do not imply it');
-  await assertCurrentManagerRegistration(r, args, "enrollment");
+  await assertCurrentManagerRegistration(r, r.serveEpoch, args, "manager enrollment");
   return r;
+}
+
+/** Who a hosted enrollment's helper is delegated by (SPEC 13.6): the parent its managed row records,
+ *  whose current grant the ledger walk bounds it by. With no served spawn the manager starts the
+ *  helper on its own behalf and is its parent. With one, the parent is the caller this host saw
+ *  publish that exact subject, so the request names no one: the broker forge-locks the caller in
+ *  the subject. A run's spawn is delegated by the run's starter, and its admission's delegation
+ *  bounds it as well. A subject this host did not observe, or already answered, is refused. */
+export async function resolveRemoteSpawner(args: {
+  request: RemoteManagedAgentEnrollmentRequest;
+  owner: string;
+  /** Takes the observation of a served spawn subject for one enrollment, named by its helper and
+   *  token digest: true for the first taker and its retries, false for any other or for a subject
+   *  never observed. */
+  takeObserved: (subject: string, enrollment: { actor: string; tokenHash: string }) => Promise<boolean>;
+  readAdmission: (runId: string) => Promise<RunAdmission | undefined>;
+}): Promise<{ parent: string; run?: { runId: string; starter: { owner: string; actor: string }; delegation: RunDelegation } }> {
+  const r = args.request;
+  if (r.spawn === undefined) return { parent: principalKey(args.owner, r.actor).key };
+  const parsed = parseEpSubject(r.spawn.served);
+  if (!r.spawn.served.startsWith(`cotal.${r.space}.`) || parsed === null || parsed.plane !== "request" || parsed.endpoint !== "manager"
+    || parsed.command !== "spawn" || parsed.target !== null || (parsed.route === "inst" && parsed.instanceId !== r.instanceId))
+    throw new EpEnvelopeError("permission-denied", "a hosted enrollment's spawn must name a manager spawn request served on this instance");
+  if (!(await args.takeObserved(r.spawn.served, r.target)))
+    throw new EpEnvelopeError("permission-denied", "the issuing host did not observe this spawn request within its window, or it was taken by another enrollment (SPEC 13.6)");
+  const caller = parsed.caller;
+  if (caller.owner !== args.owner)
+    throw new EpEnvelopeError("permission-denied", "a helper is enrolled only for a spawn asked for by a caller of the manager's own owner");
+  if (r.spawn.runId === undefined) return { parent: principalKey(caller.owner, caller.actor).key };
+  const runId = r.spawn.runId;
+  const admission = await args.readAdmission(runId);
+  if (admission === undefined || admission.instanceId !== r.instanceId)
+    throw new EpEnvelopeError("permission-denied", `run ${runId} is not admitted on this manager instance, so it has no starter to delegate a helper`);
+  const driver = runDriverCaller(runId, admission.caller.owner);
+  if (driver.owner !== caller.owner || driver.actor !== caller.actor || driver.uid !== caller.uid)
+    throw new EpEnvelopeError("permission-denied", `the spawn request was not sent by run ${runId}'s driver`);
+  const starter = { owner: admission.caller.owner, actor: admission.caller.actor };
+  return {
+    parent: principalKey(starter.owner, starter.actor).key,
+    // An admission written before the snapshot existed hands on nothing.
+    run: { runId, starter, delegation: admission.delegation ?? { scope: [], allowSubscribe: [], allowPublish: [] } },
+  };
 }
 
 export interface AuthorizeRemoteManagedAgentPrepareRetirementArgs {
@@ -100,7 +125,7 @@ export async function authorizeRemoteManagedAgentPrepareRetirement(
   const expectedOpId = managedRetirementOpId(r.target.lifecycleUid);
   if (r.opId !== expectedOpId)
     throw new EpEnvelopeError("permission-denied", `prepare-retirement opId "${r.opId}" does not match derived terminal operation "${expectedOpId}" for uid ${r.target.lifecycleUid}`);
-  await assertCurrentManagerRegistration(r, args, "prepare-retirement");
+  await assertCurrentManagerRegistration(r, r.serveEpoch, args, "manager prepare-retirement");
   return r;
 }
 
@@ -144,7 +169,7 @@ async function authorizeRemoteManagedAgentRuntime(
   }
   if (!scope.includes("supervise"))
     throw new EpEnvelopeError("permission-denied", `${what} needs scope "supervise"; spawn/admin do not imply it`);
-  await assertCurrentManagerRegistration(r, args, what);
+  await assertCurrentManagerRegistration(r, r.serveEpoch, args, what);
   return { owner: args.owner, instanceId: r.instanceId, actor: r.actor, target: { ...r.target } };
 }
 

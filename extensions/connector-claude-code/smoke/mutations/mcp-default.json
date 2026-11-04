@@ -1,0 +1,68 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/mcp-default.smoke.ts"
+  ],
+  "guard": "Native discovery defaults, explicit and carried isolation, selected-profile refs and narrow environment forwarding",
+  "command": "pnpm smoke:claude-mcp-default",
+  "why": [
+    "The source adapter is imported directly and assertions fail fast. A named expected red intentionally omits the success-only final line."
+  ],
+  "mutations": [
+    {
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "if (exclusive) args.push(\"--strict-mcp-config\");",
+      "replace": "args.push(\"--strict-mcp-config\");",
+      "expectRed": "default launch retains native MCP discovery",
+      "name": "restore unconditional strict native exclusion"
+    },
+    {
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "const exclusive = opts.mcpServersExclusive === true || opts.carried !== undefined;",
+      "replace": "const exclusive = opts.carried !== undefined;",
+      "expectRed": "an explicit empty selection isolates native MCP sources",
+      "name": "ignore an explicit sharing selection"
+    },
+    {
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "const exclusive = opts.mcpServersExclusive === true || opts.carried !== undefined;",
+      "replace": "const exclusive = opts.mcpServersExclusive === true;",
+      "expectRed": "carried private homes remain isolated from native MCP sources",
+      "name": "ignore carried-home isolation"
+    },
+    {
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "const nativeEnvKeys = exclusive ? [] : claudeUserMcpEnvKeys();",
+      "replace": "const nativeEnvKeys: string[] = [];",
+      "expectRed": "current user MCP references receive only their declared environment names",
+      "name": "drop native user environment references"
+    },
+    {
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS]",
+      "replace": "mcpKeys: Object.keys(process.env)",
+      "expectRed": "current user MCP references receive only their declared environment names",
+      "name": "forward the entire parent environment"
+    },
+    {
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "const nativeEnvKeys = exclusive ? [] : claudeUserMcpEnvKeys();",
+      "replace": "const nativeEnvKeys = claudeUserMcpEnvKeys();",
+      "expectRed": "an exclusive selection does not forward native user MCP secrets",
+      "name": "import native user secrets into an exclusive launch"
+    },
+    {
+      "name": "ignore selected Claude config directory",
+      "file": "extensions/connector-claude-code/src/user-mcp.ts",
+      "find": "join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), \".claude.json\")",
+      "replace": "join(homedir(), \".claude.json\")",
+      "expectRed": "current user MCP references receive only their declared environment names"
+    },
+    {
+      "name": "drop the native connected-account opt-out",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "[\"ENABLE_CLAUDEAI_MCP_SERVERS\", \"ENABLE_TOOL_SEARCH\", \"MCP_TIMEOUT\", \"MCP_CONNECTION_NONBLOCKING\"] as const",
+      "replace": "[\"ENABLE_TOOL_SEARCH\", \"MCP_TIMEOUT\", \"MCP_CONNECTION_NONBLOCKING\"] as const",
+      "expectRed": "native MCP switch ENABLE_CLAUDEAI_MCP_SERVERS keeps its explicit value"
+    }
+  ]
+}

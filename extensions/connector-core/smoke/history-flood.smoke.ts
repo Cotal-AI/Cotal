@@ -9,10 +9,9 @@
  * one real work order (a DMed file-write) never executed. The live E2E suite could not see it:
  * its mesh is seconds old, so there is no history to replay.
  *
- * The rule this suite grades: historical channel ambient is PULL-ONLY — excluded from automatic
- * delivery and from the wake count, still recallable via the pull lane. Directed traffic is
- * exempt: a historical @mention and a historical DM stay automatic, because mail addressed to
- * you is never noise.
+ * The rule this suite grades: all historical channel traffic is PULL-ONLY — excluded from
+ * automatic delivery and the wake count, still recallable via the pull lane. Mentions cannot
+ * promote replay into new work. Direct mail retains its existing delivery behavior.
  *
  * WHAT WOULD MAKE THIS THE WRONG EXPERIMENT, stated so a later reader can check it:
  *
@@ -24,7 +23,7 @@
  *     coin. Cell 4 is that inverse control.
  *   • If it only used channel traffic, a regression that classified historical DMs as pull-only
  *     (mail lost to the noise rule) would be invisible. Cell 5 pins the DM exemption; cell 2
- *     pins the mention exemption.
+ *     pins the historical-mention exclusion.
  *   • The cells drive MeshAgent's own "message" event path, the same entry the endpoint uses —
  *     not a re-implementation of the classifier.
  *
@@ -96,14 +95,15 @@ try {
     check("...and the full buffer holds backfill + order", agent.inboxCount() === 120, agent.inboxCount());
   }
 
-  // ── 2) A HISTORICAL @MENTION IS DIRECTED CATCH-UP, not noise ──────────────────────────────────
+  // ── 2) A HISTORICAL @MENTION IS CONTEXT, not a new work request ───────────────────────────────
   {
     const agent = new MeshAgent(cfg);
     agent.on("error", () => {});
     agent.ep.emit("message", channelMsg("h-plain", "ambient history"), noop(), historicalChannel);
     agent.ep.emit("message", channelMsg("h-mention", "@otto please rule on this", true), noop(), historicalChannel);
     const auto = agent.peekInbox("automatic");
-    check("the historical mention stays automatic while plain history does not", auto.length === 1 && auto[0].id === "h-mention", auto.map((i) => i.id));
+    check("historical mentions and ambient both stay pull-only", auto.length === 0 && agent.peekInbox("pull-only").length === 2, auto.map((i) => i.id));
+    check("a historical mention cannot count as a wake", agent.pendingWake() === 0 && agent.directedPendingCount() === 0);
   }
 
   // ── 3) POSSESSION: the pull lane serves the backfill on request, marked historical ────────────

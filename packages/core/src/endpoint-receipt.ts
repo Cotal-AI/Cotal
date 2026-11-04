@@ -31,6 +31,8 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
+import { isCasLoss } from "./endpoint-records.js";
 import { epfSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
 import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, signArtifact, type AnchorResolver, type SignerAnchor } from "./endpoint-signing.js";
@@ -345,10 +347,10 @@ export function parseReceipt(raw: unknown, ref: ReceiptRef, space: string): Rece
   if (cal.id !== `${ref.caller.owner}.${ref.caller.actor}` || cal.lifecycleUid !== ref.caller.uid)
     garbled(`the receipt's caller evidence (${String(cal.id)}/${String(cal.lifecycleUid)}) does not name its subject's caller (${ref.caller.owner}.${ref.caller.actor}/${ref.caller.uid}); a cross-caller receipt never attests`);
   const sd = o.schemaDigests as Record<string, unknown>;
-  if (!isRec(sd) || !isContractDigest(sd.input as string) || !isContractDigest(sd.output as string))
+  if (!isRec(sd) || !isContractDigest(sd.input) || !isContractDigest(sd.output))
     garbled("the receipt schemaDigests are not sha256 digests");
-  if (!isContractDigest(o.argsDigest as string)) garbled("the receipt argsDigest is not a sha256 digest");
-  if (o.resultDigest !== undefined && !isContractDigest(o.resultDigest as string)) garbled("the receipt resultDigest is not a sha256 digest");
+  if (!isContractDigest(o.argsDigest)) garbled("the receipt argsDigest is not a sha256 digest");
+  if (o.resultDigest !== undefined && !isContractDigest(o.resultDigest)) garbled("the receipt resultDigest is not a sha256 digest");
   const out = o.outcome as Record<string, unknown>;
   if (!isRec(out) || typeof out.ok !== "boolean" || (out.code !== undefined && typeof out.code !== "string"))
     garbled("the receipt outcome is not { ok, code? }");
@@ -385,8 +387,7 @@ export async function publishReceipt(
     await js.publish(subject, new TextEncoder().encode(canonicalJson(candidate)), { headers: h });
     return { won: true, receipt: candidate };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    if (!isCasLoss(e)) throw e;
     const winner = await readReceipt(ctx, refSnap);
     if (winner === undefined)
       throw new EpEnvelopeError("internal", `the receipt CAS for ${subject} was lost but no winning receipt is readable (SPEC 13.4)`);
@@ -403,17 +404,6 @@ export async function readReceipt(ctx: ReceiptStoreContext, ref: ReceiptRef): Pr
   const subject = receiptSubject(ctx.space, refSnap);
   const raw = await readLastFact(jsm, epfStreamName(ctx.space), subject);
   return raw === undefined ? undefined : parseReceipt(raw, refSnap, ctx.space);
-}
-
-/** Race the anchor resolution against the verification budget: a stuck registry is a bounded
- *  `unavailable` refusal, never a hung verification. Races `Promise.resolve(p)` unconditionally
- *  (a non-native thenable must not bypass the deadline). */
-async function withVerifyBudget<T>(p: Promise<T> | T, budgetMs: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; receipt verification is bounded and fails closed (SPEC 13.10)`)), budgetMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
 }
 
 function assertBudget(v: number | undefined): number {
@@ -436,9 +426,9 @@ function snapshotRawReceipt(raw: unknown): unknown {
  *  covering the attested endpoint, window at the receipt's `ts`, bounded), then verify the D28
  *  signature over the detached snapshot. */
 async function verifySignatureCore(rawSnapshot: unknown, receipt: Receipt, resolveAnchor: AnchorResolver, budget: number): Promise<SignerAnchor> {
-  const anchor = await withVerifyBudget(
-    resolveAnchorForUse(resolveAnchor, { keyId: receipt.signer.keyId, role: "receipts", at: receipt.ts }),
-    budget, `the anchor resolution for receipt signer "${receipt.signer.keyId}"`);
+  const anchor = await withDeadline(
+    Promise.resolve(resolveAnchorForUse(resolveAnchor, { keyId: receipt.signer.keyId, role: "receipts", at: receipt.ts })), budget,
+    () => new EpEnvelopeError("unavailable", `the anchor resolution for receipt signer "${receipt.signer.keyId}" did not answer within ${budget}ms; receipt verification is bounded and fails closed (SPEC 13.10)`));
   assertAnchorScopeCovers(anchor, "receipts", receipt.endpoint, "the receipt's attested endpoint");
   verifyArtifactSignature(rawSnapshot as Record<string, unknown>, anchor); // the DETACHED snapshot the parse read, not the live caller-owned raw
   return anchor;

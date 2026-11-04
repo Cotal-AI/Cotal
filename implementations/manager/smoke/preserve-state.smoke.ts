@@ -409,6 +409,31 @@ registry.register(preserveAuth as unknown as AuthProvider);
   manager.abortPreservation("replacement");
 }
 
+// #3241: the plan a caller receives shares nothing with the live seat. An in-process caller that
+// edits the plan and then abandons the attempt leaves the seat's retained launch as it was, so the
+// next cut records the seat as it runs.
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
+  map.set("worker", managed("worker", "open_principal_alias", fakeHandle("worker"), "persona"));
+  const first = await manager.preparePreservation("alias-1");
+  const handed = first.inventory.agents[0]?.launch;
+  check("the abandoned plan carries the seat", first.ok && handed !== undefined, first);
+  if (handed) {
+    for (const list of [handed.subscribe, handed.allowSubscribe, handed.allowPublish ?? [], handed.capabilities ?? []]) (list as string[]).push("ops");
+    (handed.source as { configSha256: string }).configSha256 = "0".repeat(64);
+  }
+  manager.abortPreservation("alias-1");
+  const next = await manager.preparePreservation("alias-2");
+  const recorded = next.inventory.agents[0]?.launch;
+  check("a caller's edit to an abandoned plan does not widen the seat's lists in the next cut",
+    JSON.stringify([recorded?.subscribe, recorded?.allowSubscribe, recorded?.allowPublish, recorded?.capabilities]) === JSON.stringify([["general"], ["general"], [], ["spawn"]]),
+    JSON.stringify(recorded));
+  check("...nor change its launch source, so the next cut still records the seat",
+    next.ok && next.failures.length === 0 && recorded?.source.configSha256 === digest(personaPath), JSON.stringify({ failures: next.failures, source: recorded?.source }));
+  manager.abortPreservation("alias-2");
+}
+
 // An accepted pre-fence destructive stop includes its detached deprovision in the drain. The
 // preserved inventory is taken only after that operation has fully completed.
 {
@@ -454,6 +479,12 @@ registry.register(preserveAuth as unknown as AuthProvider);
   check("partial stop names the failed child", result.failures.length === 1 && result.failures[0]?.name === "bad", result.failures);
   check("partial stop retains the full pre-stop inventory", result.inventory.agents.length === 2, result.inventory.agents);
   check("partial stop performs no deprovision", deprovisions === 0, deprovisions);
+  // Shutdown after the failed cut reports the refused hard stop once and does not wait for that
+  // seat's exit: the stop never reached the child, so the wait could only time out and restate it.
+  let shutdown: string | undefined;
+  try { await manager.stop(); } catch (e) { shutdown = (e as Error).message; }
+  check("shutdown after a partial cut reports a refused stop once, with no exit wait",
+    shutdown === "manager preservation shutdown incomplete: bad: stop failed: simulated stop failure", shutdown);
 }
 
 // A runtime without an authoritative wait contract is never accepted as a completed cut, even if

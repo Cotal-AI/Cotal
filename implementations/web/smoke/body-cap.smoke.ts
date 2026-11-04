@@ -1,7 +1,7 @@
 /**
  * THE ONE WRITE ROUTE READ AS MUCH AS THE CALLER CARED TO SEND.
  *
- * `POST /api/channel/delete` is the dashboard's only write path. It read its body by pushing every
+ * `POST /api/channel/delete` was the dashboard's only write path. It read its body by pushing every
  * chunk into an array and concatenating, with no cap and no look at `content-length`, so the
  * ceiling on a request was the process heap.
  *
@@ -36,6 +36,8 @@
  * Section 9: the GATE's refusal closes an announced upload too, so a stranger with no session
  * cannot hold the dashboard reading one (#2024); a bodyless refusal keeps its connection.
  *
+ * Section 10: `POST /api/send`, the second body route, reads its body under the same cap.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-body-cap
  */
 import { spawn } from "node:child_process";
@@ -43,9 +45,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
-import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams, CotalEndpoint, newIdentity } from "@cotal-ai/core";
-import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { bootWeb } from "./boot-web.js";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -90,28 +92,13 @@ try {
   await seed.stop();
 
   let log = "";
-  let launchUrl: string | undefined;
-  const WEB_PORT = await onFreePort(async (port) => {
-    webChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-    const taken = `Port ${port} is in use`;
-    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(250);
-    }
-    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
-    return port;
+  const web = await bootWeb({
+    server: SERVER, space: SPACE,
+    onSpawn: (child) => { webChild = child; }, onOutput: (text) => { log += text; },
   });
-  const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
-  const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
-  const authed = { cookie: `cotal_web_session=${session}` };
-  const ready = session === undefined ? undefined
-    : await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed }).catch(() => undefined);
-  const served = exchange?.status === 302 && session !== undefined && ready?.status === 200;
+  const WEB_PORT = web.port;
+  const authed = { cookie: web.cookie ?? "" };
+  const served = web.served;
 
   const post = async (payload: string): Promise<{ status: number; text: string }> => {
     const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channel/delete`, {
@@ -551,6 +538,37 @@ try {
       && stillReusable && twoResp.includes("401"),
       { first: first401.slice(0, 160), second: twoResp.slice(0, 160) });
     keep.destroy();
+  }
+
+  console.log("10. the send route reads a body under the same cap");
+  {
+    // `POST /api/send` is the second body route. It must be let through the zero-byte guard, and the
+    // cap must stay its ceiling: the refusal here is the 8 KiB limit, never the guard's "takes no
+    // request body" and never a 400 about a body it did not finish reading.
+    const SEND_HEAD = "POST /api/send HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + COOKIE + "Connection: close\r\n";
+    const payload = JSON.stringify({ kind: "msg", channel: "capsend", text: "a".repeat(CAP - 200) });
+    ok("10.0 CONTROL: the post below really is under the cap and close to it",
+      Buffer.byteLength(payload) < CAP && Buffer.byteLength(payload) > CAP - 300, Buffer.byteLength(payload));
+    const r = await fetch(`http://127.0.0.1:${WEB_PORT}/api/send`, {
+      method: "POST", headers: { ...authed, "content-type": "application/json" }, body: payload,
+    });
+    const text = await r.text();
+    ok("10.1 a post just under the cap is read and sent, so the send route is one of the routes that take a body",
+      r.status === 200 && text.includes('"ok":true'), { status: r.status, text: text.slice(0, 200) });
+
+    const declared = await raw(SEND_HEAD + `Content-Length: ${20_000_000}\r\n\r\n`, Buffer.alloc(0));
+    ok("10.2 a post ANNOUNCED over the cap is refused with 413 on the announcement, naming the 8 KiB limit",
+      declared.status.includes("413") && declared.text.includes("8192 byte limit for this route"),
+      { status: declared.status, text: declared.text.slice(0, 200) });
+
+    const beforeChunked = log.length;
+    const chunked = await raw(SEND_HEAD.replace("Connection: close\r\n", "Connection: close\r\nTransfer-Encoding: chunked\r\n") + "\r\n",
+      Buffer.alloc(CAP * 8, 0x61), asChunks);
+    await wait(200);
+    const chunkedLog = log.slice(beforeChunked);
+    ok("10.3 a post with NO declared length is refused on the read loop as a size, never as a body it read and disliked",
+      /8192 byte limit/.test(chunkedLog) && !/must be a JSON object/.test(chunkedLog) && !chunked.status.includes("400"),
+      { status: chunked.status, operatorLine: chunkedLog.slice(-240) });
   }
 } finally {
   webChild?.kill("SIGKILL");

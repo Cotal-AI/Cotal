@@ -1,7 +1,9 @@
 # @cotal-ai/pi
 
 Cotal as an extension for the operator's own [Pi coding agent](https://github.com/earendil-works/pi).
-The package does not bundle Pi.
+The package does not bundle Pi. It declares `@earendil-works/pi-coding-agent` as an optional peer
+and loads it from the Pi host that runs the extension, so `cotal` can register the connector
+without Pi installed.
 
 ## Requirements
 
@@ -63,8 +65,22 @@ permission/sandbox extensions still run. Replies remain deliberate model actions
 Quiet-channel ambient is never included in automatic or continuation batches. It remains buffered
 until `cotal_inbox` explicitly surfaces and clears it; quiet `@mention`s remain automatic.
 
-Pi resume, model variants, MCP sharing, and raw launch options are not implemented and fail loudly.
+Model variants, MCP sharing, and raw launch options are not implemented and fail loudly. Resume
+forks the named Pi session.
 Persona files and `--model` are supported; an explicit spawn model wins over the persona file.
+
+## Project trust
+
+A supervised Pi seat has nobody at its terminal to answer **Trust project folder?**. The connector
+reads Pi's own saved trust decision. A saved approval or denial remains in force. A denial prints
+that project resources were skipped and how to review the decision. When project
+resources exist and Pi has no saved decision, that seat runs untrusted for this session only: Pi
+skips project `.pi` settings and resources and ancestor `.agents/skills`, and Cotal does not change
+Pi's trust store. The seat prints the directory and tells the operator to run `pi` there once in a
+foreground terminal to review and save a decision.
+
+A foreground launch keeps Pi's native interactive prompt. If startup stops before Pi creates its
+session, the manager's failure names **Trust project folder?** and the launch directory.
 
 ## Credits
 

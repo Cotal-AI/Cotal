@@ -24,19 +24,28 @@
  * today.
  *
  * Capability labels (describe/grant vocabulary, one per tier class):
+ *   manager.vitals read host CPU, memory and filesystem capacity on this exact Manager
  *   manager.read     status / ps / inspect / models / list-personas / show-persona
  *   manager.spawn    spawn / resolve-cwd / resolve-agent   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
- *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
+ *   manager.persona  definePersona / removePersona         (privileged-grade; ownership-checked)
+ *   manager.chat     chat-session-open / chat-session-retire (operator instruments only; static managers)
  *   manager.admin    purge / launch / resume family / transcript-receive  (operator instruments only)
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
  *                    run-status / run-ps ride manager.read
  */
+import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
+import type { ManagerVitals } from "./vitals.js";
 import {
+  buildClusterArtifacts,
+  buildClusterDocument,
   serviceContractTable,
   singleDocumentClosure,
+  TURN_INPUT_SCHEMA,
+  TURN_OUTPUT_SCHEMA,
   VOID_SCHEMA,
+  type ClusterDocument,
   type CompiledContract,
   type ContractClosureManifest,
   type EpAuthzMode,
@@ -53,7 +62,89 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 
 // ---- output/input schemas (closed unless the payload is genuinely open) ------------------------
 
-/** The read-only manager-health output. Manager-LEVEL — per-agent rows are `ps`/`inspect`. */
+const STOP_IMPACT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["agentScope", "observedAt", "maintenance", "resumeRequired", "stopping", "lifecycleInFlight", "reservedLaunches", "retirementsPending", "deprovisioningInFlight", "staticReconciliationInFlight", "agents"],
+  properties: {
+    agentScope: { enum: ["manager", "owner-filtered"] },
+    observedAt: { type: "string" },
+    maintenance: { enum: ["active", "preserving", "preserved"] },
+    resumeRequired: { type: "boolean" },
+    stopping: { type: "boolean" },
+    lifecycleInFlight: { type: "integer", minimum: 0 },
+    reservedLaunches: { type: "integer", minimum: 0 },
+    retirementsPending: { type: "integer", minimum: 0 },
+    deprovisioningInFlight: { type: "integer", minimum: 0 },
+    staticReconciliationInFlight: { type: "integer", minimum: 0 },
+    agents: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "id", "lifecycleUid", "mode", "defaultAction", "withAgentsAction"],
+        properties: {
+          name: { type: "string" },
+          id: { type: "string" },
+          lifecycleUid: { type: "string" },
+          mode: { type: "string" },
+          defaultAction: { enum: ["release-custody", "stop", "stop-retaining-state"] },
+          withAgentsAction: { enum: ["stop", "stop-retaining-state"] },
+        },
+      },
+    },
+    preservation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["attemptId", "inventorySha256"],
+      properties: {
+        attemptId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+        inventorySha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+      },
+    },
+  },
+} as const;
+
+const VITALS_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["sampledAt", "cpu", "memory", "filesystems"],
+  properties: {
+    sampledAt: { type: "string", format: "date-time" },
+    cpu: {
+      type: "object", additionalProperties: false,
+      required: ["logicalCount", "load1", "load5", "load15"],
+      properties: {
+        logicalCount: { type: "integer", minimum: 1 },
+        load1: { type: "number", minimum: 0 },
+        load5: { type: "number", minimum: 0 },
+        load15: { type: "number", minimum: 0 },
+      },
+    },
+    memory: {
+      type: "object", additionalProperties: false,
+      required: ["totalBytes", "availableBytes"],
+      properties: {
+        totalBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        availableBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      },
+    },
+    filesystems: {
+      type: "array", maxItems: 128,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["mount", "totalBytes", "freeBytes"],
+        properties: {
+          mount: { type: "string", minLength: 1, maxLength: 1024, pattern: "^[^\\u0000-\\u001f\\u007f-\\u009f]+$" },
+          totalBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          freeBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        },
+      },
+    },
+  },
+} as const;
+
+/** Read-only manager health and caller-scoped seat policy. Neither reserves or authorizes a stop. */
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -61,6 +152,12 @@ const STATUS_OUTPUT_SCHEMA = {
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
+    /** Answering Manager's host name. Advisory display metadata, never routing authority. */
+    host: { type: "string" },
+    /** Running @cotal-ai/manager package version. Optional for older status payloads. */
+    version: { type: "string" },
+    /** Native per-process incarnation, not inferred from a PID or a logical instance name. */
+    lifecycleUid: { type: "string" },
     execution: { enum: ["runtime", "none"] },
     /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
@@ -84,15 +181,20 @@ const STATUS_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["agent", "state", "binaries"],
+        required: ["agent", "state", "binaries", "eventPlane"],
         properties: {
           agent: { type: "string" },
           state: { enum: ["available", "unavailable"] },
           binaries: { type: "object", additionalProperties: { type: "string" } },
+          /** Whether this connector publishes the AG-UI event plane. Required and explicit: a
+           *  client must never read an absent fact as true. */
+          eventPlane: { type: "boolean" },
           reason: { type: "string" },
         },
       },
     },
+    /** Caller-scoped native seat policy as observed now, not a stop reservation or cleanup receipt. */
+    stopImpact: STOP_IMPACT_SCHEMA,
     /** Current startup/post-adoption static lifecycle convergence state. */
     staticReconciliation: {
       type: "object",
@@ -144,6 +246,12 @@ const STATUS_OUTPUT_SCHEMA = {
 /** The typed shape a `status` invocation returns (the compiled output contract validates it). */
 export interface ManagerStatus {
   instanceId: string;
+  /** Answering Manager's host name. Advisory only; older payloads may omit it. */
+  host?: string;
+  /** Running @cotal-ai/manager package version. Older payloads may omit it. */
+  version?: string;
+  /** Older managers can omit this process-incarnation coordinate. */
+  lifecycleUid?: string;
   execution: "runtime" | "none";
   runtime: string;
   custody: "legacy" | "custodied" | "none";
@@ -154,6 +262,32 @@ export interface ManagerStatus {
   connectors: ManagerConnectorStatus[];
   classSpawn: boolean;
   staticReconciliation: ManagerStaticReconciliationStatus;
+  /** Absent on older managers. Its presence grants no stop authority. */
+  stopImpact?: ManagerStopImpact;
+}
+
+export interface ManagerStopImpact {
+  agentScope: "manager" | "owner-filtered";
+  observedAt: string;
+  maintenance: "active" | "preserving" | "preserved";
+  resumeRequired: boolean;
+  stopping: boolean;
+  lifecycleInFlight: number;
+  reservedLaunches: number;
+  retirementsPending: number;
+  deprovisioningInFlight: number;
+  staticReconciliationInFlight: number;
+  agents: Array<{
+    name: string;
+    id: string;
+    lifecycleUid: string;
+    mode: string;
+    defaultAction: "release-custody" | "stop" | "stop-retaining-state";
+    withAgentsAction: "stop" | "stop-retaining-state";
+  }>;
+  /** Present only while maintenance is not `active` and an inventory exists: the attempt and the
+   *  inventory digest a preserved-exit stop must name. Absent on revision 32 and older. */
+  preservation?: { attemptId: string; inventorySha256: string };
 }
 
 export interface ManagerStaticReconciliationSweep {
@@ -190,6 +324,7 @@ export interface ManagerConnectorStatus {
   agent: string;
   state: "available" | "unavailable";
   binaries: Record<string, string>;
+  eventPlane: boolean;
   reason?: string;
 }
 
@@ -212,6 +347,15 @@ const AGENT_ROW_SCHEMA = {
     status: { type: "string" },
     uptimeMs: { type: "integer", minimum: 0 },
     mesh: { type: "string" },
+    // A bounded launch wait elapsed without the exact incarnation joining. Process status stays
+    // separate, and a later observed join clears this optional diagnostic.
+    joinHealth: {
+      type: "object", additionalProperties: false, required: ["state", "reason"],
+      properties: {
+        state: { type: "string", const: "degraded" },
+        reason: { type: "string" },
+      },
+    },
     // The roster's harness-reported condition beside `mesh` (SPEC §6), its four fields projected. Optional:
     // absent when the connector reported none, and on rows from managers that predate it.
     condition: {
@@ -233,6 +377,12 @@ const AGENT_ROW_SCHEMA = {
     // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
     // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
     meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
+    // Optional proof that the name-matched roster record also matches this managed principal
+    // and lifecycle UID. False is not proof the agent is absent; older managers omit the field.
+    presenceIdentityVerified: { type: "boolean" },
+    // Snapshot time of a current, identity-verified manager presence read, not the seat's
+    // unvalidated heartbeat timestamp. Absent when the view is stale or identity differs.
+    presenceObservedAt: { type: "integer", minimum: 0 },
     // Epoch ms of the seat's last presence heartbeat, present only when `mesh` is `offline` and
     // `meshView` is `current`: when the offline verdict began (#1208). Optional so an older
     // manager's rows still validate.
@@ -303,15 +453,24 @@ const SLOT_ROW_SCHEMA = {
   },
 } as const;
 const SLOTS_OUTPUT_SCHEMA = { type: "array", items: SLOT_ROW_SCHEMA } as const;
+const SLOTS_INPUT_SCHEMA = {
+  anyOf: [
+    { type: "null" },
+    { type: "object", additionalProperties: false, properties: {
+      names: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", pattern: "^[A-Za-z0-9_-]+$", maxLength: 200 } },
+      includeRetired: { type: "boolean" },
+    } },
+  ],
+} as const;
 
 const INSPECT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name"],
   properties: { name: { type: "string", minLength: 1 } },
 } as const;
 
-/** An optional `spawn` field that is present must say something: the persona fills an omitted
- *  field, so a blank one read as omitted would launch on a value the caller did not ask for. A
- *  fresh object per field, because the canonical serializer refuses a shared reference as circular. */
+/** Optional persona and spawn strings must be nonblank when present. Omission can inherit a value;
+ *  a blank string must not silently select that value. A fresh object per field is needed because
+ *  the canonical serializer refuses a shared reference as circular. */
 const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
 
 /** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the
@@ -339,10 +498,46 @@ const SPAWN_INPUT_SCHEMA = {
     events: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
+    // An inline persona: the helper's definition, carried here instead of read from the catalog.
+    // Its `prompt` is the persona body; the `prompt` above stays the first-turn kickoff.
+    persona: {
+      type: "object",
+      additionalProperties: false,
+      required: ["prompt"],
+      properties: {
+        prompt: nonBlank(),
+        role: nonBlank(),
+        model: nonBlank(),
+        variant: nonBlank(),
+        description: nonBlank(),
+        subscribe: { type: "array", items: { type: "string" } },
+        allowSubscribe: { type: "array", items: { type: "string" } },
+        allowPublish: { type: "array", items: { type: "string" } },
+        capabilities: { type: "array", items: { type: "string" } },
+        save: { type: "boolean" },
+      },
+    },
+    // The workflow run whose driver sends this spawn, so a static manager that does not host the
+    // run can read the run's admission and bound the helper by it (SPEC 14.8).
+    runId: nonBlank(),
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
+    // Channels the new seat joins on top of its persona's read set (the peer door's `join`).
+    join: { type: "array", items: { type: "string" } },
+    // The caller's own read/post ACL. Used only when the persona file names no channel field, so
+    // a helper spawned from a persona that says nothing about channels is scoped to its spawner.
+    callerAcl: {
+      type: "object",
+      additionalProperties: false,
+      required: ["allowSubscribe", "allowPublish"],
+      properties: {
+        allowSubscribe: { type: "array", items: { type: "string" } },
+        allowPublish: { type: "array", items: { type: "string" } },
+      },
+    },
     shareTools: { type: "array", items: { type: "string" } },
+    runtime: nonBlank(),
     supervise: {
       type: "object",
       additionalProperties: false,
@@ -350,6 +545,15 @@ const SPAWN_INPUT_SCHEMA = {
       properties: {
         restarts: { type: "integer", minimum: 1 },
         windowMs: { type: "integer", minimum: 1 },
+      },
+    },
+    // The seat takes its prompt as one relayed turn and is stopped when that turn ends. Omitted,
+    // `deadlineMs` is the manager's default; -1 means no deadline.
+    once: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        deadlineMs: { anyOf: [{ const: -1 }, { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }] },
       },
     },
   },
@@ -469,64 +673,46 @@ const INPUT_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
 } as const;
 
-/** `turn` (workflow runs, cotal-lang §5.3): wake the TARGET seat for one turn on behalf of a
- *  workflow run. The manager relays and stays run-ignorant: `payload` is an opaque bounded string
- *  the seat pulls back verbatim through `turn-pending` — its shape is the runtime↔connector
- *  contract, never this endpoint's. A deadline bounds the whole turn and is REQUIRED at the
- *  wire (the caller defaults it; an unbounded turn goal could never be settled by a successor
- *  incarnation, which refuses to settle a goal with no readiness deadline). It is `deadlineMs`,
- *  counted from the acceptance, or `deadlineAt`, an instant the caller already holds (an ask's
- *  pause): the hold denies at that same instant, and one already past is refused
- *  `deadline-exceeded`. */
-const TURN_INPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["payload"],
-  oneOf: [{ required: ["deadlineMs"] }, { required: ["deadlineAt"] }],
-  properties: {
-    payload: { type: "string", minLength: 1, maxLength: 65536 },
-    deadlineMs: { type: "integer", minimum: 1 },
-    deadlineAt: { type: "integer", minimum: 1 },
-    // The goal-chain link when this turn honors a handoff (lang §5.3): the previous turn's goal
-    // id, mirrored into this goal's terminal data so the chain is readable from the facts alone.
-    handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
-  },
-} as const;
-/** `turn` acceptance: the SEAT the goal was pinned to (its addressing triple), the goal
- *  coordinates, the absolute deadline the manager armed, and the executor coordinate — the same
- *  floor shape `spawn` serves, because a follower recovers the same way. */
-const TURN_OUTPUT_SCHEMA = {
+/** `turn-participate`: a native personal connection opts into the existing self turn relay.
+ * The caller triple is the requested lifecycle. The manager and its issuing host derive every
+ * authority fact and return a finite exact lease. This creates no managed seat and no custody. */
+const TURN_PARTICIPATE_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "deadlineAt", "executor"],
+  required: ["owner", "actor", "lifecycleUid", "name", "managerInstanceId", "expiresAt"],
   properties: {
-    name: { type: "string" },
-    owner: { type: "string" },
-    actor: { type: "string" },
-    uid: { type: "string" },
-    goalId: { type: "string" },
-    fingerprint: { type: "string" },
-    deadlineAt: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object",
-      additionalProperties: false,
-      required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
+    owner: { type: "string", minLength: 1 },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+    name: { type: "string", minLength: 1 },
+    managerInstanceId: { type: "string", minLength: 1 },
+    expiresAt: { type: "integer", minimum: 1 },
   },
 } as const;
+
 /** `turn-pending`: the SEAT's own pull of the turns accepted against it and not yet terminal,
- *  oldest first. Self-targeted, so the caller triple IS the query; there is no other input. */
+ *  oldest first. Self-targeted, so the caller triple IS the query; there is no other input.
+ *  `notices` says this manager publishes a turn notice whenever the answer changes (SPEC 14.3),
+ *  so the seat pulls on notices instead of on a timer. */
 const TURN_PENDING_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["turns"],
   properties: {
+    notices: { const: true },
+    // Only for a once seat this manager does not hold whose task has ended: the seat ends itself.
+    // It comes with an empty `turns`, and an empty `turns` alone never means stop.
+    stop: { const: true },
     turns: {
       type: "array",
       items: {
         type: "object", additionalProperties: false,
-        required: ["goalId", "payload", "acceptedAt", "deadlineAt"],
+        // `once` marks a once seat's task, which the seat hands to its harness at most once. Only
+        // that task may omit `deadlineAt`, and its absence means no expiry.
+        required: ["goalId", "payload", "acceptedAt"],
         properties: {
           goalId: { type: "string" },
           payload: { type: "string" },
           acceptedAt: { type: "integer", minimum: 0 },
           deadlineAt: { type: "integer", minimum: 1 },
+          once: { const: true },
         },
       },
     },
@@ -553,6 +739,14 @@ const TURN_YIELD_OUTPUT_SCHEMA = {
     goalId: { type: "string" },
     state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] },
   },
+} as const;
+/** `turn-unconfirmed`: a `once` seat reports that the handoff of its task to its harness was not
+ *  confirmed, so the task may or may not have reached the session. Nothing hands it over again: the
+ *  manager fails the task `delivery-unconfirmed` and stops the seat. Only for the once task pending
+ *  against the calling seat; the output is the terminal state committed, as `turn-yield` answers. */
+const TURN_UNCONFIRMED_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 } },
 } as const;
 /** `cancel` (SPEC 13.6 item 4): the reserved goal cancel, served for a turn this manager relays.
  *  Untargeted, because it names a goal rather than a seat: the goal ref derives from the
@@ -602,17 +796,81 @@ const PERSONA_INPUT_SCHEMA = {
   properties: {
     name: { type: "string", minLength: 1 },
     persona: { type: "string", minLength: 1 },
-    model: { type: "string" },
-    role: { type: "string" },
-    agent: { type: "string" },
+    model: nonBlank(),
+    role: nonBlank(),
+    agent: nonBlank(),
     subscribe: CHANNEL_LIST,
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
+    capabilities: { type: "array", items: { type: "string" } },
   },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "path"],
   properties: { name: { type: "string" }, path: { type: "string" } },
+} as const;
+/** Removal names a catalog filename stem, not a spawnable identity. It deliberately has no
+ *  64-character ceiling: invalid legacy entries are the ones a caller most needs to remove. The
+ *  alphabet still keeps the request inside `.cotal/agents` and excludes paths and `.md` suffixes. */
+const REMOVE_PERSONA_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string", pattern: "^[A-Za-z0-9_-]+$" } },
+} as const;
+const REMOVE_PERSONA_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string" } },
+} as const;
+
+/** A chat session's channel list: bounded, since every entry becomes broker permission rows. */
+const CHAT_CHANNEL_LIST = { type: "array", maxItems: 64, uniqueItems: true, items: { type: "string", minLength: 1 } } as const;
+/** An encoded curve public key, `X` and 55 base32 characters. */
+const CURVE_PUBLIC_KEY = { type: "string", pattern: "^X[A-Z2-7]{55}$" } as const;
+/** A static chat session's admission. The manager draws the alias and the identity; the caller
+ *  names the three lists a spawn takes (initial channels, read ceiling, post list) under the same
+ *  rules, a display label, a lifetime, and `sealTo`, the one-time curve key the credential is
+ *  sealed to. The leaf has no renewal, so `ttl` is capped at its 900-second life. */
+const CHAT_SESSION_OPEN_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["label", "ttl", "sealTo"],
+  properties: {
+    subscribe: CHAT_CHANNEL_LIST,
+    allowSubscribe: CHAT_CHANNEL_LIST,
+    allowPublish: CHAT_CHANNEL_LIST,
+    label: { type: "string", minLength: 1, maxLength: 128 },
+    ttl: { type: "integer", minimum: 1, maximum: 900 },
+    sealTo: CURVE_PUBLIC_KEY,
+  },
+} as const;
+/** `actor` is the session's nkey, its wire authority; `alias` is the routing-only slot name.
+ *  `expiresAt` is the leaf's expiry in epoch milliseconds. The credential is not here in the
+ *  clear: `sealed` (base64url) opens only with the private half of `sealTo`, from the one-time
+ *  `sealer` key, to a closed object binding the space, this manager instance and every field
+ *  above to the credential. */
+const CHAT_SESSION_OPEN_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["alias", "actor", "lifecycleUid", "expiresAt", "sealer", "sealed"],
+  properties: {
+    alias: { type: "string", pattern: "^chat_[a-z2-7]{26}$" },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+    expiresAt: { type: "integer", minimum: 0 },
+    sealer: CURVE_PUBLIC_KEY,
+    sealed: { type: "string", minLength: 1 },
+  },
+} as const;
+const CHAT_SESSION_RETIRE_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["alias", "actor", "lifecycleUid"],
+  properties: {
+    alias: { type: "string", pattern: "^chat_[a-z2-7]{26}$" },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+  },
+} as const;
+/** `failed` carries `reason`, starting `retirement pending:`. It is never a success. */
+const CHAT_SESSION_RETIRE_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["outcome"],
+  properties: {
+    outcome: { enum: ["retired", "alreadyRetired", "failed"] },
+    reason: { type: "string" },
+  },
 } as const;
 
 /** Catalog row for the mesh-side persona read (#402). Content only: name / role / model /
@@ -752,9 +1010,57 @@ const RUN_RESUME_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, timeout: { type: "string", minLength: 1 } },
 } as const;
+const RUN_SUBMISSION_INPUT_SCHEMA = { type: "object", additionalProperties: false, required: ["submissionId"],
+  properties: { submissionId: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9_-]+$" } } } as const;
+const RUN_SUBMISSION_OUTPUT_SCHEMA = { type: "object", additionalProperties: false,
+  required: ["submissionId", "state", "instanceId", "processEpoch"], properties: {
+    submissionId: { type: "string" }, state: { type: "string", enum: ["unbound", "binding-only", "admitted", "activated", "indeterminate"] },
+    instanceId: { type: "string" }, processEpoch: { type: "integer", minimum: 0 }, runId: { type: "string" },
+    fingerprint: { type: "string" }, callbackDeadline: { type: "integer", minimum: 1 }, reason: { type: "string" },
+  } } as const;
+const RUN_CANCEL_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "reason"],
+  properties: { runId: { type: "string", minLength: 1 }, reason: { type: "string", minLength: 1, maxLength: 512 } },
+} as const;
+const RUN_CANCEL_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "duplicate", "authority", "observed"],
+  properties: {
+    runId: { type: "string" }, duplicate: { type: ["boolean", "null"] },
+    authority: { enum: ["original", "owner-interactive", "admin"] },
+    revocation: { type: "object", additionalProperties: false, required: ["by", "reason", "revokedAt"],
+      properties: { by: { type: "string" }, reason: { type: "string" }, revokedAt: { type: "integer" } } },
+    observed: { type: "object", additionalProperties: false, required: ["processEpoch", "phase"], properties: {
+      processEpoch: { type: "integer", minimum: 0 },
+      phase: { enum: ["terminal", "launch-abandoned", "stop-requested", "stopped", "not-driven-here"] },
+      recordedState: { enum: ["running", "released", "completed", "failed"] },
+      runEpoch: { type: "integer", minimum: 0 }, fencingToken: { type: "integer", minimum: 0 }, holder: { type: "string" },
+      driveOutcome: { anyOf: [
+        { type: "object", additionalProperties: false, required: ["status", "steps"], properties: {
+          status: { const: "completed" }, steps: { type: "integer", minimum: 0 }, value: {},
+        } },
+        { type: "object", additionalProperties: false, required: ["status", "reason"], properties: {
+          status: { const: "released" }, reason: { type: "object", additionalProperties: false, required: ["name", "message"],
+            properties: { name: { type: "string" }, message: { type: "string" } } },
+        } },
+        { type: "object", additionalProperties: false, required: ["status", "error"], properties: {
+          status: { const: "failed" }, error: { type: "object", additionalProperties: false, required: ["name", "message"],
+            properties: { name: { type: "string" }, message: { type: "string" }, code: { type: "string" } } },
+        } },
+      ] },
+    } },
+  },
+} as const;
 const RUN_ID_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, endpoint: { type: "string", minLength: 1 } },
+} as const;
+/** With `journal`, the reply holds the journal rows from `offset` that fit in one reply. */
+const RUN_STATUS_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId"],
+  properties: {
+    ...RUN_ID_INPUT_SCHEMA.properties,
+    journal: { type: "object", additionalProperties: false, required: ["offset"], properties: { offset: { type: "integer", minimum: 0 } } },
+  },
 } as const;
 const RUN_ID_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
@@ -762,7 +1068,16 @@ const RUN_ID_OUTPUT_SCHEMA = {
 } as const;
 const RUN_PS_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
-  properties: { endpoint: { type: "string", minLength: 1 } },
+  properties: {
+    endpoint: { type: "string", minLength: 1 },
+    page: {
+      type: "object", additionalProperties: false,
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 16 },
+        cursor: { type: "string", minLength: 1, maxLength: 3072, pattern: "^[A-Za-z0-9_-]+$" },
+      },
+    },
+  },
 } as const;
 const RUN_ROW_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "endpoint"],
@@ -773,6 +1088,10 @@ const RUN_ROW_SCHEMA = {
     holder: { type: "string" },
     epoch: { type: "integer", minimum: 0 },
     journalHigh: { type: "integer", minimum: -1 },
+    failure: {
+      type: "object", additionalProperties: false, required: ["message"],
+      properties: { code: { type: "string", pattern: "^L[0-9]{4}$" }, message: { type: "string" } },
+    },
     startedAt: { type: "number" },
     programHash: { type: "string" },
     forkedFrom: {
@@ -786,12 +1105,57 @@ const RUN_ROW_SCHEMA = {
     revocationUnreadable: { type: "string" },
   },
 } as const;
-const RUN_PS_OUTPUT_SCHEMA = { type: "array", items: RUN_ROW_SCHEMA } as const;
+const RUN_PAGE_STATUS_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["v", "observedSpecRevision", "state", "holder", "epoch", "fencingToken", "journalHigh", "at", "statusRevision", "staleProjection"],
+  properties: {
+    v: { const: 1 }, observedSpecRevision: { type: "integer", minimum: 0 },
+    state: { type: "string", enum: ["running", "released", "completed", "failed"] },
+    holder: { type: "string" }, epoch: { type: "integer", minimum: 0 }, fencingToken: { type: "integer", minimum: 0 },
+    journalHigh: { type: "integer", minimum: -1 }, at: { type: "number", minimum: 0 },
+    statusRevision: { type: "integer", minimum: 1 }, staleProjection: { type: "boolean" },
+  },
+} as const;
+const RUN_PAGE_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["v", "semantics", "space", "endpointFilter", "responder", "cutSeq", "nextSeq", "items", "endObserved", "stopReason", "storageReads"],
+  properties: {
+    v: { const: 1 }, semantics: { const: "diagnostic" }, space: { type: "string" },
+    endpointFilter: { anyOf: [{ type: "null" }, { type: "string", minLength: 1, maxLength: 64 }] },
+    responder: {
+      type: "object", additionalProperties: false, required: ["instanceId", "epoch"],
+      properties: { instanceId: { type: "string", pattern: "^[a-z0-9]{26,32}$" }, epoch: { type: "integer", minimum: 0 } },
+    },
+    cutSeq: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 },
+    nextSeq: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    items: {
+      type: "array", maxItems: 16,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["endpoint", "runId", "specRevision", "startedAt", "observedAt", "status", "revocation"],
+        properties: {
+          endpoint: { type: "string", minLength: 1, maxLength: 64 },
+          runId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" },
+          specRevision: { type: "integer", minimum: 1 }, startedAt: { type: "number", minimum: 0 }, observedAt: { type: "number", minimum: 0 },
+          status: { anyOf: [{ type: "null" }, RUN_PAGE_STATUS_SCHEMA] }, revocation: { enum: ["present", "not-observed"] },
+        },
+      },
+    },
+    nextCursor: { type: "string", minLength: 1, maxLength: 3072, pattern: "^[A-Za-z0-9_-]+$" },
+    endObserved: { type: "boolean" }, stopReason: { enum: ["end", "rows", "bytes", "read-budget"] },
+    storageReads: { type: "integer", minimum: 0, maximum: 64 },
+  },
+} as const;
+const RUN_PS_OUTPUT_SCHEMA = { anyOf: [{ type: "array", items: RUN_ROW_SCHEMA }, RUN_PAGE_SCHEMA] } as const;
 const RUN_STATUS_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "endpoint", "spec", "journal"],
   properties: {
     runId: { type: "string" },
     endpoint: { type: "string" },
+    revoked: RUN_ROW_SCHEMA.properties.revoked,
+    revocationUnreadable: RUN_ROW_SCHEMA.properties.revocationUnreadable,
+    programHash: RUN_ROW_SCHEMA.properties.programHash,
+    programUnreadable: { type: "string" },
     // The record halves are core's own closed shapes; they ride here as the values the store holds.
     spec: { type: "object" },
     status: { type: "object" },
@@ -812,8 +1176,11 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           outcome: { type: "string" },
           status: { type: "string" },
           errorCode: { type: "string" },
+          errorMessage: { type: "string" },
           startedAt: { type: "number" },
           endedAt: { type: "number" },
+          winner: { type: "string" },
+          lostRace: { type: "string" },
           asks: { type: "string" },
           addressee: { type: "string" },
           deadlineAt: { type: "number" },
@@ -845,6 +1212,7 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    journalTotal: { type: "integer", minimum: 0 },
   },
 } as const;
 /** No `by`: the answerer is the caller as the manager knows them, decided from the authenticated
@@ -885,10 +1253,11 @@ interface CommandRow {
 }
 
 const ROWS: CommandRow[] = [
+  { name: "vitals", capability: "manager.vitals", input: VOID_SCHEMA, output: VITALS_OUTPUT_SCHEMA, targeted: false, handler: "vitals" },
   { name: "status", capability: "manager.read", input: VOID_SCHEMA, output: STATUS_OUTPUT_SCHEMA, targeted: false, handler: "status" },
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
-  { name: "slots", capability: "manager.read", input: VOID_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
+  { name: "slots", capability: "manager.read", input: SLOTS_INPUT_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
@@ -908,20 +1277,30 @@ const ROWS: CommandRow[] = [
   // attach holder can already do), and a seat pulling or yielding ITS OWN turns is `manager.self`
   // at mode self exactly as `stop` is — so no cred anywhere gains a capability it did not have.
   { name: "turn", capability: "manager.lifecycle", input: TURN_INPUT_SCHEMA, output: TURN_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "turn" },
+  { name: "turn-participate", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PARTICIPATE_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnParticipate" },
   { name: "turn-pending", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PENDING_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnPending" },
   { name: "turn-yield", capability: "manager.self", input: TURN_YIELD_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnYield" },
+  { name: "turn-unconfirmed", capability: "manager.self", input: TURN_UNCONFIRMED_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnUnconfirmed" },
   { name: "cancel", capability: "manager.lifecycle", input: CANCEL_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: false, handler: "cancel" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
   // The workflow-run family (SPEC 14.3): untargeted, a run is not an agent. The writes ride the
   // `manager.run` class (minted by the `run` capability and the privileged instrument); the reads
   // ride `manager.read` beside every other read.
   { name: "run-start", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runStart" },
+  { name: "run-start-keyed", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runStartKeyed" },
+  { name: "run-submission-status", capability: "manager.run", input: RUN_SUBMISSION_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runSubmissionStatus" },
   { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
+  { name: "run-cancel", capability: "manager.run", input: RUN_CANCEL_INPUT_SCHEMA, output: RUN_CANCEL_OUTPUT_SCHEMA, targeted: false, handler: "runCancel" },
   { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
-  { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
+  { name: "run-status", capability: "manager.read", input: RUN_STATUS_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
+  { name: "remove-persona", capability: "manager.persona", input: REMOVE_PERSONA_INPUT_SCHEMA, output: REMOVE_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "removePersona" },
+  // A static chat session's open and retire: untargeted, because the session does not exist before
+  // open and retire names it by its own slot. Minted into operator instruments only.
+  { name: "chat-session-open", capability: "manager.chat", input: CHAT_SESSION_OPEN_INPUT_SCHEMA, output: CHAT_SESSION_OPEN_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionOpen" },
+  { name: "chat-session-retire", capability: "manager.chat", input: CHAT_SESSION_RETIRE_INPUT_SCHEMA, output: CHAT_SESSION_RETIRE_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionRetire" },
   { name: "list-personas", capability: "manager.read", input: VOID_SCHEMA, output: LIST_PERSONAS_OUTPUT_SCHEMA, targeted: false, handler: "listPersonas" },
   { name: "show-persona", capability: "manager.read", input: SHOW_PERSONA_INPUT_SCHEMA, output: SHOW_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "showPersona" },
   { name: "purge", capability: "manager.admin", input: PURGE_INPUT_SCHEMA, output: PURGE_OUTPUT_SCHEMA, targeted: false, handler: "purge" },
@@ -1058,37 +1437,58 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  27 = manager `status` adds `lastSweep.error`: why a static reconciliation sweep stopped before
  *  it planned any alias. A changed output contract is a changed described surface even though the
- *  command name is unchanged. */
-export function managerClusterDocument(): {
-  urn: string;
-  revision: number;
-  attributes: never[];
-  events: never[];
-  commands: Array<{
-    name: string;
-    class: "ephemeral";
-    targeted: boolean;
-    modes?: EpAuthzMode[];
-    capability: string;
-    inputDigest: string;
-    outputDigest: string;
-  }>;
-} {
-  return {
-    urn: MANAGER_CLUSTER_URN,
-    revision: 27,
-    attributes: [],
-    events: [],
-    commands: ROWS.map((r) => ({
-      name: r.name,
-      class: "ephemeral" as const,
-      targeted: r.targeted,
-      ...(r.modes ? { modes: r.modes } : {}),
-      capability: r.capability,
-      inputDigest: singleDocumentClosure(r.input).closureDigest,
-      outputDigest: singleDocumentClosure(r.output).closureDigest,
-    })),
-  };
+ *  command name is unchanged.
+ *
+ *  28 = manager `status` adds the answering host name and running package version.
+ *
+ *  29 = `run-ps` accepts a bounded page request and answers with a diagnostic run page.
+ *
+ *  30 = manager `status` adds caller-scoped stop impact and its process lifecycle UID.
+ *
+ *  31 = `ps`/`inspect` add an optional lifecycle-bound presence proof and a current-view
+ *  snapshot time. Older rows omit both.
+ *
+ *  32 = `slots` accepts an optional name selection and retired-row request. A changed input
+ *  contract is a changed described surface even though the command name is unchanged.
+ *
+ *  33 = `status.stopImpact` adds the optional `preservation` binding a preserved-exit stop names.
+ *  The status output schema is closed, so a revision-32 contract rejects it.
+ *
+ *  34 = `chat-session-open` and `chat-session-retire`: a static manager admits and retires a chat
+ *  session. New served commands cannot fold into 33.
+ *
+ *  35 = keyed workflow submission and submission-status.
+ *  36 = authenticated workflow cancellation with observed local stop results.
+ *
+ *  38 = `run-status` accepts a journal page request and answers with `journalTotal`.
+ *
+ *  39 = `run-status` adds the recorded program's `programHash`, or `programUnreadable` when that
+ *  record cannot be read. The status output schema is closed, so a revision-38 contract rejects it.
+ *
+ *  40 = `ps`/`inspect` add optional joinHealth for a launch whose bounded wait elapsed without
+ *  a join. Process liveness remains separate, and an exact-incarnation late join clears it.
+ *
+ *  41 = `remove-persona` removes one caller-owned machine-local persona definition, including a
+ *  filename whose stem is no longer a valid spawn name. A new served command cannot fold into 40.
+ *
+ *  42 = every `status.connectors` row requires `eventPlane`, including rows projected from the
+ *  declared extension inventory before its connector package is imported.
+ *
+ *  43 = `turn-participate` authorizes an exact personal native lifecycle for a finite self-only
+ *  workflow turn lease without creating a managed seat or granting terminal custody.
+ *
+ *  44 = `once` on `spawn`: the spawn input grows `once` (`deadlineMs`), a `turn-pending` row gains
+ *  `once` and its `deadlineAt` becomes optional (a once task with no deadline never expires), the
+ *  `turn-pending` reply gains `stop` for a once seat the manager does not hold whose task ended, and
+ *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task.
+ *
+ *  45 = `spawn` takes an inline `persona` record and a run's `runId`, and `define-persona` takes
+ *  `capabilities`. Both input schemas are closed, so a revision-44 contract rejects either.
+ *
+ *  46 = `define-persona` refuses empty or whitespace-only model, role and agent arguments.
+ *  The changed input schema advances the described surface without adding a command. */
+export function managerClusterDocument(): ClusterDocument {
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 46, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1104,7 +1504,7 @@ export function managerShippedSurface(): { revision: number; commandCount: numbe
 
 /** Public, immutable source artifacts used by both local registration and the remote
  * host-registration protocol. Exporting the same values avoids a second manager contract dialect. */
-export function managerAuthorityContractSource(): { document: ReturnType<typeof managerClusterDocument>; artifacts: unknown[] } {
+export function managerAuthorityContractSource(): { document: ClusterDocument; artifacts: unknown[] } {
   return { document: managerClusterDocument(), artifacts: managerContractArtifactValues() };
 }
 
@@ -1114,14 +1514,24 @@ export function managerAuthorityContractSource(): { document: ReturnType<typeof 
  *  spec carries the closure digest. Returned together so the manager publishes both then registers
  *  under the closure digest. */
 export function managerClusterArtifacts(): {
-  document: ReturnType<typeof managerClusterDocument>;
+  document: ClusterDocument;
   rootDigest: string;
   manifest: ContractClosureManifest;
   closureDigest: string;
 } {
-  const document = managerClusterDocument();
-  const { manifest, closureDigest } = singleDocumentClosure(document);
-  return { document, rootDigest: manifest.root, manifest, closureDigest };
+  return buildClusterArtifacts(managerClusterDocument());
+}
+
+/** The manager's contract data as a host's build-time generator takes it (`generateBrowserContracts`
+ *  from `@cotal-ai/core/browser-validators-build`): the registered cluster document, its closure
+ *  digest and each DISTINCT schema root its commands name. The closure manifests published beside
+ *  the roots ({@link managerContractArtifactValues}) are not schemas and are not included; the
+ *  generator recomputes every digest from the document and roots and refuses any mismatch. */
+export function managerBrowserContractSource(): BrowserContractSource {
+  const { document, closureDigest } = managerClusterArtifacts();
+  const roots = new Map<string, unknown>();
+  for (const row of ROWS) for (const root of [row.input, row.output]) roots.set(singleDocumentClosure(root).manifest.root, root);
+  return { label: `${MANAGER_CLUSTER_URN}@${document.revision}`, clusterDigest: closureDigest, document, roots: [...roots.values()] };
 }
 
 /** The handlers the manager supplies to back each served command. Each receives the serve
@@ -1130,6 +1540,7 @@ export function managerClusterArtifacts(): {
  *  the command's output value (the compiled output contract validates it at the serve boundary).
  *  Kept as a narrow interface so the contract module stays broker-free. */
 export interface ManagerServiceHandlers {
+  vitals(ctx: EpServeContext): ManagerVitals | Promise<ManagerVitals>;
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
@@ -1142,17 +1553,25 @@ export interface ManagerServiceHandlers {
   attach(ctx: EpServeContext): unknown | Promise<unknown>;
   input(ctx: EpServeContext): unknown | Promise<unknown>;
   turn(ctx: EpServeContext): unknown | Promise<unknown>;
+  turnParticipate(ctx: EpServeContext): unknown | Promise<unknown>;
   turnPending(ctx: EpServeContext): unknown | Promise<unknown>;
   turnYield(ctx: EpServeContext): unknown | Promise<unknown>;
+  turnUnconfirmed(ctx: EpServeContext): unknown | Promise<unknown>;
   cancel(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   runStart(ctx: EpServeContext): unknown | Promise<unknown>;
+  runStartKeyed(ctx: EpServeContext): unknown | Promise<unknown>;
+  runSubmissionStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runResume(ctx: EpServeContext): unknown | Promise<unknown>;
+  runCancel(ctx: EpServeContext): unknown | Promise<unknown>;
   runAnswer(ctx: EpServeContext): unknown | Promise<unknown>;
   runStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;
   goalResult(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
+  removePersona(ctx: EpServeContext): unknown | Promise<unknown>;
+  chatSessionOpen(ctx: EpServeContext): unknown | Promise<unknown>;
+  chatSessionRetire(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;
   showPersona(ctx: EpServeContext): unknown | Promise<unknown>;
   purge(ctx: EpServeContext): unknown | Promise<unknown>;

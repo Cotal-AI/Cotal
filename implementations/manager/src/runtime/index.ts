@@ -14,6 +14,7 @@ import {
 } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
+import { rejectionText } from "../rejection-text.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
@@ -214,7 +215,7 @@ function removeOwned(name: string, artifacts: readonly string[] | undefined): vo
       discardLaunchArtifacts(artifacts);
     } catch (e) {
       if (!retry) {
-        console.error(`! ${name}: ${(e as Error).message}; trying again every ${EXIT_POLL_MS / 1000}s`);
+        console.error(`! ${name}: ${rejectionText(e)}; trying again every ${EXIT_POLL_MS / 1000}s`);
         retry = setInterval(attempt, EXIT_POLL_MS);
         retry.unref();
       }
@@ -227,7 +228,7 @@ function removeOwned(name: string, artifacts: readonly string[] | undefined): vo
 
 function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly string[]): void {
   let done = false;
-  // Runs only once the exit is proved.
+  // Both the watcher and wrapped waitForExit can finish; cleanup must stay idempotent.
   const finish = () => {
     if (done) return;
     done = true;
@@ -251,9 +252,19 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
   } catch {
     return pollProvedExit(handle, onExit, watching, EXIT_POLL_MS);
   }
-  session.onExit(onExit);
-  // A child that exited before the subscription fires no event for it.
-  if (handle.status() === "exited") onExit();
+  let finished = false;
+  let unsubscribe: (() => void) | undefined;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    unsubscribe?.();
+    if (watching()) onExit();
+  };
+  unsubscribe = session.onExit(finish);
+  // A session may replay its exit during subscription, before returning its disposer.
+  if (finished) unsubscribe();
+  // A child that exited before the subscription may fire no event for it.
+  else if (handle.status() === "exited") finish();
   return true;
 }
 
@@ -275,7 +286,7 @@ export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching
     proof.then(
       () => {
         clearInterval(poll);
-        onExit();
+        if (watching()) onExit();
       },
       () => {
         waiting = false;

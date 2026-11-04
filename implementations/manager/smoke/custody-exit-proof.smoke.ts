@@ -26,8 +26,7 @@ import { jetstreamManager, JetStreamApiError, JetStreamApiCodes } from "@nats-io
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
   openAclRegistry, readAcl, dmStream, dlvStream, dmDurable, dlvDurable, DEV_OWNER, principalKey,
-  mintLifecycleUid, CotalEndpoint, evictDeniedPrincipalWithCreds,
-  mintConnectionEvictorCreds, mintMembershipObserverCreds,
+  mintLifecycleUid,
 } from "@cotal-ai/core";
 import type { Connector, LaunchOpts, LaunchSpec, RuntimeProvider } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
@@ -36,6 +35,7 @@ import { registry } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 import { identityVerdict, type SeatRecord } from "@cotal-ai/seat";
+import { bootDeliveryDaemon } from "./_boot-delivery.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -76,7 +76,7 @@ const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], {
   stdio: "ignore", env: { PATH: process.env.PATH, HOME: process.env.COTAL_HOME, TMPDIR: dir },
 });
 const releaseBroker = teardownOnSignal(srv);
-let delivery: CotalEndpoint | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 
 const DM = dmStream(space), DLV = dlvStream(space);
 const provId = newIdentity();
@@ -171,24 +171,7 @@ try {
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
-  const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
-  const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
-  const deliveryId = newIdentity();
-  delivery = new CotalEndpoint({
-    space, servers: SERVERS, creds: await mintCreds(auth, deliveryId, "delivery"),
-    card: { id: deliveryId.id, name: "delivery", role: "delivery", kind: "endpoint" },
-    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
-  });
-  delivery.on("error", () => {});
-  await delivery.start();
-  const dlvRevision = await delivery.acquireDeliveryLease(0);
-  await delivery.startPlane3(async () => undefined, {
-    evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
-      servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
-    }),
-    reloadStoreIdentity: () => workspaceSecretStore(workspaceRoot).identity,
-  });
-  await delivery.markDeliveryLeaseReady(0, dlvRevision);
+  delivery = await bootDeliveryDaemon({ space, servers: SERVERS, auth, reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity });
   await mgr.start();
 
   type PrivMgr = {

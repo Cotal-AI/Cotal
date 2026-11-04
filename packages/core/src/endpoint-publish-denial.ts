@@ -20,8 +20,13 @@
  * Watch only for OUR subject. The connection is shared, and another component's
  * denial or an unrelated transport error must not fail this call.
  */
-import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
+import { PermissionViolationError, type NatsConnection } from "@nats-io/nats-core";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+
+/** What a broker refusal can mean, for every refusal message (SPEC 13.2). The broker fixes a
+ *  connection's permissions when it authenticates, so a grant made later reaches only a new
+ *  connection: a refusal must not tell a caller that was just granted that it holds no grant. */
+export const BROKER_REFUSAL_CAUSE = "either no grant covers it, or it was granted after this connection authenticated, which still has its earlier permissions: reconnect and retry (SPEC 13.2)";
 
 export type StatusStream = {
   [Symbol.asyncIterator](): AsyncIterator<{ type: string; error?: unknown }>;

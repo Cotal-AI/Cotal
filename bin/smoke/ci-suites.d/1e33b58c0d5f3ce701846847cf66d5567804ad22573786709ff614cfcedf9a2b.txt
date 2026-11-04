@@ -1,0 +1,3 @@
+# An explicit managed daemon home (`cotal daemon … --daemon-home`): its own socket, lock and
+# state beside a legacy daemon, with no migration, over real unix sockets.
+smoke:daemon-home

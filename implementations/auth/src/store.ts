@@ -27,10 +27,9 @@
  * Versioned JSON with fail-loud parsing everywhere (the login session-cache posture: a torn or
  * hand-edited credential surfaces as one legible sentence, never a raw SyntaxError downstream).
  */
-import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileCreateOnly, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
 import { normalizeIdpUrl } from "./login.js";
@@ -42,8 +41,9 @@ import {
   type SerializedSigningKey,
   type UserTokenIssuer,
 } from "./issuer.js";
+import { STORE_VER, parseStoreDoc, readStoreFile } from "./store-file.js";
 
-const STORE_VER = 1;
+export { clearAuthServiceInfo, clearAuthServiceRefusal, loadAuthServiceInfo, loadAuthServiceRefusal, saveAuthServiceInfo, saveAuthServiceRefusal, type AuthServiceInfo, type AuthServiceRefusal } from "./store-file.js";
 
 /** The registered auth-provider name, as it appears in a mesh registry entry's `userAuth.provider`
  *  and in the discovery bundle the public face serves. ONE constant, because those two must agree:
@@ -57,6 +57,8 @@ export const AUTH_PROVIDER_NAME = "cotal" as const;
  *  segment is workspace's ONE guarded encoder (`spaceSegment`, shared with `userAuthStateDir`):
  *  a `.`/`..`/empty space is refused before any key or path exists, on both surfaces. */
 export const authCalloutKey = (space: string): string => `auth/${spaceSegment(space)}/callout.json`;
+/** Host-written client projection. Reading it never loads the callout account signing material. */
+export const authClientSentinelKey = (space: string): string => `auth/${spaceSegment(space)}/client-sentinel.creds`;
 export const authIssuerKey = (space: string): string => `auth/${spaceSegment(space)}/issuer.json`;
 export const authOwnerSecretKey = (space: string): string => `auth/${spaceSegment(space)}/owner-secret.json`;
 export const authServiceKeysKey = (space: string): string => `auth/${spaceSegment(space)}/service-keys.json`;
@@ -69,21 +71,6 @@ export const authInstanceKey = (space: string): string => `auth/${spaceSegment(s
 export function spaceIssuer(space: string): string {
   if (!space) throw new Error("spaceIssuer: a space is required");
   return `urn:cotal:auth:${space}`;
-}
-
-/** Fail-loud versioned-JSON parse, shared by the store-read and file-read paths: a torn/edited/
- *  unknown-version document is a legible sentence naming WHERE it lives (a store key or a path)
- *  and the recovery, never a raw parse error downstream. */
-function parseStoreDoc<T extends { ver: number }>(raw: string, where: string, what: string): T {
-  let parsed: T;
-  try {
-    parsed = JSON.parse(raw) as T;
-  } catch (e) {
-    throw new Error(`${where}: the ${what} entry is not valid JSON (${e instanceof Error ? e.message : String(e)}) - restore it from backup; regenerating breaks existing credentials`);
-  }
-  if (parsed === null || typeof parsed !== "object" || parsed.ver !== STORE_VER)
-    throw new Error(`${where}: unknown ${what} version ${String((parsed as { ver?: unknown })?.ver)} (expected ${STORE_VER}) - refusing to guess at credential material`);
-  return parsed;
 }
 
 /** The store-side read: an absent key is undefined; everything else parses fail-loud. The key names
@@ -109,12 +96,6 @@ async function loadOrCreate<T>(
   const winner = await load();
   if (winner === undefined) throw new Error(`${key}: another caller created this entry first and it could not be read back - retry`);
   return winner;
-}
-
-/** The file-side read, for the NON-SEAM kinds only (the IdP pin, service runtime discovery). */
-function readStoreFile<T extends { ver: number }>(path: string, what: string): T | undefined {
-  if (!existsSync(path)) return undefined;
-  return parseStoreDoc<T>(readFileSync(path, "utf8"), path, what);
 }
 
 // ---- the dedicated auth-callout account ----
@@ -249,7 +230,7 @@ export async function claimAuthInstanceIdentity(store: SecretStore, space: strin
     const value = earlier ?? mint();
     return { value, doc: JSON.stringify({ ver: STORE_VER, ...value } satisfies AuthInstanceFile, null, 2) };
   });
-  if (earlier && (identity.instanceId !== earlier.instanceId || identity.serveIdentity.seed !== earlier.serveIdentity.seed))
+  if (earlier && (identity.instanceId !== earlier.instanceId || identity.serveIdentity.id !== earlier.serveIdentity.id || identity.serveIdentity.seed !== earlier.serveIdentity.seed))
     throw new Error(`${authInstanceKey(space)} and the record under ${stateDir} hold different auth instance identities for space "${space}" - refusing to guess which is this context's. Remove the one that did not come from this context, then retry.`);
   if (earlier) removeAuthInstanceIdentity(stateDir, space);
   return identity;
@@ -273,6 +254,9 @@ export interface PinnedIdp {
   audience: string;
   /** The pinned JWKS URL keys resolve from — the ONLY key path. */
   jwksUri: string;
+  /** The dedicated `aud` of `dm-reader` proofs (#4189), set only by editing the pin deliberately.
+   *  Never derived from `audience`, and refused when equal to it. Absent: no `dm-reader` exchange. */
+  dmReaderAudience?: string;
 }
 
 interface IdpFile extends PinnedIdp {
@@ -285,33 +269,61 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
   if (!f) return undefined;
   if (!f.url || !f.issuer || !f.audience || !f.jwksUri)
     throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin - re-pin with \`cotal up --user-auth --idp <url>\``);
-  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri };
+  if (f.dmReaderAudience !== undefined && (typeof f.dmReaderAudience !== "string" || !f.dmReaderAudience || f.dmReaderAudience === f.audience))
+    throw new Error(`${join(dir, IDP_FILE)}: dmReaderAudience must be a non-empty string that differs from audience`);
+  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri, ...(f.dmReaderAudience !== undefined ? { dmReaderAudience: f.dmReaderAudience } : {}) };
 }
 
 /** Pin-or-verify the space's IdP. First call REQUIRES a URL (there is no default IdP); later calls
- *  either omit it (reuse the pin) or must MATCH it — re-pointing a space at a different IdP re-keys
- *  every derived owner (the issuer is part of the derivation input), a migration this refuses to do
- *  as a flag side-effect. */
+ *  either omit it (reuse the pin) or must MATCH it once normalized — re-pointing a space at a
+ *  different IdP re-keys every derived owner (the issuer is part of the derivation input), a
+ *  migration this refuses to do as a flag side-effect. */
 export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
   const existing = loadPinnedIdp(dir);
-  if (existing) {
-    if (idpUrl !== undefined && idpUrl !== existing.url)
-      throw new Error(
-        `this space's IdP is pinned to ${existing.url}; --idp ${idpUrl} would re-key every derived owner. ` +
-          `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
-      );
-    return existing;
+  if (existing) return verifyPinnedIdp(dir, existing, idpUrl);
+  const pin = derivePinnedIdp(idpUrl);
+  mkSecretDir(dir);
+  try {
+    writeSecretFileCreateOnly(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    // Another process pinned between our read and this create: its pin decides, as for a later call.
+    const winner = loadPinnedIdp(dir);
+    if (!winner) throw new Error(`idp-pin-create-lost: ${join(dir, IDP_FILE)} exists but holds no readable IdP pin - remove it deliberately, then re-pin`);
+    return verifyPinnedIdp(dir, winner, idpUrl);
   }
+  return pin;
+}
+
+/** The pin a first enable would write, derived without touching disk. Shared by
+ *  {@link ensurePinnedIdp} and {@link checkPinnedIdp} so the pre-effect check and the real pin can
+ *  never disagree on the required URL, its normalization or its error text. */
+function derivePinnedIdp(idpUrl: string | undefined): PinnedIdp {
   if (!idpUrl)
     throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
   // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
   // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
   const url = normalizeIdpUrl(idpUrl);
   const origin = new URL(url).origin;
-  const pin: PinnedIdp = { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
-  mkSecretDir(dir);
-  writeSecretFileAtomic(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
-  return pin;
+  return { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
+}
+
+/** Read-only form of {@link ensurePinnedIdp}: the same refusals for a missing, malformed or
+ *  conflicting `--idp`, with no directory, pin or other write. `fresh` is true when no pin exists
+ *  yet, which is when a first enable must also prove the IdP serves a JWKS. */
+export function checkPinnedIdp(dir: string, idpUrl?: string): { pin: PinnedIdp; fresh: boolean } {
+  const existing = loadPinnedIdp(dir);
+  if (existing) return { pin: verifyPinnedIdp(dir, existing, idpUrl), fresh: false };
+  return { pin: derivePinnedIdp(idpUrl), fresh: true };
+}
+
+function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined): PinnedIdp {
+  if (idpUrl !== undefined && normalizeIdpUrl(idpUrl) !== pinned.url)
+    throw new Error(
+      `this space's IdP is pinned to ${pinned.url}; --idp ${idpUrl} would re-key every derived owner. ` +
+        `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
+    );
+  return pinned;
 }
 
 // ---- the auth service's own key projection ----
@@ -354,50 +366,4 @@ export async function loadServiceKeys(store: SecretStore, space: string): Promis
  *  same space bundle is a no-op in content. */
 export async function saveServiceKeys(store: SecretStore, space: string, keys: ServiceKeys): Promise<void> {
   await store.put(authServiceKeysKey(space), JSON.stringify({ ver: STORE_VER, ...keys } satisfies ServiceKeysFile, null, 2));
-}
-
-// ---- the auth-service runtime discovery file ----
-
-const SERVICE_FILE = "auth-service.json";
-
-/** Where the RUNNING auth service listens — written by the daemon only after EVERY plane is bound
- *  (its existence is the readiness signal), read by user-mode connects from other directories on
- *  this machine. Runtime state, not a trust pin: the port and capability rotate per start.
- *  `cap` is the per-start exchange capability: /exchange requires `Authorization: Bearer <cap>`,
- *  so a local process can only exchange if it can read this 0600 file — same-user file ACL is the
- *  boundary, and browser/off-user processes are shut out of the loopback port. */
-export interface AuthServiceInfo {
-  /** The local exchange/JWKS base URL, e.g. `http://127.0.0.1:53200`. */
-  url: string;
-  pid: number;
-  /** High-entropy per-start exchange capability (hex). NEVER copied into the mesh registry. */
-  cap: string;
-  /** The PUBLIC exchange base URL when the optional public face is enabled — the operator's
-   *  `--exchange-public-url` (the reverse proxy's https address) or the local bind. `up` copies
-   *  this (never `cap`) into the registry's `UserAuthInfo.endpoints.url` so the discovery bundle
-   *  is generated, not hand-written. */
-  publicUrl?: string;
-}
-
-interface ServiceFile extends AuthServiceInfo {
-  ver: number;
-}
-
-export function loadAuthServiceInfo(dir: string): AuthServiceInfo | undefined {
-  const f = readStoreFile<ServiceFile>(join(dir, SERVICE_FILE), "auth service info");
-  if (!f) return undefined;
-  if (!f.url || typeof f.pid !== "number" || !f.cap || (f.publicUrl !== undefined && typeof f.publicUrl !== "string"))
-    throw new Error(`${join(dir, SERVICE_FILE)}: malformed auth service info - restart the mesh (\`cotal down\` then \`cotal up\`)`);
-  return { url: f.url, pid: f.pid, cap: f.cap, ...(f.publicUrl !== undefined ? { publicUrl: f.publicUrl } : {}) };
-}
-
-export function saveAuthServiceInfo(dir: string, info: AuthServiceInfo): void {
-  mkSecretDir(dir);
-  writeSecretFileAtomic(join(dir, SERVICE_FILE), JSON.stringify({ ver: STORE_VER, ...info } satisfies ServiceFile, null, 2));
-}
-
-/** Remove the discovery file (daemon shutdown / CLI pre-start scrub) so a stale entry can never
- *  satisfy a readiness poll for the NEXT start. */
-export function clearAuthServiceInfo(dir: string): void {
-  rmSync(join(dir, SERVICE_FILE), { force: true });
 }

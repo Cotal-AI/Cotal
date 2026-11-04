@@ -12,9 +12,11 @@
  * `openMembersRegistry` / `openAclRegistry`.
  */
 import { Kvm, type KV } from "@nats-io/kv";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { deliveryBucket, leaseKey, principalKey, DEV_OWNER } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
+import { standaloneConnectOpts } from "./streams.js";
 
 /** The `holder` string a delivery daemon holding THIS credential will write into its lease row.
  *
@@ -111,9 +113,9 @@ export async function waitForDeliveryLease(opts: {
   timeoutMs?: number;
 }): Promise<boolean> {
   const deadline = Date.now() + (opts.timeoutMs ?? 8000);
-  let nc: Awaited<ReturnType<typeof connect>> | undefined;
+  let nc: NatsConnection | undefined;
   try {
-    nc = await connect({
+    nc = await dialerFor(opts.servers)({
       servers: opts.servers,
       authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)),
       inboxPrefix: `_INBOX_${opts.id}`,
@@ -143,4 +145,93 @@ export async function waitForDeliveryLease(opts: {
     }
   }
   return false;
+}
+
+/** How long past a stale row's expiry {@link awaitLeaseExpiry} keeps looking before it gives up. The
+ *  broker removes an expired message on its own timer, not at the exact millisecond. */
+export const LEASE_EXPIRY_GRACE_MS = 5_000;
+
+/** How a wait for a dead holder's lease row to expire ended. `expired`: the row is gone and the key
+ *  can be created again. `rewritten`: the row changed revision while we waited, so some live process
+ *  wrote it and holds the lease. `timeout`: the row outlived its TTL plus the grace, unchanged.
+ *  `aborted`: the caller stopped the wait. */
+export type LeaseExpiryWait = "expired" | "rewritten" | "timeout" | "aborted";
+
+/** Wait out a lease row whose holder the caller has shown to be dead, until the bucket TTL removes
+ *  it (#4092). This never writes the key. A takeover by revision-checked update would act on the
+ *  caller's proof of death, and that proof is only as good as its view of one host. Waiting needs
+ *  no proof to be safe: a live holder renews its row before the TTL runs out, the revision moves,
+ *  and the wait returns `rewritten` for the caller to refuse. The proof only decides whether a
+ *  conflict is worth waiting on at all.
+ *
+ *  `read` returns the row's current revision and broker write time (epoch ms), or `undefined` when
+ *  no live row is there; a read that fails throws through. The wait is bounded from now as well as
+ *  from the row's write time, so a skewed clock cannot stretch it past one TTL plus the grace. */
+export async function awaitLeaseExpiry(opts: {
+  read: () => Promise<{ revision: number; created: number } | undefined>;
+  revision: number;
+  created: number;
+  ttlMs: number;
+  aborted?: () => boolean;
+  pollMs?: number;
+}): Promise<LeaseExpiryWait> {
+  const deadline = Math.min(opts.created, Date.now()) + opts.ttlMs + LEASE_EXPIRY_GRACE_MS;
+  for (;;) {
+    if (opts.aborted?.()) return "aborted";
+    const row = await opts.read();
+    if (row === undefined) return "expired";
+    if (row.revision !== opts.revision) return "rewritten";
+    if (Date.now() >= deadline) return "timeout";
+    await new Promise((r) => setTimeout(r, opts.pollMs ?? 250));
+  }
+}
+
+/** The time left before a row written at `created` expires under `ttlMs`, for an operator line. */
+export function leaseRemainingMs(created: number, ttlMs: number, now: number = Date.now()): number {
+  return Math.max(0, created + ttlMs - now);
+}
+
+/** Wait out the shard-0 delivery lease when it is held by `deadHolder`, a holder the caller has
+ *  shown to be dead (#4092). The CLI's `ensureDelivery` calls this before it starts a replacement
+ *  daemon: a daemon SIGKILLed, or one that exited because its broker went away, cannot release its
+ *  row, and a replacement started inside the remaining TTL loses the create and refuses to bind.
+ *
+ *  Returns `free` when no row is held, `other-holder` when a row names someone else (the caller
+ *  proved nothing about them, so their conflict is left to the daemon's own refusal), and otherwise
+ *  how {@link awaitLeaseExpiry} ended. `onWait` hears the remaining TTL once, before the wait.
+ *  Connects with the scoped delivery creds the caller minted. */
+export async function awaitDeadDeliveryLease(opts: {
+  servers: string;
+  space: string;
+  creds: string;
+  /** The broker's transport decision: true REQUIRES TLS on this credentialed connection. */
+  tls: boolean;
+  deadHolder: string;
+  ttlMs: number;
+  onWait: (remainingMs: number) => void;
+}): Promise<"free" | "other-holder" | LeaseExpiryWait> {
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: opts.tls }), maxReconnectAttempts: 5 });
+  try {
+    const kv = await openDeliveryRegistry(nc, opts.space);
+    const read = async () => {
+      const e = await kv.get(leaseKey(0));
+      return !e || e.operation === "DEL" || e.operation === "PURGE" ? undefined : e;
+    };
+    const row = await read();
+    if (row === undefined) return "free";
+    if (row.json<DeliveryLeaseInfo>().holder !== opts.deadHolder) return "other-holder";
+    const created = row.created.getTime();
+    opts.onWait(leaseRemainingMs(created, opts.ttlMs));
+    return await awaitLeaseExpiry({
+      read: async () => {
+        const e = await read();
+        return e && { revision: e.revision, created: e.created.getTime() };
+      },
+      revision: row.revision,
+      created,
+      ttlMs: opts.ttlMs,
+    });
+  } finally {
+    await nc.drain().catch(() => {});
+  }
 }

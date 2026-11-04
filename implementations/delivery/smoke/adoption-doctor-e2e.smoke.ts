@@ -4,9 +4,9 @@
  * requestDeliveryAdmin + writeRenewalRecord, the exact sequence Manager.renewDaemonCreds wires) + the
  * packaged `cotal doctor auth` BINARY reading the record the real daemon's real reply produced.
  *
- *  HAPPY:   a trusted re-sign the daemon broker-ACCEPTS  → record ok:true  → `doctor auth` exit 0, "broker-accepted".
+ *  HAPPY:   a trusted re-sign the daemon broker-ACCEPTS  → record ok:true  → `doctor auth` exit 0, "recorded-acceptance".
  *  REFUSED: a rogue (untrusted-operator, same nkey) delivery cred in the daemon's store, which the daemon's
- *           reload preflight REFUSES → record ok:false → `doctor auth` exit 1, "refused by the broker" — the
+ *           reload preflight REFUSES → record ok:false → `doctor auth` exit 5 (failed), "not broker-accepted" — the
  *           ORIGINAL false-green (daemon never re-authenticated, doctor said healthy), now caught.
  *  --fix:   `doctor auth --fix` on the refused state does NOT erase it to green (a local re-sign is no proof).
  *
@@ -131,7 +131,7 @@ try {
   check("real daemon broker-ACCEPTED the trusted membership re-sign", okData?.membership?.brokerAccepted !== undefined, JSON.stringify(okReply).slice(0, 300));
   const dHappy = runDoctor(root);
   check("`cotal doctor auth` BINARY exits 0 on the broker-accepted renewal", dHappy.code === 0, `code=${dHappy.code} ${dHappy.out.slice(-200)}`);
-  check("`cotal doctor auth` renders broker-accepted (not a false 'daemon adopted')", /broker-accepted/.test(dHappy.out) && !/\bdaemon adopted\b/.test(dHappy.out), dHappy.out.slice(-300));
+  check("`cotal doctor auth` renders the recorded broker acceptance (not a false 'daemon adopted')", /Broker acceptance at that pass:\s+recorded-acceptance/.test(dHappy.out) && !/\bdaemon adopted\b/.test(dHappy.out), dHappy.out.slice(-300));
 
   // REFUSED (the original false-green, now caught)
   const rogueCred = await mintCreds(rogue, dlvId, "delivery", { expiresInSeconds: 300 });
@@ -140,11 +140,11 @@ try {
   writeRenewalRecord(root, space, { ts: new Date().toISOString(), owner: "manager", results: [{ file: DELIVERY_CREDS_KIND, ok: true }], adoption: refusedReply.ok ? { ok: true, detail: refusedReply.data } : { ok: false, error: refusedReply.error, detail: refusedReply.data } });
   check("real daemon REFUSED the rogue re-sign (reply ok:false, no brokerAccepted)", refusedReply.ok === false && (refusedReply.data as { delivery?: { brokerAccepted?: unknown } })?.delivery?.brokerAccepted === undefined, JSON.stringify(refusedReply).slice(0, 300));
   const dRefused = runDoctor(root);
-  check("`cotal doctor auth` BINARY exits 1 on the broker-refused renewal (no false green)", dRefused.code === 1, `code=${dRefused.code} ${dRefused.out.slice(-250)}`);
+  check("`cotal doctor auth` BINARY exits 5 on the broker-refused renewal (no false green)", dRefused.code === 5, `code=${dRefused.code} ${dRefused.out.slice(-250)}`);
   check("`cotal doctor auth` names the refusal, not auth: healthy", /refused by the broker|not broker-accepted/.test(dRefused.out) && !/auth: healthy/.test(dRefused.out), dRefused.out.slice(-300));
 
   const dFix = runDoctor(root, true);
-  check("`cotal doctor auth --fix` does NOT erase the refusal to green (still exit 1)", dFix.code === 1, `code=${dFix.code} ${dFix.out.slice(-250)}`);
+  check("`cotal doctor auth --fix` does NOT erase the refusal to green (still exit 5)", dFix.code === 5, `code=${dFix.code} ${dFix.out.slice(-250)}`);
 
   console.log(`\n${fail ? "✗" : "✓"} E2E DOCTOR-BINARY ${pass}/${pass + fail}`);
 } finally {

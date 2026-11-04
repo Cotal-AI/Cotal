@@ -6,8 +6,8 @@ import React from "react";
 import { AbsoluteFill, Easing, interpolate } from "remotion";
 import { fontFamily } from "../_shared";
 
-// Square-ish stage. Single source of truth for size.
-export const STAGE = { w: 860, h: 620 } as const;
+// Shared card width. Each card family sets its own height.
+export const CARD_WIDTH = 860;
 
 // The README shows the NATS cards (nats/) one per row at the column width, 294
 // CSS px on a 360 px phone, and the mode cards (modes/) at a fixed 270 CSS px,
@@ -15,8 +15,8 @@ export const STAGE = { w: 860, h: 620 } as const;
 // (18 px) still renders above 10 CSS px at 270, and their stages are taller to
 // make room for it.
 export const CARD_TYPE = 1.9;
-export const MODE_STAGE = { w: STAGE.w, h: 780 } as const;
-export const NATS_STAGE = { w: STAGE.w, h: 700 } as const;
+export const MODE_STAGE = { w: CARD_WIDTH, h: 780 } as const;
+export const NATS_STAGE = { w: CARD_WIDTH, h: 700 } as const;
 const INSET = 16;
 
 // The cast of the three mode cards: the same points and presence in each, so only
@@ -28,6 +28,8 @@ export const MODE_PEERS = [
   { name: "carol", at: { x: 700, y: 410 }, status: "idle" },
   { name: "dave", at: { x: 700, y: 580 }, status: "working" },
 ] as const;
+// The card middle: on alice's row, halfway to the peer column.
+export const MODE_MIDDLE: Pt = { x: (MODE_ALICE.at.x + MODE_PEERS[0].at.x) / 2, y: MODE_ALICE.at.y };
 
 // --- palette (cool cream + gold + ink) -----------------------------------------
 
@@ -280,26 +282,32 @@ export function wirePath(p0: Pt, c1: Pt, c2: Pt, p1: Pt): string {
   return `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p1.x} ${p1.y}`;
 }
 
+export function straightWire(a: Pt, b: Pt): string {
+  return wirePath(a, lerp(a, b, 0.4), lerp(a, b, 0.6), b);
+}
+
 // Multicast and anycast both fan out to the peers through this one wire shape,
 // so the two cards glance alike and cannot drift apart.
 export function fanWire(from: Pt, to: Pt): [Pt, Pt, Pt, Pt] {
   return [from, { x: from.x + 60, y: from.y }, { x: to.x - 90, y: to.y }, { x: to.x - 54, y: to.y }];
 }
 
-// Resting hairlines, plus an optional gold "afterglow" that lingers on a wire
-// once a message has just traversed it (glow 0..1 per path), fading back to ink.
-export const Wires: React.FC<{ paths: string[]; glow?: number[] }> = ({ paths, glow = [] }) => (
+export type Wire = { d: string; glow: number };
+
+// Resting hairlines and gold afterglow (0..1 per wire, with explicit 0 for resting).
+
+export const Wires: React.FC<{ wires: readonly Wire[] }> = ({ wires }) => (
   <svg style={{ position: "absolute", inset: 0 }} width="100%" height="100%">
-    {paths.map((d, i) => (
+    {wires.map(({ d }, i) => (
       <path key={`r${i}`} d={d} stroke={INK.line} strokeOpacity={0.95} strokeWidth={2} fill="none" />
     ))}
-    {paths.map((d, i) =>
-      (glow[i] ?? 0) > 0.01 ? (
+    {wires.map(({ d, glow }, i) =>
+      glow > 0.01 ? (
         <path
           key={`g${i}`}
           d={d}
           stroke={GOLD}
-          strokeOpacity={0.55 * (glow[i] ?? 0)}
+          strokeOpacity={0.55 * glow}
           strokeWidth={2}
           fill="none"
         />

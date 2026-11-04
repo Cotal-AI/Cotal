@@ -39,7 +39,7 @@ if [ "${1:-}" = "--stop" ]; then
   # later start is clean — the history lives in JetStream's store and would otherwise replay.
   if nats_up; then
     echo "mesh-wall: wiping chat history on space '$SPACE'" >&2
-    ( cd "$ROOT" && pnpm cotal history clear --force --dms --space "$SPACE" ) >&2 || true
+    ( cd "$ROOT" && pnpm cotal history clear --yes --dms --space "$SPACE" ) >&2 || true
   fi
   tmux kill-session -t "$SESSION" 2>/dev/null && echo "mesh-wall: killed tmux '$SESSION'" >&2 || true
   if [ -f "$PIDFILE" ]; then
@@ -105,7 +105,7 @@ fi
 # --- fresh: wipe retained chat history so agents start clean (no replayed chatter) ---
 if [ -n "$FRESH" ]; then
   echo "mesh-wall: fresh start — clearing chat history on space '$SPACE'" >&2
-  ( cd "$ROOT" && pnpm cotal history clear --force --dms --space "$SPACE" ) >&2 \
+  ( cd "$ROOT" && pnpm cotal history clear --yes --dms --space "$SPACE" ) >&2 \
     || echo "mesh-wall: (history clear failed — continuing)" >&2
   rm -rf "$ROOT/.cotal/opencode"/* 2>/dev/null || true   # drop stale per-agent opencode sessions
 fi

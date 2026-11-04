@@ -1,3 +1,5 @@
+import type { EpEffectOutcome } from "./endpoint-error.js";
+
 /**
  * Cotal wire types (v0.2).
  *
@@ -97,6 +99,26 @@ export type AttentionMode = "open" | "dnd" | "focus";
  */
 export type ChannelMode = "quiet" | "muted";
 
+/** Where a {@link PresenceRuntime} start was observed. Closed: a consumer that meets any other value
+ *  treats the observation as unsupported rather than guessing what it dates.
+ *  - `endpoint-process`: the OS process that holds this presence's mesh connection, observed by
+ *    that process itself. */
+export type PresenceRuntimeSource = "endpoint-process";
+
+/** The running process behind a presence record, as that process observed itself. Advisory display
+ *  data, never authority. It carries no pid, host, path, command line or environment. */
+export interface PresenceRuntime {
+  /** Opaque CSPRNG id minted once per OS process and lifecycleUid scope, never reused. A new
+   *  process or lifecycle scope gets a new id; reconnect within that scope keeps it. */
+  id: string;
+  /** Epoch ms when the process started, read in-process from its own clock origin
+   *  (`performance.timeOrigin`). Never a launch request, registration, heartbeat, status or activity
+   *  time. Every lifecycle in this process shares this start, including one registered later.
+   *  It does not date a separate parent, model harness or lifecycle. */
+  startedAt: number;
+  source: PresenceRuntimeSource;
+}
+
 /** Live presence record. Stored in the space's KV bucket under key = card.id. */
 export interface Presence {
   card: AgentCard;
@@ -105,6 +127,11 @@ export interface Presence {
    *  Advisory observability, never authority (authority is the ledger/broker grants). */
   lifecycleUid?: string;
   status: PresenceStatus;
+  /** The process that publishes this record, with its observed start. Status, activity, heartbeats
+   *  and reconnects inside the process leave it unchanged; a new process publishes a new one. An
+   *  offline record keeps it to name the process that went away, so it dates a running duration
+   *  only while the record is live. Missing means the publisher reports none: unknown, not zero. */
+  runtime?: PresenceRuntime;
   /** Structured condition reported by the harness. Missing means nothing was reported. */
   condition?: PresenceCondition;
   /** Opaque reference whose meaning belongs to the provider that issued it. */
@@ -197,7 +224,8 @@ export type MembershipState = "live-confirmed" | "durable-active";
  * deterministically); a rejoin bumps {@link generation} and takes a fresh {@link joinCursor}.
  */
 export interface MembershipRecord {
-  /** Concrete channel (never a wildcard — wildcard ACLs grant live breadth, durable is per-channel). */
+  /** A concrete channel, or a channel family such as `team.>` covering the durable-class channels under
+   *  it (#5404). Never the root `>` or a pattern with `*`, which grant live breadth only. */
   channel: string;
   /** The subscribing **principal** in dot-form `<owner>.<actor>` (= `principalKey().key`) under the
    *  owner+actor grammar. NB: the field NAME is legacy — it holds the full principal (both tokens), not
@@ -216,8 +244,9 @@ export interface MembershipRecord {
    *  gate: {@link durableEligible} is pure membership-interval, so a `durable-active` record routes
    *  in-interval immediately (no live message is lost during catch-up). `activated` instead gates what is
    *  REPORTED — `durableJoin` returns `durable:true` and `channelMembers()` lists the owner only once
-   *  catch-up confirms; a join whose catch-up never completes reports `durable:false`, stays hidden, and
-   *  is tombstoned on eviction so it does not route. A tombstone preserves the `activated` it had at leave. */
+   *  catch-up confirms; a join whose catch-up has not completed reports `durable:false` and stays
+   *  hidden, and a retry reruns catch-up over the same window. Catch-up copies what the stream still
+   *  holds and does not judge retention (SPEC §4). A tombstone preserves the `activated` it had at leave. */
   activated?: boolean;
   /** CHAT stream seq captured at leave — eligibility upper bound `seq <= leaveCursor`. Present ⇒
    *  tombstone. Absent ⇒ open membership (no upper bound). */
@@ -276,8 +305,12 @@ export interface Plane3Entry {
   /** Why this owner was fanned to: a `durable` channel's member (interval-gated) vs a `live` channel
    *  `@mention` to an authorized target (ACL-only, no membership). */
   reason: "durable-channel" | "live-mention";
-  /** The owner's membership generation at fan-out (idempotency-key component + diagnostics). */
+  /** The addressing row's membership generation (provenance and diagnostics; not part of the
+   *  dedupe id, which is per message and lifecycle). */
   generation: number;
+  /** The membership row that addressed a `durable-channel` copy when it is not `channel` itself: the
+   *  family above it (`review.>`). Absent for the channel's own row. */
+  row?: string;
 }
 
 /**
@@ -294,8 +327,10 @@ export interface ChannelMembership {
    *  (e.g. `team.>`) — expanded to concrete channels only by the consumer at read time, so a channel
    *  *creation* never rewrites a wildcard-subscriber's record. Empty when the agent has no live connection. */
   live: string[];
-  /** Concrete durable channels from the privileged members registry (authoritative for the durable arm,
-   *  incl. reconnect-grace) — a member here whose presence is offline is "member, currently offline". */
+  /** Durable channels from the privileged members registry (authoritative for the durable arm, incl.
+   *  reconnect-grace) — a member here whose presence is offline is "member, currently offline". A family
+   *  row is kept as recorded (`team.>`), as `live` keeps wildcards; it stores copies only for the
+   *  durable-class channels under it (#5404). */
   durable: string[];
   /** Epoch ms this record was last (re)written — a per-agent "last changed" caption. Feed-wide freshness
    *  is the separate {@link MEMBERSHIP_FEED_KEY} heartbeat (refreshed every poll); ordering is the native
@@ -309,6 +344,15 @@ export interface MembershipEntry extends ChannelMembership {
   /** The agent nkey (`card.id`) — resolve to name/role/status via presence at the dashboard. */
   id: string;
 }
+
+/** One membership-feed entry as `watchMembership` delivers it. `update` is false for the entries a
+ *  (re)armed watch replays from the bucket's last values; every replay ends with one `replayed`
+ *  change. A `member` change carries the decoded record on a PUT, and no record when the key was
+ *  deleted or purged (or the record could not be decoded, the same entries `readMembership` skips). */
+export type MembershipChange =
+  | { type: "member"; id: string; operation: "PUT" | "DEL" | "PURGE"; revision: number; update: boolean; member?: MembershipEntry }
+  | { type: "heartbeat"; revision: number; update: boolean; asOf?: number }
+  | { type: "replayed"; revision: number };
 
 /** The broker-sourced membership feed as the dashboard consumes it. */
 export interface MembershipSnapshot {
@@ -475,6 +519,8 @@ export interface ControlReply {
   /** The endpoint's error code when the reply carried one. A caller that decides on a refusal keys
    *  on it, because the message is rendered prose and the code is the only stable half. */
   code?: string;
+  /** Effect outcome carried by the endpoint reply or envelope error. Absent means unknown. */
+  outcome?: EpEffectOutcome;
   /** Structured §13.3 details when the manager named a cause the string cannot carry
    *  (lifecycle-blocked spawn refusals, #873). Optional so every existing `{ok,error}`
    *  producer stays valid. */

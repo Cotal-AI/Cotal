@@ -1,5 +1,5 @@
 // HeaderMorph — "Up, then sideways": a topology morph that tells Cotal's core
-// story (one protocol, any topology). 1280x400 @ 30fps, 240-frame seamless loop.
+// story (one protocol, any topology). 1280x400 @ 30fps, seamless loop.
 //
 //   Beat A  ~0-90   supervised:   three agents wire UP to a manager pill; gold
 //                                 beams travel up, staggered.
@@ -25,11 +25,11 @@ import {
   Ripple,
   useCurrentFrame,
   WireLines,
-  Wordmark,
+  Logo,
   type Pt,
 } from "./shared";
 
-const DURATION = 240;
+export const HEADER_MORPH_DURATION = 240;
 
 // --- layout ---------------------------------------------------------------------
 
@@ -178,26 +178,31 @@ export const HeaderMorph: React.FC = () => {
     fade(frame, 100, 116) * (1 - fade(frame, 166, 178));
 
   // --- wire glow bundles -------------------------------------------------------
-  const upGlow = upArrive.map((g) => g * upStructure);
-  const latGlow = latArrive.map((g) => g * latStructure);
+  const upWires = [
+    { d: upPath(ALICE), glow: arrival(frame, ...A.up[0]) * upStructure },
+    { d: upPath(BOB), glow: arrival(frame, ...A.up[1]) * upStructure },
+    { d: upPath(CAROL), glow: arrival(frame, ...A.up[2]) * upStructure },
+  ];
+  const latWires = [
+    { d: AB_PATH, glow: arrival(frame, ...B.lat[0]) * latStructure },
+    { d: BC_PATH, glow: arrival(frame, ...B.lat[1]) * latStructure },
+    { d: AC_PATH, glow: arrival(frame, ...B.lat[2]) * latStructure },
+  ];
 
   // root loop envelope (fade in/out so the loop is seamless over the cream bg)
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, HEADER_MORPH_DURATION);
 
   return (
     <CreamStage>
       <div style={{ position: "absolute", inset: 0, opacity: rootOpacity }}>
         {/* up-wires (beat A) */}
         <div style={{ opacity: upStructure }}>
-          <WireLines paths={UP_PATHS} glow={upGlow} />
+          <WireLines wires={upWires} />
         </div>
 
         {/* lateral wires (beat B) */}
         <div style={{ opacity: latStructure }}>
-          <WireLines
-            paths={[AB_PATH, BC_PATH, AC_PATH]}
-            glow={latGlow}
-          />
+          <WireLines wires={latWires} />
         </div>
 
         {/* shared-space ripples as the peer mesh forms */}
@@ -271,7 +276,7 @@ export const HeaderMorph: React.FC = () => {
         <Caption text="peer-to-peer" opacity={capPeer} top={28} />
 
         {/* resolve: wordmark + tagline */}
-        <Wordmark
+        <Logo
           frame={frame}
           appear={180}
           tagline="one protocol, any topology"

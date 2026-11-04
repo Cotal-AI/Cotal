@@ -82,6 +82,7 @@ import {
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { approveDevice } from "../../auth/smoke/_device-approval.js";
 
 const self = process.argv[1]!;
 const participantHome = mkdtempSync(join(tmpdir(), "cotal-registered-manager-home-"));
@@ -301,20 +302,12 @@ try {
     returnHeaders: true,
   });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
-  const approve = async (userCode: string): Promise<void> => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
-    const response = await fetch(`${idpUrl}/device/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie, origin },
-      body: JSON.stringify({ userCode }),
-    });
-    if (!response.ok) throw new Error(`device approval failed: HTTP ${response.status}`);
-  };
+  const approve = (userCode: string) => approveDevice({ base: idpUrl, cookie, origin }, userCode);
   const { sub } = await establishIdpSession({
     dir: participantHome,
     idpUrl,
     clientId,
-    onPrompt: (prompt: { userCode: string }) => void approve(prompt.userCode),
+    onPrompt: (prompt: { userCode: string }) => approve(prompt.userCode),
   });
   const owner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
   check("participant login is established", typeof sub === "string" && sub.length > 0);
@@ -322,15 +315,18 @@ try {
 
   const callout = await loadCalloutAuth(hostStore, space);
   if (!callout) throw new Error("host callout material is missing after preparation");
+  if (!service.publicUrl) throw new Error("host auth service did not expose a public exchange");
+  const participantUserAuth = {
+    provider: "cotal",
+    idp: { url: idpUrl, issuer: origin, audience: origin },
+    endpoints: { url: service.publicUrl },
+  };
+  assertUserAuthInfo(participantUserAuth);
   persistRemoteUserEntry(space, server, participantRoot, {
     space,
     server,
     tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal",
-      idp: { url: idpUrl, issuer: origin, audience: origin },
-      endpoints: { url: service.publicUrl },
-    }),
+    userAuth: participantUserAuth,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   check("participant registry entry is remote user mode", existsSync(participantDir));
@@ -363,8 +359,8 @@ try {
   await endpoint.start();
   check("existing provider bearer connects from the registry-only participant", endpoint.principal.owner === owner && endpoint.principal.actor === "cli", endpoint.principal);
 
-  // Manager.start() needs both endpoint stream setup (manager.ts:4566-4579) and records/auth KV
-  // authority for service registration (manager.ts:4509-4522, 4696). A normal user bearer is
+  // Manager.start() needs both endpoint stream setup and records/auth KV authority for service
+  // registration (both in manager.ts registerManagerService). A normal user bearer is
   // intentionally an agent-profile bearer. Probe the first write-free prerequisite: even
   // STREAM.INFO on records is broker-denied; no client-side inference can promote it.
   const nc = await connect({ servers: server, ...standaloneConnectOpts({ bearer: material.bearer, sentinelCreds: material.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });

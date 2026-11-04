@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
 
@@ -57,6 +57,9 @@ type MutationPolicy = Generator<LockRequest, () => void, HeldLock>;
 
 /** Update pass: acquire it, then refuse while an extension npm child is still marked live. */
 function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
+  // The first lock can create the shared config root. A group-writable umask must not make
+  // Cotal's own directory fail the completion writer's protected-ancestor check.
+  mkdirSync(dirname(extensionMutationLockPath()), { recursive: true, mode: 0o700 });
   const held = yield {
     path: extensionUpdatePassLockPath(),
     opts: {

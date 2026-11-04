@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import ts from "typescript";
+import {
+  assertSmokeSandboxDown,
+  assertSmokeSandboxLinkedDown,
+  assertSmokeSandboxTargetDown,
+  recordSmokeSandbox,
+} from "@cotal-ai/smoke-kit";
 
 const base = mkdtempSync(join(tmpdir(), "cotal-sandbox-guard-"));
 const repo = join(import.meta.dirname, "..", "..", "..");
@@ -34,6 +40,19 @@ function permits(name: string, run: () => void): void {
 }
 
 try {
+  if (process.platform !== "win32") {
+    const privateRoot = join(base, "private-root");
+    const privateHome = join(base, "private-home");
+    const privateConfig = join(base, "private-config");
+    const previous = process.umask(0o002);
+    try {
+      recordSmokeSandbox({ root: privateRoot, cotalHome: privateHome, xdgConfigHome: privateConfig });
+    } finally {
+      process.umask(previous);
+    }
+    for (const [label, path] of [["root .cotal", join(privateRoot, ".cotal")], ["Cotal home", privateHome], ["XDG config", privateConfig]])
+      permits(`${label} is created private under umask 002`, () => assert.equal(statSync(path).mode & 0o777, 0o700));
+  }
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }));
   permits(
     "explicit destructive down retains the same exact sandbox identity guard",
@@ -98,6 +117,47 @@ try {
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root + sep, env }));
   // Scoped to issue 884's destructive `down` verb only. This is not a general blessing of foreign cwd.
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["status"], { cwd: foreign }));
+
+  // A down in a folder whose .cotal is a link, which the CLI refuses before any effect.
+  const linkedFolder = join(root, "linked");
+  const danglingFolder = join(root, "dangling");
+  const outsideFolder = join(base, "outside-linked");
+  const leadsOutFolder = join(root, "leads-out");
+  const ownFolder = join(root, "own");
+  for (const dir of [linkedFolder, danglingFolder, outsideFolder, leadsOutFolder, join(ownFolder, ".cotal")])
+    mkdirSync(dir, { recursive: true });
+  symlinkSync(marker, join(linkedFolder, ".cotal"));
+  symlinkSync(join(root, "nowhere", ".cotal"), join(danglingFolder, ".cotal"));
+  symlinkSync(marker, join(outsideFolder, ".cotal"));
+  symlinkSync(join(foreign, ".cotal"), join(leadsOutFolder, ".cotal"));
+  permits(
+    "a down in a folder below the root whose .cotal links into it is guarded",
+    () => assertSmokeSandboxLinkedDown(anchor, ["down", "--yes", "--json"], { cwd: linkedFolder, env }),
+  );
+  permits(
+    "a down in a folder below the root whose .cotal leads nowhere is guarded",
+    () => assertSmokeSandboxLinkedDown(anchor, ["down", "--dry-run", "--json"], { cwd: danglingFolder, env }),
+  );
+  refuses(
+    "the linked guard refuses a folder outside the recorded root",
+    () => assertSmokeSandboxLinkedDown(anchor, ["down", "--yes", "--json"], { cwd: outsideFolder, env }),
+    /observed folder.*outside-linked.*identity verdicts root=same, folder=outside, link=below/,
+  );
+  refuses(
+    "the linked guard refuses a link that leads outside the recorded root",
+    () => assertSmokeSandboxLinkedDown(anchor, ["down", "--yes"], { cwd: leadsOutFolder, env }),
+    /identity verdicts root=same, folder=below, link=outside/,
+  );
+  refuses(
+    "the linked guard refuses a folder whose .cotal is a directory",
+    () => assertSmokeSandboxLinkedDown(anchor, ["down", "--yes"], { cwd: ownFolder, env }),
+    /identity verdicts root=same, folder=below, link=not-a-link/,
+  );
+  refuses(
+    "the linked guard keeps the recorded COTAL_HOME",
+    () => assertSmokeSandboxLinkedDown(anchor, ["down", "--yes"], { cwd: linkedFolder, env: { ...env, COTAL_HOME: foreignHome } }),
+    /folder=below, link=below, COTAL_HOME=foreign/,
+  );
 
   const space = "target";
   const meshes = join(cotalHome, "meshes");
@@ -182,6 +242,40 @@ try {
     /cannot classify arguments.*strict down parser/,
     "generic guard fails closed when down arguments cannot be classified",
   );
+  // The guard parses every flag the CLI's down declares, and the kernel's global flags, so a suite
+  // can pass --yes, --json or --plain and still get the same identity check.
+  permits(
+    "down with --yes and --json keeps the sandbox identity guard",
+    () => assertSmokeSandboxDown(anchor, ["down", "--yes", "--json"], { cwd: root, env }),
+  );
+  permits(
+    "a named down with -y, --plain, --instance and -s is classified",
+    () => assertSmokeSandboxDown(anchor, ["down", "stack-manager", "-y", "--plain", "--instance", "full-id", "-s", space], { cwd: root, env }),
+  );
+  permits(
+    "global flags are taken from a down as the kernel takes them",
+    () => assertSmokeSandboxDown(anchor, ["down", "--no-input", "--yes", "--no-color"], { cwd: root, env }),
+  );
+  refuses(
+    "down --yes --json still refuses a foreign sandbox root",
+    () => assertSmokeSandboxDown(anchor, ["down", "--yes", "--json"], { cwd: foreign, env }),
+    /refused cotal down: observed root/,
+  );
+  refuses(
+    "a global flag before the down word still reaches the sandbox guard",
+    () => assertSmokeSandboxDown(anchor, ["--no-input", "down", "--yes"], { cwd: foreign, env }),
+    /refused cotal down: observed root/,
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down", "--yes", "--unrecognized"], { cwd: root, env }),
+    /cannot classify arguments.*strict down parser/,
+    "the guard still fails closed on a flag down does not declare",
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down", "-s", space, "web"], { cwd: root, env }),
+    /requires assertSmokeSandboxTargetDown/,
+    "-s is the space flag, so down web still needs the target guard",
+  );
 
   const rootPackage = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
     scripts?: { check?: string };
@@ -202,57 +296,44 @@ try {
     "packages/lang/smoke/engine.smoke.ts",
   ]);
 
-  /** Keep line numbers. Drop comments and templates so `down` inside a string is not a CLI verb. */
+  /**
+   * Keep line numbers. Drop comments, template text and regex literals so `down` inside one is not a
+   * CLI verb. TypeScript's parser finds them, so a backtick in a regex, a template nested in a
+   * substitution or an escaped backtick cannot put the scan out of step with the code.
+   */
   const codeOf = (source: string): string => {
-    let out = "";
-    let i = 0;
-    const blank = (from: number, to: number): void => {
-      for (let j = from; j < to; j++) out += source[j] === "\n" ? "\n" : " ";
+    const file = ts.createSourceFile("scan.ts", source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+    // The scanner alone cannot tell a regex from a division or the end of a substitution from a
+    // brace, so it rescans where the parser found a regex or the rest of a template.
+    const regexAt = new Set<number>();
+    const templateAt = new Set<number>();
+    const find = (node: ts.Node): void => {
+      if (ts.isRegularExpressionLiteral(node)) regexAt.add(node.getStart(file));
+      else if (ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) templateAt.add(node.getStart(file));
+      ts.forEachChild(node, find);
     };
-    while (i < source.length) {
-      const c = source[i];
-      const n = source[i + 1];
-      if (c === "/" && n === "/") {
-        const start = i;
-        i += 2;
-        while (i < source.length && source[i] !== "\n") i++;
-        blank(start, i);
-        continue;
-      }
-      if (c === "/" && n === "*") {
-        const start = i;
-        i += 2;
-        while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i++;
-        i = Math.min(source.length, i + 2);
-        blank(start, i);
-        continue;
-      }
-      if (c === "`") {
-        const start = i;
-        i++;
-        while (i < source.length) {
-          if (source[i] === "\\") { i += 2; continue; }
-          if (source[i] === "`") { i++; break; }
-          i++;
-        }
-        blank(start, i);
-        continue;
-      }
-      if (c === '"' || c === "'") {
-        out += c;
-        i++;
-        while (i < source.length) {
-          if (source[i] === "\\") { out += source[i] + (source[i + 1] ?? ""); i += 2; continue; }
-          out += source[i];
-          if (source[i] === c) { i++; break; }
-          i++;
-        }
-        continue;
-      }
-      out += c;
-      i++;
+    find(file);
+    const dropped = new Set([
+      ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+      ts.SyntaxKind.TemplateHead,
+      ts.SyntaxKind.TemplateMiddle,
+      ts.SyntaxKind.TemplateTail,
+      ts.SyntaxKind.RegularExpressionLiteral,
+    ]);
+    const blank = (text: string): string => text.replace(/[^\n]/g, " ");
+    let out = "";
+    let at = 0;
+    // The scanner skips comments, so only the tokens it returns are copied.
+    const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, source);
+    for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+      const start = scanner.getTokenStart();
+      if (regexAt.has(start)) kind = scanner.reScanSlashToken();
+      else if (templateAt.has(start)) kind = scanner.reScanTemplateToken(false);
+      if (dropped.has(kind)) continue;
+      out += blank(source.slice(at, start)) + source.slice(start, scanner.getTokenEnd());
+      at = scanner.getTokenEnd();
     }
-    return out;
+    return out + blank(source.slice(at));
   };
 
   const lineOf = (source: string, index: number): number => source.slice(0, index).split("\n").length;
@@ -341,8 +422,9 @@ try {
     return false;
   };
 
+  const guards = new Set(["assertSmokeSandboxDown", "assertSmokeSandboxLinkedDown", "assertSmokeSandboxTargetDown"]);
   const wrapperGuardsDown = (name: string, fns: Map<string, string>, seen = new Set<string>()): boolean => {
-    if (name === "assertSmokeSandboxDown" || name === "assertSmokeSandboxTargetDown") return true;
+    if (guards.has(name)) return true;
     if (seen.has(name)) return false;
     seen.add(name);
     const body = fns.get(name);
@@ -422,7 +504,7 @@ try {
           if (guardCalls < 1) findings.push(unclassifiedDown(relative, code, use.index));
           continue;
         }
-        if (call.name === "assertSmokeSandboxDown" || call.name === "assertSmokeSandboxTargetDown") continue;
+        if (guards.has(call.name)) continue;
         sites.push({ ...call, index: use.index });
       }
     }
@@ -461,7 +543,7 @@ try {
           if (guardCalls < 1) findings.push(unclassifiedDown(relative, code, site.index));
           return [];
         }
-        if (call.name === "assertSmokeSandboxDown" || call.name === "assertSmokeSandboxTargetDown") return [];
+        if (guards.has(call.name)) return [];
         return [{ ...call, index: site.index }];
       });
       const verbSites = downVerbSites(code, relative, fns, guardCalls, findings);
@@ -516,6 +598,35 @@ runCli(args);
     scanDownSites(shape2Root),
     ["probe.smoke.ts:5: unclassified down site, cannot prove a guard"],
     "shape 2 bound argv must be reported as unclassified",
+  );
+
+  // A backtick in a regex and a template nested in a substitution put the old hand lexer out of step
+  // with TypeScript, and escaped backticks moved where it came back. A down follows each.
+  const lexerRoot = join(base, "scan-lexer");
+  mkdirSync(lexerRoot, { recursive: true });
+  writeFileSync(
+    join(lexerRoot, "probe.smoke.ts"),
+    `import { spawnSync } from "node:child_process";
+function runCli(args: string[]): void {
+  spawnSync("cotal", args, { encoding: "utf8" });
+}
+const tick = /\`/;
+runCli(["down"]);
+const nested = \`outer \${\`inner runCli(["down"])\`} outer\`;
+runCli(["down"]);
+const escaped = \`an escaped \\\` stays text\`;
+runCli(["down"]);
+`,
+  );
+  assert.deepEqual(
+    scanDownSites(lexerRoot),
+    [
+      "probe.smoke.ts: no shared guard call",
+      "probe.smoke.ts:6: down wrapper call is not immediately guarded",
+      "probe.smoke.ts:8: down wrapper call is not immediately guarded",
+      "probe.smoke.ts:10: down wrapper call is not immediately guarded",
+    ],
+    "the lexer must read regex literals, nested templates and escaped backticks as TypeScript does",
   );
 
   const unguarded = scanDownSites(repo);

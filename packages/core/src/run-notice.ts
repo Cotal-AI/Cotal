@@ -18,10 +18,10 @@
  * move a run whose notice has not yet been consumed by its addressee's next turn, and that rule
  * needs something to read.
  */
-import { createHash } from "node:crypto";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { assertIdToken } from "./endpoint-subjects.js";
+import { digestIdToken } from "./digest-id.js";
 import {
   RECORD_KINDS,
   createRecordEntry,
@@ -29,6 +29,7 @@ import {
   recordSpecKey,
   recordStatusKey,
   assertStatusValue,
+  decodeRecordJson,
 } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
 import { walkKvEntries } from "./kv-scan.js";
@@ -68,17 +69,11 @@ function qualifiers(endpoint: string, runId: string, addresseeId: string, notice
   return [endpoint, runId, addresseeId, noticeId];
 }
 
-/** base64url of the sha256, truncated to 43 characters — the same shape and alphabet as a run's
- *  request ids and a checkpoint answer id, so a derived id is an `<id-token>` by construction. */
-function digestId(canonical: string): string {
-  return createHash("sha256").update(canonical, "utf8").digest("base64url").slice(0, 43);
-}
-
 /** The key token standing for an agent. Derived from the name, never the name itself. */
 export function noticeAddresseeId(agent: string): string {
   if (agent.length === 0)
     throw new EpEnvelopeError("failed-precondition", `a notice addressee is an agent name; the empty string names nobody`);
-  return digestId(canonicalJson({ agent }));
+  return digestIdToken(canonicalJson({ agent }));
 }
 
 /**
@@ -89,7 +84,7 @@ export function noticeAddresseeId(agent: string): string {
  * call to N agents writes N notices, and the addressee is what separates them.
  */
 export function runNoticeId(requestId: string, addressee: string): string {
-  return digestId(canonicalJson({ requestId, addressee }));
+  return digestIdToken(canonicalJson({ requestId, addressee }));
 }
 
 function parseSpec(raw: unknown, key: string): RunNoticeSpecValue {
@@ -160,7 +155,7 @@ export async function writeRunNotice(
     const existing = await kv.get(key);
     if (!existing || existing.operation !== "PUT")
       throw new EpEnvelopeError("internal", `notice ${key} lost its create CAS but is not readable; reconcile the store`);
-    const parsed = parseSpec(JSON.parse(new TextDecoder().decode(existing.value)), key);
+    const parsed = parseSpec(decodeRecordJson(existing.value, key), key);
     if (canonicalJson(parsed) !== canonicalJson(value))
       throw new EpEnvelopeError("conflict", `notice ${key} already exists with a different decision; a notice id is derived from the step that decided it, so a differing one under the same id is never overwritten`);
     return { key, created: false };

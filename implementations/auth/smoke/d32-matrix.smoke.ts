@@ -280,8 +280,14 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
+    "$KV.cotal_auth_d32m.consent.*",
+    // Chat admission and sweep: holder index, owner quota, sweep cursor (exact arity, no `.>`).
+    "$KV.cotal_auth_d32m.chatholder.*.*",
+    "$KV.cotal_auth_d32m.chatowner.*",
+    "$KV.cotal_auth_d32m.chatsweep.cursor",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "environment-admission-index": { publish: [
     "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_cotal_environment_managers_d32m",
@@ -297,6 +303,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m", "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
     "$JS.API.DIRECT.GET.KV_cotal_records_d32m", "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
     "$KV.cotal_auth_d32m.gate.>", "$KV.cotal_auth_d32m.cred.>", "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_records_d32m.lifecycle.>", "$KV.cotal_records_d32m.uid.>",
     "$KV.cotal_auth_d32m.epgate.manager.>", "$KV.cotal_auth_d32m.stage.*.environment-manager",
     "$KV.cotal_auth_d32m.stage.*.environment-manager-gate",
@@ -320,6 +327,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.gate.>",
     "$KV.cotal_auth_d32m.cred.>",
     "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
     "$KV.cotal_auth_d32m.epgate.manager.>",
@@ -336,15 +344,27 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m",
   ], subscribe: [
     "_INBOX_ibxconn0123456789.>",
-    // Read-only witness of the run-start, resume and answer requests a participant manager forwards (SPEC 14.8).
+    // Read-only witness of the run-start, resume and answer requests a participant manager forwards (SPEC 14.8),
+    // and of the keyed run-start-keyed and run-submission-status requests (SPEC 14).
     "cotal.d32m.ep.v1.inst.manager.*.run-start.>",
     "cotal.d32m.ep.v1.one.manager.run-start.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-resume.>",
     "cotal.d32m.ep.v1.one.manager.run-resume.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.v1.one.manager.run-answer.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-start-keyed.>",
+    "cotal.d32m.ep.v1.one.manager.run-start-keyed.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-submission-status.>",
+    "cotal.d32m.ep.v1.one.manager.run-submission-status.>",
     "cotal.d32m.ep.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.one.manager.run-answer.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-cancel.>",
+    // Read-only witness of the spawn requests a participant manager forwards with a hosted
+    // enrollment (SPEC 13.6), on both rails, so the issuer bounds the helper by the caller that asked.
+    "cotal.d32m.ep.v1.inst.manager.*.spawn.>",
+    "cotal.d32m.ep.v1.one.manager.spawn.>",
+    "cotal.d32m.ep.inst.manager.*.spawn.>",
+    "cotal.d32m.ep.one.manager.spawn.>",
   ] },
   "auth-barrier": { publish: [
     "$JS.API.INFO",
@@ -772,8 +792,9 @@ for (const [profile, rows] of Object.entries(untrusted)) {
   c(`${profile}: no records/auth KV write rows`, kvWrites.length === 0, kvWrites);
 }
 // The agent's ep reach = its minted caller rows PLUS the normative Appendix-B baseline
-// (wildcard describe + delivery join/leave/list + the self-mode lifecycle set: stop, the two
-// seat halves of the turn relay, and caller-bound run-answer), pinned EXACTLY here so a widened baseline (or a stray extra
+// (wildcard describe + delivery join/leave/list + the self-mode lifecycle set: stop, the native
+// participation opt-in (SPEC "Native personal participation"), the two seat halves of the turn relay,
+// and caller-bound run-answer), pinned EXACTLY here so a widened baseline (or a stray extra
 // row) fails this audit, not just the grants smoke.
 const BASELINE_PUB = [
   `cotal.${S}.ep.one.*.describe.u_abc.cli.${UID}.*`,
@@ -781,6 +802,7 @@ const BASELINE_PUB = [
   `cotal.${S}.ep.one.delivery.leave.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.delivery.list.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.stop.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.manager.turn-participate.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
@@ -962,6 +984,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `$JS.API.STREAM.MSG.GET.KV_cotal_channels_${S}`,
         `$KV.cotal_members_${S}.>`,
         `$JS.API.STREAM.MSG.GET.KV_cotal_members_${S}`,
+        `$JS.API.STREAM.MSG.GET.KV_cotal_acl_${S}`,
         `cotal.${S}.ep.one.*.describe.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.spawn.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.inspect.${cO}.${cA}.${cU}.*`,

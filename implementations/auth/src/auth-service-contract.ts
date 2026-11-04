@@ -9,8 +9,10 @@
  * serve WIRING lives in the plane (`openAuthAuthorityPlane` / `openAuthAdminListener`).
  */
 import {
+  buildClusterArtifacts,
+  buildClusterDocument,
   serviceContractTable,
-  singleDocumentClosure,
+  type ClusterDocument,
   type ContractClosureManifest,
   type EpAuthzMode,
   type EpCommandDef,
@@ -83,50 +85,20 @@ export const authContractArtifactValues = TABLE.artifactValues;
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the auth plane's served
  *  command surface. Revision 1: the single `retire-lifecycle` command. */
-export function authClusterDocument(): {
-  urn: string;
-  revision: number;
-  attributes: unknown[];
-  events: unknown[];
-  commands: Array<{
-    name: string;
-    class: "ephemeral";
-    targeted: boolean;
-    modes?: EpAuthzMode[];
-    capability: string;
-    inputDigest: string;
-    outputDigest: string;
-  }>;
-} {
-  return {
-    urn: AUTH_CLUSTER_URN,
-    revision: 1,
-    attributes: [],
-    events: [],
-    commands: ROWS.map((r) => ({
-      name: r.name,
-      class: "ephemeral" as const,
-      targeted: r.targeted,
-      ...(r.modes ? { modes: r.modes } : {}),
-      capability: r.capability,
-      inputDigest: singleDocumentClosure(r.input).closureDigest,
-      outputDigest: singleDocumentClosure(r.output).closureDigest,
-    })),
-  };
+export function authClusterDocument(): ClusterDocument {
+  return buildClusterDocument(AUTH_CLUSTER_URN, 1, ROWS);
 }
 
-/** The two-digest §13.7 content addressing for the auth document (mirrors
- *  `managerClusterArtifacts`): both artifacts publish to the `epc` store at their own digest;
- *  `clusterDigests` in the service spec carries the closure digest. */
+/** The two-digest §13.7 content addressing for the auth document: both artifacts publish to the
+ *  `epc` store at their own digest; `clusterDigests` in the service spec carries the closure
+ *  digest. */
 export function authClusterArtifacts(): {
-  document: ReturnType<typeof authClusterDocument>;
+  document: ClusterDocument;
   rootDigest: string;
   manifest: ContractClosureManifest;
   closureDigest: string;
 } {
-  const document = authClusterDocument();
-  const { manifest, closureDigest } = singleDocumentClosure(document);
-  return { document, rootDigest: manifest.root, manifest, closureDigest };
+  return buildClusterArtifacts(authClusterDocument());
 }
 
 /** The handler the auth plane supplies to back `retire-lifecycle`. Receives the serve CONTEXT

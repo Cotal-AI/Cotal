@@ -11,9 +11,10 @@
  * `traffic-only`, a later successful read clears the reason, a failed watch is named as such.
  */
 import { EventEmitter } from "node:events";
-import type { CotalEndpoint, MembershipSnapshot, Presence } from "@cotal-ai/core";
+import type { CotalEndpoint, MembershipChange, MembershipSnapshot, Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../src/console/mesh.js";
-import { MeshView, type MembershipView } from "../src/view/mesh-view.js";
+// By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
+import { MeshView, type MembershipView } from "../../../packages/workspace/dist/view/index.js";
 import { foldTopo, membershipFreshness } from "../src/console/ui/topo/model.js";
 
 let failures = 0;
@@ -65,6 +66,23 @@ check("bounded wildcard expands to both concretes (live)", (() => {
 const aliceNodes = g.nodes.filter((n) => n.key === "a:ID_alice");
 check("a member with traffic is one node, member:true", aliceNodes.length === 1 && aliceNodes[0].member === true);
 check("a member with traffic keeps its traffic edge", g.edges.some((e) => e.src === "a:ID_alice" && e.dst === "c:general"));
+
+console.log("1b. a durable family row expands over the durable-class channels under it");
+// fay follows team.> and is offline: her family row stores copies for team.build (durable) and none for
+// team.qa (live). gus reads team.qa live and also holds the family row.
+const famSnapshot: MembershipSnapshot = {
+  asOf: NOW,
+  members: [
+    { id: "ID_fay", live: [], durable: ["team.>"], observedAt: NOW },
+    { id: "ID_gus", live: ["team.qa"], durable: ["team.>"], observedAt: NOW },
+  ],
+};
+const fam = foldTopo([], [], { membership: { snapshot: famSnapshot }, knownChannels, durableChannels: ["backend", "team.build"], now: NOW, nameOf });
+const famLinks = (id: string) => fam.memberships.filter((m) => m.agent === "a:" + id).map((m) => `${m.channel}:${m.state}`).sort();
+check("an offline family follower gets a durable link to each durable-class channel under it, and none to a live one",
+  JSON.stringify(famLinks("ID_fay")) === JSON.stringify(["c:team.build:durable"]), famLinks("ID_fay"));
+check("a live read wins over the family row on its channel", JSON.stringify(famLinks("ID_gus")) === JSON.stringify(["c:team.build:durable", "c:team.qa:live"]), famLinks("ID_gus"));
+check("the family itself is not drawn as a channel hub", !fam.byKey.has("c:team.>"), [...fam.byKey.keys()]);
 
 console.log("2. same-name principals remain separate authoritative members");
 const sameNameAgents: Presence[] = [agent("ID_sam_1", "sam"), agent("ID_sam_2", "sam")];
@@ -123,19 +141,25 @@ console.log("5. MeshView classifies what its endpoint answers (the error path dr
 class StubEndpoint extends EventEmitter {
   space = "stub";
   readAnswer: () => Promise<MembershipSnapshot> = () => Promise.resolve({ asOf: NOW, members: [] });
-  watchAnswer: (cb: () => void, onClosed?: (e: Error) => void) => Promise<{ stop(): Promise<void> }> = (cb, onClosed) => { this.onChange = cb; this.onClosed = onClosed; return Promise.resolve({ stop: async () => {} }); };
-  onChange?: () => void;
+  watchAnswer: (cb: (change: MembershipChange) => void, onClosed?: (e: Error) => void) => Promise<{ stop(): Promise<void> }> = (cb, onClosed) => { this.onChange = cb; this.onClosed = onClosed; return Promise.resolve({ stop: async () => {} }); };
+  onChange?: (change: MembershipChange) => void;
   onClosed?: (e: Error) => void;
+  reads = 0;
   async start() {}
   async stop() {}
   getRoster(): Presence[] { return []; }
   tap() {}
-  async listChannels() { return []; }
+  listChannels: () => Promise<{ channel: string; messages: number }[]> = async () => [];
+  channelDeliveryClass(channel: string) { return channel === "team.build" ? "durable" : "live"; }
   async dmHistory() { return []; }
+  async channelHistory() { return []; }
   ref() { return { id: "stub", name: "stub" }; }
-  readMembership() { return this.readAnswer(); }
-  watchMembership(cb: () => void, onClosed?: (e: Error) => void) { return this.watchAnswer(cb, onClosed); }
+  readMembership() { this.reads++; return this.readAnswer(); }
+  watchMembership(cb: (change: MembershipChange) => void, onClosed?: (e: Error) => void) { return this.watchAnswer(cb, onClosed); }
 }
+/** What the watch delivers for one agent's record and for the daemon's heartbeat (#4904). */
+const memberChange: MembershipChange = { type: "member", id: "a:x", operation: "PUT", revision: 7, update: true, member: { id: "a:x", live: ["ops"], durable: [], observedAt: NOW } };
+const heartbeat = (asOf: number): MembershipChange => ({ type: "heartbeat", revision: 8, update: true, asOf });
 async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => MembershipView }> {
   const view = new MeshView(stub as unknown as CotalEndpoint, {});
   await view.start();
@@ -151,9 +175,37 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   check("...and the pill says unreadable", membershipFreshness(NOW, m()).label === "unreadable");
   // The watch fires, the read now succeeds: the reason clears and the snapshot is live.
   stub.readAnswer = () => Promise.resolve(snapshot);
-  stub.onChange?.();
+  stub.onChange?.(heartbeat(NOW + 1));
   await wait(300);
-  check("a later successful read clears the reason and carries the snapshot", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
+  check("a heartbeat over a FAILED read is the retry: the reason clears and the snapshot is read", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
+  await view.stop();
+}
+{
+  // The channel rows carry each channel's class, which the topology lens hands foldTopo as the durable
+  // channels a family row expands over (#5404).
+  const stub = new StubEndpoint();
+  stub.listChannels = async () => [{ channel: "team.build", messages: 1 }, { channel: "team.chat", messages: 2 }];
+  const { view } = await viewOver(stub);
+  const rows = view.snapshot().channels.map((c) => `${c.channel}:${c.deliveryClass}`);
+  check("the channel rows carry each channel's class from the endpoint", JSON.stringify(rows) === JSON.stringify(["team.build:durable", "team.chat:live"]), rows);
+  await view.stop();
+}
+{
+  // #4904: the daemon rewrites the heartbeat every poll with nothing else changed. Over a readable
+  // snapshot that moves `asOf` and nothing else, so it must cost no bucket read; a member change does.
+  const stub = new StubEndpoint();
+  stub.readAnswer = () => Promise.resolve(snapshot);
+  const { view, m } = await viewOver(stub);
+  const readsAfterStart = stub.reads;
+  stub.onChange?.(heartbeat(NOW + 5_000));
+  await wait(300);
+  check("a heartbeat over a readable snapshot moves asOf without a bucket read", m().snapshot?.asOf === NOW + 5_000 && m().snapshot?.members.length === 5 && stub.reads === readsAfterStart, { asOf: m().snapshot?.asOf, reads: stub.reads, readsAfterStart });
+  stub.onChange?.({ type: "replayed", revision: 8 });
+  await wait(300);
+  check("a replayed marker costs no read either", stub.reads === readsAfterStart, { reads: stub.reads, readsAfterStart });
+  stub.onChange?.(memberChange);
+  await wait(300);
+  check("a member change reads the feed back in full", stub.reads === readsAfterStart + 1 && m().snapshot?.asOf === NOW, { reads: stub.reads, readsAfterStart, asOf: m().snapshot?.asOf });
   await view.stop();
 }
 {
@@ -181,7 +233,7 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   await wait(50);
   check("a watch that closes after setup is named as the watch's failure, never as a connection error", /^watch: membership watch closed/.test(m().unreadable ?? ""), m());
   check("...and never as a connection error", view.snapshot().status.error === undefined, view.snapshot().status);
-  stub.onChange?.();
+  stub.onChange?.(memberChange);
   await wait(300);
   check("...and a later change clears the reason, leaving a live snapshot", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
   await view.stop();
@@ -191,6 +243,27 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   stub.readAnswer = () => Promise.resolve(snapshot);
   const { view, m } = await viewOver(stub);
   check("a readable feed is carried as the snapshot, no reason", m().unreadable === undefined && m().snapshot?.members.length === 5, m());
+  await view.stop();
+}
+
+console.log("6. A broker restart's presence error clears when the presence view is current again (AGENT-2889)");
+{
+  // The endpoint's real order across a broker restart, measured: the transport reconnects with no
+  // new `connection`, the view goes stale, `stream not found` arrives, and the view is current once
+  // the space is provisioned again.
+  const stub = new StubEndpoint();
+  const { view } = await viewOver(stub);
+  stub.emit("connection", { connected: true });
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("error", new Error("stream not found"));
+  check("the outage error is shown while the presence view is stale", view.snapshot().status.error === "stream not found", view.snapshot().status);
+  stub.emit("presence-view", { state: "current" });
+  check("the outage error clears once the presence view is current again", view.snapshot().status.error === undefined, view.snapshot().status);
+  // Control: an error raised while the view is current is not an outage's, so recovery never clears it.
+  stub.emit("error", new Error("permission denied"));
+  stub.emit("presence-view", { state: "stale" });
+  stub.emit("presence-view", { state: "current" });
+  check("an error raised while the view was current stays until a new connection", view.snapshot().status.error === "permission denied", view.snapshot().status);
   await view.stop();
 }
 

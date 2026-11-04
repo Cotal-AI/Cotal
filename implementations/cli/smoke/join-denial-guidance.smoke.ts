@@ -19,6 +19,10 @@
  * failure would pass a one-sided test while making every unrelated join failure misleading, so the
  * unprovisioned case is asserted to be unchanged: it still says `cotal up`, and must NOT blame the
  * responder. Credentials stay the first cause because they usually are.
+ *
+ * A `--creds` join whose credential was minted without provisioning has no inbox for its lifecycle,
+ * and the last cell asserts that refusal names that lifecycle and `cotal auth mint <name>
+ * --provision`, never `cotal up`, which cannot make that inbox.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -110,6 +114,8 @@ try {
   // CELL 1: the denial is still a single human sentence, not a raw stack.
   check("CELL: a denied join renders as guidance, not a raw broker stack",
     /not authorized to join/.test(out) && !/at Object\.|at process\./.test(out), out);
+  check("CELL: the denial is a classified refusal: PERMISSION_DENIED, exit 2",
+    denied.status === 2 && /Code: +PERMISSION_DENIED/.test(out), { status: denied.status, out });
 
   // CELL 2: THE FIX. The delivery daemon is named as a possible cause.
   check("CELL: the denial NAMES the delivery daemon as a possible cause",
@@ -146,6 +152,16 @@ try {
     !/DELIVERY DAEMON/i.test(unprovOut), unprovOut);
   check("REFUSE CONTROL: it still gives that failure's own remedy (creds), so it is not a silent pass",
     /credentials rejected|check your creds|--creds/i.test(unprovOut), unprovOut);
+
+  // CELL 5: an agent credential from this broker, minted without provisioning, has no inbox for its
+  // lifecycle, and running `cotal up` cannot make one for it.
+  const unprovisioned = pjoin(root, "unprovisioned.creds");
+  const unprovisionedUid = mintLifecycleUid();
+  writeFileSync(unprovisioned, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: unprovisionedUid }), { mode: 0o600 });
+  const bare = cli("join", "--space", SPACE, "--server", server, "--creds", unprovisioned, "--lifecycle-uid", unprovisionedUid, "--name", "probe");
+  check("CELL: a --creds join with no inbox for its lifecycle names that lifecycle and the provisioning mint, not cotal up",
+    bare.status === 2 && /Code: +TARGET_NOT_FOUND/.test(bare.text) && bare.text.includes(`no inbox provisioned for this credential's lifecycle ${unprovisionedUid}`) &&
+      bare.text.includes("cotal auth mint <name> --provision") && !/run `cotal up`/.test(bare.text), bare.text);
 
   console.log(fail === 0
     ? `\nJOIN DENIAL GUIDANCE SMOKE OK ✅  (${pass} passed, ${fail} failed)`

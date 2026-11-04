@@ -1,11 +1,17 @@
-import { rawDigest } from "./canonical.js";
+import { fromPublic } from "@nats-io/nkeys";
+import { rawDigest, canonicalJson, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, principalKey } from "./subjects.js";
 
 /** The manager-service authority operations. The request type and the host parser both read this
  *  list, so an operation added here is admitted by the parser too. */
 export const REMOTE_MANAGER_AUTHORITY_OPERATIONS = Object.freeze(["prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", "transferReader"] as const);
+
+/** The host-owned manager-service maintenance operations. The request type, the host parser, and
+ *  the result check all read this list, so an operation added here is admitted by the parser too
+ *  and cannot fall through another operation's branch. */
+export const REMOTE_MANAGER_MAINTENANCE_OPERATIONS = Object.freeze(["evict-family-principal", "reconcile-registration"] as const);
 
 /**
  * Closed request for one remote manager-service authority lifecycle.
@@ -131,7 +137,7 @@ export interface RemoteManagerAuthorityMaterial {
 export interface RemoteManagerMaintenanceRequest {
   v: 1;
   kind: "manager-service-maintenance";
-  operation: "evict-family-principal" | "reconcile-registration";
+  operation: (typeof REMOTE_MANAGER_MAINTENANCE_OPERATIONS)[number];
   space: string;
   actor: string;
   instanceId: string;
@@ -270,6 +276,63 @@ export interface RemoteManagerAdminAuthorizationResult {
   authorized: boolean;
 }
 
+/** Closed pre-run decision for one exact native personal caller lifecycle. */
+export interface RemoteManagerParticipationAuthorizationRequest {
+  v: 1;
+  kind: "manager-participation-authorization";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  caller: { owner: string; actor: string; lifecycleUid: string };
+}
+
+/** Exact request echo plus the host-derived authorization decision. */
+export interface RemoteManagerParticipationAuthorizationResult extends RemoteManagerParticipationAuthorizationRequest {
+  owner: string;
+  authorized: boolean;
+}
+
+/** Build the closed request a registered manager sends for one native workflow participant. */
+export function remoteManagerParticipationAuthorizationRequest(
+  manager: { space: string; instanceId: string; lifecycleUid: string; identities: RemoteManagerAuthorityRequest["identities"] },
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  caller: RemoteManagerParticipationAuthorizationRequest["caller"],
+  requestId: string,
+): RemoteManagerParticipationAuthorizationRequest {
+  return { v: 1, kind: "manager-participation-authorization", space: manager.space, actor,
+    instanceId: manager.instanceId, managerLifecycleUid: manager.lifecycleUid, requestId,
+    registrationProof, serveEpoch, identities: manager.identities, caller };
+}
+
+/** Bind an untrusted host decision to the exact request before using its boolean. */
+export function remoteManagerParticipationAuthorized(
+  raw: unknown,
+  request: RemoteManagerParticipationAuthorizationRequest,
+  expectedOwner: string,
+): boolean {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("manager participation authorization returned a non-object result");
+  const result = raw as Record<string, unknown>;
+  const fields = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller", "authorized"];
+  if (Object.keys(result).sort().join(",") !== fields.sort().join(",") || result.v !== 1 ||
+      result.kind !== request.kind || result.space !== request.space || result.owner !== expectedOwner ||
+      result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch ||
+      canonicalJson(result.identities) !== canonicalJson(request.identities) ||
+      canonicalJson(result.caller) !== canonicalJson(request.caller) ||
+      typeof result.authorized !== "boolean")
+    throw new Error("manager participation authorization returned different manager, caller, owner, or boolean coordinates");
+  return result.authorized;
+}
+
 /**
  * Closed wire request for host-owned managed agent enrollment (#1972).
  *
@@ -300,6 +363,11 @@ export interface RemoteManagedAgentEnrollmentRequest {
     allowSubscribe?: string[];
     allowPublish?: string[];
   };
+  /** The spawn request this enrollment answers, when a caller asked for it: the request subject the
+   *  manager served, and the run whose driver sent it. The host bounds the helper by the caller it
+   *  observed publishing that subject, never by this field's word. Absent for a spawn the manager
+   *  starts on its own behalf, whose parent is the manager. */
+  spawn?: { served: string; runId?: string };
   identities: RemoteManagerAuthorityRequest["identities"];
 }
 
@@ -406,6 +474,17 @@ export interface RemoteManagedAgentRuntimeStatusRequest extends Omit<RemoteManag
 
 export type RemoteManagedAgentRuntimeRequest = RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest;
 
+/** SPEC §13.19's declaration-only serving request. Parsing grants no authority; the auth
+ *  and host owners must implement current registration, child, snapshot and clock checks. */
+export interface RemoteManagedAgentToolResultServingRequest extends RemoteManagerEnvelope {
+  v: 1;
+  kind: "manager-managed-agent-tool-result-serving";
+  accountPublicKey: string;
+  serveEpoch: number;
+  operation: "issue" | "renew";
+  target: { owner: string; actor: string; lifecycleUid: string };
+}
+
 /** The host's answer to a runtime create or status request: the request echo plus the host state. */
 export interface RemoteManagedAgentRuntimeResult {
   v: 1;
@@ -432,6 +511,11 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
   };
 }
 
+/** Serialize a remote manager's serve principal through the shared owner/actor token validator. */
+export function remoteManagerServePrincipal(owner: string, instanceId: string): string {
+  return principalKey(owner, remoteManagerActors(instanceId).serve).key;
+}
+
 /** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts.
  * Only activation binds contract artifacts. */
 export function remoteManagerRegistrationProof(
@@ -454,7 +538,8 @@ export function remoteManagerRegistrationProof(
 }
 
 /** The one terminal operation identity for a managed lifecycle. It is derived, never selected:
- * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op. */
+ * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op.
+ * The id is 26 hex chars, so it is itself a lifecycle token (`[a-z0-9]{26,32}`). */
 export function managedRetirementOpId(lifecycleUid: string): string {
   return rawDigest(`retire:${assertLifecycleToken(lifecycleUid)}`).slice("sha256:".length, "sha256:".length + 26);
 }
@@ -519,7 +604,7 @@ export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: str
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
     enrollmentError(what, "requestId must be a 22-64 character idempotency token");
   if (registrationProof) {
-    if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof))
+    if (!isContractDigest(o.registrationProof))
       enrollmentError(what, "requires a sha256 registrationProof");
   } else if (o.registrationProof !== undefined) enrollmentError(what, "must not carry registrationProof");
   const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
@@ -565,18 +650,34 @@ export function parseRemoteManagedAgentEnrollmentRequest(raw: unknown): RemoteMa
   const o = raw as Record<string, unknown>;
   const allowed = new Set([
     "v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId",
-    "registrationProof", "serveEpoch", "target", "identities",
+    "registrationProof", "serveEpoch", "target", "spawn", "identities",
   ]);
   for (const key of Object.keys(o))
     if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-enrollment");
   const target = parseLaunchTarget(o.target, what, true);
+  const spawn = o.spawn === undefined ? undefined : parseEnrollmentSpawn(o.spawn, what);
   return {
     v: 1,
     kind: "manager-managed-agent-enrollment",
     ...envelope,
     target: { ...target, tokenHash: parseTokenHash((o.target as Record<string, unknown>).tokenHash, what) },
+    ...(spawn !== undefined ? { spawn } : {}),
   };
+}
+
+/** The served spawn an enrollment answers: a request subject and, for a run's spawn, its run id.
+ *  Only the shape is checked here; the host checks the subject against what it observed. */
+function parseEnrollmentSpawn(value: unknown, what: string): { served: string; runId?: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) enrollmentError(what, "spawn must be an object when present");
+  const v = value as Record<string, unknown>;
+  for (const key of Object.keys(v))
+    if (key !== "served" && key !== "runId") enrollmentError(what, `spawn carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  if (typeof v.served !== "string" || v.served.length === 0 || v.served.length > 512 || !v.served.startsWith("cotal."))
+    enrollmentError(what, "spawn.served must be the served request subject");
+  if (v.runId !== undefined && (typeof v.runId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v.runId)))
+    enrollmentError(what, "spawn.runId must be a run id token when present");
+  return { served: v.served as string, ...(v.runId !== undefined ? { runId: v.runId as string } : {}) };
 }
 
 /** The digest, never the secret: a request that carried the plaintext standing token would put an
@@ -704,6 +805,34 @@ function parseRemoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRunti
   } as Extract<RemoteManagedAgentRuntimeRequest, { kind: K }>;
 }
 
+/** Parse the closed issue/renew request through the shared managed-agent envelope.
+ *  There is no dispatch, signer, resume operation or caller-selected profile in this slice. */
+export function parseRemoteManagedAgentToolResultServingRequest(raw: unknown): RemoteManagedAgentToolResultServingRequest {
+  const what = "managed agent tool-result serving";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) enrollmentError(what, "must be an object");
+  let o: Record<string, unknown>;
+  try { o = JSON.parse(canonicalJson(raw)) as Record<string, unknown>; }
+  catch { enrollmentError(what, "must be interchangeable JSON"); }
+  const keys = new Set([...RUNTIME_REQUEST_KEYS, "operation", "accountPublicKey"]);
+  for (const key of Object.keys(o))
+    if (!keys.has(key)) enrollmentError(what, "carries an unknown field (the protocol is closed)");
+  if (o.operation !== "issue" && o.operation !== "renew") enrollmentError(what, "operation must be issue or renew");
+  try {
+    const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-tool-result-serving");
+    if (!/^[A-Za-z0-9_-]+$/.test(envelope.space)) enrollmentError(what, "space must be a literal routing token");
+    const target = Object.freeze(parseRetirementTarget(o.target, what));
+    const accountPublicKey = parseAccountPublicKey(o.accountPublicKey, what);
+    fromPublic(accountPublicKey);
+    for (const identity of Object.values(envelope.identities)) Object.freeze(identity);
+    Object.freeze(envelope.identities);
+    return Object.freeze({ v: 1, kind: "manager-managed-agent-tool-result-serving", ...envelope,
+      accountPublicKey, operation: o.operation, target });
+  } catch (error) {
+    if (error instanceof EpEnvelopeError) throw error;
+    enrollmentError(what, "has invalid identity coordinates");
+  }
+}
+
 /** Parse a runtime-create request without retaining unknown input fields. */
 export function parseRemoteManagedAgentRuntimeCreateRequest(raw: unknown): RemoteManagedAgentRuntimeCreateRequest {
   return parseRemoteManagedAgentRuntimeRequest(raw, "manager-managed-agent-runtime-create", "managed agent runtime-create");
@@ -812,6 +941,38 @@ export interface RemoteRunAdmissionResult {
   admission: import("./run-admission.js").RunAdmission;
 }
 
+/** Issuer-observed keyed start or caller-confined exact read. No caller/run identity in body. */
+export interface RemoteRunSubmissionRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-submission";
+  subject: string;
+}
+export interface RemoteRunSubmissionResult {
+  v: 1;
+  kind: "manager-run-submission";
+  requestId: string;
+  winner: boolean;
+  view: import("./run-submission.js").RunSubmissionView;
+  admission?: import("./run-admission.js").RunAdmission;
+}
+
+/** Inspect or commit one exact issuer-observed served cancellation. Inspection is not a grant. */
+export interface RemoteRunCancelRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-cancel";
+  stage: "inspect" | "commit";
+  subject: string;
+  cancel: import("./run-cancel.js").RunCancelInput;
+}
+
+export type RemoteRunCancelResult = {
+  v: 1;
+  kind: "manager-run-cancel";
+  requestId: string;
+  runId: string;
+} & (
+  | { stage: "inspect"; authority: import("./run-cancel.js").RunCancelAuthority }
+  | { stage: "commit"; result: import("./run-cancel.js").RunCancelCommit }
+);
+
 /** Revoke one admitted run through its issuing host. The authenticated holder, never the body,
  * supplies the owner and attribution. The admission supplies the run's owner. */
 export interface RemoteRunRevokeRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
@@ -894,6 +1055,7 @@ export type PlatformControlInnerRequest =
   | RemoteManagerGoalIndexScanRequest
   | RemoteManagerAdminAuthorizationRequest
   | RemoteRunAdmissionRequest
+  | RemoteRunSubmissionRequest
   | RemoteRunAttemptRequest;
 
 /** Closed envelope for one platform control door call. It names no profile, permission, subject,
@@ -918,6 +1080,7 @@ export type PlatformControlAuthorityResult<R extends PlatformControlInnerRequest
   : R extends RemoteManagerGoalIndexScanRequest ? RemoteManagerGoalIndexScanResult
   : R extends RemoteManagerAdminAuthorizationRequest ? RemoteManagerAdminAuthorizationResult
   : R extends RemoteRunAdmissionRequest ? RemoteRunAdmissionResult
+  : R extends RemoteRunSubmissionRequest ? RemoteRunSubmissionResult
   : R extends RemoteRunAttemptRequest ? RemoteRunAttemptResult
   : never;
 

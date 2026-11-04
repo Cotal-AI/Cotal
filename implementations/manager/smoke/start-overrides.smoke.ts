@@ -149,14 +149,32 @@ const j = (v: unknown) => JSON.stringify(v);
   resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", events: false });
   check("absent shareTools → all declared servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha", "beta"]), lastOpts?.mcpServers);
+  check("absent shareTools keeps native MCP discovery", lastOpts?.mcpServersExclusive === false);
   resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: ["alpha"], events: false });
   check("named selection → that server only", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha"]), lastOpts?.mcpServers);
+  check("named shareTools requests exclusive MCP discovery", lastOpts?.mcpServersExclusive === true);
   resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: [], events: false });
   check("empty shareTools → no servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j([]), lastOpts?.mcpServers);
+  check("empty shareTools requests exclusive MCP discovery", lastOpts?.mcpServersExclusive === true);
   const bad = await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: ["gamma"], events: false });
   check("undeclared share-tools name fails loud", bad.ok === false && /gamma/.test(bad.error ?? ""), bad);
+  // #3864: the selection is a pure function of the request and the config, so the refusal lands
+  // BEFORE the spawn is accepted. Before the fix onAccepted had fired (and a hosted run had bound
+  // its goal) by the time hostLaunchFields refused the name.
+  let accepted = false;
+  let refusal: string | undefined;
+  try {
+    const r = await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: ["gamma"], events: false }, undefined, {
+      onAccepted: async () => { accepted = true; },
+    });
+    if (r.ok === false) refusal = r.error;
+  } catch (e) {
+    refusal = e instanceof Error ? e.message : String(e);
+  }
+  check("undeclared share-tools name is refused before the spawn is accepted (onAccepted never fires)",
+    refusal !== undefined && /gamma/.test(refusal) && accepted === false, { refusal, accepted });
 }
 
 // 6 — the identity override (`--name` alongside a ref) wins over the file's `name:` and threads

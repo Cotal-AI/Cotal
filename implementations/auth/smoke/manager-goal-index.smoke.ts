@@ -34,7 +34,7 @@ assert.throws(() => parseRemoteManagerGoalIndexScanRequest({ ...request, filter:
 await assert.rejects(run({ scope: ["spawn"] }), /scope "supervise"/);
 await assert.rejects(run({ request: { ...request, space: "other" } }), /not this host space/);
 await assert.rejects(run({ request: { ...request, serveEpoch: 6 } }), /serve epoch 6 is stale/);
-await assert.rejects(run({ observeManagerGate: async () => ({ ...gate, principal: `${otherOwner}.${actors.serve}` }) }), /not u_/);
+await assert.rejects(run({ observeManagerGate: async () => ({ ...gate, principal: `${otherOwner}.${actors.serve}` }) }), /not serve principal u_/);
 await assert.rejects(run({ request: { ...request, registrationProof: `sha256:${"f".repeat(64)}` } }), /current host registration/);
 const authorized = await run();
 const entry = { v: 1 as const, endpoint: "manager", owner, actor: "cli", uid: mintLifecycleUid(), goalId: `goal${mintLifecycleUid()}`, iid: instanceId };

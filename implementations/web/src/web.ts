@@ -1,44 +1,63 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fchmodSync, fstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import {
   CotalEndpoint,
   deliveryOf,
+  eventChannel,
+  eventChannelPrincipal,
   isEventChannel,
+  isPermissionDenied,
+  parsePrincipalKey,
   parseSubject,
+  principalKey,
+  type DeliveryMode,
   type PresenceView,
   spacePrefix,
+  credsClaims,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   clearChannel,
   assertValidChannel,
   hardenPrivate,
+  mentionsIn,
+  openPrivateAppend,
+  writePrivateRecord,
   type CotalMessage,
+  type MembershipChange,
+  type MembershipSnapshot,
   type ParsedArgs,
+  type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   c,
   connectOrExit,
+  inputDisabledByFlag,
   localProcessPath,
   parsePid,
   probeLiveness,
-  progressSignal,
+  probeWebReadiness,
+  webBoundUrl as boundUrl,
+  readPidfile,
   readWebSession,
   removePidPair,
   userViewAuth,
   userViewAuthOrExit,
   WEB_PIDFILE,
   WEB_READINESS_HEADER,
+  WEB_READINESS_PATH,
   WEB_SESSION_FILE,
   writeIdentityPin,
   type ConnectFlags,
   type Connection,
   type LocalProcess,
   type UserViewAuth,
+  type WebMeta,
   type WebSession,
 } from "@cotal-ai/workspace";
 
@@ -64,15 +83,19 @@ export const CROSS_ORIGIN = "cross-origin";
  *  keeps it off cross-site requests; the origin check carries what is left. Stated here rather than
  *  discovered in review. */
 const SESSION_COOKIE = "cotal_web_session";
-/** The ONLY path the readiness nonce opens. Shared with the route below so the gate and the route
- *  cannot drift into disagreeing about which path that is. */
-const READINESS_PATH = "/api/meta";
 /** The request path, without the query. This DUPLICATES the handler's own parse, deliberately: the
  *  statements ahead of the gate are pinned to an exact literal parse, because an initializer there is
  *  code that runs before the gate is consulted. So the gate derives the path itself rather than being
  *  handed one, and the two must be edited together. */
 function pathOf(req: IncomingMessage): string {
   return (req.url ?? "/").split("?")[0];
+}
+/** The class of an error for a managed service log: its name and code when each is a short
+ *  identifier. Never its message, which can carry peer-supplied text or a request target. */
+export function errorClassForLog(error: unknown): string {
+  const token = (value: unknown) => (typeof value === "string" || Number.isSafeInteger(value)) && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(String(value)) ? String(value) : undefined;
+  const parts = error instanceof Error ? [token(error.name), token((error as { code?: unknown }).code)] : [];
+  return parts.filter(Boolean).join(" ") || "unclassified";
 }
 /** Keep request diagnostics useful without copying a contiguous live launch credential into the
  *  operator log, wherever it appears in the target. Match each ASCII token byte in raw or percent-
@@ -180,7 +203,7 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
       // as the process, so accepting it on every path would leave `web.session` holding a standing
       // full-surface credential beside a link this command calls single-use.
       const readiness = req.headers[WEB_READINESS_HEADER];
-      if (pathOf(req) === READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
+      if (pathOf(req) === WEB_READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
         return undefined;
 
       const session = cookieValue(req.headers.cookie, SESSION_COOKIE);
@@ -219,9 +242,6 @@ export const webProcess: LocalProcess = {
   // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
   // credential outlives the process it authenticates.
   artifacts: [WEB_SESSION_FILE],
-  // The dashboard starts target-resolved from any directory and claims its pidfile under the
-  // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
-  rootedAt: "target",
 };
 
 /** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it,
@@ -247,8 +267,8 @@ function claimPid(path: string): void {
           ? `web extension removal is in progress (pid ${pid})`
           : `web dashboard is already running for this mesh (pid ${pid})`,
       );
-    // Stale is advice to clean the record, so it is given only for a pid proven gone or an empty husk
-    // (which `cotal down web` clears). Anything else may still front a live process.
+    // Stale is advice to clean the record, so it is given only for a pid proven gone or an empty
+    // husk, which has no process behind it. Anything else may still front a live process.
     if (liveness === "dead" || raw === "")
       throw new Error(
         removal
@@ -267,47 +287,71 @@ function releasePid(path: string): void {
   }
 }
 
-// Message bodies render markdown via marked + DOMPurify (parse + sanitize). Their browser builds are
-// copied into dist/web/vendor at build time (scripts/copy-vendor.mjs) and served from the dashboard's
-// OWN files, so a published/seeded copy is self-contained and never reaches into node_modules at
-// runtime — which is what lets web ship as a bundled first-party extension, seeded like the connectors.
-const jsType = "text/javascript; charset=utf-8";
-
 /** The one condition name for "the membership read did not answer", shared by the HTTP body and the
  *  SSE event so a browser matches ONE token and a test asserts the same token the server emits.
- *  Exported for the same reason `PAGE` is: a test that restates it only agrees with itself. */
+ *  Exported so a test asserts the token the server emits rather than a restated copy. */
 export const MEMBERSHIP_READ_FAILED = "membership-read-failed";
 
-/** Exported so a test can resolve what the browser is actually served, rather than restating the
- *  route table in its own source and agreeing with itself. */
-export const PAGE: Record<string, { path: string; type: string }> = {
-  "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
-  "/harness.js": { path: join(here, "web/harness.js"), type: jsType },
-  // Shared message-part renderer for both pages. This map is an allow-list, so a page script that
-  // depends on this file is broken until it has a row here, whatever the HTML requests.
-  "/parts.js": { path: join(here, "web/parts.js"), type: jsType },
-  // Registers an `ag-ui.frame` renderer into the map `parts.js` consults. Served to both pages: a
-  // frame is as likely to arrive on the graph's detail row as in the console body, and a kind that
-  // draws on one page and shows a marker on the other is worse than one that shows a marker on both.
-  "/agui-frame.js": { path: join(here, "web/agui-frame.js"), type: jsType },
-  // The shape-B bootstrap: this page taps live before it reads history, so a frame's `seq` order has
-  // to be imposed by the consumer. Served to `/` only. The graph page reads the backfill into
-  // transient glow and "recently active" buffers and keeps no feed a live arrival appends to, so it
-  // has no merge to order; giving it the machine anyway would imply an ordering guarantee on a
-  // surface where nothing consumes one.
-  "/event-order.js": { path: join(here, "web/event-order.js"), type: jsType },
-  // Keep-last-good + the refusal guard, shared by BOTH pages so they cannot disagree about what a
-  // failed poll does to what is already on screen. Served to `/` and `/graph` alike: the wipe was
-  // measured on the graph page and the corrupted feed on the console page, and one page keeping its
-  // snapshot while the other drops it is the state this file exists to prevent.
-  "/snapshot.js": { path: join(here, "web/snapshot.js"), type: jsType },
-  "/md.js": { path: join(here, "web/md.js"), type: jsType },
-  "/app.js": { path: join(here, "web/app.js"), type: jsType },
-  "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
-  "/graph.js": { path: join(here, "web/graph.js"), type: jsType },
-  "/vendor/marked.umd.js": { path: join(here, "web/vendor/marked.umd.js"), type: jsType },
-  "/vendor/purify.min.js": { path: join(here, "web/vendor/purify.min.js"), type: jsType },
+/** Content types for the files a client build contains. A file of any other type is not served,
+ *  so a stray file dropped into the build directory never becomes a route. */
+const CLIENT_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
 };
+
+/** One servable file of the client build. `immutable` marks a content-hashed asset, which a
+ *  browser may cache forever because a new build gives it a new name. */
+export interface ClientFile { path: string; type: string; immutable: boolean }
+
+/** The answer when the client build is missing: the server keeps serving the API and says what to
+ *  do instead of serving nothing. It speaks to both readers who can meet it: in a source checkout
+ *  the page has not been built yet, while an installed package always ships its page, so there the
+ *  install itself is broken. */
+export const CLIENT_NOT_BUILT =
+  "the dashboard client is not built. In a source checkout, run `pnpm --filter @cotal-ai/web build`. " +
+  "An installed @cotal-ai/web always ships its client, so this is a broken install: reinstall it with `cotal ext seed --force`.";
+
+/** The classic script the page loads in its head, before the stylesheet, to put the saved theme on
+ *  the root element before anything is drawn (`client/src/lib/themeBoot.ts`, written by the build). */
+export const THEME_BOOT = "theme-boot.js";
+
+/** The client build as an allow-list, read once at startup: the page at `/` (and `/graph`, so an
+ *  old link opens the app), the theme boot script at `/theme-boot.js`, and the files directly inside
+ *  `assets/`. Nothing else under `dir` is reachable, and no request path is ever joined onto the
+ *  filesystem. The boot script's name carries no hash, so unlike the assets it is not cached for good. */
+export function clientAssets(dir: string): Map<string, ClientFile> {
+  const routes = new Map<string, ClientFile>();
+  const index = join(dir, "index.html");
+  if (!existsSync(index)) return routes;
+  const page: ClientFile = { path: index, type: "text/html; charset=utf-8", immutable: false };
+  routes.set("/", page);
+  routes.set("/graph", page);
+  const boot = join(dir, THEME_BOOT);
+  if (existsSync(boot)) routes.set(`/${THEME_BOOT}`, { path: boot, type: CLIENT_TYPES[".js"], immutable: false });
+  const assets = join(dir, "assets");
+  if (!existsSync(assets)) return routes;
+  for (const entry of readdirSync(assets, { withFileTypes: true })) {
+    const type = entry.isFile() ? CLIENT_TYPES[extname(entry.name)] : undefined;
+    if (type) routes.set(`/assets/${entry.name}`, { path: join(assets, entry.name), type, immutable: true });
+  }
+  return routes;
+}
+
+/** The answer to a static request: the file when the build has it, a 503 naming the build command
+ *  when the build is missing and the page is asked for, otherwise a 404. A pure function of the
+ *  route map and the path, so the 503 is testable without a server. */
+export function clientResponse(
+  routes: Map<string, ClientFile>,
+  path: string,
+): { status: 200; file: ClientFile } | { status: 503; body: { error: string } } | { status: 404 } {
+  const file = routes.get(path);
+  if (file) return { status: 200, file };
+  if (routes.size === 0 && (path === "/" || path === "/graph")) return { status: 503, body: { error: CLIENT_NOT_BUILT } };
+  return { status: 404 };
+}
 
 /** What the two backfill routes need from an endpoint. Narrow on purpose: it is the seam the filter
  *  is measured through, and a mock satisfying six methods it never calls would prove less. */
@@ -325,7 +369,7 @@ export interface ActivitySource {
  * WHY AN AGENT'S EVENT CHANNEL IS NOT ONE OF THEM. `listChannels()` derives a row from every
  * retained concrete subject and the chat stream caps per subject rather than by age, so the list
  * grows by one row per agent that has ever run and those rows never age out. Unfiltered, the channel
- * sidebar is buried under machine streams, the graph page grows a hub node for each, and
+ * sidebar is buried under machine streams, the client's graph grows a hub node for each, and
  * `/api/activity` merges every event channel into a global top-N that a human reading chat did not
  * ask for, and pays to move those messages across the link first. That is a cost that scales with
  * the number of agents ever run, which is the wrong axis entirely.
@@ -338,9 +382,10 @@ export interface ActivitySource {
  * surfaces share this classifier rather than each spelling the convention, so they cannot disagree
  * about what a channel is.
  *
- * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still carries frames, marked
- * rather than dropped: dropping them would delete the only traffic this release taught the surface
- * to draw, and delete it silently. And `/api/channels/<name>/history` still serves an event channel
+ * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still receives frames, and
+ * sends each one as an `agent-frame` only to the feeds watching that agent (see {@link classifyTap}
+ * and {@link SessionWatchers}), never as a `message` to every browser and never dropped for a
+ * watcher. And `/api/channels/<name>/history` still serves an event channel
  * when a caller names one, because that route answers a question about a channel the caller already
  * identified; a filter there would mean the dashboard could render a frame it could never fetch. */
 export function chatOnly<T extends { channel: string }>(rows: readonly T[]): T[] {
@@ -432,13 +477,19 @@ export class BadRequest extends Error {}
  *  400 by fixing its payload would loop forever on a size it never learns is the problem. */
 export class PayloadTooLarge extends Error {}
 
-/** The most a request body may weigh before the one write route refuses to keep reading it.
+/** A post the broker, or the operator's connection to it, refused. Neither the caller's fault nor
+ *  this server's, so the frame answers 502 with the broker's own message, escaped by
+ *  {@link escapeForOperator}. */
+export class BrokerRefused extends Error {}
+
+/** The most a request body may weigh before a body route refuses to keep reading it.
  *
- *  THE ROUTE'S BODY HAS ONE FIELD, a channel name, and `assertValidChannel` bounds a usable name
- *  to dotted `[A-Za-z0-9_-]` segments that the wire will carry as a subject. The dashboard's own
- *  delete sends about sixty bytes. 8 KiB is therefore not a guess at a working size, it is two
+ *  The delete route's body has one field, a channel name, and `assertValidChannel` bounds a usable
+ *  name to dotted `[A-Za-z0-9_-]` segments that the wire will carry as a subject. The dashboard's
+ *  own delete sends about sixty bytes. 8 KiB is therefore not a guess at a working size, it is two
  *  orders of magnitude ABOVE any name the broker would accept, chosen so that no legitimate
- *  caller can meet it and an abusive one meets it immediately.
+ *  caller can meet it and an abusive one meets it immediately. The send route shares the cap, so a
+ *  post's text is bounded by it too.
  *
  *  MEASURED, before this existed, against the shipped route over a local broker with a raw socket
  *  rather than `fetch`, because `fetch` hides how much of the body actually left the client:
@@ -446,6 +497,9 @@ export class PayloadTooLarge extends Error {}
  *    peak RSS +1.39 GB, 1022 ms. The read was unbounded and ran to completion before the route
  *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
 const MAX_BODY_BYTES = 8 * 1024;
+
+/** The only routes that read a request body. Every other route refuses an announced body. */
+const BODY_ROUTES = new Set(["/api/channel/delete", "/api/send"]);
 
 /** Codepoints `JSON.stringify` leaves RAW that PRODUCE NO GLYPH OF THEIR OWN, or that reorder the
  *  text around them, stated as Unicode PROPERTIES rather than as a hand list. That wording is
@@ -526,6 +580,17 @@ export function quoteForOperator(value: string): string {
   });
 }
 
+/** Every codepoint {@link quoteForOperator} escapes, the C0 controls included, without its quotes. */
+const UNREADABLE = new RegExp(`[\\u0000-\\u001f]|${INVISIBLE_AFTER_JSON.source}`, "gu");
+
+/** Escapes a message someone else wrote, keeping its wording. A broker refusal names the subject it
+ *  refused, and a DM subject carries a recipient id taken from another agent's presence card, so the
+ *  message reaches the 502 body and the operator's line as untrusted text. Each codepoint the quoter
+ *  escapes leaves as its escape; the rest, quotes included, stays as the broker wrote it. */
+export function escapeForOperator(text: string): string {
+  return text.replace(UNREADABLE, (ch) => quoteForOperator(ch).slice(1, -1));
+}
+
 /** The channel name out of the path. A percent escape the decoder cannot read is the caller having
  *  typed a bad one, so it is refused as a bad request like any other malformed input. Left as a
  *  bare `URIError` it reached the request frame unrecognised and was reported as a server fault,
@@ -565,11 +630,15 @@ function canonicalChannel(name: string): string {
   }
 }
 
-/** The `limit` out of the query. The safe-integer refusal is reachable only through the digits-only
- *  test above it, so its value cannot carry anything the quoter would escape today. It quotes
- *  anyway: the guarantee that a refusal renders its input unambiguously should hold because the
- *  quoting site holds it, not because a regex two lines up stays exactly as narrow as it is this
- *  morning.
+/** The most messages one read may ask for. A route reads up to `limit` messages and holds them all
+ *  before it answers, so a limit with no ceiling lets one request make the server read a stream's
+ *  whole retained history. The dashboard asks for at most 500. */
+export const MAX_HISTORY_LIMIT = 2000;
+
+/** The `limit` out of the query. The ceiling refusal is reachable only through the digits-only test
+ *  above it, so its value cannot carry anything the quoter would escape today. It quotes anyway:
+ *  the guarantee that a refusal renders its input unambiguously should hold because the quoting site
+ *  holds it, not because a regex two lines up stays exactly as narrow as it is this morning.
  *
  *  THE LIMIT, PARSED ONCE, because three routes each re-deriving
  *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
@@ -585,7 +654,8 @@ function canonicalChannel(name: string): string {
  *    ?limit=2.5       silently truncated to 2.
  *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
  *
- *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
+ *  So the accepted form is the narrow one: a plain run of digits no larger than
+ *  {@link MAX_HISTORY_LIMIT}. `0` keeps
  *  meaning zero, which is what it already did and what a caller expects; an absent or empty
  *  parameter keeps meaning the route's own default, the one shape the old parse got right.
  *
@@ -597,10 +667,295 @@ export function historyLimit(query: URLSearchParams, fallback: number): number {
   if (raw === null || raw === "") return fallback;
   if (!/^[0-9]+$/.test(raw))
     throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);
+  // The ceiling also covers a run of digits too long for a double to count exactly: every such
+  // number is far above it.
   const n = Number(raw);
-  if (!Number.isSafeInteger(n))
-    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);
+  if (n > MAX_HISTORY_LIMIT)
+    throw new BadRequest(`limit ${quoteForOperator(raw)} is above the most this server reads at once, ${MAX_HISTORY_LIMIT} messages`);
   return n;
+}
+
+/** An agent id out of a path segment: decoded, and a principal key, or a BadRequest naming it.
+ *
+ *  The id is the roster's `card.id`, which is `principalKey(owner, actor).key` by construction, so
+ *  the agent is named by its principal and never by a display name: two live agents with one name
+ *  never share a session. The answer's `id` is rebuilt from the parsed tokens rather than passed
+ *  through, so the id a route acts on is the one the event channel is formed from. */
+export function agentIdFromPath(raw: string): { id: string; owner: string; actor: string } {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    throw new BadRequest(`agent id ${quoteForOperator(raw)} is not valid percent-encoded text`);
+  }
+  const principal = parsePrincipalKey(decoded);
+  if (principal === null)
+    throw new BadRequest(`agent id ${quoteForOperator(decoded)} is not an agent id: <owner>.<actor>, each of [A-Za-z0-9_]`);
+  return { id: principalKey(principal.owner, principal.actor).key, ...principal };
+}
+
+/** What the live tap does with one message. A chat message on a principal-shaped event channel is an
+ *  agent frame for `principalKey(owner, actor).key`; everything else goes out as today's `message`.
+ *
+ *  WHY FRAMES LEAVE THE BROADCAST. The observer taps `chat.>`, and an agent's event channel is a
+ *  chat channel, so this one subscription receives every agent's frames. A NATS wildcard cannot
+ *  exclude a sub-tree, so the observer still receives them; what changes is who it forwards them to.
+ *  Sent as `message` to every browser, each frame cost every open dashboard a write whether or not
+ *  anyone was reading that agent. As `agent-frame` it reaches only the feeds watching that agent.
+ *
+ *  The agent is the event channel's principal, the same derivation the chat-only filter reads, so a
+ *  near-miss name such as `events.standup` stays an ordinary `message`. The channel is the one the
+ *  broker policed, taken from the subject, never the payload's own claim.
+ *
+ *  A FRAME FROM ANYONE BUT THE AGENT IS DROPPED, and dropped rather than sent on as a `message`. The
+ *  subject's sender is the verified publisher, and a frame is that agent's only when the agent
+ *  published it. On a mesh where another principal may write the channel (an open mesh, or a grant
+ *  wider than the agent's own), a forged frame would otherwise read as the agent's session, and
+ *  falling through to `message` would hand it to every browser instead. */
+export function classifyTap(subject: string, msg: CotalMessage | undefined):
+  | { event: "message"; data: { mode: DeliveryMode; senderId?: string; channel?: string; msg: CotalMessage } }
+  | { event: "agent-frame"; agent: string; data: { id: string; msg: CotalMessage } }
+  | null {
+  const mode = deliveryOf(subject);
+  if (!mode || !msg) return null;
+  // senderId is the subject's sender token, the *verified* publisher (the server policed who could
+  // publish it), vs the advisory `from` in the payload.
+  const parsed = parseSubject(subject);
+  const senderId = parsed?.sender;
+  // The channel the broker actually POLICED, taken from the subject rather than the payload: a
+  // publish grant is per-channel (`chat.<owner>.<actor>.<ch>`), so this token is covered by the
+  // minted grant, while `msg.channel` is publisher-supplied and backed by nothing.
+  //
+  // Gated on kind, and the gate is load-bearing rather than defensive: `rest` is the channel only
+  // on the chat plane. On `inst` it is the RECIPIENT (`subjects.ts:599`) and on `svc` the route
+  // (`:603`), so forwarding it ungated would label a DM's recipient as a channel.
+  const channel = parsed?.kind === "chat" ? parsed.rest : undefined;
+  const agent = channel === undefined ? null : eventChannelPrincipal(channel);
+  if (agent !== null) {
+    const id = principalKey(agent.owner, agent.actor).key;
+    if (senderId !== id) return null;
+    return { event: "agent-frame", agent: id, data: { id, msg } };
+  }
+  return { event: "message", data: { mode, senderId, channel, msg } };
+}
+
+/** The most bytes a feed may have waiting to be sent before the server gives up on it. A browser on
+ *  a slow link, watching a busy agent, cannot take frames as fast as the tap produces them, and
+ *  every byte it has not taken waits in this process. Past this the feed is told why and ended, and
+ *  the browser's own reconnect opens a fresh one, watches again and reads the gap from history. */
+export const MAX_FEED_BUFFER_BYTES = 1_048_576;
+
+/** What a feed write is. A `live` event is traffic the feed may fall behind on, so it is held to the
+ *  ceiling. A `snapshot` is the state a feed is opened with (its hello, the roster, the presence view
+ *  and the membership seed), written once on connect: a mesh whose roster alone is larger than the
+ *  ceiling must still open, or every new feed would end at once and reconnect into the same end. */
+export type FeedWrite = "live" | "snapshot";
+
+/** The parts of a feed's response that `writeFeed` uses. `once` is the stream's own, used to learn
+ *  when the opening state has drained; a response without it is warmed by the zero-backlog check. */
+export interface FeedResponse {
+  readonly writableEnded: boolean;
+  readonly writableLength: number;
+  write(chunk: string): unknown;
+  end(): unknown;
+  once?(event: "drain", listener: () => void): unknown;
+}
+
+/** Each cold feed and the unsent bytes its opening snapshots left behind. A feed is cold from a
+ *  snapshot write that leaves bytes unsent until its response emits `drain`, or a live write finds
+ *  nothing unsent, and is warm after. A feed that has gone is dropped with its response. */
+const coldFeeds = new WeakMap<object, number>();
+
+/** The feed's opening state has drained: from here on a live event is held to the ceiling alone. */
+function warmFeed(res: object): void {
+  coldFeeds.delete(res);
+}
+
+/** Writes one SSE event to a feed. A feed that has ended takes nothing more.
+ *
+ *  A live event is checked against the backlog the feed already holds, measured BEFORE the write:
+ *  when more than `ceiling` bytes are still unsent, the feed is told so with one `overflow` event
+ *  `{ reason }` and ended, and the event is not written. Measuring after the write would end a feed
+ *  for one event larger than the ceiling on its own, such as a single long chat message, which would
+ *  disconnect every dashboard at once. So one large event over an empty backlog is written, and the
+ *  feed ends only when it is in fact behind.
+ *
+ *  A snapshot is never checked. Its unsent bytes are not live traffic the feed fell behind on, so
+ *  while they drain (the feed is cold) a live event is allowed them on top of the ceiling: on a slow
+ *  link a roster over the ceiling would otherwise end the feed at its first live event, and every
+ *  reconnect would end the same way. The allowance goes when the opening state has drained, so a
+ *  cold feed still has a bound, its opening bytes plus the ceiling plus one event. */
+export function writeFeed(
+  res: FeedResponse,
+  event: string,
+  data: unknown,
+  kind: FeedWrite = "live",
+  ceiling: number = MAX_FEED_BUFFER_BYTES,
+): void {
+  if (res.writableEnded) return;
+  const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  if (kind === "snapshot") {
+    res.write(frame);
+    if (res.writableLength > 0) {
+      if (!coldFeeds.has(res)) res.once?.("drain", () => warmFeed(res));
+      coldFeeds.set(res, res.writableLength);
+    }
+    return;
+  }
+  if (res.writableLength === 0) warmFeed(res);
+  const allowance = coldFeeds.get(res) ?? 0;
+  if (res.writableLength > ceiling + allowance) {
+    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;
+    res.write(`event: overflow\ndata: ${JSON.stringify({ reason })}\n\n`);
+    res.end();
+    return;
+  }
+  res.write(frame);
+}
+
+/** The state a feed opens with, in the order a browser needs it. */
+export interface FeedOpening {
+  /** The feed's id, which every watch request names. */
+  feed: string;
+  roster: unknown;
+  presenceView: unknown;
+  /** Reads the current membership snapshot. The live tap carries only post-connect traffic, and
+   *  membership is state, so a fresh feed needs it read for it. */
+  membership(): Promise<unknown>;
+}
+
+/** Writes a new feed's opening state through `send`, every write a snapshot: `hello` first, so a
+ *  browser can watch an agent before the roster arrives, then the roster and the presence view, then
+ *  the membership seed once it is read, or its refusal when the read fails. Resolves when the seed
+ *  is written. */
+export function writeOpening(send: (event: string, data: unknown, kind: FeedWrite) => void, state: FeedOpening): Promise<void> {
+  send("hello", { feed: state.feed }, "snapshot");
+  send("roster", state.roster, "snapshot");
+  send("presence-view", state.presenceView, "snapshot");
+  return state.membership()
+    .then((m) => send("membership", m, "snapshot"))
+    .catch((e) => send(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }, "snapshot"));
+}
+
+/** The most agents one feed may watch at once. A watch is a row in a map this process holds for as
+ *  long as the feed is open, and the id is the caller's, so without a ceiling one browser could
+ *  grow that map without bound by asking for ids nobody runs. The dashboard watches the agent whose
+ *  session is open, in the panel and the centre, so it never comes near this. */
+export const MAX_WATCHES_PER_FEED = 64;
+
+/** Which feeds watch which agent. A feed is counted once per agent however many times it asks.
+ *
+ *  This is the refcount behind "subscribe on demand": the tap already receives every frame, so an
+ *  agent with no watcher costs no browser anything, and an agent leaves the map with its last
+ *  watcher. Both directions are kept so `drop` touches only the agents its feed held, and so the
+ *  per-feed ceiling is a lookup rather than a scan. */
+export class SessionWatchers<F> {
+  private readonly byAgent = new Map<string, F[]>();
+  private readonly byFeed = new Map<F, Set<string>>();
+
+  constructor(private readonly perFeed: number = MAX_WATCHES_PER_FEED) {}
+
+  /** Throws a BadRequest when the feed already watches `perFeed` other agents. */
+  watch(agent: string, feed: F): void {
+    const held = this.byFeed.get(feed) ?? new Set<string>();
+    if (!held.has(agent) && held.size >= this.perFeed)
+      throw new BadRequest(`this feed already watches ${this.perFeed} agents, the most one feed may watch at once`);
+    const feeds = this.byAgent.get(agent) ?? [];
+    if (!feeds.includes(feed)) feeds.push(feed);
+    this.byAgent.set(agent, feeds);
+    held.add(agent);
+    this.byFeed.set(feed, held);
+  }
+
+  unwatch(agent: string, feed: F): void {
+    const feeds = this.byAgent.get(agent);
+    if (feeds !== undefined) {
+      const rest = feeds.filter((f) => f !== feed);
+      if (rest.length === 0) this.byAgent.delete(agent);
+      else this.byAgent.set(agent, rest);
+    }
+    const held = this.byFeed.get(feed);
+    if (held !== undefined) {
+      held.delete(agent);
+      if (held.size === 0) this.byFeed.delete(feed);
+    }
+  }
+
+  /** A feed closed: forget every watch it held. */
+  drop(feed: F): void {
+    for (const agent of [...(this.byFeed.get(feed) ?? [])]) this.unwatch(agent, feed);
+  }
+
+  targets(agent: string): readonly F[] {
+    return [...(this.byAgent.get(agent) ?? [])];
+  }
+
+  /** Agents with at least one watcher. An agent with none is absent, not zero. */
+  agents(): string[] {
+    return [...this.byAgent.keys()];
+  }
+}
+
+/** The events read ran past its deadline. Its own type, so the route can tell it from a refusal
+ *  (an answer) and from any other failure (a 503 with the reason). */
+export class AgentEventsLate extends Error {}
+
+/** One agent's newest frames within the deadline. Reads `limit + 1` from `events.<owner>.<actor>`
+ *  with `channelHistory` and answers the newest `limit`, oldest first, with `more` when one more
+ *  existed. A permission denial (`isPermissionDenied` from core) is an answer, `{ refused }` with the
+ *  broker's own text and the grant command for this mesh. The deadline throws `AgentEventsLate`; any
+ *  other failure rethrows.
+ *
+ *  SENDER-CHECKED LIKE THE LIVE FEED. The read names the agent as `publisher`, so it filters on the
+ *  agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`, and a frame whose subject
+ *  names another sender is never read. That is the check `classifyTap` makes on a live frame, so a
+ *  session's history and its live frames hold the same frames. Like that check, it is as strong as
+ *  the mesh's publish permissions: on an open mesh any raw NATS client can publish on this subject.
+ *
+ *  BOUNDED TWICE. The caller's `limit` is already capped at {@link MAX_HISTORY_LIMIT}, so one read
+ *  holds at most one more message than that, and the read races the same deadline its siblings do,
+ *  with the signal handed down so a late read stops its pull and drops its consumer.
+ *
+ *  `channelHistory`, not the mediated `readHistory`: the mediated read caps a page at 200 and has
+ *  no cursor, and this is the same credential the channel history route already reads with. */
+export async function agentEventsPage(
+  source: {
+    channelHistory(channel: string, opts: { limit: number; signal: AbortSignal; publisher: { owner: string; actor: string } }): Promise<CotalMessage[]>;
+  },
+  agent: { owner: string; actor: string },
+  limit: number,
+  grantFor: (channel: string, owner: string) => string | undefined,
+  deadlineMs: number = AGGREGATION_DEADLINE_MS,
+): Promise<{ frames: CotalMessage[]; more: boolean } | { refused: string; grant?: string }> {
+  const channel = eventChannel(agent);
+  const clock = deadline(deadlineMs);
+  try {
+    const publisher = { owner: agent.owner, actor: agent.actor };
+    const page = await within(source.channelHistory(channel, { limit: limit + 1, signal: clock.signal, publisher }), clock.until);
+    if (page === LATE) throw new AgentEventsLate(`${channel}: the read did not finish within ${deadlineMs}ms`);
+    const more = page.length > limit;
+    // Not `slice(-limit)`: at a limit of 0 that is `slice(-0)`, the whole page.
+    return { frames: more ? page.slice(page.length - limit) : page, more };
+  } catch (e) {
+    if (e instanceof AgentEventsLate) throw e;
+    if (isPermissionDenied(e)) {
+      const grant = grantFor(channel, agent.owner);
+      return { refused: e instanceof Error ? e.message : String(e), ...(grant === undefined ? {} : { grant }) };
+    }
+    throw e;
+  } finally {
+    clock.done();
+  }
+}
+
+/** The command that lets a reader see one agent's event channel, as `docs/connect-claude.md` gives
+ *  it for each kind of mesh, or nothing on an open mesh, where there is no grant to give. */
+export function eventsGrantFor(mode: "user" | "static" | "open"): (channel: string, owner: string) => string | undefined {
+  if (mode === "user")
+    return (channel, owner) => `cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' --allow-publish ''`;
+  if (mode === "static")
+    return (channel) => `cotal mint watcher --profile agent --allow-subscribe '${channel}' --provision`;
+  return () => undefined;
 }
 
 /** One aggregated page, and what it is missing. `partial` and the counts are ALWAYS present, so a
@@ -750,21 +1105,222 @@ export async function activityBackfill(
   }
 }
 
-/** Connects the dashboard and spends the account seed on its one write cred, the channel-purger
- *  for channel delete. The dashboard is a loopback HTTP process and the seed can mint ANY identity
- *  or role, so the seed is bound only inside this function and a request handler in {@link web}
- *  that reaches for it fails to compile. A narrowed copy made inside `web()` would leave the full
- *  value in the handlers' scope beside it. Resolves `undefined` in a parent that hands off to a
- *  `--detach` child. The mint comes last, after that hand-off and the pidfile claim, because the
- *  cred has no expiry and a process that detaches or is refused must not mint one it then drops.
- *  `--creds` and open meshes have no seed and purge with the connection's own creds; user mode
- *  mints a purger view per delete instead. */
+/** What the dashboard can post as, decided once at startup and reported in `/api/meta`. A
+ *  `participant` posts as one operator for the life of the process and joins the roster on its
+ *  first post, on open and static-auth meshes alike. */
+export type PostCapability =
+  | { mode: "participant" }
+  | { mode: "off"; reason: string };
+/** Why posting is off on a dashboard started with `--creds`: the file is the only credential it
+ *  holds, and it has no seed to mint an operator from. */
+export const POST_OFF_CREDS = "This dashboard was started with --creds, which can only read.";
+/** Why posting is off on a per-user sign-in mesh. */
+export const POST_OFF_USER = "Posting from the dashboard isn't available on a sign-in mesh yet. Use cotal send.";
+/** Why posting is off on a dashboard run as a service: the service holds a read-only credential. */
+export const POST_OFF_SERVICE = "This dashboard runs as a read-only service. Use cotal send.";
+
+/** The operator credential's lifetime: 24 days. Core arms a reconnect fence with one `setTimeout`
+ *  at the credential's expiry, and Node caps a timer at 2^31-1 ms (about 24.8 days), so a longer
+ *  credential turns library reconnect off 1 ms after every connect. */
+export const OPERATOR_TTL_SECONDS = 24 * 24 * 3600;
+
+/** The posting decision. `--creds` wins: a raw credential file is all such a dashboard holds. */
+export function postCapability(creds: string | undefined, userMode: boolean): PostCapability {
+  if (creds !== undefined) return { mode: "off", reason: POST_OFF_CREDS };
+  if (userMode) return { mode: "off", reason: POST_OFF_USER };
+  return { mode: "participant" };
+}
+
+/** The static-mesh operator: its credential, the lifecycle uid its presence registers under, and
+ *  the credential's expiry in epoch milliseconds, read from the credential itself. */
+export interface OperatorCred { creds: string; lifecycleUid: string; expiresAt: number }
+
+/** Mints the operator for a static-auth mesh with one new identity. Called once, from
+ *  {@link connectWithoutSeed}, so every post the process makes carries that one `from.id` and an
+ *  agent's replies land in one DM thread. With `consume: false` the uid names no broker resources,
+ *  so it needs no provisioning. */
+export async function mintOperatorCred(auth: SpaceAuth): Promise<OperatorCred> {
+  const creds = await mintCreds(auth, newIdentity(), "operator", { expiresInSeconds: OPERATOR_TTL_SECONDS });
+  const exp = credsClaims(creds).exp;
+  if (exp === undefined) throw new Error("the operator credential was minted without an expiry");
+  return { creds, lifecycleUid: mintLifecycleUid(), expiresAt: exp * 1000 };
+}
+
+/** The dashboard's one posting endpoint, built at startup and started on the first post. */
+export interface OperatorPoster {
+  /** The id the operator posts as, once it is known: from startup on a static mesh, whose
+   *  credential names it, and from the first post on an open mesh. */
+  operatorId(): string | undefined;
+  /** Starts the endpoint once. Concurrent first posts share one start. A failed start is stopped
+   *  and dropped, so the next post tries again under the same id. Rejects once the poster has
+   *  stopped. */
+  ensure(): Promise<CotalEndpoint>;
+  /** Whether the operator credential has expired, so a refused post can say why. Never on an open
+   *  mesh, which has no credential. */
+  expired(): boolean;
+  /** Stops the endpoint if it started, so the operator leaves an offline record, and closes the
+   *  poster: a start still in flight stops what it started, and a later post is refused. */
+  stop(): Promise<void>;
+}
+
+/** What `ensure()` rejects with once the poster has stopped. */
+export const POSTER_STOPPED = "the dashboard is shutting down, so it no longer posts";
+
+/** Why a post is refused once the operator credential has expired. */
+export const POST_OFF_EXPIRED = "The operator credential expired. Restart cotal web to post again.";
+
+/** What `POST /api/send` answers for a post that went out. `seq` is a DM's stored sequence, the
+ *  broker's proof that it kept the message; a channel post has none. */
+export interface SendAnswer { ok: true; id: string; operatorId: string; seq?: number }
+
+/** `POST /api/send`: posts the body `{kind: "msg", channel, text}` to one channel, or
+ *  `{kind: "dm", to, text}` to one roster member, as the operator. Separate from the handler so the
+ *  refusals that need a stopped or expired poster can be driven with one.
+ *
+ *  The body is read before any refusal, so the size cap bounds what a refused post costs: a reply
+ *  written over an unread body leaves Node draining the rest of it to keep the connection. Every
+ *  check runs before the poster starts, so a refused post never puts the operator on the roster.
+ *  Throws `PayloadTooLarge`, `BadRequest` and `BrokerRefused` for the request frame to answer. */
+export async function sendAsOperator(
+  post: PostCapability,
+  poster: OperatorPoster | undefined,
+  onRoster: (id: string) => boolean,
+  readRequest: () => Promise<unknown>,
+): Promise<{ status: number; body: SendAnswer | { error: string } }> {
+  const read = await readRequest().then(
+    (value) => ({ value }),
+    (e: unknown) => {
+      if (e instanceof PayloadTooLarge) throw e;
+      return undefined;
+    },
+  );
+  if (post.mode === "off") return { status: 403, body: { error: post.reason } };
+  if (!poster) throw new Error("posting is on but no operator poster was built");
+  if (poster.expired()) return { status: 403, body: { error: POST_OFF_EXPIRED } };
+  const body = read?.value;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new BadRequest("the request body must be a JSON object");
+  const { kind, channel, to, text: raw } = body as Record<string, unknown>;
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) throw new BadRequest("text required");
+  let target: { channel: string } | { to: string };
+  if (kind === "msg") {
+    if (typeof channel !== "string") throw new BadRequest("channel required");
+    const name = canonicalChannel(channel);
+    if (name.includes("*") || name.includes(">")) throw new BadRequest(`${quoteForOperator(name)} is not one channel`);
+    target = { channel: name };
+  } else if (kind === "dm") {
+    if (typeof to !== "string") throw new BadRequest("to required");
+    if (!onRoster(to)) throw new BadRequest(`no agent with id ${quoteForOperator(to)} is on the roster`);
+    target = { to };
+  } else throw new BadRequest('kind must be "msg" or "dm"');
+
+  let sender: CotalEndpoint;
+  try {
+    sender = await poster.ensure();
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    if (why === POSTER_STOPPED) return { status: 503, body: { error: why } };
+    throw new BrokerRefused(escapeForOperator(why));
+  }
+  const refused = (e: unknown): never => {
+    throw new BrokerRefused(escapeForOperator(e instanceof Error ? e.message : String(e)));
+  };
+  if ("channel" in target) {
+    const msg = await sender.multicast(text, { channel: target.channel, mentions: mentionsIn(text) }).catch(refused);
+    return { status: 200, body: { ok: true, id: msg.id, operatorId: sender.card.id } };
+  }
+  const { msg, ack } = await sender.unicastAttributed(target.to, text).catch(refused);
+  return { status: 200, body: { ok: true, id: msg.id, operatorId: sender.card.id, seq: ack.seq } };
+}
+
+/** Builds the operator poster: a presence-registering endpoint with the card
+ *  `{ name: "operator", role: "operator", kind: "endpoint" }`, on the static operator credential
+ *  when there is one. The id is fixed here. The credential names it on a static mesh, and an open
+ *  mesh pins one, so a start retried after a failure keeps it. */
+export function operatorPoster(target: { space: string; server: string; tls: boolean }, operator: OperatorCred | undefined): OperatorPoster {
+  const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, "") }), name: "operator", role: "operator", kind: "endpoint" as const };
+  const build = (): CotalEndpoint => {
+    const e = new CotalEndpoint({
+      space: target.space,
+      servers: target.server,
+      tls: target.tls,
+      ...(operator ? { creds: operator.creds, lifecycleUid: operator.lifecycleUid } : {}),
+      card,
+      channels: [],
+      consume: false,
+      registerPresence: true,
+      watchPresence: false,
+    });
+    e.on("error", (err: Error) => console.error(c.red("! operator: " + err.message)));
+    e.on("warning", (err: Error) => console.error(c.yellow("! operator: " + err.message)));
+    return e;
+  };
+  let endpoint = build();
+  let live: CotalEndpoint | undefined;
+  let starting: Promise<CotalEndpoint> | undefined;
+  let closed = false;
+  const start = async (): Promise<CotalEndpoint> => {
+    const e = endpoint;
+    try {
+      await e.start();
+    } catch (err) {
+      // Dropped quietly, the way the console drops a peer that never started, and stopped before
+      // the next post may start its successor, so this one's offline record cannot land after the
+      // successor's online one.
+      e.removeAllListeners("error");
+      e.removeAllListeners("warning");
+      e.on("error", () => {});
+      await e.stop().catch(() => undefined);
+      endpoint = build();
+      starting = undefined;
+      throw err;
+    }
+    if (closed) {
+      await e.stop();
+      throw new Error(POSTER_STOPPED);
+    }
+    return (live = e);
+  };
+  return {
+    operatorId: () => (operator || live ? endpoint.card.id : undefined),
+    ensure() {
+      if (closed) return Promise.reject(new Error(POSTER_STOPPED));
+      starting ??= start();
+      return starting;
+    },
+    expired: () => operator !== undefined && Date.now() >= operator.expiresAt,
+    async stop() {
+      closed = true;
+      await starting?.catch(() => undefined);
+      await live?.stop();
+    },
+  };
+}
+
+/** Connects the dashboard and spends the account seed on its two write creds: the channel-purger
+ *  for channel delete, and the operator the dashboard posts as. The dashboard is a loopback HTTP
+ *  process and the seed can mint ANY identity or role, so the seed is bound only inside this
+ *  function and a request handler in {@link web} that reaches for it fails to compile. A narrowed
+ *  copy made inside `web()` would leave the full value in the handlers' scope beside it. Resolves
+ *  `undefined` in a parent that hands off to a `--detach` child. The mints come last, after that
+ *  hand-off and the pidfile claim, because the purger has no expiry and the operator lives 24 days,
+ *  and a process that detaches or is refused must not mint creds it then drops. `--creds` and open
+ *  meshes have no seed and purge with the connection's own creds; user mode mints a purger view
+ *  per delete instead. Posting is decided here too, and the operator poster built, so the operator
+ *  credential stays in this scope with the seed. An open mesh posts with no credential. */
 async function connectWithoutSeed(
   raw: readonly string[],
   values: ConnectFlags & { detach?: boolean; "no-open"?: boolean },
   host: string,
   port: number,
-): Promise<{ conn: Omit<Connection, "auth">; user: UserViewAuth | undefined; pidPath: string | undefined; purgeCreds: string | undefined } | undefined> {
+): Promise<{
+  conn: Omit<Connection, "auth">;
+  user: UserViewAuth | undefined;
+  pidPath: string | undefined;
+  purgeCreds: string | undefined;
+  post: PostCapability;
+  poster: OperatorPoster | undefined;
+} | undefined> {
   const { auth, ...conn } = await connectOrExit(values, "admin");
   const detachedRoot = process.env[DETACHED_ROOT_ENV];
   if (detachedRoot && conn.root !== detachedRoot)
@@ -782,14 +1338,29 @@ async function connectWithoutSeed(
     process.once("exit", () => releasePid(pidPath));
   }
   const purgeCreds = !user && auth ? await mintCreds(auth, newIdentity(), "channel-purger") : conn.creds;
-  return { conn, user, pidPath, purgeCreds };
+  const post = postCapability(values.creds, user !== undefined);
+  const operator = post.mode === "participant" && auth ? await mintOperatorCred(auth) : undefined;
+  // The operator the dashboard posts as. Built here so its credential never enters `web()`'s scope,
+  // where the request handlers are, and so its id is fixed for the process. It starts on the first
+  // post, so it is not on the roster before then.
+  const poster = post.mode === "participant" ? operatorPoster({ space: conn.space, server: conn.server, tls: conn.tls }, operator) : undefined;
+  return { conn, user, pidPath, purgeCreds, post, poster };
+}
+
+/** Trusted native service embedding. The supplied connection is explicitly scoped by its
+ *  credential file; no account signer, cached operator login or purger mint is substituted. */
+export interface WebServiceLifecycle {
+  readonly connection: Omit<Connection, "auth">;
+  readonly onSession: (session: WebSession) => void | Promise<void>;
+  readonly onReady: () => void | Promise<void>;
+  readonly onClosed: () => void | Promise<void>;
 }
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
- *  observer endpoint (invisible to peers) feeds the page presence, channel history,
- *  and a live message stream — no manager required. Bound to loopback unless the operator opts in
- *  to a different host explicitly. */
-export async function web(args: ParsedArgs): Promise<void> {
+ *  observer endpoint (invisible to peers) feeds the React client in `dist/web` presence, channel
+ *  history and a live message stream, with no manager required. Bound to loopback unless the
+ *  operator opts in to a different host explicitly. */
+export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Promise<void> {
   const values = args.values as { space?: string; server?: string; host?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
   // Validate the exposure coordinates before connecting to the broker or claiming local artifacts.
   // An invalid exposure request must have no dashboard side effects.
@@ -803,11 +1374,13 @@ export async function web(args: ParsedArgs): Promise<void> {
   // "channel-purger" view per action, so each destructive click is a fresh ledger check, and
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
-  const started = await connectWithoutSeed(args.raw, values, host, port);
+  const started = lifecycle
+    ? { conn: lifecycle.connection, user: undefined, pidPath: undefined, purgeCreds: undefined, post: { mode: "off", reason: POST_OFF_SERVICE } as PostCapability, poster: undefined }
+    : await connectWithoutSeed(args.raw, values, host, port);
   if (!started) return;
-  const { conn, user, pidPath, purgeCreds } = started;
+  const { conn, user, pidPath, purgeCreds, post, poster } = started;
   const { server, space } = conn;
-  const sessionPath = conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
+  const sessionPath = !lifecycle && conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -827,24 +1400,29 @@ export async function web(args: ParsedArgs): Promise<void> {
     registerPresence: false,
     watchPresence: true,
   });
-  const reportEndpoint = (e: Error) => console.error(c.red("! " + e.message));
+  const reportEndpoint = (e: Error) => console.error(c.red(lifecycle ? `! native dashboard endpoint reported an error (${errorClassForLog(e)}); diagnostic body omitted` : "! " + e.message));
   ep.on("error", reportEndpoint);
-  ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
+  ep.on("warning", (e: Error) => console.error(c.yellow(lifecycle ? `! native dashboard endpoint reported a warning (${errorClassForLog(e)}); diagnostic body omitted` : "! " + e.message)));
   await ep.start();
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
-  // both browser renderers can say so honestly without deriving progress from the heartbeat.
+  // the client can say so honestly without deriving progress from the heartbeat.
   const rosterSnapshot = () => ep.getRoster().map((presence) => ({
     ...presence,
-    progress: presence.status === "working" ? progressSignal(undefined, Date.now()) : undefined,
+    progress: presence.status === "working" ? { kind: "unknown" as const } : undefined,
   }));
 
   const clients = new Set<ServerResponse>();
-  const send = (res: ServerResponse, event: string, data: unknown) =>
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const send = (res: ServerResponse, event: string, data: unknown, kind?: FeedWrite) =>
+    writeFeed(res, event, data, kind);
   const broadcast = (event: string, data: unknown) => {
     for (const res of clients) if (!res.writableEnded) send(res, event, data);
   };
+  // Each open feed by the id its `hello` named, so a watch request can say which feed it is for.
+  // A feed leaves this map, and every watch it held, when its connection closes.
+  const feeds = new Map<string, ServerResponse>();
+  const watchers = new SessionWatchers<ServerResponse>();
+  const grantFor = eventsGrantFor(user ? "user" : conn.creds ? "static" : "open");
 
   // Presence changes → push the whole roster; the client just re-renders it.
   // Trailing-edge debounce: a stall-recovery replay is one burst of N keys, and pushing
@@ -860,15 +1438,28 @@ export async function web(args: ParsedArgs): Promise<void> {
   // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
   // degrades to traffic-only. The admin cred carries the read grant; agents never do.
   let membershipWatch: { stop(): Promise<void> } | undefined;
+  let lastMembership: MembershipSnapshot | undefined;
   const pushMembership = debounce(() => {
-    // A swallowed rejection here left the graph showing its LAST GOOD snapshot indefinitely, which
-    // is worse than the HTTP case: the display was not merely empty, it was stale and confident.
+    // A rejected membership read clears `lastMembership` and broadcasts `MEMBERSHIP_READ_FAILED`;
+    // swallowing it would leave the graph showing its last good snapshot as current.
     void ep.readMembership()
-      .then((m) => broadcast("membership", m))
-      .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
+      .then((m) => { lastMembership = m; broadcast("membership", m); })
+      .catch((e) => { lastMembership = undefined; broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
   }, 150);
+  // The daemon rewrites the heartbeat key every poll with nothing else changed; re-reading the whole
+  // bucket for it was a full ordered-consumer rescan per heartbeat per dashboard (#4904). The watch
+  // delivers the heartbeat's `asOf`, so only a member change (or a failed last read) costs a read.
+  const onMembership = (change: MembershipChange) => {
+    if (change.type === "replayed") return;
+    if (change.type === "heartbeat" && change.update && lastMembership) {
+      lastMembership = { ...lastMembership, asOf: change.asOf };
+      broadcast("membership", lastMembership);
+      return;
+    }
+    pushMembership();
+  };
   try {
-    membershipWatch = await ep.watchMembership(pushMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
+    membershipWatch = await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
@@ -876,26 +1467,25 @@ export async function web(args: ParsedArgs): Promise<void> {
   // allows exactly the MESSAGING plane (SPEC 13.9/13.11: chat + inst + svc, enumerated — never
   // the space-wide `>`, which would also plain-subscribe the v0.4 endpoint request rails), so
   // the tap is one subscription per plane.
-  const onTap = (subject: string, msg: unknown) => {
-    const mode = deliveryOf(subject);
-    if (!mode || !msg) return;
-    // senderId is the subject's sender token — the *verified* publisher (the server
-    // policed who could publish it), vs the advisory `from` in the payload.
-    const parsed = parseSubject(subject);
-    const senderId = parsed?.sender;
-    // The channel the broker actually POLICED, taken from the subject rather than the payload: a
-    // publish grant is per-channel (`chat.<owner>.<actor>.<ch>`), so this token is covered by the
-    // minted grant, while `msg.channel` is publisher-supplied and backed by nothing. The verified
-    // value was already parsed on the line above and was being dropped.
-    //
-    // Gated on kind, and the gate is load-bearing rather than defensive: `rest` is the channel only
-    // on the chat plane. On `inst` it is the RECIPIENT (`subjects.ts:599`) and on `svc` the route
-    // (`:603`), so forwarding it ungated would label a DM's recipient as a channel.
-    const channel = parsed?.kind === "chat" ? parsed.rest : undefined;
+  //
+  // An agent's frames go only to the feeds watching that agent, and to none when nobody watches;
+  // they are never broadcast as `message` (see `classifyTap`). Everything else is broadcast.
+  const onTap = (subject: string, tapped: unknown) => {
+    const verdict = classifyTap(subject, tapped as CotalMessage | undefined);
+    if (verdict === null) return;
+    if (verdict.event === "agent-frame") {
+      for (const res of watchers.targets(verdict.agent)) if (!res.writableEnded) send(res, "agent-frame", verdict.data);
+      return;
+    }
+    const { mode, senderId, channel, msg } = verdict.data;
     broadcast("message", { mode, senderId, channel, msg });
   };
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
+
+  // The client build sits beside the compiled server in `dist/web`. Run from source, as the smokes
+  // run it, the server lives in `src`, so the page is read from the package's `dist/web` instead.
+  const client = clientAssets(join(here, basename(here) === "src" ? "../dist/web" : "web"));
 
   const gate = makeAuthGate(port, host);
 
@@ -932,12 +1522,12 @@ export async function web(args: ParsedArgs): Promise<void> {
       return void res.end();
     }
 
-    // The delete endpoint is the sole route that reads a request body. Refuse an announced body
-    // before dispatch everywhere else, so the next no-body route inherits the same bound instead
-    // of silently letting Node drain an upload the handler will never inspect.
+    // Only the `BODY_ROUTES` read a request body. Refuse an announced body before dispatch
+    // everywhere else, so the next no-body route inherits the same bound instead of silently
+    // letting Node drain an upload the handler will never inspect.
     const declared = Number(req.headers["content-length"]);
     const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
-    const noBodyRoute = path !== "/api/channel/delete" || req.method !== "POST";
+    const noBodyRoute = !BODY_ROUTES.has(path) || req.method !== "POST";
     if (noBodyRoute && announcedBody) throw noBody(path, declared);
 
     if (path === "/feed") {
@@ -947,17 +1537,31 @@ export async function web(args: ParsedArgs): Promise<void> {
         connection: "keep-alive",
       });
       clients.add(res);
-      send(res, "roster", rosterSnapshot());
-      send(res, "presence-view", ep.presenceView());
-      // Seed this client's graph with the current membership snapshot (the live tap only carries
-      // post-connect traffic; membership is state, so a fresh client needs it explicitly).
-      void ep.readMembership()
-        .then((m) => { if (!res.writableEnded) send(res, "membership", m); })
-        .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
-      req.on("close", () => clients.delete(res));
+      // The feed's opening state, written as snapshots: a big mesh's roster may be larger than the
+      // ceiling on its own, and holding it to the ceiling would end every new feed at once.
+      const feed = randomUUID();
+      feeds.set(feed, res);
+      void writeOpening((event, data, kind) => send(res, event, data, kind), {
+        feed,
+        roster: rosterSnapshot(),
+        presenceView: ep.presenceView(),
+        membership: () => ep.readMembership(),
+      });
+      // Both ends, because either can end a feed: the browser going away closes the request, and
+      // an overflow ends the response while the socket may stay open. Forgetting twice is harmless.
+      const forget = () => {
+        clients.delete(res);
+        feeds.delete(feed);
+        watchers.drop(res);
+      };
+      req.on("close", forget);
+      res.on("close", forget);
       return;
     }
-    if (path === READINESS_PATH) return json(res, { space, pid: process.pid });
+    if (path === WEB_READINESS_PATH) {
+      const operatorId = poster?.operatorId();
+      return json(res, { space, pid: process.pid, post, channelDeleteSupported: lifecycle === undefined, ...(operatorId ? { operatorId } : {}) });
+    }
     if (path === "/api/roster") return json(res, rosterSnapshot());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
@@ -1047,8 +1651,8 @@ export async function web(args: ParsedArgs): Promise<void> {
       // named 503 lets the open channel keep the messages it already has and say they are stale,
       // which beats a page that arrives after the reader gave up. Measured on a modelled link
       // before this existed: 11360ms here, on a link where `/api/dms` already refused at 8005ms.
-      // The console page re-reads this route on every poll, so an unbounded read here is one slow
-      // channel holding the view open indefinitely.
+      // The client re-reads this route for the open channel on every poll, so an unbounded read
+      // here is one slow channel holding the view open indefinitely.
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
         const page = await within(
@@ -1066,12 +1670,52 @@ export async function web(args: ParsedArgs): Promise<void> {
         clock.done();
       }
     }
-    // Delete a channel and its content. The only write path on this otherwise read-only
-    // dashboard, so it's POST-gated and guarded by a confirm in the UI. Purges with the
+    // One agent's session: watch and unwatch its live frames on one feed, and read its history.
+    // `<id>` is the roster id, `<owner>.<actor>`, percent-encoded, so a raw `/` never belongs to it.
+    if (path.startsWith("/api/agents/")) {
+      const rest = path.slice("/api/agents/".length);
+      const cut = rest.lastIndexOf("/");
+      const action = cut === -1 ? "" : rest.slice(cut + 1);
+      if ((action === "watch" || action === "unwatch") && req.method === "POST") {
+        // No body, so these stay out of `BODY_ROUTES`, and they change no mesh state: a watch is a
+        // row in this process's map, which the feed's close removes.
+        const agent = agentIdFromPath(rest.slice(0, cut));
+        const feedId = query.get("feed");
+        if (!feedId) throw new BadRequest("feed required: the id the feed's hello event named");
+        const feed = feeds.get(feedId);
+        if (feed === undefined) throw new BadRequest(`feed ${quoteForOperator(feedId)} is not an open feed`);
+        if (action === "watch") watchers.watch(agent.id, feed);
+        else watchers.unwatch(agent.id, feed);
+        res.writeHead(204).end();
+        return;
+      }
+      if (action === "events") {
+        // A read, so GET only. Any other method is named as refused, never answered as a read.
+        if (req.method !== "GET") {
+          res.writeHead(405, { "content-type": "application/json", allow: "GET" });
+          return void res.end(JSON.stringify({ error: "GET only" }));
+        }
+        const agent = agentIdFromPath(rest.slice(0, cut));
+        const limit = historyLimit(query, 200);
+        // BOUNDED LIKE ITS SIBLINGS, with their wording: a late read and a failed one are 503s
+        // that say which, while a refusal is an answer the session view shows as it came.
+        try {
+          return json(res, await agentEventsPage(ep, agent, limit, grantFor));
+        } catch (e) {
+          if (e instanceof AgentEventsLate)
+            return json(res, { error: `${agent.id} events: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
+          return json(res, { error: `${agent.id} events: the read failed: ${e instanceof Error ? e.message : String(e)}` }, 503);
+        }
+      }
+    }
+    // Delete a channel and its content. A write path, so it's POST-gated. The client reaches it
+    // only through the controller's `deleteChannel`; nothing in the phase 1 shell calls that yet, and the operator's confirm
+    // arrives with the phase 2 UI. Purges with the
     // channel-purger cred minted at startup (auth mode), the connection creds (open / --creds) or a
     // per-delete channel-purger view (user mode), never the account seed. A wildcard / missing
     // channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
+      if (lifecycle) return json(res, { error: "this service was explicitly configured read-only; no channel-purger authority or alternate transport was acquired", code: "PERMISSION_DENIED" }, 403);
       const body = await readBody(req).catch((e: unknown) => {
         // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
         // refusal into `{}` here would answer "channel required", which tells the caller to add a
@@ -1105,15 +1749,28 @@ export async function web(args: ParsedArgs): Promise<void> {
         return;
       }
     }
+    // Post as the operator: a message to one channel, or a DM to one roster member.
+    if (path === "/api/send" && req.method === "POST") {
+      const answer = await sendAsOperator(post, poster, (id) => ep.getRoster().some((p) => p.card.id === id), () => readBody(req));
+      return json(res, answer.body, answer.status);
+    }
 
-    const file = PAGE[path];
-    if (file) {
-      // no-cache: always revalidate so a `cotal` upgrade's new dashboard code is picked up on
-      // reload — a stale cached graph.js silently runs old behavior (e.g. pre-fix filters).
-      res.writeHead(200, { "content-type": file.type, "cache-control": "no-cache" });
-      res.end(readFileSync(file.path));
+    const answer = clientResponse(client, path);
+    if (answer.status === 200) {
+      const { file } = answer;
+      // Read before the status line: a read that throws after `writeHead` reaches the catch below
+      // with the 200 already sent, and the browser runs an empty file as a success.
+      const body = readFileSync(file.path);
+      // The page revalidates on every load so a `cotal` upgrade's new client is picked up; the
+      // hashed assets never change under their name, so they cache for good.
+      res.writeHead(200, {
+        "content-type": file.type,
+        "cache-control": file.immutable ? "public, max-age=31536000, immutable" : "no-cache",
+      });
+      res.end(body);
       return;
     }
+    if (answer.status === 503) return json(res, answer.body, 503);
     res.writeHead(404).end("not found");
   };
 
@@ -1129,9 +1786,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       const why = e instanceof Error ? e.message : String(e);
       // A caller error and a server fault are different facts and must not share a status. Before
       // this split, a malformed query read in the log exactly like the dashboard breaking.
-      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
+      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
       const caller = status < 500;
-      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
+      console.error(c[caller ? "yellow" : "red"](lifecycle ? `native dashboard request ${caller ? "refused" : "failed"}; diagnostic body omitted` : `${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
       // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
       // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
@@ -1157,19 +1814,15 @@ export async function web(args: ParsedArgs): Promise<void> {
         ? { "content-type": "application/json", connection: "close" }
         : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
-      // NO DRAIN HERE, DELIBERATELY. An earlier version resumed the request after answering, on the
-      // theory that discarding the remainder let more closes be clean and so let more callers read
-      // the 413. Three independent measurements, two of them from other people on another machine,
-      // could not reproduce any effect: the direction did not hold, and a real `fetch` client read
-      // the refusal in every arm with or without it. A line whose only defence is that it is
-      // harmless is not worth carrying, and once the refusal closes the connection there is no
-      // socket being kept for it to be for.
+      // NO DRAIN HERE, DELIBERATELY. Once the refusal closes the connection, no socket is kept for
+      // a drain to return to the pool, and resuming the request after answering does not help a
+      // client read the 413.
       //
       // WHETHER THE UPLOADING PEER READS THE 413 IS BEST EFFORT AND NOT CLAIMED. Cutting a caller
       // off mid-upload leaves unread bytes in its receive buffer, that close goes out as an RST,
       // and an RST makes the peer discard the response it had already buffered. That is the trade
-      // the cap exists to make, and the alternative is the unbounded read this replaces. The
-      // refusal that is never lost is the operator line above, written before the response is.
+      // the cap makes over reading the body to the end. The refusal that is never lost is the
+      // operator line above, written before the response is.
     });
   });
 
@@ -1179,9 +1832,20 @@ export async function web(args: ParsedArgs): Promise<void> {
   }, 20_000);
 
   httpServer.on("error", (e: NodeJS.ErrnoException) => {
-    if (e.code === "EADDRINUSE") console.error(c.red(`Port ${port} is in use. Pass --port <n>.`));
-    else console.error(c.red("! " + e.message));
-    process.exit(1);
+    if (e.code === "EADDRINUSE") console.error(c.red(lifecycle ? "native dashboard port is in use; no alternate port was selected" : `Port ${port} is in use. Pass --port <n>.`));
+    else console.error(c.red(lifecycle ? "! native dashboard HTTP listener failed; diagnostic body omitted" : "! " + e.message));
+    // A native listener that never bound served nothing and wrote no session, so it hands its service
+    // PID custody back before exiting. Exiting here directly kept the slot, and every later start of
+    // the service in this space refused LIFECYCLE_BLOCKED until `cotal down` cleared it.
+    if (!lifecycle || httpServer.listening) process.exit(1);
+    clearInterval(ping);
+    void (async () => { await membershipWatch?.stop(); await ep.stop(); await lifecycle.onClosed(); })().then(
+      () => process.exit(1),
+      () => {
+        console.error("! native dashboard shutdown did not confirm completion; original custody was retained");
+        process.exit(1);
+      },
+    );
   });
 
   await new Promise<void>((ready) => httpServer.listen(port, host, ready));
@@ -1192,6 +1856,8 @@ export async function web(args: ParsedArgs): Promise<void> {
   // that cannot be launched (headless box, wrong default) must still have a way in — and because a
   // token the operator cannot see is a token they cannot revoke by restarting.
   const launchUrl = `${url}?k=${gate.launchToken}`;
+  const boundAddress = httpServer.address() as AddressInfo;
+  const browserSession: WebSession = { launchUrl, readiness: gate.readinessNonce, host: boundAddress.address, port: boundAddress.port };
   // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
   // for the link; `cotal status` reads it for the address to probe and the nonce to present. 0600 —
@@ -1199,42 +1865,50 @@ export async function web(args: ParsedArgs): Promise<void> {
   if (sessionPath) {
     // The socket's address, not the requested one: a hostname `--host` binds the address it resolved to.
     const bound = httpServer.address() as AddressInfo;
-    // `mode:` on writeFileSync applies at CREATION ONLY — a stale `web.session` left behind with a
-    // broader mode would keep it and quietly hold the launch URL and readiness nonce world-readable.
-    // Open, then fchmod the DESCRIPTOR (not the path, which could be re-pointed between the calls),
-    // so the mode is enforced on every write rather than only the first.
-    const sfd = openSync(sessionPath, "w", 0o600);
-    try {
-      fchmodSync(sfd, 0o600);
-      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port } satisfies WebSession));
-    } finally { closeSync(sfd); }
+    writeWebSession(sessionPath, { launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port });
     process.once("exit", () => rmSync(sessionPath, { force: true }));
   }
-  console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
-  console.log(c.dim("  god-view - DMs + anycast visible"));
-  // A detached child's stdout and stderr are the persistent web.log. The parent reads the private
-  // session file and prints the link to the operator's terminal, so repeating the live credential in
-  // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
-  if (!process.env[DETACHED_LOG_ENV]) {
-    printLaunchLink(launchUrl, host, port, "(Ctrl-C to stop)");
-    console.log(c.dim("  the link is single-use; it opens one session in one browser"));
+  if (!lifecycle) {
+    console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
+    console.log(c.dim("  god-view - DMs + anycast visible"));
+    // A detached child's stdout and stderr are the persistent web.log. The parent reads the private
+    // session file and prints the link to the operator's terminal, so repeating the live credential in
+    // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
+    if (!process.env[DETACHED_LOG_ENV]) {
+      printLaunchLink(launchUrl, host, port, "(Ctrl-C to stop)");
+      console.log(c.dim("  the link is single-use; it opens one session in one browser"));
+    }
+    if (!values["no-open"]) openBrowser(launchUrl);
   }
-  if (!values["no-open"]) openBrowser(launchUrl);
 
   let shuttingDown = false;
-  const shutdown = async () => {
+  const shutdown = async (code = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(ping);
     await membershipWatch?.stop();
     for (const res of clients) res.end();
-    httpServer.close();
+    if (lifecycle) await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+    else httpServer.close();
+    await poster?.stop().catch(reportEndpoint);
     await ep.stop();
     if (pidPath) releasePid(pidPath);
-    process.exit(0);
+    await lifecycle?.onClosed();
+    process.exit(code);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  const stop = () => void shutdown().catch(() => {
+    console.error("! native dashboard shutdown did not confirm completion; original custody was retained");
+    process.exit(1);
+  });
+  process.on("SIGINT", lifecycle ? stop : () => void shutdown());
+  process.on("SIGTERM", lifecycle ? stop : () => void shutdown());
+  if (lifecycle) {
+    try { await lifecycle.onSession(browserSession); await lifecycle.onReady(); }
+    catch {
+      try { await shutdown(1); } catch { /* Unknown close retains original process/session custody. */ }
+      throw new Error("native dashboard private startup was not confirmed; no replacement was launched");
+    }
+  }
   await new Promise<void>(() => {});
 }
 
@@ -1287,18 +1961,24 @@ async function launchDetachedWeb(
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
   printLaunchLink(session.launchUrl, host, port, "(single-use link)");
   console.log(c.dim(`  log: ${logPath}`));
-  console.log(c.dim("  stop: cotal down web"));
+  console.log(c.dim("  stop: `cotal down web`"));
   if (!noOpen) openBrowser(session.launchUrl);
+}
+
+/** Write the session file. A stale `web.session` with a broader mode is set to 0o600 through the
+ *  descriptor on every write, so the launch URL and readiness nonce never stay readable to others,
+ *  and a symlink at the name is refused rather than followed. */
+export function writeWebSession(path: string, session: WebSession): void {
+  writePrivateRecord(path, JSON.stringify(session));
 }
 
 /** Open the persistent detached log privately even when it pre-existed with permissive metadata. */
 export function openDetachedLog(logPath: string): number {
-  const logFd = openSync(logPath, "a", 0o600);
-  // Creation mode does not narrow a stale file. Harden the already-open descriptor before either
-  // child stream can write to it; then apply the core secret-file ACL convention for win32, where
-  // POSIX mode bits do not express privacy. Fail closed before spawning if either operation fails.
+  // The private open sets a stale file to 0o600 through the descriptor before either child stream
+  // can write to it, and refuses a symlink. Then apply the core secret-file ACL convention for
+  // win32, where POSIX mode bits do not express privacy. Fail closed before spawning if either fails.
+  const logFd = openPrivateAppend(logPath);
   try {
-    fchmodSync(logFd, 0o600);
     if (process.platform === "win32") hardenPrivate(logPath, "file");
     return logFd;
   } catch (e) {
@@ -1366,24 +2046,25 @@ export async function waitForDetachedWeb(
     if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
     if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
       throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
-    if (pidFileOwned(opts.pidPath, pid)) {
+    // Absent is "not claimed yet". A file that exists and cannot be read is not: treating that as
+    // absent waits out the whole window and then reports a timeout with no probe, over a dashboard
+    // that is up. `readPidfile` throws that error, naming the path.
+    const recorded = readPidfile(opts.pidPath);
+    if (recorded === String(pid)) {
       // The child writes its readiness nonce only after `listen()` succeeded, so an absent, empty or
-      // partial file simply means "not up yet" and the loop keeps waiting — exactly as it did
+      // partial file simply means "not up yet" and the loop keeps waiting, exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = readWebSession(opts.sessionPath);
-      const probeUrl = `${opts.url}api/meta`;
-      let meta: { space?: unknown; pid?: unknown } | undefined;
+      const probeUrl = new URL(WEB_READINESS_PATH, opts.url).href;
+      let meta: WebMeta | undefined;
       try {
-        const res = await fetch(probeUrl, {
-          signal: AbortSignal.timeout(500),
-          headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
-        });
-        if (res.ok) {
-          meta = await res.json() as { space?: unknown; pid?: unknown };
+        const answer = await probeWebReadiness(opts.url, session?.readiness);
+        meta = answer.meta;
+        if (meta !== undefined) {
           lastProbe = `${probeUrl}: answered space ${summarizeProbeField(meta?.space, 40)}, pid ${summarizeProbeField(meta?.pid, 20)}`;
         } else {
-          lastProbe = `${probeUrl}: HTTP ${res.status}`;
+          lastProbe = `${probeUrl}: HTTP ${answer.status}`;
         }
       } catch (e) {
         const cause = e instanceof Error ? (e.cause as { code?: unknown } | undefined)?.code : undefined;
@@ -1412,11 +2093,6 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
     }
   }
   removePidPair(pidPath, String(pid));
-}
-
-function pidFileOwned(path: string, pid: number): boolean {
-  try { return readFileSync(path, "utf8").trim() === String(pid); }
-  catch { return false; }
 }
 
 async function waitForDeath(child: ChildProcess, pid: number, timeoutMs: number): Promise<boolean> {
@@ -1486,13 +2162,6 @@ export function webUrl(host: string, port: number): string {
   return boundUrl(host, port);
 }
 
-/** The address the server binds, for a client that does not resolve `cotal.localhost` itself: that
- *  name is a browser convention, and a system resolver such as WSL2's has no answer for it. */
-function boundUrl(host: string, port: number): string {
-  const literal = host.includes(":") ? `[${host}]` : host;
-  return `http://${literal}:${port}/`;
-}
-
 /** On the branded default the link is printed a second time at the bound address, so an operator
  *  whose browser or resolver has no answer for `cotal.localhost` still has a way in. Both carry the
  *  one token, so opening either spends it. */
@@ -1517,7 +2186,7 @@ function debounce(fn: () => void, ms: number): () => void {
   };
 }
 
-async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
+async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   // A DECLARED size over the cap is refused before a single body byte is read. A declaration can
   // lie, in either direction, so this is the cheap gate and the loop below is the real one.
   const declared = Number(req.headers["content-length"]);
@@ -1554,8 +2223,9 @@ function noBody(path: string, declared: number): PayloadTooLarge {
 }
 
 /** Best-effort open of the dashboard in the default browser. The URL is already
- *  printed, so a failure here is harmless — never block startup on it. */
-function openBrowser(url: string): void {
+ *  printed, so a failure here is harmless — never block startup on it. `--no-input` opens nothing. */
+export function openBrowser(url: string): void {
+  if (inputDisabledByFlag()) return;
   const [cmd, args] =
     process.platform === "darwin"
       ? ["open", [url]]

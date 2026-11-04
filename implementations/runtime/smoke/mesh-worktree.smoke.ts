@@ -37,6 +37,8 @@ import {
   presenceBucket,
   readCheckpointSettle,
   compileContract,
+  TURN_INPUT_SCHEMA,
+  TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
   publishContractArtifact,
@@ -68,7 +70,7 @@ import {
 import { type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshworktree";
 const EP = "manager";
@@ -79,17 +81,7 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshworktree", uid: "a".re
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
+
 /** Grade a rejection as a value rather than a process kill (the bare-call trap). */
 const safe = (p: Promise<unknown>): Promise<unknown> =>
   p.catch((e: unknown) => ({ threw: true, name: (e as Error)?.name, code: (e as { code?: string })?.code, message: (e as Error)?.message ?? String(e) }));
@@ -135,6 +127,9 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
   },
 } as const;
 const SPAWN_OUTPUT = {
@@ -143,26 +138,6 @@ const SPAWN_OUTPUT = {
   properties: {
     name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
     goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-const TURN_INPUT = {
-  type: "object", additionalProperties: false, required: ["payload", "deadlineMs"],
-  properties: {
-    payload: { type: "string", minLength: 1, maxLength: 65536 },
-    deadlineMs: { type: "integer", minimum: 1 },
-    handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
-  },
-} as const;
-const TURN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "deadlineAt", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, deadlineAt: { type: "integer", minimum: 1 },
     executor: {
       type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
       properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
@@ -179,7 +154,7 @@ const DESPAWN_OUTPUT = {
 } as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
-  turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
+  turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
 };
 const DOCUMENT = {
@@ -199,7 +174,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);

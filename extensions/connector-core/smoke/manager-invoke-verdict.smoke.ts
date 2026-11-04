@@ -30,6 +30,7 @@
 import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, managerCallerBinding } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
+import { cotalToolSpecs } from "../src/tool-specs.js";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict; it never throws. A throwing cell takes every cell below it with it,
@@ -146,7 +147,162 @@ check("user spawn delegates follow to its standing endpoint before executing the
   followedOnMain && spawned.ok && (spawned.data as { name?: string })?.name === "followed" &&
   (spawning as unknown as { ep: unknown }).ep === standing);
 
-const EXPECTED_CELLS = 21;
+// Dispatch checks only. The native two-manager replay supplies the process-exit proof.
+const selfCalls: Array<{ command: string; args: unknown; opts: { instanceId?: string; target?: unknown } }> = [];
+function selfAgent(config: AgentConfig): MeshAgent {
+  const agent = new MeshAgent(config);
+  (agent as unknown as { ep: unknown }).ep = {
+    principal: { owner: "local", actor: "caller" },
+    invokeService: async (_endpoint: string, command: string, args: unknown, opts: { instanceId?: string; target?: unknown }) => {
+      selfCalls.push({ command, args, opts });
+      return { reply: { ok: true, data: { stopped: true } } };
+    },
+  };
+  (agent as unknown as { _connected: boolean })._connected = true;
+  return agent;
+}
+const openSelf = selfAgent({ ...cfg, managerInstanceId: instanceId });
+await openSelf.despawn(undefined, { graceful: false });
+check("open managed self-stop pins the launching manager", selfCalls.at(-1)?.opts.instanceId === instanceId);
+check("self-stop retains its self authorization mode", selfCalls.at(-1)?.command === "stop" && JSON.stringify(selfCalls.at(-1)?.opts.target) === '{"mode":"self"}');
+check("self-stop preserves explicit hard-stop selection", JSON.stringify(selfCalls.at(-1)?.args) === '{"graceful":false}');
+await selfAgent(cfg).despawn();
+check("an unbound open caller retains the class route", selfCalls.at(-1)?.opts.instanceId === undefined);
+await selfAgent({ ...cfg, id: "caller", managerInstanceId: instanceId, creds: async () => "not-used" }).despawn();
+check("static self-stop preserves its class-only credential grants", selfCalls.at(-1)?.opts.instanceId === undefined);
+const beforeRefusals = selfCalls.length;
+const conversation = await selfAgent({ ...cfg, managerInstanceId: instanceId, turnRelay: false }).despawn();
+check("conversation self-stop refuses without dispatch", !conversation.ok && selfCalls.length === beforeRefusals);
+const overrideSelf = await openSelf.despawn(undefined, { instance: "b".repeat(26) });
+check("a self-stop instance override still refuses without dispatch", !overrideSelf.ok && selfCalls.length === beforeRefusals);
+
+// Dispatch only. The native two-manager replay supplies catalog and pending-goal evidence.
+for (const [label, config, expected] of [
+  ["open managed", { ...cfg, managerInstanceId: instanceId }, instanceId],
+  ["open unbound", cfg, undefined],
+  ["static managed", { ...cfg, id: "caller", managerInstanceId: instanceId, creds: async () => "not-used" }, undefined],
+] as const) {
+  const agent = selfAgent(config);
+  await agent.definePersona({ name: "owned", prompt: "Owned fixture" });
+  check(`${label} persona definition preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+  await agent.listPersonas();
+  check(`${label} persona listing preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+  await agent.showPersona("owned");
+  check(`${label} persona show preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+  await agent.spawn("owned");
+  check(`${label} spawn preserves its route`, selfCalls.at(-1)?.opts.instanceId === expected);
+}
+const explicit = selfAgent({ ...cfg, managerInstanceId: instanceId });
+await explicit.listPersonas("b".repeat(26));
+check("an existing explicit open persona selector stays explicit", selfCalls.at(-1)?.opts.instanceId === "b".repeat(26));
+
+for (const [label, config, expected] of [
+  ["open managed", { ...cfg, managerInstanceId: instanceId }, instanceId],
+  ["open unbound", cfg, undefined],
+  ["static managed", { ...cfg, id: "caller", managerInstanceId: instanceId, creds: async () => "not-used" }, undefined],
+  ["user managed", managerConfig, undefined],
+] as const) {
+  const calls: Array<{ endpoint: string; opts: { instanceId?: string; target?: { mode: string } } }> = [];
+  const agent = new MeshAgent(config);
+  (agent as unknown as { ep: unknown }).ep = {
+    describeService: async (endpoint: string, opts: { instanceId?: string }) => {
+      calls.push({ endpoint, opts });
+      return { endpoint, owner: "local", responder: { instanceId, epoch: 0 }, commands: new Map() };
+    },
+    invokeService: async (endpoint: string, _command: string, _args: unknown, opts: { instanceId?: string; target?: { mode: string } }) => {
+      calls.push({ endpoint, opts });
+      return { reply: { ok: true, data: { turns: [] } }, responder: { instanceId, epoch: 0 } };
+    },
+  };
+  const tools = cotalToolSpecs(config);
+  await tools.find(t => t.name === "cotal_describe")!.run(agent, config, { endpoint: "manager", refresh: true });
+  check(`${label} generic manager describe preserves credential routing`, calls.at(-1)?.opts.instanceId === expected);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "turn-pending", self: true });
+  check(`${label} generic manager self read preserves credential routing`, calls.at(-1)?.opts.instanceId === expected && calls.at(-1)?.opts.target?.mode === "self");
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "other", command: "read", self: true });
+  check(`${label} another endpoint never receives a manager pin`, calls.at(-1)?.opts.instanceId === undefined);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "status" });
+  check(`${label} generic untargeted call retains its existing class route`, calls.at(-1)?.opts.instanceId === undefined);
+}
+
+// Constructed throw exercises the actual managerInvoke -> spawn -> tool rendering pipeline.
+// The paused-manager live replay supplies publication, late acceptance and goal-to-seat proof.
+{
+  const goalId = "published_spawn_request";
+  const tools = cotalToolSpecs(cfg);
+  const spawnTool = tools.find(t => t.name === "cotal_spawn")!;
+  const unknown = async (error: EpEnvelopeError, model?: string) => {
+    const agent = new MeshAgent(cfg);
+    let calls = 0;
+    (agent as unknown as { ep: unknown }).ep = {
+      invokeService: async () => { calls++; throw error; }, principal: { owner: "local", actor: "caller" },
+    };
+    (agent as unknown as { _connected: boolean })._connected = true;
+    const result = await spawnTool.run(agent, cfg, { name: "reviewer", ...(model ? { model } : {}) });
+    return { result, calls };
+  };
+  const submitted = new EpEnvelopeError("deadline-exceeded", "submission outcome is unknown", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: goalId }], "unknown");
+  const { result, calls } = await unknown(submitted);
+  check("an unknown submitted spawn is not reported as a plain failure", !result.isError && result.structured?.status === "unknown", result);
+  check("unknown spawn text and structured data retain the same goal", result.text.includes(`goal "${goalId}"`) && result.structured?.goalId === goalId, result);
+  check("unknown spawn gives an existing same-caller goal-result read", result.text.includes('command="goal-result"') && result.text.includes("as this same caller"), result);
+  check("unknown spawn forbids retry and treats missing readback as inconclusive", result.text.includes("Do NOT retry") && result.text.includes("missing result does not prove"), result);
+  check("the unknown result neither resubmits nor claims confirmed acceptance", calls === 1 && result.text.includes("Acceptance has not been confirmed"), { result, calls });
+  const pinned = await unknown(submitted, "requested-model");
+  check("a requested model does not discard the unknown goal or inspect an unallocated alias", pinned.calls === 1 && pinned.result.structured?.goalId === goalId, pinned);
+  for (const [label, error] of [
+    ["describe deadline", new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", requestId: goalId }])],
+    ["broker no responder", new EpEnvelopeError("unavailable", "no responder", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: goalId }], "not-executed")],
+    ["malformed request id", new EpEnvelopeError("deadline-exceeded", "unknown", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: "invalid.id" }], "unknown")],
+    ["another endpoint", new EpEnvelopeError("deadline-exceeded", "unknown", [{ kind: EP_UNANSWERED, endpoint: "other", command: "spawn", requestId: goalId }], "unknown")],
+  ] as const) {
+    const r = await unknown(error);
+    check(`${label} never manufactures a recoverable spawn goal`, r.result.isError === true && r.result.structured?.goalId === undefined, r);
+  }
+}
+
+// Constructed errors grade only the diagnostic. The owned real manager/native-seat timeout
+// replay measures same-id retries after both recorded and unsent yields.
+{
+  const goalId = "yield_timeout_turn";
+  const yieldTool = cotalToolSpecs(cfg).find(t => t.name === "cotal_yield")!;
+  const renderYield = async (error: EpEnvelopeError) => {
+    const agent = new MeshAgent(cfg);
+    let calls = 0;
+    (agent as unknown as { ep: unknown }).ep = {
+      invokeService: async () => { calls++; throw error; }, principal: { owner: "local", actor: "caller" },
+    };
+    (agent as unknown as { _connected: boolean })._connected = true;
+    const active = (agent as unknown as { activeTurns: Map<string, unknown> }).activeTurns;
+    active.set(goalId, { goalId, payload: "owned diagnostic", acceptedAt: Date.now(), deadlineAt: Date.now() + 60_000, surfaced: true });
+    const result = await yieldTool.run(agent, cfg, { status: "blocked", turn: goalId });
+    return { result, calls, retained: active.has(goalId) };
+  };
+  const detail = { kind: EP_UNANSWERED, endpoint: "manager", command: "turn-yield" };
+  const unknown = await renderYield(new EpEnvelopeError("deadline-exceeded", "no reply to manager.turn-yield", [detail], "unknown"));
+  check("unknown yield deadline says it may already be recorded, without no-responder advice",
+    unknown.result.isError === true && unknown.result.text.includes("may already have been recorded") && !SILENCE.test(unknown.result.text), unknown);
+  check("unknown yield names the measured same-turn retry and does not call it a read-only check",
+    unknown.result.text.includes("same turn id") && unknown.result.text.includes("not which attempt settled it") &&
+    unknown.result.text.includes("not a read-only check"), unknown);
+  check("unknown yield diagnostic does not retry or discard the active turn",
+    unknown.calls === 1 && unknown.retained, unknown);
+  for (const [label, error] of [
+    ["real no-responder", new EpEnvelopeError("unavailable", "no responder", [detail], "not-executed")],
+    ["describe deadline", new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ ...detail, command: "describe" }], "unknown")],
+    ["not-executed deadline", new EpEnvelopeError("deadline-exceeded", "not submitted", [detail], "not-executed")],
+  ] as const) {
+    const r = await renderYield(error);
+    check(`${label} yield retains the existing no-responder explanation`,
+      SILENCE.test(r.result.text) && !r.result.text.includes("may already have been recorded"), r);
+  }
+  const answered = await renderYield(new EpEnvelopeError("permission-denied", "manager refused yield", undefined, "not-executed"));
+  check("answered yield refusal retains its own cause without uncertainty or silence advice",
+    answered.result.text.includes("permission-denied: manager refused yield") &&
+    !SILENCE.test(answered.result.text) && !answered.result.text.includes("may already have been recorded"), answered);
+}
+
+const EXPECTED_CELLS = 74;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

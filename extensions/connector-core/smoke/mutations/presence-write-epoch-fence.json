@@ -30,8 +30,8 @@
     {
       "name": "F4 stop() no longer waits on the presence chain before publishing offline, so departure is not ordered behind a write already in flight: the offline put can start before an earlier admitted write's put has settled, and an observer can read a live status after the seat departed (#636).",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    await Promise.race([this.inOrder(() => this.ep.stop(), true), sleep(3_000)]);\n    await this.ep.stop();",
-      "replace": "    await this.ep.stop();",
+      "find": "    const departure = this.inOrder(() => this.ep.stop(), true);\n    await Promise.race([departure, sleep(3_000)]);\n    await this.ep.stop();\n    await departure;\n",
+      "replace": "    await this.ep.stop();\n",
       "expectRed": "departure is ordered behind a status write already in flight"
     },
     {

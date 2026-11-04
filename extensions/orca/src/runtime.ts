@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   hardenPrivate,
+  launcherSource,
   registry,
   SpawnRefused,
   confirmWatch,
@@ -12,6 +13,7 @@ import {
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
+  type StartupOutcome,
 } from "@cotal-ai/core";
 import * as orca from "./driver.js";
 
@@ -20,13 +22,6 @@ const MAX_WORKTREE_CACHE = 32;
 /** Bounds every Orca call the startup-confirm watch makes, because it polls on the manager's event
  *  loop. */
 const CONFIRM_CALL = { timeoutMs: 1_000 };
-
-interface LauncherPayload {
-  cwd: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-}
 
 export interface PrivateLauncher {
   command: string;
@@ -38,26 +33,11 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-function launcherSource(payload: LauncherPayload): string {
-  return `import { spawn } from "node:child_process";\n` +
-    `import { rmSync } from "node:fs";\n` +
-    `const launch = ${JSON.stringify(payload)};\n` +
-    `try { rmSync(new URL(".", import.meta.url), { recursive: true, force: true }); } catch {}\n` +
-    `process.chdir(launch.cwd);\n` +
-    `const child = spawn(launch.command, launch.args, { env: launch.env, stdio: "inherit", windowsHide: false });\n` +
-    `let exiting = false;\n` +
-    `const forward = (signal) => { if (!exiting && child.pid) child.kill(signal); };\n` +
-    `process.on("SIGINT", () => forward("SIGINT"));\n` +
-    `process.on("SIGTERM", () => forward("SIGTERM"));\n` +
-    `child.on("error", (err) => { console.error("[cotal-orca-launch] " + launch.command + ": " + err.message); process.exit(127); });\n` +
-    `child.on("exit", (code, signal) => { exiting = true; if (signal) process.exit(128); process.exit(code ?? 0); });\n`;
-}
-
 export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher {
   const dir = mkdtempSync(join(tmpdir(), "cotal-orca-"));
   hardenPrivate(dir, "dir");
   const script = join(dir, "launch.mjs");
-  writeSecretFile(script, launcherSource({ cwd, command: spec.command, args: spec.args, env: spec.env ?? {} }));
+  writeSecretFile(script, launcherSource("[cotal-orca-launch]", { cwd, command: spec.command, args: spec.args, env: spec.env ?? {} }));
   // Orca types --command into an interactive shell. exec makes terminal connectivity track
   // launcher lifetime, while single-quote escaping prevents shell interpolation in temp paths.
   return { command: `exec ${shellQuote(process.execPath)} ${shellQuote(script)}`, dir, script };
@@ -74,6 +54,8 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
 /** Spawns each managed agent into an Orca terminal in the Orca worktree enclosing the launch cwd. */
 export class OrcaRuntime implements Runtime {
   readonly kind = "orca" as const;
+  readonly streamsTerminal = false;
+  readonly reportsStartupOutcome = true;
   readonly #worktrees = new Map<string, orca.OrcaWorktree>();
 
   #cacheWorktree(cwd: string, worktree: orca.OrcaWorktree): void {
@@ -95,8 +77,8 @@ export class OrcaRuntime implements Runtime {
     let cachedWorktree: boolean;
     let launcher: PrivateLauncher;
     try {
-      if (spec.confirmBefore?.length && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore);
+      if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
       cwdKey = realpathSync(cwd);
       const cached = this.#worktrees.get(cwdKey);
       cachedWorktree = !!cached;
@@ -130,7 +112,9 @@ export class OrcaRuntime implements Runtime {
       terminal = orca.currentTerminal(terminal) ?? terminal;
       return terminal;
     };
+    let startup: StartupOutcome = "pending";
     watch?.({
+      settled: (outcome) => { startup = outcome; },
       read: () => {
         const resolved = orca.currentTerminal(terminal, CONFIRM_CALL);
         if (!resolved || resolved.connected === false) return undefined;
@@ -155,6 +139,7 @@ export class OrcaRuntime implements Runtime {
     return {
       name,
       kind: "orca",
+      startupOutcome: () => startup,
       status: () => (orca.terminalAlive(terminal) ? "running" : "exited"),
       stop: (opts) => {
         if (opts?.graceful === false) {
@@ -185,7 +170,7 @@ export class OrcaRuntime implements Runtime {
         try {
           orca.sendTerminal(current().handle, { interrupt: true });
         } catch (err) {
-          if (err instanceof orca.OrcaCliError && /not_found|stale|closed|not_writable/i.test(err.code)) return;
+          if (err instanceof orca.OrcaCliError && (orca.isGoneCode(err.code) || /not_writable/i.test(err.code))) return;
           throw err;
         }
       },

@@ -26,10 +26,12 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
+import { createAccount } from "@nats-io/nkeys";
 import { generateKeyPair, exportJWK, calculateJwkThumbprint, jwtVerify, type CryptoKey } from "jose";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, epsSubject, sessionLedgerKey,
   redeemSession, retrieveServingCredential, recordAtomicKey, LIFECYCLE_HEAD, mintLifecycleUid,
+  contractDigest, endpointToken,
   type SessionGrant, type SessionRedemptionHooks,
 } from "@cotal-ai/core";
 import {
@@ -42,6 +44,7 @@ import { writeEndpointGate, epgateKey, reconcileSessionForTakeover, kvServeIssua
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { parseLedgerRow } from "../src/credential-ledger.js";
 import { tryReserveUid, createGateFrozen, reopenGate } from "../src/lifecycle-registry.js";
+import { createPendingServiceGate } from "../src/native-service-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -546,6 +549,54 @@ try {
     // hidden. (A re-revoke of an ALREADY-revoked staged row stays idempotent - proven above.)
     await rejects("revoking a NEVER-STAGED (absent) row fails loud (corruption, not idempotent abort)",
       () => seam.revoke(mkRow({ credentialId: `sha256-${"f".repeat(64)}` }) as never), "failed-precondition");
+  }
+
+  console.log("K. a native service endpoint gate never serves a session");
+  {
+    // Born by the real service-gate writer: pending-root, never approved or activated, row state "open".
+    const svcEndpoint = "example.service", svcIid = mintLifecycleUid();
+    const svcGate = await createPendingServiceGate(registry, {
+      accountPublicKey: createAccount().getPublicKey(), space: SPACE, owner: OWNER, endpoint: svcEndpoint, instanceId: svcIid,
+      lifecycleUid: mintLifecycleUid(), assignmentDigest: contractDigest({ endpoint: svcEndpoint, instanceId: svcIid }),
+    });
+    const svcKey = epgateKey(svcEndpoint, svcIid);
+    const noSessionRows = async (sessionId: string, endpoint: string, instanceId: string) =>
+      (await kv.get(`cred.${HOLDER_UID}.${sessionId}.c`)) === null
+      && (await kv.get(`epcred.${endpointToken(endpoint)}.${instanceId}.${sessionId}.s`)) === null
+      && (await kv.get(`stage.session.${sessionId}.c`)) === null && (await kv.get(`stage.session.${sessionId}.s`)) === null;
+    await rejects("the serving-gate observation refuses a service-family gate before returning a pin",
+      () => hooks.observeServingGate(svcEndpoint, svcIid), "permission-denied");
+    const epoch = svcGate.row.processEpoch;
+    const gs = mkGrant(sid(60), {
+      endpoint: svcEndpoint, serving: { instanceId: svcIid, epoch },
+      subjects: { in: epsSubject(SPACE, svcEndpoint, sid(60), epoch, "in"), out: epsSubject(SPACE, svcEndpoint, sid(60), epoch, "out") },
+    });
+    await rejects("a session naming a service-family serving gate is refused before any release",
+      () => redeemSession(gs, PRESENTER, hooks), "permission-denied");
+    c("…and it wrote no caller/serving ledger row or stage pin", await noSessionRows(sid(60), svcEndpoint, svcIid));
+    c("…and the service gate revision did not move", (await kv.get(svcKey))?.revision === svcGate.revision);
+
+    // A pin saved while the gate was ordinary cannot carry staging onto a gate that became service-family.
+    const restageIid = "r".repeat(26);
+    await writeEndpointGate(kv, ENDPOINT, restageIid, { state: "open", generation: 1, processEpoch: 7, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
+    const svcBytes = (await kv.get(svcKey))!.value;
+    const swapping: SessionRedemptionHooks = {
+      ...hooks,
+      observeServingGate: async (endpoint, instanceId) => {
+        const pin = await hooks.observeServingGate(endpoint, instanceId);
+        await kv.put(epgateKey(ENDPOINT, restageIid), svcBytes);
+        return pin;
+      },
+    };
+    await rejects("a saved ordinary pin cannot restage onto a gate that became service-family",
+      () => redeemSession(mkGrant(sid(61), { serving: { instanceId: restageIid, epoch: 7 } }), PRESENTER, swapping), "permission-denied");
+    c("…and the restage wrote no caller/serving ledger row or stage pin", await noSessionRows(sid(61), ENDPOINT, restageIid));
+
+    // Control: an ordinary gate on the same hooks still redeems.
+    const controlIid = "t".repeat(26);
+    await writeEndpointGate(kv, ENDPOINT, controlIid, { state: "open", generation: 1, processEpoch: 7, registrationRevision: 1, nameAuthorityRevision: 1, principal: SERVING_PRINCIPAL });
+    const controlCred = await redeemSession(mkGrant(sid(62), { serving: { instanceId: controlIid, epoch: 7 } }), PRESENTER, hooks);
+    c("an ordinary-family serving gate still redeems on the same hooks", controlCred.id === `${HOLDER_UID}.${sid(62)}.c`, controlCred.id);
   }
 
   await nc.drain().catch(() => {});

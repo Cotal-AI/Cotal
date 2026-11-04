@@ -255,7 +255,7 @@ mkdirSync(extensionRoot, { recursive: true });
 writeFileSync(join(extensionRoot, "extensions.json"), JSON.stringify({ extensions: [{
   pkg: "scripted-sdk-extension", version: "1.0.0", spec: "file:scripted-sdk-extension",
   provides: [{ kind: "connector", name: "scripted-sdk" }], commands: [],
-  connectors: [{ name: "scripted-sdk", requires: [] }],
+  connectors: [{ name: "scripted-sdk", requires: [], eventPlane: false }],
 }] }, null, 2));
 
 // Write persona file with explicit allowSubscribe for general and dynamic channels
@@ -408,10 +408,11 @@ try {
   check("OFFLINE: child signaled to offline status", existsSync(childOfflineFile));
   check("OFFLINE: durable memberships retained while offline", await memberRow("general", workerUid!) && await memberRow("dynamic", workerUid!));
 
-  // Attempt to steal alias with hard-pinned spawn while offline:
+  // A hard-pinned spawn of the offline agent's alias cannot steal it: its process still runs, so the
+  // spawn launches nothing and says so. The adoption cells below prove it is the same child.
   const stealCli = runCli(["spawn", "worker", "--name", "worker", "--space", space, "--server", servers, "--agent", "scripted-sdk", "--detach", "--no-events"]);
-  check("OFFLINE: hard-pinned spawn cannot steal alias of offline agent (refused)",
-    stealCli.code !== 0 && /hard-pinned|already held/i.test(stealCli.err + stealCli.out), { out: stealCli.out, err: stealCli.err });
+  check("OFFLINE: hard-pinned spawn cannot steal alias of offline agent (it says the agent already runs)",
+    stealCli.code === 0 && /worker is already running/.test(stealCli.err + stealCli.out), { out: stealCli.out, err: stealCli.err });
 
   console.log("D2) runtime adoption on live/offline child -> verify same child PID/start and footprint");
   const runtime = new CustodialPtyRuntime(seatRoot);

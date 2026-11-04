@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "implementations/cli/smoke/who-roster.smoke.ts"
+  ],
+  "guard": "the real CLI loads a native fault preload through an encoded file URL on every platform",
+  "command": "pnpm exec tsx implementations/cli/smoke/who-roster.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/who-preload-platform.json",
+  "mutations": [
+    {
+      "name": "native fault preload is passed as a filesystem specifier",
+      "file": "implementations/cli/smoke/who-roster.smoke.ts",
+      "find": "[\"--import\", pathToFileURL(preload).href]",
+      "replace": "[\"--import\", preload]",
+      "expectRed": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "cell": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4"
+    }
+  ],
+  "why": [
+    "The real preload path contains spaces and a fragment delimiter, so the native CLI child must load it through a file URL. Its trace and live broker result establish that the hook ran. No compiled package is mutated."
+  ]
+}

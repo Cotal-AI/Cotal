@@ -26,7 +26,7 @@
     {
       "name": "the exact KV filter boundary is removed",
       "file": "implementations/cli/src/commands/backup.ts",
-      "find": "    config.filter_subject === `$KV.${stream.slice(3)}.>` &&",
+      "find": "    typeof config.filter_subject === \"string\" && config.filter_subject.startsWith(`$KV.${stream.slice(3)}.`) &&",
       "replace": "    typeof config.filter_subject === \"string\" &&",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
       "expectRed": "backup still refuses an unhealthy ordered-consumer lookalike",

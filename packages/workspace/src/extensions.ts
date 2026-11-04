@@ -1,11 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Command, Connector, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
+import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
-import { localProcessPath, type LocalProcess } from "./local-process.js";
+import { globalConfigDirProblem } from "./cotal-config.js";
+import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
+import type { ServicePreset } from "./service-preset.js";
+import { serviceAdapterDeclaration } from "./service-adapter.js";
 
 /**
  * Operator-installed extensions (`cotal ext add <npm-package>`): the workstation state.
@@ -22,17 +25,28 @@ import { localProcessPath, type LocalProcess } from "./local-process.js";
  *    prescribing `cotal ext add` again — never a silent re-cache.
  */
 
-/** One cached command: the JSON-serializable display surface of a {@link Command} (its `run` /
- *  `complete` functions stay in the package — the cache can render help and offer flag names,
- *  nothing more). */
+/** Serializable command declarations for help, completion and read-only boot policy. The `run` and
+ *  `complete` callbacks stay in their package; command arguments are parsed against the live specs. */
 export interface CachedCommand {
   readonly name: string;
   readonly summary: string;
+  readonly aliases?: readonly string[];
   readonly group?: string;
   readonly usage?: string;
   readonly hidden?: boolean;
   readonly flags?: readonly FlagSpec[];
+  readonly flagNames?: readonly string[];
   readonly positionals?: string;
+  readonly subcommands?: readonly Subcommand[];
+  readonly outputs?: readonly OutputMode[];
+  readonly examples?: readonly CommandExample[];
+  /** The bare command opts out of connector seeding before materialization. */
+  readonly reads?: true;
+}
+
+/** One registry contribution of an installed package, with the aliases it claims in its kind. */
+export interface ProvidedRef extends ExtensionRef {
+  readonly aliases?: readonly string[];
 }
 
 /** Connector boot metadata cached at install time so the manager can inspect harness availability
@@ -40,6 +54,9 @@ export interface CachedCommand {
 export interface CachedConnector {
   readonly name: string;
   readonly requires: readonly string[];
+  /** Whether the connector publishes the AG-UI event plane. Cached explicitly so a manager can
+   *  report the fact before importing the connector. Never inferred true from its name. */
+  readonly eventPlane: boolean;
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
@@ -57,12 +74,15 @@ export interface InstalledExtension {
   readonly source?: "seeded";
   /** Every registry contribution made by the package. Older command-only manifests omit this; the
    *  loader derives `command:<name>` entries from `commands` for compatibility. */
-  readonly provides?: readonly ExtensionRef[];
+  readonly provides?: readonly ProvidedRef[];
   readonly commands: readonly CachedCommand[];
   /** Declarative connector harness metadata used at manager boot without importing package code. */
   readonly connectors?: readonly CachedConnector[];
   /** Declarative process metadata used without importing package code. */
   readonly localProcesses?: readonly LocalProcess[];
+  readonly servicePresets?: readonly ServicePreset[];
+  /** Cached service declaration fingerprints, bound to the installed package metadata. */
+  readonly serviceMetadata?: { readonly schemaVersion: 1; readonly packageJsonSha256: string; readonly declarationsSha256: string };
 }
 
 export interface ExtensionsManifest {
@@ -94,8 +114,10 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
   return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
-/** Load the manifest. Missing file → no extensions. A CORRUPT or unreachable file is a loud error
- *  (never treat installed extensions as absent — commands would silently vanish from help). */
+/** Load the manifest. Missing file → no extensions, and so is a config folder that is a file, which
+ *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
+ *  unreachable file is a loud error (never treat installed extensions as absent — commands would
+ *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
   const p = extensionsManifestPath();
   let parsed: unknown;
@@ -103,6 +125,7 @@ export function loadExtensionsManifest(): ExtensionsManifest {
     parsed = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { extensions: [] };
+    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message} - fix or delete it, then \`cotal ext add\` again`);
   }
   const m = parsed as ExtensionsManifest;
@@ -114,7 +137,7 @@ export function loadExtensionsManifest(): ExtensionsManifest {
  *  truncate the live manifest into corrupt JSON that would then vanish every installed extension. */
 export function saveExtensionsManifest(m: ExtensionsManifest): void {
   const dir = extensionsDir();
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = extensionsManifestPath();
   const tmp = join(dir, `.${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(tmp, `${JSON.stringify(m, null, 2)}\n`, { flag: "wx" });
@@ -131,16 +154,22 @@ export function quarantineExtensionsManifest(): string | undefined {
   return aside;
 }
 
-/** Strip a live {@link Command} down to its serializable display surface for the cache. */
+/** Cache a command's serializable help and read-only boot declarations. */
 export function cacheCommand(cmd: Command): CachedCommand {
   return {
     name: cmd.name,
     summary: cmd.summary,
+    aliases: cmd.aliases,
     group: cmd.group,
     usage: cmd.usage,
     hidden: cmd.hidden,
     flags: cmd.flags,
+    flagNames: cmd.flagNames,
     positionals: cmd.positionals,
+    subcommands: cmd.subcommands,
+    outputs: cmd.outputs,
+    examples: cmd.examples,
+    reads: cmd.reads,
   };
 }
 
@@ -148,16 +177,20 @@ export function cacheConnector(connector: Connector): CachedConnector {
   return {
     name: connector.name,
     requires: [...(connector.requires ?? [])],
+    eventPlane: connector.eventChannel !== undefined,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
   };
 }
 
 /** True when an entry's connector metadata predates what `cacheConnector` records now: an advertised
- *  connector with no cached entry, or one cached before setup providers were. Never throws. */
+ *  connector with no cached entry, or one cached before setup providers or event-plane facts were.
+ *  Never throws. */
 export function connectorMetadataStale(ext: InstalledExtension): boolean {
-  return extensionProvides(ext).some((ref) =>
-    ref.kind === "connector" && ext.connectors?.find((connector) => connector.name === ref.name)?.setup === undefined,
-  );
+  return extensionProvides(ext).some((ref) => {
+    if (ref.kind !== "connector") return false;
+    const connector = ext.connectors?.find((candidate) => candidate.name === ref.name);
+    return connector?.setup === undefined || connector.eventPlane === undefined;
+  });
 }
 
 /** Connector boot metadata from one installed package. An older manifest that advertised a
@@ -170,36 +203,42 @@ export function extensionConnectors(ext: InstalledExtension): readonly CachedCon
   for (const ref of advertised)
     if (!ext.connectors.some((connector) => connector.name === ref.name))
       throw new Error(`installed extension ${ext.pkg}@${ext.version} advertises connector ${ref.name} without cached requirements - re-run \`cotal ext add ${ext.pkg}\``);
+  for (const connector of ext.connectors)
+    if (typeof connector.eventPlane !== "boolean")
+      throw new Error(`installed extension ${ext.pkg}@${ext.version} connector ${connector.name} has no cached event-plane fact - re-run \`cotal ext add ${ext.pkg}\``);
   return ext.connectors;
 }
 
 /** Stable, serializable registry keys contributed by one imported package. */
-export function cacheExtension(ext: Extension): ExtensionRef {
-  return { kind: ext.kind, name: ext.name };
+export function cacheExtension(ext: Extension): ProvidedRef {
+  return { kind: ext.kind, name: ext.name, ...(ext.aliases?.length ? { aliases: [...ext.aliases] } : {}) };
 }
 
 export function cacheLocalProcess(component: LocalProcess): LocalProcess {
+  if (component.controllerOnly !== undefined && (component.controllerOnly !== true || component.service === undefined)) throw new Error("controller-only local processes must declare their service ABI");
   if (typeof component.pidFile !== "string") throw new Error(`local-process ${component.name} must declare a string pidFile template`);
-  localProcessPath(component.pidFile, { root: process.cwd(), space: "validation" });
+  (component.controllerOnly ? canonicalLocalProcessPath : localProcessPath)(component.pidFile, { root: process.cwd(), space: "validation" });
   for (const artifact of component.artifacts ?? []) {
     if (typeof artifact !== "string") throw new Error(`local-process ${component.name} artifacts must be string templates`);
     localProcessPath(artifact, { root: process.cwd(), space: "validation" });
   }
-  if (component.rootedAt !== undefined && component.rootedAt !== "target")
-    throw new Error(`local-process ${component.name} declares an unknown rootedAt ${JSON.stringify(component.rootedAt)} - only "target" is defined`);
+  if (component.cooperativeStop !== undefined && typeof component.cooperativeStop !== "boolean")
+    throw new Error(`local-process ${component.name} cooperativeStop must be a boolean`);
   if (component.isOwnCommand !== undefined)
     throw new Error(`local-process ${component.name} declares isOwnCommand, which an installed extension's cached descriptor cannot carry`);
   return {
     kind: "local-process",
     name: component.name,
     label: component.label,
+    ...(component.controllerOnly === true ? { controllerOnly: true as const } : {}),
+    ...(component.service === undefined ? {} : { service: serviceAdapterDeclaration(component.service) }),
     order: component.order,
     pidFile: component.pidFile,
+    cooperativeStop: component.cooperativeStop,
     artifacts: component.artifacts,
     stopLast: component.stopLast,
     clearsMesh: component.clearsMesh,
     visibleWhen: component.visibleWhen,
-    rootedAt: component.rootedAt,
   };
 }
 
@@ -208,8 +247,13 @@ export function extensionLocalProcesses(ext: InstalledExtension): readonly Local
 }
 
 /** Registry contributions recorded for an installed package, including old command-only entries. */
-export function extensionProvides(ext: InstalledExtension): readonly ExtensionRef[] {
-  return ext.provides ?? ext.commands.map((command) => ({ kind: "command", name: command.name }));
+export function extensionProvides(ext: InstalledExtension): readonly ProvidedRef[] {
+  return ext.provides ?? ext.commands.map((command) => ({ kind: "command", name: command.name, aliases: command.aliases }));
+}
+
+/** Every word a contribution claims in its kind: its name, then its aliases. */
+export function providedWords(ref: ProvidedRef): string[] {
+  return [ref.name, ...(ref.aliases ?? [])];
 }
 
 /** The installed package's on-disk root inside the prefix. */
@@ -237,11 +281,14 @@ export function hostPackageDir(name: string): string {
   }
 }
 
-/** Bind installed extensions' shared peers to the current host. Callers must hold the extension lock. */
+/** Bind installed extensions' shared peers to the current host. Callers must hold the extension lock.
+ *  `onAbsent` receives another owner whose package directory does not exist, which has no links to
+ *  keep, instead of the bind failing on it. Without it, or for `operationPkg` itself, an absent
+ *  package throws like any other unreadable one. */
 export function bindExtensionPeers(
   owners: readonly string[],
   operationPkg: string,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; onAbsent?: (owner: string) => void } = {},
 ): readonly BoundExtensionPeer[] {
   const planned: BoundExtensionPeer[] = [];
   for (const owner of owners) {
@@ -249,6 +296,12 @@ export function bindExtensionPeers(
     try {
       meta = JSON.parse(readFileSync(join(extensionPackageDir(owner), "package.json"), "utf8"));
     } catch (e) {
+      // Only a directory that does not exist is absent. A dangling link, or a directory left without
+      // its package.json, is a damaged install and still fails.
+      if (opts.onAbsent && owner !== operationPkg && (e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(extensionPackageDir(owner), { throwIfNoEntry: false })) {
+        opts.onAbsent(owner);
+        continue;
+      }
       throw new Error(`${operationPkg} cannot preserve installed extension ${owner}'s shared peers: ${(e as Error).message}`);
     }
     for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {
@@ -297,10 +350,11 @@ export class CorruptExtensionPackageError extends Error {
   }
 }
 
-/** The installed package's CURRENT version, read from disk (undefined when not installed). Only a
- *  missing package.json means not installed; one that cannot be reached or read throws, and one
- *  that is not JSON or has no version throws {@link CorruptExtensionPackageError}. */
-export function installedExtensionVersion(pkg: string): string | undefined {
+/** The installed package's CURRENT version and declared `main`, from one read of its package.json
+ *  (undefined when not installed; `main` is undefined when the package declares none). Only a missing
+ *  package.json means not installed; one that cannot be reached or read throws, and one that is not
+ *  JSON or has no version throws {@link CorruptExtensionPackageError}. */
+export function installedExtensionPackage(pkg: string): { version: string; main: string | undefined } | undefined {
   const path = join(extensionPackageDir(pkg), "package.json");
   let raw: string;
   try {
@@ -310,11 +364,17 @@ export function installedExtensionVersion(pkg: string): string | undefined {
     throw e;
   }
   let version: unknown;
+  let main: unknown;
   try {
-    version = (JSON.parse(raw) as { version?: unknown }).version;
+    ({ version, main } = JSON.parse(raw) as { version?: unknown; main?: unknown });
   } catch (e) {
     throw new CorruptExtensionPackageError(pkg, path, (e as Error).message);
   }
   if (typeof version !== "string" || !version) throw new CorruptExtensionPackageError(pkg, path, 'no "version" string');
-  return version;
+  return { version, main: typeof main === "string" && main ? main : undefined };
+}
+
+/** The installed package's CURRENT version, as {@link installedExtensionPackage} reads it. */
+export function installedExtensionVersion(pkg: string): string | undefined {
+  return installedExtensionPackage(pkg)?.version;
 }

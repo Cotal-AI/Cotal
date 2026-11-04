@@ -4,7 +4,7 @@ import { extensionProvides, loadExtensionsManifest, type InstalledExtension } fr
 import { cliPackageRoot } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 
-/** This binary's own published version. Re-exported here so the version surfaces (`cotal -v` and
+/** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
 export { cliVersion } from "../seed/paths.js";
 
@@ -34,19 +34,27 @@ export interface ExtensionVersion {
 }
 
 /** Installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
- *  versions, for `cotal -v` and `cotal status`. Reads the on-disk manifest directly — no import, no
+ *  versions, for `cotal version` and `cotal status`. Reads the on-disk manifest directly — no import, no
  *  seeding side effect. Returns `[]` on an absent or corrupt manifest: the version view stays
  *  resilient, and a corrupt manifest is surfaced loudly by the real commands (the overlay is fatal). */
 export function extensionVersions(): ExtensionVersion[] {
+  return readExtensionVersions().versions;
+}
+
+/** {@link extensionVersions}, with the reason when the manifest could not be read, so a structured
+ *  report can say its list is incomplete rather than empty. */
+export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string } {
   let extensions: readonly InstalledExtension[];
   try {
     extensions = loadExtensionsManifest().extensions;
-  } catch {
-    return [];
+  } catch (e) {
+    return { versions: [], unreadable: e instanceof Error ? e.message : String(e) };
   }
-  return extensions.map((e) => ({
-    label: [...new Set(extensionProvides(e).map((ref) => ref.name))].join(", ") || e.pkg,
-    version: e.version,
-    pkg: e.pkg,
-  }));
+  return {
+    versions: extensions.map((e) => ({
+      label: [...new Set(extensionProvides(e).map((ref) => ref.name))].join(", ") || e.pkg,
+      version: e.version,
+      pkg: e.pkg,
+    })),
+  };
 }

@@ -85,8 +85,7 @@ const cliEndpoints = readFileSync(join(root, "implementations/cli/src/commands/e
 const cliAgents = readFileSync(join(root, "implementations/cli/src/commands/agents.ts"), "utf8");
 const cliRoster = readFileSync(join(root, "implementations/cli/src/console/ui/Roster.tsx"), "utf8");
 const cliDetail = readFileSync(join(root, "implementations/cli/src/console/ui/Detail.tsx"), "utf8");
-const webMonitor = readFileSync(join(root, "implementations/web/src/web/app.js"), "utf8");
-const webGraph = readFileSync(join(root, "implementations/web/src/web/graph.js"), "utf8");
+const webRoster = readFileSync(join(root, "implementations/web/client/src/lib/roster.ts"), "utf8");
 check(
   "connector orientation names unknown progress for a textual working peer",
   /progress unknown/.test(orientation),
@@ -100,8 +99,17 @@ check(
   /working[^\n]*progress unknown/.test(cliUi),
 );
 check(
-  "CLI status, join, endpoints, and plain stream all use the honest shared textual badge",
-  [cliStatus, cliJoin, cliEndpoints, cliPlain].every((source) => /statusBadge\(/.test(source)),
+  "CLI join and plain stream use the honest shared textual badge",
+  [cliJoin, cliPlain].every((source) => /statusBadge\(/.test(source)),
+);
+// Since the command-line redesign `cotal status` renders no roster, so it has no badge to share.
+check(
+  "CLI status renders no peer presence status",
+  !/statusBadge\(|presence\.status|\.status === "working"/.test(cliStatus),
+);
+check(
+  "CLI endpoints names unknown progress for a textual working endpoint",
+  /reportedStatus === "working" \? "working · progress unknown"/.test(cliEndpoints),
 );
 check(
   "cotal ps names unknown progress for a textual working manager row",
@@ -111,16 +119,16 @@ check(
   "Ink roster and agent detail name unknown progress, with heartbeat labelled separately",
   /progress unknown/.test(cliRoster) && /progress unknown/.test(cliDetail) && /heartbeat/.test(cliDetail),
 );
+// The web dashboard is exempt by the owner's decision: "Working" is the state presence reports, and
+// no surface can observe progress yet (the server sends progress unknown for every working agent),
+// so the suffix carried no information. The dashboard shows the status word with no progress claim
+// until a real progress signal exists. The CLI and connector cells above still require the suffix.
 check(
-  "web textual agent detail names unknown progress and labels heartbeat separately",
-  /progress unknown/.test(webMonitor) && /heartbeat/.test(webMonitor),
-);
-check(
-  "web graph textual agent detail names unknown progress",
-  /progress unknown/.test(webGraph),
+  "web dashboard is exempt: statusLabel shows the presence status with no progress claim",
+  !/progress unknown/.test(webRoster) && /statusLabel = \(p: Pick<RosterRow, "status">\): string => p\.status;/.test(webRoster),
 );
 
-const EXPECTED = 23;
+const EXPECTED = 24;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`PRESENCE-PROGRESS SMOKE: ${pass} passed, ${fail} failed`);

@@ -1,0 +1,30 @@
+{
+  "suite": [
+    "implementations/cli/smoke/cli-pty.smoke.ts"
+  ],
+  "guard": "the real-PTY harness preserves cursor-positioned screen spacing and observes guided prompt exit before teardown",
+  "command": "pnpm exec tsx implementations/cli/smoke/cli-pty.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/cli-pty-harness.json",
+  "mutations": [
+    {
+      "name": "PTY oracle deletes cursor positioning",
+      "file": "implementations/cli/smoke/cli-pty.smoke.ts",
+      "find": "terminal.write(raw, done)",
+      "replace": "terminal.write(clean(raw), done)",
+      "expectRed": "the terminal oracle preserves cursor-positioned padding",
+      "cell": "the terminal oracle preserves cursor-positioned padding"
+    },
+    {
+      "name": "guided PTY prompt is left active before teardown",
+      "file": "implementations/cli/smoke/cli-pty.smoke.ts",
+      "find": "  wizardPty.write(\"\\x03\");\n  check(\"the guided prompt exits when cancelled\",",
+      "replace": "  void wizardPty;\n  check(\"the guided prompt exits when cancelled\",",
+      "expectRed": "the guided prompt exits when cancelled",
+      "cell": "the guided prompt exits when cancelled"
+    }
+  ],
+  "why": [
+    "The TSX-loaded harness is the mutation target. Its unchanged stock waits and real PTY children distinguish a lost cursor movement or an uncancelled prompt; no compiled package is mutated."
+  ]
+}

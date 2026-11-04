@@ -1,5 +1,8 @@
-/** Exact authority for the restore-only infrastructure phase (no broker, no test runner). */
-import { infrastructureMaintenancePermissions } from "../src/lib/isolated-broker.js";
+/** Exact authority for the restore-only infrastructure phase, and the isolated broker's boot bound (no broker, no test runner). */
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+import { infrastructureMaintenancePermissions, startIsolatedBroker } from "../src/lib/isolated-broker.js";
 import { endpointPlaneStreamNames, hardenedAuthorityStreamNames } from "@cotal-ai/core";
 
 let pass = 0;
@@ -55,6 +58,42 @@ try {
   invalid = (error as Error).message;
 }
 check("an invalid maintenance stream name is rejected", invalid.includes("invalid maintenance stream name"), invalid);
+
+// A listener that stays alive but never accepts connections must end at the 15 s boot bound, not
+// at the operation deadline backup, restore and quarantine pass (30 minutes in the CLI).
+{
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-isolated-boot-")));
+  const pidFile = join(root, "fake.pid");
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "nats-server"), `#!/bin/sh\n[ "$1" = "--version" ] && { echo "nats-server: v2.12.1"; exit 0; }\necho $$ > "${pidFile}"\nexec sleep 3600\n`);
+  chmodSync(join(bin, "nats-server"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}${delimiter}${path}`;
+  const started = Date.now();
+  let refused = "";
+  try {
+    const broker = await startIsolatedBroker({
+      root,
+      storeDir: join(root, "store"),
+      space: "boot",
+      mode: "open",
+      deadline: new Date(started + 45_000),
+      label: "backup",
+      initialScope: { profile: "backup", scope: { operation: "inspect", selection: "full" } },
+    });
+    await broker.stop();
+  } catch (error) {
+    refused = (error as Error).message;
+  } finally {
+    process.env.PATH = path;
+    try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* already stopped by the refusal */ }
+    rmSync(root, { recursive: true, force: true });
+  }
+  const elapsed = Date.now() - started;
+  check("an alive listener that never accepts is refused at the boot bound, before the operation deadline",
+    refused.includes("did not become reachable") && elapsed < 30_000, { refused, elapsed });
+}
 
 console.log(`\nisolated infrastructure scope: ${pass} passed, ${fail} failed`);
 process.exitCode = fail === 0 ? 0 : 1;

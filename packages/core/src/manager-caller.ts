@@ -1,5 +1,6 @@
 import type { EpCaller } from "./endpoint-subjects.js";
 import { assertLifecycleToken } from "./subjects.js";
+import { fromBase64url } from "./base64url.js";
 
 /** Refuse a minted `manager-caller` bearer (SPEC §10) that is not bound to the caller's space and
  *  principal or that names another instance than the one the caller selected, and return the caller
@@ -9,12 +10,12 @@ import { assertLifecycleToken } from "./subjects.js";
 export function managerCallerBinding(
   bearer: string,
   expected: { space: string; owner: string; actor: string; lifecycleUid: string; instanceId?: string },
-): { caller: EpCaller; instanceId: string } {
+): { caller: EpCaller; instanceId: string; credentialId?: string } {
   let payload: { sub?: unknown; aud?: unknown; act?: Record<string, unknown> };
   try {
     const parts = bearer.split(".");
     if (parts.length !== 3) throw new Error("invalid JWT");
-    payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64url(parts[1]!)));
   } catch {
     throw new Error("manager control exchange returned an invalid bearer");
   }
@@ -28,5 +29,7 @@ export function managerCallerBinding(
   const instanceId = assertLifecycleToken(act.managerInstanceId, "managerInstanceId");
   if (expected.instanceId !== undefined && instanceId !== expected.instanceId)
     throw new Error("manager control exchange selected a different manager instance");
-  return { caller: { owner: expected.owner, actor: expected.actor, uid: expected.lifecycleUid }, instanceId };
+  // The credential the view was minted from, when the issuer stamped it: what a renewal of this
+  // bearer keeps, so a client can remember a verdict about the credential across renewals.
+  return { caller: { owner: expected.owner, actor: expected.actor, uid: expected.lifecycleUid }, instanceId, ...(typeof act.credentialId === "string" ? { credentialId: act.credentialId } : {}) };
 }

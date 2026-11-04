@@ -35,8 +35,8 @@
     {
       "name": "N1 the pre-dial expiry guard is gone, so the endpoint dials with the dead bearer again",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (this.userMode && this.currentBearer && bearerExpiryMs(this.currentBearer) <= Date.now())\n      throw new Error(\n        this.bearerSource\n          ? \"this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff\"\n          : \"this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)\",\n      );\n",
-      "replace": "",
+      "find": "    if (bearer !== undefined && bearerExpiryMs(bearer) > Date.now()) return bearer;",
+      "replace": "    if (bearer !== undefined) return bearer;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "an endpoint that cannot renew presents its expired bearer to the broker ZERO times",
       "cell": "an endpoint that cannot renew presents its expired bearer to the broker ZERO times",

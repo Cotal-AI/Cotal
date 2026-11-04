@@ -1,0 +1,3 @@
+# A hosted Cotal connection stays with the Claude Code session that opened it; a fork is refused its id.
+# Mutation-proofed - extensions/connector-claude-code/smoke/mutations/connection-owner.json.
+smoke:claude-connection-owner

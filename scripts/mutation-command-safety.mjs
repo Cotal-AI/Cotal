@@ -146,7 +146,7 @@ function isSourcePath(token) {
  * Node/tsx options that sit between the launcher and the positional path.
  * Inline eval (`-e` / `--eval` / `-p`) is not a suite source.
  */
-function launchedFiles(command) {
+export function launchedFiles(command) {
   if (typeof command !== "string") return [];
   const tokens = [...command.matchAll(TOKEN)].map((m) => unquote(m[0]));
   const files = [];

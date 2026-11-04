@@ -83,9 +83,8 @@ export function RingMap({
 
   // Geometry: labels live on an ellipse, the hub box at the center.
   const labelOf = (n: TopoNode) => {
-    const role = n.role && n.role !== n.name ? "/" + n.role : "";
     const wide = n.wide ? " ≫" : ""; // "reads all" — a wide subscriber (> / *)
-    return STATUS[n.status ?? "offline"].dot + " " + trunc(n.name + role, 22) + wide;
+    return STATUS[n.status ?? "offline"].dot + " " + trunc(nodeLabel(n), 22) + wide;
   };
   const maxLabel = Math.max(...ring.map((n) => labelOf(n).length));
   const cx = Math.floor(width / 2);

@@ -26,7 +26,7 @@
     {
       "name": "M2 fall back to the workspace root for a missing directory",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      return { refusal: `path cannot be resolved: ${(error as Error).message}` };",
+      "find": "      return { refusal: `path cannot be resolved: ${rejectionText(error)}` };",
       "replace": "      cwd = this.workspaceRoot;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "resolve-cwd refuses a missing directory by name with failed-precondition",

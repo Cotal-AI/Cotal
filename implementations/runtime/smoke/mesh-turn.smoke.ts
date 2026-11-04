@@ -39,6 +39,8 @@ import {
   presenceBucket,
   readCheckpointSettle,
   compileContract,
+  TURN_INPUT_SCHEMA,
+  TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
   publishContractArtifact,
@@ -54,6 +56,7 @@ import {
   bindGoal,
   createGoal,
   commitGoalResult,
+  requestGoalCancel,
   mintCheckpoint,
   expireCheckpoint,
   goalRefOf,
@@ -75,7 +78,7 @@ import {
 import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshturn";
 const EP = "manager";
@@ -86,17 +89,7 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshturn", uid: "a".repeat
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
+
 /** Grade a rejection as a value rather than a process kill (the bare-call trap). */
 const safe = (p: Promise<unknown>): Promise<unknown> =>
   p.catch((e: unknown) => ({ threw: true, name: (e as Error)?.name, code: (e as { code?: string })?.code, kind: (e as { kind?: string })?.kind, message: (e as Error)?.message ?? String(e) }));
@@ -144,6 +137,9 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
     supervise: {
       type: "object", additionalProperties: false, required: ["restarts", "windowMs"],
       properties: { restarts: { type: "integer", minimum: 1 }, windowMs: { type: "integer", minimum: 1 } },
@@ -162,26 +158,6 @@ const SPAWN_OUTPUT = {
     },
   },
 } as const;
-const TURN_INPUT = {
-  type: "object", additionalProperties: false, required: ["payload", "deadlineMs"],
-  properties: {
-    payload: { type: "string", minLength: 1, maxLength: 65536 },
-    deadlineMs: { type: "integer", minimum: 1 },
-    handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
-  },
-} as const;
-const TURN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "deadlineAt", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, deadlineAt: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
 
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
 // A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
@@ -194,11 +170,22 @@ const DESPAWN_OUTPUT = {
 // it runs no seat process, so every seat whose presence lapsed is one it no longer holds.
 const INSPECT_INPUT = { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 } } } as const;
 const INSPECT_OUTPUT = { type: "object" } as const;
+// A cancelled step withdraws its relay through the manager's reserved `cancel` (SPEC 13.6 item 4)
+// before the cancellation leaves the step, so the stand-in serves it with the manager's schemas.
+const CANCEL_INPUT = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
+} as const;
+const CANCEL_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["goalId", "state"],
+  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
+} as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
-  turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
+  turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
   inspect: { input: cc(INSPECT_INPUT), output: cc(INSPECT_OUTPUT) },
+  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.turnmgr", revision: 1, attributes: [], events: [],
@@ -207,6 +194,7 @@ const DOCUMENT = {
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
     { name: "inspect", class: "ephemeral" as const, targeted: false, capability: "manager.read", inputDigest: COMPILED.inspect.input.closureDigest, outputDigest: COMPILED.inspect.output.closureDigest },
+    { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -218,7 +206,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -405,6 +393,19 @@ const defs: EpCommandDef[] = [
   { command: "inspect", contract: COMPILED.inspect, handler: (ctx: EpServeContext) => {
     throw new EpEnvelopeError("not-found", `no agent "${String((ctx.request.args as { name?: unknown }).name)}"`);
   } },
+  // As the manager does, it moves a relay this stand-in accepted to `cancelling` and then commits
+  // the cancel terminal, and refuses a goal it never accepted.
+  { command: "cancel", contract: COMPILED.cancel, handler: async (ctx: EpServeContext) => {
+    const raw = (ctx.request.args ?? {}) as { goalId?: unknown; mode?: unknown };
+    const goalId = String(raw.goalId);
+    if (!turnAccepts.has(goalId)) throw new EpEnvelopeError("failed-precondition", `no turn "${goalId}" of this caller is pending on this manager`);
+    await requestGoalCancel(goalCtx, { request: ctx.subject, goalId, mode: (raw.mode ?? "graceful") as "graceful" | "terminate" });
+    const { fact } = await commitGoalResult(goalCtx, {
+      ref: goalRefOf(ctx.subject, goalId), now: Date.now(), cause: "cancel", data: { cancelledBy: "caller" },
+      committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH },
+    });
+    return { goalId, state: fact.state };
+  } },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   resolveTarget: (t) => mappings.get(`${t.owner}.${t.actor}`),
@@ -457,6 +458,9 @@ const spawnSeat = async (handler: MeshHandler, tag: string, persona = "builder")
 const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }; note?: string; at: number } =>
   v !== null && typeof v === "object" && typeof (v as { status?: unknown }).status === "string" && typeof (v as { at?: unknown }).at === "number";
 
+// Focused placement proof excludes unrelated cancellation and deadline fixtures.
+const placedHostOnly = process.argv.includes("--placed-host");
+if (!placedHostOnly) {
 // ── 1) a driven program turns end to end: the done yield ─────────────────────────────────────
 {
   console.log("• 1 — a driven program turns its agent end to end");
@@ -642,6 +646,36 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
   }
 }
 
+// ── 8b) the same watch: a live successor under the name is superseded, not lapsed ───────────────
+{
+  console.log("• 8b — a successor under the name is superseded before the lapse window");
+  const handler = mk("tn-8b");
+  const a = await spawnSeat(handler, "n8b");
+  if (a !== undefined) {
+    const alloc = allocations.find((x) => `${x.name}#${x.uid}` === a.agent);
+    const T = token("o8b");
+    const p = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(T).ctx));
+    await wait(1_200);
+    if (alloc !== undefined) {
+      await presenceKv.delete(`local.${alloc.actor}`);
+      const successor: Presence = {
+        card: { id: `local.${alloc.actor}`, name: alloc.name, kind: "agent" },
+        lifecycleUid: `z${"0".repeat(25)}`,
+        status: "idle",
+        ts: Date.now(),
+      };
+      await presenceKv.put(successor.card.id, JSON.stringify(successor));
+    }
+    const got = await withDeadline(p, 15_000, "the superseded turn");
+    c("a live successor reads as superseded through the turn's own watch",
+      (got as { code?: string })?.code === "L4002" && String((got as { message?: string })?.message).includes("superseded")
+        && !String((got as { message?: string })?.message).includes("lapsed"),
+      JSON.stringify(got));
+    const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: T });
+    c("the superseded death claims the armed pause", settle !== undefined, settle?.settle);
+  }
+}
+
 // ── 9) handoff honored: the roster resolves `to`, the link and the owner move ─────────────────
 {
   console.log("• 9 — a handoff yield resolves to the roster handle; the next turn links the chain");
@@ -718,12 +752,15 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const bName = b.agent.split("#")[0]!;
     // Not-honored-immediately: a handoff to b, then a turn on d (not b) spends the memo.
     turnEndings.push({ state: "succeeded", status: "handoff", to: bName, delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(token("B")).ctx)), 20_000, "the ignored handoff");
+    c("the ignored handoff ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(token("B")).ctx)).then(() => true), 20_000, "the ignored handoff") === true);
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(token("C")).ctx)), 20_000, "the intervening turn");
+    c("the intervening turn ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(token("C")).ctx)).then(() => true), 20_000, "the intervening turn") === true);
     const T3 = token("D");
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T3).ctx)), 20_000, "the late turn on b");
+    c("the late turn on b ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T3).ctx)).then(() => true), 20_000, "the late turn on b") === true);
     c("a handoff not honored by the NEXT turn in the scope links nothing",
       turnInvokes.find((i) => i.goalId === T3)?.handoffFrom === undefined,
       JSON.stringify(turnInvokes.find((i) => i.goalId === T3)));
@@ -735,10 +772,12 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const pa = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(TA).ctx));
     await wait(150);
     const pb = safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(TB).ctx));
-    await withDeadline(Promise.all([pa, pb]), 20_000, "the concurrent handoffs");
+    c("the concurrent handoffs ended within its deadline",
+      await withDeadline(Promise.all([pa, pb]).then(() => true), 20_000, "the concurrent handoffs") === true);
     const T4 = token("G");
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T4).ctx)), 20_000, "the post-ambiguity turn");
+    c("the post-ambiguity turn ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T4).ctx)).then(() => true), 20_000, "the post-ambiguity turn") === true);
     c("two pending handoffs naming one agent record no linkage at all",
       turnInvokes.find((i) => i.goalId === T4)?.handoffFrom === undefined,
       JSON.stringify(turnInvokes.find((i) => i.goalId === T4)));
@@ -957,8 +996,161 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     JSON.stringify(sup));
   const well = await withDeadline(safe(handler.spawn({ persona: "builder", supervise: { restarts: 2, window: "5m" } }, stepCtx(token("S1")).ctx)), 10_000, "the well-formed supervise spawn");
   c("a well-formed supervise travels as restarts and windowMs and the spawn is submitted",
-    (well as { threw?: boolean })?.threw !== true && spawnAccepts.size === before + 1,
+    well !== undefined && (well as { threw?: boolean })?.threw !== true && spawnAccepts.size === before + 1,
     JSON.stringify({ well, accepts: spawnAccepts.size, before }));
+}
+
+}
+
+// ── 19) a placed seat's turn reaches its placed host, whatever the class rail reaches ─────────
+// Deterministic, not a retry budget: the suite manager (the placed host) stops taking class-rail
+// turns, and a second registered member that maps no seat becomes the only class-rail turn
+// responder. A turn on the class rail can reach only that member, which refuses it as unmapped; a
+// turn addressed to the placed host reaches the one manager that maps the seat. The decoy counts
+// every handler entry, so "no other member ran it" is measured, not assumed.
+{
+  console.log("• 19 — a placed seat's turn is addressed to its placed host; the class rail reaches only a member that maps nothing");
+  const handler = mk("tn-place");
+  // `token` repeats its tag to 43 characters, so a tag is unique only if no earlier tag repeats to
+  // the same string ("pp" and cell 9's "p" are one request id). A shared id is one goal: the
+  // placed spawn would be served cell 9's recorded acceptance and allocate nothing.
+  const unplaced = await spawnSeat(handler, "Q19u");
+  const allocsBefore = allocations.length;
+  const placedGot = await withDeadline(safe(handler.spawn({ persona: "builder", placement: { endpoint: EP, instanceId: MGR_IID } }, stepCtx(token("Q19p")).ctx)), 20_000, "the placed spawn");
+  const placedSeat = typeof (placedGot as { agent?: unknown })?.agent === "string" ? placedGot as { agent: string; persona: string } : undefined;
+  const placedAlloc = allocations.find((a) => a.uid === placedSeat?.agent.split("#")[1]);
+  c("19 setup: the placed spawn is a fresh allocation by its placed host, not an earlier step's acceptance",
+    placedSeat !== undefined && placedAlloc !== undefined && allocations.length === allocsBefore + 1 && allocations.at(-1) === placedAlloc
+      && unplaced !== undefined && unplaced.agent !== placedSeat.agent,
+    { placed: placedSeat?.agent, unplaced: unplaced?.agent, allocated: allocations.length - allocsBefore });
+
+  const DECOY_IID = "d".repeat(26);
+  await provisionEndpointGateOpen(authKv, { endpoint: EP, instanceId: DECOY_IID, principal: "local.mgr" });
+  await registerServiceInstance(kv, {
+    space: SPACE,
+    spec: { endpoint: EP, owner: "local", clusterDigests: [CLOSURE_DIGEST], protocol: { v: 1 } },
+    instanceId: DECOY_IID, registrant: { owner: "local" }, authority,
+    barrier: endpointRegistrationBarrier(authKv, SPACE, { endpoint: EP, instanceId: DECOY_IID, opId: DECOY_IID }), readClusterArtifact,
+  });
+  const decoyEpoch = (await serveIssuanceGateKv(authKv, SPACE, { endpoint: EP, instanceId: DECOY_IID }).observe())!.processEpoch;
+  const decoyGrant = await authorizeServeGrant(kv, {
+    space: SPACE, endpoint: EP, instanceId: DECOY_IID, epoch: decoyEpoch,
+    holder: { owner: "local" }, authority, readProcessEpoch: () => decoyEpoch, readClusterArtifact,
+  });
+  let decoyRuns = 0;
+  const decoy = serveEndpoint(nc, SPACE, decoyGrant, defs.map((d) => ({ ...d, handler: () => {
+    decoyRuns += 1;
+    throw new EpEnvelopeError("internal", "the decoy member ran a command");
+  } })), { public: true }, { resolveTarget: () => undefined });
+  await serve.stop();
+  const hostServe = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
+    resolveTarget: (t) => mappings.get(`${t.owner}.${t.actor}`),
+    omitClassCommands: ["turn"],
+  });
+  await nc.flush();
+  try {
+    const before = turnInvokes.length;
+    turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
+    const placedTurn = placedSeat === undefined ? undefined
+      : await withDeadline(safe(handler.turn({ agent: placedSeat, deadline: "5m" }, stepCtx(token("Q19t")).ctx)), 30_000, "the placed turn");
+    c("19 PLACED: a placed seat's turn is served by its placed host while the class rail reaches only a member that does not map it",
+      isTurnResult(placedTurn) && placedTurn.status === "done" && turnInvokes.length === before + 1 && decoyRuns === 0,
+      JSON.stringify({ placedTurn, invokes: turnInvokes.length - before, decoyRuns }));
+    const unplacedTurn = unplaced === undefined ? undefined
+      : await withDeadline(safe(handler.turn({ agent: unplaced, deadline: "5m" }, stepCtx(token("Q19v")).ctx)), 60_000, "the unplaced turn");
+    c("19b UNPLACED keeps the class rail: its live seat comes back L4002 'down or unreachable', and no member ran it",
+      (unplacedTurn as { code?: string })?.code === "L4002" && String((unplacedTurn as { message?: string })?.message).includes("down or unreachable")
+        && turnInvokes.length === before + 1 && decoyRuns === 0,
+      JSON.stringify({ unplacedTurn, decoyRuns }));
+    // The placed seat itself leaves its host's map: the host is live and answers, and has no seat.
+    const placedKey = placedAlloc === undefined ? undefined : `${placedAlloc.owner}.${placedAlloc.actor}`;
+    const unmapped = placedKey !== undefined && mappings.delete(placedKey) && !mappings.has(placedKey);
+    const absentTurn = placedSeat === undefined ? undefined
+      : await withDeadline(safe(handler.turn({ agent: placedSeat, deadline: "5m" }, stepCtx(token("Q19w")).ctx)), 30_000, "the absent placed turn");
+    c("19c ABSENT: a seat its placed host no longer maps is L4002 from that host itself, named as its placed host",
+      unmapped && (absentTurn as { code?: string })?.code === "L4002" && String((absentTurn as { message?: string })?.message).includes(`down on its placed host ${MGR_IID}`)
+        && turnInvokes.length === before + 1 && decoyRuns === 0,
+      JSON.stringify({ unmapped, absentTurn, invokes: turnInvokes.length - before, decoyRuns }));
+    // A real invoke has been accepted before its I/O reply is lost. Losing the
+    // host now cannot be reclassified as a fresh not-run reachability failure.
+    if (placedKey !== undefined && placedAlloc !== undefined)
+      mappings.set(placedKey, { lifecycleUid: placedAlloc.uid, mappingRevision: 1 });
+    const { readGoalStatus } = await import("@cotal-ai/core");
+    const client = handler as unknown as { invokeManager(...args: unknown[]): Promise<unknown> };
+    const realInvoke = client.invokeManager.bind(handler);
+    const unknownId = token("Q19unknown");
+    let acceptedThenLost = 0;
+    client.invokeManager = async (...args) => {
+      const reply = await realInvoke(...args);
+      if (args[1] === "turn" && acceptedThenLost === 0) {
+        acceptedThenLost++;
+        await hostServe.stop(); await nc.flush();
+        throw new EpEnvelopeError("deadline-exceeded", "fixture lost reply AFTER real accepted turn", undefined, "unknown");
+      }
+      return reply;
+    };
+    turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
+    let ambiguous: unknown;
+    try {
+      ambiguous = placedSeat === undefined ? undefined : await withDeadline(safe(handler.turn({ agent: placedSeat, deadline: "5m" }, stepCtx(unknownId).ctx)), 30_000, "the post-submit host loss");
+    } finally { client.invokeManager = realInvoke; }
+    c("19u POST-SUBMIT UNKNOWN: accepted goal and lost host never become not-run L4002 or a duplicate effect",
+      acceptedThenLost === 1 && (ambiguous as { name?: string })?.name === "EpEnvelopeError"
+        && (ambiguous as { code?: string })?.code === "deadline-exceeded"
+        && (await readGoalStatus(goalCtx, { endpoint: EP, caller: CALLER, goalId: unknownId })) !== undefined
+        && turnInvokes.length === before + 2 && decoyRuns === 0,
+      JSON.stringify({ ambiguous, acceptedThenLost, invokes: turnInvokes.length - before, decoyRuns }));
+    // 19c removed a SEAT mapping. Restore it, then remove the HOST itself: the
+    // class responder still maps nothing, and must never become a fallback.
+    if (placedKey !== undefined && placedAlloc !== undefined)
+      mappings.set(placedKey, { lifecycleUid: placedAlloc.uid, mappingRevision: 1 });
+    if (acceptedThenLost === 0) await hostServe.stop();
+    await nc.flush();
+    c("19d setup: the placed host is stopped while its seat mapping remains",
+      placedKey !== undefined && mappings.has(placedKey) && turnInvokes.length === before + 2 && decoyRuns === 0);
+    const hostGone = placedSeat === undefined ? undefined
+      : await withDeadline(safe(handler.turn({ agent: placedSeat, deadline: "5m" }, stepCtx(token("Q19d")).ctx)), 30_000, "the absent-host turn");
+    c("19d HOST ABSENT: a pre-submit placed turn is catchable L4002 unreachable, never affirmative seat death or class fallback",
+      (hostGone as { code?: string })?.code === "L4002"
+        && String((hostGone as { message?: string })?.message).includes(`placed host ${MGR_IID} unreachable`)
+        && !String((hostGone as { message?: string })?.message).includes("found the agent down")
+        && (await readGoalStatus(goalCtx, { endpoint: EP, caller: CALLER, goalId: token("Q19d") })) === undefined
+        && turnInvokes.length === before + 2 && decoyRuns === 0,
+      JSON.stringify({ hostGone, invokes: turnInvokes.length - before, decoyRuns }));
+    const askGone = placedSeat === undefined ? undefined
+      : await withDeadline(safe(handler.ask({ agent: placedSeat, schema: { answer: "string" }, deadline: "5m" }, stepCtx(token("Q19e")).ctx)), 30_000, "the absent-host ask");
+    c("19e ASK HOST ABSENT: the shipped ask relay reports L4002 placed-host unreachable without submission",
+      (askGone as { code?: string; kind?: string })?.code === "L4002" && (askGone as { kind?: string })?.kind === "ask"
+        && String((askGone as { message?: string })?.message).includes(`placed host ${MGR_IID} unreachable`)
+        && turnInvokes.length === before + 2 && decoyRuns === 0,
+      JSON.stringify({ askGone, invokes: turnInvokes.length - before, decoyRuns }));
+    // Drive the actual shared checkpoint-relay method, not a copied classification rule.
+    const relay = handler as unknown as { relayToSeat(seat: { name: string; uid: string; owner: string; actor: string; host: string }, goalId: string, payload: string, deadlineAt: number, kind: "checkpoint", step: string): Promise<void> };
+    const checkpointGone = placedAlloc === undefined ? undefined : await withDeadline(safe(relay.relayToSeat({
+      name: placedAlloc.name, uid: placedAlloc.uid, owner: placedAlloc.owner, actor: placedAlloc.actor, host: MGR_IID,
+    }, token("Q19f"), "{}", Date.now() + 300_000, "checkpoint", "host-gone")), 30_000, "the absent-host checkpoint relay");
+    c("19f CHECKPOINT HOST ABSENT: the shared shipped relay reports L4002 unreachable without inventing seat death",
+      (checkpointGone as { code?: string; kind?: string })?.code === "L4002" && (checkpointGone as { kind?: string })?.kind === "checkpoint"
+        && String((checkpointGone as { message?: string })?.message).includes(`placed host ${MGR_IID} unreachable`)
+        && turnInvokes.length === before + 2 && decoyRuns === 0,
+      JSON.stringify({ checkpointGone, invokes: turnInvokes.length - before, decoyRuns }));
+    // These are attributed refusal controls at the resolver I/O seam, not silence.
+    const resolver = handler as unknown as { manager(host?: string): Promise<never> };
+    const originalManager = resolver.manager;
+    try {
+      for (const [code, tag] of [["permission-denied", "Q19deny"], ["failed-precondition", "Q19contract"]] as const) {
+        const refusal = new EpEnvelopeError(code, `fixture ${code}`);
+        resolver.manager = async () => { throw refusal; };
+        const refused = placedSeat === undefined ? undefined : await safe(handler.turn({ agent: placedSeat, deadline: "5m" }, stepCtx(token(tag)).ctx));
+        c(`19r ${code}: a real refusal retains its code and submits nothing`,
+          (refused as { code?: string })?.code === code && turnInvokes.length === before + 2 && decoyRuns === 0,
+          JSON.stringify(refused));
+      }
+    } finally { resolver.manager = originalManager; }
+  } finally {
+    await decoy.stop().catch(() => { /* teardown */ });
+    await hostServe.stop().catch(() => { /* teardown */ });
+  }
 }
 
 async function readGoalResultData(goalId: string): Promise<Record<string, unknown> | undefined> {
@@ -967,10 +1159,20 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
   return fact?.data as Record<string, unknown> | undefined;
 }
 
+// A wait supplies an assertion's input; it must not manufacture another assertion.
+{
+  const before = ok + fail;
+  const settled = await withDeadline(Promise.resolve("settled"), 1_000, "the settled accounting control");
+  c("a settled wait leaves the assertion tally to its caller", settled === "settled" && ok + fail === before);
+  const beforeTimeout = ok + fail;
+  const timedOut = await withDeadline(new Promise<never>(() => {}), 1, "the deadline accounting probe");
+  c("a timed-out wait leaves the assertion tally to its caller", timedOut === undefined && ok + fail === beforeTimeout);
+}
+
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 49;
+const EXPECTED_CELLS = placedHostOnly ? 13 : 69;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

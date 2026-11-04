@@ -82,7 +82,7 @@ try {
   const proof = remoteManagerCurrentRegistrationProof(auth.account.signingSeed, owner, base, gate);
   const liveUid = mintLifecycleUid();
   await epKv.put(issuanceGateKey(liveUid), new TextEncoder().encode(JSON.stringify({ lifecycleUid: liveUid, state: "open", generation: 1 })));
-  const caller = { space: SPACE, owner, actor: "cli", uid: mintLifecycleUid(), generation: mintGeneration() };
+  const caller = { space: SPACE, owner, actor: "cli", uid: mintLifecycleUid(), generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800) };
   const prepared = await issued.stage({ version: 1, ref: caller, sources: [{ space: SPACE, bucket: epAuthBucket(SPACE), key: `cred.${liveUid}` }], permissions: {
     publish: { allow: { mode: "patterns", patterns: [`cotal.${SPACE}.ep.v1.inst.manager.*.run-start.${owner}.cli.>`] }, deny: [] },
     subscribe: { allow: { mode: "patterns", patterns: [chatSubject(SPACE, "*", "*", "build")] }, deny: [] },
@@ -167,6 +167,7 @@ try {
   await local.reconcile();
   const resumeRefusal = await refused(local.resume({ runId: waiting }));
   cell("U6-6 manager resume of a revoked run is refused", resumeRefusal.includes("was revoked") && resumeRefusal.includes("not resumed"));
+  cell("U6-6b the refusal cites no spec section", resumeRefusal !== "" && !resumeRefusal.includes("SPEC"));
   await local.stop();
 
   const pairRun = newRun(); await admit(pairRun);
@@ -199,7 +200,7 @@ try {
   cell("closed revoke body refuses owner by and ignored run assertions", forgedOwner.status !== 200 && forgedBy.status !== 200 && ignoredRun.status !== 200 && await readRunRevocation(jsm, SPACE, EP, malformedRun) === undefined);
   const stale = await post({ ...revokeRequest(malformedRun), processEpoch: 2 });
   const badProof = await post({ ...revokeRequest(malformedRun), registrationProof: `sha256:${"0".repeat(64)}` });
-  cell("stale epoch and invalid registration proof write no marker", stale.status !== 200 && badProof.status === 403 && String(badProof.body.error).includes("proof does not match the current registration") && await readRunRevocation(jsm, SPACE, EP, malformedRun) === undefined);
+  cell("stale epoch and invalid registration proof write no marker", stale.status !== 200 && badProof.status === 403 && String(badProof.body.error).includes("proof does not match current host registration") && await readRunRevocation(jsm, SPACE, EP, malformedRun) === undefined);
   const missing = await post(revokeRequest(newRun()));
   cell("unrecorded run cannot be revoked", missing.status === 403 && String(missing.body.error).includes("no admission record"));
   grantActor(authDir, { owner: admin, actor: "cli", scope: ["supervise"], allowSubscribe: [">"], allowPublish: [">"] });

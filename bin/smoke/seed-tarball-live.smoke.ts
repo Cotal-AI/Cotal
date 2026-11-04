@@ -11,12 +11,13 @@
  *    `package.json` and no `seeded-connectors/`, so only resolving it reaches the payloads
  *  - each connector registers into THE BINARY'S single `@cotal-ai/core` (ext add asserts this; a
  *    dual-core install would fail it), recorded `source:"seeded"`
+ *  - the docs data every connector reads ships once, in `seeded-connectors/_shared`; the seed puts it
+ *    back in each installed connector, and `cotal update` verifies those copies against it
  *
  * Broker-free and deterministic. Needs `npm` + `pnpm` on PATH and network for third-party deps.
  * Run: pnpm smoke:seed-tarball:live
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -75,9 +76,12 @@ try {
     header.writeUInt16LE(machine, 18);
     writeFileSync(helper, header);
   }
+  // workspace's prepack refuses without its Windows and macOS identity bindings, which only the native
+  // builder jobs produce and a Linux install never loads, so it packs without that check.
   for (const d of dirs) {
     const root = d === "packages/seat" ? seatClone : join(REPO, d);
-    execFileSync("pnpm", ["-C", root, "pack", "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
+    const skipPrepack = d === "packages/workspace" ? ["--config.ignore-scripts=true"] : [];
+    execFileSync("pnpm", ["-C", root, "pack", ...skipPrepack, "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
   }
   const tarballs = readdirSync(tgz).filter((f) => f.endsWith(".tgz"));
   check("packed the full @cotal-ai closure", tarballs.length === dirs.length, tarballs.length);
@@ -86,11 +90,19 @@ try {
   const listing = execFileSync("tar", ["tzf", cotalTgz], { encoding: "utf8" });
   check("cotal-ai tarball ships seeded-connectors/ payloads", listing.includes("package/seeded-connectors/hermes/package.json"));
   check("cotal-ai tarball bundles the web dashboard payload", listing.includes("package/seeded-connectors/web/package.json"));
+  const webBase = "package/seeded-connectors/web/dist/web";
   check(
-    "bundled web payload is self-contained (marked/dompurify shipped in dist, no runtime deps)",
-    listing.includes("package/seeded-connectors/web/dist/web/vendor/marked.umd.js") &&
-      listing.includes("package/seeded-connectors/web/dist/web/vendor/purify.min.js"),
+    "bundled web payload ships the client page and its bundle manifest in dist",
+    listing.includes(`${webBase}/index.html`) && listing.includes(`${webBase}/bundle-licenses.json`),
   );
+  // Every connector bundle reads the same docs data from beside itself; the tarball carries it once.
+  const docsEntries = listing.split("\n").filter((line) => /\/docs-(bundle|index)\.bin$/.test(line)).sort();
+  check(
+    "cotal-ai tarball ships each docs file once, in seeded-connectors/_shared",
+    docsEntries.join(" ") === "package/seeded-connectors/_shared/docs-bundle.bin package/seeded-connectors/_shared/docs-index.bin",
+    docsEntries,
+  );
+  check("cotal-ai tarball ships the shared-file placements", listing.includes("package/seeded-connectors/_shared/placements.json"));
   const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { encoding: "utf8" });
   check("cotal-ai tarball has concrete dep versions (workspace: replaced)", !packedPkg.includes("workspace:"));
 
@@ -105,28 +117,45 @@ try {
     check(`bundled ${n} payload is version-locked to the umbrella (${umbrellaVersion})`, seededPkg.version === umbrellaVersion, seededPkg.version);
   }
 
-  // The web dashboard ships marked/DOMPurify as opaque browser bytes in dist (not runtime deps), so
-  // its vendor-manifest.json is the auditable SBOM surface. Assert it lists both libs with a concrete
-  // version + license + sha512, and that each recorded hash matches the ACTUAL shipped bytes (F2) — so
-  // a drifted or tampered vendored lib can never pass unnoticed into a published binary.
-  const vendorBase = "package/seeded-connectors/web/dist/web/vendor";
-  const vendorManifest = JSON.parse(
-    execFileSync("tar", ["xzf", cotalTgz, "-O", `${vendorBase}/vendor-manifest.json`], { encoding: "utf8" }),
-  ) as { vendored: { file: string; package: string; version: string; license: string; sha512: string }[] };
-  const libs = new Map(vendorManifest.vendored.map((e) => [e.package, e]));
+  // The web dashboard's client is one Vite build: third-party code is compiled into its hashed
+  // assets rather than shipped as runtime deps, so bundle-licenses.json is the auditable SBOM
+  // surface. Assert that every bundled package carries a concrete version and license, that it names
+  // the React runtime the page is built on, and that every file the shipped page references is in
+  // the tarball, so a payload whose page points at a missing asset cannot pass into a published
+  // binary. marked and DOMPurify are bundled too, because the message rows render bodies as
+  // sanitized Markdown, and d3-force, d3-selection and d3-zoom lay out and pan the topology graph.
+  const licenses = JSON.parse(
+    execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }),
+  ) as { bundled: { package: string; version: string; license: string }[] };
+  const libs = new Map(licenses.bundled.map((e) => [e.package, e]));
   check(
-    "web vendor manifest lists marked + dompurify with version, license and sha512",
-    ["marked", "dompurify"].every((p) => {
-      const e = libs.get(p);
-      return Boolean(e && e.version && e.license && /^[0-9a-f]{128}$/.test(e.sha512));
-    }),
-    [...libs.keys()].join(","),
+    "web bundle-licenses.json gives every bundled package a version and a license",
+    licenses.bundled.length > 0 && licenses.bundled.every((e) => Boolean(e.version && e.license)),
+    licenses.bundled,
   );
-  for (const e of vendorManifest.vendored) {
-    const bytes = execFileSync("tar", ["xzf", cotalTgz, "-O", `${vendorBase}/${e.file}`], { maxBuffer: 1 << 26 });
-    const actual = createHash("sha512").update(bytes).digest("hex");
-    check(`vendor manifest sha512 matches the shipped ${e.file}`, actual === e.sha512, `${actual.slice(0, 12)} vs ${e.sha512.slice(0, 12)}`);
-  }
+  check("web bundle-licenses.json names react and react-dom", ["react", "react-dom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
+  check("web bundle-licenses.json names marked and dompurify", ["marked", "dompurify"].every((p) => libs.has(p)), [...libs.keys()].join(","));
+  check("web bundle-licenses.json names d3-force, d3-selection and d3-zoom", ["d3-force", "d3-selection", "d3-zoom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
+  const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { encoding: "utf8" });
+  const refs = [...page.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
+  check("the shipped web page references its script and stylesheet", refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
+  for (const r of refs) check(`the shipped web page's reference /${r} is in the tarball`, listing.includes(`${webBase}/${r}`));
+  // The same payload, packed from the web package directly, the way prepack packs it and the way
+  // `@cotal-ai/web` publishes on its own: the umbrella must carry that package's manifest byte for
+  // byte, not a copy from some other build.
+  //
+  // This pack is also what gives the mutation coverage gate its reach into the web package: the
+  // gate cannot follow the umbrella's prepack, but it can follow an `npm pack` this suite runs over
+  // `implementations/web`. It is NOT the witness for the fixture's mutation. That mutation (the
+  // build stops recording bundled packages) is killed by the "names react and react-dom" cell
+  // above, which reads the umbrella's own tarball.
+  const webTgzDir = join(base, "web-tgz");
+  mkdirSync(webTgzDir, { recursive: true });
+  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { stdio: ["ignore", "ignore", "inherit"] });
+  const webTgz = join(webTgzDir, readdirSync(webTgzDir).find((f) => f.endsWith(".tgz")) ?? "");
+  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { encoding: "utf8" });
+  check("the umbrella's web manifest is the one the web package itself packs",
+    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }));
 
   console.log("installing the tarball closure into a clean prefix …");
   writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "tb-host", private: true }));
@@ -147,12 +176,15 @@ try {
   if (process.platform !== "win32") {
     check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
   }
+  // A read no longer seeds, so seed explicitly; the listing after it is a read.
+  const seed = spawnSync("node", [invokedBin, "ext", "seed"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  check("ext seed from the published layout succeeded", seed.status === 0, `${seed.stdout}${seed.stderr}`.split("\n").slice(-12).join("\n"));
   const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
   const out = list.stdout ?? "";
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
-  check("seeded command:web (the dashboard) from the bundled payload", out.includes("command:web"), list.stderr);
+  check("seeded service-preset:web (the dashboard) from the bundled payload", out.includes("service-preset:web"), list.stderr);
 
   const manifest = JSON.parse(readFileSync(join(cfg, "cotal", "extensions", "extensions.json"), "utf8")) as {
     extensions: { pkg: string; spec: string; source?: string }[];
@@ -182,6 +214,55 @@ try {
   }
   const hermesLaunch = readFileSync(join(extRoot, "@cotal-ai", "connector-hermes", "dist", "launch.js"), "utf8");
   check("Hermes launcher is self-contained (no late host-core import)", !/^\s*import\b[^\n]* from ["']@cotal-ai\/core["'];?\s*$/m.test(hermesLaunch));
+
+  // The seed store put the shared docs data back at every path the prepack took it from, so each
+  // installed connector holds the files it was packed with.
+  const seededPkgs: Record<string, string> = {
+    claude: "@cotal-ai/connector-claude-code", opencode: "@cotal-ai/connector-opencode", codex: "@cotal-ai/connector-codex",
+    hermes: "@cotal-ai/connector-hermes", jcode: "@cotal-ai/connector-jcode", pi: "@cotal-ai/pi", web: "@cotal-ai/web",
+  };
+  const sharedDir = join(prefix, "node_modules", "cotal-ai", "seeded-connectors", "_shared");
+  const placements = (JSON.parse(readFileSync(join(sharedDir, "placements.json"), "utf8")) as { placements: Record<string, string[]> }).placements;
+  // Every connector bundles the docs data; the web dashboard does not.
+  const connectors = Object.keys(seededPkgs).filter((name) => name !== "web");
+  check("every connector, and only a connector, shipped its docs data in the shared copy", Object.keys(placements).sort().join(" ") === [...connectors].sort().join(" "), Object.keys(placements));
+  const installedAt = (name: string, rel: string) => join(extRoot, ...seededPkgs[name].split("/"), ...rel.split("/"));
+  const sharedCopy = (rel: string) => readFileSync(join(sharedDir, rel.slice(rel.lastIndexOf("/") + 1)));
+  let restored = 0;
+  for (const name of connectors) {
+    for (const rel of placements[name] ?? []) {
+      const at = installedAt(name, rel);
+      if (existsSync(at) && readFileSync(at).equals(sharedCopy(rel))) restored++;
+      else check(`installed ${name} holds ${rel}, byte-equal to the shared copy`, false);
+    }
+  }
+  const placed = Object.values(placements).flat().length;
+  check(`every placement is restored byte-equal in the installed connectors (${restored}/${placed})`, restored === placed && placed > 0);
+
+  // `cotal update` keeps a seeded built-in only when its store and installed copies are byte-equal to
+  // the shipped payload, which for a restored file is the shared copy. A tampered copy is reinstalled.
+  const updateEnv = { ...process.env, HOME: join(base, "home"), XDG_CONFIG_HOME: cfg };
+  mkdirSync(updateEnv.HOME, { recursive: true });
+  const update = () => {
+    const run = spawnSync("node", [invokedBin, "update"], { cwd: prefix, encoding: "utf8", env: updateEnv });
+    return `${run.stdout ?? ""}${run.stderr ?? ""}`;
+  };
+  const reconciled = (out: string) => out.split("\n").find((line) => line.includes("connectors reconciled")) ?? "";
+  const kept = reconciled(update());
+  check(
+    "cotal update verifies all seven built-ins against the shipped payload and reinstalls none",
+    Object.keys(seededPkgs).every((name) => new RegExp(`verified [^;]*\\b${name}\\b`).test(kept)) && !kept.includes("refreshed"),
+    kept,
+  );
+  const tamperedRel = placements.claude?.[0] ?? "";
+  writeFileSync(installedAt("claude", tamperedRel), Buffer.concat([sharedCopy(tamperedRel), Buffer.from([0])]));
+  const repairOut = update();
+  check(
+    "cotal update reinstalls a built-in whose restored docs file differs from the shared copy",
+    repairOut.includes(`claude: the installed copy differs at ${join(...tamperedRel.split("/"))}; reinstalling`) && /refreshed claude\b/.test(reconciled(repairOut)),
+    repairOut.split("\n").filter((line) => line.includes("claude")).join("\n"),
+  );
+  check("the reinstall restores the shared copy", readFileSync(installedAt("claude", tamperedRel)).equals(sharedCopy(tamperedRel)));
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

@@ -1,0 +1,2 @@
+# Release detail diagnostics and non-blocking warning behavior.
+smoke:release-notes-detail

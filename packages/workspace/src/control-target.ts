@@ -4,15 +4,17 @@
  * run`, the web dashboard), so they all resolve the same target the same way: exactly
  * {@link connectOrExit}'s precedence (--creds raw > --server + unregistered --space open >
  * registry/`current` with mint + preflight + stale-prune) with one control-specific delta: on the
- * raw `--creds` path the space defaults to THIS FOLDER's `.cotal/auth` space rather than
- * `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
+ * raw `--creds` path with `--server` and no `--space`, the space is THIS FOLDER's `.cotal/auth`
+ * space rather than `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
  */
 import { existsSync, readFileSync } from "node:fs";
 import {
+  assertLifecycleToken,
   DEFAULT_SPACE,
   DEV_OWNER,
   dialerFor,
   epCallerGrantRows,
+  isAuthRejection,
   jwtFromCreds,
   mintCreds,
   mintLifecycleUid,
@@ -27,8 +29,8 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
-import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, preflightOrThrow, userViewAuthOrThrow, type ConnectFlags } from "./connect.js";
+import { isWorkspaceTargetError, resolveMeshTarget, resolveReadsLiveness, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
 
@@ -67,22 +69,29 @@ const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["
  *
  * `instanceId` (`--on <instanceId>`) is forwarded to the instrument mint so the one-shot credential
  * carries the exact `ep.inst.…` rows for that instance; a credential cannot gain a rail after it is
- * issued, so it has to arrive here rather than at the invoke.
+ * issued, so it has to arrive here rather than at the invoke. On a user-auth mesh
+ * without an explicit selector, a managed seat uses the manager that launched it.
  *
  * `onRefusal: "throw"` makes an unresolvable or unreachable mesh a thrown {@link ConnectRefusal}
  * instead of a printed sentence and `process.exit(1)`, for a loop that has to survive the broker
- * being briefly gone.
+ * being briefly gone. `readOnly` resolves and connects without the liveness sweep and without
+ * pruning a stale registry entry, for a read that must leave the registry as it found it.
  */
 export async function resolveControlTarget(
   flags: ConnectFlags,
   profile: Profile,
   instanceId?: string,
-  opts: { onRefusal?: "exit" | "throw"; endpoint?: string } = {},
+  opts: { onRefusal?: "exit" | "throw"; endpoint?: string; readOnly?: boolean } = {},
 ): Promise<ControlTarget> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
+  // A credential-less resolve that reads liveness sweeps once, unless the caller already swept for
+  // these flags, and the peek and the connect helper both resolve against that `offline` set,
+  // so they see one world and a kept dead record is a live candidate for neither.
+  // A raw `--creds` with `--server` and no `--space` takes this folder's space; with neither, the
+  // connect helper takes the selected space or this folder's.
   const withSpace = flags.creds
-    ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
-    : flags;
+    ? flags.space === undefined && flags.server !== undefined ? { ...flags, space: soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE } : flags
+    : { ...flags, offline: flags.offline ?? (!opts.readOnly && resolveReadsLiveness(process.cwd(), { server: flags.server, space: flags.space }) ? (await pruneStaleMeshes(flags.server)).offline : []) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.
@@ -93,25 +102,25 @@ export async function resolveControlTarget(
   // so absorbing it would let an explicit `--server` take the raw-open arm and connect a
   // misconfigured AUTH mesh with no credentials. Those codes rethrow and the command dies loud.
   if (!withSpace.creds) {
-    // Sweep first when no space is named, as the connect helper does before ITS resolve, so the
-    // peek and the connect see one world. The sweep's `offline` set is the liveness verdict:
-    // pass it through so a kept dead record is not a live candidate.
-    const offline = withSpace.space ? [] : (await pruneStaleMeshes()).offline;
     let mode: MeshTarget["mode"] | undefined;
     try {
       mode = resolveMeshTarget(process.cwd(), {
         server: withSpace.server,
         space: withSpace.space,
-        offline,
+        offline: withSpace.offline,
+        readOnly: opts.readOnly,
       }).mode;
     } catch (e) {
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }
     if (mode === "user") {
-      const conn = await (opts.onRefusal === "throw" ? connectUserControlOrThrow : connectUserControlOrExit)(withSpace);
+      const conn = await (opts.onRefusal === "throw" ? connectUserControlOrThrow : connectUserControlOrExit)({ ...withSpace, readOnly: opts.readOnly });
+      // A managed seat's own shell defaults to the manager that launched it, as its tools do, so a
+      // second live manager for the owner does not make the seat's calls ambiguous. `--on` wins.
+      const pin = instanceId ?? seatManagerInstance(conn.space);
       const manager = (opts.endpoint === undefined || opts.endpoint === "manager") &&
           (profile === "control-caller-privileged" || profile === "control-caller-admin")
-        ? await userViewAuth(conn, "manager-caller", instanceId === undefined ? {} : { managerInstanceId: instanceId })
+        ? await userViewAuthOrThrow(conn, "manager-caller", pin === undefined ? {} : { managerInstanceId: pin })
         : undefined;
       return {
         space: conn.space,
@@ -129,7 +138,7 @@ export async function resolveControlTarget(
       };
     }
   }
-  const conn = await connect_(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
+  const conn = await connect_(withSpace, profile, { ...(instanceId !== undefined ? { instanceId } : {}), readOnly: opts.readOnly });
   return {
     space: conn.space,
     server: conn.server,
@@ -139,6 +148,36 @@ export async function resolveControlTarget(
     ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
     ...(conn.policy ? { policy: conn.policy } : {}),
   };
+}
+
+/** The manager that launched the managed seat this process runs in (`COTAL_MANAGER_INSTANCE`, which
+ *  the manager sets on every launch), when the seat belongs to `space`; `undefined` outside one. */
+function seatManagerInstance(space: string): string | undefined {
+  const instanceId = process.env.COTAL_MANAGER_INSTANCE?.trim();
+  if (!instanceId || process.env.COTAL_SPACE?.trim() !== space) return undefined;
+  return assertLifecycleToken(instanceId, "COTAL_MANAGER_INSTANCE");
+}
+
+/** The non-secret launch identity a managed seat's shell inherits, or `undefined` when it is not
+ *  enough for {@link resolveSeatControlTarget} to act as the seat. */
+function seatLaunchIdentity(): { name: string; actor: string; uid: string; seatSpace?: string; acceptedToken?: string } | undefined {
+  const name = process.env.COTAL_NAME?.trim();
+  const actor = process.env.COTAL_ID?.trim();
+  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const seatSpace = process.env.COTAL_SPACE?.trim() || undefined;
+  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim() || undefined;
+  if (!name || !actor || !uid || (!seatSpace && !acceptedToken)) return undefined;
+  return { name, actor, uid, seatSpace, acceptedToken };
+}
+
+/** The flags for a command that tries {@link resolveSeatControlTarget} and then, when it does not
+ *  apply, {@link resolveControlTarget} (#4018). With no space named, the seat resolve sweeps the
+ *  registry, so that sweep is taken here once and both resolves read its `offline` set: a record that
+ *  does not answer is probed once, and both judge the same registry state. Outside a managed seat,
+ *  or with a space named or a sweep already taken, the flags come back unchanged. */
+export async function sweepForSeatResolve<F extends ConnectFlags>(flags: F): Promise<F> {
+  if (flags.space || flags.offline !== undefined || !seatLaunchIdentity()) return flags;
+  return { ...flags, offline: (await pruneStaleMeshes(flags.server)).offline };
 }
 
 /**
@@ -168,16 +207,14 @@ export async function resolveControlTarget(
  * carries the spawn set only when the seat's own credential holds it, and it expires in five minutes.
  */
 export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?: string): Promise<ControlTarget | undefined> {
-  const name = process.env.COTAL_NAME?.trim();
-  const actor = process.env.COTAL_ID?.trim();
-  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
-  const seatSpace = process.env.COTAL_SPACE?.trim();
-  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
-  if (!name || !actor || !uid || (!seatSpace && !acceptedToken)) return undefined;
+  const launch = seatLaunchIdentity();
+  if (!launch) return undefined;
+  const { name, actor, uid, seatSpace, acceptedToken } = launch;
   if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
-  // Sweep first when no space is named, as the operator resolution does, so a kept dead record is
-  // not a live candidate here either and the seat picks the same mesh the operator path would.
-  const offline = flags.space ? [] : (await pruneStaleMeshes()).offline;
+  // Managed-seat resolution retains its sweep when no space is named, so a kept dead record is
+  // not a live candidate here. Operator resolution skips a sweep its selection does not read. A sweep
+  // the caller already took ({@link sweepForSeatResolve}) is the one read.
+  const offline = flags.space ? [] : flags.offline ?? (await pruneStaleMeshes(flags.server)).offline;
   const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
   if (seatSpace && mesh.space !== seatSpace) return undefined;
   const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };
@@ -187,10 +224,18 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   if (!existsSync(path))
     throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
   const creds = readFileSync(path, "utf8");
+  const tls = mesh.tlsRequired;
+  // As the operator mint does, a dial that did not reach a broker is reported in the preflight's
+  // classified words rather than as the raw transport error; the probe uses the seat's own credential
+  // and never prunes. A broker that refused the seat's credential answered, so that refusal is kept
+  // as it is and never reported as a registry mismatch.
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
+    ...standaloneConnectOpts({ creds, tls }),
     maxReconnectAttempts: 0,
+  }).catch(async (e: unknown) => {
+    if (!isAuthRejection(e)) await preflightOrThrow(mesh, creds, true);
+    throw e;
   });
   let epCaller: IssuedCaller;
   try {

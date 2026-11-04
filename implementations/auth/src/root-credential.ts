@@ -34,6 +34,7 @@
  */
 import { EpEnvelopeError, mintLifecycleUid } from "@cotal-ai/core";
 import {
+  assertOrdinaryRegistryMutation,
   activateLifecycleAtUid,
   readLifecycleHeadForOperation,
   registryStores,
@@ -84,6 +85,7 @@ export async function ensureRootCredential(
   reg: LifecycleRegistry,
   args: { owner: string; actor: string; lifecycleUid: string; managerInstance: string; now?: () => number },
 ): Promise<string> {
+  await assertOrdinaryRegistryMutation(reg, args);
   const now = args.now ?? Date.now;
   const { owner, actor, lifecycleUid } = args;
   const holder = `${owner}.${actor}`;

@@ -11,8 +11,8 @@
  *   C. CANNOT create a history consumer on a FORBIDDEN channel (no grant for that EX subject).
  *   D. CANNOT use the bare, filter-less create subject (the multi-filter escape hatch).
  *   E. CANNOT Direct-Get the CHAT stream (the removed unfiltered read hole).
- *   F. CANNOT create a CHAT-stream consumer at all — agents hold no CHAT consumer grant post-v0.3
- *      (the removed `chat_<id>` name + a forbidden filter is just the probe; the live read is a core-sub).
+ *   F. CANNOT create an arbitrary CHAT consumer name (only the pinned history name is granted).
+ *   J. The production page API uses that exact grant, including occupied-name and stale-owner cases.
  *
  * If a future nats-server / nats.js upgrade ever stops enforcing B, this smoke fails loud — the
  * whole read boundary rests on it. Run: pnpm smoke:read-acl:auth
@@ -25,6 +25,8 @@ import { join } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   isReachable,
+  CotalEndpoint,
+  partsToText,
   createSpaceAuth,
   mintCreds,
   provisionAgent,
@@ -108,7 +110,7 @@ try {
   const noop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
   const id = newIdentity();
   const uid = mintLifecycleUid();
-  const agentCreds = await provisionAgent(noop, auth, id, { subscribe: ["allowed"], allowSubscribe: ["allowed"], lifecycleUid: uid });
+  const agentCreds = await provisionAgent(noop, auth, id, { subscribe: ["allowed"], allowSubscribe: ["allowed", "other", "quiet"], allowPublish: ["allowed"], lifecycleUid: uid });
   const chatHistD = chatHistDurable(DEV_OWNER, id.id, uid);
   const ag = await connect({
     servers: SERVERS,
@@ -148,7 +150,7 @@ try {
   const e = await jsApi(ag, `$JS.API.DIRECT.GET.${CHAT}`, { seq: 1 });
   check("E: Direct Get on CHAT is blocked (read hole removed)", e.kind === "blocked", e);
 
-  // F — an agent holds NO CHAT consumer grant (v0.3: the live read is a core-sub, not a durable).
+  // F — an agent holds no live-tail consumer create (the live read is a core subscription).
   // Probe it by trying to create a CHAT-stream consumer (using the removed chat_<id> name + a forbidden
   // filter) — blocked, so an agent can never stand up its own CHAT reader to self-widen its read.
   const f = await jsApi(ag, `$JS.API.CONSUMER.CREATE.${CHAT}.${chatDurable(DEV_OWNER, id.id)}`, {
@@ -189,6 +191,162 @@ try {
     aliasRejected = true;
   }
   check("I: non-NATS-safe channel (foo/bar) is rejected at provision (no ACL alias)", aliasRejected);
+
+  // The public one-shot reader must reach the same confined native create, not an observer
+  // consumer or an ACL row seeded by this fixture. Separate endpoints model separate CLI processes.
+  const readers: CotalEndpoint[] = [];
+  const reader = async (lifecycleUid = uid) => {
+    const ep = new CotalEndpoint({ space, servers: SERVERS, creds: agentCreds, lifecycleUid,
+      card: { name: "page-reader", id: id.id, kind: "endpoint" }, channels: [], consume: false,
+      registerPresence: false, watchPresence: false });
+    ep.on("error", () => {});
+    await ep.start();
+    readers.push(ep);
+    return ep;
+  };
+  try {
+    const exercise = async () => {
+      const one = await reader();
+      const two = await reader();
+      for (let i = 0; i < 5; i++) await one.multicast(`own ${i}`, { channel: "allowed" });
+      const page = await one.channelHistoryPage("allowed", { limit: 2 }).catch((e: Error) => e);
+      check("J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first",
+        !(page instanceof Error) && JSON.stringify(page.items.map((m) => partsToText(m.parts))) === JSON.stringify(["own 3", "own 4"]) && page.complete === false, page);
+      if (page instanceof Error) return; // keep an authority regression a named red, not a later hang
+      let deniedPage = false;
+      try { await one.channelHistoryPage("secret"); } catch (e) { deniedPage = /permission/i.test((e as Error).message); }
+      check("J2: public channel page refuses a forbidden channel rather than returning empty", deniedPage);
+      let badUid = false;
+      const foreign = await reader(mintLifecycleUid());
+      try { await foreign.channelHistoryPage("allowed"); } catch (e) { badUid = /permission/i.test((e as Error).message); }
+      check("J3: public channel page cannot read through a foreign lifecycle consumer name", badUid);
+
+      // Occupy the fixed name with a reader this test owns. Wait for the production call to observe
+      // the collision, then abort it: cancellation must not delete/update this owner's consumer.
+      const { jetstreamManager } = await import("@nats-io/jetstream");
+      const api = await jetstreamManager(ag);
+      const occupy = async (marker: string) => {
+        const end = Date.now() + 6000;
+        for (;;) {
+          try { return await api.consumers.add(CHAT, { name: chatHistD, description: marker,
+            filter_subject: allowedFilter, ack_policy: "none", deliver_policy: "all",
+            mem_storage: true, inactive_threshold: 30_000_000_000 }); }
+          catch (e) { if (!/already exists/i.test((e as Error).message) || Date.now() >= end) throw e; await wait(25); }
+        }
+      };
+      const occupant = await occupy("test-owner");
+      const internals = one as unknown as { jsm: import("@nats-io/jetstream").JetStreamManager; js: import("@nats-io/jetstream").JetStreamClient };
+      const originalAdd = internals.jsm.consumers.add.bind(internals.jsm.consumers);
+      let observedCollision!: () => void;
+      const collision = new Promise<void>((resolve) => { observedCollision = resolve; });
+      internals.jsm.consumers.add = async (...args) => {
+        try { return await originalAdd(...args); }
+        catch (e) { observedCollision(); throw e; }
+      };
+      const abort = new AbortController();
+      const blocked = one.channelHistoryPage("allowed", { signal: abort.signal }).then(() => "succeeded",
+        (e: Error) => e === abort.signal.reason || e.cause === abort.signal.reason ? "cancel occupied read" : e.message);
+      const collided = await Promise.race([collision.then(() => true), blocked.then(() => false)]);
+      if (!collided) {
+        check("J4: occupied read and cancellation never change or delete the other owner's consumer", false, "the occupied name was taken over");
+        internals.jsm.consumers.add = originalAdd;
+        return;
+      }
+      const beforeAbort = await api.consumers.info(CHAT, chatHistD);
+      abort.abort(new Error("cancel occupied read"));
+      const cancelled = await blocked;
+      const afterAbort = await api.consumers.info(CHAT, chatHistD).catch(() => undefined);
+      check("J4: occupied read and cancellation never change or delete the other owner's consumer",
+        cancelled === "cancel occupied read" && beforeAbort.created === occupant.created && afterAbort?.created === occupant.created &&
+        afterAbort.config.description === "test-owner", { cancelled, before: beforeAbort.config.description, after: afterAbort?.config.description });
+      internals.jsm.consumers.add = originalAdd;
+      await api.consumers.delete(CHAT, chatHistD); // the fixture releases its own occupant
+
+      // Pause a completed reader before its final INFO, let native expiry replace its consumer,
+      // then release it. This stale completion must not claim a page or delete the successor.
+      let atInfo!: () => void, resumeInfo!: () => void;
+      const infoReached = new Promise<void>((resolve) => { atInfo = resolve; });
+      const infoRelease = new Promise<void>((resolve) => { resumeInfo = resolve; });
+      const originalGet = internals.js.consumers.get.bind(internals.js.consumers);
+      internals.js.consumers.get = async (...args) => {
+        const consumer = await originalGet(...args);
+        const info = consumer.info.bind(consumer);
+        consumer.info = async (...infoArgs) => { atInfo(); await infoRelease; return info(...infoArgs); };
+        return consumer;
+      };
+      const stale = one.channelHistoryPage("allowed").then(() => "succeeded", (e: Error) => e.message);
+      const reachedInfo = await Promise.race([infoReached.then(() => true), stale.then(() => false)]);
+      if (!reachedInfo) {
+        check("J5: a delayed old reader detects replacement and leaves the successor intact", false, "reader skipped its final ownership check");
+        internals.js.consumers.get = originalGet;
+        return;
+      }
+      const successor = await occupy("successor");
+      resumeInfo();
+      const staleResult = await stale;
+      const surviving = await api.consumers.info(CHAT, chatHistD);
+      check("J5: a delayed old reader detects replacement and leaves the successor intact",
+        /ownership was lost/.test(staleResult) && surviving.created === successor.created && surviving.config.description === "successor",
+        { staleResult, surviving: surviving.config.description });
+      internals.js.consumers.get = originalGet;
+      await api.consumers.delete(CHAT, chatHistD); // fixture-owned successor only
+      const reread = await one.channelHistoryPage("allowed");
+      check("J6: a successful reread retains all own messages after interference", reread.complete && reread.items.length === 5, reread);
+
+      // End a real broker-backed pull after one delivery through the client's native stop API.
+      // A clean iterator end must not masquerade as a complete five-row snapshot.
+      internals.js.consumers.get = async (...args) => {
+        const consumer = await originalGet(...args);
+        const consume = consumer.consume.bind(consumer);
+        consumer.consume = async (...consumeArgs) => {
+          const iter = await consume(...consumeArgs);
+          const iterate = iter[Symbol.asyncIterator].bind(iter);
+          iter[Symbol.asyncIterator] = async function* () {
+            for await (const m of { [Symbol.asyncIterator]: iterate }) { yield m; iter.stop(); break; }
+          };
+          return iter;
+        };
+        return consumer;
+      };
+      const short = await one.channelHistoryPage("allowed").then(() => "succeeded", (e: Error) => e.message);
+      check("J7: a pull ending before its captured pending count is a cut-short error, never a page", /window was cut short/.test(short), short);
+      internals.js.consumers.get = originalGet;
+      const [whole, empty] = await Promise.all([one.channelHistoryPage("allowed"), two.channelHistoryPage("other")]);
+      check("J8: independent same-lifecycle readers serialize on the broker without cross-feeding channels",
+        whole.complete && whole.items.length === 5 && whole.items.every((m) => m.channel === "allowed") && empty.complete && empty.items.length === 0,
+        { whole, empty });
+      // Both native creates are in flight before the first creator proceeds to pull. Healthy
+      // readers conflict; an identical marker would idempotently bind both to one pending window.
+      const twoInternals = two as unknown as { jsm: import("@nats-io/jetstream").JetStreamManager };
+      const twoAdd = twoInternals.jsm.consumers.add.bind(twoInternals.jsm.consumers);
+      let observedBoth!: () => void;
+      const bothAttempted = new Promise<void>((resolve) => { observedBoth = resolve; });
+      let attempts = 0;
+      const gateAdd = (add: typeof originalAdd): typeof originalAdd => async (...args) => {
+        try { return await add(...args); }
+        finally { if (++attempts >= 2) observedBoth(); await bothAttempted; }
+      };
+      internals.jsm.consumers.add = gateAdd(originalAdd);
+      twoInternals.jsm.consumers.add = gateAdd(twoAdd);
+      const same = await Promise.all([one, two].map((ep) => ep.channelHistoryPage("allowed").catch((e: Error) => e)));
+      check("J9: simultaneous same-channel connections each receive a whole independent page",
+        same.every((p) => !(p instanceof Error) && p.complete && p.items.length === 5), same);
+      internals.jsm.consumers.add = originalAdd;
+      twoInternals.jsm.consumers.add = twoAdd;
+
+      const { jetstream } = await import("@nats-io/jetstream");
+      const publisher = jetstream(ag);
+      const ownSubject = chatSubject(space, DEV_OWNER, id.id, "allowed");
+      await publisher.publish(ownSubject, enc(JSON.stringify({ ...page.items[0], id: "forged-history", from: { id: `${DEV_OWNER}.forged`, name: "forged" } })));
+      await publisher.publish(ownSubject, enc("not JSON"));
+      const verified = await one.channelHistoryPage("allowed");
+      check("J10: malformed and sender-forged stored rows do not enter the page or completeness probe",
+        verified.complete && JSON.stringify(verified.items.map((m) => partsToText(m.parts))) === JSON.stringify(["own 0", "own 1", "own 2", "own 3", "own 4"]), verified);
+    };
+    await exercise();
+  } finally {
+    for (const ep of readers) await ep.stop();
+  }
 
   await ag.drain().catch(() => {});
   await mgr.drain().catch(() => {});

@@ -1,20 +1,22 @@
-import { formatAge, presenceAges, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
+import { formatAge, presenceAges, presenceText, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
 
-// The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
-// Re-exported so the CLI's many importers keep resolving them from here.
-export { c, color256 } from "@cotal-ai/workspace";
+// The ANSI helpers and the stderr line wrapper moved into `@cotal-ai/workspace`, shared with
+// @cotal-ai/web and the manager. Re-exported so the CLI's many importers keep resolving them from here.
+export { c, color256, hang, stderrLine } from "@cotal-ai/workspace";
 
-export function statusBadge(status: PresenceStatus): string {
+/** A presence status in words, after its mark unless `marks` is false. */
+export function statusBadge(status: PresenceStatus, marks = true): string {
+  const mark = (glyph: string): string => (marks ? `${glyph} ` : "");
   switch (status) {
     case "working":
-      return c.green("● working · progress unknown");
+      return c.green(`${mark("●")}working · progress unknown`);
     case "waiting":
-      return c.yellow("◐ waiting");
+      return c.yellow(`${mark("◐")}waiting`);
     case "idle":
-      return c.gray("○ idle");
+      return c.gray(`${mark("○")}idle`);
     case "offline":
-      return c.dim("⨯ offline");
+      return c.dim(`${mark("⨯")}offline`);
   }
 }
 
@@ -28,7 +30,7 @@ type DatedRow = PresenceStamps & { condition?: { code: string } };
  *  reset inside the text would end a highlighted row's styling. */
 export function presenceFacts(p: DatedRow, now = Date.now()): { condition: string; ages: string } {
   const age = presenceAges(p, now);
-  const condition = p.condition ? ` (${p.condition.code}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "";
+  const condition = p.condition ? ` (${presenceText(p.condition.code)}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "";
   const unchanged = age.statusSince === undefined ? "" : ` · unchanged for ${formatAge(age.statusSince)}`;
   const active = age.activeAt === undefined ? "" : ` · active ${formatAge(age.activeAt)} ago`;
   return { condition, ages: unchanged + active };
@@ -47,15 +49,10 @@ export function activityAge(p: PresenceStamps, now = Date.now()): string {
   return age === undefined ? "" : ` (set ${formatAge(age)} ago)`;
 }
 
-/** A follow-up hint for failures whose signature is stale on-disk broker state: streams/durable
- *  consumers minted by an older, incompatible Cotal generation survive every down/up cycle, and
- *  JetStream rejects a same-name re-create with a different config. Rendered dim under the red
- *  line by the error surfaces - the error itself stays the broker's own sentence. */
-export function staleStoreHint(msg: string): string | undefined {
-  // The recipe must not promise a configuration-preserving restart: a bare `cotal up` would turn
-  // a named/open/user-auth mesh into the default authenticated one, and a custom --store-dir is
-  // not recorded - so both variable parts are called out instead of implied.
-  return /consumer already exists|stream already exists/i.test(msg)
-    ? "likely stale on-disk mesh state from an older Cotal version - reset: cotal down, cotal clean store --force (repeat any custom --store-dir), then `cotal up` with your usual flags"
-    : undefined;
+/** The dimmed ` - <activity> (set <age> ago)` an ANSI presence line ends with after
+ *  {@link presenceDetail}, or nothing when the seat reports no activity. `cotal endpoints`, `cotal who`
+ *  and the console's Ink rows lay the activity out on their own, over the same text and age. */
+export function activityDetail(p: PresenceStamps, now = Date.now()): string {
+  return p.activity ? c.dim(" - " + presenceText(p.activity) + activityAge(p, now)) : "";
 }
+

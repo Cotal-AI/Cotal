@@ -34,15 +34,19 @@
  *     manager. The record filenames decode back to their space, residue never wedges the folder, and
  *     two spaces genuinely running under one root is refused rather than arbitrated.
  *
+ *  6. A KEY THAT DECODES TO `.` OR `..` IS A STRAY. `spaceKey` refuses both names, so no writer here
+ *     produces `2e` or `2e2e`; the segment, account and record decoders answer undefined for them
+ *     instead of throwing out of the enumeration that met the stray.
+ *
  * Run: pnpm smoke:segmented-runtime-namespace
  */
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spaceKey } from "../src/auth-paths.js";
+import { accountInventory, spaceFromSegment, spaceKey } from "../src/auth-paths.js";
 import {
   canonicalLocalProcessPath, DELIVERY_PIDFILE, localProcessPath, MANAGER_DELIVERY_AWARE_MARKER,
-  MANAGER_PIDFILE, type LocalProcessContext,
+  MANAGER_PIDFILE, recordedRuntimeSpaces, type LocalProcessContext,
 } from "../src/local-process.js";
 import { resolveRuntimeSpace, resolveSpace } from "../src/space.js";
 import { RESERVED_COTAL_CHILDREN } from "../src/space-segmentation.js";
@@ -218,6 +222,41 @@ try {
         localProcessPath(MANAGER_PIDFILE, ctx(root, resolveRuntimeSpace(root))) === join(root, ".cotal", "manager.pid"),
       );
     }
+  }
+
+  console.log("\n7) a key that decodes to \".\" or \"..\" is a stray, never a throw");
+  {
+    // Each call is caught so a throw fails its own named cell instead of ending the suite.
+    const answer = <T>(fn: () => T): { value?: T; threw?: string } => {
+      try { return { value: fn() }; } catch (e) { return { threw: (e as Error).message }; }
+    };
+    const dots = [["space.2e", "."], ["space.2e2e", ".."]] as const;
+    for (const [segment, name] of dots) {
+      const got = answer(() => spaceFromSegment(segment));
+      check(`dot stray: spaceFromSegment("${segment}") answers undefined for "${name}"`, got.threw === undefined && got.value === undefined, got);
+    }
+    const alpha = spaceKey("alpha");
+    check("CONTROL: spaceFromSegment still decodes alpha", spaceFromSegment(`space.${alpha}`) === "alpha");
+    check("CONTROL: non-hex and odd-length segments still answer undefined", spaceFromSegment("space.zz") === undefined && spaceFromSegment("space.2e2") === undefined);
+
+    const auth = join(makeRoot("dotaccounts"), ".cotal", "auth");
+    mkdirSync(auth);
+    for (const name of ["account.zz.json", "account.2e.json", "account.2e2e.json"]) writeFileSync(join(auth, name), "{}\n");
+    const inv = answer(() => accountInventory(auth));
+    check(
+      "dot stray: accountInventory lists account.2e.json and account.2e2e.json under corrupt beside the non-hex control",
+      inv.threw === undefined && JSON.stringify(inv.value) === JSON.stringify({ spaces: [], corrupt: ["account.2e.json", "account.2e2e.json", "account.zz.json"] }),
+      inv,
+    );
+
+    const root = makeRoot("dotrecords");
+    for (const name of [`manager.${alpha}.pid`, "manager.zz.pid", "manager.2e.pid", "delivery.2e2e.pid"]) writeFileSync(join(root, ".cotal", name), "");
+    const recorded = answer(() => recordedRuntimeSpaces(root));
+    check(
+      "dot stray: recordedRuntimeSpaces skips manager.2e.pid and delivery.2e2e.pid and still reports alpha",
+      recorded.threw === undefined && recorded.value?.map((r) => r.space).join(",") === "alpha",
+      recorded,
+    );
   }
 } finally {
   for (const root of roots) rmSync(root, { recursive: true, force: true });

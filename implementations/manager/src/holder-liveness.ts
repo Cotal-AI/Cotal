@@ -4,7 +4,7 @@
  * deliberately shaped like it so the two guards of the same repair read the same way.
  *
  * The `$SYS` CONNZ capability lives with the DELIVERY DAEMON (co-located with the broker), never in
- * a seed-holding process — the same D5 rail-split the evictor obeys. This reaches it with a
+ * a seed-holding process — the same rail split the evictor obeys. This reaches it with a
  * per-call SCOPED `endpoint-evictor` credential: pub the delivery-admin subject + reply +
  * `$JS.API.INFO`, nothing else. That credential names eviction because it is the rail's existing
  * scope; the VERB it calls here is read-only, and the daemon-side executor opens only the CONNZ
@@ -119,7 +119,7 @@ function unansweredRailBlocker(before: DeliveryLeaseReading, after: DeliveryLeas
 /** Read `lease.0` under a per-call read-only `observer` credential, the profile `cotal status` reads
  *  it with; the evictor credential holds no lease read by design. Never throws: a failed read is
  *  itself a reading. */
-async function readDeliveryLeaseForDiagnosis(opts: { space: string; servers: string; auth: SpaceAuth }): Promise<DeliveryLeaseReading> {
+async function readDeliveryLeaseForDiagnosis(opts: { space: string; servers: string; auth: SpaceAuth; tlsRequired?: boolean }): Promise<DeliveryLeaseReading> {
   try {
     return await withScopedEndpoint(opts, "observer", "manager-lease-diagnosis", async (ep): Promise<DeliveryLeaseReading> => {
       const entry = await ep.readDeliveryLeaseEntry(0);
@@ -142,6 +142,7 @@ export function makeManagerHolderLivenessProbe(opts: {
   space: string;
   servers: string;
   auth: SpaceAuth;
+  tlsRequired?: boolean;
   log: (line: string) => void;
   /** How long an UNREACHABLE rail is retried before the probe answers `unestablishable` (#871).
    *  Manager boot passes a wait; the operator's `cotal reconcile-gate` answers on one attempt. */

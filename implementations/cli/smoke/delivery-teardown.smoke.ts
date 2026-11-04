@@ -27,7 +27,18 @@ writeFileSync(join(cotal, "delivery.creds", "block"), "x");
 // because that is the whole of what the record's attribution reads (#1528): a live pid that is
 // provably NOT a delivery daemon is deliberately never signalled, so a stand-in without it would be
 // spared and this suite would grade the wrong branch.
-const victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "deliver"], { stdio: "ignore" });
+const cooperative = process.platform === "win32";
+const code = cooperative
+  ? `import { listenForLocalStop } from ${JSON.stringify(new URL("../../../packages/workspace/src/local-stop.ts", import.meta.url).href)};
+      listenForLocalStop(${JSON.stringify(join(cotal, "delivery.pid"))}, () => process.exit(0));
+      process.send("ready"); setInterval(() => {}, 1000);`
+  : "setInterval(() => {}, 1000)";
+const victim = spawn(process.execPath, [...(cooperative ? ["--import", import.meta.resolve("tsx"), "--input-type=module"] : []), "-e", code, "deliver"], { stdio: cooperative ? ["ignore", "ignore", "inherit", "ipc"] : "ignore" });
+if (cooperative) await new Promise<void>((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error("local delivery control did not become ready")), 30_000);
+  victim.once("message", () => { clearTimeout(timer); resolve(); });
+  victim.once("exit", () => { clearTimeout(timer); reject(new Error("local delivery control exited before ready")); });
+});
 let victimExited = false;
 victim.on("exit", () => { victimExited = true; });
 await wait(300); // let it exec, so the argv read sees its final command line

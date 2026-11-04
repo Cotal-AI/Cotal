@@ -18,7 +18,9 @@
  *  - the SURVIVAL claim the repair copy makes to the operator. An agent credential minted before the
  *    rotation still connects afterwards, and a message published before it is still readable at its
  *    JetStream sequence after it. "Your agents and your data are untouched" is otherwise a promise
- *    with no test behind it.
+ *    with no test behind it;
+ *  - the CONTROLLER route: a stack from `space create` plus `up` refuses the rotation while a member
+ *    runs, and after `down --yes` its `up --rotate-sys` rotates and reports the generation.
  *
  * Elapsed time is the one thing simulated: the $SYS pair is minted with a past `exp`, which is the
  * state a 30-day-old mesh reaches on its own. It is signed by the space's CURRENT system account, so
@@ -49,7 +51,7 @@ import {
 } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, DELIVERY_LOGFILE, getSpaceAuth, MANAGER_LOGFILE, MEMBERSHIP_RW_CREDS_KIND, putSpaceAuth, renewalRecordPath, spaceMaterialDir, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 let pass = 0,
   fail = 0;
@@ -85,6 +87,8 @@ const RUN = randomUUID().slice(0, 8);
 const SPACE = `sysrote2e-${RUN}`;
 const HOME = mkdtempSync(join(tmpdir(), `cotal-sysrot-e2e-home-${RUN}-`));
 const root = mkdtempSync(join(tmpdir(), `cotal-sysrot-e2e-${RUN}-`));
+// Stage 6's controller stack. `-e2e-${RUN}-` in its path keeps its broker inside the teardown sweep.
+const stackRoot = mkdtempSync(join(tmpdir(), `cotal-sysrot-e2e-${RUN}-stack-`));
 const CONFIG = join(HOME, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: HOME, xdgConfigHome: CONFIG });
 const cotalPath = (f: string) => join(root, ".cotal", f);
@@ -103,10 +107,12 @@ mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 
-/** One `cotal` subprocess, on the sandboxed home, from the provisioned root. */
-function cotal(args: string[], timeout = 120_000): { code: number | null; out: string } {
+/** One `cotal` subprocess, on the sandboxed home. From the provisioned root it runs as the `sysrot`
+ *  sender. Stage 6's controller stack runs as the operator, because its `up` and `down` read a named
+ *  caller as a managed seat. */
+function cotal(args: string[], timeout = 120_000, at: { cwd: string; sandbox: SmokeSandboxAnchor; sender: boolean } = { cwd: root, sandbox, sender: true }): { code: number | null; out: string; stdout: string } {
   const options = {
-    cwd: root,
+    cwd: at.cwd,
     encoding: "utf8" as const,
     timeout,
     env: {
@@ -115,13 +121,12 @@ function cotal(args: string[], timeout = 120_000): { code: number | null; out: s
       COTAL_HOME: HOME,
       XDG_CONFIG_HOME: CONFIG,
       COTAL_SKIP_CONNECTOR_SEED: "1",
-      COTAL_NAME: "sysrot",
-      COTAL_ID: "sysrot_send",
+      ...(at.sender ? { COTAL_NAME: "sysrot", COTAL_ID: "sysrot_send" } : {}),
     },
   };
-  assertSmokeSandboxDown(sandbox, args, options);
+  assertSmokeSandboxDown(at.sandbox, args, options);
   const r = spawnSync(process.execPath, [cotalJs, ...args], options);
-  return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
+  return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? ""), stdout: r.stdout ?? "" };
 }
 
 /** The delivery daemon appends across boots, so every read is of ONE boot's tail. Marked in DECODED
@@ -173,9 +178,9 @@ async function settleThenDown(opts: { awaitManagerLease?: boolean } = {}): Promi
   return r;
 }
 
-async function accepts(creds: string): Promise<boolean> {
+async function accepts(creds: string, servers = SERVERS): Promise<boolean> {
   try {
-    const nc = await connect({ servers: SERVERS, timeout: 3000, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
+    const nc = await connect({ servers, timeout: 3000, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
     await nc.close();
     return true;
   } catch {
@@ -243,7 +248,7 @@ try {
   check("...and left no flat copy behind", !existsSync(legacyPath(SYSTEM_CREDS_FILES[0])) && !existsSync(legacyPath(SYSTEM_CREDS_FILES[1])));
   check("the migration is byte-preserving (a move, not a re-mint)", readFileSync(obsPath, "utf8") === expiredObs && readFileSync(evPath, "utf8") === expiredEv);
   const doc1 = cotal(["doctor", "auth"]);
-  check("`cotal doctor auth` exits 1 on the expired pair", doc1.code === 1, `code=${doc1.code} ${doc1.out.slice(-300)}`);
+  check("`cotal doctor auth` exits 5 on the expired pair", doc1.code === 5, `code=${doc1.code} ${doc1.out.slice(-300)}`);
   check("`cotal doctor auth` names both $SYS files as EXPIRED", doc1.out.includes(SYSTEM_CREDS_FILES[0]) && doc1.out.includes(SYSTEM_CREDS_FILES[1]) && /EXPIRED/.test(doc1.out), doc1.out.slice(-400));
   check("`cotal doctor auth` prints `--rotate-sys` as the repair", /--rotate-sys/.test(doc1.out), doc1.out.slice(-400));
 
@@ -251,12 +256,12 @@ try {
   console.log("\n2) traffic and durable state before any rotation");
   const NONCE = `sysrot-${randomUUID()}`;
   const CH = `survive-${RUN}`;
-  const sent = cotal(["send", "msg", "general", NONCE, "--space", SPACE, "--server", SERVERS]);
-  check("`cotal send msg` exits 0 on the expiring mesh", sent.code === 0, sent.out.slice(-400));
-  const set = cotal(["channels", "set", CH, "--desc", NONCE, "--space", SPACE, "--server", SERVERS]);
-  check("`cotal channels set` writes durable registry state", set.code === 0, set.out.slice(-400));
-  const list1 = cotal(["channels", "list", "--space", SPACE, "--server", SERVERS]);
-  check("`cotal channels list` reads it back before the rotation", list1.out.includes(CH) && list1.out.includes(NONCE), list1.out.slice(-400));
+  const sent = cotal(["send", "-c", "general", NONCE, "--space", SPACE, "--server", SERVERS]);
+  check("`cotal send -c` exits 0 on the expiring mesh", sent.code === 0, sent.out.slice(-400));
+  const set = cotal(["channel", "set", CH, "--desc", NONCE, "--space", SPACE, "--server", SERVERS]);
+  check("`cotal channel set` writes durable registry state", set.code === 0, set.out.slice(-400));
+  const list1 = cotal(["channel", "--space", SPACE, "--server", SERVERS]);
+  check("`cotal channel` reads it back before the rotation", list1.out.includes(CH) && list1.out.includes(NONCE), list1.out.slice(-400));
   const chatBefore = await chatState(preReader);
   check("the message landed on the CHAT stream", chatBefore.messages > 0 && chatBefore.last_seq > 0, chatBefore);
 
@@ -267,7 +272,9 @@ try {
   survivors("down 1");
   mark = logSize();
   const boot2 = cotal(["up", "--detach", "--space", SPACE, "--server", SERVERS]);
-  check("a plain `cotal up` comes back", boot2.code === 0, boot2.out.slice(-500));
+  // The expired evictor cannot verify-evict the previous manager's serve family, so its restart
+  // fails closed. A degraded first boot exits 1 (#3893), even though broker and delivery start.
+  check("a plain `cotal up` reports the degraded control plane", boot2.code === 1 && /control plane degraded:/.test(boot2.out), boot2.out.slice(-500));
   // Wait for THIS boot's daemon before the next `down`; see `settleThenDown` for why a
   // seconds-old daemon must not be stopped here.
   const tail2 = await daemonTail(mark);
@@ -277,7 +284,7 @@ try {
   check("it left the observer cred BYTE-IDENTICAL (still expired)", readFileSync(obsPath, "utf8") === expiredObs);
   check("it left the evictor cred BYTE-IDENTICAL (still expired)", readFileSync(evPath, "utf8") === expiredEv);
   const doc2 = cotal(["doctor", "auth"]);
-  check("`cotal doctor auth` is still red after the advertised repair", doc2.code === 1, `code=${doc2.code} ${doc2.out.slice(-300)}`);
+  check("`cotal doctor auth` is still red after the advertised repair", doc2.code === 5, `code=${doc2.code} ${doc2.out.slice(-300)}`);
 
   // ── 4) the repair that works ───────────────────────────────────────────────────────────────────
   console.log("\n4) `down` + `up --rotate-sys`");
@@ -305,7 +312,9 @@ try {
   // above, so its silence there was a real reading rather than a broken probe.
   const tail3 = await daemonTail(mark);
   check("the daemon's membership feed IS up after the rotation", /membership feed up/.test(tail3), tail3.slice(-500));
-  check("the daemon no longer reports a degraded membership feed", !/! membership:/.test(tail3), tail3.slice(-500));
+  // A degraded feed says so. The first sweep after boot can miss the daemon's own connection and
+  // keep its last membership for one interval; that warning is not a degraded feed.
+  check("the daemon no longer reports a degraded membership feed", !/! membership:.*graph membership degraded/.test(tail3), tail3.split("\n").filter((line) => /! membership:/.test(line)));
   // Bounded, and only on the POSITIVE assertion. `doctor auth` also grades the last renewal record,
   // which still holds the pre-rotation adoption failure until the manager's first post-boot pass
   // rewrites it, so this waits for that pass rather than for the rotation, which has already
@@ -327,11 +336,44 @@ try {
   check("an AGENT cred minted before the rotation still connects", await accepts(preAgent));
   const chatAfter = await chatState(preReader);
   check("the CHAT stream came back at the same sequence, count and start (not recreated)", JSON.stringify(chatAfter) === JSON.stringify(chatBefore), `${JSON.stringify(chatBefore)} vs ${JSON.stringify(chatAfter)}`);
-  const list2 = cotal(["channels", "list", "--space", SPACE, "--server", SERVERS]);
+  const list2 = cotal(["channel", "--space", SPACE, "--server", SERVERS]);
   check("durable registry state written before the rotation reads back byte-for-byte after it", list2.out.includes(CH) && list2.out.includes(NONCE), list2.out.slice(-400));
 
   const down3 = await settleThenDown();
   check("`cotal down` tears the rotated mesh down cleanly", down3.code === 0, down3.out.slice(-400));
+
+  // ── 6) the controller stack's route ────────────────────────────────────────────────────────────
+  console.log("\n6) a controller stack rotates through its own stopped `up`");
+  // SPACE in the space name keeps this stack's daemons inside the teardown sweep.
+  const stackSpace = `${SPACE}-stack`;
+  const stackServers = `nats://127.0.0.1:${await pickFreePort()}`;
+  const json = (r: { stdout: string }) => { try { return JSON.parse(r.stdout) as { outcome?: string; result?: { rotatedSystemAccount?: { generation: number; expiresAt: string | null } | null }; error?: { code: string; remedy?: string } }; } catch { return undefined; } };
+  const created = cotal(["space", "create", stackSpace, "--root", stackRoot, "--json"]);
+  check("`space create` prepares the stack's root", created.code === 0, created.out.slice(-400));
+  const stack = { cwd: stackRoot, sandbox: recordSmokeSandbox({ root: stackRoot, cotalHome: HOME, xdgConfigHome: CONFIG }), sender: false };
+  const stackCli = (args: string[]) => cotal(args, 120_000, stack);
+  const stackObs = () => readFileSync(join(spaceMaterialDir(stackRoot, stackSpace), SYSTEM_CREDS_FILES[0]), "utf8");
+  const first = stackCli(["up", "--server", stackServers, "--json"]);
+  check("the first `up` starts a controller stack", first.code === 0 && /"kind":"controller-stack-up"/.test(first.stdout), first.out.slice(-600));
+  const stackStore = workspaceSecretStore(stackRoot);
+  const stackAuth = await getSpaceAuth(stackStore, stackSpace);
+  const obsBefore = stackObs();
+  const live = json(stackCli(["up", "--rotate-sys", "--json"]));
+  check("`up --rotate-sys` on the running stack refuses LIFECYCLE_BLOCKED and names `cotal down --yes`", live?.outcome === "refused" && live.error?.code === "LIFECYCLE_BLOCKED" && Boolean(live.error.remedy?.includes("cotal down --yes")), live);
+  check("the refused rotation left the $SYS creds and the trust record as they were", stackObs() === obsBefore && (await getSpaceAuth(stackStore, stackSpace))?.sys.pub === stackAuth?.sys.pub);
+  await wait(3000);
+  const stackDown = stackCli(["down", "--yes", "--json"]);
+  check("`cotal down --yes` stops the stack", stackDown.code === 0, stackDown.out.slice(-400));
+  const rotatedUp = stackCli(["up", "--rotate-sys", "--json"]);
+  const receipt = json(rotatedUp)?.result?.rotatedSystemAccount;
+  const stackRotated = await getSpaceAuth(stackStore, stackSpace);
+  const obsAfter = stackObs();
+  check("the stopped stack's `up --rotate-sys` exits 0 and reports the new generation", rotatedUp.code === 0 && receipt?.generation === stackRotated?.gen && (stackRotated?.gen ?? 0) > (stackAuth?.gen ?? 0), { receipt, before: stackAuth?.gen, after: stackRotated?.gen, out: rotatedUp.out.slice(-600) });
+  check("its observer is issued by the record's new system account", credsClaims(obsAfter).iss === stackRotated?.sys.pub && stackRotated?.sys.pub !== stackAuth?.sys.pub, `${credsClaims(obsAfter).iss} vs ${stackRotated?.sys.pub}`);
+  check("the stack's broker accepts the rotated observer and refuses the retired one", (await accepts(obsAfter, stackServers)) && !(await accepts(obsBefore, stackServers)));
+  await wait(3000);
+  const stackDown2 = stackCli(["down", "--yes", "--json"]);
+  check("`cotal down --yes` stops the rotated stack", stackDown2.code === 0, stackDown2.out.slice(-400));
 
   if (process.env.SYSROT_DEBUG === "1") {
     console.log("\n---- FULL DELIVERY LOG ----\n" + readFileSync(deliveryLog, "utf8"));
@@ -366,6 +408,7 @@ try {
   }
   await wait(400);
   rmSync(root, { recursive: true, force: true });
+  rmSync(stackRoot, { recursive: true, force: true });
   rmSync(HOME, { recursive: true, force: true });
 }
 process.exit(fail ? 1 : 0);

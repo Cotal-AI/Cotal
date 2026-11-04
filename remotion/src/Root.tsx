@@ -14,10 +14,10 @@ import { MeshFrame } from "./variants/MeshFrame";
 import { MeshFull } from "./variants/MeshFull";
 import { MeshBanner } from "./variants/MeshBanner";
 import { MeshRing } from "./variants/MeshRing";
-import { HeaderMorph } from "./header/HeaderMorph";
+import { HeaderMorph, HEADER_MORPH_DURATION } from "./header/HeaderMorph";
 import { HeaderModesReel, REEL_DURATION } from "./header/HeaderModesReel";
-import { HeaderAssemble } from "./header/HeaderAssemble";
-import { HeaderBanner } from "./header/HeaderBanner";
+import { HeaderAssemble, HEADER_ASSEMBLE_DURATION } from "./header/HeaderAssemble";
+import { HeaderBanner, HEADER_BANNER_DURATION } from "./header/HeaderBanner";
 import { S1Problem, PROBLEM_DURATION } from "./explainer/S1Problem";
 import { S2Shift, SHIFT_DURATION } from "./explainer/S2Shift";
 import { S3Modes, MODES_DURATION } from "./explainer/S3Modes";
@@ -28,6 +28,7 @@ import { ExplainerCore, EXPLAINER_CORE_DURATION } from "./explainer/ExplainerCor
 import { ExplainerFull, EXPLAINER_FULL_DURATION } from "./explainer/ExplainerFull";
 import { HeaderCut, HEADER_CUT_DURATION } from "./explainer/HeaderCut";
 import { S0Headline, HEADLINE_DURATION } from "./explainer/S0Headline";
+import { ReadmeForumHero, README_HERO } from "./forum/ReadmeForumHero";
 import { S7Command, COMMAND_DURATION } from "./explainer/S7Command";
 import { DemoLoop, DEMO_LOOP_DURATION } from "./explainer/DemoLoop";
 import { DemoCommand, DEMO_COMMAND_DURATION } from "./explainer/DemoCommand";
@@ -69,10 +70,10 @@ export const Root: React.FC = () => {
       <Composition id="MeshRing" component={MeshRing} height={340} {...COMMON} />
 
       {/* Header-video candidates (cream/gold), to compare and pick one. */}
-      <Composition id="HeaderMorph" component={HeaderMorph} fps={30} width={1280} height={400} durationInFrames={240} />
+      <Composition id="HeaderMorph" component={HeaderMorph} fps={30} width={1280} height={400} durationInFrames={HEADER_MORPH_DURATION} />
       <Composition id="HeaderModesReel" component={HeaderModesReel} fps={30} width={1080} height={1080} durationInFrames={REEL_DURATION} />
-      <Composition id="HeaderAssemble" component={HeaderAssemble} fps={30} width={1080} height={1080} durationInFrames={210} />
-      <Composition id="HeaderBanner" component={HeaderBanner} fps={30} width={1280} height={340} durationInFrames={180} />
+      <Composition id="HeaderAssemble" component={HeaderAssemble} fps={30} width={1080} height={1080} durationInFrames={HEADER_ASSEMBLE_DURATION} />
+      <Composition id="HeaderBanner" component={HeaderBanner} fps={30} width={1280} height={340} durationInFrames={HEADER_BANNER_DURATION} />
 
       {/* Clear-message explainer: modular snippets + masters (1920x1080). */}
       <Composition id="S1Problem" component={S1Problem} durationInFrames={PROBLEM_DURATION} {...EXPL} />
@@ -104,6 +105,7 @@ export const Root: React.FC = () => {
       <Composition id="DemoCodexShuffle" component={DemoCodexShuffle} durationInFrames={DEMO_CODEX_SHUFFLE_DURATION} {...EXPL} />
       <Composition id="DemoReadme" component={DemoReadme} durationInFrames={DEMO_README_DURATION} {...EXPL} />
       <Composition id="ExplainerMerged" component={ExplainerMerged} durationInFrames={EXPLAINER_MERGED_DURATION} {...EXPL} />
+      <Composition id="ReadmeForumHero" component={ReadmeForumHero} {...README_HERO} />
     </>
   );
 };

@@ -18,20 +18,20 @@
     {
       "name": "PREDICTED KILLED (3 red) - the wrapped refusal falls into the unmarked re-resolve below and makes a THIRD attempt",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (e.code !== \"failed-precondition\" || replyRefusedBeforeEffect(e.toEpError())) throw e;",
-      "replace": "        if (e.code !== \"failed-precondition\") throw e;",
+      "find": "        if (respondedButUnbound(e)) {",
+      "replace": "        if (respondedButUnbound(e) || (e instanceof EpEnvelopeError && e.code === \"failed-precondition\")) {",
       "expectRed": "it still states the command was not run"
     },
     {
       "name": "PREDICTED KILLED (2 red) - a refusal computed against another request is honored, so a forged boundTo moves the caller's hand",
-      "file": "packages/core/src/endpoint-verbs.ts",
+      "file": "packages/core/src/endpoint-call.ts",
       "find": "      if (refusal.boundTo.instanceId !== op.bind.instanceId || refusal.boundTo.epoch !== op.bind.epoch)",
       "replace": "      if (false as boolean)",
       "expectRed": "a refusal whose boundTo the caller cannot derive is refused as internal"
     },
     {
       "name": "PREDICTED KILLED (2 red) - a refusal claiming another server is honored, so a forged servedBy moves the caller's hand",
-      "file": "packages/core/src/endpoint-verbs.ts",
+      "file": "packages/core/src/endpoint-call.ts",
       "find": "      if (refusal.servedBy.instanceId !== r.instanceId || refusal.servedBy.epoch !== r.epoch)",
       "replace": "      if (false as boolean)",
       "expectRed": "a refusal whose servedBy the caller cannot derive is refused as internal"

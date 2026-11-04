@@ -73,7 +73,7 @@
  * grading them on `[A]` alone would have been the "green list you choose" mistake in miniature.
  *
  *   M1  [A] pass `signature` into `reasoningMessageContent`  -> **SURVIVED**, and that is recorded
- *       rather than deleted: the constructor returns an explicit field literal (`agui.ts:882`), so
+ *       rather than deleted: the constructor returns an explicit field literal (in `agui.ts`), so
  *       an unknown ARGUMENT key cannot reach the output at all. The outcome cell was riding a
  *       barrier it did not assert. It is why `mechanism:*` exists, and M1 stays in the ledger
  *       because a survivor that produced a fix is the most useful line in it.
@@ -82,7 +82,7 @@
  *   M2  [A] skip thinking blocks that carry a signature
  *       -> KILLED `real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature`
  *   M3  [A] force the read offset to 0 -> **WRONG-RED**, not a kill: the seal is verified at the
- *       cursor offset (`durable-source.ts:206`), so it threw before reaching the cell it named.
+ *       cursor offset (`JsonlFileSource.read`), so it threw before reaching the cell it named.
  *       Red is not proof, and the tool refusing to score it is the only reason that is known.
  *   M3b [A] make each record's cursor point at its own START instead of its end
  *       -> KILLED `source:resuming-from-record-k-yields-exactly-the-records-after-k`
@@ -118,7 +118,7 @@
  *
  *       **Those two cells build their records BY HAND, and that limit is theirs:** they prove each
  *       mechanism discriminates, and prove nothing about a real entry point reaching it. The
- *       population cell (`split:every-run-opened-came-from-a-promptSource-bearing-record`) is the
+ *       population cell (`split:every-run-opened-came-from-an-ATTRIBUTABLE-record`) is the
  *       half that walks 5938 real records. **Neither is sufficient alone and the pair is stated as
  *       a pair** — the same shape as the `[P5]` probe composing with `smoke:cas-preflight-cluster`.
  *
@@ -331,7 +331,7 @@ const mint = (): string => `run-${(minted += 1)}`;
 //
 // **ADOPT-THEN-APPEND, because a fresh adopt is not a read of the file.** An earlier revision of
 // this suite called `source.read(undefined)` and asserted it returned every record. It returns
-// ZERO — `undefined` is a fresh adopt, defined at `durable-source.ts:179` to start at the last
+// ZERO — `undefined` is a fresh adopt, defined in `JsonlFileSource.read` to start at the last
 // complete record boundary rather than replay history, which is what an emitter attaching to a
 // live session must do. Against a real 30-record session that read 0 and took eleven downstream
 // cells with it. The suite was wrong, not the source.
@@ -361,8 +361,8 @@ c("source:reads-every-complete-record", read.records.length === rawLines, {
   viaSource: read.records.length,
   completeLines: rawLines,
 });
-// A cursor is OPAQUE (`durable-source.ts:14`), so the thing to assert is the property the contract
-// actually promises — RESUMABILITY — not an ordering of the token's bytes.
+// A cursor is OPAQUE (the `durable-source.ts` module doc), so the thing to assert is the property
+// the contract actually promises — RESUMABILITY — not an ordering of the token's bytes.
 //
 // The cell that used to sit here compared cursors with `>`, i.e. lexicographically. It failed on a
 // real session at record 3, where the offset goes 902 -> 2767: strictly increasing as a number,
@@ -436,9 +436,9 @@ c("session:is-a-multi-turn-session-with-tool-use", (() => {
 //
 // That is a COVERAGE gap, not a bad token: §3.1's own session measured `kind:"human"` 44 times
 // beside 3068 `kind:"channel"` injections, so the predicate does select on a session containing
-// what it selects. Ruled: run-opening keys on `promptSource` PRESENT — a positive marker, present
-// on all 67 mesh deliveries and both sdk prompts, absent on all 824 tool results and on the
-// compaction summary — and provenance becomes a FIELD (`cotal.turnSource`), never a gate.
+// what it selects. Ruled: run-opening enumerates `origin.kind` in `ORIGIN_RULE` and, for an
+// origin-less record, `promptSource` in `ABSENT_ORIGIN_RULE` (both in `agui-map.ts`; restated once
+// below as `attributableTurn`), and provenance becomes a FIELD (`cotal.turnSource`), never a gate.
 //
 // **AND THE REPAIR THAT WAS NOT TAKEN, recorded so nobody re-derives it:** "origin absent = human"
 // selects 825 of the interactive session's 892 user entries, because in a Claude session `user` is
@@ -468,24 +468,6 @@ const asSpecifiedUnits = entries.map((e) => asSpecified.map(e)).filter((u) => u 
 const originKinds = [...new Set(entries.map((e) => (e.origin === undefined ? "<absent>" : `kind=${String(e.origin.kind)}`)))].sort();
 const promptSources = [...new Set(entries.map((e) => e.promptSource ?? "<absent>"))].sort();
 
-// Whether this session contains anything the enumeration opens a run on. Computed once, here,
-// because both the population cells below and PART 3 are unassertable without it.
-/**
- * The enumeration RESTATED, by hand, and this is the one restatement in the file.
- *
- * Written out rather than imported, because a suite that imports the predicate under test asserts
- * only that the code equals itself. Written ONCE rather than twice, because the file previously
- * carried two copies of it and they are what went wrong: the mapper gained `auto-continuation` and
- * absent-origin `typed`, both copies kept the older two-value rule, and the assertability helper
- * then disagreed with the cell in a way no arm could show until a session containing those values
- * turned up. Two restatements do not double-check a rule, they double the number of places it can
- * be stale. One restatement, two call sites.
- *
- * Both levels, in the order the mapper reads them: `origin.kind` where there is one, and the
- * absent-origin table where there is not. A value in neither table is not "false" here, it is a
- * value this restatement has not been told about, and the mapper THROWS on it, so returning false
- * would quietly disagree with a loud refusal.
- */
 /**
  * A `user` entry that carries a PROMPT rather than a tool result, which is the shape question the
  * attribution question sits behind. AN ARRAY IS TWO DIFFERENT RECORDS WEARING ONE SHAPE: the
@@ -503,6 +485,22 @@ const carriesPromptShape = (e: ClaudeEntry): boolean => {
   return !c.some((b) => b.type === "tool_result" && b.tool_use_id);
 };
 
+/**
+ * The enumeration RESTATED, by hand, and this is the one restatement in the file.
+ *
+ * Written out rather than imported, because a suite that imports the predicate under test asserts
+ * only that the code equals itself. Written ONCE rather than twice, because the file previously
+ * carried two copies of it and they are what went wrong: the mapper gained `auto-continuation` and
+ * absent-origin `typed`, both copies kept the older two-value rule, and the assertability helper
+ * then disagreed with the cell in a way no arm could show until a session containing those values
+ * turned up. Two restatements do not double-check a rule, they double the number of places it can
+ * be stale. One restatement, two call sites.
+ *
+ * Both levels, in the order the mapper reads them: `origin.kind` where there is one, and the
+ * absent-origin table where there is not. A value in neither table is not "false" here, it is a
+ * value this restatement has not been told about, and the mapper THROWS on it, so returning false
+ * would quietly disagree with a loud refusal.
+ */
 const attributableTurn = (e: ClaudeEntry): boolean => {
   if (e.type !== "user" || !carriesPromptShape(e)) return false;
   if (e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) return false;
@@ -511,6 +509,8 @@ const attributableTurn = (e: ClaudeEntry): boolean => {
   return k === "human" || k === "channel" || k === "auto-continuation";
 };
 const opensARun = attributableTurn;
+// Whether this session contains anything the enumeration opens a run on. Computed once, here,
+// because both the population cells below and PART 3 are unassertable without it.
 const OPENERS = entries.filter(opensARun).length;
 
 /**
@@ -616,8 +616,8 @@ c("resume:CONTROL-an-unseeded-mapper-drops-the-same-assistant-record", (() => {
 })());
 
 // And the same claim over the REAL population rather than one hand-built record: every run opened
-// across the session must come from a record carrying `promptSource`. A count is not enough here —
-// the mapper could open the right NUMBER of runs off the wrong records.
+// across the session must come from a record `attributableTurn` admits. A count is not enough
+// here — the mapper could open the right NUMBER of runs off the wrong records.
 if (OPENERS > 0) c("split:every-run-opened-came-from-an-ATTRIBUTABLE-record", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
@@ -979,6 +979,57 @@ c("real:every-RESULT-names-a-toolCallId-that-a-START-opened", (() => {
   return results.length > 0 && results.every((r) => opened.has(r.toolCallId));
 })());
 
+// THE TOOL RESULT MARKER. The fence drops each TOOL_CALL_RESULT, so the mapper follows each one with
+// a content-free `cotal.toolResult` for the same call, in the same unit, at the same timestamp. The
+// pairs are read from each unit's own event order, since a marker belongs right after its result.
+type Loose = { type: string; name?: unknown; value?: { toolCallId?: unknown; isError?: unknown }; timestamp?: unknown; toolCallId?: unknown; cotal?: { tsSource?: unknown; isError?: unknown } };
+const resultPairs = units.flatMap((u) => {
+  const ev = u.events as unknown as Loose[];
+  return ev.flatMap((e, k) => (e.type === "TOOL_CALL_RESULT" ? [{ result: e, next: ev[k + 1] }] : []));
+});
+const isMarker = (e: Loose | undefined): boolean => e?.type === "CUSTOM" && e.name === "cotal.toolResult";
+c("real:every-RESULT-is-followed-by-one-cotal.toolResult-for-the-same-call", (() => {
+  const markers = units.flatMap((u) => (u.events as unknown as Loose[]).filter(isMarker));
+  return resultPairs.length > 0 && markers.length === resultPairs.length &&
+    resultPairs.every(({ result, next }) => isMarker(next) && next!.value?.toolCallId === result.toolCallId);
+})(), { results: resultPairs.length });
+c("real:every-marker-carries-its-RESULT's-timestamp",
+  resultPairs.length > 0 && resultPairs.every(({ result, next }) => isMarker(next) && next!.timestamp === result.timestamp),
+  { results: resultPairs.length });
+// The marker's isError is the record's is_error. The RESULT carries the same fact as
+// `cotal.isError`, so each pair is checked against its own result. The equality holds on any session;
+// only a session with a failed call can show it says true, so the cell keys on that, as the HEAD
+// cell above keys on what the head holds. The committed fixture has failed calls.
+const failedResults = resultPairs.filter(({ result }) => result.cotal?.isError === true).length;
+const isErrorMatches = resultPairs.length > 0 && resultPairs.every(({ result, next }) =>
+  isMarker(next) && next!.value?.isError === (result.cotal?.isError === true));
+if (failedResults > 0) {
+  c("real:a-marker-says-isError-true-where-its-RESULT-carries-cotal.isError", isErrorMatches,
+    { results: resultPairs.length, failed: failedResults });
+} else {
+  c("ARM:this-session-has-no-failed-tool-result, so every marker must say isError false and the true case is NOT assertable here",
+    isErrorMatches, { results: resultPairs.length });
+}
+// No record in the fixture lacks a timestamp, so the arrival stamp is driven here on one that does.
+c("synthetic:an-arrival-stamped-result's-marker-carries-cotal.tsSource-arrival", (() => {
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "r-arrival", now: () => 42 });
+  unitOf(m.map(OPENER));
+  unitOf(m.map({
+    type: "assistant",
+    uuid: "arrival-call",
+    timestamp: "2026-08-14T21:00:01.000Z",
+    message: { content: [{ type: "tool_use", id: "t-arrival", name: "Read", input: {} }] },
+  }));
+  const unit = unitOf(m.map({
+    type: "user",
+    uuid: "arrival-result",
+    message: { content: [{ type: "tool_result", tool_use_id: "t-arrival", content: "ok" }] },
+  }));
+  const marker = (unit?.events as unknown as Loose[] | undefined)?.find(isMarker);
+  return marker !== undefined && marker.value?.toolCallId === "t-arrival" && marker.timestamp === 42 &&
+    marker.cotal?.tsSource === "arrival";
+})());
+
 // IDENTITY. This is the `message.id` defect: a provider request id repeats across entries and
 // across block types, so spending it as `messageId` opens and closes one id repeatedly. Keyed on
 // `${uuid}#${blockIndex}` it cannot.
@@ -1043,7 +1094,7 @@ c("control:and-does-NOT-fire-on-the-word-in-a-value",
 // and this suite found that out by mutation rather than by reasoning about it.
 //
 // A mutation that passed `signature` straight into `reasoningMessageContent` SURVIVED: the
-// constructor builds an explicit field literal (`agui.ts:882`), so an unknown key is structurally
+// constructor builds an explicit field literal (in `agui.ts`), so an unknown key is structurally
 // dropped and the leak could never reach the output through that argument at all. The outcome cell
 // below was therefore riding on a barrier it was not testing. `cotal` is the OTHER story — it is
 // passed through by reference, so it is a real channel a key can travel down, and it is the one the
@@ -1143,7 +1194,7 @@ c("real:the-mapper-ALONE-leaves-the-LAST-run-open-at-EOF", (() => {
 // otherwise leaves the run green with a smaller number that nobody compares. The PR body leans on
 // this total, so the suite is what holds it.
 if (SESSION.endsWith("session-shape.jsonl")) {
-  const EXPECTED = 48;
+  const EXPECTED = 52;
   c(`fixture:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 }
 

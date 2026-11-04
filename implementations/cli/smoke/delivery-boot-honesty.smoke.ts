@@ -134,7 +134,7 @@ try {
   check("CELL: ensureDelivery reports responderBound FALSE over an unbound responder",
     result.responderBound === false, result);
   check("CELL: its message names the CONSEQUENCE, not just a pending reconcile",
-    /no spawn, no retirement, no join until it binds/.test(out), out);
+    /no spawn, no retirement and no durable backstop until it binds; joins, DMs and live posts can still work/.test(out), out);
   check("CELL: its message no longer promises only that joins 'will reconcile when it is'",
     !/boot durable joins will reconcile when it is/.test(out), out);
   check("CELL: it says the wait is open-ended rather than implying it is handled",
@@ -175,8 +175,8 @@ try {
     // The stand-in is graded before it is relied on: a fixture that failed to look alive would send
     // the propagation cell below through the spawn path this issue exists to close.
     check("FIXTURE: the recorded manager reads ALIVE, so the composition needs no spawn",
-      managerLiveness(undefined, undefined, SPACE) === "alive",
-      { pid: supervisor.pid, state: managerLiveness(undefined, undefined, SPACE) });
+      managerLiveness(SPACE) === "alive",
+      { pid: supervisor.pid, state: managerLiveness(SPACE) });
 
     const { ensureControlPlane } = await import("../src/lib/delivery-proc.js");
     const planeLines: string[] = [];

@@ -1,33 +1,48 @@
 import { MANAGED_HANDOFF_FILE_ENV, takeManagedHandoffFile } from "@cotal-ai/core";
-import { c } from "./ui.js";
+import { CommandFailure, oneLine } from "@cotal-ai/workspace";
 
 let held: string | undefined;
+let refusal: CommandFailure | undefined;
 
-/** The first statement of `runCli`. When `MANAGED_HANDOFF_FILE_ENV` is set under any letter case,
- *  delete every such key from `env`, then run `takeManagedHandoffFile` on each distinct path it
- *  names and hold the text in this module. Spellings that name different files are refused, after
- *  every one of them was taken, so no file survives the ambiguity. A refusal prints one line naming
- *  the check and exits 1. With the variable absent it does nothing. */
-export function takeManagedHandoffCustody(env: Record<string, string | undefined>): void {
-  const paths = new Set<string>();
+/** The first statement of `runCli` after its leading flags. Every command deletes from `env` each key
+ *  that spells `MANAGED_HANDOFF_FILE_ENV` under any letter case, so no child inherits it. Only a
+ *  `spawn`, the command a managed launch runs, then runs `takeManagedHandoffFile` on each distinct path
+ *  those keys name and holds the text in this module; any other command leaves the file where it is.
+ *  A path it cannot take, or spellings that name different files, become one `USAGE_INVALID` refusal
+ *  that spawn throws before its other checks, after every path was taken, so no file survives the
+ *  ambiguity. With the variable absent it does nothing. */
+export function takeManagedHandoffCustody(env: Record<string, string | undefined>, spawn: boolean): void {
+  const keys = new Map<string, string>();
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() !== MANAGED_HANDOFF_FILE_ENV) continue;
     const path = env[key];
-    if (path) paths.add(path);
+    if (path && !keys.has(path)) keys.set(path, key);
     delete env[key];
   }
-  let refusal: string | undefined;
-  for (const path of paths) {
+  if (!spawn) return;
+  let problem: string | undefined;
+  for (const [path, key] of keys) {
     try {
       held = takeManagedHandoffFile(path);
     } catch (e) {
-      refusal ??= (e as Error).message;
+      problem ??= `${(e as Error).message}: ${key} names ${oneLine(path)}`;
     }
   }
-  if (paths.size > 1) refusal = `${MANAGED_HANDOFF_FILE_ENV} names ${paths.size} different files under different letter cases`;
-  if (refusal === undefined) return;
-  console.error(c.red(`✗ ${refusal}`));
-  process.exit(1);
+  if (keys.size > 1) problem = `${MANAGED_HANDOFF_FILE_ENV} names ${keys.size} different files under different letter cases`;
+  if (problem === undefined) return;
+  held = undefined;
+  refusal = new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: `unset ${[...new Set(keys.values())].join(" ")}` });
+}
+
+/** The refusal custody holds for a handoff file it could not take. Spawn throws it first. */
+export function managedHandoffRefusal(): CommandFailure | undefined {
+  return refusal;
+}
+
+/** Whether custody holds a handoff, without handing it over. Spawn's argument check reads this,
+ *  because custody already removed the variable it would otherwise see. */
+export function holdsManagedHandoff(): boolean {
+  return held !== undefined;
 }
 
 /** The text custody holds, handed over once. A later call returns undefined. Only the spawn

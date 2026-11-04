@@ -59,8 +59,8 @@
     {
       "name": "M12 CONTROL: a departing daemon deletes its replacement lease on the way out",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (revision === undefined) return;\n    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }",
-      "replace": "    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }",
+      "find": "    if (revision === undefined) return;\n    await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision });",
+      "replace": "    await (await this.deliveryRegistry()).delete(leaseKey(shardIndex));",
       "expectRed": "a release arguing a STALE revision leaves the row in place, silently",
       "cell": "a release arguing a STALE revision leaves the row in place, silently",
       "command": "pnpm smoke:delivery-lease:auth",

@@ -1,72 +1,116 @@
 # Cotal docs site
 
-Astro [Starlight](https://starlight.astro.build/) site for Cotal's documentation,
-built to be **agent-native** — the docs a protocol for agents ships should be
-readable by agents.
-
-The canonical Markdown stays in [`/docs`](../docs) and [`/SPEC.md`](../SPEC.md);
-this site renders it. `scripts/sync-docs.mjs` derives a frontmatter title from the H1
-each file opens with and a description from its first paragraph of text after the banner
-and any headings, and rewrites `*.md` cross-links and image paths to site routes, whether
-a Markdown link or an HTML or JSX `href`, `src` or `srcset` names them, then writes the
-result into `src/content/docs/` (git-ignored). A page that does not open with an H1, a
-page with no such paragraph, or one whose long paragraph opens with a character too long
-to shorten, fails the sync. Edit the source files, not the generated copies.
+Next.js and Fumadocs render the authored Markdown and MDX in `/docs` and `/SPEC.md`.
+Edit those sources rather than the generated collection under `website/content/`.
+The sync script publishes navigation, links, Markdown downloads, redirects, and
+agent discovery files. `@cotal-ai/docs-content` provides the same complete Markdown
+to this site and the release bundle served by `cotal_docs`.
 
 ## Develop
 
-```sh
-npm install --legacy-peer-deps   # plugin's Astro peer range lags; it works on 7
-npm run dev                      # syncs docs, then starts Astro
-npm run build                    # syncs docs, then builds to dist/
-```
-
-`astro.config.mjs` loads the sidebar the sync generates and stops with an error when it
-cannot read or parse that file, so run `npm run sync` before calling `npm run astro`
-directly.
-
-## Agent-native surface
-
-Every feature below is generated at build time, served at the edge, or drift-guarded
-by `scripts/check-dist.mjs`.
-
-| Endpoint | Source |
-| --- | --- |
-| `/llms.txt`, `/llms-full.txt`, `/llms-small.txt` | [`starlight-llms-txt`](https://github.com/delucis/starlight-llms-txt) plugin |
-| `/<page>.md` (raw Markdown per page) | `src/pages/[...slug].md.ts` |
-| `<link rel="alternate" type="text/markdown">` in each page head | `src/components/Head.astro` |
-| `Accept: text/markdown` on a canonical URL → Markdown + `x-markdown-tokens` (on `/` it returns the `/llms.txt` index) | `functions/_middleware.ts` (Cloudflare Pages) |
-| `Link` headers on the homepage (`service-doc`, `describedby`; RFC 8288) | `functions/_middleware.ts` |
-| `/robots.txt` (wildcard crawl rules, Content Signals, sitemap pointer) | `public/robots.txt` |
-| `/install.sh`, and the root of `get.cotal.ai` / `install.cotal.ai`, served as `text/plain` so it reads in a browser | `/install.sh` at the repo root, copied by `scripts/sync-docs.mjs`; host routing in `functions/_middleware.ts` |
-| `/.well-known/agent-skills/` (Agent Skills + discovery index with sha256 digests) | `public/.well-known/agent-skills/` + `scripts/sync-docs.mjs` |
-| `/docs-for-agents` (human/agent-readable guide to the above) | `src/content/docs/docs-for-agents.mdx` |
-
-Verify locally against the real Pages runtime:
+Requires Node.js 22 or later.
 
 ```sh
+cd website
+npm ci
+npm run dev
+npm run typecheck
 npm run build
-npx wrangler pages dev
-curl -H "Accept: text/markdown" http://127.0.0.1:8788/spec/   # -> Markdown
-curl http://127.0.0.1:8788/spec.md                            # -> Markdown
-curl http://127.0.0.1:8788/llms.txt                           # -> index
+npm run preview
+# In another terminal while preview runs:
+npm run check:runtime
 ```
 
-## Deploy (Cloudflare Pages)
+Run the content-generating commands sequentially. The build exports static HTML
+to `dist/`. Search runs in the browser against a build-time index.
+There is no Next.js server in production.
 
-- **Root directory:** `website`
-- **Build command:** `npm run build`
-- **Output directory:** `dist`
-- **Install command:** `npm install --legacy-peer-deps`
+## Navigation
 
-`functions/` (the `Accept` negotiation) and `public/_routes.json` (which limits the
-function to page routes, keeping it off static assets) are picked up automatically.
-Set `site` in `astro.config.mjs` to the production origin so `llms.txt` links and the
-sitemap are absolute.
+The site uses the standard Fumadocs Docs layout with the Neutral theme and
+Cotal gold accents. Sidebar page links each occupy their own row. Desktop
+section tabs sit above the page; mobile uses the section dropdown.
 
-## Not yet built: docs MCP server
+Docs live at `/docs/<page>/`; API Reference lives at `/api-reference/<page>/`.
+The root opens What is Cotal through a Pages redirect. Old page and Markdown
+URLs redirect to their new section. The legacy `/api-reference/` URL retains its
+Integration interfaces document and heading bookmarks; the API tab opens the overview.
+Changelog will be added later.
 
-The top tier of agent-native — letting an agent query these docs as a *tool* rather
-than fetching files — is a separate remote MCP server (a Cloudflare Worker). It would
-read `llms-full.txt` / the per-page `.md` and expose `search_docs` / `get_page`
-tools. Tracked as a follow-up.
+The navigation tree in `scripts/sync-docs.mjs` controls publication and order.
+Its published page set must match `docs/README.md`. Guides and Concepts contain
+collapsible subsections. A page has one navigation home, and its subsection does
+not change its URL.
+
+Start here uses direct MDX with explicit Fumadocs Cards, Steps, and Callout
+components. Titles, descriptions, classification, and audience live in frontmatter.
+Tutorial headings declare their existing IDs so incoming fragment links still work.
+What is Cotal includes a setup card that copies the prompt when activated.
+Quickstart keeps the native Fumadocs code-block copy control. Both use the same
+plain-text prompt as the Markdown exports. Every documentation page also offers
+a native Copy page button that copies its complete Markdown download. Its adjacent
+Open menu links to Markdown and AI applications using the public page URL.
+
+Reviewed pages use direct MDX. Project pages await their writing pass.
+The normative specification remains Markdown, and the MCP catalog is generated MDX.
+
+The shared build package converts supported components to complete Markdown.
+Card links and descriptions, all tab alternatives, warnings, and code remain in
+the downloads. Unknown components and executable expressions fail the export.
+See [`tools/docs-content/README.md`](../tools/docs-content/README.md) for the authoring contract.
+
+The website installs its own copy of the shared package through a local file
+dependency. `install-links=true` in `.npmrc` makes that copy resolve dependencies
+inside the website installation. The connector build uses the root pnpm workspace
+and does not need Next.js or the website's dependencies.
+
+## Agent endpoints
+
+The build preserves `/llms.txt`, `/llms-full.txt`, `/llms-small.txt`, `/prompt.md`,
+`/cotal.schema.json`, `/install.sh`, and `/.well-known/agent-skills/`.
+Each page advertises its `.md` twin in its HTML head. Pages middleware serves
+that twin for `Accept: text/markdown` with an `x-markdown-tokens` estimate.
+The root returns the documentation index for Markdown requests and discovery
+Link headers. Installer hosts `get.cotal.ai` and `install.cotal.ai` serve the installer.
+
+Skill descriptions come from YAML frontmatter parsed by Fumadocs, including quoted
+and multiline strings. Sync refuses missing, blank, non-string or invalid descriptions.
+The served `SKILL.md` bytes and their discovery digests remain unchanged.
+
+## Deployment
+
+Cloudflare Pages uses root directory `website`, build command `npm run build`,
+output directory `dist`, and install command `npm ci`.
+The existing workflow publishes PR previews, production, and release snapshots.
+`functions/` provides content negotiation. The Next.js development server does
+not run Pages middleware or redirects; use the Pages preview for compatibility checks.
+
+Build checks verify installer safety, skill digests, page exports, legacy redirects,
+and local links and assets. The link check parses HTML and Markdown destinations,
+including reference definitions and image candidates. Code samples remain literal text;
+relative targets are refused regardless of their directory name.
+Existing unresolved fragment links await page cleanup.
+Verify a preview deployment before production cutover.
+
+## HTTP references
+
+Short reference overviews are authored in `src/content/api-overviews/`.
+They describe connection details, authentication, and shared limits.
+Complete Markdown exports still come from the implementation OpenAPI contracts.
+
+The OpenAPI contracts live in their implementation packages. The reference registry
+in `src/http-references.js` maps each contract to its website and Markdown URLs.
+`npm run gen:api` generates canonical MDX, and sync checks that it remains current.
+
+Operation pages use Fumadocs' native OpenAPI renderer for request examples and
+expandable parameter, request and response schemas. Overviews link to operations
+and retain a schema index. The complete HTTP contract is available in a collapsed
+section on each operation page, preserving its previous heading links.
+
+The native request playground is disabled. These listeners have local capabilities,
+cookie checks or Origin restrictions that prevent calls from the docs website.
+The site does not proxy requests or change service access rules.
+
+Complete Markdown twins and portable OpenAPI downloads describe the same operations.
+The canonical Markdown sources also reach offline `cotal_docs` without Next.js or
+the OpenAPI renderer's browser dependencies.

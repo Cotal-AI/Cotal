@@ -1,0 +1,3 @@
+# Login against an IdP that cannot be reached, or that accepts and never answers, refuses with
+# DEPENDENCY_UNAVAILABLE (exit 2), names the failed request and caches no session. Broker-free.
+smoke:login-unreachable

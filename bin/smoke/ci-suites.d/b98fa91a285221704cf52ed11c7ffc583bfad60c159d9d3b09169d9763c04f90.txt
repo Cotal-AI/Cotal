@@ -1,0 +1,3 @@
+# The service host effect credential and discovery grant: exact-key publish grants, the profile guard,
+# expiry at the original deadline with no renewal or reconnect, and socket loss through the engine.
+smoke:service-host-effect:auth

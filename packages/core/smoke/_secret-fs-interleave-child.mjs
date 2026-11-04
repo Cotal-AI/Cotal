@@ -24,7 +24,7 @@ try {
 } catch {
   try {
     const dir = dirname(target);
-    const squatted = readdirSync(dir).find((n) => n.startsWith("contested.secret") && n.endsWith(".tmp"));
+    const squatted = readdirSync(dir).find((n) => n.startsWith(".cotal-create.") && n.endsWith(".tmp"));
     bytes = squatted ? readFileSync(join(dir, squatted), "utf8") : "\u0000ABSENT";
   } catch {
     bytes = "\u0000ABSENT";

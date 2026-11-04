@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts, resolveService, invokeCommand, withIssuerSession, mintGeneration, mintAcceptedToken, registry, credsClaims, actionContext, recordGoalIndex, readGoalIndex, bindGoal, createGoal, recordAtomicKey, RECORD_KINDS, recordsKvStreamName, admissionBucket, type Connector, type RemoteManagerAuthorityRequest, type RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
+import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts, resolveService, invokeCommand, withIssuerSession, mintGeneration, mintAcceptedToken, instanceOnlyManagerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, registry, credsClaims, actionContext, recordGoalIndex, readGoalIndex, bindGoal, createGoal, recordAtomicKey, RECORD_KINDS, recordsKvStreamName, admissionBucket, type Connector, type RemoteManagerAuthorityRequest, type RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { spaceKey } from "@cotal-ai/workspace";
 import { Manager, remoteManagerClient as client, registerRemoteManagerAuthority, managerClusterArtifacts, type ManagerOptions } from "../dist/index.js";
@@ -18,7 +18,7 @@ function check(name: string, condition: unknown) { assert.ok(condition, name); p
 async function refusesBoot(opts: ManagerOptions, match: RegExp, label: string) {
   const probe = new Manager(opts); let started = false;
   try { await assert.rejects(probe.start().then(() => { started = true; }), match, label); passed++; }
-  finally { if (started) await probe.stop(); }
+  finally { if (started) await probe.stop({ withAgents: true }); }
 }
 const fx = await startHostedAuthFixture("noexec", 1);
 const a = fx.accounts[0]!;
@@ -86,6 +86,7 @@ try {
       prepareAgentRetirement: async (args) => { const request = client.remoteManagedAgentPrepareRetirementRequest(state, "cli", proof, registered.processEpoch, args.target, args.opId); await door(request); },
       validateRetainedAgent: async (args) => { const request = client.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, args, args.actorToken, args.sentinelCreds); return client.retainedAgentAuthority(await door(request), request); },
       scanGoalIndex: async () => { scans++; const request = client.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch); return client.remoteManagerGoalIndexEntries(await door(request), request, prepared.owner); },
+      authorizeParticipation: async (caller) => { const request = client.remoteManagerParticipationAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller); return client.remoteManagerParticipationAuthorized(await door(request), request, prepared.owner); },
       authorizeAdmin: async (caller) => { const request = client.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller); return client.remoteManagerAdminAuthorized(await door(request), request, prepared.owner); },
       agentBearerExchangeUrl: service!.url,
     };
@@ -116,8 +117,12 @@ try {
     return { owner: prepared.owner, epoch: registered.processEpoch, opts };
   };
   const initial = await start();
-  const id = newIdentity(), uid = mintLifecycleUid(), issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
-  const creds = await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, (s) => mintCreds(a.auth, id, "manager-caller", { lifecycleUid: uid, managerInstanceId: state.instanceId, principal: { owner: initial.owner, actor: "probe" }, capabilities: ["admin", "spawn", "run"], expiresInSeconds: 300, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+  const id = newIdentity(), uid = mintLifecycleUid(), issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
+  // An issued caller pinned to the instance, minted as an agent: it holds its own presence key, which
+  // a source-free issuance needs (SPEC 13.15).
+  const pinned = instanceOnlyManagerCapabilities([{ endpoint: "manager", command: "describe" }, { endpoint: "manager", command: "status" },
+    ...runCallerCapabilities(initial.owner), ...operatorInstrumentCapabilities("admin", initial.owner)], state.instanceId);
+  const creds = await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, (s) => mintCreds(a.auth, id, "agent", { lifecycleUid: uid, principal: { owner: initial.owner, actor: "probe" }, capabilities: ["admin", "spawn", "run"], endpointCapabilities: pinned, expiresInSeconds: 300, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   callerNc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds, tls: false }) });
   const caller = { owner: initial.owner, actor: "probe", uid, generation: issued.generation };
   const selected = await resolveService(callerNc, a.space, "manager", caller, { instanceId: state.instanceId });
@@ -229,4 +234,4 @@ try {
   await service!.close();
   check("authority close ends every real owned connection", (await service!.closed).connections.every((c) => c.ended));
   console.log(`no-execution native: ${passed} assertions passed`); emitSentinel({ passed, failed: 0 });
-} finally { console.error = originalError; await callerNc?.close(); if (managerStarted) await manager?.stop(); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }
+} finally { console.error = originalError; await callerNc?.close(); if (managerStarted) await manager?.stop({ withAgents: true }); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }

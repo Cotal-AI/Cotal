@@ -2,7 +2,9 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
+import { assertValidKind, loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
+import { CotalEndpoint } from "../src/endpoint.js";
+import type { EndpointKind } from "../src/types.js";
 
 // Every cell runs and the suite reports at the end. Throwing on the first failure stopped the run
 // before the summary line, which reads as "stopped early" rather than "this cell is red" — the
@@ -207,6 +209,83 @@ const provBack = loadAgentFile(provenance);
 ok("an unmodelled key survives a save and reload", provBack.meta?.scope_source === "wire-default", provBack.meta);
 saveAgentFile(provenance, provBack);
 ok("and survives a second cycle, so a redefine cannot erode it", loadAgentFile(provenance).meta?.scope_source === "wire-default");
+
+// 9) A meta key that names a modeled field is refused before anything is written. The writer used
+//    to lay meta over the frontmatter it had just validated, so a hint could rebind the name, owner
+//    or capabilities, or write a blank model or a renamed key that the loader then refuses.
+for (const [k, v] of [["model", "   "], ["name", "bob"], ["owner", "mallory-id"], ["capabilities", "spawn"], ["channels", "general"]]) {
+  const target = join(dir, `collide-${k}`, "a.md");
+  let collided = false;
+  try { saveAgentFile(target, { name: "boundary", subscribe: [], model: "valid", meta: { [k]: v } }); } catch { collided = true; }
+  ok(`a meta "${k}" that collides with a modeled field is refused`, collided);
+  ok(`the "${k}" collision creates no directory`, !existsSync(join(dir, `collide-${k}`)));
+}
+const hinted = reread(join(dir, "hinted.md"), { name: "hinted", subscribe: [], model: "valid", meta: { theme: "dark", retries: "3" } });
+ok("unknown scalar hints round-trip beside a modeled model", hinted.model === "valid" && JSON.stringify(hinted.meta) === JSON.stringify({ theme: "dark", retries: "3" }), hinted);
+
+// 10) A file saved with CRLF line endings or a UTF-8 BOM, as Windows editors and git's autocrlf
+//     write it, reads as the LF file does. Both used to fail the frontmatter fence.
+const lf = "---\nname: crlf\nrole: reviewer\nsubscribe: [general]\n---\nReviews code.\nSecond line.\n";
+writeFileSync(join(dir, "lf.md"), lf);
+const plain = loadAgentFile(join(dir, "lf.md"));
+for (const [label, text] of [["CRLF", lf.replaceAll("\n", "\r\n")], ["a BOM", "\uFEFF" + lf], ["a BOM and CRLF", "\uFEFF" + lf.replaceAll("\n", "\r\n")]]) {
+  const file = join(dir, `${label.replaceAll(" ", "-")}.md`);
+  writeFileSync(file, text);
+  let read: AgentDef | undefined;
+  try { read = loadAgentFile(file); } catch { read = undefined; }
+  ok(`a file with ${label} reads as the LF file`, JSON.stringify(read) === JSON.stringify(plain), read);
+}
+
+// 11) A file saved as UTF-16, as Windows PowerShell 5.1 writes it, is refused by its encoding, with
+//     or without the byte-order mark, instead of as a missing frontmatter fence.
+for (const [label, bytes] of [["UTF-16LE", Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(lf, "utf16le")])], ["UTF-16BE", Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(lf, "utf16le").swap16()])], ["UTF-16LE with no BOM", Buffer.from(lf, "utf16le")]] as const) {
+  const file = join(dir, `${label.replaceAll(" ", "-")}.md`);
+  writeFileSync(file, bytes);
+  let error = "";
+  try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+  ok(`a ${label} file is refused by its encoding`, error === `agent file ${file}: it is saved as UTF-16, and Cotal reads only UTF-8; save it as UTF-8`, error);
+}
+
+// 12) #3243: endpoint kind is validated across loadAgentFile, saveAgentFile, and CotalEndpoint.
+for (const valid of ["agent", "endpoint"] as const) {
+  const kindFile = join(dir, `kind-${valid}.md`);
+  saveAgentFile(kindFile, { name: "kind-probe", kind: valid, subscribe: [] });
+  ok(`saveAgentFile and loadAgentFile accept kind "${valid}"`, loadAgentFile(kindFile).kind === valid);
+  const ep = new CotalEndpoint({ space: "main", servers: "nats://127.0.0.1:1", card: { name: "kind-probe", kind: valid } });
+  ok(`CotalEndpoint accepts card.kind "${valid}"`, ep.card.kind === valid && assertValidKind(valid) === valid);
+}
+for (const bad of ["agnet", "Agent", "service", ""] as const) {
+  const badLoad = join(dir, `kind-bad-${bad || "empty"}.md`);
+  writeFileSync(badLoad, `---\nname: kind-probe\nkind: ${JSON.stringify(bad)}\nsubscribe: []\n---\nbody\n`);
+  let loadErr = "";
+  try { loadAgentFile(badLoad); } catch (e) { loadErr = (e as Error).message; }
+  ok(`loadAgentFile refuses kind ${JSON.stringify(bad)}`, loadErr === `agent file ${badLoad}: "kind" must be "agent" or "endpoint"`, loadErr);
+
+  const badSave = join(dir, `kind-save-${bad || "empty"}.md`);
+  let saveErr = "";
+  try { saveAgentFile(badSave, { name: "kind-probe", kind: bad as EndpointKind, subscribe: [] }); } catch (e) { saveErr = (e as Error).message; }
+  ok(`saveAgentFile refuses kind ${JSON.stringify(bad)} without writing`, saveErr === 'saveAgentFile: "kind" must be "agent" or "endpoint"' && !existsSync(badSave), saveErr);
+
+  let ctorErr = "";
+  try { new CotalEndpoint({ space: "main", servers: "nats://127.0.0.1:1", card: { name: "kind-probe", kind: bad as EndpointKind } }); } catch (e) { ctorErr = (e as Error).message; }
+  ok(`CotalEndpoint refuses card.kind ${JSON.stringify(bad)}`, ctorErr === `invalid kind ${JSON.stringify(bad)}: "kind" must be "agent" or "endpoint"`, ctorErr);
+}
+let slashNameErr = "";
+try { new CotalEndpoint({ space: "main", servers: "nats://127.0.0.1:1", card: { name: "a/b", kind: "agent" } }); } catch (e) { slashNameErr = (e as Error).message; }
+ok("CotalEndpoint still refuses a reserved '/' in card.name", /invalid name "a\/b"/.test(slashNameErr), slashNameErr);
+
+// 13) A persona that saves must load. The loader refuses a subscribe family that no single
+//     allowSubscribe entry contains, such as perm.> under perm.*, which cannot read perm.a.b. The
+//     writer used to save it anyway, and every later load, spawn and redefine of that name failed.
+const wide = join(dir, "wide.md");
+let wideErr = "";
+try { saveAgentFile(wide, { name: "wide", persona: "x", subscribe: ["perm.>"], allowSubscribe: ["perm.*"] }); } catch (e) { wideErr = (e as Error).message; }
+ok("saveAgentFile refuses a family wider than every read entry and writes no file",
+  wideErr.includes('subscribe "perm.>" is not within allowSubscribe [perm.*]') && !existsSync(wide), wideErr);
+// The refusal reaches an agent through cotal_persona as "Couldn't define <name>: <this>", so it states
+// the rule once and names neither this function nor the path of a file that was never written.
+ok("the refusal reads as the rule the file broke",
+  wideErr === 'it would not load: subscribe "perm.>" is not within allowSubscribe [perm.*]', wideErr);
 
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

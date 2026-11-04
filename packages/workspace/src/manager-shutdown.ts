@@ -64,8 +64,9 @@ function exactIntent(value: unknown): ManagerShutdownIntent | undefined {
     const process = value as Record<string, unknown>;
     if (Object.keys(process).sort().join(",") !== "pid,token") return undefined;
     if (typeof process.pid !== "number" || parsePid(String(process.pid)) !== process.pid) return undefined;
-    if (typeof process.token !== "string" || process.token === "" || /\s/.test(process.token)) return undefined;
-    return { pid: process.pid, token: process.token };
+    if (typeof process.token !== "string") return undefined;
+    const parsed = parseRecord(`${process.pid} ${process.token}`);
+    return parsed.kind === "record" && parsed.record.token === process.token ? parsed.record : undefined;
   };
   if (row.version === 1) {
     const target = exactRecord(row.target);
@@ -242,7 +243,19 @@ export function armManagerShutdownIntent(
   publishAtomic(path, { version: 1, policy: "with-agents", target: managerProcess, stopper } satisfies ManagerShutdownIntent);
 }
 
-/** Remove an armed intent when SIGTERM could not be delivered. */
+/** Whether a `--with-agents` intent is armed, and if so whether this exact manager process and this
+ * exact stopper armed it. Reads only. */
+export function managerShutdownIntentArmedBy(context: LocalProcessContext, target: ProcessIdentityRecord, stopper: ProcessIdentityRecord): "none" | "exact" | "other" {
+  const path = canonicalLocalProcessPath(MANAGER_SHUTDOWN_INTENT, context);
+  let stat;
+  try { stat = lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "none"; throw error; }
+  if (!stat.isFile()) return "other";
+  let parsed: ManagerShutdownIntent | undefined;
+  try { parsed = exactIntent(JSON.parse(readFileSync(path, "utf8"))); } catch { parsed = undefined; }
+  return parsed?.version === 1 && parsed.target.pid === target.pid && parsed.target.token === target.token && parsed.stopper.pid === stopper.pid && parsed.stopper.token === stopper.token ? "exact" : "other";
+}
+
+/** Remove an armed intent when SIGTERM could not be delivered, or when its stop was abandoned. */
 export function disarmManagerShutdownIntent(context: LocalProcessContext): void {
   const path = canonicalLocalProcessPath(MANAGER_SHUTDOWN_INTENT, context);
   rmSync(path, { force: true });

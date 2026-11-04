@@ -1,0 +1,54 @@
+{
+  "suite": [
+    "implementations/cli/smoke/isolated-reload.smoke.ts"
+  ],
+  "guard": "maintenance phases receive only a confirmed replacement login within the reload and operation deadlines",
+  "command": "pnpm smoke:isolated-reload",
+  "completionMarker": "ISOLATED RELOAD SMOKE:",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/isolated-reload.json",
+  "why": [
+    "A real NATS server is driven through the production watchdog and reload path. The executable shim delays signal forwarding and splits the actual success log across reads. A separate CLI reproduction proves both backup create and up --restore reach this seam."
+  ],
+  "mutations": [
+    {
+      "name": "the fixed 100ms single read is restored",
+      "find": "          const reloadDeadline = Math.min(options.deadline.getTime(), Date.now() + RELOAD_TIMEOUT_MS);\n          let reloadDiagnostics = \"\";\n          while (Date.now() < reloadDeadline) {\n            if (!alive(brokerOwner!.pid))\n              throw new Error(`${options.label} broker exited during its maintenance-login reload: ${reloadDiagnostics.trim()}`);\n            reloadDiagnostics += readLogTail();\n            if (/Failed to reload server configuration/.test(reloadDiagnostics))\n              throw new Error(`${options.label} broker rejected its maintenance-login reload: ${reloadDiagnostics.trim()}`);\n            if (/Reloaded server configuration/.test(reloadDiagnostics)) return login;\n            await delay(Math.min(50, Math.max(0, reloadDeadline - Date.now())));\n          }\n          throw new Error(`${options.label} broker did not confirm its maintenance-login reload`);",
+      "replace": "          await delay(100);\n          const reloadDiagnostics = readLogTail();\n          if (/Failed to reload server configuration/.test(reloadDiagnostics))\n            throw new Error(`${options.label} broker rejected its maintenance-login reload: ${reloadDiagnostics.trim()}`);\n          if (!/Reloaded server configuration/.test(reloadDiagnostics))\n            throw new Error(`${options.label} broker did not confirm its maintenance-login reload`);\n          return login;",
+      "expectRed": "a delayed reload with a split acknowledgement installs the next login",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "cell": "a delayed reload with a split acknowledgement installs the next login"
+    },
+    {
+      "name": "partial acknowledgement chunks are discarded",
+      "find": "            reloadDiagnostics += readLogTail();",
+      "replace": "            reloadDiagnostics = readLogTail();",
+      "expectRed": "a delayed reload with a split acknowledgement installs the next login",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "cell": "a delayed reload with a split acknowledgement installs the next login"
+    },
+    {
+      "name": "a preceding acknowledgement is left available to the next phase",
+      "find": "          readLogTail();\n          try {\n            process.kill(brokerOwner!.pid, \"SIGHUP\");",
+      "replace": "          try {\n            process.kill(brokerOwner!.pid, \"SIGHUP\");",
+      "expectRed": "an old acknowledgement cannot authorize a reload with no response",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "cell": "an old acknowledgement cannot authorize a reload with no response"
+    },
+    {
+      "name": "the reload operation deadline is ignored",
+      "find": "          const reloadDeadline = Math.min(options.deadline.getTime(), Date.now() + RELOAD_TIMEOUT_MS);",
+      "replace": "          const reloadDeadline = Date.now() + RELOAD_TIMEOUT_MS;",
+      "expectRed": "an unacknowledged reload waits until the operation deadline",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "cell": "an unacknowledged reload waits until the operation deadline"
+    },
+    {
+      "name": "the reload bound is recomputed on every poll",
+      "find": "          while (Date.now() < reloadDeadline) {",
+      "replace": "          while (Date.now() < Math.min(options.deadline.getTime(), Date.now() + RELOAD_TIMEOUT_MS)) {",
+      "expectRed": "an unacknowledged reload has its own bound before a distant operation deadline",
+      "file": "implementations/cli/src/lib/isolated-broker.ts",
+      "cell": "an unacknowledged reload has its own bound before a distant operation deadline"
+    }
+  ]
+}

@@ -1,68 +1,132 @@
 # Roadmap
 
 > **Project** (non-normative) · Direction and deferred designs; nothing here is shipped
-> behavior unless a linked page says so. The shipped contract is the [spec](../SPEC.md).
 
-Cotal is pre-1.0. The wire contract (v0.x) may still change under the
-[change process](../SPEC.md#11-versioning-and-extensibility). This page tracks what is
-deliberately *not* built yet, and the direction each area is headed.
+Cotal is pre-1.0, and the v0.x wire contract can still change under the
+[change process](../SPEC.md#11-versioning-and-extensibility). This page lists what is not built
+yet and where each area is headed. Nothing here is shipped behavior unless a linked page
+says so. The [spec](../SPEC.md) is the shipped contract.
 
-## Where we are
+## What ships today
 
-The core is running today: all three delivery modes over JetStream, presence and
-discovery, channel replay and durable delivery classes, JWT identity and per-agent ACLs on
-by default, a supervising manager with pluggable runtimes, connectors for Claude Code,
-OpenCode, Hermes, and pi, the mesh manifest (`cotal.yaml`), and the console + web observers.
-The [Quickstart](getting-started.md) is the fastest proof.
+The core runs today. It includes:
+
+- All three delivery modes over JetStream.
+- Presence and discovery.
+- Channel replay and durable delivery classes.
+- JWT identity, with per-agent ACLs on by default.
+- A supervising manager with pluggable runtimes.
+- Connectors for Claude Code, OpenCode, Codex, Hermes, Jcode, and pi.
+- The mesh manifest (`cotal.yaml`).
+- The console and web observers.
+- Durable Cotal Lang runs.
+- Discoverable service contracts.
+- Structured CLI output.
+- An interactive launch form in the console.
+- Approval-based connections for personal Claude Code sessions, on supported user-auth
+  deployments.
+
+[Choose a workflow](using-cotal.mdx) links each supported path and its limits.
+
+The stock Linear adapter serves under static auth, and under user auth once a deployment approves
+it. A hosted installation still configures its own authority, registration, and caller grants.
+Support in the source does not mean that an integration is deployed in a given space.
 
 ## Deferred work
 
-These have a reserved shape in the spec or the architecture, and are intentionally not
-built yet.
+A shape that the spec reserves, or that a design proposal describes, is not runtime support.
+Each item below says which parts exist and what remains.
 
-| Area | Direction |
-|---|---|
-| **Signed envelopes + DID identity** | Non-repudiation: authenticity that survives an untrusted relay or federation hop, not just a single trusted broker. Instance ids are shaped to become `did:key`. ([SPEC §11](../SPEC.md#11-versioning-and-extensibility)) |
-| **Auth-callout onboarding** | Shipped for per-user-auth spaces: the auth service mints scoped creds *at connect* from the data-account signing key, which a running manager also holds ([identity & auth](identity-and-auth.md)). Remaining: the join-link bootstrap-token variant for static meshes. |
-| **Credential revocation / TTL** | User-auth spaces have it (short bearers, ledger revocation, live-connection eviction); command and daemon creds are bounded and renewed everywhere, and manager-spawned static agent creds are now bounded too (24h TTL, manager renewal, despawn revokes the ledger rows and the control surface refuses the retired incarnation). Remaining: static reconnect-time revocation inside the TTL window (structural: no auth callout) and TTL on out-of-band `cotal mint` creds. ([Security model](security.md)) |
-| **Sessions + moderator** | Managed group membership (admit/remove). Channels today carry no roster of their own. |
-| **Artifact delivery** | Large payloads move to a per-space JetStream Object Store; the message carries a reference part. Part shape reserved, transfer not built. ([SPEC §5](../SPEC.md#5-envelopes)) |
-| **Instant offline (`$SYS`)** | Manager-observed disconnect events for immediate `offline`, instead of waiting out the presence heartbeat window. The heartbeat sweep stays the floor. |
-| **Host mode (Agent SDK)** | Headless sessions with true mid-turn interrupt, observed via the plain stream instead of a native TUI. Documented upgrade path from attach mode. |
-| **Multi-space brokers** | The trust layer already hosts many spaces per broker (one operator signs one account per space, per [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)), and broker-wide lifecycle verbs refuse on a multi-space root rather than scoping to one tenant. Still to build: per-space lifecycle (provisioning a new space through `up`, per-space teardown/backup) and agents present in many spaces at once. |
-| **Strict metadata containment** | Chat *content* reads are ACL-bounded today; stream metadata (channel names, per-subject counts) still leaks to in-space agents. Hiding it needs the channel-major stream model. ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)) |
+### Partly built
 
-## Connecting spaces (federation)
+- **Auth-callout onboarding.** Shipped for per-user-auth spaces. The auth service mints scoped
+  credentials when a client connects, using the data-account signing key, which a running manager
+  also holds ([identity & auth](identity-and-auth.mdx)). Remaining: the join-link variant with a
+  bootstrap token, for static meshes.
+- **Credential revocation and TTL.** User-auth spaces have short bearer tokens, ledger revocation,
+  and eviction of live connections. Command and daemon credentials are bounded and renewed in
+  every mode. Manager-spawned static agent credentials have a 24-hour TTL that the manager renews.
+  Despawn revokes their ledger rows, and the control surface refuses the retired incarnation.
+  Credentials minted out of band with `cotal auth mint` also expire after 24 hours by default, and
+  `--no-expiry` opts out. Remaining: revoking a static credential at reconnect inside its TTL
+  window. Static meshes have no auth callout to do it ([security model](security.mdx)).
+- **Artifact delivery.** Large payloads move to a per-space JetStream Object Store, and the message
+  carries a reference part. The spec defines the `artifact` part, and setup creates the store.
+  Nothing stores or fetches artifact bytes yet ([SPEC §5](../SPEC.md#5-envelopes)).
+- **Multi-space brokers.** The trust layer already hosts many spaces on one broker. One operator
+  signs one account per space ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
+  The broker-wide lifecycle verbs refuse to run on a multi-space root instead of acting on one
+  tenant. Remaining: per-space lifecycle, such as creating a new space through `up` and per-space
+  teardown and backup, and agents that are present in many spaces at once.
 
-The rule: **never merge trust roots.** The staged path, from
-[spaces & channels](spaces.md):
+### Not built
 
-- **v0: origin-qualified identity.** An additive `name@space` qualifier on the envelope
-  and card, so a remote peer is unambiguous. Cheap, non-breaking, prerequisite for any
-  bridge.
-- **v1: application-level relay.** A bridge endpoint holding a separate credential each
-  side issued forwards one channel both ways (loop-marker, identity rewriting, explicit
-  config on both ends), or both parties' delegates meet in a neutral **rendezvous
-  space**. Works in open and auth mode with no NATS reconfiguration.
-- **v2: NATS-native.** Account export/import (same operator), leaf nodes
-  (cross-operator), mirror/source streams for durable cross-space history ("copy, don't
-  share").
-- **North star: encrypted group as the boundary.** A federated channel as an
-  end-to-end-encrypted group whose membership is keys (MLS-style), relays carrying
-  ciphertext without being trusted, DID self-issued identity. Not built now, not blocked
-  either.
+Each item describes the planned design. None of it runs yet.
+
+- **Signed envelopes with DID identity.** Today a message is authentic because one trusted broker
+  carries it. A signed envelope stays authentic across an untrusted relay or a federation hop, so
+  the sender cannot deny it. Instance ids are already shaped to become `did:key` ids
+  ([SPEC §11](../SPEC.md#11-versioning-and-extensibility)).
+- **Sessions with a moderator.** Managed group membership, where a moderator admits and removes
+  members. Today a channel has no presence roster of its own. A `durable` channel's membership
+  list decides only backstop delivery, and any agent that the channel's read ACL admits can join
+  it ([channels & permissions](channels-and-permissions.mdx#membership-changes)).
+- **Instant offline from `$SYS`.** The manager watches disconnect events and marks an agent
+  `offline` at once, instead of after the presence heartbeat window. The heartbeat sweep keeps
+  running as the fallback.
+- **Host mode on the Agent SDK.** Headless sessions with true mid-turn interrupt, which you watch
+  through the plain stream instead of a native TUI. The plan includes a documented upgrade path
+  from attach mode.
+- **Strict metadata containment.** ACLs already limit which chat content an agent reads. Stream
+  metadata, such as channel names and per-subject counts, is still visible to agents inside the
+  space. Hiding it needs the channel-major stream model
+  ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
+
+## Connecting spaces
+
+Federation never merges trust roots. [Spaces & channels](spaces.mdx) describes the path in four
+stages:
+
+- **v0: origin-qualified identity.** An additive `name@space` qualifier on the envelope and the
+  card makes a remote peer unambiguous. It is cheap, breaks nothing, and every bridge needs it.
+- **v1: application-level relay.** A bridge endpoint holds a separate credential from each side and
+  forwards one channel both ways. It marks loops, rewrites identities, and needs explicit config
+  on both ends. Alternatively, each party's delegates meet in a neutral **rendezvous space**. Both
+  forms work in open and auth mode, with no NATS reconfiguration.
+- **v2: NATS-native.** Account export and import connect spaces under the same operator. Leaf nodes
+  connect spaces across operators. Mirror and source streams copy durable history between spaces
+  instead of sharing it.
+- **Long-term: an encrypted group as the boundary.** A federated channel becomes an end-to-end
+  encrypted group whose membership is a set of keys, in the style of MLS. Relays carry ciphertext
+  and need no trust, and identity is self-issued DID. Nothing here is built, and nothing blocks
+  it.
 
 ## Open questions
 
-- **Inbound buffer/policy defaults**: queue vs coalesce vs immediate injection.
-- **Agent-directed control ops**: manager lifecycle ops exist; the agent-directed set
-  (directive, set-role, pause/resume) is still open.
-- **Coordination primitives**: settled for the endpoint control surface. v0.4 defines goals and
-  a decision journal, competitive work pools, and leases/obligations
-  ([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)); whether a lighter *advisory* intent
-  record also belongs on the chat plane is still open.
-- **Collaboration patterns**: agents are declared today ([agent files](agent-files.md));
-  how a user declares the patterns *between* them (who delegates to whom) is open.
+- **Inbound buffer defaults.** Should the default inbound policy queue messages, coalesce them, or
+  inject them at once?
+- **Agent-directed control operations.** The manager lifecycle operations exist. The set an agent
+  directs, such as directive, set-role, pause, and resume, is still open.
+- **Coordination primitives.** Settled for the endpoint control surface. v0.4 defines goals and a
+  decision journal, competitive work pools, and leases and obligations
+  ([SPEC §13](../SPEC.md#13-endpoint-control-surface-v04)). Still open: whether a lighter,
+  advisory intent record also belongs on the chat plane.
+- **Collaboration patterns.** [Manifests](manifest.mdx) declare agents and channel access.
+  [Cotal Lang](workflows.mdx) expresses delegation, concurrency, and human checkpoints. Still open:
+  a separate declarative notation for arbitrary social relationships between agents.
 
-Watch the [changelog](../SPEC.md#11-versioning-and-extensibility) and releases for what
-lands; propose changes against the spec first ([change process](../SPEC.md#11-versioning-and-extensibility)).
+To follow what lands, watch the [changelog](../SPEC.md#11-versioning-and-extensibility) and the
+releases. Propose a change against the spec first, under the
+[change process](../SPEC.md#11-versioning-and-extensibility).
+
+## Earlier section links
+
+These links lead to the current guidance for sections renamed in earlier versions.
+
+### Where we are [#where-we-are]
+
+See [What ships today](#what-ships-today).
+
+### Connecting spaces (federation) [#connecting-spaces-federation]
+
+See [Connecting spaces](#connecting-spaces).

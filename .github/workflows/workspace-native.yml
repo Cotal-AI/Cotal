@@ -1,0 +1,93 @@
+name: Workspace native bindings
+on:
+  workflow_call:
+    inputs:
+      architectures:
+        type: string
+        default: '["x64", "arm64"]'
+      test_controls:
+        type: boolean
+        default: false
+      darwin:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ${{ fromJSON('{"x64":"windows-latest","arm64":"windows-11-arm"}')[matrix.arch] }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.architectures) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Compile against pinned Node-API headers and import library
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }} -host_arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }}
+          if errorlevel 1 exit /b 1
+          if "${{ inputs.test_controls }}"=="true" (set "CONTROLS=--test-controls") else (set "CONTROLS=")
+          node packages/workspace/scripts/build-native.mjs %CONTROLS%
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+          if "${{ inputs.test_controls }}"=="true" (
+            cl /nologo /O2 /MT /W4 /WX /std:c11 /Fopackages\workspace\build\test\win32-${{ matrix.arch }}\query-control.obj /Fepackages\workspace\build\test\win32-${{ matrix.arch }}\query-control.exe packages\workspace\smoke\fixtures\win32-denied-process.c /link /Brepro advapi32.lib
+          )
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-win32-${{ matrix.arch }}
+          path: packages/seat/build/Release/win32-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workspace-native-${{ matrix.arch }}
+          path: packages/workspace/build/Release/win32-${{ matrix.arch }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: inputs.test_controls
+        with:
+          name: workspace-native-tests-${{ matrix.arch }}
+          path: |
+            packages/workspace/build/test/win32-${{ matrix.arch }}/query-control.exe
+            packages/workspace/build/test/win32-${{ matrix.arch }}/query-denied.node
+          if-no-files-found: error
+  # The macOS process identity binding, built natively per architecture. A caller that packs workspace
+  # asks for it, because its prepack requires both Windows and both macOS bindings.
+  darwin:
+    if: inputs.darwin
+    runs-on: ${{ fromJSON('{"x64":"macos-15-intel","arm64":"macos-15"}')[matrix.arch] }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.architectures) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Compile against pinned Node-API headers
+        run: node packages/workspace/scripts/build-native.mjs
+      - name: Compile the daemon host primitives
+        run: node packages/seat/scripts/build-native.mjs --host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-darwin-${{ matrix.arch }}
+          path: packages/seat/build/Release/darwin-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workspace-native-darwin-${{ matrix.arch }}
+          path: packages/workspace/build/Release/darwin-${{ matrix.arch }}
+          if-no-files-found: error

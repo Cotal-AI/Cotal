@@ -82,7 +82,7 @@ try {
   const e1 = await enqueueWorkItem(ctx, r1, enc("w1"));
   c("the first enqueue of an item wins its create-only CAS", e1.enqueued && typeof e1.seq === "number");
 
-  // ── the reconciliation read is STRUCTURALLY leader-served (SPEC 13.6:1797-1799) ──
+  // ── the reconciliation read is STRUCTURALLY leader-served (SPEC 13.6) ──
   // EPW is bound allow_direct:false, so a follower-servable Direct Get is REFUSED by the broker
   // (a single node cannot exhibit replication lag, so this structural forbiddance IS the proof:
   // the reconciliation probe CANNOT accidentally take the follower path whose stale miss re-arms

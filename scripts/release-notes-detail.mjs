@@ -5,12 +5,13 @@
  * with, minor changes before patches), then every summary in full under a collapsed block. The
  * Discord announcement posts the first layer only (`scripts/release-announcement.mjs`).
  *
- * Usage: node scripts/release-notes-detail.mjs <version> [--since <previous released version>]
+ * Usage: node scripts/release-notes-detail.mjs <version> [--since <previous released version>] [--max-bytes=<n>]
  *
  * With `--since`, every `## <v>` section with <previous> < v <= <version> is read, so a version
  * that was cut but never published (its publish refused, or reverted before it reached npm) is
  * described by the release that first carries its changes. Without it only `## <version>` is read.
- * Prints nothing when no section carries a summary.
+ * Missing version sections or summaries fail on stderr. A byte budget keeps whole changes in both
+ * layers and names omitted changes; a budget that fits no change fails instead of emitting partial notes.
  *
  * Reads the basic `@changesets/cli/changelog` format: `### Minor Changes` / `### Patch Changes`
  * sub-headers, top-level `- <hash>: <summary>` bullets with their indented continuation, and
@@ -52,8 +53,8 @@ const CLOSING_MARK = /[.!?]["'\u201d\u2019)\]]*$/;
  * non-ASCII letter. A summary that does not open with a paragraph is listed by its first line.
  */
 export const firstSentence = (text) => {
-  const paragraph = marked.lexer(text).find((t) => t.type === "paragraph");
-  if (!paragraph) return text.split("\n")[0].trim();
+  const paragraph = marked.lexer(text)[0];
+  if (paragraph?.type !== "paragraph") return text.split("\n")[0].trim();
   const flat = (s) => s.replace(/\s*\n\s*/g, " ").trim();
   let out = "";
   const tokens = paragraph.tokens;
@@ -107,6 +108,7 @@ export const collectSummaries = (root, version, since) => {
 
   const RANK = { major: 0, minor: 1, patch: 2 };
   const seen = new Map();
+  let foundVersion = false;
   for (const file of changelogFiles(root)) {
     const lines = readFileSync(file, "utf8").split("\n");
     let inSection = false;
@@ -115,6 +117,7 @@ export const collectSummaries = (root, version, since) => {
       const line = lines[i];
       if (line.startsWith("## ")) {
         const v = parseVersion(line.slice(3));
+        if (v !== undefined && compareVersions(v, upper) === 0) foundVersion = true;
         inSection = v !== undefined && inRange(v);
         kind = "patch";
         continue;
@@ -143,20 +146,37 @@ export const collectSummaries = (root, version, since) => {
       else if (RANK[kind] < RANK[known.kind]) known.kind = kind;
     }
   }
+  if (!foundVersion) throw new Error(`no changelog section for version ${JSON.stringify(version)}`);
+  if (!seen.size) throw new Error(`no release summaries in changelog sections for version ${JSON.stringify(version)}`);
   return [...seen.values()].sort((a, b) => RANK[a.kind] - RANK[b.kind]);
 };
 
-export const render = (summaries) => {
+export const render = (summaries, maxBytes = Infinity) => {
+  if (!(maxBytes > 0)) throw new Error("--max-bytes must be a positive number");
   if (summaries.length === 0) return "";
-  const out = ["## What changed", ""];
-  for (const s of summaries) out.push(`- ${firstSentence(s.text)}`);
-  out.push("", "<details>", "<summary>Every change in full</summary>", "");
-  for (const s of summaries) out.push(`- ${s.text}`);
-  out.push("", "</details>", "");
-  return out.join("\n");
+  const headlines = [], details = [];
+  const body = () => {
+    const left = summaries.length - headlines.length;
+    const note = left ? ["", `_${left} more changes did not fit in this release body; each package's CHANGELOG.md lists them all._`] : [];
+    return ["## What changed", "", ...headlines, ...note, "", "<details>",
+      `<summary>${left ? "Shown changes" : "Every change"} in full</summary>`, "", ...details, "", "</details>", ""].join("\n");
+  };
+  for (const summary of summaries) {
+    headlines.push(`- ${firstSentence(summary.text)}`);
+    details.push(`- ${summary.text}`);
+    if (Buffer.byteLength(body()) > maxBytes) {
+      headlines.pop(); details.pop();
+      break;
+    }
+  }
+  if (!headlines.length) throw new Error("byte budget is too small for a release summary");
+  return body();
 };
 
 const selfTest = () => {
+  let checks = 0;
+  const check = Object.fromEntries(["equal", "deepEqual", "ok", "throws"].map(method =>
+    [method, (...args) => { assert[method](...args); checks++; }]));
   const root = mkdtempSync(join(tmpdir(), "release-notes-"));
   try {
     const write = (rel, text) => {
@@ -237,7 +257,7 @@ const selfTest = () => {
     );
 
     const since = collectSummaries(root, "0.81.1", "0.79.0");
-    assert.deepEqual(
+    check.deepEqual(
       since.map((s) => [s.kind, firstSentence(s.text)]),
       [
         ["minor", "A seat never leaves the mesh because its event plane stopped, e.g. on a torn line."],
@@ -246,20 +266,20 @@ const selfTest = () => {
       ],
       "the range covers every unpublished version, minor first, one entry per change across packages and bump kinds, and the sentence ends where the paragraph says, not where the line wraps",
     );
-    assert.equal(since[0].text.split("\n").length, 3, "a multi-paragraph summary keeps its continuation");
+    check.equal(since[0].text.split("\n").length, 3, "a multi-paragraph summary keeps its continuation");
 
     const only = collectSummaries(root, "0.81.1");
-    assert.deepEqual(
+    check.deepEqual(
       only.map((s) => firstSentence(s.text)),
       ["`cotal spawn -f` now reports a failed launch as partial."],
       "without --since only the named version's section is read",
     );
-    assert.equal(collectSummaries(root, "0.81.0", "0.80.0").length, 0, "an empty section renders nothing");
-    assert.equal(render([]), "");
+    check.throws(() => collectSummaries(root, "0.81.0", "0.80.0"), /no release summaries/, "an empty section remains a named refusal");
+    check.equal(render([]), "");
 
     const body = render(since);
     const summary = body.slice(0, body.indexOf("<details>"));
-    assert.equal(
+    check.equal(
       summary,
       [
         "## What changed",
@@ -272,52 +292,54 @@ const selfTest = () => {
       ].join("\n"),
       "the first layer is one sentence per change",
     );
-    assert.ok(
+    check.ok(
       body.includes("<summary>Every change in full</summary>\n\n- A seat never leaves the mesh") &&
         body.includes("\n\n  A second paragraph of the same summary.\n- `cotal spawn -f`") &&
         body.endsWith("\n</details>\n"),
       "the collapsed layer carries the full text",
     );
-    assert.equal(
+    check.equal(
       firstSentence("Use `node foo.js. Bar` to inspect state. The next sentence is mechanism."),
       "Use `node foo.js. Bar` to inspect state.",
       "punctuation inside an inline code span does not end the sentence",
     );
-    assert.equal(
+    check.equal(
       firstSentence('The command now says "Connected." It reports the actual state.'),
       'The command now says "Connected."',
       "a closing quote after the mark belongs to the sentence",
     );
-    assert.equal(firstSentence("Fails on ``a `b` c``. Then more."), "Fails on ``a `b` c``.", "a double-backtick span closes at its own fence");
-    assert.equal(firstSentence("An unclosed `span is plain text. Nor this."), "An unclosed `span is plain text.", "a lone backtick is text, not a span");
-    assert.equal(firstSentence("Reads 1.5 MB (e.g. two files) at once. Then stops."), "Reads 1.5 MB (e.g. two files) at once.", "a decimal and an abbreviation do not end the sentence");
-    assert.equal(
+    check.equal(firstSentence("Fails on ``a `b` c``. Then more."), "Fails on ``a `b` c``.", "a double-backtick span closes at its own fence");
+    check.equal(firstSentence("An unclosed `span is plain text. Nor this."), "An unclosed `span is plain text.", "a lone backtick is text, not a span");
+    check.equal(firstSentence("Reads 1.5 MB (e.g. two files) at once. Then stops."), "Reads 1.5 MB (e.g. two files) at once.", "a decimal and an abbreviation do not end the sentence");
+    check.equal(
       firstSentence("It supports [Node.js. Docs](https://example.invalid/a.b) links. The next sentence is mechanism."),
       "It supports [Node.js. Docs](https://example.invalid/a.b) links.",
       "a mark inside a Markdown link does not end the sentence",
     );
-    assert.equal(firstSentence("The CLI respects Dr. Smith's config. The next sentence is mechanism."), "The CLI respects Dr. Smith's config.", "a title abbreviation does not end the sentence");
+    check.equal(firstSentence("The CLI respects Dr. Smith's config. The next sentence is mechanism."), "The CLI respects Dr. Smith's config.", "a title abbreviation does not end the sentence");
     for (const next of ["iOS clients also reconnect.", "\u00dcberlong retries no longer occur.", "24 seats can reconnect at once."])
-      assert.equal(firstSentence(`Reconnect now works. ${next}`), "Reconnect now works.", `a next sentence starting with ${next.split(" ")[0]} is not consulted`);
-    assert.equal(firstSentence("Node.js is read as one word. Then more."), "Node.js is read as one word.", "a dotted name is not a sentence end");
-    assert.equal(
+      check.equal(firstSentence(`Reconnect now works. ${next}`), "Reconnect now works.", `a next sentence starting with ${next.split(" ")[0]} is not consulted`);
+    check.equal(firstSentence("Node.js is read as one word. Then more."), "Node.js is read as one word.", "a dotted name is not a sentence end");
+    check.equal(
       firstSentence('Reads [the guide](https://example.invalid/a_(b) "Quick. Start") safely. Details follow.'),
       'Reads [the guide](https://example.invalid/a_(b) "Quick. Start") safely.',
       "a link destination with parentheses and a title is one construct",
     );
-    assert.equal(firstSentence("Reads [nested [v2. Docs] material](https://example.invalid) safely. Details follow."), "Reads [nested [v2. Docs] material](https://example.invalid) safely.", "a nested link label is one construct");
-    assert.equal(
+    check.equal(firstSentence("Reads [nested [v2. Docs] material](https://example.invalid) safely. Details follow."), "Reads [nested [v2. Docs] material](https://example.invalid) safely.", "a nested link label is one construct");
+    check.equal(
       firstSentence("Reads [Node.js. Docs][guide] safely. Details follow.\n\n[guide]: https://example.invalid"),
       "Reads [Node.js. Docs][guide] safely.",
       "a reference link defined later in the summary is one construct",
     );
-    assert.equal(firstSentence("The response is **ready.** The next sentence explains the mechanism."), "The response is **ready.**", "a sentence may end inside strong emphasis");
-    assert.equal(firstSentence("The response is *ready.* The next sentence explains the mechanism."), "The response is *ready.*", "a sentence may end inside emphasis");
-    assert.equal(firstSentence("Shows ![a dot. here](img.png) inline. Then more."), "Shows ![a dot. here](img.png) inline.", "an image is one construct");
-    assert.equal(firstSentence("Ends with a period\\. escaped then real. Then more."), "Ends with a period\\. escaped then real.", "an escaped mark does not end the sentence");
-    assert.equal(firstSentence("- not a paragraph. second\n- more"), "- not a paragraph. second", "a summary that opens with a list is listed by its first line");
-    assert.throws(() => collectSummaries(root, "v0.81.1"), /not a release version/);
-    console.log("release-notes-detail self-test: ok");
+    check.equal(firstSentence("The response is **ready.** The next sentence explains the mechanism."), "The response is **ready.**", "a sentence may end inside strong emphasis");
+    check.equal(firstSentence("The response is *ready.* The next sentence explains the mechanism."), "The response is *ready.*", "a sentence may end inside emphasis");
+    check.equal(firstSentence("Shows ![a dot. here](img.png) inline. Then more."), "Shows ![a dot. here](img.png) inline.", "an image is one construct");
+    check.equal(firstSentence("Ends with a period\\. escaped then real. Then more."), "Ends with a period\\. escaped then real.", "an escaped mark does not end the sentence");
+    check.equal(firstSentence("- not a paragraph. second\n- more"), "- not a paragraph. second", "a summary that opens with a list is listed by its first line");
+    check.equal(firstSentence("# A headline.\n\nSupporting detail."), "# A headline.");
+    check.equal(firstSentence("- A headline.\n\nSupporting detail."), "- A headline.");
+    check.throws(() => collectSummaries(root, "v0.81.1"), /not a release version/);
+    console.log(`release-notes-detail self-test: ${checks} checks passed`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -329,10 +351,12 @@ const main = (argv) => {
   const sinceAt = argv.indexOf("--since");
   const since = sinceAt === -1 ? undefined : argv[sinceAt + 1];
   if (!version || version.startsWith("--") || (sinceAt !== -1 && !since)) {
-    process.stderr.write("usage: release-notes-detail.mjs <version> [--since <previous version>]\n");
+    process.stderr.write("usage: release-notes-detail.mjs <version> [--since <previous version>] [--max-bytes=<n>]\n");
     process.exit(1);
   }
-  process.stdout.write(render(collectSummaries(process.cwd(), version, since)));
+  const maxArg = argv.find((a) => a.startsWith("--max-bytes="));
+  const maxBytes = maxArg ? Number(maxArg.slice("--max-bytes=".length)) : Infinity;
+  process.stdout.write(render(collectSummaries(process.cwd(), version, since), maxBytes));
 };
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main(process.argv.slice(2));

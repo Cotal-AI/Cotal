@@ -1,0 +1,2 @@
+# The static chat adapter's pure decisions: open-reply verification and retire close reports. No broker.
+smoke:static-chat-pure

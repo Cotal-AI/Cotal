@@ -48,6 +48,7 @@ import {
   EpEnvelopeError,
   epAuthBucket,
   epsSubject,
+  isCasLoss,
   endpointToken,
   parsePrincipalKey,
   isPrincipalOwnerToken,
@@ -72,6 +73,7 @@ import {
 import {
   observeGate,
   registryStores,
+  assertOrdinaryRegistryMutation,
   readLifecycleMappingLeader,
   type LifecycleRegistry,
   type LifecycleMappingReader,
@@ -174,11 +176,6 @@ function parseRow(raw: Uint8Array, key: string): SessionLedgerRow {
     throw new EpEnvelopeError("internal", `the session row ${key} names non-deterministic credential ids (caller "${r.credCaller}", serving "${r.credServing}"); a swapped/aliased id never authorizes (SPEC 13.6)`);
   return r as SessionLedgerRow;
 }
-
-const isCasLoss = (e: unknown): boolean => {
-  const code = (e as { api_error?: { err_code?: number } })?.api_error?.err_code;
-  return code === 10071 || code === 10164 || /wrong last sequence/i.test((e as Error)?.message ?? "");
-};
 
 /** The real-KV {@link SessionLedger}: create-only CAS for the one-use `issuing` row,
  *  revision-pinned CAS for every transition, monotonic states enforced on the write path. */
@@ -294,7 +291,9 @@ export async function writeEndpointGate(kv: KV, endpoint: string, instanceId: st
 }
 
 /** Observe the serving instance's endpoint gate (candidate read feeding the pinned touch). A
- *  DEL/PURGE marker refuses loudly — a gate is never deleted (corruption, not absence). */
+ *  DEL/PURGE marker refuses loudly — a gate is never deleted (corruption, not absence). A native
+ *  service gate is never a session serving gate: its issuance runs only through the service
+ *  callout, so both this observation and stagePair's fresh read refuse it before any pin or row. */
 async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string, what: string): Promise<{ pin: LifecycleGatePin; gate: EndpointGateRow }> {
   const key = epgateKey(endpoint, instanceId);
   const entry = await kv.get(key);
@@ -303,6 +302,8 @@ async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string,
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
   const gate = parseEndpointGate(entry.value, key);
+  if (gate.authorityFamily === "service")
+    throw new EpEnvelopeError("permission-denied", `${what}'s endpoint gate ${key} belongs to a native service; a session never serves on a service gate (SPEC 13.6)`);
   if (gate.state !== "open")
     throw new EpEnvelopeError("permission-denied", `${what}'s endpoint issuance gate is "${gate.state}"; only an open gate mints (a frozen gate is a barrier in flight, a retired one is terminal, SPEC 13.1)`);
   return { pin: { key, revision: entry.revision }, gate };
@@ -584,6 +585,7 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       const key = credLedgerKey(id);
       const entry = await kv.get(key);
       if (!entry) return; // a dead (never-staged) id re-revokes successfully
+      if (key.startsWith("cred.")) await assertOrdinaryRegistryMutation(registry, { lifecycleUid: key.split(".")[1] });
       await markLedgerRowRevoked(kv, key);
     },
     ...(now ? { now } : {}),

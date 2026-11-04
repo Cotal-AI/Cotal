@@ -1,7 +1,7 @@
 /**
- * Manager-entry regression for persona show authorization (#402).
+ * Manager-entry regression for persona catalog authorization (#402).
  *
- * Drives the real `managerServiceDefs()` show-persona handler in process, with no broker. The
+ * Drives the real `managerServiceDefs()` show-persona and list-personas handlers in process, with no broker. The
  * authenticated subject context is constructed, while the command definition, admission gate,
  * persona path resolution, parser, authorization projection, and envelope mapping are shipped code.
  *
@@ -10,7 +10,7 @@
  *
  * Run: pnpm smoke:manager-persona-show-auth
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -39,6 +39,11 @@ saveAgentFile(join(agentsDir, "mine.md"), {
   persona: "Owned prompt.",
 });
 writeFileSync(join(agentsDir, "broken-foreign.md"), "not a persona file\nforeign raw marker\n");
+saveAgentFile(join(agentsDir, "theirs.md"), {
+  name: "theirs", owner: `${DEV_OWNER}.bob`, role: "worker", subscribe: [], persona: "Foreign fixture prompt.",
+});
+symlinkSync("theirs.md", join(agentsDir, "foreign-link.md"));
+mkdirSync(join(agentsDir, "folder.md"));
 
 const manager = new Manager({ space: "persona-show-auth", runtime: "pty", workspaceRoot: root });
 const defs = (manager as unknown as { managerServiceDefs(): EpCommandDef[] }).managerServiceDefs();
@@ -88,6 +93,28 @@ check(
     && !refusal.message.includes("frontmatter")
     && !refusal.message.includes(agentsDir),
   refusal instanceof Error ? { name: refusal.name, message: refusal.message } : refusal,
+);
+
+const list = defs.find((d) => d.command === "list-personas");
+if (!list) throw new Error("fixture: list-personas handler missing from manager service definitions");
+const baseContext = context("");
+const listContext: EpServeContext = {
+  ...baseContext,
+  subject: { ...baseContext.subject, command: "list-personas" },
+  request: { ...baseContext.request, args: {} },
+};
+const listed = await list.handler(listContext) as { personas: Array<{ name: string; [key: string]: unknown }> };
+const foreign = listed.personas.find((row) => row.name === "foreign-link");
+check(
+  "the real list handler returns only a foreign link's name, not its target or parsed details",
+  foreign?.name === "foreign-link" && Object.keys(foreign).length === 1,
+  foreign,
+);
+check(
+  "the real list handler omits malformed and non-regular cards for a non-admin caller",
+  listed.personas.some((row) => row.name === "mine")
+    && !listed.personas.some((row) => row.name === "broken-foreign" || row.name === "folder"),
+  listed,
 );
 
 const shipped = managerClusterDocument();

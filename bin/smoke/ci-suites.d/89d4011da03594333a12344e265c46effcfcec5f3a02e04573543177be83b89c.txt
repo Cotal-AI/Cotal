@@ -1,0 +1,1 @@
+smoke:opencode-setup-refused

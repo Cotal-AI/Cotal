@@ -10,8 +10,8 @@
     {
       "name": "the effect site records the handler's detail again, unchecked",
       "file": "packages/lang/src/perform.ts",
-      "find": "    const recorded = e instanceof EffectError ? recordableError(e, \"handler-fault\") : undefined;",
-      "replace": "    const recorded = e instanceof EffectError ? { error: { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }, faithful: true } : undefined;",
+      "find": "  const recorded = e instanceof EffectError ? recordableError(e, \"handler-fault\") : undefined;",
+      "replace": "  const recorded = e instanceof EffectError ? { error: { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }, faithful: true } : undefined;",
       "expectRed": "a failure whose detail has no canonical form is recorded as the handler fault it is, not with the code the handler chose",
       "completionMarker": "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
       "cell": "a failure whose detail has no canonical form is recorded as the handler fault it is, not with the code the handler chose",

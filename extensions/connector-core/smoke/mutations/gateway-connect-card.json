@@ -1,0 +1,31 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/gateway.smoke.ts"
+  ],
+  "guard": "the cotal_connect result carries the connection's orientation card and the shared briefing, because a conversation that joins through the gateway had no launch-time system prompt",
+  "command": "pnpm smoke:gateway",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/gateway-connect-card.json",
+  "why": [
+    "A launched seat reads its briefing from its harness's system prompt. A conversation that joins",
+    "with cotal_connect (the Claude Code plugin in a session the person opened, Claude Desktop, a",
+    "hosted connector) has only the gateway's connect instructions, which say how to connect and",
+    "listen and nothing about how to work. The connect result is the one message every such",
+    "conversation reads, so the card and the briefing ride on it.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the gateway by RELATIVE",
+    "SOURCE PATH (../src/gateway.js), so the bytes mutated are the bytes graded. It starts a real",
+    "broker, so the proof is live. No completionMarker: the suite is fail-fast and prints its",
+    "banner only on success, so there is no line common to both outcomes to declare."
+  ],
+  "mutations": [
+    {
+      "name": "G1 the connect result stops at the access line, as it did before",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "${accessLine(c.config)}${listening}\\n\\n${card}\\n\\n${briefing(c.config, \"gateway\")}`",
+      "replace": "${accessLine(c.config)}${listening}`",
+      "expectRed": "connect hands over the orientation card and the shared briefing",
+      "cell": "connect hands over the orientation card and the shared briefing",
+      "note": "The pre-change reply. The card is still computed and dropped, so the mutant compiles and every other connect cell stays green."
+    }
+  ]
+}

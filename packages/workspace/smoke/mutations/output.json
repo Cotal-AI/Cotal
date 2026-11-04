@@ -1,0 +1,94 @@
+{
+  "suite": [
+    "packages/workspace/smoke/output.smoke.ts"
+  ],
+  "guard": "every structured command exits by one outcome table, an error code belongs to one outcome, and a failure envelope keeps its native cause and changed resources",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+  "completionMarker": "OUTPUT SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/output.json",
+  "why": [
+    "A script reads a command's outcome from its exit code and its envelope, so a drift in the table, a code accepted under the wrong outcome, or a dropped cause or changed list misleads every caller. The suite imports the workspace package through its build, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "a boundary refusal exits 1",
+      "file": "packages/workspace/src/output.ts",
+      "find": "      return (USAGE_CODES as readonly string[]).includes(code!) ? 1 : 2;\n",
+      "replace": "      return 1;\n",
+      "expectRed": "every boundary refusal exits 2",
+      "cell": "every boundary refusal exits 2",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "partial exits as failed",
+      "file": "packages/workspace/src/output.ts",
+      "find": "      return 4;\n",
+      "replace": "      return 5;\n",
+      "expectRed": "partial OPERATION_PARTIAL exits 4",
+      "cell": "partial OPERATION_PARTIAL exits 4",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "any code passes under any outcome",
+      "file": "packages/workspace/src/output.ts",
+      "find": "  return allowed.includes(code) ? undefined : `outcome ${outcome} cannot carry error code ${code}`;\n",
+      "replace": "  return undefined;\n",
+      "expectRed": "a refusal cannot carry an operation code",
+      "cell": "a refusal cannot carry an operation code",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "the native cause is dropped",
+      "file": "packages/workspace/src/output.ts",
+      "find": "      ...(this.native === undefined ? {} : { cause: this.native }),\n",
+      "replace": "",
+      "expectRed": "the native cause is kept beside the stable code",
+      "cell": "the native cause is kept beside the stable code",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a failure envelope drops what changed",
+      "file": "packages/workspace/src/output.ts",
+      "find": "    ...(failure.changed === undefined ? {} : { changed: failure.changed }),\n",
+      "replace": "",
+      "expectRed": "changed resources survive a failure",
+      "cell": "changed resources survive a failure",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a failure is recognized by instanceof",
+      "file": "packages/workspace/src/output.ts",
+      "find": "  return typeof e === \"object\" && e !== null && (e as { [FAILURE_BRAND]?: unknown })[FAILURE_BRAND] === true;\n",
+      "replace": "  return e instanceof CommandFailure;\n",
+      "expectRed": "a branded failure from another module copy is recognized",
+      "cell": "a branded failure from another module copy is recognized",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "an envelope line is not checked",
+      "file": "packages/workspace/src/output.ts",
+      "find": "  const problem = outcomeCodeProblem(envelope.outcome, envelope.error?.code);\n",
+      "replace": "  const problem = undefined;\n",
+      "expectRed": "an ok envelope carrying an error is refused",
+      "cell": "an ok envelope carrying an error is refused",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a json output accepts a flag without -j",
+      "file": "packages/workspace/src/output.ts",
+      "find": "    if (!flag || flag.type !== want.type || flag.short !== want.short)\n",
+      "replace": "    if (!flag || flag.type !== want.type)\n",
+      "expectRed": "a json flag without its -j short is refused",
+      "cell": "a json flag without its -j short is refused",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:output",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    }
+  ]
+}

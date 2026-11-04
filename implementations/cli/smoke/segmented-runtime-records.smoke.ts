@@ -25,7 +25,7 @@ import {
   canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { deliveryLiveness, deliveryUp, stopDelivery } from "../src/lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
+import { clearManagerArtifacts, managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
 
 const ALPHA = "segrec-alpha", BETA = "segrec-beta", GAMMA = "segrec-gamma";
 const root = mkdtempSync(join(tmpdir(), "cotal-segrec-"));
@@ -83,8 +83,8 @@ try {
     readFileSync(record(MANAGER_PIDFILE, ALPHA), "utf8") === String(aPid)
       && readFileSync(record(MANAGER_PIDFILE, BETA), "utf8") === String(bPid),
     { aPid, bPid });
-  check("alpha reads its own manager as alive", managerUp(ALPHA) && managerLiveness(undefined, undefined, ALPHA) === "alive");
-  check("beta reads its own manager as alive", managerUp(BETA) && managerLiveness(undefined, undefined, BETA) === "alive");
+  check("alpha reads its own manager as alive", managerUp(ALPHA) && managerLiveness(ALPHA) === "alive");
+  check("beta reads its own manager as alive", managerUp(BETA) && managerLiveness(BETA) === "alive");
 
   console.log("\n2) the delivery-aware marker is per-space too");
   place(MANAGER_DELIVERY_AWARE_MARKER, ALPHA, aPid);
@@ -97,8 +97,12 @@ try {
 
   console.log("\n3) stopping one space's manager leaves the other's running and recorded");
   const stopped = await stopManager(ALPHA);
+  // `down` removes the marker only after its all-stopped gate, so the stop itself must leave it.
+  const markerLeft = existsSync(record(MANAGER_DELIVERY_AWARE_MARKER, ALPHA));
+  clearManagerArtifacts(ALPHA);
   await waitDead(aPid);
   check("stopManager(alpha) reports a stop", stopped, stopped);
+  check("...and the stop leaves alpha's marker for its caller to remove", markerLeft);
   check("...and alpha's process is dead", !alive(aPid));
   check("...and beta's manager is UNTOUCHED — the defect this change fixes", alive(bPid) && managerUp(BETA));
   check("...and alpha's records are gone", !existsSync(record(MANAGER_PIDFILE, ALPHA)) && !existsSync(record(MANAGER_DELIVERY_AWARE_MARKER, ALPHA)));
@@ -113,7 +117,7 @@ try {
   check("both spaces' delivery records coexist", deliveryUp(ALPHA) && deliveryUp(BETA));
   await stopDelivery(ALPHA);
   await waitDead(d1Pid);
-  check("stopDelivery(alpha) stops alpha's daemon", !alive(d1Pid) && deliveryLiveness(undefined, ALPHA) === "absent");
+  check("stopDelivery(alpha) stops alpha's daemon", !alive(d1Pid) && deliveryLiveness(ALPHA) === "absent");
   check("...and beta's daemon survives with its record intact", alive(d2Pid) && deliveryUp(BETA));
 
   console.log("\n5) a pre-segmentation root still upgrades without orphaning its daemon");
@@ -122,7 +126,7 @@ try {
   const legacy = daemon();
   const legacyPid = legacy.pid!;
   writeFileSync(join(root, ".cotal", "manager.pid"), String(legacyPid));
-  check("the CLI still FINDS the pre-upgrade manager", managerUp(ALPHA), managerLiveness(undefined, undefined, ALPHA));
+  check("the CLI still FINDS the pre-upgrade manager", managerUp(ALPHA), managerLiveness(ALPHA));
   const legacyStop = await stopManager(ALPHA);
   await waitDead(legacyPid);
   check("...and still STOPS it, rather than leaving it orphaned", legacyStop && !alive(legacyPid), legacyStop);

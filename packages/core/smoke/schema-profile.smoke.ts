@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
-  compileContractSchema, compileContract, createCompiledContractCache, ContractInvalidError,
+  compileContractSchema, compileContract, createCompiledContractCache, serviceContractTable, ContractInvalidError,
   SCHEMA_PROFILE, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, VOID_SCHEMA_DIGEST,
 } from "../src/schema-profile.js";
 import { contractDigest } from "../src/canonical.js";
@@ -61,6 +61,11 @@ const withMember = compileContractSchema({
 ok("digest-pinned member resolves from the bundle", withMember({ name: "ok" }) === true && withMember({ name: "x" }) === false);
 
 // 3) Closure violations refuse loudly at registration.
+// #4012: meta-validation is pinned, not inherited, so a malformed keyword value refuses.
+refuses("malformed keyword value refused (type: 5)", () =>
+  compileContractSchema({ root: { type: 5 } }), "schema is invalid");
+refuses("malformed keyword value refused (minLength: -1)", () =>
+  compileContractSchema({ root: { type: "string", minLength: -1 } }), "schema is invalid");
 refuses("http $ref refused (no ambient resolution)", () =>
   compileContractSchema({ root: { $ref: "https://example.com/schema.json" } }), "external $ref");
 refuses("file $ref refused", () =>
@@ -363,4 +368,30 @@ refuses("member $id collision is contract-invalid", () =>
     out);
 }
 
+// 16) Published service tables stay lazy without exposing replaceable command validators.
+{
+  let inputReads = 0;
+  const table = serviceContractTable([
+    { name: "probe", get input() { inputReads++; return { type: "string" }; }, output: VOID_SCHEMA },
+    { name: "invalid", input: { type: 5 }, output: VOID_SCHEMA },
+  ]);
+  ok("service contract table is frozen before any command is compiled", Object.isFrozen(table.contracts) && inputReads === 0);
+  ok("enumeration and membership do not compile command schemas",
+    Object.keys(table.contracts).join(",") === "probe,invalid" && "probe" in table.contracts && inputReads === 0);
+  ok("undeclared commands and prototype names have no contract",
+    table.contracts.absent === undefined && table.contracts.constructor === undefined && !("toString" in table.contracts));
+  ok("command descriptors cannot be replaced or deleted",
+    !Reflect.set(table.contracts, "probe", {}) && !Reflect.deleteProperty(table.contracts, "probe"));
+  ok("a frozen service table cannot acquire a new command", !Reflect.set(table.contracts, "injected", {}));
+  const pair = table.contracts.probe;
+  ok("the first access compiles once and keeps the same pair", inputReads === 1 && table.contracts.probe === pair && inputReads === 1);
+  ok("the compiled pair and both compiled contracts are frozen",
+    Object.isFrozen(pair) && Object.isFrozen(pair.input) && Object.isFrozen(pair.output));
+  ok("a caller cannot swap the pair's input validator", !Reflect.set(pair, "input", pair.output));
+  ok("the original input and output validators still decide their own schemas",
+    pair.input.validate("text") && !pair.input.validate(null) && pair.output.validate(null) && !pair.output.validate("text"));
+  refuses("an invalid unused command compiles only when accessed", () => table.contracts.invalid, "schema is invalid");
+}
+
 console.log(`schema-profile.smoke: ${pass} checks passed`);
+await import("./schema-meta-cache.smoke.js");

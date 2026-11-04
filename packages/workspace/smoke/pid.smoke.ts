@@ -24,10 +24,11 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalLocalProcessPath } from "../src/local-process.js";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE } from "../src/local-process.js";
 import {
-  commandIsCotalDelivery, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
+  commandIsCotalDelivery, commandIsCotalServiceManager, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
 } from "../src/pid.js";
+import { resolveRuntimeSpace } from "../src/space.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -69,6 +70,9 @@ check("...at the end of the line too (no trailing flags)", commandIsCotalSupervi
 check("...and through a dev tsx invocation", commandIsCotalSupervisor("node --import tsx bin/cotal.ts supervise --runtime pty"));
 for (const other of ["vim SPEC.md", "node server.js", "/usr/bin/supervised-thing --x", "cotal up", ""])
   check(`an unrelated command line is NOT a manager (${JSON.stringify(other)})`, !commandIsCotalSupervisor(other), other);
+// `up` launches the hidden `__daemon-manager` twin of `supervise`, so its own record carries that token.
+check("the manager twin `up` launches is recognised", commandIsCotalSupervisor("node bin/cotal.ts __daemon-manager --space main --server nats://x"));
+check("...and is not the native service child", !commandIsCotalServiceManager("node bin/cotal.ts __daemon-manager --space main"));
 // THE DELIVERY DAEMON'S OWN TOKEN (#1528), the same rule one component over: `deliver` is the
 // daemon's subcommand and is present however it was started.
 check("a deliver argv is recognised", commandIsCotalDelivery("node /usr/local/bin/cotal deliver --space main"));
@@ -79,6 +83,8 @@ for (const other of ["vim SPEC.md", "node server.js", "cotal up", "cotal supervi
 // A `--creds …/delivery.creds` path must not read as the daemon: that string appears in the argv of
 // anything handed the cred, and a substring test would attribute a stranger to us.
 check("a path mentioning delivery is NOT the token", !commandIsCotalDelivery("node x.js --creds /root/.cotal/delivery.creds"));
+check("the delivery twin `up` launches is recognised", commandIsCotalDelivery("node bin/cotal.ts __daemon-deliver --space main --server nats://x"));
+check("...and is not a manager", !commandIsCotalSupervisor("node bin/cotal.ts __daemon-deliver --space main"));
 // SUBSTRING IS NOT ENOUGH, and this is the cell that says so: the token test is what keeps
 // `supervised-thing` above from reading as a manager, so a rewrite to `includes("supervise")`
 // resolves a stranger to ours and the attribution stops attributing.
@@ -111,8 +117,12 @@ try {
   const { managerUp, managerLiveness } = await import("../../../implementations/cli/src/lib/manager-proc.js");
   const { deliveryUp } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
 
-  const mgrPid = join(root, ".cotal", "manager.pid");
-  const delPid = join(root, ".cotal", "delivery.pid");
+  // Written where a current start writes them: a pre-upgrade name would reach the readers only through
+  // the legacy read admission, and these cells would stop finding their records if it narrowed.
+  const ctx = { root, space: resolveRuntimeSpace(root) };
+  const mgrPid = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx);
+  const delPid = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx);
+  const marker = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx);
 
   // A REAL live process that reads as a manager: `supervise` is in its argv, exactly as every route
   // to a running manager puts it there. It is a real process, not a stand-in, because the point of
@@ -131,6 +141,8 @@ try {
 
   writeFileSync(mgrPid, `${supervisorPid}\n`);
   writeFileSync(delPid, `${deliverPid}\n`);
+  check("the manager fixture exists at the current space-keyed writer path", existsSync(canonicalLocalProcessPath(MANAGER_PIDFILE, ctx)));
+  check("the delivery fixture exists at the current space-keyed writer path", existsSync(canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx)));
   check("managerUp is TRUE for a live pid running a manager", managerUp() === true, supervisorPid);
   check("deliveryUp is TRUE for a live pid running a delivery daemon", deliveryUp() === true, deliverPid);
 
@@ -206,14 +218,14 @@ try {
   const stuck = () => "unknown" as const;
 
   writeFileSync(mgrPid, `${process.pid}\n`); // a LIVE holder, the dual review proved was overwritten
-  check("managerLiveness surfaces UNKNOWN rather than folding it to a boolean", managerLiveness(stuck) === "unknown");
+  check("managerLiveness surfaces UNKNOWN rather than folding it to a boolean", managerLiveness(undefined, root, { probe: stuck }) === "unknown");
   // An `unknown` liveness is never attributed: there is no process established to look at. This
   // pins that the command read is not what produces the verdict here — a reader that ran anyway
   // would resolve this record (a live pid, not a manager) to `foreign` and lose the refusal below.
   const before = readFileSync(mgrPid, "utf8");
   let refused: string | undefined;
   try {
-    await ensureManager({}, stuck);
+    await ensureManager({}, { probe: stuck });
   } catch (e) {
     refused = (e as Error).message;
   }
@@ -231,7 +243,7 @@ try {
   // minted, written and started, and only THEN did ensureManager throw. A guard that runs after the
   // work is not a guard, so the preflight refuses first and this pins the position, not just the rule.
   const { stopOldHostingManagerIfPresent } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-  rmSync(join(root, ".cotal", "manager.delivery-aware"), { force: true }); // no marker: the old shape
+  rmSync(marker, { force: true }); // no marker: the old shape
   let preflightRefused: string | undefined;
   try {
     await stopOldHostingManagerIfPresent(stuck);
@@ -239,7 +251,7 @@ try {
     preflightRefused = (e as Error).message;
   }
   check("the delivery cutover preflight REFUSES on an unattributable manager", preflightRefused !== undefined);
-  check("it refuses BEFORE the daemon, naming double-binding as the reason", /double-bind/i.test(preflightRefused ?? ""), preflightRefused?.slice(0, 90));
+  check("it refuses BEFORE the daemon, saying nothing was started over the record", /Nothing was started over it/.test(preflightRefused ?? ""), preflightRefused?.slice(0, 90));
   check("the preflight leaves the manager pidfile untouched too", readFileSync(mgrPid, "utf8") === before);
 
   // The manager's signal path (an EPERM refusal, a process that outlives SIGTERM) is the shared
@@ -256,7 +268,8 @@ try {
   // a pre-protocol husk with nothing behind it; a garbled one may front a live process nobody can
   // identify, and clearing it orphans that process under a clean-stop report.
   writeFileSync(mgrPid, "not-a-pid\n");
-  writeFileSync(join(root, ".cotal", "manager.delivery-aware"), "not-a-pid\n");
+  writeFileSync(marker, "not-a-pid\n");
+  check("the delivery-aware fixture exists at the current space-keyed writer path", existsSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx)));
   let malformed: string | undefined;
   try {
     await stopManager();
@@ -265,7 +278,7 @@ try {
   }
   check("stopManager REFUSES a malformed pidfile instead of clearing it", malformed !== undefined);
   check("the malformed pidfile SURVIVES", existsSync(mgrPid));
-  check("and so does the marker beside it", existsSync(join(root, ".cotal", "manager.delivery-aware")));
+  check("and so does the marker beside it", existsSync(marker));
   writeFileSync(mgrPid, "");
   check("an EMPTY pidfile IS cleared (a husk, not a claim)", (await stopManager()) && !existsSync(mgrPid));
 
@@ -329,6 +342,71 @@ try {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });
 }
+
+// ── shipped doc comments state the contract rules without revision history ────────────────────
+const pidSrc = readFileSync(join(import.meta.dirname, "../src/pid.ts"), "utf8");
+const livenessSrc = readFileSync(join(import.meta.dirname, "../src/liveness.ts"), "utf8");
+const downSrc = readFileSync(join(import.meta.dirname, "../../../implementations/cli/src/commands/down.ts"), "utf8");
+const pidSurfaces: Array<[label: string, text: string]> = [
+  ["src/pid.ts", pidSrc],
+  ...(existsSync(join(import.meta.dirname, "../dist/pid.js")) ? [["dist/pid.js", readFileSync(join(import.meta.dirname, "../dist/pid.js"), "utf8")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../dist/pid.d.ts")) ? [["dist/pid.d.ts", readFileSync(join(import.meta.dirname, "../dist/pid.d.ts"), "utf8")] as [string, string]] : []),
+];
+const livenessSurfaces: Array<[label: string, text: string]> = [
+  ["src/liveness.ts", livenessSrc],
+  ...(existsSync(join(import.meta.dirname, "../dist/liveness.js")) ? [["dist/liveness.js", readFileSync(join(import.meta.dirname, "../dist/liveness.js"), "utf8")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../dist/liveness.d.ts")) ? [["dist/liveness.d.ts", readFileSync(join(import.meta.dirname, "../dist/liveness.d.ts"), "utf8")] as [string, string]] : []),
+];
+const downSurfaces: Array<[label: string, text: string]> = [
+  ["src/commands/down.ts", downSrc],
+  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.js")) ? [["dist/commands/down.js", readFileSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.js"), "utf8")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.d.ts")) ? [["dist/commands/down.d.ts", readFileSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.d.ts"), "utf8")] as [string, string]] : []),
+];
+for (const phrase of [
+  "had drifted",
+  "WHO CAN ACTUALLY CONSUME IT",
+  "the old suite could only reach",
+  "Found by review, not by me.",
+  "Reviewed against a repro",
+]) {
+  check(
+    `pid and liveness surfaces omit history phrase ${JSON.stringify(phrase)}`,
+    [...pidSurfaces, ...livenessSurfaces].every(([, text]) => !text.includes(phrase)),
+    phrase,
+  );
+}
+for (const rule of [
+  "only an actual `ESRCH` proves a",
+  "`EPERM`",
+  "CALLERS MUST PICK A DIRECTION",
+  "a pid probe is not a wire concept",
+]) {
+  check(
+    `pid surfaces state contract rule ${JSON.stringify(rule)}`,
+    pidSurfaces.every(([, text]) => text.includes(rule)),
+    rule,
+  );
+}
+for (const rule of [
+  "only an actual `ESRCH` proves a",
+  "`EPERM`",
+  "CALLERS MUST PICK A DIRECTION",
+]) {
+  check(
+    `liveness surfaces state contract rule ${JSON.stringify(rule)}`,
+    livenessSurfaces.every(([, text]) => text.includes(rule)),
+    rule,
+  );
+}
+check(
+  "down surfaces point pidfile/liveness comments at @cotal-ai/workspace instead of lib/pid.ts",
+  downSurfaces.every(
+    ([, text]) =>
+      !text.includes("(`lib/pid.ts`)") &&
+      !text.includes("the old unbounded parser + two-state") &&
+      text.includes("the `@cotal-ai/workspace` pid-attribution contract"),
+  ),
+);
 
 console.log(`\nPID CONTRACT TESTS PASSED ✅  (${pass} checks)`);
 console.log(

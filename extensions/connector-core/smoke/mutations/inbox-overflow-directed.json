@@ -71,8 +71,8 @@
     {
       "name": "M6 let the in-flight ceiling hold a partial batch instead of refusing whole",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;",
-      "replace": "    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) { for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1); return true; }",
+      "find": "    if (this.inFlightIds.size + fresh > MAX_IN_FLIGHT) return false;",
+      "replace": "    if (this.inFlightIds.size + fresh > MAX_IN_FLIGHT) { for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1); return true; }",
       "expectRed": "a batch that would cross the ceiling is refused whole"
     }
   ]

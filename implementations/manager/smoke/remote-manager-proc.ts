@@ -7,6 +7,8 @@ import {
   remoteManagerActors,
   remoteManagerRegistrationProof,
   type RemoteManagerAuthorityMaterial,
+  type Connector,
+  type RuntimeProvider,
 } from "@cotal-ai/core";
 import { Manager as SourceManager, type ManagerOptions } from "../src/manager.js";
 import "@cotal-ai/runtime";
@@ -197,21 +199,25 @@ if (publicAuthority) assert.ok(manager instanceof publicApi!.Manager, "native ch
 await manager.start();
 // Fixture-only refusal boundary: stop new renewal entries and drain admitted calls before
 // sampling the last-good pair. The real renewal implementation still performs every call.
+// The run-driver and standing schedules pause separately: a recovery call only needs the
+// standing family held, and a held drive must keep renewing its own short-TTL driver.
 const hostedRuns = (manager as unknown as { runHosting: { renew(): Promise<void> } }).runHosting;
 const renewRuns = hostedRuns.renew.bind(hostedRuns);
-const renewalFlights = new Set<Promise<void>>();
+const runFlights = new Set<Promise<void>>();
+const standingFlights = new Set<Promise<void>>();
 let pauseRunRenewals = false;
+let pauseStandingRenewals = false;
 const renewalOwner = manager as any;
 const renewStanding = renewalOwner.renewRemoteStandingBundle.bind(manager);
-function trackedRenewal(renew: () => Promise<void>): Promise<void> {
-  if (pauseRunRenewals) return Promise.resolve();
+function trackedRenewal(paused: boolean, flights: Set<Promise<void>>, renew: () => Promise<void>): Promise<void> {
+  if (paused) return Promise.resolve();
   const flight = renew();
-  renewalFlights.add(flight);
-  void flight.then(() => renewalFlights.delete(flight), () => renewalFlights.delete(flight));
+  flights.add(flight);
+  void flight.then(() => flights.delete(flight), () => flights.delete(flight));
   return flight;
 }
-hostedRuns.renew = () => trackedRenewal(renewRuns);
-renewalOwner.renewRemoteStandingBundle = (force = false) => trackedRenewal(() => renewStanding(force));
+hostedRuns.renew = () => trackedRenewal(pauseRunRenewals, runFlights, renewRuns);
+renewalOwner.renewRemoteStandingBundle = (force = false) => trackedRenewal(pauseStandingRenewals, standingFlights, () => renewStanding(force));
 console.log(`MANAGER_READY:${mgrIdentity.instanceId}:${registered.processEpoch}`);
 
 // FIXTURE-ONLY observation seam: on a `PROBE <runId>` stdin line, report bounded non-secret
@@ -283,8 +289,13 @@ async function probe(runId: string) {
 const witnesses = new Map<string, string>();
 async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUME_RENEWALS" | "PREPARE_RECOVERY", runId: string) {
   if (op === "PAUSE_RENEWALS" || op === "RESUME_RENEWALS" || op === "PREPARE_RECOVERY") {
-    pauseRunRenewals = op !== "RESUME_RENEWALS";
-    if (pauseRunRenewals) await Promise.allSettled([...renewalFlights]);
+    // A recovery call holds only the standing family, whose reconnect would cut the call's serve
+    // connection. Holding the run-driver too let a resumed drive's 10s driver expire during the
+    // call, and the drive was released at its next append.
+    pauseStandingRenewals = op !== "RESUME_RENEWALS";
+    pauseRunRenewals = op === "PAUSE_RENEWALS";
+    const held = op === "PAUSE_RENEWALS" ? [standingFlights, runFlights] : [standingFlights];
+    if (pauseStandingRenewals) await Promise.allSettled(held.flatMap((flights) => [...flights]));
     let prepared = false;
     let error: string | undefined;
     if (op === "PREPARE_RECOVERY") {
@@ -327,7 +338,7 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
       } catch (e) { error = `${phase}: ${(e as Error).message}`; }
       finally { clearTimeout(timer); void events.return?.(); }
     }
-    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseRunRenewals, inFlight: renewalFlights.size, prepared, error })}`);
+    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseStandingRenewals, inFlight: held.reduce((n, flights) => n + flights.size, 0), prepared, error })}`);
     return;
   }
   const meta = (creds: string) => { const c = credsClaims(creds); return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account }; };
@@ -361,7 +372,7 @@ function standingMeta() {
     sessionLedger: m.sessionLedgerCreds,
   };
   const now = Math.floor(Date.now() / 1000);
-  const out: Record<string, unknown> = { debt: m.remoteRenewalDebt?.reason ?? null };
+  const out: Record<string, unknown> = { debt: m.remoteRenewalDebt?.reason ?? null, serveConnClosed: m.serviceServe ? m.serviceServe.nc.isClosed() : null };
   for (const [k, v] of Object.entries(held)) {
     if (typeof v !== "string") { out[k] = null; continue; }
     const c = credsClaims(v);
@@ -399,11 +410,11 @@ async function registerPooledFixture() {
   await import("@cotal-ai/auth");
   const hostUrl = process.env.EF_EXEC_HOST_URL!;
   const childCmd = JSON.parse(process.env.EF_CHILD_CMD!) as string[];
-  registry.register({
+  const connector: Connector = {
     kind: "connector", name: "ef-sdk-fixture", readinessTimeoutMs: 30000,
     eventChannel: (principal: { owner: string; actor: string }) => eventChannel(principal),
-    buildLaunch(opts: any) {
-      if (!opts.userAuth || !opts.lifecycleUid) throw new Error("ef-sdk-fixture requires enrolled user authority");
+    buildLaunch(opts) {
+      if (!opts.userAuth || !opts.lifecycleUid || !opts.servers) throw new Error("ef-sdk-fixture requires enrolled user authority and explicit servers");
       return {
         command: childCmd[0]!, args: childCmd.slice(1),
         env: {
@@ -414,16 +425,18 @@ async function registerPooledFixture() {
         },
       };
     },
-  } as never);
+  };
+  registry.register(connector);
   const call = async (path: string, body: unknown) => {
     const r = await fetch(`${hostUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: r.status, json: (await r.json().catch(() => ({}))) as Record<string, unknown> };
   };
-  registry.register({
+  const runtime: RuntimeProvider = {
     kind: "runtime", name: "ef-fixture-host", available: () => true,
     create: () => ({
       kind: "ef-fixture-host",
-      spawn(name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) {
+      streamsTerminal: false,
+      spawn(name, spec, cwd) {
         let state: "running" | "exited" = "running";
         let exit: { code?: number } | undefined;
         const exitFns: Array<() => void> = [];
@@ -447,9 +460,10 @@ async function registerPooledFixture() {
           waitForExit: () => new Promise<void>((res) => state === "exited" ? res() : exitFns.push(res)),
           exitInfo: () => exit,
           interrupt: () => {},
-          attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: (f: () => void) => { exitFns.push(f); return () => {}; }, write: () => {}, resize: () => {} }),
+          attach: () => { throw new Error("ef-fixture-host has no terminal stream; inspect the separate fixture execution host"); },
         };
       },
     }),
-  } as never);
+  };
+  registry.register(runtime);
 }
