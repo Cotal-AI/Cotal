@@ -179,12 +179,15 @@ endpoint methods; those go into `core`, generalized.
 - **Never fix an issue you could not reproduce.** Reproduce the failure (live, not just in
 reasoning or a unit simulation) before writing a fix; the repro is also the only proof the
 fix works. If you can't reproduce it, report that and stop, don't ship a guess.
-- **A test that passes with the fix reverted proves nothing.** Before you call a fix tested, revert
-it or break the code it covers, run the test, and check that it fails on the assertion you expect.
-An unrelated early failure is not proof. If the test builds its inputs by hand, also show that a
-real entry point reaches that code. Mutation configs (`*/mutations/*.json`) and `pnpm
-mutation-proof` are optional tools. CI does not run them, and a change does not need to add,
-update or re-pin them.
+- **Prove fixes against unchanged pre-fix code.** Run the real reproducer or regression test against
+that implementation before editing it, then run it against the fix. If a baseline is needed later,
+use a separate checkout at the pre-fix commit and install and build its dependencies before testing.
+Name the expected failure: a setup error or unrelated early failure is not proof. If the test builds
+its inputs by hand, also show that a real entry point reaches that code.
+- **Mutation and fix-reversion proofs require an explicit request.** Do not run them otherwise,
+including in delegated work, reviews or checks that execute mutations indirectly. Mutation configs
+(`*/mutations/*.json`) and `pnpm mutation-proof` are optional tools, not a delivery gate. A change
+does not need to add, update or re-pin them.
 - **Every package's `typecheck` also runs a `tsconfig.smoke.json` over its smoke tree.** A new
 package with smoke files adds the same pair, because a smoke file that is typechecked by nothing
 runs green over real type errors.
