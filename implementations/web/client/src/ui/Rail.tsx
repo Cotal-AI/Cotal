@@ -68,7 +68,8 @@ const CHOICES: { value: Theme; label: string }[] = [
 
 /** The Settings item at the foot of the rail and the menu it opens: the theme, System, Light or Dark,
  *  as radio items with the chosen one checked. Picking one applies it and closes the menu. The menu
- *  owns its keys, Escape and outside click, and gives focus back to Settings when it closes. With no
+ *  owns its keys, Escape and outside click, and gives focus back to Settings when it closes. Up and
+ *  Down wrap at the ends, which Radix does only when the content gets `loop`. With no
  *  `onTheme` the item is disabled. */
 function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => void }) {
   const label = useId();
@@ -90,7 +91,7 @@ function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => v
         <TooltipContent side="right">Settings</TooltipContent>
       </Tooltip>
       {onTheme && (
-        <DropdownMenuContent side="right" align="end">
+        <DropdownMenuContent side="right" align="end" loop>
           <DropdownMenuGroup aria-labelledby={label}>
             <DropdownMenuLabel id={label}>Theme</DropdownMenuLabel>
             <DropdownMenuRadioGroup
