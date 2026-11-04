@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.141.7
+
+### Patch Changes
+
+- 03044bd: Resolve and reclaim auth-service PID records through the shared workspace helpers. Directory-listing errors now refuse the start instead of being treated as absent legacy records, and ambiguity errors match status and teardown.
+- @cotal-ai/core@0.141.7
+  - @cotal-ai/workspace@0.141.7
+
 ## 0.141.6
 
 ### Patch Changes
