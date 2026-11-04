@@ -11,6 +11,8 @@
  *   C. its clean exit revokes its issuance and retires its gate, so the evidence no longer resolves.
  *   D. `--expires-at` sets the generation's horizon and the credential's expiry.
  *   E. the expiry flags are refused for a managed launch.
+ *   F. a persona's endpoint commands are minted on the seat's credential, and an instance-pinned
+ *      entry is refused before anything is provisioned.
  *
  * Needs `nats-server` on PATH. Run: pnpm smoke:foreground-issuance:live
  */
@@ -59,6 +61,8 @@ await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds
 recordMesh({ space, server: broker.servers, root, mode: "auth", origin: "manual", ts: new Date().toISOString() });
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(root, ".cotal", "agents", "default.md"), "---\nname: issued\nagent: foreground-issuance-fixture\nallowSubscribe: [review]\nallowPublish: [review]\ncapabilities: [spawn]\n---\nFixture only.\n");
+writeFileSync(join(root, ".cotal", "agents", "ep.md"), "---\nname: ep\nagent: foreground-issuance-fixture\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n---\nFixture only.\n");
+writeFileSync(join(root, ".cotal", "agents", "ep-pin.md"), "---\nname: eppin\nagent: foreground-issuance-fixture\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n    instanceId: i0000000000000000000000000a\n---\nFixture only.\n");
 const env: NodeJS.ProcessEnv = {
   PATH: process.env.PATH, HOME: join(home, "home"), COTAL_HOME: home,
   XDG_CONFIG_HOME: join(home, "config"), XDG_CACHE_HOME: join(home, "cache"), XDG_DATA_HOME: join(home, "data"),
@@ -143,6 +147,20 @@ try {
   console.log("E. not for a managed launch");
   const refused = await outcome(async () => validateSpawnArguments({ values: { detach: true, "expires-in": "60" }, positionals: [], raw: [] } as never));
   check("the expiry flags are refused with -d", refused.error !== undefined && /a manager renews its own seats' credentials/.test(refused.error), refused);
+
+  console.log("F. a persona's endpoint commands");
+  const we = launch(["ep"]);
+  const seatE = await we.seat;
+  const pubE = seatE ? (credsClaims(readFileSync(seatE.creds, "utf8")) as { nats?: { pub?: { allow?: string[] } } } | undefined)?.nats?.pub?.allow ?? [] : [];
+  // An issued row carries the generation after the caller triple, so match the rail and the seat's uid.
+  const listRow = seatE ? new RegExp(`^cotal\\.${space}\\.ep\\.v1\\.one\\.com_example_orders\\.list\\.local\\.[A-Z0-9]+\\.${seatE.uid}\\.`) : /$^/;
+  check("the seat's credential carries the request row for each command its persona names",
+    pubE.some((r) => listRow.test(r)), pubE.filter((r) => r.includes("orders")));
+  check("and no row for a command it does not name", !pubE.some((r) => r.includes(".com_example_orders.create.")), pubE.filter((r) => r.includes("orders")));
+  await stop(we);
+  const wp = launch(["ep-pin"]);
+  await wp.closed;
+  check("an instance-pinned entry is refused before a seat starts", (await wp.seat) === undefined && /pins instance i0000000000000000000000000a/.test(wp.output) && !/FIXTURE_SEAT/.test(wp.output), wp.output);
   ok = true;
 } finally {
   for (const worker of workers) await stop(worker);
