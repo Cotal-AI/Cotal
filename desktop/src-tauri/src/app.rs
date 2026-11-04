@@ -1,4 +1,4 @@
-use crate::{browser_url, daemon_env_key, DesktopRequest};
+use crate::{browser_url, daemon_env_key, DesktopRequest, NODE_SIDECAR};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tauri::{
@@ -43,7 +43,7 @@ async fn daemon_request(
     let env = std::env::vars().filter(|(key, _)| daemon_env_key(key));
     let command = app
         .shell()
-        .sidecar("cotal-node")
+        .sidecar(NODE_SIDECAR)
         .map_err(|_| "The packaged Node runtime is unavailable.")?
         .env_clear()
         .envs(env)

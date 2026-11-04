@@ -1,1 +1,8 @@
-{ "bundle": { "targets": ["nsis", "msi"] } }
+{
+  "bundle": {
+    "targets": ["nsis", "msi"],
+    "externalBin": [
+      "binaries/node"
+    ]
+  }
+}
