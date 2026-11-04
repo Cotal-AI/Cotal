@@ -1,6 +1,7 @@
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Icon } from "../../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import { formatRoute, type Route } from "../../lib/route.js";
 import type { Controller } from "../../state/controller.js";
 import type { Store } from "../../state/store.js";
@@ -184,9 +185,9 @@ export function RightPanel({ store, controller, channel, route, panel, clock }: 
           </button>
         ))}
         <span className="ui-sp" />
-        <button type="button" className="ui-tool" title="Close panel" aria-label="Close panel" onClick={panel.close}>
-          <Icon icon={Cancel01Icon} className="ui-ic" />
-        </button>
+        <Button type="button" variant="ghost" size="icon" title="Close panel" aria-label="Close panel" onClick={panel.close}>
+          <Icon icon={Cancel01Icon} />
+        </Button>
       </div>
       <div className="ui-pane-body" role="tabpanel" id="pane-body" aria-labelledby={`pane-tab-${tab}`} data-tab={tab}>
         {tab === "members" && channel !== null && <MembersTab store={store} controller={controller} channel={channel} now={clock()} onPick={panel.selectAgent} />}

@@ -6,6 +6,7 @@ import { displayNameOf, type NameIndex } from "../lib/names.js";
 import { partsToText } from "../lib/parts.js";
 import { clock } from "../lib/time.js";
 import type { RosterRow } from "../lib/roster.js";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
 import { MessageActions } from "./MessageActions.tsx";
@@ -98,7 +99,7 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
           </div>
         )}
         <div className={clamped ? "ui-tx ui-clamp" : "ui-tx"} dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
-        {clamped && <button type="button" className="ui-more" onClick={() => setOpened(true)}>Show more</button>}
+        {clamped && <Button type="button" variant="link" size="sm" className="px-0" onClick={() => setOpened(true)}>Show more</Button>}
         {mode === "anycast" && role !== undefined && (
           <div className="ui-route ui-route-any" title="Anycast: one free agent with this role takes it.">
             <i />

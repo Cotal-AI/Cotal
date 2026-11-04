@@ -106,7 +106,7 @@ function NewSteps({ steps, away }: { steps: readonly StepKey[]; away: boolean })
   if (fresh === 0) return null;
   return (
     <Button type="button" variant="outline" size="sm" className="ox-newsteps" data-active="true" onClick={() => scrollToEnd({ behavior: reducedMotion() ? "auto" : "smooth" })}>
-      <Icon icon={ArrowDown02Icon} size={16} />
+      <Icon icon={ArrowDown02Icon} data-icon="inline-start" />
       {fresh === 1 ? "1 new step" : `${fresh} new steps`}
     </Button>
   );
@@ -240,7 +240,7 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
       <div className="ox-col">
         <SessionEmpty icon={InformationCircleIcon} title={`${name}'s work didn't load`}>
           <p>{session?.reason ?? ""}</p>
-          <button type="button" className="ui-btn ui-btn-sm" onClick={() => void controller?.reloadSession(id)}>Try again</button>
+          <Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>
         </SessionEmpty>
       </div>
     );
@@ -276,12 +276,12 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
         {load === "failed" && (
           <PlaneNote>
             {`${name}'s work didn't load. ${session?.reason ?? ""} `}
-            <button type="button" className="ui-btn ui-btn-sm" onClick={() => void controller?.reloadSession(id)}>Try again</button>
+            <Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>
           </PlaneNote>
         )}
         {more && !atCap && (
           <div className="ui-cutoff">
-            <button type="button" className="ui-btn ui-btn-sm" disabled={load === "loading"} onClick={() => void controller?.loadEarlier(id)}>Load earlier</button>
+            <Button type="button" variant="outline" size="sm" disabled={load === "loading"} onClick={() => void controller?.loadEarlier(id)}>Load earlier</Button>
           </div>
         )}
         {more && atCap && <div className="ui-cutoff">Showing the newest 2,000 events</div>}
@@ -295,9 +295,11 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
     <>
       <header className="ox-head">
         {phone ? (
-          <a className="ui-tool" href={formatRoute(back.route)} title={backTitle} aria-label={backTitle}>
-            <Icon icon={ArrowLeft01Icon} className="ui-ic" />
-          </a>
+          <Button asChild variant="ghost" size="icon">
+            <a href={formatRoute(back.route)} title={backTitle} aria-label={backTitle}>
+              <Icon icon={ArrowLeft01Icon} />
+            </a>
+          </Button>
         ) : (
           <>
             <a className="ui-crumb" href={formatRoute(back.route)} title={backTitle}>
@@ -313,21 +315,23 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
         {known && <StatusBadge row={known} />}
         <span className="ui-sp" />
         {phone ? (
-          <a className="ui-tool" href={messageHref} title={`Message ${name}`} aria-label={`Message ${name}`} onClick={focus}>
-            <Icon icon={Message01Icon} className="ui-ic" />
-          </a>
+          <Button asChild variant="ghost" size="icon">
+            <a href={messageHref} title={`Message ${name}`} aria-label={`Message ${name}`} onClick={focus}>
+              <Icon icon={Message01Icon} />
+            </a>
+          </Button>
         ) : (
           <>
-            <Button asChild variant="outline" size="sm" className="ox-btn">
+            <Button asChild variant="outline" size="sm">
               <a href={messageHref} onClick={focus}>
-                <Icon icon={Message01Icon} size={16} />
+                <Icon icon={Message01Icon} data-icon="inline-start" />
                 Message
               </a>
             </Button>
             {onTogglePanel && (
-              <button type="button" className="ui-tool" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
-                <Icon icon={SidebarRightIcon} className="ui-ic" />
-              </button>
+              <Button type="button" variant="ghost" size="icon" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
+                <Icon icon={SidebarRightIcon} />
+              </Button>
             )}
           </>
         )}

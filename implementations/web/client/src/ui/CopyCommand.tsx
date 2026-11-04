@@ -1,6 +1,7 @@
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { Icon } from "../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 
 /** The part of `navigator` copying needs. Spelled out rather than taken from the DOM lib, because
  *  the suites typecheck the components that render on the server with no DOM lib. */
@@ -24,10 +25,10 @@ export function CopyCommand({ command, icon }: { command: string; icon?: IconSvg
     <span className="ui-cmd">
       {icon && <Icon icon={icon} size={16} className="ui-ic ui-ic16" />}
       <code>{command}</code>
-      <button type="button" onClick={() => copy(command)}>
-        <Icon icon={Copy01Icon} size={16} className="ui-ic" />
+      <Button type="button" variant="outline" size="xs" onClick={() => copy(command)}>
+        <Icon icon={Copy01Icon} data-icon="inline-start" />
         Copy
-      </button>
+      </Button>
     </span>
   );
 }

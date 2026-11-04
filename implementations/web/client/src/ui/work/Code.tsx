@@ -53,8 +53,8 @@ export function Code({ lang, text }: { lang: string; text: string }) {
         {lang && <span title={lang}>{shownName(lang, LANG_CAP)}</span>}
         {" "}
         <CodeBlockActions className="ox-code-acts">
-          <Button type="button" variant="ghost" size="xs" className="ox-copy" onClick={() => copy(text)}>
-            <Icon icon={Copy01Icon} size={16} />
+          <Button type="button" variant="ghost" size="xs" onClick={() => copy(text)}>
+            <Icon icon={Copy01Icon} data-icon="inline-start" />
             Copy
           </Button>
         </CodeBlockActions>

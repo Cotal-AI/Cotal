@@ -6,6 +6,7 @@ import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { TopologyGraph } from "../graph/TopologyGraph.tsx";
 import { MembershipPill } from "../MembershipPill.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 
 /** What each kind of line in the graph means, in the same dress the graph gives it, and the arc a
  *  working agent's node carries. */
@@ -73,9 +74,9 @@ export function TopologyView({ store, clock = Date.now, initialHideOffline = tru
         <h1>Topology</h1>
         <span className="ui-sp" />
         <MembershipPill state={pillState(membership, now)} reason={membership.unreadable} />
-        <button type="button" className="ui-btn ui-btn-sm" aria-pressed={hideOffline} onClick={() => setHideOffline(!hideOffline)}>
+        <Button type="button" variant={hideOffline ? "secondary" : "outline"} size="sm" aria-pressed={hideOffline} onClick={() => setHideOffline(!hideOffline)}>
           Hide offline
-        </button>
+        </Button>
       </header>
       <div className="ui-scroll">
         <div className="ui-col ui-col-wide">

@@ -2,6 +2,7 @@ import { Loading03Icon, Menu01Icon, SidebarRightIcon } from "@hugeicons/core-fre
 import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { composeKey, type ComposeTarget } from "../../lib/compose.js";
 import { channelMembers } from "../../lib/members.js";
@@ -193,9 +194,9 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
     <>
       <header className="ui-bar">
         {sheet && (
-          <button type="button" className="ui-tool" title="Open sidebar" aria-label="Open sidebar" aria-haspopup="dialog" aria-expanded={sheet.open} onClick={sheet.show}>
-            <Icon icon={Menu01Icon} className="ui-ic" />
-          </button>
+          <Button type="button" variant="ghost" size="icon" title="Open sidebar" aria-label="Open sidebar" aria-haspopup="dialog" aria-expanded={sheet.open} onClick={sheet.show}>
+            <Icon icon={Menu01Icon} />
+          </Button>
         )}
         <h1>{`# ${channel}`}</h1>
         {info?.description && <span className="ui-topic">{info.description}</span>}
@@ -207,7 +208,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
             {sheet ? working.length : `${working.length} working`}
           </span>
         )}
-        <button type="button" className="ui-members" title={`${count} member${count === 1 ? "" : "s"}`} disabled={!onMembers} onClick={onMembers}>
+        <Button type="button" variant="ghost" size="sm" title={`${count} member${count === 1 ? "" : "s"}`} disabled={!onMembers} onClick={onMembers}>
           <span className="ui-stack" aria-hidden="true">
             {members.slice(0, STACK).map((m) => {
               const r = peers.get(m.id);
@@ -215,11 +216,11 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
             })}
           </span>
           {count}
-        </button>
+        </Button>
         {onTogglePanel && (
-          <button type="button" className="ui-tool" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
-            <Icon icon={SidebarRightIcon} className="ui-ic" />
-          </button>
+          <Button type="button" variant="ghost" size="icon" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
+            <Icon icon={SidebarRightIcon} />
+          </Button>
         )}
       </header>
       <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>

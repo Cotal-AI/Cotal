@@ -1,6 +1,7 @@
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Icon } from "../../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import type { Controller } from "../../state/controller.js";
 
 /** The part of an element the focus trap uses. Spelled out rather than taken from the DOM lib,
@@ -99,11 +100,11 @@ export function DeleteChannelDialog({ channel, space, controller, onClose }: {
         </label>
         <span className="ui-dialog-err" role="alert">{error}</span>
         <div className="ui-btns">
-          <button type="button" className="ui-btn" onClick={onClose}>Keep channel</button>
-          <button type="button" className={matches ? "ui-btn ui-btn-danger-solid" : "ui-btn"} disabled={!matches || busy || controller === null} onClick={() => void confirm()}>
-            <Icon icon={Delete02Icon} size={16} className="ui-ic ui-ic16" />
+          <Button type="button" variant="outline" onClick={onClose}>Keep channel</Button>
+          <Button type="button" variant="destructive" disabled={!matches || busy || controller === null} onClick={() => void confirm()}>
+            <Icon icon={Delete02Icon} data-icon="inline-start" />
             {`Delete #${channel}`}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

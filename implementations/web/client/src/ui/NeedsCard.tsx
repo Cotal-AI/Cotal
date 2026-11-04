@@ -1,6 +1,7 @@
 import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { useLayoutEffect, useState } from "react";
 import { Icon } from "../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import type { PostCapability } from "../api/types.js";
 import { messageRoute, sendCommand } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
@@ -103,19 +104,21 @@ export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = n
         {needsCondition(row) && <span className="ui-nd ui-facts">{needsCondition(row)}</span>}
       </div>
       <div className="ui-btns">
-        <button type="button" className="ui-btn" disabled={!onViewAgent} onClick={() => onViewAgent?.(row.id)}>View agent</button>
+        <Button type="button" variant="outline" disabled={!onViewAgent} onClick={() => onViewAgent?.(row.id)}>View agent</Button>
         {post?.mode === "off" ? (
-          <button type="button" className="ui-btn" onClick={() => copy(sendCommand({ kind: "dm", to: row.id }))}>
-            <Icon icon={Copy01Icon} size={16} className="ui-ic ui-ic16" />
+          <Button type="button" variant="outline" onClick={() => copy(sendCommand({ kind: "dm", to: row.id }))}>
+            <Icon icon={Copy01Icon} data-icon="inline-start" />
             Copy command
-          </button>
+          </Button>
         ) : (
-          <a className="ui-btn ui-btn-primary" href={formatRoute(messageRoute(row.id, selfId))} onClick={() => focusComposer({ kind: "dm", to: row.id })}>{`Message ${row.name}`}</a>
+          <Button asChild>
+            <a href={formatRoute(messageRoute(row.id, selfId))} onClick={() => focusComposer({ kind: "dm", to: row.id })}>{`Message ${row.name}`}</a>
+          </Button>
         )}
       </div>
-      <button type="button" className="ui-x" title={DISMISS} aria-label={DISMISS} onClick={onDismiss}>
-        <Icon icon={Cancel01Icon} size={16} className="ui-ic ui-ic16" />
-      </button>
+      <Button type="button" variant="ghost" size="icon-sm" title={DISMISS} aria-label={DISMISS} onClick={onDismiss}>
+        <Icon icon={Cancel01Icon} />
+      </Button>
     </div>
   );
 }

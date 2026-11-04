@@ -1,6 +1,7 @@
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { useMemo, useRef, useState } from "react";
 import { Icon } from "../../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import { channelMembers } from "../../lib/members.js";
 import { pillState } from "../../lib/membership.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
@@ -97,10 +98,10 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
         {delivery && <><dt>Delivery</dt><dd>{delivery}</dd></>}
         {info && <><dt>Messages</dt><dd className="ui-num">{info.messages}</dd></>}
       </dl>
-      <button ref={trigger} type="button" className="ui-btn ui-btn-danger" style={{ marginTop: 4 }} onClick={() => setDeleting(true)}>
-        <Icon icon={Delete02Icon} size={16} className="ui-ic ui-ic16" />
+      <Button ref={trigger} type="button" variant="destructive" className="mt-1" onClick={() => setDeleting(true)}>
+        <Icon icon={Delete02Icon} data-icon="inline-start" />
         Delete channel
-      </button>
+      </Button>
       {deleting && (
         <DeleteChannelDialog
           channel={channel}

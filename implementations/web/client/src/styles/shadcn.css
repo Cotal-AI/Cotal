@@ -156,6 +156,10 @@
    base does. Without the colour, a border with no colour class takes the text colour. It sits in the
    base layer so Tailwind's own border utilities still win over it. */
 @layer base { :where([data-slot], [data-slot] *) { border: 0 solid var(--border); } }
+/* Preflight also strips a link's colour and underline. Without that, a part drawn as a link (a Button
+   with asChild over an <a>) takes the browser's link blue and underline. The variant's own colour and
+   the link variant's hover underline are utilities, so they still win. */
+@layer base { a[data-slot] { color: inherit; text-decoration: inherit; } }
 
 /* shadcn's colour names, radii and fonts onto ours. tokens.css sets each shadcn name from one of our
    tokens on :root, so Night follows from its own blocks. */

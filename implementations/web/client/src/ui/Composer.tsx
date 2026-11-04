@@ -1,6 +1,7 @@
 import { ArrowUp02Icon, AtIcon, SquareLock02Icon } from "@hugeicons/core-free-icons";
 import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import { composeKey, composerNote, messageRoute, POST_OFF_CREDS, sendCommand, type ComposeTarget } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
 import type { Controller } from "../state/controller.js";
@@ -144,7 +145,7 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
           ) : (
             <>
               <span className="ui-sp" />
-              <button type="button" className="ui-btn ui-btn-sm" disabled={!ready} onClick={submit}>Try again</button>
+              <Button type="button" variant="outline" size="sm" disabled={!ready} onClick={submit}>Try again</Button>
             </>
           )}
         </div>
@@ -191,7 +192,9 @@ export function BetweenAgents({ peer, name, selfId }: { peer: string; name: stri
         <div className="ui-reason"><span>This conversation is between two agents.</span></div>
         <div className="ui-crow">
           <span className="ui-sp" />
-          <a className="ui-btn ui-btn-sm" href={formatRoute(messageRoute(peer, selfId))} onClick={() => focusComposer({ kind: "dm", to: peer })}>{`Message ${name}`}</a>
+          <Button asChild variant="outline" size="sm">
+            <a href={formatRoute(messageRoute(peer, selfId))} onClick={() => focusComposer({ kind: "dm", to: peer })}>{`Message ${name}`}</a>
+          </Button>
         </div>
       </div>
       <div className="ui-cnote" />
