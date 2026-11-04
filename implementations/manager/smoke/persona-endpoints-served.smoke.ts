@@ -9,9 +9,10 @@
  * agent file. Each helper's own credential then calls `list`, and the endpoint's handler receives
  * and answers it; the broker refuses `create`, and the handler never receives one.
  *
- * The suite then renews the inline helper's credential through the manager's own renewal, crashes
- * the manager, lets a successor adopt the seat, and renews again there. At each step the credential
- * calls `list` and is refused `create`. A despawn ends the lifecycle: every ledger row of the
+ * Each seat's environment carries the list in COTAL_ENDPOINTS. The spawner is then issued again
+ * with `create`, and the suite renews the inline helper's credential through the manager's own
+ * renewal, which keeps `list` alone. It crashes the manager, lets a successor adopt the seat, and
+ * renews again there. At each step the credential calls `list` and is refused `create`. A despawn ends the lifecycle: every ledger row of the
  * helper's credentials reads revoked, and a live connection made with a copy of its credential is
  * evicted.
  *
@@ -42,6 +43,8 @@ import { readStaticSlot, staticLifecycleTransport } from "../src/static-lifecycl
 import { bootDeliveryDaemon, type DeliveryDaemon } from "./_boot-delivery.js";
 
 if (spawnSync("tmux", ["-V"]).status !== 0) skipSuite("tmux is not installed");
+// A seat's launch environment is read from /proc.
+if (process.platform !== "linux") skipSuite("reads a seat's environment from /proc, which only Linux has");
 
 // Every cell, in order. A cell an earlier failure left unreachable is graded failed, so the suite
 // always reaches its completion line.
@@ -50,10 +53,12 @@ const CELLS = [
   "a served spawn whose inline persona names a command the spawner lacks is refused by name",
   "a served spawn whose inline persona hands on list starts the helper",
   "a served spawn of an agent file that hands on list starts the helper",
+  "each helper's session is launched with COTAL_ENDPOINTS naming list alone",
   "each helper's credential carries the list request row and no create row",
   "each helper's credential calls list, and the endpoint's handler receives and answers it",
   "the broker refuses each helper's create call, and the handler never receives one",
-  "a renewal re-signs the inline helper's credential with the same endpoint rows",
+  "the spawner is issued again with create, and its own create call reaches the handler",
+  "a renewal after that gain re-signs the inline helper's credential with the same endpoint rows",
   "the renewed credential calls list, and create is still refused",
   "the helper's seat outlives the manager's crash and the successor adopts it",
   "after adoption the helper's credential calls list, and create is still refused",
@@ -205,7 +210,7 @@ try {
       const listed = list.ok === true && list.data?.orders?.[0] === "o-1" && received.filter((r) => r.command === "list" && r.actor === who.actor).length === listsBefore + 1;
       const create = await call(nc, caller, "create");
       await until(() => violations.some((v) => v.includes(".com_example_orders.create.")), 3_000);
-      const refused = create.ok !== true && create.error?.code === "permission-denied" && violations.some((v) => v.includes(".com_example_orders.create.")) && !received.some((r) => r.command === "create");
+      const refused = create.ok !== true && create.error?.code === "permission-denied" && violations.some((v) => v.includes(".com_example_orders.create.")) && !received.some((r) => r.command === "create" && r.actor === who.actor);
       return { listed, refused, list, create, violations };
     } finally {
       await close(nc);
@@ -249,6 +254,15 @@ try {
   const fromFile = await manager("spawn", { name: "helper_file", agent: "tmux-adopt-stub", cwd: repo, events: false });
   check("a served spawn of an agent file that hands on list starts the helper", await started("helper_file", fromFile), { fromFile, stderr: first.stderr().slice(-1500) });
 
+  // The seat process's own environment: what the connector wrote at launch, as the session reads it.
+  const launchedEndpoints = (name: string): string | undefined => {
+    const pane = tmux("list-panes", "-a", "-F", "#{window_name} #{pane_pid}").split("\n").map((l) => l.split(" ")).find(([w]) => w === name)?.[1];
+    if (pane === undefined) return undefined;
+    return readFileSync(`/proc/${pane}/environ`, "utf8").split("\0").find((kv) => kv.startsWith("COTAL_ENDPOINTS="))?.slice("COTAL_ENDPOINTS=".length);
+  };
+  const handed = { helper_inline: launchedEndpoints("helper_inline"), helper_file: launchedEndpoints("helper_file") };
+  check("each helper's session is launched with COTAL_ENDPOINTS naming list alone",
+    Object.values(handed).every((v) => v === JSON.stringify([{ endpoint: ORDERS, commands: ["list"] }])), handed);
   const credsOf = (name: string) => readFileSync(agentLifecycleSecretFilePaths(root, space, name, seats[name]!.uid).creds, "utf8");
   const helpers = ["helper_inline", "helper_file"];
   check("each helper's credential carries the list request row and no create row",
@@ -258,11 +272,19 @@ try {
   check("each helper's credential calls list, and the endpoint's handler receives and answers it", probes.every((p) => p.listed), probes);
   check("the broker refuses each helper's create call, and the handler never receives one", probes.every((p) => p.refused), probes);
 
+  // The spawner gains create: it is issued again on a fresh generation, and its own call reaches
+  // the handler. The helper's renewal below reads the helper's record, never the spawner's grant.
+  const sWider = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 3600), acceptedToken: mintAcceptedToken() };
+  const widerSpawnerNc = await connectWith(await withIssuerSession({ servers, space, auth, tls: false }, (s) =>
+    mintCreds(auth, sid, "agent", { lifecycleUid: suid, capabilities: ["spawn", "role:worker"], endpointCapabilities: [{ endpoint: ORDERS, command: "list" }, { endpoint: ORDERS, command: "create" }], expiresInSeconds: 3600, issued: sWider, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } })));
+  const gainedCreate = await call(widerSpawnerNc, { ...spawner, generation: sWider.generation } as IssuedCaller, "create");
+  check("the spawner is issued again with create, and its own create call reaches the handler",
+    gainedCreate.ok === true && received.some((r) => r.command === "create" && r.actor === sid.id), gainedCreate);
   const helper = seats.helper_inline!;
   const beforeRenew = credsOf("helper_inline");
   const renewed = await renew(first, "helper_inline", beforeRenew);
   const afterRenew = credsOf("helper_inline");
-  check("a renewal re-signs the inline helper's credential with the same endpoint rows",
+  check("a renewal after that gain re-signs the inline helper's credential with the same endpoint rows",
     renewed === "ok" && jwtOf(afterRenew) !== jwtOf(beforeRenew) && JSON.stringify(pubRows(afterRenew).sort()) === JSON.stringify(pubRows(beforeRenew).sort()),
     { renewed, resigned: jwtOf(afterRenew) !== jwtOf(beforeRenew), gained: pubRows(afterRenew).filter((r) => !pubRows(beforeRenew).includes(r)), lost: pubRows(beforeRenew).filter((r) => !pubRows(afterRenew).includes(r)) });
   const renewedProbe = await probe(afterRenew, helper);

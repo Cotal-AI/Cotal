@@ -6,13 +6,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
 import { evictDeniedPrincipalWithCreds, registry, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { aclEnv } from "@cotal-ai/connector-core";
 
 const root = process.env.REPRO_ROOT!;
 const space = process.env.REPRO_SPACE!;
 const servers = process.env.REPRO_SERVERS!;
 const here = dirname(fileURLToPath(import.meta.url));
 const stub = join(here, "e2e-stub.mjs");
-const envFor = (o: LaunchOpts): Record<string, string> => ({ COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? servers), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: String(o.lifecycleUid), PATH: process.env.PATH ?? "" });
+// The stub seat gets the endpoint list the way a real connector writes it, so a suite can read the
+// value the session received.
+const envFor = (o: LaunchOpts): Record<string, string> => ({ COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? servers), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: String(o.lifecycleUid), ...aclEnv({ endpoints: o.endpoints }), PATH: process.env.PATH ?? "" });
 registry.register({ kind: "connector", name: "tmux-adopt-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [stub, space], env: envFor(o) }) } as Connector);
 const manager = new Manager({ space, servers, runtime: "tmux", workspaceRoot: root, consolePort: 0 });
 (manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
