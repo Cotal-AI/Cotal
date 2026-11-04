@@ -322,6 +322,29 @@ try {
       c("one naming a command the starter did not hold is refused by name",
         stateOf(epWide.v) === "failed" && epWide.v?.status?.failure?.message.includes(`more than run ${epWide.runId}'s starter held when the run was admitted`) === true
           && epWide.v?.status?.failure?.message.includes("endpoints com.example.orders refund") === true, epWide.v?.status);
+      // A command the starter gains after admission does not reach the run. The run parks, the
+      // starter is issued again on a fresh generation with `refund` as well, and the spawn the run
+      // makes once answered is still measured against the admitted ceiling (SPEC 14.8, 13.15).
+      const gainRun = await call("run-start", { source: 'await checkpoint("gain", "Gain?");\nawait spawn({ name: "inl-ep-gained", prompt: "You answer.", endpoints: [{ endpoint: "com.example.orders", commands: ["list", "refund"] }] });\n', file: "inline-ep-gained.cotal.js" });
+      const gainId = (gainRun.data as { runId?: string } | undefined)?.runId ?? "";
+      await until(async () => pending(await status(gainId), "Gain?") ? true : undefined, 15_000);
+      const wider = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
+      const widerCreds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
+        mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run", "role:worker"], endpointCapabilities: [{ endpoint: "com.example.orders", command: "list" }, { endpoint: "com.example.orders", command: "refund" }], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: id.id })], expiresInSeconds: 3600, issued: wider, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+      const widerNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: widerCreds, tls: false }), maxReconnectAttempts: 0 });
+      try {
+        const widerService = await resolveService(widerNc, spaceA, "manager", { owner: DEV_OWNER, actor: id.id, uid, generation: wider.generation } as EpCallerT, { deadlineMs: 10_000 });
+        const direct = (await invokeCommand(widerNc, spaceA, widerService, "spawn", { name: "ep-gained-direct", events: false, persona: { prompt: "You answer.", endpoints: [{ endpoint: "com.example.orders", commands: ["list", "refund"] }] } }, { deadlineMs: 30_000, currentEpoch: async () => 0 })).reply;
+        c("the starter's wider credential may hand refund on in a spawn of its own", direct.ok === true, direct);
+        await call("run-answer", { runId: gainId, stepKey: "/checkpoint:gain#0", value: "yes" });
+        const gained = await until(async () => { const s = await status(gainId); return stateOf(s) === "failed" || stateOf(s) === "completed" ? s : undefined; }, 30_000);
+        c("the parked run's spawn of the same persona is refused by name, as the starter did not hold refund when the run was admitted",
+          stateOf(gained) === "failed" && gained?.status?.failure?.message.includes(`more than run ${gainId}'s starter held when the run was admitted`) === true
+            && gained.status.failure.message.includes("endpoints com.example.orders refund") === true
+            && !(mgr as unknown as { agents: Map<string, unknown> }).agents.has("inl-ep-gained"), gained?.status);
+      } finally {
+        await widerNc.drain().catch(() => widerNc.close());
+      }
       // A run revoked while it is parked starts no helper: a spawn its driver makes afterwards is
       // refused before anything is minted (SPEC 14.8). The spawn enters the manager with the
       // driver's caller, as the served spawn above hands it in.
@@ -987,7 +1010,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 96;
+const EXPECTED_CELLS = 98;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
