@@ -282,6 +282,23 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const statusFg = (p: Presence) =>
     ({ working: theme.text.feedback.success.base, waiting: theme.text.feedback.warning.base, idle: theme.text.muted, offline: theme.text.faint })[p.status]
 
+  // A name keeps the color it got first. A new name starts at its hash and takes the next color no
+  // name holds yet, so a few agents never share one. You are gold.
+  const tints = new Map<string, number>()
+  const tint = (name: string) => {
+    const n = theme.categorical.length
+    let i = tints.get(name)
+    if (i === undefined) {
+      const start = [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0) % n
+      const held = new Set(tints.values())
+      i = Array.from({ length: n }, (_, k) => (start + k) % n).find((k) => !held.has(k)) ?? start
+      tints.set(name, i)
+    }
+    return theme.categorical[i % n][200]
+  }
+  const gold = () => theme.hue.accent[200]
+  const nameFg = (from: { id: string; name: string }) => (from.id === self() ? gold() : tint(from.name))
+
   const Section = (p: { title: string; right?: string }) => (
     <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
       <text fg={theme.text.muted} attributes={TextAttributes.BOLD} wrapMode="none">
@@ -314,12 +331,13 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       const p = r.presence
       const mark = p.card.kind === "agent" ? STATUS[p.status].mark : "⚙"
       const tag = p.card.id === self() ? "you" : (p.card.role ?? "")
-      return { mark, markFg: statusFg(p), name: fit(p.card.name, width - tag.length - 5), tag: fit(tag, Math.max(0, width - 12)), fg: p.status === "offline" ? theme.text.faint : theme.text.base }
+      const fg = p.status === "offline" ? theme.text.faint : p.card.kind === "agent" || p.card.id === self() ? nameFg(p.card) : theme.text.base
+      return { mark, markFg: statusFg(p), name: fit(p.card.name, width - tag.length - 5), tag: fit(tag, Math.max(0, width - 12)), fg }
     }
     const e = r.entry
     if (e.kind === "unusable") return { mark: "✗", markFg: theme.text.feedback.error.base, name: fit(baseName(e.source), width - 4), tag: "", fg: theme.text.feedback.error.base }
     const tag = e.kind === "prepared" ? "prepared" : r.open ? "open" : e.mode
-    return { mark: r.open ? "▸" : " ", markFg: theme.text.action.primary.base, name: fit(e.space, width - tag.length - 5), tag, fg: e.kind === "prepared" ? theme.text.muted : theme.text.base }
+    return { mark: r.open ? "▸" : " ", markFg: gold(), name: fit(e.space, width - tag.length - 5), tag, fg: e.kind === "prepared" ? theme.text.muted : theme.text.base }
   }
 
   /** The human's name: dim while watching unseen, plain once a session puts them on the roster. */
@@ -361,7 +379,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
                   <span style={{ fg: label().markFg }}>{label().mark}</span>
                   {` ${label().name}`}
                 </text>
-                <text wrapMode="none" fg={item.kind === "channel" && item.unread ? theme.text.action.primary.base : theme.text.faint}>
+                <text wrapMode="none" fg={item.kind === "channel" && item.unread ? gold() : theme.text.faint}>
                   {label().tag}
                 </text>
               </box>
@@ -372,7 +390,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
         <Show when={me()}>
           {(m) => (
             <box flexShrink={0} paddingBottom={1}>
-              <text wrapMode="none" fg={m().seen ? theme.text.base : theme.text.faint}>
+              <text wrapMode="none" fg={m().seen ? gold() : theme.text.faint}>
                 {fit(m().name, p.width - 2)}
               </text>
             </box>
@@ -420,12 +438,12 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   }
 
   const FeedRow = (p: { entry: FeedEntry; withChannel: boolean }) => (
-    <box flexShrink={0} marginBottom={1} border={["left"]} customBorderChars={SplitBorder.customBorderChars} borderColor={p.entry.events ? theme.text.faint : theme.text.muted} paddingLeft={1}>
+    <box flexShrink={0} marginBottom={1} border={["left"]} customBorderChars={SplitBorder.customBorderChars} borderColor={p.entry.events ? theme.text.faint : nameFg(p.entry.from)} paddingLeft={1}>
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
-        <text wrapMode="none" fg={theme.text.base} attributes={TextAttributes.BOLD}>
+        <text wrapMode="none" fg={nameFg(p.entry.from)} attributes={TextAttributes.BOLD}>
           {p.entry.from.name}
           <span style={{ fg: theme.text.faint }}>{` ${route(p.entry, p.withChannel)}`}</span>
-          <span style={{ fg: theme.text.action.primary.base }}>{talk()?.mentionsYou(p.entry) ? "  @you" : ""}</span>
+          <span style={{ fg: gold() }}>{talk()?.mentionsYou(p.entry) ? "  @you" : ""}</span>
         </text>
         <text wrapMode="none" fg={theme.text.faint}>
           {clock(p.entry.ts)}

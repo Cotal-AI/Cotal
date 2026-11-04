@@ -6,9 +6,11 @@ import { Config, ConfigProvider } from "../vendor/opencode/packages/tui/src/conf
 import { ClipboardProvider } from "../vendor/opencode/packages/tui/src/context/clipboard"
 import { Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { ThemeProvider } from "../vendor/opencode/packages/tui/src/context/theme"
+import { setCustomThemes } from "../vendor/opencode/packages/tui/src/theme"
 import { DialogProvider } from "../vendor/opencode/packages/tui/src/ui/dialog"
 import { Toast, ToastProvider } from "../vendor/opencode/packages/tui/src/ui/toast"
 import { Shell } from "./app.js"
+import { COTAL_THEME } from "./theme.js"
 
 // A terminal that answers the theme query does so within a few milliseconds. tmux and some others
 // never answer, so the wait is bounded and the shell starts dark. A late answer still switches the
@@ -32,7 +34,10 @@ renderer.once("destroy", () => process.exit(0))
 let farewell: string | undefined
 process.once("exit", () => farewell && writeSync(1, `${farewell}\n`))
 const mode = (await renderer.waitForThemeMode(THEME_QUERY_MS)) ?? DEFAULT_THEME_MODE
-const config = Config.resolve({}, { terminalSuspend: false })
+// Registered before the first frame, so it never paints in OpenCode's colors first.
+const themes = { cotal: COTAL_THEME }
+setCustomThemes(themes)
+const config = Config.resolve({ theme: { name: "cotal" } }, { terminalSuspend: false })
 
 // The catalog module imports @cotal-ai/workspace, the largest import in the app. Reading it only
 // after the first frame keeps that cost off the time to a visible shell.
@@ -57,7 +62,7 @@ await render(
       <ConfigProvider config={config}>
         <Keymap.Provider>
           <ToastProvider>
-            <ThemeProvider mode={mode} source={{ discover: async () => ({}) }}>
+            <ThemeProvider mode={mode} source={{ discover: async () => themes }}>
               <DialogProvider>
                 <Shell
                   quit={(text) => {

@@ -144,7 +144,7 @@ export function Composer(props: {
 
   const bg = theme.background.raised.base
   return (
-    <box flexShrink={0} flexDirection="column" backgroundColor={bg} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+    <box flexShrink={0} flexDirection="column" backgroundColor={bg} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} marginBottom={1}>
       <Show when={draft()?.reply}>
         {(q) => (
           <text fg={theme.text.muted} wrapMode="none" flexShrink={0}>
