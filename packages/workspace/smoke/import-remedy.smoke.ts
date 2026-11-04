@@ -135,6 +135,40 @@ try {
     const checkout = upgradeRemedy("/home/someone/Cotal/packages/core", "0.18.0");
     check("source checkout: prescribes a rebuild, never `npm i -g`", checkout.includes("rebuild") && !checkout.includes("npm i -g"), checkout);
   }
+  // 8. The extension's package.json is corrupt by the time the failure is diagnosed (here its own
+  //    entry rewrites it, then hits the missing export). The declared floor is unreadable, and that
+  //    must be said with the file's path: read as "declares nothing", the third-party cell above
+  //    would claim the pair is unrankable for a reason the extension's own file never gave.
+  for (const [label, damage] of [
+    ["corrupt", `writeFileSync(meta, "{corrupt");`],
+    ["directory", `unlinkSync(meta); mkdirSync(meta);`],
+    ["missing", `unlinkSync(meta);`],
+  ] as const) {
+    // The static core import makes Node read and cache the package scope before the file is
+    // changed, as loading a real entry does; otherwise Node's own resolver refuses the later import.
+    const body =
+      `import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";\n` +
+      `import { registry } from "@cotal-ai/core";\n` +
+      `void registry;\n` +
+      `const meta = new URL("./package.json", import.meta.url); ${damage}\n` +
+      `writeFileSync(new URL("./b.mjs", import.meta.url), 'import { notAnExportOfCore } from "@cotal-ai/core";\\nvoid notAnExportOfCore;\\n');\n` +
+      `await import("./b.mjs");\n`;
+    const m = await failureFor({ scope: "@third", version: "1.0.0", peerRange: ">=99.0.0", body });
+    check(
+      `${label} package.json: names the unreadable file by path`,
+      m.includes("is corrupt or unreadable") && m.includes(join(extensionsDir(), "node_modules", "@third", `remedy-${seq}`, "package.json")),
+      m,
+    );
+    check(`${label} package.json: keeps the original import error`, m.includes("does not provide an export named 'notAnExportOfCore'"), m);
+    check(`${label} package.json: claims no ranking it could not read`, !/is BEHIND|older side|Same version|is not a @cotal-ai\/\* package/.test(m), m);
+    check(`${label} package.json: keeps the reinstall remedy`, m.includes("cotal ext add @third/remedy-"), m);
+  }
+  {
+    const m = await failureFor({ scope: "@third", version: "1.0.0" });
+    check("no declared range: remains an unrankable pair", m.includes("Neither side can be named as behind") && m.includes("is not a @cotal-ai/* package"), m);
+    check("no declared range: is not reported as damaged metadata", !m.includes("is corrupt or unreadable"), m);
+  }
+  check("all import-remedy assertions ran", passed + failed === 36, { passed, failed });
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
