@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 966,
+    "total": 969,
     "honest-text": 64,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 750
+    "non-render/control": 753
   },
   "renderers": [
     {
@@ -7024,6 +7024,27 @@
       "anchor": "cur === done ? { phase: \"idle\" } : cur)), STOP_NOTICE_",
       "class": "non-render/control",
       "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/compose.ts",
+      "kind": "status-token",
+      "anchor": " \"opening\") return note(\"waiting\", `still joining ${at.sp",
+      "class": "non-render/control",
+      "rationale": "App composer notice: the shared outcome words' waiting tone colours a notice; it is not an agent's presence."
+    },
+    {
+      "path": "implementations/tui/src/compose.ts",
+      "kind": "status-token",
+      "anchor": "}, notice: { key, tone: \"waiting\", lines: [`sending to ${",
+      "class": "non-render/control",
+      "rationale": "App composer notice: the shared outcome words' waiting tone colours a notice; it is not an agent's presence."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "peerOf(mesh, open.id)",
+      "class": "non-render/control",
+      "rationale": "App recipient: the open peer's name for a direct message's label; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/talk.ts",
