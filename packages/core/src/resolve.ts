@@ -94,6 +94,27 @@ export function resolvePeer(
   throw new AmbiguousPeerError(target, pool.map(candidate));
 }
 
+/**
+ * The instance ids on `roster` whose display name another row shares.
+ *
+ * The comparison is the one {@link resolvePeer} uses for a name: trimmed, then case-insensitive,
+ * with no other normalization. Every row counts, including the caller and an offline ghost, because
+ * a rendered row is shown whether or not a send would choose it. A name one row carries returns
+ * nothing. The ids are what a renderer appends so a repeated name is not read as an address.
+ */
+export function sharedNameIds(roster: readonly Presence[]): ReadonlySet<string> {
+  const ids = new Map<string, string[]>();
+  for (const p of roster) {
+    const key = p.card.name.trim().toLowerCase();
+    const seen = ids.get(key);
+    if (seen) seen.push(p.card.id);
+    else ids.set(key, [p.card.id]);
+  }
+  const shared = new Set<string>();
+  for (const seen of ids.values()) if (seen.length > 1) for (const id of seen) shared.add(id);
+  return shared;
+}
+
 /** Maximum length of a display name, in UTF-16 code units.
  *
  *  Derived from the transport budget, not picked. The client's CONNECT line carries the user JWT

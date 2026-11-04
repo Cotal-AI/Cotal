@@ -3,7 +3,7 @@
  * Asserts the deterministic, fail-loud rules in src/resolve.ts.
  */
 import assert from "node:assert/strict";
-import { resolvePeer, AmbiguousPeerError, assertValidName } from "../src/resolve.js";
+import { resolvePeer, sharedNameIds, AmbiguousPeerError, assertValidName } from "../src/resolve.js";
 import type { Presence, PresenceStatus } from "../src/types.js";
 
 let seq = 0;
@@ -48,6 +48,17 @@ assert.equal(resolvePeer([p("me", "idle", "ME")], "me", { selfId: "ME" }), undef
 
 // no match → undefined
 assert.equal(resolvePeer([p("alice")], "nobody"), undefined);
+
+// sharedNameIds uses resolvePeer's comparison: trimmed, then case-insensitive, every row.
+{
+  const a = p("Bob", "idle", "A");
+  const b = p(" bob ", "offline", "B");
+  const c = p("solo", "idle", "C");
+  const shared = sharedNameIds([a, b, c]);
+  assert.deepEqual([...shared].sort(), ["A", "B"]);
+  assert.equal(sharedNameIds([c]).size, 0);
+  assert.equal(sharedNameIds([]).size, 0);
+}
 
 // name validation: accept human display names + roster names; reject reserved/edge shapes
 assert.doesNotThrow(() => assertValidName("review-general"));
