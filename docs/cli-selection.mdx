@@ -1033,6 +1033,9 @@ stopped one does, refuses the manager and delivery probes, and the pass still ex
 its current and a pre-upgrade name, refuses only its own row. A record that its component removes
 while the pass runs reads as `absent`.
 
+The auth-service start, status and stop paths share the same PID-file resolution rules.
+An unreadable record directory refuses the start; it is not treated as an absent pre-upgrade record.
+
 Each component prints on one line. A control character inside a reported reason, such as a newline
 in a stored row's field name, prints as its `\uXXXX` escape.
 
