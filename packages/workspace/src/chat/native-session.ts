@@ -136,7 +136,7 @@ export function resolveDmTarget(
     // reply by its name can reach none of them.
     const present = new Set(roster.filter((p) => p.status !== "offline").map((p) => p.card.id));
     if (rosterState === "current" && !ids.some((id) => present.has(id)))
-      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot \`cotal send\` commands, which exit once they have sent; ${self.answerOne}` };
+      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot senders, which exit once they have sent; ${self.answerOne}` };
     return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${ids.join(", ")}); use the full principal` };
   }
   const only = [...named.values()][0];
