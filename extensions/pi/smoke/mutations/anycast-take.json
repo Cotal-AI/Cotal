@@ -2,7 +2,7 @@
   "suite": [
     "extensions/pi/pi.smoke.ts"
   ],
-  "guard": "pi shows a role request only from a batch whose take returned it and that may still be shown (SPEC §8.1), takes only the requests the batch carries, holds a taken batch for its turn, never sends a dnd batch left with only chatter by a refused or undecided take, and keeps a user turn's forced pump across a take",
+  "guard": "pi shows a role request only from a batch whose take returned it and that may still be shown (SPEC §8.1), takes only the requests the batch carries, holds a taken batch for its turn, never sends a dnd batch left with only chatter by a refused or undecided take, keeps a user turn's forced pump across a take, and seats a role request ahead of channel posts in a full batch",
   "command": "pnpm smoke:pi",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/anycast-take.json",
   "why": [
@@ -15,6 +15,8 @@
     "PT5 sends a taken batch without holding it in flight, so its role request's ack wait runs out mid-turn and the broker hands the request out again (#5637).",
     "",
     "PT6 sends from the take's answer what only the preview still offers, so a request a redelivery sent back to wait for its take goes out with no take of the new copy.",
+    "",
+    "PT7 fills a full batch with the first 32 messages again, so a role request that arrived after 32 channel posts waits untaken behind them for a later turn.",
     "",
     "NO BUILD STEP: the suite imports ./src.",
     "",
@@ -68,6 +70,14 @@
       "replace": "      const live = new Set(available.map((item) => item.recvKey));",
       "expectRed": "a taken batch sends nothing a redelivery sent back to wait for its take",
       "cell": "a taken batch sends nothing a redelivery sent back to wait for its take"
+    },
+    {
+      "name": "PT7 a full batch takes the first 32 messages whatever waits after them",
+      "file": "extensions/pi/src/inbox-turn.ts",
+      "find": "      else if (item.kind === \"channel\" && limit - selected.length <= requestsAfter) continue;\n",
+      "replace": "",
+      "expectRed": "a full batch takes and carries a role request that arrived after more channel posts than fit",
+      "cell": "a full batch takes and carries a role request that arrived after more channel posts than fit"
     }
   ]
 }

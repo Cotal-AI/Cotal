@@ -370,6 +370,44 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(host.sent[0]!.details.ids.every((id) => mesh.held.has(id)), "a batch that goes out on its take is held for its turn like any other");
 }
 
+// A full batch seats a role request ahead of the channel posts that arrived before it, so the request
+// does not wait behind chatter for a later turn.
+{
+  class HeldMesh extends FakeMesh {
+    gated: InboxItem[] = [];
+    chosen: string[][] = [];
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      const picked = choose(this.inboxPreview(scope));
+      this.chosen.push(picked.map((value) => value.recvKey));
+      const keys = new Set(picked.map((value) => value.recvKey));
+      this.items.push(...this.gated.filter((value) => keys.has(value.recvKey)));
+      this.gated = this.gated.filter((value) => !keys.has(value.recvKey));
+      return [...picked];
+    }
+  }
+  const mesh = new HeldMesh();
+  mesh.attention = "dnd";
+  const posts = Array.from({ length: 40 }, (_, i) => `post${i}`);
+  mesh.items = posts.map((id) => item(id, { kind: "channel", channel: "team" }));
+  mesh.gated = [item("req", { kind: "anycast", service: "worker" })];
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  await new Promise((resolve) => setImmediate(resolve));
+  const ids = host.sent[0]?.details.ids ?? [];
+  ok(
+    host.sent.length === 1 && ids.length === 32 && ids.includes("req") && mesh.chosen[0]?.includes("req"),
+    "a full batch takes and carries a role request that arrived after more channel posts than fit",
+  );
+  ok(ids.join() === [...posts.slice(0, 31), "req"].join(), "the batch keeps arrival order and leaves out the latest channel posts");
+}
+
 // A take that leaves a batch with nothing that wakes, and a user turn that starts during a take.
 {
   class TakingMesh extends FakeMesh {

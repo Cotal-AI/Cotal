@@ -852,7 +852,8 @@ again on the new link rather than waiting on that take, and a take whose connect
 it. A holder asks for no take while its connection is down, so a read then is offered none of its
 held requests, and once the connection is back the holder tells its host about each one again. A
 held request keeps its place in the order the holder received its messages, so it is offered, and
-once taken shown, where it arrived.
+once taken shown, where it arrived. A host that shows its inbox one batch at a time MAY fill a full
+batch with role requests before the channel posts that arrived ahead of them.
 
 **Record.** The daemon keeps one row per request in `cotal_anycast_<space>` (history 1, no TTL)
 under the key `r.<epoch>.<seq>`, where `<epoch>` is the `TASK_<space>` stream's creation time

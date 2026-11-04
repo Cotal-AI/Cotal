@@ -53,14 +53,19 @@ export class InboxTurn {
     return ids.length;
   }
 
-  /** Select the next automatic FIFO batch after already-reserved receive keys. A role request in it
-   *  that is still held for its take is shown only through {@link take} (SPEC §8.1). */
+  /** Select the next automatic batch after already-reserved receive keys, in arrival order. When more
+   *  waits than fits, a channel post takes a seat only while every role request after it still fits,
+   *  so a request never waits behind chatter for a later turn. A role request in the batch that is
+   *  still held for its take is shown only through {@link take} (SPEC §8.1). */
   select(reserved: ReadonlySet<string>, limit: number): InboxItem[] {
+    const open = this.source.inboxPreview("automatic").filter((item) => !reserved.has(item.recvKey));
+    let requestsAfter = open.filter((item) => item.kind === "anycast").length;
     const selected: InboxItem[] = [];
-    for (const item of this.source.inboxPreview("automatic")) {
-      if (reserved.has(item.recvKey)) continue;
-      selected.push(item);
+    for (const item of open) {
       if (selected.length >= limit) break;
+      if (item.kind === "anycast") requestsAfter--;
+      else if (item.kind === "channel" && limit - selected.length <= requestsAfter) continue;
+      selected.push(item);
     }
     return selected;
   }
