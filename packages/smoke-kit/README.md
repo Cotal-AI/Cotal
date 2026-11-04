@@ -2,6 +2,12 @@
 
 Private helpers for the repository's smoke suites. Shipped code must not import this package.
 
+`withDeadline(promise, ms, label)` logs a timeout and returns `undefined`; it never counts an
+assertion. Rejections propagate. Check the result at the call site, including waits used only to
+drain work. For a void promise, pass `promise.then(() => true)` and check for `true`, so successful
+completion cannot be mistaken for a timeout. Include any added assertions in the suite's expected
+cell count. The helper does not cancel the underlying work.
+
 Use `freePort()` when a suite or its child needs a loopback port. Ports come from 20000-26383,
 below the kernel's ephemeral range, so no bind of port 0 and no outgoing connection on the host can
 be given one. A lock listener held until the process exits keeps every other caller of the kit, in
