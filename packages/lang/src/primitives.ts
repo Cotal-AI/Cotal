@@ -122,7 +122,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = deepFreeze({
     scope: null,
     signature:
       "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events?, runtime? }) -> AgentHandle",
-    doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy; events: false starts the agent without an event plane; runtime names the terminal runtime for this one seat.",
+    doc: "Bring an agent into the run. persona is a catalog name, { persona, model?, variant? }, or an inline persona { name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, save? } hashed and journalled whole. Permits are budgets whose violation is catchable; supervise is a declarative restart policy; events: false starts the agent without an event plane; runtime names the terminal runtime for this one seat.",
     example: 'const builder = await spawn("builder", { worktree: "wt-1", join: [team] })',
   },
   turn: {

@@ -498,6 +498,28 @@ const SPAWN_INPUT_SCHEMA = {
     events: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
+    // An inline persona: the helper's definition, carried here instead of read from the catalog.
+    // Its `prompt` is the persona body; the `prompt` above stays the first-turn kickoff.
+    persona: {
+      type: "object",
+      additionalProperties: false,
+      required: ["prompt"],
+      properties: {
+        prompt: nonBlank(),
+        role: nonBlank(),
+        model: nonBlank(),
+        variant: nonBlank(),
+        description: nonBlank(),
+        subscribe: { type: "array", items: { type: "string" } },
+        allowSubscribe: { type: "array", items: { type: "string" } },
+        allowPublish: { type: "array", items: { type: "string" } },
+        capabilities: { type: "array", items: { type: "string" } },
+        save: { type: "boolean" },
+      },
+    },
+    // The workflow run whose driver sends this spawn, so a static manager that does not host the
+    // run can read the run's admission and bound the helper by it (SPEC 14.8).
+    runId: nonBlank(),
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
@@ -780,6 +802,7 @@ const PERSONA_INPUT_SCHEMA = {
     subscribe: CHANNEL_LIST,
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
+    capabilities: { type: "array", items: { type: "string" } },
   },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
@@ -1457,9 +1480,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  44 = `once` on `spawn`: the spawn input grows `once` (`deadlineMs`), a `turn-pending` row gains
  *  `once` and its `deadlineAt` becomes optional (a once task with no deadline never expires), the
  *  `turn-pending` reply gains `stop` for a once seat the manager does not hold whose task ended, and
- *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task. */
+ *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task.
+ *
+ *  45 = `spawn` takes an inline `persona` record and a run's `runId`, and `define-persona` takes
+ *  `capabilities`. Both input schemas are closed, so a revision-44 contract rejects either. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 45, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

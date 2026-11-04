@@ -154,6 +154,8 @@ const SPAWN_INPUT = {
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
     runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
   },
 } as const;
 const SPAWN_OUTPUT = {

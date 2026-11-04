@@ -137,6 +137,8 @@ const SPAWN_INPUT = {
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
     runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
   },
 } as const;
 const SPAWN_OUTPUT = {
@@ -599,7 +601,8 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
 {
   console.log("• 8 — a yield handing off to a stranger is the turn's L4005 and never resolves the wait");
   const h = mk("rp-8");
-  const d = await spawnSeat(h, "o");
+  // Its own spawn goal: a run's spawn names its run, so cell 7's goal under this run is another submission.
+  const d = await spawnSeat(h, "o8");
   turnEndings.push({ state: "succeeded", status: "handoff", to: "stranger", delayMs: 50 });
   const got = await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(token("p"), { key: { scope: [], kind: "turn", name: "", occurrence: 0 } }).ctx)), 30_000, "the refused-handoff turn");
   c("the turn refuses the spoofed addressee as L4005", (got as { code?: string } | undefined)?.code === "L4005", JSON.stringify(got));

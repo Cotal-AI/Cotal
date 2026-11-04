@@ -39,6 +39,7 @@ It joins no channel at boot but may join, read, and post channels on demand.
 `cotal_send` without `channel` uses the first concrete channel in the agent's active subscriptions that its post ACL permits.
 If none qualifies, the tool refuses an omitted channel. A read-only subscription or a wildcard subscription cannot provide that default.
 On an open mesh, which does not enforce post ACLs, the default is the first concrete active subscription.
+A spawn's inline persona follows the same rules ([agent files](agent-files.mdx#inline-personas)).
 
 ## Delivery classes
 

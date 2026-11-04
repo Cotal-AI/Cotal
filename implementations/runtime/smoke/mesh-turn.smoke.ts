@@ -148,6 +148,8 @@ const SPAWN_INPUT = {
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
     runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
     supervise: {
       type: "object", additionalProperties: false, required: ["restarts", "windowMs"],
       properties: { restarts: { type: "integer", minimum: 1 }, windowMs: { type: "integer", minimum: 1 } },

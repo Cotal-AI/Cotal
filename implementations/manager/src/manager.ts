@@ -2,7 +2,7 @@ import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, dirname, resolve } from "node:path";
+import { isAbsolute, join, dirname, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
@@ -26,6 +26,7 @@ import {
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
+  assertValidChannel,
   clearSpaceHistory,
   dialerFor,
   connectorServers,
@@ -74,20 +75,28 @@ import {
   resolveAuthProvider,
   resolveReadAcl,
   runAgentBearer,
+  runDriverCaller,
   saveAgentFile,
   subjectMatches,
   AUTH_ENDPOINT,
   EP_CMD_RETIRE_LIFECYCLE,
   controlServiceSubject,
+  eventChannel,
   eventChannelPrincipal,
   resolveService,
   invokeCommand,
   digestIdToken,
+  capabilityWithin,
+  grantOverreach,
+  grantParts,
+  isIssuedCaller,
+  issuedSpawnerStanding,
+  withIssuerSession,
   renderOnceTask,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -106,10 +115,10 @@ import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js"
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
+import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
-import { RunHosting } from "./run-hosting.js";
+import { RunHosting, servedRequestSubject } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { rejectionText } from "./rejection-text.js";
 import { controlSession } from "./control-session.js";
@@ -634,6 +643,10 @@ export interface ManagerOptions {
         allowSubscribe?: string[];
         allowPublish?: string[];
       };
+      /** The served spawn request this enrollment answers, when a caller asked for it. The host
+       *  makes the caller it saw publish that subject the helper's parent, or the run's starter for
+       *  a run's spawn (SPEC 13.6). */
+      spawn?: { served: string; runId?: string };
     }) => Promise<{
       owner: string;
       actor: string;
@@ -746,7 +759,8 @@ export type FreeSlotCause =
   | "resume-session-rebind-failed"
   | "carried-fork-refused"
   | "resume-custody-unrecorded"
-  | "supervise-record-failed";
+  | "supervise-record-failed"
+  | "inline-snapshot-changed";
 
 /** Operator-facing phrasing per cause. Kept beside the union so adding a member without a sentence
  *  is a type error rather than a blank in the log. The stop family's sentences carry the principal
@@ -763,6 +777,7 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "carried-fork-refused": "this manager stopped it: it recorded no fork of the carried transcript",
   "resume-custody-unrecorded": "this manager stopped it: its custody reference could not be recorded on resume",
   "supervise-record-failed": "this manager stopped it: its supervise policy could not be recorded for a manager restart",
+  "inline-snapshot-changed": "this manager retired it instead of restarting it: its inline persona snapshot changed after launch",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -832,6 +847,8 @@ export interface ManagerResumeAgent {
     cwd: string;
     source:
       | { kind: "persona"; ref: string; configPath: string; configSha256: string }
+      // An inline persona's seat: `ref` is the requested name and `configPath` its lifecycle's snapshot.
+      | { kind: "inline"; ref: string; configPath: string; configSha256: string }
       | { kind: "manifest"; runId?: string; requested: string; hash: string; configPath: string; configSha256: string; manifestSha256?: string };
     model?: string;
     variant?: string;
@@ -924,8 +941,15 @@ export interface ManagerResumeResult {
 export interface StartAgentOpts {
   /** The persona REF to spawn — a filename in `.cotal/agents` (the unique spawn key), discovered as
    *  `.cotal/agents/<name>.md`. NOT the mesh identity: the spawned peer presents under the file's
-   *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback). */
+   *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback).
+   *  With {@link persona}, the helper's own name instead, numbered on collision the same way. */
   name: string;
+  /** An inline persona in place of a catalog file. It takes no `config` or `identity`. Validated
+   *  where it is read, so a direct call meets the same refusals as the served door. */
+  persona?: InlinePersona;
+  /** The workflow run whose driver sends this spawn (SPEC 14.8). A manager that does not host the
+   *  run reads the run's admission and bounds the helper by it, as the hosting manager does. */
+  runId?: string;
   /** Connector / agent type — resolved from the registry. Outranks the persona pin and every default (see `resolveAgentType`). */
   agent?: string;
   /** Detached caller's default connector, kept separate from an explicit flag so the persona file
@@ -985,6 +1009,10 @@ export interface StartAgentOpts {
    *  ignored. The spawner's event channel is never inherited (the seat mints its own below).
    *  Imperative-only, rejected with `resolved`. */
   callerAcl?: { allowSubscribe: string[]; allowPublish: string[] };
+  /** The request subject the served `spawn` door answered. A hosted enrollment forwards it, and the
+   *  issuing host makes the caller it saw publish that subject the helper's parent (SPEC 13.6).
+   *  Set by the served door only. */
+  served?: string;
   /** Names of the operator's configured MCP servers this agent gets (absent → all declared for the
    *  connector — the pre-merge manager behavior; `[]` → none). */
   shareTools?: readonly string[];
@@ -1062,6 +1090,75 @@ interface PreparedResume {
 /** What the host returned for one managed-agent enrollment (#1972). */
 type ManagedEnrollment = Awaited<ReturnType<NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>>>;
 
+/** What bounds the grant a spawn hands its helper on a static mesh (SPEC 13.15). Nothing for the
+ *  manager's own composition root, an operator instrument or a spawner holding the admin set; no
+ *  grant at all for a caller whose evidence does not resolve; no spawn at all for a run that was
+ *  revoked or whose revocation marker cannot be read; a run's admitted ceiling for its spawns;
+ *  otherwise the caller's evidence. */
+type StaticSpawnBound =
+  | { kind: "exempt" }
+  | { kind: "none"; reason: string }
+  | { kind: "refused"; reason: string }
+  | { kind: "bounded"; caller: EpCaller; ceiling: IssuedSubjectPermissions; run?: string };
+
+/** The workflow run a spawn acts for (SPEC 14.8): the run this manager drives under the spawn's
+ *  caller, or, on a static mesh, a run hosted elsewhere whose spawn reached this manager, read from
+ *  its admission. That run's revocation marker is read with the admission; a hosted run's is read at
+ *  the bound. */
+type SpawnRun = { admission: RunAdmission; hosted: boolean } | { refused: string };
+
+/** Why a revoked run starts no helper, the same words wherever the marker is read. */
+function revokedRunRefusal(runId: string, revoked: RunRevocation): string {
+  return `run ${runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
+}
+
+const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "save"];
+
+/** Read an inline persona into the definition a catalog file would load as, refusing what a file
+ *  load refuses plus any shape the closed record does not take. The body is literal text: nothing in
+ *  it becomes a field, so a body that starts with `---` stays body. */
+function inlinePersonaDef(name: string, raw: unknown): { def: AgentDef; save: boolean } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error("persona: expected an object");
+  const rec = raw as Record<string, unknown>;
+  const extra = Object.keys(rec).filter((k) => !INLINE_PERSONA_KEYS.includes(k));
+  if (extra.length) throw new Error(`persona: unknown key ${extra[0]}; it takes ${INLINE_PERSONA_KEYS.join(", ")}`);
+  const text = (k: string): string | undefined => {
+    const v = rec[k];
+    if (v === undefined) return undefined;
+    if (typeof v !== "string" || !v.trim()) throw new Error(`persona.${k}: expected a non-blank string`);
+    return v;
+  };
+  const list = (k: string): string[] | undefined => {
+    const v = rec[k];
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) throw new Error(`persona.${k}: expected an array of strings`);
+    return [...v] as string[];
+  };
+  const prompt = text("prompt");
+  if (prompt === undefined) throw new Error("persona.prompt: required; it is the persona body");
+  if (rec.save !== undefined && typeof rec.save !== "boolean") throw new Error("persona.save: expected a boolean");
+  const def: AgentDef = {
+    name,
+    persona: prompt.trim(),
+    role: text("role"),
+    model: text("model"),
+    variant: text("variant"),
+    description: text("description"),
+    subscribe: list("subscribe"),
+    allowSubscribe: list("allowSubscribe"),
+    allowPublish: list("allowPublish"),
+    capabilities: list("capabilities"),
+  };
+  // The checks a file load makes on these fields: channel names, and the read set within the read ACL.
+  try {
+    for (const ch of [...(def.subscribe ?? []), ...(def.allowSubscribe ?? []), ...(def.allowPublish ?? [])]) assertValidChannel(ch);
+    resolveReadAcl(def.subscribe ?? [], def.allowSubscribe);
+  } catch (e) {
+    throw new Error(`persona: ${rejectionText(e)}`);
+  }
+  return { def, save: rec.save === true };
+}
+
 /** A user-mode spawn's provisioning options. Both arms take this one declaration because
  *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
  *  hosted arm. */
@@ -1081,6 +1178,8 @@ interface ProvisionUserAgentOpts {
    *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
   lifecycleUid: string;
   delegatedIntent?: StartAgentOpts["delegatedIntent"];
+  /** The served spawn this enrollment answers, which the hosted arm forwards. */
+  spawnRequest?: { served: string; runId?: string };
   /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
    *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
   onEnrolled?: (enrolled: Pick<ProvisionedUserAgent, "owner" | "lifecycleUid" | "files">) => void;
@@ -1210,6 +1309,12 @@ interface TeardownTarget {
   launch?: { allowSubscribe: readonly string[] };
   /** The departed agent's admitted renewal, which the static terminal drains before it begins. */
   staticCredentialRenewal?: Promise<void>;
+  /** Set when this lifecycle's inline snapshot is settled: the file is gone, or the lifecycle never
+   *  had one. A live slot's free and a manager shutdown set it once they removed the seat's own, and
+   *  a spawn's rollback once it removed the one it wrote or its write was refused, since a file that
+   *  write refused was never this lifecycle's. Absent after a removal that failed, and for a
+   *  lifecycle known only by its slot row; the static terminal then removes the uid's path. */
+  snapshotSettled?: true;
 }
 
 /** A name held pending its incarnation's retirement. It keeps the teardown target whole, so a
@@ -3311,6 +3416,8 @@ export class Manager {
       return `imperative launch options have no non-secret durable source (${entry.launch.unresolvedLaunchOptionKeys.join(", ")})`;
     if (!entry.dependencies.some((path) => resolve(path) === resolve(entry.launch.source.configPath)))
       return `launch config is not declared as a retained dependency: ${entry.launch.source.configPath}`;
+    if (entry.launch.source.kind === "inline" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.workspaceRoot, entry.identity.lifecycleUid)))
+      return `inline persona snapshot ${entry.launch.source.configPath} is not this lifecycle's snapshot path`;
     if (entry.launch.source.kind === "manifest" && entry.launch.source.runId) {
       const specPath = join(this.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
       if (!entry.dependencies.some((path) => resolve(path) === resolve(specPath)))
@@ -3481,9 +3588,11 @@ export class Manager {
     }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
-      managed.filter((a) => !a.suppressCleanup).map((a) =>
-        this.deprovision(this.teardownTarget(a)).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`)),
-      ),
+      managed.filter((a) => !a.suppressCleanup).map((a) => {
+        // Retired here on every mesh, the open mesh included, which runs no teardown of its own.
+        const settled = a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid);
+        return this.deprovision({ ...this.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
+      }),
     );
     if (failures.length)
       throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
@@ -4466,7 +4575,7 @@ export class Manager {
       // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
       // the residual cross-owner case; opStart decides before connector resolution or grant
       // mutation. Static meshes resolve true and nothing changes.
-      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller)))),
+      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller, servedRequestSubject(this.space, ctx))))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -4526,7 +4635,7 @@ export class Manager {
       // authenticated caller's own, so a run withdraws only the turns it submitted.
       cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
-      definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      definePersona: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller))),
       removePersona: (ctx) => this.serveGated(ctx, () => {
         const r = this.opRemovePersona(args(ctx), callerOf(ctx), false);
         if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, "not-executed");
@@ -4817,6 +4926,13 @@ export class Manager {
       .finally(() => this.releaseLifecycle());
   }
 
+  /** The served spawn a hosted enrollment forwards. A run's spawn also names its run, so the host
+   *  bounds the helper by what the run's starter held when the run was admitted (SPEC 14.8). */
+  private servedSpawnRequest(served: string, caller: EpCaller | undefined): { served: string; runId?: string } {
+    const run = caller !== undefined ? this.runHosting?.runAdmission(caller) : undefined;
+    return { served, ...(run !== undefined ? { runId: run.runId } : {}) };
+  }
+
   /** USER-MODE spawn provisioning (the gate-1 counterpart to the static mint block): resolve the
    *  OWNER (ctl caller's principal, or the manifest's stamped owner — never a payload field),
    *  pre-create the principal-keyed durables + ACL row on the ephemeral provisioner, author the
@@ -4993,6 +5109,7 @@ export class Manager {
           allowSubscribe: opts.allowSubscribe,
           ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
         },
+        ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
       });
       if (material.actor !== name)
         throw new Error(`the host enrolled actor "${material.actor}", not the requested "${name}"`);
@@ -5223,8 +5340,27 @@ export class Manager {
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
     // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
-    if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence))
+    if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence)) {
+      // An inline seat's snapshot goes with the seat on every mesh. An open mesh runs no teardown
+      // below, and a preservation cut suppresses this, so a resumed seat still finds its snapshot.
+      // Settled means the file is gone or the seat never had one. A removal that failed is left to
+      // the teardown, which retries it and reports what it could not remove.
+      if (a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;
       this.trackDeprovision(target);
+    }
+  }
+
+  /** Remove one lifecycle's inline snapshot by the path its uid derives, never by a recorded one, so a
+   *  resume inventory cannot point the removal at another file. Returns whether the file is gone. A
+   *  failure is logged, never thrown, because the callers must still schedule the teardown. */
+  private dropInlineSnapshot(name: string, lifecycleUid: string): boolean {
+    try {
+      removeInlineSnapshot(this.workspaceRoot, lifecycleUid);
+      return true;
+    } catch (e) {
+      console.error(`! ${name}: its inline persona snapshot could not be removed: ${rejectionText(e)}`);
+      return false;
+    }
   }
 
   /** A live agent's teardown target, built field by field so the rest of its record (handle, seed,
@@ -5837,6 +5973,29 @@ export class Manager {
     throw new Error(`replacement did not prove session ${expected} (${last})`);
   }
 
+  /** Why an inline seat's snapshot no longer matches its launch, or `undefined` when it does or the
+   *  seat is not inline. The recorded path and the relaunch's path must both be this lifecycle's
+   *  snapshot path, as the resume cut requires, and the file there must still be a private regular
+   *  file with the recorded digest. */
+  private inlineSnapshotChange(a: ManagedAgent): string | undefined {
+    const source = a.launch.source;
+    if (source.kind !== "inline") return undefined;
+    const path = resolve(inlineSnapshotPath(this.workspaceRoot, a.lifecycleUid));
+    if (resolve(source.configPath) !== path)
+      return `its recorded inline persona snapshot ${source.configPath} is not this lifecycle's snapshot path`;
+    if (a.restart !== undefined && resolve(a.restart.opts.configPath ?? "") !== path)
+      return `its relaunch persona ${a.restart.opts.configPath} is not this lifecycle's snapshot path`;
+    try {
+      const st = lstatSync(path);
+      if (!st.isFile() || st.isSymbolicLink()) return `its inline persona snapshot ${path} is not a regular file`;
+      if (process.platform !== "win32" && (st.mode & 0o077) !== 0) return `its inline persona snapshot ${path} is readable by others`;
+      if (this.fileDigest(path) !== source.configSha256) return `its inline persona snapshot ${path} changed after launch`;
+    } catch (e) {
+      return `its inline persona snapshot is unavailable: ${rejectionText(e)}`;
+    }
+    return undefined;
+  }
+
   /** Restart one managed process in place. Identity, lifecycle, credentials, durables, children,
    *  and the manager row remain owned; only the process handle/control endpoint change. Budget
    *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
@@ -5857,6 +6016,19 @@ export class Manager {
       console.error(`! ${a.name}: ${supervised ? "supervised" : "Pi"} crash loop (${restart.crashes.length} crashes in ${windowMs / 1000}s) - retiring the managed seat`);
       restart.armed = false;
       this.freeSlot(a, true, supervised ? "supervise-crash-loop" : "pi-crash-loop");
+      this.reapChildrenOf(this.managedPrincipal(a));
+      release();
+      return;
+    }
+    // An inline seat relaunches from its snapshot, so one that changed after launch, or a recorded
+    // path that names another file, would start a session its spawn never accepted. Every in-place
+    // restart passes here; the resume cut and a successor's restart make the same two checks in
+    // inventoryReferenceError.
+    const changed = this.inlineSnapshotChange(a);
+    if (changed) {
+      console.error(`! ${a.name}: ${changed} - retiring the managed seat instead of restarting it`);
+      restart.armed = false;
+      this.freeSlot(a, true, "inline-snapshot-changed");
       this.reapChildrenOf(this.managedPrincipal(a));
       release();
       return;
@@ -6042,7 +6214,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller, served?: string): Promise<ControlReply> {
     // Opaque launch options, when present, must be a mapping — a raw control message could send a
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
@@ -6146,6 +6318,9 @@ export class Manager {
         role: args.role as string | undefined,
         config: args.config as string | undefined,
         identity: args.identity as string | undefined,
+        // Passed as sent: spawnPersona validates the record, the one place every door reads it.
+        persona: args.persona as InlinePersona | undefined,
+        ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
         model: args.model as string | undefined,
         variant: args.variant as string | undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
@@ -6166,6 +6341,7 @@ export class Manager {
         ...(once !== undefined ? { once } : {}),
         ...(typeof args.runtime === "string" ? { runtime: args.runtime.trim() } : {}),
         route,
+        ...(served !== undefined ? { served } : {}),
       },
       caller,
       hooks,
@@ -6550,10 +6726,14 @@ export class Manager {
    *  `resolve-agent` read: a detached resume locates the session it carries with the connector this
    *  names, so the two doors must not drift (#2899). */
   private async spawnPersona(
-    opts: Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent" | "resolved">,
+    opts: Pick<StartAgentOpts, "name" | "config" | "identity" | "agent" | "defaultAgent" | "resolved" | "persona">,
     spawner: string | undefined,
     authenticatedCaller: EpCaller | undefined,
-  ): Promise<{ ref: string; configPath: string; def: AgentDef | undefined; agent: string } | { error: string; code?: "bad-request" }> {
+  ): Promise<
+    | { ref: string; configPath: string; def: AgentDef | undefined; agent: string; inline?: undefined }
+    | { ref: string; configPath?: undefined; def: AgentDef; agent: string; inline: { save: boolean } }
+    | { error: string; code?: "bad-request" }
+  > {
     // Both config-taking wire commands and direct/roster starts enter here before interpreting
     // a path. A resolved manifest is host-built authority over its own materialized resource,
     // never a wire-supplied config override (the public schemas accept no `resolved` field).
@@ -6566,6 +6746,35 @@ export class Manager {
     // filename (unique on disk); two files can't collide on the key.
     const ref = opts.name.trim();
     if (!ref) return { error: "name required" };
+    // An inline persona is its own definition, read here like a file so every later check sees a
+    // def. It has no file until its snapshot is written, once the seat's lifecycle uid is final.
+    if (opts.persona !== undefined) {
+      if (opts.resolved || opts.config !== undefined || opts.identity !== undefined)
+        return { error: "persona: an inline persona names the helper itself, so it takes no config, identity or manifest launch", code: "bad-request" };
+      const refErr = this.nameError(ref);
+      if (refErr) return { error: refErr };
+      let inline: { def: AgentDef; save: boolean };
+      try {
+        inline = inlinePersonaDef(ref, opts.persona);
+      } catch (e) {
+        return { error: rejectionText(e), code: "bad-request" };
+      }
+      // A save under a name the catalog already holds is refused here, before anything is allocated,
+      // so the refusal starts nothing. The create-only write after the grant settles a race.
+      if (inline.save) {
+        const target = agentFilePath(this.workspaceRoot, ref);
+        let taken = true;
+        try {
+          lstatSync(target);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") return { error: `persona.save: ${rejectionText(e)}` };
+          taken = false;
+        }
+        if (taken)
+          return { error: `persona.save: the catalog already holds a persona named "${ref}" (${target}). Spawn that persona by name, or pick another name to save this one under` };
+      }
+      return { ref, def: inline.def, agent: resolveAgentType({ flag: opts.agent, pin: undefined, callerDefault: opts.defaultAgent }), inline: { save: inline.save } };
+    }
     // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
     // `--config` path is validated by existsSync below instead.
     if (!opts.config) {
@@ -6589,6 +6798,11 @@ export class Manager {
       if (!existsSync(configPath))
         return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
     }
+    // An inline snapshot belongs to its own seat's lifecycle, which removes it at retirement and
+    // refuses a restart once it changed, so no other launch may read it. Compared after symlinks
+    // resolve, for a config path and a catalog entry alike.
+    if (!opts.resolved && this.insideInlineDir(configPath))
+      return { error: `${configPath} is an inline persona's snapshot, which belongs to the seat it was written for; spawn a saved persona by name, or pass the persona inline` };
 
     // Load the persona ONCE, here, ahead of the connector choice. The file's `agent:` pin feeds the
     // harness resolution below; the spawn path's identity/ACL profile block consumes the SAME def (no
@@ -6615,6 +6829,142 @@ export class Manager {
       }
     }
     return { ref, configPath, def, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
+  }
+
+  /** Whether a persona path resolves into the inline snapshot directory, the directory itself
+   *  included. A directory that does not exist holds nothing. */
+  private insideInlineDir(path: string): boolean {
+    const dir = inlinePersonaDir(this.workspaceRoot);
+    if (!existsSync(dir)) return false;
+    const real = realpathSync(path);
+    const realDir = realpathSync(dir);
+    return real === realDir || real.startsWith(realDir + sep);
+  }
+
+  /** The run a spawn acts for (SPEC 14.8). The run this manager drives under `caller` answers from
+   *  memory. On a static mesh, a spawn from a run hosted elsewhere names its run, whether the program
+   *  placed it here or the class queue delivered it, and its caller must be that run's driver, whose
+   *  triple derives from the run id; the run's admission and revocation marker are then read
+   *  leader-served, so the helper is bounded as the hosting manager bounds it. Elsewhere the run id
+   *  is not read: a user-auth run's issuing host bounds the helper, and an open mesh bounds none.
+   *  `undefined` for a spawn that acts for no run. */
+  private async spawnRun(caller: EpCaller | undefined, runId: string | undefined): Promise<SpawnRun | undefined> {
+    const hosted = caller !== undefined ? this.runHosting?.runAdmission(caller) : undefined;
+    if (hosted !== undefined) {
+      if (runId !== undefined && runId !== hosted.runId) return { refused: `it names run ${runId}, but its caller drives run ${hosted.runId}` };
+      return { admission: hosted, hosted: true };
+    }
+    if (runId === undefined || this.meshMode !== "static") return undefined;
+    let driver: EpCaller | undefined;
+    try {
+      driver = caller !== undefined ? runDriverCaller(runId, caller.owner) : undefined;
+    } catch (e) {
+      return { refused: `runId ${JSON.stringify(runId)} is not a run id (${rejectionText(e)})` };
+    }
+    if (driver === undefined || driver.actor !== caller!.actor || driver.uid !== caller!.uid)
+      return { refused: `it names run ${runId}, but its caller is not that run's driver` };
+    if (this.runHosting === undefined) return { refused: `run ${runId} asked this manager for a helper, but this manager hosts no runs, so it cannot read the run's admission` };
+    let view: { admission: RunAdmission; revoked: RunRevocation | undefined };
+    try {
+      view = await this.runHosting.admission(runId);
+    } catch (e) {
+      return { refused: `run ${runId}'s admission and revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)` };
+    }
+    if (view.revoked !== undefined) return { refused: revokedRunRefusal(runId, view.revoked) };
+    return { admission: view.admission, hosted: false };
+  }
+
+  /**
+   * Resolve what bounds a spawn's grant on a STATIC mesh: the caller's issued evidence, read the way
+   * keyed runs read it. A user-auth mesh bounds the mint on its ledger instead, and an open mesh
+   * mints no grant, so both return `exempt`. So does a call with no authenticated caller, which is
+   * the manager's own composition root (roster boot, a manifest `launch`, which a static mesh mints
+   * only into operator instruments). A workflow run's spawn, whether this manager hosts the run or
+   * its spawn reached this manager from another host ({@link spawnRun}), is bounded by the run's admission (SPEC 14.8):
+   * the ceiling it recorded, at the starter's coordinate, unless the starter was exempt then. That
+   * ceiling is the starter's evidence as resolved at admission, or for a local run the channels the
+   * operator named. Any other caller with no issued generation, or whose evidence does not resolve,
+   * hands on no grant. The evidence's own standing decides the rest.
+   */
+  private async staticSpawnBound(caller: EpCaller | undefined, run: Extract<SpawnRun, { admission: RunAdmission }> | undefined): Promise<StaticSpawnBound> {
+    if (this.meshMode !== "static" || caller === undefined) return { kind: "exempt" };
+    // The driver's own credential is not the run's authority, and the starter's evidence may have
+    // expired or changed since: the admission recorded both the ceiling and the verdict.
+    if (run !== undefined) {
+      const admission = run.admission;
+      // Read leader-served before each of the run's spawns, so a run revoked mid-step starts no
+      // helper, and a marker this manager cannot read refuses the spawn too. The marker of a run
+      // hosted elsewhere was read with its admission.
+      let refusal: string | undefined;
+      if (run.hosted)
+        try {
+          const revoked = (await this.runHosting!.admission(admission.runId)).revoked;
+          if (revoked !== undefined) refusal = revokedRunRefusal(admission.runId, revoked);
+        } catch (e) {
+          refusal = `run ${admission.runId}'s revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)`;
+        }
+      if (refusal !== undefined) return { kind: "refused", reason: refusal };
+      if (admission.spawnExempt) return { kind: "exempt" };
+      // The helper is projected at the admitted coordinate, which needs a lifecycle token. A local
+      // admission written before its uid was one records the CLI's own holder id, and bounds nothing.
+      try {
+        assertLifecycleToken(admission.caller.uid);
+      } catch {
+        return { kind: "refused", reason: `run ${admission.runId}'s admission records caller uid ${JSON.stringify(admission.caller.uid)}, which is not a lifecycle token, so its helpers cannot be measured and it starts none. Start the run again (SPEC 14.8)` };
+      }
+      return { kind: "bounded", caller: admission.caller, ceiling: admission.ceiling, run: admission.runId };
+    }
+    if (!isIssuedCaller(caller))
+      return { kind: "none", reason: "its credential carries no issued generation (an unissued mint or a legacy rail)" };
+    const ref = { space: this.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+    try {
+      const { evidence } = await withIssuerSession({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, auth: this.auth!, tls: false }, (s) =>
+        s.store.resolve(ref, s.sourceIsLive));
+      return issuedSpawnerStanding(evidence) === "bounded" ? { kind: "bounded", caller, ceiling: evidence.permissions } : { kind: "exempt" };
+    } catch (e) {
+      return { kind: "none", reason: `its issued evidence does not resolve: ${rejectionText(e)}` };
+    }
+  }
+
+  /** The refusal for a grant its static spawner does not hold, or `undefined` when it holds all of
+   *  it. Each part is named, so the caller can drop exactly what overreached. `armsEvents` is whether
+   *  the helper's own event plane will be minted: that row is keyed on a principal allocated later,
+   *  so it is measured as the spawner's own, the rule the ledger applies. `door` names the command
+   *  being bounded: a persona definition is bounded against its definer as a spawn is. */
+  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean, door: "spawn" | "define-persona" = "spawn"): string | undefined {
+    if (bound.kind === "exempt") return undefined;
+    if (bound.kind === "refused") return `${door}: ${bound.reason}`;
+    let over: GrantOverreach[];
+    let eventsOver: boolean;
+    try {
+      over = bound.kind === "none" ? grantParts(grant) : grantOverreach(this.space, bound.caller, bound.ceiling, grant);
+      eventsOver = armsEvents && (bound.kind === "none"
+        || grantOverreach(this.space, bound.caller, bound.ceiling, { allowPublish: [eventChannel({ owner: bound.caller.owner, actor: bound.caller.actor })] }).length > 0);
+    } catch (e) {
+      return `${door}: ${rejectionText(e)}`;
+    }
+    if (!over.length && !eventsOver) return undefined;
+    const named = [
+      // A role is handed on by a spawner whose credential binds that role's task queue: its own
+      // role, or a `role:<r>` token in its capabilities.
+      ...over.map((o) => o.field === "role" ? `role ${o.value} (a spawner hands on a role it was given as its own or as the \`role:${o.value}\` capability)` : `${o.field} ${o.value}`),
+      ...(eventsOver ? ["events (the helper's own event plane; pass events: false to spawn without it)"] : []),
+    ].join(", ");
+    if (door === "define-persona")
+      return bound.kind === "none"
+        ? `define-persona: the definer holds no issued evidence (SPEC 13.15), so its persona can grant nothing: ${bound.reason}. This persona asks for ${named}. ` +
+            `Define it without these, or start the definer under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
+        : `define-persona: this persona grants more than the definer holds: ${named}. A definer hands on only what its own issued credential carries (SPEC 13.15). ` +
+            `Drop these from the persona, or have the operator widen the definer's own persona.`;
+    if (bound.kind === "bounded" && bound.run !== undefined)
+      return `spawn: this spawn hands its helper more than run ${bound.run}'s starter held when the run was admitted: ${named}. ` +
+        `A run hands on only what its admission recorded: its starter's issued credential, or for a \`--local\` run the channels named by \`--admit-read\` and \`--admit-publish\` (SPEC 14.8). ` +
+        `Drop these from the persona or the spawn, or start the run from a caller that holds them.`;
+    return bound.kind === "none"
+      ? `spawn: the spawner holds no issued evidence (SPEC 13.15), so it hands on no grant: ${bound.reason}. This spawn asks for ${named}. ` +
+          `Spawn a persona that names none of these, or start the spawner under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
+      : `spawn: this spawn hands its helper more than the spawner holds: ${named}. A spawner hands on only what its own issued credential carries (SPEC 13.15). ` +
+          `Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.`;
   }
 
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
@@ -6647,7 +6997,11 @@ export class Manager {
     }
     const persona = await this.spawnPersona(opts, spawner, authenticatedCaller);
     if ("error" in persona) return { ok: false, error: persona.error, ...(persona.code ? { code: persona.code } : {}) };
-    const { ref, configPath, def, agent } = persona;
+    const { ref, def, agent, inline } = persona;
+    // An inline persona's file is its snapshot, written once the lifecycle uid is final; until then
+    // a refusal names the persona instead of a path.
+    let configPath = persona.configPath;
+    const where = configPath ?? `inline persona "${ref}"`;
 
     // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
     // `cotal ext` manifest import on the published binary). It runs BEFORE the capacity/reserve span
@@ -6664,6 +7018,10 @@ export class Manager {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
+    // Read here, beside the connector, so the capacity check and the reserve below take no new await.
+    const run = await this.spawnRun(authenticatedCaller, opts.runId);
+    if (run !== undefined && "refused" in run) return { ok: false, error: `spawn: ${run.refused}` };
+    const bound = await this.staticSpawnBound(authenticatedCaller, run);
 
     const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
     if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
@@ -6781,6 +7139,8 @@ export class Manager {
     let variant = opts.variant;
     let launchOptions = opts.launchOptions;
     let prompt = opts.prompt;
+    // The read set the persona and the overrides name, before `join` adds to it: what a saved copy keeps.
+    let ownSubscribe: string[] | undefined;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -6814,13 +7174,25 @@ export class Manager {
       // when the door sent one). The spawner's own event channel is dropped from it: that plane is
       // foreign to the child, and the guard below refuses any spawn that asks for one. The joined
       // set is never copied from the spawner: a helper starts on what its persona lists plus what
-      // the caller passes in `join`, and nothing else.
+      // the caller passes in `join`, and nothing else. The ACL is the caller's own report, so on a
+      // static mesh it is clamped to what the caller's evidence shows it holds, and a caller with
+      // no evidence gets no default at all.
       const personaNamesChannels = def.subscribe !== undefined || def.allowSubscribe !== undefined || def.allowPublish !== undefined;
-      const scoped = !personaNamesChannels && opts.callerAcl ? {
-        allowSubscribe: opts.callerAcl.allowSubscribe.filter((ch) => eventChannelPrincipal(ch) === null),
-        allowPublish: opts.callerAcl.allowPublish.filter((ch) => eventChannelPrincipal(ch) === null),
-      } : undefined;
+      const heldChannels = (field: "allowSubscribe" | "allowPublish", channels: string[]) => {
+        const own = channels.filter((ch) => eventChannelPrincipal(ch) === null);
+        return bound.kind === "bounded" ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;
+      };
+      let scoped: { allowSubscribe: string[]; allowPublish: string[] } | undefined;
+      try {
+        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== "none" ? {
+          allowSubscribe: heldChannels("allowSubscribe", opts.callerAcl.allowSubscribe),
+          allowPublish: heldChannels("allowPublish", opts.callerAcl.allowPublish),
+        } : undefined;
+      } catch (e) {
+        return { ok: false, error: `callerAcl: ${rejectionText(e)}` };
+      }
       const base = opts.subscribe ?? def.subscribe;
+      ownSubscribe = base;
       subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
       allowPublish = opts.allowPublish ?? def.allowPublish ?? scoped?.allowPublish;
@@ -6838,44 +7210,83 @@ export class Manager {
     try {
       allowSubscribe = resolveReadAcl(subscribe ?? [], allowSubscribe);
     } catch (e) {
-      return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${configPath}: ${rejectionText(e)}` };
+      return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${where}: ${rejectionText(e)}` };
     }
+    // The AG-UI event plane is on unless the launch explicitly opted out. A connector that cannot
+    // emit one is refused further down, before anything is minted.
+    const events = this.eventsRequired || opts.events !== false;
+    // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
+    // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
+    // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
+    // leaves nothing.
+    const boundRefusal = this.spawnBoundRefusal(bound, {
+      allowSubscribe,
+      ...(allowPublish !== undefined ? { allowPublish } : {}),
+      ...(role !== undefined ? { role } : {}),
+      ...(capabilities !== undefined ? { capabilities } : {}),
+    }, events);
+    if (boundRefusal) return { ok: false, error: boundRefusal };
+    // A run saves for the caller it was admitted for, whose catalog reads then find the copy.
+    const savedBy = authenticatedCaller === undefined ? undefined : this.runHosting?.admittedCaller(authenticatedCaller);
+    // What a saved copy keeps: the grant just checked, without the helper's own event row, which each
+    // later spawn derives for its own helper. The file names every channel field, so no later caller's
+    // default fills one, and each later spawn of it is still bounded against that caller.
+    const catalogCopy: AgentDef | undefined = inline?.save
+      ? {
+          name: ref,
+          owner: savedBy !== undefined ? this.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.personaOwner(spawner),
+          role,
+          model,
+          variant,
+          description: def?.description,
+          persona: def?.persona,
+          subscribe: [...(ownSubscribe ?? [])],
+          allowSubscribe: [...allowSubscribe],
+          allowPublish: [...(allowPublish ?? [])],
+          capabilities: capabilities?.length ? [...capabilities] : undefined,
+        }
+      : undefined;
     // Checked after every path has resolved its selectors: a direct `startAgent` call skips the
     // `start` op's checks, and no connector may receive a blank one (#2862).
     if (model !== undefined && !model.trim()) return { ok: false, error: "model: must not be empty" };
     if (variant !== undefined && !variant.trim()) return { ok: false, error: "variant: must not be empty" };
     const idErr = this.nameError(identityName);
-    if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
+    if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${where}: ${idErr}` };
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
     // is what other agents ROUTE on (role is the anycast address). The gap is silent today because
-    // the mismatch is only discovered minutes in, when the seat first reaches for a worker. The
-    // persona write path takes content only (role/capabilities are POLICY), so a peer-defined
-    // persona can never fix this by declaring the capability — the only honest outcomes are "the
-    // persona grants spawn" or "say so now". Refuse at accept, before any reserve/mint, naming the
-    // exact remediation for each author: an operator edits the file to add the grant; a peer that
-    // defined the persona over the wire must ask one, because capabilities cannot be declared over
-    // the wire by design. The check keys on the EFFECTIVE role (a spawn-time role: override wins
+    // the mismatch is only discovered minutes in, when the seat first reaches for a worker. Refuse
+    // at accept, before any reserve/mint, naming the remediation for each author: an operator edits
+    // the file to add the grant, and the persona's owner may redefine it with the grant only if the
+    // owner holds spawn, because define-persona bounds capabilities against the definer. The
+    // check keys on the EFFECTIVE role (a spawn-time role: override wins
     // over the file, mirroring the resolution above), not the file's, so the label other agents
     // will actually see is the label that is held to account. `manager` is the label that MEANS
     // spawn-holding: naming it literally keeps this the narrow guard for the observed harm, not a
     // vocabulary any caller can trigger with a synonym (roles are free-form and mostly
     // non-manager: this workspace's own catalog carries worker/reviewer/orchestrator seats with no
     // spawn grant, all legitimate).
+    if (role === "manager" && !capabilities?.includes("spawn") && inline)
+      return {
+        ok: false,
+        error:
+          `inline persona "${ref}" would join with role "manager" but no spawn capability: it presents as a manager ` +
+          `while being unable to seat workers. Add \`capabilities: [spawn]\` to the inline persona (a spawner hands on only what it holds), or give it another role.`,
+      };
     if (role === "manager" && !capabilities?.includes("spawn"))
       return {
         ok: false,
         error:
           `persona "${ref}" would join with role "manager" but no spawn capability: it presents as a manager ` +
           `while being unable to seat workers, and it would discover that only on first use. ` +
-          `An operator adds \`capabilities: [spawn]\` to ${configPath}; a peer-defined persona ` +
-          `(cotal_persona) cannot declare capabilities by design — ask an operator to grant it.`,
+          `An operator adds \`capabilities: [spawn]\` to ${configPath}, or the persona's owner redefines it ` +
+          `with \`capabilities: [spawn]\` (cotal_persona) if the owner holds spawn.`,
       };
     // #581: the operator's per-role model allowlist, judged on the EFFECTIVE role and model resolved
     // above, before any reserve or mint. This is where the launch is performed, so no caller can
     // skip it, and a definition pinned to a stale model (or to none) is refused here instead of
     // serving on it.
     const policyRefusal = modelPolicyRefusal(cotalConfig, {
-      persona: opts.resolved ? `manifest agent "${ref}"` : `persona "${ref}" (${configPath})`,
+      persona: opts.resolved ? `manifest agent "${ref}"` : configPath ? `persona "${ref}" (${configPath})` : where,
       role, model, variant,
       // A manifest launch carries its own declared model/variant in these options
       // (launchAgentToStartOpts), so there they are the definition's field, never a flag.
@@ -6921,16 +7332,15 @@ export class Manager {
     const unportable = runtime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
     if (unportable.length)
       return { ok: false, error: `runtime "${runtime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
-    // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
-    // anything is minted: a connector that cannot
-    // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
+    // An event plane the connector cannot emit is refused HERE, before anything is minted: a
+    // connector that cannot emit must fail before provisioning rather than after, as an
+    // unsupported `resume` does.
     // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
     // the principal's owner is resolved further down, so deriving it from anything in scope here
     // would mean guessing at the identity the child will actually connect as. It is added at the
     // accept seam below, where the allocated triple exists.
     const eventsRefused = this.eventsRefusal(connector, opts.events);
     if (eventsRefused) return { ok: false, error: eventsRefused };
-    const events = this.eventsRequired || opts.events !== false;
 
     // The roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
@@ -6986,6 +7396,9 @@ export class Manager {
     let provisioned: TeardownTarget | undefined;
     // A carried resume's seat-private home, removed by the finally unless a live seat took it.
     let seatHome: string | undefined;
+    // The lifecycle whose inline snapshot this spawn wrote: removed by the finally unless a live seat
+    // took it. A write that failed sets nothing, so the finally never removes a file it did not make.
+    let snapshotUid: string | undefined;
     // Taken right before the try so its finally is the only release; a refusal belongs above the
     // allocation, where there is no name to give back.
     hooks?.onEffect?.();
@@ -7103,6 +7516,7 @@ export class Manager {
           label: ref,
           lifecycleUid,
           delegatedIntent: opts.delegatedIntent,
+          ...(opts.served !== undefined ? { spawnRequest: this.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
           // Hold the name at the UID the host enrolled for the intent's user before any later local
           // step runs, so no later failure, its refusal included, releases a lifecycle that only that
           // user's retirement intent retires.
@@ -7200,6 +7614,16 @@ export class Manager {
       // The realpath the admission check above already resolved (#385 item 2) — never re-resolved here,
       // so the admission refusal and the launch cwd can never disagree on the same request.
       const cwd = resolvedCwd ?? this.workspaceRoot;
+      // An inline persona's snapshot, and its catalog copy when saved, are written here: after the
+      // grant (the static issuance, the user-auth ledger, a hosted enrollment that may replace the
+      // uid) and before launch, so a refused grant leaves neither file and the snapshot carries the
+      // final uid. A copy that loses a create race throws, and the finally rolls the grant back.
+      if (inline) {
+        configPath = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role, model, variant, description: def.description, body: def.persona });
+        snapshotUid = lifecycleUid;
+        if (catalogCopy) saveAgentFile(agentFilePath(this.workspaceRoot, ref), catalogCopy, { createOnly: true });
+      }
+      if (configPath === undefined) throw new Error("internal: the persona file is missing at launch");
       const configSha256 = this.fileDigest(configPath);
       const manifestPath = opts.launchRef
         ? join(this.workspaceRoot, ".cotal", "run", `${opts.launchRef.runId}.json`)
@@ -7303,7 +7727,9 @@ export class Manager {
                 configSha256,
                 manifestSha256,
               }
-            : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
+            : inline
+              ? { kind: "inline", ref, configPath, configSha256 }
+              : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
           cwd,
           model,
           variant,
@@ -7364,6 +7790,7 @@ export class Manager {
       // orphan-rollback in `finally` no longer applies to it.
       provisioned = undefined;
       seatHome = undefined;
+      snapshotUid = undefined;
       // #159 B1: reply on a REAL outcome, not a timer. Wait for the agent to actually join the mesh
       // (presence) → started, the child to exit → failed (with its last output; already reaped), or
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
@@ -7509,10 +7936,15 @@ export class Manager {
       this.reserved.delete(name);
       this.reservedLive.delete(name);
       if (seatHome) rmSync(seatHome, { recursive: true, force: true });
+      // A failed removal is logged, never thrown, so the grant's teardown below is still scheduled.
+      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);
       // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
-        const orphan = provisioned;
+        // Settled when this spawn wrote no snapshot or removed the one it wrote. A file its write
+        // refused is not this lifecycle's, so the terminal leaves the uid's path alone; a removal
+        // that failed is the terminal's to retry and report.
+        const orphan: TeardownTarget = { ...provisioned, ...(snapshotGone ? { snapshotSettled: true as const } : {}) };
         // The host enrolled this UID for the intent's user, so only that user's retirement intent
         // retires it, and its name stays held for retireDelegatedAgent.
         const p = orphan.delegated ? parsePrincipalKey(orphan.id) : null;
@@ -11346,6 +11778,12 @@ export class Manager {
         await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
         await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
+      // The lifecycle's inline snapshot, when no earlier step settled it. Keyed by the uid, so a boot
+      // sweep or a reconcile that knows only the slot row removes it too.
+      if (!a.snapshotSettled) {
+        const snapshot = inlineSnapshotPath(this.workspaceRoot, a.lifecycleUid);
+        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.workspaceRoot, a.lifecycleUid));
+      }
       await attemptCleanup(failed, "broker teardown", async () => {
         try {
           const accounting = await this.deprovisionBroker(a);
@@ -12167,15 +12605,17 @@ export class Manager {
   /** Persist a peer-defined persona as config. After this, `start name` auto-discovers
    *  .cotal/agents/<name>.md and the connector applies its persona/model at spawn.
    *
-   *  CONTENT vs POLICY: `capabilities` and `owner` still have no slot, so a peer cannot
-   *  self-grant spawn or claim ownership. Channel grants, role, and agent are content: they may
+   *  CONTENT vs POLICY: `owner` has no slot, so a peer cannot claim ownership, and the
+   *  capabilities the written persona carries, a saved list a redefine keeps included, are bounded
+   *  against the definer before the write, so a peer can put only what it holds into a persona that
+   *  a wider spawner might later launch. Channel grants, role, and agent are content: they may
    *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
    *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
    *  frontmatter block; a malformed block is refused by name rather than wrapped. A fresh name is
    *  created with the owner {@link personaOwner} records. Redefining an EXISTING file is allowed on
    *  the privileged tier only if `file.owner == caller`, else admin is required. Fail-closed: an
    *  ownerless file (legacy / operator-written) is admin-only. */
-  private opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+  private async opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean, authenticated?: EpCaller): Promise<ControlReply> {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
@@ -12185,47 +12625,101 @@ export class Manager {
     if (!persona) return { ok: false, error: "persona required" };
     const model = args.model !== undefined && args.model !== null && String(args.model) !== "" ? String(args.model) : undefined;
     const path = agentFilePath(this.workspaceRoot, name);
-    let existing: AgentDef | undefined;
-    if (existsSync(path)) {
-      try {
-        existing = loadAgentFile(path);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      if (!admin && existing.owner !== caller) {
-        const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
-        return { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` };
-      }
-    }
     const strList = (v: unknown): string[] | undefined => {
       if (v === undefined || v === null) return undefined;
       return (Array.isArray(v) ? v : [v]).map((x) => String(x));
     };
-    let def: AgentDef;
-    try {
-      def = composeWirePersona(
-        {
-          name,
-          owner: this.personaOwner(caller),
-          prompt: persona,
-          model,
-          role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
-          agent: args.agent !== undefined && args.agent !== null && String(args.agent) !== "" ? String(args.agent) : undefined,
-          subscribe: strList(args.subscribe),
-          allowSubscribe: strList(args.allowSubscribe),
-          allowPublish: strList(args.allowPublish),
-        },
-        existing,
-      );
-    } catch (e) {
-      return { ok: false, error: rejectionText(e) };
+    const capabilities = strList(args.capabilities);
+    // Read, authorize and compose against the catalog as it is now. Nothing yields between this and
+    // the write, so no other call in this manager can change the file in between. The handler does
+    // not serialize with other processes; their writes are outside this single-manager guarantee.
+    const compose = (): { def: AgentDef } | { reply: ControlReply } => {
+      let existing: AgentDef | undefined;
+      if (existsSync(path)) {
+        try {
+          existing = loadAgentFile(path);
+        } catch (e) {
+          return { reply: { ok: false, error: rejectionText(e) } };
+        }
+        if (!admin && existing.owner !== caller) {
+          const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
+          return { reply: { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` } };
+        }
+      }
+      try {
+        return {
+          def: composeWirePersona(
+            {
+              name,
+              owner: this.personaOwner(caller),
+              prompt: persona,
+              model,
+              role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
+              agent: args.agent !== undefined && args.agent !== null && String(args.agent) !== "" ? String(args.agent) : undefined,
+              subscribe: strList(args.subscribe),
+              allowSubscribe: strList(args.allowSubscribe),
+              allowPublish: strList(args.allowPublish),
+              capabilities,
+            },
+            existing,
+          ),
+        };
+      } catch (e) {
+        return { reply: { ok: false, error: rejectionText(e) } };
+      }
+    };
+    let composed = compose();
+    if ("reply" in composed) return composed.reply;
+    // The bound reads the persona as written, so a redefine that omits `capabilities` has the list it
+    // keeps checked too. Resolving the definer's grant yields, so the catalog is read again after it.
+    if (composed.def.capabilities?.length) {
+      const refusal = await this.definerCapabilityRefusal(caller, authenticated);
+      composed = compose();
+      if ("reply" in composed) return composed.reply;
+      const kept = composed.def.capabilities ?? [];
+      const refused = kept.length ? refusal(kept) : undefined;
+      if (refused)
+        return {
+          ok: false,
+          code: "permission-denied",
+          error: capabilities === undefined
+            ? `${refused} These come from the saved persona, which a redefine without \`capabilities\` keeps; pass the capabilities the definer holds, or [] to clear them.`
+            : refused,
+        };
     }
     try {
-      saveAgentFile(path, def);
+      saveAgentFile(path, composed.def);
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** Resolve what a persona's definer may put into it, as a check that returns the refusal for
+   *  capabilities it does not hold, or `undefined` when it holds them all. The check itself does not
+   *  yield. An open mesh mints no credential, so nothing is bounded there. A static definer is
+   *  bounded by its issued evidence, as a spawner is; a user-auth definer by its own ledger row's
+   *  scope, under the ledger's token rule, with `admin` exempt. A hosted manager reads no ledger, so
+   *  it refuses. A later spawn of the persona is bounded again against its own spawner. */
+  private async definerCapabilityRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(capabilities: string[]) => string | undefined> {
+    if (this.meshMode === "open") return () => undefined;
+    if (this.meshMode === "static") {
+      const run = await this.spawnRun(authenticated, undefined);
+      const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
+      return (capabilities) => this.spawnBoundRefusal(bound, { capabilities }, false, "define-persona");
+    }
+    if (this.remoteAuthority)
+      return () => "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities.";
+    const p = parsePrincipalKey(caller);
+    const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner: p.owner, actor: p.actor }) : undefined;
+    return (capabilities) => {
+      if (scope?.includes("admin")) return undefined;
+      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));
+      if (!over.length) return undefined;
+      return scope === undefined
+        ? `define-persona: the definer ${caller} has no grant in this space, so its persona can grant nothing. This persona asks for capabilities ${over.join(", ")}.`
+        : `define-persona: this persona grants more than the definer holds: capabilities ${over.join(", ")} beyond [${scope.join(", ") || "none"}]. Drop these from the persona, or have the operator widen the definer's grant.`;
+    };
   }
 
   /** Remove one machine-local persona definition without touching any running lifecycle that was

@@ -43,6 +43,7 @@ import {
   type ChannelMode,
   type CotalMessage,
   type GoalResultFact,
+  type InlinePersona,
   turnNoticeFilter,
   renderOnceTask,
 } from "@cotal-ai/core";
@@ -2289,8 +2290,11 @@ export class MeshAgent extends EventEmitter {
    *  set, each checked here against THIS agent's read ACL before anything is sent (a spawn never
    *  widens). The request also carries this agent's own read/post ACL as `callerAcl`; the manager
    *  consults it only for a persona that names no channel field, so such a helper is scoped to its
-   *  spawner. The joined set is never copied: without `join`, a channel-less persona starts on none. */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string; join?: string[]; once?: { deadlineMs?: number } }): Promise<ControlReply & { instanceId?: string }> {
+   *  spawner. The joined set is never copied: without `join`, a channel-less persona starts on none.
+   *
+   *  `opts.persona` defines the helper inline, with `name` as its name: the manager validates and
+   *  bounds it as it does a catalog file. Its `model` is audited like the `opts.model` override. */
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string; join?: string[]; persona?: InlinePersona; once?: { deadlineMs?: number } }): Promise<ControlReply & { instanceId?: string }> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
@@ -2315,17 +2319,20 @@ export class MeshAgent extends EventEmitter {
     }
     if (this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)
       return { ok: false, error: "the requested manager instance differs from this credential's instance authority" };
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, join: opts?.join, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish }, once: opts?.once };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, join: opts?.join, persona: opts?.persona, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish }, once: opts?.once };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
     // There is no allocated name to inspect before acceptance. Preserve the submission's goal
     // rather than auditing the requested persona alias and discarding the unknown result.
     if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown) return reply;
-    if (!requested) return reply;
+    // The record is forwarded as written and the manager records its model as written, so the
+    // inline model is audited as sent.
+    const pinned = requested || opts?.persona?.model;
+    if (!pinned) return reply;
     // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
     // looks successful, the seat comes up on the harness default, and nothing in the spawn result
-    // names the mismatch. Inspect is the manager's recorded pin (persona file or this override).
+    // names the mismatch. Inspect is the manager's recorded pin (persona file, inline persona, or this override).
     // A wait-timeout is still a timeout, not evidence the pin landed — annotate it, never upgrade it.
     const actual = reply.data as { name?: string } | undefined;
     const seat = actual?.name ?? name;
@@ -2335,18 +2342,18 @@ export class MeshAgent extends EventEmitter {
       : recorded.model === undefined
         ? "the manager recorded no model pin"
         : `the manager recorded ${JSON.stringify(recorded.model)}`;
-    if (recorded.ok && recorded.model !== requested) {
+    if (recorded.ok && recorded.model !== pinned) {
       return {
         ok: false,
         error:
-          `requested model ${JSON.stringify(requested)} but ${recordedLabel} for "${seat}" — refusing a spawn whose pin did not land. The seat may already be live; inspect it before retrying, because a retry duplicates the spawn`,
+          `requested model ${JSON.stringify(pinned)} but ${recordedLabel} for "${seat}" — refusing a spawn whose pin did not land. The seat may already be live; inspect it before retrying, because a retry duplicates the spawn`,
       };
     }
     // An uncertain launch stays managed with its pin recorded, so it carries the pin like a started one.
     if (!reply.ok && reply.code !== "uncertain") {
       return {
         ok: false,
-        error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
+        error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(pinned)}; ${recordedLabel} for "${seat}")`,
       };
     }
     // The launch stands and only its audit failed. A refusal here reads as "nothing was spawned",
@@ -2357,7 +2364,7 @@ export class MeshAgent extends EventEmitter {
         ...reply,
         data: {
           ...(reply.data as Record<string, unknown> | undefined),
-          pinAudit: { requested, error: recorded.error, ...(recorded.unreported ? { unreported: true } : {}) },
+          pinAudit: { requested: pinned, error: recorded.error, ...(recorded.unreported ? { unreported: true } : {}) },
         },
       };
     }
@@ -3044,6 +3051,7 @@ export class MeshAgent extends EventEmitter {
     subscribe?: string[];
     allowSubscribe?: string[];
     allowPublish?: string[];
+    capabilities?: string[];
     announce?: string;
   }): Promise<ControlReply & { definitionOutcome?: "unknown"; announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
@@ -3085,6 +3093,7 @@ export class MeshAgent extends EventEmitter {
       subscribe: def.subscribe,
       allowSubscribe: def.allowSubscribe,
       allowPublish: def.allowPublish,
+      capabilities: def.capabilities,
     };
     const reply = await this.managerInvoke("define-persona", args, pin);
     // A command deadline observes no reply, not a refused write. A paused manager can still

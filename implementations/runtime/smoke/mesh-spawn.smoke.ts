@@ -67,7 +67,7 @@ import {
   type EpCaller,
   type GoalRef,
 } from "@cotal-ai/core";
-import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
+import { Cancelled, EffectError, digest, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMigration, canonicalCwd } from "../src/index.js";
 // Package imports, not sibling source paths: this package's typecheck pins rootDir to its own tree,
 // so a source import from another package fails TS6059. The fixture entries that mutate core or
@@ -162,6 +162,18 @@ const SPAWN_INPUT = {
     cwd: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
     runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
+    // The manager's inline persona record, as its own contract declares it.
+    persona: {
+      type: "object", additionalProperties: false, required: ["prompt"],
+      properties: {
+        prompt: { type: "string" }, role: { type: "string" }, model: { type: "string" }, variant: { type: "string" },
+        description: { type: "string" }, save: { type: "boolean" },
+        subscribe: { type: "array", items: { type: "string" } }, allowSubscribe: { type: "array", items: { type: "string" } },
+        allowPublish: { type: "array", items: { type: "string" } }, capabilities: { type: "array", items: { type: "string" } },
+      },
+    },
   },
 } as const;
 const SPAWN_OUTPUT = {
@@ -253,6 +265,10 @@ const grant = await authorizeServeGrant(kv, {
 const goalCtx = await actionContext(nc, SPACE);
 const acceptances = new Map<string, Record<string, unknown>>();
 const spawnInvokes: string[] = [];                       // every spawn submission's goalId, in order
+const spawnPersonas = new Map<string, unknown>();         // goalId -> the `persona` record the submission carried
+/** The run whose spawn journal is read as each inline submission arrives, and what that read saw. */
+let receiptRun: string | undefined;
+const journalAtReceipt = new Map<string, JournalEntry[]>(); // goalId -> the step's journal when the manager got the request
 const allocations: Array<{ goalId: string; name: string; owner: string; actor: string; uid: string; persona: string }> = [];
 const despawns: Array<{ owner: string; actor: string; lifecycleUid: string; graceful: unknown }> = [];
 const placements: Array<{ goalId: string; cwd: string; head: string }> = [];
@@ -274,6 +290,8 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   const persona = String(args.name);
   const goalId = ctx.request.id;
   spawnInvokes.push(goalId);
+  if (args.persona !== undefined) spawnPersonas.set(goalId, args.persona);
+  if (args.persona !== undefined && receiptRun !== undefined) journalAtReceipt.set(goalId, await journalEntries(receiptRun, "spawn"));
   const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
   // Idempotent same-goalId retry: the recorded acceptance, never a second allocation.
   const prior = acceptances.get(goalId);
@@ -560,6 +578,59 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     bound?.external?.goalId === bound?.requestId && bound?.external?.name === alloc?.name
       && bound?.external?.actor === alloc?.actor && bound?.external?.uid === alloc?.uid,
     JSON.stringify(bound?.external));
+}
+
+// ── 1b) an inline persona travels whole and is journalled with its digest ─────────────────────
+{
+  console.log("• 1b — an inline persona travels whole and is journalled with its digest");
+  receiptRun = "sp-1b";
+  const out = await withDeadline(driven({
+    space: SPACE, endpoint: EP, kv, runId: "sp-1b", lease: lease(),
+    source: `const d = await spawn({ name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] });\nlog("spawned", d.agent);`,
+    handler: mk("sp-1b"),
+  }), 30_000, "the inline spawning run");
+  receiptRun = undefined;
+  c("an inline spawn completes", out?.status === "completed", JSON.stringify(out));
+  const alloc = allocations.find((a) => a.persona === "inliner");
+  c("the manager is asked for the helper by name, with the definition as its persona record",
+    alloc !== undefined && JSON.stringify(spawnPersonas.get(alloc.goalId)) === JSON.stringify({ prompt: "You check diffs.", allowPublish: ["t"] }),
+    spawnPersonas.get(alloc?.goalId ?? ""));
+  const entries = await journalEntries("sp-1b", "spawn");
+  const binds = entries.filter((e) => e.state === "pending" && e.external !== undefined);
+  const definition = { name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] };
+  const first = binds[0]?.external as { inline?: { definition?: unknown; digest?: unknown }; goalId?: unknown } | undefined;
+  // What the journal held when the manager received the request, so a bind after the submission fails.
+  const received = journalAtReceipt.get(alloc?.goalId ?? "")?.find((e) => e.state === "pending" && e.external !== undefined)?.external as { inline?: { digest?: unknown } } | undefined;
+  c("the definition and its digest are bound before the submission, with no goal yet",
+    first?.goalId === undefined && JSON.stringify(first?.inline?.definition) === JSON.stringify(definition) && first?.inline?.digest === digest(definition)
+      && received?.inline?.digest === digest(definition),
+    JSON.stringify({ first, received }));
+  const last = binds.at(-1)?.external as { inline?: { digest?: unknown }; goalId?: unknown } | undefined;
+  c("and the acceptance bind restates them beside the goal", typeof last?.goalId === "string" && last?.inline?.digest === digest(definition), JSON.stringify(last));
+
+  // A resume submits the definition it recorded, so one that differs from the program's is refused.
+  const other = { name: "inliner", prompt: "You write tests." };
+  const forged = await withDeadline(
+    mk("sp-1b-r").spawn({ persona: "inliner", inline: other }, stepCtx("sp-1b-forged", { inline: { definition, digest: digest(definition) } }).ctx)
+      .then(() => "spawned", (e: unknown) => String((e as Error)?.message)), 20_000, "the forged resume") ?? "timed out";
+  c("a resume whose recorded definition differs from the program's is refused", forged.includes("never submits another definition"), forged);
+
+  // A migration hands a seat only to a spawn of the same definition.
+  const settled = entries.find((e) => e.state === "settled");
+  const seatEntry = { ...settled!, external: binds.at(-1)!.external } as JournalEntry;
+  const handle = (settled?.result as { agent?: string } | undefined)?.agent;
+  const handOver = async (req: Record<string, unknown>, id: string): Promise<string> => {
+    const h = mk(`sp-1b-${id}`);
+    h.adoptMigratedSeats(new Map([["inliner", [seatEntry]]]));
+    return await withDeadline(h.spawn(req as never, stepCtx(`sp-1b-${id}`).ctx).then((v) => `agent ${v.agent}`, (e: unknown) => String((e as Error)?.message)), 20_000, `the ${id} hand-over`) ?? "timed out";
+  };
+  const before = spawnInvokes.length;
+  const changed = await handOver({ persona: "inliner", inline: other }, "changed");
+  c("an adopted inline seat is refused to a spawn of another definition", changed.includes("an adopted seat keeps its definition"), changed);
+  const catalog = await handOver({ persona: "inliner" }, "catalog");
+  c("and to a catalog spawn of the same name", catalog.includes("an adopted seat keeps its definition"), catalog);
+  const same = await handOver({ persona: "inliner", inline: definition }, "same");
+  c("a spawn of the same definition receives the seat and submits nothing", same === `agent ${handle}` && spawnInvokes.length === before, { same, invokes: spawnInvokes.length - before });
 }
 
 // Historical hosted enrollment could replace the provisional floor after acceptance. Drive the
@@ -1349,7 +1420,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 80;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

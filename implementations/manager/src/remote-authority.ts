@@ -680,6 +680,7 @@ export function remoteManagedAgentEnrollmentRequest(
   registrationProof: string,
   serveEpoch: number,
   target: RemoteManagedAgentEnrollmentRequest["target"],
+  spawn?: RemoteManagedAgentEnrollmentRequest["spawn"],
 ): RemoteManagedAgentEnrollmentRequest {
   return {
     v: 1,
@@ -692,6 +693,7 @@ export function remoteManagedAgentEnrollmentRequest(
     registrationProof,
     serveEpoch,
     target,
+    ...(spawn !== undefined ? { spawn } : {}),
     identities: publicIdentities(state),
   };
 }
