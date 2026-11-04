@@ -346,12 +346,15 @@
 @keyframes ui-fade { from { opacity: 0; } to { opacity: 1; } }
 /* Reduced motion stops every animation here. The caret stands still, and the skeleton
    keeps its fill without the pulse. The registry Skeleton has no reduced-motion stop of its own, so
-   it stops here by its slot. */
+   it stops here by its slot. Nor does tw-animate-css: a part that opens and closes carries
+   data-state, so its enter, exit and expand animations stop by that, and Radix then mounts and
+   unmounts it at once. */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .ui-in, .ui-xfade { animation: none; }
   .ui-caret { animation: none; }
   [data-slot="skeleton"] { animation: none; }
+  [data-slot][data-state] { animation: none; }
 }
 /* ---------- message actions (agents round 1: sections S, C, D and E) ----------
    The Session action on a verified roster agent's message. It is in the tab order, so it shows on

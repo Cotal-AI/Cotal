@@ -969,6 +969,9 @@ importers:
       tailwindcss:
         specifier: 4.3.3
         version: 4.3.3
+      tw-animate-css:
+        specifier: 1.4.0
+        version: 1.4.0
       vite:
         specifier: ^8.3.4
         version: 8.3.5(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.0)(yaml@2.9.1)
@@ -5946,6 +5949,9 @@ packages:
     resolution: {integrity: sha512-eUdUIaCr963q2h5u3+QwvYp0+eqPvn+egeqZUm0hwERCqqx1E3kK5ehbGCvqSE5MQAULr67ww0cA3jKc3YkM1w==}
     engines: {node: '>=18.0.0'}
     hasBin: true
+
+  tw-animate-css@1.4.0:
+    resolution: {integrity: sha512-7bziOlRqH0hJx80h/3mbicLW7o8qLsH5+RaLR2t+OHM3D0JlWGODQKQ4cxbK7WlvmUxpcj6Kgu6EKqjrGFe3QQ==}
 
   tweetnacl@1.0.3:
     resolution: {integrity: sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw==}
@@ -11388,6 +11394,8 @@ snapshots:
       esbuild: 0.28.1
     optionalDependencies:
       fsevents: 2.3.3
+
+  tw-animate-css@1.4.0: {}
 
   tweetnacl@1.0.3: {}
 
