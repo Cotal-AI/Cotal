@@ -31,6 +31,8 @@ import {
   runDriverCaller,
   setupSpaceStreams,
   DEV_OWNER,
+  epRequestSubject,
+  standaloneConnectOpts,
   type AgentDef,
   type AgentHandle,
   type Connector,
@@ -41,6 +43,7 @@ import {
   type LaunchSpec,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { connect } from "@nats-io/transport-node";
 import { bootBroker } from "./_boot-broker.js";
 import { credAcl } from "./_cred-acl.js";
 import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
@@ -334,6 +337,27 @@ try {
       inlineOne.ok && hasCommand(inlineAcl, "list") && !hasCommand(inlineAcl, "create"), inlineOne.ok ? inlineAcl?.filter((r) => r.includes("orders")) : inlineOne.error);
     check("and the session is handed the same list it was minted",
       JSON.stringify(launched.get("ep_inline")?.endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), launched.get("ep_inline")?.endpoints);
+    // The broker enforces what the mint granted. On the helper's own credential a request on
+    // com.example.orders' `create`, which it was not handed, draws a permission violation, and one on
+    // `list` does not. The broker answers publishes in order, so once the later `create` violation has
+    // arrived, a `list` violation would already be there.
+    {
+      const seat = seatOf(S.M, "ep_inline")!;
+      const helper = { owner: DEV_OWNER, actor: seat.id, uid: seat.lifecycleUid, generation: seat.issued!.generation };
+      const helperCreds = readFileSync(agentLifecycleSecretFilePaths(workspaceRoot, space, seat.name, seat.lifecycleUid).creds, "utf8");
+      const hnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: helperCreds, tls: false }), maxReconnectAttempts: 0 });
+      const errors: string[] = [];
+      void (async () => { for await (const st of hnc.status()) if (st.type === "error") errors.push(String((st as { error?: unknown }).error)); })();
+      const rail = (command: string) => epRequestSubject(space, { route: { mode: "one" }, endpoint: "com.example.orders", command, caller: helper, nonce: `n${randomUUID().replace(/-/g, "").slice(0, 23)}` });
+      const list = rail("list"), create = rail("create");
+      hnc.publish(list, new TextEncoder().encode("{}"));
+      hnc.publish(create, new TextEncoder().encode("{}"));
+      await hnc.flush().catch(() => undefined);
+      await until(() => errors.some((e) => e.includes(create)), 5_000);
+      check("the broker refuses the helper's request on a command it was not handed", errors.some((e) => /permission/i.test(e) && e.includes(create)), errors);
+      check("and lets its request on the command it was handed through", errors.some((e) => e.includes(create)) && !errors.some((e) => e.includes(list)), errors);
+      await hnc.close();
+    }
     check("a command the spawner does not hold is refused by name",
       refused(await spawnAs(epLead, "ep_refund", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list", "refund"] }] } }), /more than the spawner holds: endpoints com\.example\.orders refund\./));
     const byName = await spawnAs(epLead, "ep_ok");
