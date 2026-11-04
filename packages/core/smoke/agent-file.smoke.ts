@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertValidKind, composeWirePersona, loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
 import { CotalEndpoint } from "../src/endpoint.js";
+import { lowerPersonaEndpoints, parsePersonaEndpoints } from "../src/persona-endpoints.js";
 import type { EndpointKind } from "../src/types.js";
 
 // Every cell runs and the suite reports at the end. Throwing on the first failure stopped the run
@@ -309,6 +310,22 @@ ok("the refusal reads as the rule the file broke",
   const pinned = join(dir, "ep-pin.md");
   writeFileSync(pinned, "---\nname: pin\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n    instanceId: i0000000000000000000000000a\n---\n");
   ok("an instanceId is kept on its own entry", loadAgentFile(pinned).endpoints?.[0]?.instanceId === "i0000000000000000000000000a");
+  // Entry order never changes the result: the same (endpoint, instanceId) folds, two instances of one
+  // endpoint stay two entries, and a reordered list parses and lowers to the same set.
+  const forward = [
+    { endpoint: "com.example.orders", commands: ["list"] },
+    { endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000a" },
+    { endpoint: "com.example.orders", commands: ["create", "list"] },
+    { endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000b" },
+  ];
+  const a = parsePersonaEndpoints(forward, "t");
+  const b = parsePersonaEndpoints([...forward].reverse(), "t");
+  ok("a reordered endpoints list parses to the same canonical list", JSON.stringify(a) === JSON.stringify(b), { a, b });
+  ok("two instances of one endpoint stay two entries beside the class entry",
+    a?.length === 3 && a.filter((e) => e.instanceId !== undefined).length === 2, a);
+  const classOnly = forward.filter((e) => e.instanceId === undefined);
+  ok("a reordered class list lowers to the same capabilities",
+    JSON.stringify(lowerPersonaEndpoints(parsePersonaEndpoints(classOnly, "t"))) === JSON.stringify(lowerPersonaEndpoints(parsePersonaEndpoints([...classOnly].reverse(), "t"))));
   const refuse = (label: string, body: string, want: RegExp) => {
     const f = join(dir, `ep-bad-${label.replace(/\W+/g, "-")}.md`);
     writeFileSync(f, `---\nname: bad\nsubscribe: []\nendpoints: ${body}\n---\n`);
