@@ -141,16 +141,23 @@ const names = licenses.bundled.map((b) => b.package);
 // d3-force, d3-selection and d3-zoom are bundled because the topology graph lays out and pans with them.
 const missing = ["react", "react-dom", "@fontsource-variable/inter", "marked", "dompurify", "d3-force", "d3-selection", "d3-zoom"].filter((p) => !names.includes(p));
 ok("bundle-licenses.json names react, react-dom, the Inter font, marked, DOMPurify and the three d3 modules", missing.length === 0, { missing, names });
-// The shadcn parts and the utilities in shadcn.css are copied source, not a package any module id names.
-ok("bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
-  licenses.bundled.some((b) => b.package === "shadcn/ui" && b.license === "MIT" && b.version === "4.22.1"), licenses.bundled);
-// Tailwind generates its theme and utilities into the stylesheet, so it ships with no module id either.
-const tailwindMeta = JSON.parse(readFileSync(createRequire(join(pkg, "package.json")).resolve("tailwindcss/package.json"), "utf8")) as { version: string; license: string };
-ok("bundle-licenses.json lists tailwindcss with its own version and license",
-  licenses.bundled.some((b) => b.package === "tailwindcss" && b.version === tailwindMeta.version && b.license === tailwindMeta.license), licenses.bundled);
+// The shadcn parts are copied source, not a package any module id names. The CLI that wrote them is
+// the version the package pins.
+const shadcnCli = (JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")) as { devDependencies: Record<string, string> }).devDependencies.shadcn;
+ok("bundle-licenses.json lists shadcn/ui with MIT at the shadcn CLI version the package pins",
+  shadcnCli !== undefined && licenses.bundled.some((b) => b.package === "shadcn/ui" && b.license === "MIT" && b.version === shadcnCli), { shadcnCli, bundled: licenses.bundled });
+// Tailwind generates its theme and utilities into the stylesheet, and shadcn.css imports
+// tw-animate-css and shadcn's tailwind.css, so each ships with no module id either. Each is read from
+// the package.json installed beside this package.
+const cssOnly = ["shadcn", "tailwindcss", "tw-animate-css"].map((name) => {
+  const meta = JSON.parse(readFileSync(join(pkg, "node_modules", name, "package.json"), "utf8")) as { version: string; license: string };
+  return { name, listed: licenses.bundled.some((b) => b.package === name && b.version === meta.version && b.license === meta.license) };
+});
+ok("bundle-licenses.json lists shadcn, tailwindcss and tw-animate-css with their own versions and licenses",
+  cssOnly.every((c) => c.listed), { cssOnly, bundled: licenses.bundled });
 // The work parts draw on Radix (Collapsible, Tooltip) and the copied parts' cn() and variants.
-const unlisted = ["class-variance-authority", "clsx", "tailwind-merge", "@radix-ui/react-collapsible", "@radix-ui/react-tooltip"].filter((p) => !names.includes(p));
-ok("bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled", unlisted.length === 0, { unlisted, names });
+const unlisted = ["class-variance-authority", "cn", "@radix-ui/react-collapsible", "@radix-ui/react-tooltip"].filter((p) => !names.includes(p));
+ok("bundle-licenses.json lists class-variance-authority, cn and the Radix packages now bundled", unlisted.length === 0, { unlisted, names });
 ok("every bundled package carries a version and a license",
   licenses.bundled.every((b) => b.version && b.license), licenses.bundled);
 // The same plain comparison the build sorts with (vite.config.ts), so the two cannot disagree.
@@ -205,5 +212,5 @@ const drivenReact = driven.filter((d) => d.package === "react");
 ok("given a chunk holding react, the plugin writes bundle-licenses.json naming react with its own version and license",
   emitted?.fileName === "bundle-licenses.json" && drivenReact.length === 1
     && drivenReact[0]!.version === reactMeta.version && drivenReact[0]!.license === reactMeta.license
-    && driven.every((d) => ["react", "shadcn/ui", "tailwindcss"].includes(d.package)), { emitted: emitted?.fileName, driven });
+    && driven.every((d) => ["react", "shadcn", "shadcn/ui", "tailwindcss", "tw-animate-css"].includes(d.package)), { emitted: emitted?.fileName, driven });
 console.log(`client-build: ${n} checks passed`);
