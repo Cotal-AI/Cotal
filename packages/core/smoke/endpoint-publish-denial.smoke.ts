@@ -94,8 +94,8 @@ try {
   check("invoke names the refused instance-rail subject", invoke.message.includes(`.ep.inst.manager.${IID}.status.`), invoke.message.slice(0, 280));
   check("invoke settles well inside the deadline", invoke.elapsed < DEADLINE_MS / 2, invoke.elapsed);
   check("invoke is not marked unanswered", !unansweredRequest(invoke.err), invoke.err);
-  check("invoke says the responder may be healthy (the wrong conclusion is the expensive one)",
-    /REFUSED BY THE BROKER/.test(invoke.message) && /grant is what is missing/.test(invoke.message),
+  check("invoke says the responder may be healthy and a grant made after connecting needs a reconnect",
+    /REFUSED BY THE BROKER/.test(invoke.message) && /no grant covers it, or it was granted after this connection authenticated.*reconnect and retry/.test(invoke.message),
     invoke.message.slice(0, 280));
 
   const direct = await caught(() => epCall(nc, space, { mode: "inst", instanceId: IID, epoch: 1 }, {
@@ -164,7 +164,7 @@ try {
   await nc.drain().catch(() => nc.close());
 } catch (e) {
   fail++;
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  console.error("  ✗ scenario threw:", e);
 } finally {
   await killAndAwaitExit(srv, "SIGKILL");
   releaseBroker();

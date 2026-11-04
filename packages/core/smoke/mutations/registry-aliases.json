@@ -60,8 +60,8 @@
     {
       "name": "two subcommands may share a word",
       "file": "packages/core/src/command.ts",
-      "find": "      if (holder !== undefined) problems.push(`command \"${cmd.name}\": \"${word}\" names both subcommand ${holder} and ${sub.name}`);\n      else seen.set(word, sub.name);\n",
-      "replace": "      seen.set(word, holder ?? sub.name);\n",
+      "find": "        if (holder !== undefined) problems.push(`command \"${parent}\": \"${word}\" names both subcommand ${holder} and ${sub.name}`);\n        seen.set(word, sub.name);\n",
+      "replace": "        seen.set(word, holder ?? sub.name);\n",
       "expectRed": "two subcommands sharing a word were accepted",
       "cell": "two subcommands sharing a word were accepted"
     },

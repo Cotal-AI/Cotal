@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     space: SPACE,
     server: EPHEMERAL_SERVER,
     // The spelling an operator hands to `cotal meshes add --root <dir>`: `checkRoot`
-    // (implementations/cli/src/commands/meshes-add.ts:126) applies `resolve()`, which does NOT
+    // (implementations/cli/src/commands/meshes-add.ts) applies `resolve()`, which does NOT
     // collapse a symlink, so this is exactly what lands in the record.
     root: resolve(alias),
     mode: "open" as const,
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
 
   // ---- the divergence itself, both comparisons run against the SAME live root ----
   const liveRoot = physical; // what `cotalRoot()` returns from inside the project (cwd is physical)
-  const rawCompare = held !== undefined && held.root === liveRoot; // the `up.ts:621` spelling
+  const rawCompare = held !== undefined && held.root === liveRoot; // the raw compare `up` used
   const canonicalCompare = meshesForRoot(liveRoot).some((m) => m.space === SPACE); // the documented rule
 
   check("the RAW `===` compare MISSES the record for the live root", rawCompare === false, `raw=${rawCompare}`);
@@ -83,22 +83,22 @@ async function main(): Promise<void> {
   check("therefore the two comparisons DISAGREE about one directory", rawCompare !== canonicalCompare, `raw=${rawCompare} canonical=${canonicalCompare}`);
 
   // ---- the `resolve()`-flavoured spelling, which is what TARGET RESOLUTION actually uses ----
-  // `mesh-target.ts:355` filters with `resolve(m.root) === resolve(root)` and `:372` re-tests the
-  // same way. `resolve` normalizes separators and relative segments but does NOT collapse a
+  // Before 41123b739, `resolveMeshTarget`'s recorded-root lookup filtered with
+  // `resolve(m.root) === resolve(root)` and its default-port test re-tested the same way. `resolve` normalizes separators and relative segments but does NOT collapse a
   // symlink, so it misses here exactly as the bare `===` does — worth its own cell, because a
   // reader can reasonably assume `resolve()` already canonicalizes and that these sites are safe.
   //
-  // This matters more than the `up.ts` guard: `:355` is a RESOLUTION path, not a refusal. A miss
+  // This matters more than the `up.ts` guard: that lookup is a RESOLUTION path, not a refusal. A miss
   // there leaves `recorded` undefined for a root that IS recorded, so the project is treated as
   // UNRECORDED — discarding the recorded server and mode and falling through to
-  // `localTarget(root, DEFAULT_SERVER)` (`:380`) when nothing else holds the default port.
+  // `localTarget(root, DEFAULT_SERVER)` when nothing else holds the default port.
   const resolveCompare = held !== undefined && resolve(held.root) === resolve(liveRoot);
-  check("the `resolve()` compare (mesh-target.ts:355 spelling) ALSO misses", resolveCompare === false, `resolve=${resolveCompare}`);
+  check("the `resolve()` compare (the recorded-root lookup's old spelling) ALSO misses", resolveCompare === false, `resolve=${resolveCompare}`);
   check("`resolve()` and `meshesForRoot` disagree about one directory too", resolveCompare !== canonicalCompare, `resolve=${resolveCompare} canonical=${canonicalCompare}`);
-  // The `:372` companion: our OWN record now reads as "a DIFFERENT mesh" because the roots differ
+  // The default-port companion: our OWN record now reads as "a DIFFERENT mesh" because the roots differ
   // lexically. That is the misleading-refusal half of the same divergence.
   const readsAsForeign = held !== undefined && resolve(held.root) !== resolve(liveRoot);
-  check("our own record reads as a FOREIGN root to the `:372` test", readsAsForeign === true, `foreign=${readsAsForeign}`);
+  check("our own record reads as a FOREIGN root to the default-port test", readsAsForeign === true, `foreign=${readsAsForeign}`);
 
   // ---- NON-VACUITY CONTROL ----
   // The miss above must be caused by the SPELLING, not by a broken fixture (a bad space name, a

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { serviceStartupPath } from "./service-startup.js";
 
 /** `.cotal/web.session` — the web dashboard's record of the listener it bound, written 0600 beside its
  *  pidfile. The dashboard writes it and reads it back in its detached parent, and `cotal status` reads
@@ -10,6 +11,16 @@ export const WEB_SESSION_FILE = "web.session";
  *  setup card and `cotal clean` read it from a package that cannot import the dashboard's, so the
  *  name lives here where a rename reaches every reader. */
 export const WEB_PIDFILE = "web.pid";
+
+/** The local-process adapter the `web` service preset launches. `cotal status` finds a service-run
+ *  dashboard's instance by it, from a package that cannot import the dashboard's. */
+export const WEB_SERVICE_ADAPTER = "web-service";
+
+/** A service-run dashboard's session record, the {@link WebSession} its native child writes beside its
+ *  startup receipt, named for the full instance and launch. That child never writes `web.session`. */
+export function serviceWebSessionPath(context: Parameters<typeof serviceStartupPath>[0]): string {
+  return serviceStartupPath(context).replace(/\.ready\.json$/, ".web-session.json");
+}
 
 /** The header that presents {@link WebSession.readiness} to the dashboard. Lower-case because Node
  *  lower-cases incoming header names, so a capitalised name would never match and would look like a
@@ -52,6 +63,13 @@ export interface WebSession {
   /** The socket's bound address, not the requested one: a hostname `--host` binds what it resolved to. */
   readonly host: string;
   readonly port: number;
+}
+
+/** The bound dashboard address, with an unbracketed IPv6 host enclosed for URL syntax.
+ *  This is the socket address, not the dashboard's branded default browser URL. */
+export function webBoundUrl(host: string, port: number): string {
+  const literal = host.includes(":") ? `[${host}]` : host;
+  return `http://${literal}:${port}/`;
 }
 
 /** The whole record, or `undefined` while there is none to read: the dashboard writes it only once it

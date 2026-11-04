@@ -92,6 +92,22 @@ try {
   check("...and is GONE after the TTL elapses — expiry IN FORCE on a HEALTHY server", after === null, after?.string());
   check("...while max_age still reports 6s (so the cell above proves enforcement, not config drift)", (await maxAge()) === PRESENCE_MS * 1e6);
 
+  // AGENT-2889: a broker restart loses the memory-backed presence bucket, and `cotal up` on the
+  // running mesh reconciles through this entry point. It must re-create that bucket rather than
+  // refuse. A missing FILE bucket is lost state, so it still refuses.
+  await jsm.streams.delete(`KV_${bucket}`);
+  const recreated = await reconcileSpaceTtls({ servers: SERVERS, space }).then((r) => r, (e: Error) => e);
+  check(
+    "a lost memory presence bucket is re-created by the reconcile (AGENT-2889)",
+    !(recreated instanceof Error) && recreated.some((r) => r.stream === `KV_${bucket}` && r.recreated === true),
+    recreated instanceof Error ? recreated.message : recreated,
+  );
+  const remade = await jsm.streams.info(`KV_${bucket}`).catch(() => undefined);
+  check("...as memory storage with the presence TTL", remade?.config.storage === "memory" && remade?.config.max_age === PRESENCE_MS * 1e6, remade?.config);
+  await jsm.streams.delete(`KV_${deliveryBucket(space)}`);
+  const refused = await reconcileSpaceTtls({ servers: SERVERS, space }).then(() => undefined, (e: Error) => e.message);
+  check("a lost FILE bucket still refuses, because lost state is not re-created", refused !== undefined && /not found/i.test(refused), refused);
+
   await nc.close();
   console.log(`\nPRESENCE-TTL-EXPIRY-OPEN SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } finally {

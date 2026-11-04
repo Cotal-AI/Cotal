@@ -101,6 +101,7 @@ const runtime: RuntimeProvider = {
   available: () => true,
   create: () => ({
     kind: "expiry-fixture",
+    streamsTerminal: false,
     spawn: (name): AgentHandle => {
       const opts = launches.get(name)!;
       const closed = { value: false };

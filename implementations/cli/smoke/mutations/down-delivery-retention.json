@@ -17,7 +17,7 @@
     {
       "name": "DRM01-restore-early-delivery-credential-cleanup",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "      else if (component.name === \"delivery\") await stopDelivery(context.space, { preserveCredentials: !requested.length });",
+      "find": "      else if (component.name === \"delivery\") await stopDelivery(context.space, { preserveCredentials: true });",
       "replace": "      else if (component.name === \"delivery\") await stopDelivery(context.space);",
       "cell": "DR01-broker-refusal-retains-both-delivery-credentials",
       "expectRed": "DR01-broker-refusal-retains-both-delivery-credentials",
@@ -27,7 +27,7 @@
     {
       "name": "DRM02-omit-successful-whole-stack-credential-cleanup",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  if (!requested.length && selected.some((component) => component.name === \"delivery\"))\n    await removeDeliveryCredentials(folderCtx().space);\n",
+      "find": "  if (selected.some((component) => component.name === \"delivery\"))\n    await removeDeliveryCredentials(folderCtx().space);\n",
       "replace": "",
       "cell": "DR07-whole-stack-cleans-only-after-broker-stop",
       "expectRed": "DR07-whole-stack-cleans-only-after-broker-stop",

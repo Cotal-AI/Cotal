@@ -2,7 +2,7 @@
  *  `endpoint-verbs` and the browser entry. Moved unchanged from `endpoint-verbs.ts`. */
 import { base64url } from "./base64url.js";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
-import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
+import { BROKER_REFUSAL_CAUSE, openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { spacePrefix } from "./subjects.js";
 import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, type EpCaller, type EpRoute, type EpTarget } from "./endpoint-subjects.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_UNDECLARED_ARG, EP_BIND_REFUSED, bindRefusalMarked, parseEndpointReply, assertArgsValid, assertOutputValid, type EndpointRequest, type EndpointReply, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock } from "./endpoint-envelope.js";
@@ -92,9 +92,10 @@ export function buildRequest(
   } catch (e) {
     if (!(e instanceof EpEnvelopeError)) throw e;
     // Nothing was published, so the refusal is `not-executed` (§13.3). A key the contract does not
-    // declare is marked, so a surface that knows both builds can name the version skew.
+    // declare is marked, with the instance the request binds, so a surface that knows both builds can
+    // name the version skew and ask that instance which release it runs.
     const property = op.contract.input.validate.errors?.[0]?.params?.additionalProperty;
-    throw new EpEnvelopeError(e.code, e.message, typeof property === "string" ? [{ kind: EP_UNDECLARED_ARG, property }] : undefined, "not-executed");
+    throw new EpEnvelopeError(e.code, e.message, typeof property === "string" ? [{ kind: EP_UNDECLARED_ARG, property, ...(op.bind !== undefined ? { instanceId: op.bind.instanceId } : {}) }] : undefined, "not-executed");
   }
   // The responder refuses these too (§13.3), but a caller that would emit an unservable request
   // should not have to learn it from a round trip: `describe` is what produces a bind, and a
@@ -213,7 +214,7 @@ export async function epProbeInstanceInterest(
   // budget: a refused publish that expired into `unknown` would read a permission problem as "no
   // verdict" and pay the full budget for it — the exact slow masquerade the watch exists to end.
   const denialWatch = openPublishDenialWatch(nc, subject, () => new EpEnvelopeError("permission-denied",
-    `the liveness probe for ${endpoint}.${iId} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}" (the instance rail for ${iId}). The instance may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "probe");
+    `the liveness probe for ${endpoint}.${iId} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}" (the instance rail for ${iId}). The instance may be perfectly healthy; ${BROKER_REFUSAL_CAUSE}`), "probe");
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -411,8 +412,9 @@ export async function epCall(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
+  let published = false;
   const cancelled = new Promise<never>((_, reject) => {
-    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, undefined, "unknown"));
+    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, published ? [{ ...unansweredDetail(op), requestId: req.requestId }] : undefined, "unknown"));
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -420,7 +422,7 @@ export async function epCall(
     // same promise executor: a closed/draining connection must not strand a rejected reply wait.
     // The broker dropped the publish, so no responder received the command: `not-executed` (§13.3).
     denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
-      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId})` : ""}. The responder may be perfectly healthy; the grant is what is missing: the current credential did not authorize this route, command or target, and the broker does not say which (SPEC 13.2)`, undefined, "not-executed"), "call");
+      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId})` : ""}. The responder may be perfectly healthy. The current credential did not authorize this route, command or target, and the broker does not say which; ${BROKER_REFUSAL_CAUSE}`, undefined, "not-executed"), "call");
     const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
         callback: (err, msg) => {
@@ -432,7 +434,9 @@ export async function epCall(
           // impersonate transport absence — so it takes the ordinary attributed-reply path below, never
           // the broker-control path.
           if (msg.subject === noRespReplyTo) {
-            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`, [unansweredDetail(op)])); return; }
+            // On that sentinel the answer is the broker's attestation that no subscriber received the
+            // request, so nothing ran: `not-executed`, never `unknown` (§13.3).
+            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`, [unansweredDetail(op)], "not-executed")); return; }
             reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${op.endpoint}.${op.command}; nothing but the broker control frame is addressable there`)); return;
           }
           resolve({ subject: msg.subject, data: msg.data });
@@ -440,8 +444,9 @@ export async function epCall(
       });
       opts.signal?.throwIfAborted();
       nc.publish(req.subject, req.body, { reply: noRespReplyTo });
+      published = true;
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [{ ...unansweredDetail(op), requestId: req.requestId }], "unknown")), deadlineMs); });
     const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
@@ -556,7 +561,7 @@ export async function epCast(
   // chain complete first: a refused publish rejects deterministically, and a permitted one
   // settles on the next loop turn — the flush round-trip remains the entire cost.
   const denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
-    `the cast for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not cast: this caller's credential does not authorize publishing to "${req.subject}". The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "cast");
+    `the cast for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not cast: this caller's credential does not authorize publishing to "${req.subject}". The responder may be perfectly healthy; ${BROKER_REFUSAL_CAUSE}`), "cast");
   try {
     nc.publish(req.subject, req.body);
     await Promise.race([

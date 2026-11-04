@@ -63,7 +63,7 @@ import {
 } from "../src/host-starvation.js";
 import * as starvation from "../src/host-starvation.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 /**
  * `POLL_ATTEMPTS` READ OFF THE NAMESPACE, NOT IMPORTED BY NAME, and this is the difference between
@@ -95,19 +95,6 @@ const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "b".repeat(26) };
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops. */
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 /** Block the event loop for real: a synchronous spin, which is what a host under load does to this
  *  process from the outside. Nothing here is simulated: the timers genuinely cannot run. */
@@ -277,14 +264,44 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // class reported on #1517. It reads the observer the implementation reads.
 {
   const lag = loopLagObserver(50);
+  const initialTimer = (lag as unknown as { timer?: NodeJS.Timeout }).timer;
+  c("the observer arms an unrefed tick timer on Node",
+    initialTimer !== undefined && initialTimer.hasRef() === false);
   const mark = lag.mark();
   starveLoop(2_000);
   await wait(60);
+  const rescheduledTimer = (lag as unknown as { timer?: NodeJS.Timeout }).timer;
+  c("and each rescheduled tick timer stays unrefed",
+    rescheduledTimer !== undefined && rescheduledTimer !== initialTimer && rescheduledTimer.hasRef() === false);
   const w = lag.since(mark);
   lag.stop();
+  c("stopping the observer clears its armed tick timer",
+    (lag as unknown as { timer?: NodeJS.Timeout }).timer === undefined);
   c("a synchronous block is visible to the observer as lag across the window", w.lagMs >= 1_000, JSON.stringify(w));
   c("and as ticks the window should have contained and did not", w.ticksObserved * 2 < w.ticksExpected, JSON.stringify(w));
   c("so the same evidence the handler acts on says this process was not scheduled", wasStarved(w), JSON.stringify(w));
+
+  const realSetTimeout = globalThis.setTimeout;
+  const armedTimers: NodeJS.Timeout[] = [];
+  let unrefMissingErr: unknown;
+  try {
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      const t = realSetTimeout(fn, ms, ...args);
+      armedTimers.push(t);
+      Object.defineProperty(t, "unref", { value: undefined, configurable: true });
+      return t;
+    }) as typeof setTimeout;
+    try {
+      loopLagObserver(50).stop();
+    } catch (e) {
+      unrefMissingErr = e;
+    }
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    for (const t of armedTimers) clearTimeout(t);
+  }
+  c("a timer without unref throws TypeError instead of silently leaving a refed tick armed",
+    unrefMissingErr instanceof TypeError, unrefMissingErr);
 }
 
 // ── 1b) the OTHER half of the pause: a starved ARM is absorbed too ───────────────────────────
@@ -723,7 +740,7 @@ done();
 // from this file produced exactly that, a passing run one cell lighter. An assertion silently
 // stops being paid for the moment nobody counts it, which is the same way a displaced mutation
 // anchor stops grading without anything going red.
-const EXPECTED_CELLS = 58;
+const EXPECTED_CELLS = 62;
 const ran = ok + fail;
 if (ran !== EXPECTED_CELLS) {
   console.error(

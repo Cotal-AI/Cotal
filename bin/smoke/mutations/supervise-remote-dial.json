@@ -56,7 +56,7 @@
       "cell": "F",
       "name": "Manager.start restores the unconditional local trust read under remote authority",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.remoteAuthority) {\n      if ((await localTrustOfSpace(this.secrets, this.space)).present)\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");\n      this.auth = undefined;\n    } else {\n      this.auth = await getSpaceAuth(this.secrets, this.space);\n    }",
+      "find": "    if (this.remoteAuthority) {\n      if ((await localTrustOfSpace(this.secrets, this.space)).present)\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");\n      this.auth = undefined;\n    } else {\n      this.auth = recorded?.mode === \"open\" ? undefined : await getSpaceAuth(this.secrets, this.space);\n    }",
       "replace": "    this.auth = await getSpaceAuth(this.secrets, this.space);\n    if (this.remoteAuthority && this.auth)\n      throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "FAIL: F: a remote supervise with an unrelated legacy monolith in the root reaches manager up"

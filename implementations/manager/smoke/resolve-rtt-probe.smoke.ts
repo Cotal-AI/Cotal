@@ -43,7 +43,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  resolveService,
+  CotalEndpoint, resolveService,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -81,10 +81,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 
-/** Wrap a connection so every `request` is COUNTED by subject, and optionally DELAYED by
- *  `delayMs` before it is issued — a synthetic caller->broker RTT. Concurrency is tracked so the
- *  sequential-vs-batched question is answered by observation, not by reading the source. A request
- *  whose subject ends in `failHex` fails after 10ms instead, well before any delayed read answers. */
+/** Request counts, ordering, concurrency and injected-delay occupancy for one metered run. */
 interface Meter {
   total: number;
   bySubject: Map<string, number>;
@@ -93,6 +90,11 @@ interface Meter {
   /** Wall time during which at least one injected wait is open. Host/broker work after the wait is excluded. */
   delayOccupancyMs: number;
 }
+
+/** Wrap a connection so every `request` is COUNTED by subject, and optionally DELAYED by
+ *  `delayMs` before it is issued — a synthetic caller->broker RTT. Concurrency is tracked so the
+ *  sequential-vs-batched question is answered by observation, not by reading the source. A request
+ *  whose subject ends in `failHex` fails after 10ms instead, well before any delayed read answers. */
 function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number, failHex?: string): NatsConnection {
   let inFlight = 0;
   let delaying = 0;
@@ -156,7 +158,7 @@ try {
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: id.id, uid };
-  const creds = await mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["spawn"] });
+  const creds = await mintCreds(auth, id, "control-caller-privileged", { lifecycleUid: uid });
   const rawNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
 
   // ---- 1. COUNT the round-trips one cold resolveService performs -------------------------------
@@ -193,6 +195,61 @@ try {
   // reverted behaviour.
   check("the reads are issued CONCURRENTLY — many overlap, not just a command's own input/output pair",
     m1.maxInFlight >= 8, `maxInFlight=${m1.maxInFlight}`);
+
+  // ---- 2b. ONE COMMAND: an invoke does not pay for the endpoint's whole surface -----------------
+  console.log("\n2b. one-command resolution reads only that command's cluster and schema closures");
+  const mOne = newMeter();
+  const one = await resolveService(meteredConnection(rawNc, mOne, 0), space, MANAGER_ENDPOINT, caller, {
+    deadlineMs: 10_000, commands: ["despawn"],
+  });
+  const oneDistinct = new Set(mOne.order).size;
+  console.log(`   commands resolved: ${one.commands.size}`);
+  console.log(`   reads: ${mOne.total} (${oneDistinct} distinct)`);
+  check("one-command resolution returns only the requested command",
+    one.commands.size === 1 && one.commands.has("despawn"), [...one.commands.keys()]);
+  check("one-command resolution avoids the other 39 commands' contracts",
+    mOne.total === oneDistinct && mOne.total <= 6 && mOne.total < m1.total / 10,
+    { oneReads: mOne.total, fullReads: m1.total, distinct: oneDistinct });
+  const missingMeter = newMeter();
+  let missing: unknown;
+  try {
+    await resolveService(meteredConnection(rawNc, missingMeter, 0), space, MANAGER_ENDPOINT, caller, {
+      deadlineMs: 10_000, commands: ["not-visible"],
+    });
+  } catch (error) { missing = error; }
+  check("an absent requested command fails after describe and before contract-store reads",
+    (missing as { code?: string } | undefined)?.code === "not-found" && missingMeter.total === 0,
+    { error: (missing as Error | undefined)?.message, reads: missingMeter.total });
+
+  // ---- 2c. ENDPOINT CACHE: partial invoke handles never truncate discovery or thrash -------------
+  // The core smoke covers this cache contract hermetically. This live cell proves the same public
+  // methods against a real manager, real describe, and real contract-store reads.
+  console.log("\n2c. command handles and the full describe surface use separate caches");
+  const client = new CotalEndpoint({
+    space, servers: SERVERS, creds, lifecycleUid: uid,
+    card: { id: id.id, name: "cache-probe", kind: "agent" }, channels: [],
+    consume: false, watchPresence: false, watchChannels: false, registerPresence: false,
+  });
+  await client.start();
+  const clientPriv = client as unknown as { nc: NatsConnection };
+  const cacheMeter = newMeter();
+  clientPriv.nc = meteredConnection(clientPriv.nc, cacheMeter, 0);
+  const ps = await client.invokeService(MANAGER_ENDPOINT, "ps", undefined, { deadlineMs: 10_000 });
+  const afterPs = cacheMeter.total;
+  const status = await client.invokeService(MANAGER_ENDPOINT, "status", undefined, { deadlineMs: 10_000 });
+  const afterStatus = cacheMeter.total;
+  await client.invokeService(MANAGER_ENDPOINT, "ps", undefined, { deadlineMs: 10_000 });
+  const afterRepeatedPs = cacheMeter.total;
+  const described = await client.describeService(MANAGER_ENDPOINT);
+  check("invokeService resolves and invokes two different manager commands",
+    ps.reply.ok === true && status.reply.ok === true && afterPs > 0 && afterStatus > afterPs,
+    { ps: ps.reply, status: status.reply, afterPs, afterStatus });
+  check("alternating invokes retain each command handle instead of re-resolving the first command",
+    afterRepeatedPs === afterStatus, { afterPs, afterStatus, afterRepeatedPs });
+  check("a prior narrowed invoke never truncates describeService's complete discovery surface",
+    described.commands.size === shipped.commandCount && described.commands.has("ps") && described.commands.has("status"),
+    { commands: [...described.commands.keys()], expected: shipped.commandCount });
+  await client.stop();
 
   // ---- 3. WAN RECONSTRUCTION: inject a synthetic RTT and check the arithmetic -------------------
   const INJECT_MS = 15; // a scaled-down stand-in for the reported ~150ms WAN RTT

@@ -7,10 +7,13 @@ const EXIT_WAIT_MS = 8_000;
 const EXIT_POLL_MS = 100;
 const EXIT_PROBE_MS = 1_000;
 
+// Every tmux call passes `-u`. Without a UTF-8 locale the tmux client writes tabs and non-ASCII
+// bytes in its output as `_`, and this driver parses tab-separated listings and pane screens.
+
 /** True if tmux is installed and reachable on PATH. */
 export function available(): boolean {
   try {
-    execFileSync("tmux", ["-V"], { stdio: "ignore" });
+    execFileSync("tmux", ["-u", "-V"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -26,15 +29,18 @@ export function currentSession(): string {
   if (!process.env.TMUX)
     throw new Error("tmux: not inside a tmux session ($TMUX is not set)");
   try {
-    return execFileSync("tmux", ["display-message", "-p", "#S"], { encoding: "utf8" }).trim();
+    return execFileSync("tmux", ["-u", "display-message", "-p", "#S"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
   } catch (err) {
-    throw new Error(`tmux: couldn't read current session name: ${err}`);
+    throw new Error(`tmux: couldn't read current session name: ${failureText(err)}`, { cause: err });
   }
 }
 
 function hasSession(session: string): boolean {
   try {
-    execFileSync("tmux", ["has-session", "-t", session], { stdio: "ignore" });
+    execFileSync("tmux", ["-u", "has-session", "-t", session], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -45,10 +51,14 @@ function hasSession(session: string): boolean {
  *  to size it, and some tmux builds then treat its window as sizeless — so `split-window` fails
  *  with "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
 export function ensureSession(session: string, cwd: string): void {
-  if (!hasSession(session))
-    execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", cwd], {
-      stdio: "ignore",
+  if (hasSession(session)) return;
+  try {
+    execFileSync("tmux", ["-u", "new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", cwd], {
+      stdio: ["ignore", "ignore", "pipe"],
     });
+  } catch (err) {
+    throw new Error(`tmux: couldn't create session ${session}: ${failureText(err)}`, { cause: err });
+  }
 }
 
 /** True if a window named `name` exists in `session`. Name-based — fragile under renames; prefer
@@ -81,7 +91,7 @@ function failureText(err: unknown): string {
 /** The running tmux server's pid, or undefined when no server is running. */
 export function serverPid(opts: { timeoutMs?: number } = {}): string | undefined {
   try {
-    return execFileSync("tmux", ["display-message", "-p", "#{pid}"], {
+    return execFileSync("tmux", ["-u", "display-message", "-p", "#{pid}"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: opts.timeoutMs,
@@ -108,7 +118,7 @@ export function windowSessions(windowId: string): string[] {
  *  server is running. A failed listing throws instead of reading as no windows. */
 function windowLines(format: string): string[] {
   try {
-    return execFileSync("tmux", ["list-windows", "-a", "-F", format], {
+    return execFileSync("tmux", ["-u", "list-windows", "-a", "-F", format], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
@@ -126,7 +136,7 @@ function windowLines(format: string): string[] {
  *  {@link paneState}, a failed listing throws instead of reading as gone. */
 export function paneWindow(paneId: string): string | undefined {
   try {
-    return execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{window_id}"], {
+    return execFileSync("tmux", ["-u", "list-panes", "-a", "-F", "#{pane_id} #{window_id}"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
@@ -142,28 +152,44 @@ export function paneWindow(paneId: string): string | undefined {
 
 export type PaneState = "running" | "exited";
 
-/** Authoritative process state for a stable pane ID. A successful full-server listing that no
- * longer contains the pane proves exit; `pane_dead=1` also handles `remain-on-exit` configurations.
- * Provider/permission failures throw instead of turning uncertainty into a false exit. */
-export function paneState(paneId: string): PaneState {
+/** A missing or different server proves exit only when the recorded server is gone too. */
+function missingServerState(paneId: string, server: string | undefined): PaneState {
+  if (server === undefined) return "exited";
   try {
-    const panes = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"], {
+    process.kill(Number(server), 0);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ESRCH") return "exited";
+    throw err;
+  }
+  throw new Error(`tmux: couldn't prove pane ${paneId} exited: recorded server ${server} still runs but does not answer here`);
+}
+
+/** Authoritative process state for a stable pane ID, optionally bound to its opening server.
+ * A successful listing that no longer contains the pane proves exit; `pane_dead=1` also handles
+ * `remain-on-exit`. The server identity is read in that same listing, so reused pane ids cannot
+ * name a replacement seat. Provider/permission failures still throw. */
+export function paneState(paneId: string, server?: string): PaneState {
+  let panes: string;
+  try {
+    const format = server === undefined ? "#{pane_id} #{pane_dead}" : "#{pid} #{pane_id} #{pane_dead}";
+    panes = execFileSync("tmux", ["-u", "list-panes", "-a", "-F", format], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
       killSignal: "SIGKILL",
     });
-    for (const line of panes.split("\n")) {
-      const [id, dead] = line.trim().split(/\s+/);
-      if (id === paneId) return dead === "1" ? "exited" : "running";
-    }
-    return "exited";
   } catch (err) {
-    // No tmux server means no pane can still exist. Other failures (including permission/socket
-    // errors) are unknown and must fail the preservation cut closed.
-    if (noServer(err)) return "exited";
+    // A missing socket is unknown, while tmux's own no-server answer can prove exit.
+    if (noServer(err)) return missingServerState(paneId, server);
     throw new Error(`tmux: couldn't prove pane ${paneId} exited: ${failureText(err)}`, { cause: err });
   }
+  for (const line of panes.split("\n").filter(Boolean)) {
+    const fields = line.trim().split(/\s+/);
+    if (server !== undefined && fields.shift() !== server) return missingServerState(paneId, server);
+    const [id, dead] = fields;
+    if (id === paneId) return dead === "1" ? "exited" : "running";
+  }
+  return "exited";
 }
 
 /** The text pane `paneId` (`%N`) of the server whose pid is `server` shows now, or undefined once it
@@ -171,7 +197,7 @@ export function paneState(paneId: string): PaneState {
 export function capturePane(paneId: string, server: string): string | undefined {
   let screen: string;
   try {
-    screen = execFileSync("tmux", ["capture-pane", "-p", "-t", paneId], {
+    screen = execFileSync("tmux", ["-u", "capture-pane", "-p", "-t", paneId], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
@@ -179,7 +205,7 @@ export function capturePane(paneId: string, server: string): string | undefined 
     });
   } catch (err) {
     if (paneState(paneId) === "exited") return undefined;
-    throw err;
+    throw new Error(`tmux: couldn't capture pane ${paneId}: ${failureText(err)}`, { cause: err });
   }
   // capture-pane also reads a pane kept after its process exited (`remain-on-exit`); a pane still
   // running on `server` after the capture was running during it. A later server reuses pane ids.
@@ -192,13 +218,14 @@ export async function waitForPaneExit(
   opts: {
     timeoutMs?: number;
     pollMs?: number;
+    server?: string;
   } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? EXIT_WAIT_MS;
   const pollMs = opts.pollMs ?? EXIT_POLL_MS;
   const deadline = Date.now() + timeoutMs;
   while (true) {
-    if (paneState(paneId) === "exited") return;
+    if (paneState(paneId, opts.server) === "exited") return;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error(`tmux: pane ${paneId} did not exit within ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
@@ -239,7 +266,7 @@ export function openWindow(
   if (!(opts.focus ?? false)) args.push("-d");
   // -P -F prints the new window + pane IDs before returning — stable across renames and reorders.
   args.push("-P", "-F", "#{window_id} #{pane_id} #{pid}", command);
-  const out = execFileSync("tmux", args, { encoding: "utf8" }).trim();
+  const out = execFileSync("tmux", ["-u", ...args], { encoding: "utf8" }).trim();
   const [windowId, paneId, serverPid] = out.split(/\s+/);
   if (!windowId || !paneId || !serverPid)
     throw new Error(`tmux: couldn't read window/pane IDs from new-window ("${out}")`);
@@ -266,12 +293,16 @@ export function splitWindow(
   // -P -F prints the new pane's ID — use it as a stable target (pane indexes shift under
   // `pane-base-index` and renumber on close).
   args.push("-P", "-F", "#{pane_id}", command);
-  return execFileSync("tmux", args, { encoding: "utf8" }).trim();
+  return execFileSync("tmux", ["-u", ...args], { encoding: "utf8" }).trim();
 }
 
 /** Focus a window by target (`session:name` or window ID). */
 export function selectWindow(target: string): void {
-  execFileSync("tmux", ["select-window", "-t", target], { stdio: "ignore" });
+  try {
+    execFileSync("tmux", ["-u", "select-window", "-t", target], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (err) {
+    throw new Error(`tmux: couldn't select window ${target}: ${failureText(err)}`, { cause: err });
+  }
 }
 
 /** tmux arguments that run command `args` only on the server whose pid is `server`, when one is given.
@@ -284,7 +315,7 @@ function onServer(server: string | undefined, args: string[]): string[] {
 /** Kill a tmux window by target (window ID `@N`, or `session:name`). Idempotent: already-gone is a no-op. */
 export function closeWindow(target: string): void {
   try {
-    execFileSync("tmux", ["kill-window", "-t", target], { stdio: "pipe" });
+    execFileSync("tmux", ["-u", "kill-window", "-t", target], { stdio: "pipe" });
   } catch (err) {
     if (isWindowGone(err)) return;
     throw err;
@@ -295,7 +326,7 @@ export function closeWindow(target: string): void {
  *  already-gone is a no-op. */
 export function closePane(paneId: string, opts: { timeoutMs?: number; server?: string } = {}): void {
   try {
-    execFileSync("tmux", onServer(opts.server, ["kill-pane", "-t", paneId]), {
+    execFileSync("tmux", ["-u", ...onServer(opts.server, ["kill-pane", "-t", paneId])], {
       stdio: "pipe",
       timeout: opts.timeoutMs,
       killSignal: "SIGKILL",
@@ -317,7 +348,7 @@ export function closeWindowIfHeld(session: string, windowId: string, paneId: str
   // `-t` names no window. tmux quotes a command string as sh does.
   const kill = `kill-window -t ${shellQuote(`=${session}:${windowId}`)}`;
   try {
-    const out = execFileSync("tmux", ["if-shell", "-F", `#{?${paneElsewhere},0,1}`, kill, "display-message -p refused"], {
+    const out = execFileSync("tmux", ["-u", "if-shell", "-F", `#{?${paneElsewhere},0,1}`, kill, "display-message -p refused"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -392,18 +423,30 @@ export function privateLaunch(commandBody: string): { command: string; dir: stri
   return { command: `bash ${shellQuote(scriptPath)}`, dir };
 }
 
-/** Type literal text into a tmux target.
+/** Type literal text into a tmux target, on server `opts.server` only when given.
  *  `-l` bypasses tmux's key-name lookup; `--` guards against text starting with `-`. */
-export function send(text: string, target: string): void {
-  execFileSync("tmux", ["send-keys", "-l", "-t", target, "--", text], { stdio: "ignore" });
+export function send(text: string, target: string, opts: { timeoutMs?: number; server?: string } = {}): void {
+  try {
+    execFileSync("tmux", ["-u", ...onServer(opts.server, ["send-keys", "-l", "-t", target, "--", text])], {
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: opts.timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (err) {
+    throw new Error(`tmux: couldn't send text to ${target}: ${failureText(err)}`, { cause: err });
+  }
 }
 
 /** Send a named key sequence (e.g. `"Enter"`, `"C-c"`) to a tmux target, on server `opts.server` only
  *  when given. `--` guards against key names starting with `-`. */
 export function sendKey(key: string, target: string, opts: { timeoutMs?: number; server?: string } = {}): void {
-  execFileSync("tmux", onServer(opts.server, ["send-keys", "-t", target, "--", key]), {
-    stdio: "ignore",
-    timeout: opts.timeoutMs,
-    killSignal: "SIGKILL",
-  });
+  try {
+    execFileSync("tmux", ["-u", ...onServer(opts.server, ["send-keys", "-t", target, "--", key])], {
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: opts.timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (err) {
+    throw new Error(`tmux: couldn't send key to ${target}: ${failureText(err)}`, { cause: err });
+  }
 }

@@ -1,7 +1,8 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { provenance } from "@cotal-ai/workspace";
 import { assertReleasedSeedWriter, seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
+import { sharedPlacements } from "./shared.js";
 
 /**
  * The durable seed store: a stable, per-generation copy of each shipped connector payload that
@@ -32,11 +33,19 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   if (!opts.force && existsSync(join(dest, "package.json"))) return dest;
   assertReleasedSeedWriter(generation, "write");
   const src = shippedSourceDir(name);
+  const shared = sharedPlacements(name, src);
   const staging = `${dest}.staging`;
   rmSync(staging, { recursive: true, force: true });
   rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dirname(dest), { recursive: true });
+  mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
   cpSync(src, staging, { recursive: true, filter: (from) => payloadFilter(src, from) });
+  // A published payload's docs data ships once for every connector; put a copy back where it was packed.
+  for (const { rel, source } of shared) {
+    const to = join(staging, ...rel.split("/"));
+    if (existsSync(to)) throw new Error(`the shipped payload for "${name}" holds ${rel} and also ships it shared - reinstall cotal-ai`);
+    mkdirSync(dirname(to), { recursive: true });
+    copyFileSync(source, to);
+  }
   renameSync(staging, dest); // atomic within the store: the final path only ever holds a complete payload
   // Announce the write on the provenance channel. This store is operator-global (a sibling of the
   // shared `extensions/` prefix, moved only by `XDG_CONFIG_HOME`), so re-seeding it from a non-released

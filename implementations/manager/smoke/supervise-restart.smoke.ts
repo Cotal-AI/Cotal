@@ -5,7 +5,8 @@
  * SIGKILL is the crash. Identity and lifecycle stay. A pending turn is still pullable after the
  * first restart and yieldable from the replacement process. Spending the budget retires the seat
  * (supervise-crash-loop). A relaunch that never joins presence retires (supervise-recovery-failed).
- * A host that cannot honour the policy (user-mode, non-pty) refuses at accept.
+ * A host that cannot honour the policy (user-mode, non-pty) refuses at accept, and so does an
+ * in-process start whose budget the spawn schema would refuse.
  *
  * Run: pnpm smoke:manager-supervise-restart   (needs nats-server + node on PATH)
  */
@@ -68,9 +69,10 @@ const broker = await bootBroker(auth);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-supervise-restart-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\n---\n");
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "user.md"), "---\nname: user\nrole: worker\n---\n");
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "ext.md"), "---\nname: ext\nrole: worker\n---\n");
+// No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\n---\n");
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "user.md"), "---\nname: user\n---\n");
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "ext.md"), "---\nname: ext\n---\n");
 
 const spawnedOpts: LaunchOpts[] = [];
 const envFor = (o: LaunchOpts): Record<string, string> => ({
@@ -184,7 +186,7 @@ try {
   c("the replacement process has a different pid", typeof after?.handle.pid === "number" && after.handle.pid !== firstPid, { firstPid, next: after?.handle.pid });
   c("a restart never replays fork source or initial prompt",
     spawnedOpts.length >= 2 && spawnedOpts[1]?.resume === undefined && spawnedOpts[1]?.prompt === undefined, spawnedOpts[1]);
-  c("a pending turn is not stamped dead across a restart", pendingOf(manager)?.seatDiedAt === undefined, pendingOf(manager));
+  c("a pending turn is not stamped dead across a restart", pendingOf(manager) !== undefined && pendingOf(manager)?.seatDiedAt === undefined, pendingOf(manager));
 
   if (row && after) {
     seatNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: seatCreds, tls: false }), maxReconnectAttempts: 0 });
@@ -216,7 +218,7 @@ try {
   c("spending the restart budget starts no further replacement", spawnedOpts.length === launchesBeforeSpend, spawnedOpts.length);
   c("a spent supervise budget retires the seat", !M.agents.has("seat"));
 
-  writeFileSync(join(workspaceRoot, ".cotal", "agents", "fail.md"), "---\nname: fail\nrole: worker\n---\n");
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", "fail.md"), "---\nname: fail\n---\n");
   const failGoal = "spawn-fail".padEnd(43, "f");
   const failSpawned = await call("spawn", {
     name: "fail", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 2, windowMs: 60_000 },
@@ -249,6 +251,27 @@ try {
   c("a failed supervised relaunch retires the seat",
     !M.agents.has("fail") && logs.some((l) => l.includes("this manager retired it after a supervised restart failed")),
     logs.filter((l) => /fail|reap|restart/i.test(l)).slice(-6));
+
+  // The budget is the manager's to enforce, not only the wire's: the exported `startAgent` refuses
+  // what the spawn schema refuses, before anything launches (#3298).
+  const badPolicies: [string, { restarts: number; windowMs: number }, string][] = [
+    ["zero restarts", { restarts: 0, windowMs: 60_000 }, "supervise.restarts"],
+    ["negative restarts", { restarts: -1, windowMs: 60_000 }, "supervise.restarts"],
+    ["fractional restarts", { restarts: 1.5, windowMs: 60_000 }, "supervise.restarts"],
+    ["NaN restarts", { restarts: Number.NaN, windowMs: 60_000 }, "supervise.restarts"],
+    ["infinite restarts", { restarts: Number.POSITIVE_INFINITY, windowMs: 60_000 }, "supervise.restarts"],
+    ["a zero window", { restarts: 1, windowMs: 0 }, "supervise.windowMs"],
+    ["a negative window", { restarts: 1, windowMs: -1_000 }, "supervise.windowMs"],
+  ];
+  for (const [i, [label, policy, field]] of badPolicies.entries()) {
+    const name = `bad${i}`;
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\n---\n`);
+    const launches = spawnedOpts.length;
+    const r = await manager.startAgent({ name, agent: "supervise-stub", cwd: repoRoot, events: false, supervise: policy });
+    c(`in-process startAgent refuses ${label} before launching`,
+      r.ok === false && (r.error ?? "").startsWith(`${field}: expected a positive integer`) && spawnedOpts.length === launches && !M.agents.has(name),
+      { r, launched: spawnedOpts.length - launches });
+  }
 
   const userRoot = mkdtempSync(join(tmpdir(), "cotal-supervise-user-"));
   mkdirSync(join(userRoot, ".cotal", "agents"), { recursive: true });
@@ -293,7 +316,7 @@ try {
   else process.env.COTAL_HOME = prevHome;
 }
 
-const EXPECTED = 21;
+const EXPECTED = 28;
 const ran = ok + fail;
 console.log(`supervise restart smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED) {

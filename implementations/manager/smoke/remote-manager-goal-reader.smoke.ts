@@ -101,6 +101,7 @@ import {
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
+  issuedUserCaller,
   waitForDeliveryLease,
   epRequestSubject,
   parseGoalResultFact,
@@ -133,6 +134,7 @@ import {
 } from "@cotal-ai/auth";
 
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
+import { approveDevice } from "../../auth/smoke/_device-approval.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { loadOrCreateRemoteManagerIdentity } from "../src/remote-authority.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
@@ -250,7 +252,7 @@ mkdirSync(extensionDir, { recursive: true });
 writeFileSync(join(extensionDir, "package.json"), JSON.stringify({ name: "remote-reader-test", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
 writeFileSync(join(extensionDir, "index.js"), `import { registry } from ${JSON.stringify(coreDistUrl)};
 registry.register({ kind: "connector", name: "remote-reader-test", buildLaunch() { throw new Error("fixture refuses child launch"); } });\n`);
-writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "remote-reader-test", version: "1.0.0", spec: "file:remote-reader-test", provides: [{ kind: "connector", name: "remote-reader-test" }], commands: [], connectors: [{ name: "remote-reader-test", requires: [] }] }] }));
+writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "remote-reader-test", version: "1.0.0", spec: "file:remote-reader-test", provides: [{ kind: "connector", name: "remote-reader-test" }], commands: [], connectors: [{ name: "remote-reader-test", requires: [], eventPlane: false }] }] }));
 for (const [index, root] of [partRootA, partRootB].entries()) {
   const dir = join(root, ".cotal", "agents");
   mkdirSync(dir, { recursive: true });
@@ -465,14 +467,8 @@ try {
     returnHeaders: true,
   });
   const cookieA = signupA.headers.get("set-cookie")!.split(";")[0]!;
-  const approveA = async (userCode: string) => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie: cookieA, origin } });
-    await fetch(`${idpUrl}/device/approve`, {
-      method: "POST", headers: { "content-type": "application/json", cookie: cookieA, origin },
-      body: JSON.stringify({ userCode }),
-    });
-  };
-  await establishIdpSession({ dir: homeA, idpUrl, clientId: "cli-a", onPrompt: (p) => void approveA(p.userCode) });
+  const approveA = (userCode: string) => approveDevice({ base: idpUrl, cookie: cookieA, origin }, userCode);
+  await establishIdpSession({ dir: homeA, idpUrl, clientId: "cli-a", onPrompt: (p) => approveA(p.userCode) });
   const ownerA = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
 
   // Owner B in homeB
@@ -482,23 +478,18 @@ try {
     returnHeaders: true,
   });
   const cookieB = signupB.headers.get("set-cookie")!.split(";")[0]!;
-  const approveB = async (userCode: string) => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie: cookieB, origin } });
-    await fetch(`${idpUrl}/device/approve`, {
-      method: "POST", headers: { "content-type": "application/json", cookie: cookieB, origin },
-      body: JSON.stringify({ userCode }),
-    });
-  };
-  await establishIdpSession({ dir: homeB, idpUrl, clientId: "cli-b", onPrompt: (p) => void approveB(p.userCode) });
+  const approveB = (userCode: string) => approveDevice({ base: idpUrl, cookie: cookieB, origin }, userCode);
+  await establishIdpSession({ dir: homeB, idpUrl, clientId: "cli-b", onPrompt: (p) => approveB(p.userCode) });
   const ownerB = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
 
   check("two distinct owners established via IdP (ownerA !== ownerB)", typeof ownerA === "string" && typeof ownerB === "string" && ownerA !== ownerB, { ownerA, ownerB });
 
-  // Grant actors for both owners on the host
-  grantActor(hostDir, { owner: ownerA, actor: "cli", scope: ["spawn", "role:default", "supervise"], allowSubscribe: [], allowPublish: [] });
+  // Grant actors for both owners on the host. The manager registers as `cli` and enrolls each seat
+  // under that row, so the row delegates the worker role the operator's spawn asks for.
+  grantActor(hostDir, { owner: ownerA, actor: "cli", scope: ["spawn", "role:default", "supervise", "role:worker"], allowSubscribe: [], allowPublish: [] });
   grantActor(hostDir, { owner: ownerA, actor: "operator", scope: ["spawn", "role:worker"], allowSubscribe: [], allowPublish: [] });
 
-  grantActor(hostDir, { owner: ownerB, actor: "cli", scope: ["spawn", "role:default", "supervise"], allowSubscribe: [], allowPublish: [] });
+  grantActor(hostDir, { owner: ownerB, actor: "cli", scope: ["spawn", "role:default", "supervise", "role:worker"], allowSubscribe: [], allowPublish: [] });
   grantActor(hostDir, { owner: ownerB, actor: "operator", scope: ["spawn", "role:worker"], allowSubscribe: [], allowPublish: [] });
 
   const callout = await loadCalloutAuth(hostStore, space);
@@ -506,11 +497,13 @@ try {
 
   // Configure participant roots with policyCheckedAt in future so supervise doesn't re-query policy
   process.env.COTAL_HOME = homeA;
+  const userAuthA = {
+    provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(userAuthA);
   persistRemoteUserEntry(space, server, partRootA, {
     space, server, tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: userAuthA,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const entryA = findMesh(space);
@@ -518,11 +511,13 @@ try {
   recordMesh({ ...entryA, policyCheckedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
 
   process.env.COTAL_HOME = homeB;
+  const userAuthB = {
+    provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
+  };
+  assertUserAuthInfo(userAuthB);
   persistRemoteUserEntry(space, server, partRootB, {
     space, server, tlsRequired: false,
-    userAuth: assertUserAuthInfo({
-      provider: "cotal", idp: { url: idpUrl, issuer: origin, audience: origin }, endpoints: { url: secureExchangeUrl },
-    }),
+    userAuth: userAuthB,
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
   const entryB = findMesh(space);
@@ -652,18 +647,21 @@ try {
     }
     const payload = JSON.parse(Buffer.from(credentials.bearer.split(".")[1]!, "base64url").toString("utf8"));
     check(`owner ${label} selects its own live remote manager`, payload.act.managerInstanceId === instanceId);
-    const caller: EpCaller = { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
-    const nc = await connect({ servers: server, ...standaloneConnectOpts({ bearer: credentials.bearer, sentinelCreds: credentials.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+    // An interactive manager-caller view is issued: its ep rows name the generation the callout
+    // issued for this connection, so the caller is read back from the connection, not from the bearer.
+    const connectOpts = standaloneConnectOpts({ bearer: credentials.bearer, sentinelCreds: credentials.sentinelCreds, tls: false });
+    const nc = await connect({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });
     if (label === "A") ncA = nc; else ncB = nc;
+    const caller: EpCaller = await issuedUserCaller(nc, space, connectOpts.name as string, { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid });
     const service = await resolveService(nc, space, "manager", caller, { instanceId, deadlineMs: 5000 });
     check(`owner ${label} resolves the actual remote manager`, service !== undefined);
     callers.push({ nc, caller, service, instanceId, goalId: mintLifecycleUid() });
   }
 
   for (const [index, entry] of callers.entries()) {
-    // Real acceptance and terminal production, without a successful child launch.
-    // Stock remote enrollment currently refuses missing host auth material. The declared
-    // test connector also refuses launch, so this proof cannot create an untracked child.
+    // Real acceptance and terminal production, without a successful child launch: the manager
+    // accepts the goal, and the declared test connector refuses launch, so the goal settles
+    // failed and this proof cannot create an untracked child.
     const accepted = await invokeCommand(entry.nc, space, entry.service, "spawn", { name: `worker_${index}`, role: "worker", agent: "remote-reader-test", events: false }, { id: entry.goalId, deadlineMs: 5000 });
     const acceptance = accepted.reply.ok ? accepted.reply.data as { goalId?: string; fingerprint?: string } : undefined;
     check(`owner ${index} receives a real accepted goal`, acceptance?.goalId === entry.goalId && typeof acceptance.fingerprint === "string");

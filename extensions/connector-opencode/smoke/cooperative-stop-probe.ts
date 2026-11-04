@@ -142,8 +142,21 @@ if (cross) {
     }
     return originalModel.call(this, model, variant);
   };
+  // THE WRITE SEAM. A status change that carries an activity is one `setStatus(status, activity)`
+  // presence write, and an activity-only change is `setActivity`. A crossing call can reach either,
+  // so both park through `holdPresenceWrite`; patching one alone lets a call skip the seam entirely,
+  // and then nothing is parked when the stop lands.
   const original = CotalEndpoint.prototype.setActivity;
   CotalEndpoint.prototype.setActivity = async function (activity: string): Promise<void> {
+    await holdPresenceWrite(activity);
+    return original.call(this, activity);
+  };
+  const originalEndpointStatus = CotalEndpoint.prototype.setStatus;
+  CotalEndpoint.prototype.setStatus = async function (status: Parameters<CotalEndpoint["setStatus"]>[0], activity?: string): Promise<void> {
+    if (activity !== undefined) await holdPresenceWrite(activity);
+    return originalEndpointStatus.call(this, status, activity);
+  };
+  async function holdPresenceWrite(activity: string): Promise<void> {
     // A SECOND ADMITTED CALL THAT FAILS, which is a different question from one that is slow. The
     // teardown waits on the set of admitted calls, and if that wait is satisfied by the FIRST thing
     // to happen rather than by all of them, one failure releases departure while another call is
@@ -157,7 +170,7 @@ if (cross) {
         parkedFirst.push(r);
         if (firstParked) writeFileSync(firstParked, "the leading interior call is parked and will be released first\n");
       });
-      return original.call(this, activity);
+      return;
     }
     if (activity === "crossing-reject") {
       await new Promise<void>((r) => {
@@ -171,8 +184,7 @@ if (cross) {
         if (crossParked) writeFileSync(crossParked, `the pre-stop ${cross} call is parked inside its presence write\n`);
       });
     }
-    return original.call(this, activity);
-  };
+  }
 }
 const lateFired = process.env.COOP_LATE_FIRED?.trim() || undefined;
 // Focus turns an @mention into a WAKE rather than an injected batch: the body is acked-and-dropped

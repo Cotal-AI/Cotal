@@ -42,7 +42,8 @@ function nativeValues(space: string, server: string, options: Readonly<Record<st
 
 export const authServicePreset: ServicePreset = {
   kind: "service-preset", name: "auth-service", adapter: "auth-service", timeoutMs: 60000,
-  summary: "prepared native user-auth authority and exchange on its registered loopback broker",
+  summary: "sign-in and access checks for a user-auth space",
+  defaults: { root: { space: "root" } },
 };
 
 export const authServiceProcess: LocalProcess = {

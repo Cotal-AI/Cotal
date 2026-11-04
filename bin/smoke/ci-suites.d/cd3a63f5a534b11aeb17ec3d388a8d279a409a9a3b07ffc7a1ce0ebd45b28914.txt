@@ -1,0 +1,3 @@
+# The service endpoint host in the authority plane: default off, startup refusal and unwind, the
+# real host's decide, revoke and reads, discovery loss, fatal trips and close with calls in flight.
+smoke:service-host-plane:auth

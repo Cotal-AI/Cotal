@@ -1,13 +1,12 @@
 /**
- * Cotal brand palette for the terminal setup flow. Colors match the web dashboard
- * (implementations/cli/src/web/index.html): brand blue #58a6ff, success green #3fb950.
+ * Cotal brand palette for the terminal setup flow: brand blue #58a6ff, success green #3fb950.
  *
  * Rendering gates (same as the rest of the CLI's color story):
  *   - `colorEnabled()` is false            → plain text, no ANSI (no TTY, NO_COLOR, FORCE_COLOR=0)
  *   - COLORTERM truecolor/24bit            → 24-bit ANSI (exact brand color)
  *   - otherwise                            → 16-color fallback
  */
-import * as p from "@clack/prompts";
+import * as p from "./prompts.js";
 import { colorEnabled } from "@cotal-ai/workspace";
 
 // Read on each call, so `--no-color` applied after this module loads still turns color off.

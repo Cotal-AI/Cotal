@@ -62,12 +62,12 @@ const DELIBERATE_CAP = 3 * 1024 * 1024 * 1024;
  *  on a mutant that reinstated it. Measured — restoring the create cap under a 5 GiB cap left this
  *  cell green, and the mutation proof reported it as WRONG-RED.
  *
- *  Each space's 64 MiB membership bucket genuinely reserves, so six spaces need 384 MiB of the 1 GiB.
- *  The cap is never filled with real bytes, so the suite needs no disk for it. */
+ *  Membership and artifact stores both reserve nothing now, so empty spaces leave the cap available
+ *  for real writes. The cap is never filled here, so the suite needs no large disk allocation. */
 const FILE_STORE_CAP = 1024 * 1024 * 1024;
 /** The reconcile phase's cap, which must be ROOMY where the provisioning phase's must be tight: it
  *  plants a store at the legacy 4 GiB on purpose, and the broker refuses a `max_bytes` it cannot
- *  promise. 6 GiB holds that reservation with room for the membership bucket beside it. */
+ *  promise. 6 GiB holds that reservation with room for the rest of the space. */
 const RECONCILE_STORE_CAP = 6 * 1024 * 1024 * 1024;
 const SPACES = 6;
 
@@ -155,13 +155,12 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
   check(`${SPACES} spaces provision under a file store SMALLER than the old 4 GiB per-space reservation`,
     provisioned === SPACES, `${provisioned} provisioned; refusal: ${refusal}`);
 
-  // CELL 2. The broker's own reserved figure, not a config inspection. Only the 64 MiB membership
-  // buckets reserve, so the total must stay far below one space's worth of the old artifact cap.
+  // CELL 2. The broker's own reserved figure, not a config inspection. Neither membership nor
+  // artifact stores reserve capacity, so empty spaces leave this at zero.
   const reserved = await reservedStorage(servers);
   check("the broker's reserved storage does not grow by 4 GiB per space",
     reserved < LEGACY_CAP, `reserved_storage=${reserved} (${(reserved / 2 ** 30).toFixed(2)} GiB)`);
-  check("...and it is exactly the membership buckets, with nothing reserved for artifacts",
-    reserved === SPACES * 64 * 1024 * 1024, reserved);
+  check("...and membership plus artifact stores reserve nothing", reserved === 0, reserved);
 
   // Each store individually, so a total that happened to add up cannot hide a capped store. Only the
   // spaces that actually got provisioned exist to be read, so a partial run grades what it has rather
@@ -204,7 +203,7 @@ await onBroker("open", RECONCILE_STORE_CAP, async ({ servers }) => {
   check("setup reconciles the legacy 4 GiB store to -1",
     legacyRefusal === "" && (await maxBytesOf(servers, legacy)) === -1, legacyRefusal);
   check("...and the broker RELEASES the 4 GiB it had reserved",
-    after === before - LEGACY_CAP + 64 * 1024 * 1024, `before=${before} after=${after}`);
+    after === before - LEGACY_CAP, `before=${before} after=${after}`);
 
   // A second pass must be a no-op, because setup re-runs on every `cotal up`.
   const repeatRefusal = await trySetup({ servers, space: legacy });
@@ -247,11 +246,9 @@ console.log("\nthe broker's file store is the operative bound (open mode):");
 // A put is refused once the broker's REAL usage reaches `max_file_store`. That is the bound that
 // replaced the per-space quota, and a suite that removed a cap without showing SOMETHING still says
 // no would have proved only that artifacts are unbounded.
-// Above the space's own 64 MiB membership-bucket reservation, which genuinely reserves and would
-// otherwise leave no room to provision the space at all — the cap has to bound the ARTIFACTS here,
-// not the setup. 256 MiB leaves about 192 MiB of real capacity to fill.
+// Roomy enough for the real artifact writes this phase performs, without depending on any stream
+// reservation. The cap has to bound the artifacts here, not setup.
 const PUT_CAP = 256 * 1024 * 1024;
-const MEMBERSHIP_RESERVED = 64 * 1024 * 1024;
 await onBroker("open", PUT_CAP, async ({ servers }) => {
   const space = "fullresv";
   const setupRefusal = await trySetup({ servers, space });
@@ -270,7 +267,7 @@ await onBroker("open", PUT_CAP, async ({ servers }) => {
   check("a put is REFUSED once the broker's real file-store cap is reached", putErr !== "",
     `${stored} stored, no refusal`);
   check("...and it refused because the store was actually full, not while nearly empty",
-    used > (PUT_CAP - MEMBERSHIP_RESERVED) / 2, `${used} bytes stored under a ${PUT_CAP}-byte cap`);
+    used > PUT_CAP / 2, `${used} bytes stored under a ${PUT_CAP}-byte cap`);
   check("the refusal names a resource limit rather than a per-space quota",
     /storage|resources|maximum bytes/i.test(putErr), putErr);
   await deleteSpace({ servers, space });

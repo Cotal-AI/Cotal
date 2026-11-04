@@ -26,6 +26,7 @@ import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { acquireLock } from "@cotal-ai/core/advisory-lock";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
@@ -148,6 +149,18 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
 
+  // One launcher of a name at a time. The check below reads the serve records, and a serve records
+  // itself only after the version probe and the spawn, so two overlapping launches both passed it and
+  // both started a serve on this database (#3040). The claim is core's advisory lock, held until this
+  // process exits: a launcher that died leaves a claim the next launch reclaims, and any serve it
+  // left behind is still found by its record below.
+  const claim = acquireLock(join(agentHome, "launch.lock"), {
+    waitMs: 0,
+    label: `agent "${name}"'s launch`,
+    onTimeout: (owner) => new Error(`agent "${name}" is already running (launcher pid ${owner.pid}) — kill it first`),
+  });
+  process.on("exit", () => claim.release());
+
   // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. Each
   // launch records its serve at a path of its own, and `serve.pid` is the record of a serve an
   // earlier version started, so nothing rewrites a record once its serve is gone and the check
@@ -236,8 +249,11 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   };
   serve.stdout?.on("data", scan);
   serve.stderr?.on("data", scan);
+  // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
+  // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
+  let bootFailed = false;
   serve.on("exit", (code, signal) => {
-    if (!attached) process.exit(code ?? (signal ? 1 : 0)); // died before the TUI came up
+    if (!attached) process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0))); // died before the TUI came up
   });
 
   // Poke the server until the plugin's session handshake lands (lazy plugin load → mesh join +
@@ -269,6 +285,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     process.stderr.write(
       `[cotal-connector] serve: agent session never came up (~60s) — aborting. Check the boot log above for plugin/mesh errors (OPENCODE_DB=${dbPath})\n`,
     );
+    bootFailed = true;
     await terminate(serve);
     process.exit(1);
   }

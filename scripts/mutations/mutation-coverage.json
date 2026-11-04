@@ -15,8 +15,8 @@
     {
       "name": "a refused config aborts the process before later configs are examined",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    refusals.push([path, reason]);\n    console.error(`REFUSED ${path}: ${reason}`);\n    continue;",
-      "replace": "    throw new Error(`REFUSED ${path}: ${reason}`);",
+      "find": "    refusals.push([path, reasons]);\n    for (const reason of reasons) console.error(`REFUSED ${path}: ${reason}`);\n    continue;",
+      "replace": "    throw new Error(`REFUSED ${path}: ${reasons.join(\"; \")}`);",
       "expectRed": "an invalid progress regex is refused without hiding the next config",
       "cell": "an invalid progress regex is refused without hiding the next config"
     },
@@ -159,8 +159,8 @@
     {
       "name": "an invalid progress regex escapes per-config validation",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    try { new RegExp(cfg.progressPattern, \"gm\"); } catch (error) { throw new Error(`\"progressPattern\" is invalid: ${error.message}`); }",
-      "replace": "    void cfg.progressPattern;",
+      "find": "    else try { new RegExp(cfg.progressPattern, \"gm\"); } catch (error) { reasons.push(`\"progressPattern\" is invalid: ${error.message}`); }",
+      "replace": "    else void cfg.progressPattern;",
       "expectRed": "an invalid progress regex is refused without hiding the next config",
       "cell": "an invalid progress regex is refused without hiding the next config"
     },
@@ -190,9 +190,9 @@
     },
     {
       "name": "the pnpm --filter=value form is refused",
-      "file": "scripts/mutation-coverage.mjs",
-      "find": "    const value = tokens[filter].startsWith(\"--filter=\") ? tokens[filter].slice(9) : tokens[filter + 1];",
-      "replace": "    const value = tokens[filter + 1];",
+      "file": "scripts/workspace-build-filters.mjs",
+      "find": "    else if (token.startsWith(\"--filter=\")) selectors.push(token.slice(9));",
+      "replace": "    else if (token.startsWith(\"--filter=\")) selectors.push(\"\");",
       "expectRed": "the pnpm --filter=value build form is accepted",
       "cell": "the pnpm --filter=value build form is accepted"
     },

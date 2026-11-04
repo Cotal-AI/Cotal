@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { CommandFailure, oneLine, streamRecord, type Presentation, type RecordType } from "@cotal-ai/workspace";
 import { processServiceHost, type ServiceInstanceSnapshot } from "./service-instances.js";
+import { ownStdoutErrors } from "./stdout-owner.js";
 import type { serviceSupervisorProjection } from "./service-supervision.js";
 
 type RecordedSupervisor = ReturnType<typeof serviceSupervisorProjection>;
@@ -15,7 +16,7 @@ function selection(selected: ServiceInstanceSnapshot, recorded: RecordedSupervis
   if (!Number.isSafeInteger(tail) || tail < 1 || tail > 1000) throw new CommandFailure("refused", "USAGE_INVALID", "journal tail needs an integer from 1 to 1000");
   if (value.host.machine !== host.machine || value.host.uid !== host.uid || recorded.fileObservation === "foreign-host") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the recorded journal belongs to another execution host or OS user; no local journal was substituted");
   if (recorded.mechanism !== "systemd-user" || !recorded.unit || !value.supervisorInvocationId) throw new CommandFailure("refused", "UNSUPPORTED", "native journal access requires a recorded systemd user unit and its original invocation ID; no current unit or old direct-child log was substituted");
-  const boot = value.host.boot.replaceAll("-", "").toLowerCase();
+  const boot = (value.host.boot ?? "").replaceAll("-", "").toLowerCase();
   if (!/^[0-9a-f]{32}$/.test(boot)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the original journal boot identity is invalid");
   const target = { space: value.space, name: value.definition, instanceId: value.instanceId };
   const binding = { unit: recorded.unit, invocationId: value.supervisorInvocationId, boot, uid: String(host.uid), launchRequestId: value.launchRequestId };
@@ -84,9 +85,8 @@ export async function followServiceJournal(selected: ServiceInstanceSnapshot, re
   const interrupt = () => stop("SIGINT"), terminate = () => stop("SIGTERM");
   const outputError = () => { brokenOutput = true; reason = "output-closed"; stopped.abort(); closeReader(); };
   process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
-  // The binary's global EPIPE handler can exit synchronously. Request this owned reader's
-  // shutdown first; a missing final stream record still proves no cleanup outcome.
-  process.stdout.prependListener("error", outputError);
+  // This reader owns stdout's errors, so a closed output stops journalctl before the process exits.
+  const releaseOutput = ownStdoutErrors(outputError);
   const write = async (text: string) => { if (!brokenOutput && !process.stdout.write(text)) await once(process.stdout, "drain", { signal: stopped.signal }); };
   const record = async (type: RecordType, data: unknown) => {
     if (presentation === "json") await write(`${JSON.stringify(streamRecord("logs", type, chosen.target, data))}\n`);
@@ -144,6 +144,6 @@ export async function followServiceJournal(selected: ServiceInstanceSnapshot, re
         await record("end", { reason, ...chosen.binding, deliveredRecords: count, rejectedRecords, diagnosticsWithheld, readerExitObserved: ended, journalRetention: "not-established", serviceUnchangedByView: true });
       } catch { /* A closed output has no guaranteed terminal record. */ }
     }
-    process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.stdout.off("error", outputError);
+    process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); releaseOutput();
   }
 }

@@ -38,12 +38,14 @@ export interface PtyOptions {
   env: Record<string, string>;
   cols?: number;
   rows?: number;
+  /** The terminal name, which the child sees as `TERM`. */
+  name?: string;
 }
 
 /** Run node under a real pty with tsx's loader registered, so `args` may name a `.ts` entry. */
 export function nodePty(args: string[], opts: PtyOptions): Pty {
   return ptySpawn(process.execPath, ["--import", TSX_LOADER, ...args], {
-    name: "xterm-256color",
+    name: opts.name ?? "xterm-256color",
     cols: opts.cols ?? 120,
     rows: opts.rows ?? 32,
     cwd: opts.cwd,
@@ -57,6 +59,32 @@ export const cotalPty = (args: string[], opts: PtyOptions): Pty => nodePty([COTA
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 /** Strip CSI sequences so a marker can be matched through Ink's repaints. */
 export const clean = (s: string): string => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+
+const { Terminal } = managerRequire("@xterm/headless") as {
+  Terminal: new (options: { cols: number; rows: number; scrollback: number; allowProposedApi: boolean }) => {
+    write(data: string, done: () => void): void;
+    buffer: { active: { length: number; getLine(index: number): { isWrapped: boolean; translateToString(trim: boolean): string } | undefined } };
+    dispose(): void;
+  };
+};
+
+/** The display `raw` leaves on a `cols` by `rows` terminal, a line the terminal wrapped joined back
+ *  into one, so a line wider than the terminal reads as wider. ConPTY can encode padding as cursor
+ *  moves, so read the display, not a CSI-stripped byte stream. */
+export async function screen(raw: string, cols: number, rows: number): Promise<string> {
+  const terminal = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
+  try {
+    await new Promise<void>((done) => terminal.write(raw, done));
+    const lines: string[] = [];
+    for (let i = 0; i < terminal.buffer.active.length; i++) {
+      const line = terminal.buffer.active.getLine(i);
+      const text = line?.translateToString(!terminal.buffer.active.getLine(i + 1)?.isWrapped) ?? "";
+      if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines.join("\n").trimEnd();
+  } finally { terminal.dispose(); }
+}
 
 /** One `cotal console` session under a real pty: cumulative output plus a marker poll. */
 export class ConsoleSession {
@@ -101,15 +129,15 @@ export class ConsoleSession {
     this.p.write(s);
     await wait(settleMs);
   }
-  /** Type one `:` palette line and submit it. The palette is CONFIRMED open before the line is
-   *  typed: an overlay (a detail card, help) eats the first `:` to close itself, and a line typed
+  /** Open Ctrl+P, type one palette line and submit it. The palette is CONFIRMED open before the line is
+   *  typed: an overlay (a detail card, help) eats the first key to close itself, and a line typed
    *  into the global keys instead of the palette would toggle lenses or, worse, reach `D`. */
   async command(line: string): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
       let from = this.out.length;
-      this.write(":");
-      if (!(await this.waitFor("Enter runs", 3_000, from))) {
-        if (attempt === 2) throw new Error(`the : palette did not open for ${JSON.stringify(line)}`);
+      this.write("\x10");
+      if (!(await this.waitFor("Commands", 3_000, from))) {
+        if (attempt === 2) throw new Error(`the Ctrl+P palette did not open for ${JSON.stringify(line)}`);
         await wait(300);
         continue;
       }
@@ -130,7 +158,7 @@ export class ConsoleSession {
       this.write("\x1b"); // drop the line that did not run, so the retry starts from a known state
       await wait(300);
     }
-    throw new Error(`the : palette did not run ${JSON.stringify(line)}`);
+    throw new Error(`the Ctrl+P palette did not run ${JSON.stringify(line)}`);
   }
 
   /** Open the compose prompt, wait for its input to paint, then submit once. Like `command`, every
@@ -169,7 +197,7 @@ export class ConsoleSession {
   private async paletteRepaintedOpen(): Promise<boolean> {
     const from = this.out.length;
     await wait(600);
-    return clean(this.out.slice(from)).includes("Enter runs");
+    return clean(this.out.slice(from)).includes("Commands");
   }
   private async composeRepaintedOpen(): Promise<boolean> {
     const from = this.out.length;

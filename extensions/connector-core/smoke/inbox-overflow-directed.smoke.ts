@@ -1,9 +1,9 @@
 /**
  * A peer flooding a channel must not be able to silence directed mail.
  *
- * The overflow valve sacrifices `pullOnly` entries first, and `pullOnly` is
- * `!mentionsMe && historical`. `mentionsMe` comes from the payload `mentions` field, which the code
- * itself calls forgeable. A hostile peer stamping the victim's name on every flooded message made
+ * The overflow valve sacrifices `pullOnly` entries first. Live mentions still bypass that tier,
+ * and `mentionsMe` comes from the payload `mentions` field, which the code itself calls forgeable.
+ * A hostile peer stamping the victim's name on every flooded message made
  * none of its traffic pull-only, so `findIndex` returned -1 and eviction fell through to index 0 -
  * the OLDEST entry, i.e. the DM that had been waiting longest. It was spliced out and `ack()`ed
  * without being marked handled, so JetStream never redelivered it: silent, unrecoverable loss (#791).
@@ -14,7 +14,7 @@
  * MAX_INBOX of 200, so it never reached the overflow path it was meant to cover.
  */
 import assert from "node:assert/strict";
-import { MeshAgent } from "../src/agent.js";
+import { MAX_INBOX, MeshAgent } from "../src/agent.js";
 import type { InboxItem } from "../src/agent.js";
 
 let pass = 0;
@@ -30,8 +30,6 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   console.log(`  ✗ ${detail}`);
 };
 
-const MAX_INBOX = 200;
-
 interface Harness {
   agent: MeshAgent;
   acked: Set<string>;
@@ -40,7 +38,10 @@ interface Harness {
 }
 
 function harness(): Harness {
-  const agent = new MeshAgent({ name: "victim", space: "main", connector: "test" } as never);
+  const agent = new MeshAgent({
+    name: "victim", space: "main", connector: "test", kind: "agent",
+    servers: "nats://127.0.0.1:4222", tls: false, subscribe: [], allowSubscribe: [], allowPublish: [],
+  });
   const acked = new Set<string>();
   const push: Harness["push"] = (partial, opts) => {
     const item = {
@@ -59,7 +60,7 @@ function harness(): Harness {
     (agent as unknown as { buffer: (i: InboxItem, d: { ack: () => void }, p: boolean) => void }).buffer(
       item,
       { ack: () => acked.add(item.id) },
-      opts?.pullOnly ?? (!item.mentionsMe && item.historical),
+      opts?.pullOnly ?? (item.kind === "channel" && item.historical),
     );
   };
   const ids = () =>
@@ -72,7 +73,7 @@ console.log("\n1. the attack: a forged-mention flood must not evict a waiting DM
   const h = harness();
   h.push({ id: "dm-1", kind: "dm", channel: "", fromId: "colleague", text: "the answer is 4" });
   // Every flooded message claims to mention the victim, so none of it is pullOnly.
-  for (let i = 0; i < 400; i++) h.push({ id: `flood-${i}`, mentionsMe: true, historical: true });
+  for (let i = 0; i < 400; i++) h.push({ id: `flood-${i}`, mentionsMe: true, historical: false });
 
   check("the inbox stayed bounded", h.ids().length <= MAX_INBOX, h.ids().length);
   check("the waiting DM is STILL PRESENT after the flood", h.ids().includes("dm-1"));
@@ -93,7 +94,7 @@ console.log("\n3. anycast is directed too and gets the same protection");
 {
   const h = harness();
   h.push({ id: "any-1", kind: "anycast", channel: "", fromId: "dispatcher", text: "claim me" });
-  for (let i = 0; i < 300; i++) h.push({ id: `f-${i}`, mentionsMe: true, historical: true });
+  for (let i = 0; i < 300; i++) h.push({ id: `f-${i}`, mentionsMe: true, historical: false });
 
   check("an anycast task survives a mention-forged flood", h.ids().includes("any-1"));
   check("the anycast task was not acked", !h.acked.has("any-1"));
@@ -134,7 +135,7 @@ console.log("\n6. an all-directed inbox still bounds memory (no attacker advanta
 
 console.log("\n7. the in-flight ceiling refuses all-or-nothing, and a refused DM is still not lost");
 {
-  // holdInFlight caps at MAX_INBOX * 2. A flood can exhaust that ceiling, at which point the guard
+  // holdInFlight caps at MAX_IN_FLIGHT. A flood can exhaust that ceiling, at which point the guard
   // refuses a whole batch and the caller must not surface it. The contract is a DEFERRAL, so the
   // messages must still be buffered and un-acked; a refusal that also dropped them would turn a
   // protection into the very loss it exists to prevent (audit finding 2 on #776).

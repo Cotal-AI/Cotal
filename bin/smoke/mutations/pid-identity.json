@@ -32,8 +32,8 @@
     {
       "name": "M1 the shared verdict stops reporting mismatch (verifyIdentityPin folded to match)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  return live === record.token ? { kind: \"match\" } : { kind: \"mismatch\", liveToken: live };",
-      "replace": "  return { kind: \"match\" };",
+      "find": "  if (live !== record.token) return { kind: \"mismatch\", liveToken: live };\n",
+      "replace": "",
       "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "cell": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "note": "The one comparison the whole design turns on. Folding it to match makes every pinned record pass verification, which is precisely the bare-pid behaviour the issue forbids; A1 goes red the moment the signal is sent.",
@@ -130,8 +130,8 @@
     {
       "name": "M12 invalid Windows pids reach the native binding",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return undefined;",
-      "replace": "",
+      "find": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return undefined;",
+      "replace": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n",
       "expectRed": "F8 invalid Windows pids never reach the native reader",
       "cell": "F8 invalid Windows pids never reach the native reader",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
@@ -166,8 +166,8 @@
     {
       "name": "M16 oversized Windows pids reach the native binding",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return undefined;",
-      "replace": "  if (!Number.isInteger(pid) || pid <= 0) return undefined;",
+      "find": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return undefined;",
+      "replace": "export function win32ProcessCreationToken(pid: number, read: ProcessStartTokenReader = nativeWin32CreationToken): string | undefined {\n  if (!Number.isInteger(pid) || pid <= 0) return undefined;",
       "expectRed": "F12 an oversized Windows pid never reaches the native reader",
       "cell": "F12 an oversized Windows pid never reaches the native reader",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"

@@ -2,7 +2,7 @@
 # container at it with COTAL_SERVERS. Adding or reshaping a team = edit env + roster,
 # never the image. Build once:  docker build -f deploy/docker/Dockerfile -t cotal-runner .
 #
-# Before first run, on the host beside your broker:  cotal mint --signer   (emits ./signer.json,
+# Before first run, on the host beside your broker:  cotal auth signer --out signer.json   (writes ./signer.json,
 # the account signing material with no operator key - see deploy/README.md).
 services:
   # A team: a manager that boots every agent in the roster (pty runtime, all in this container).

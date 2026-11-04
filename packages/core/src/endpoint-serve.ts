@@ -14,7 +14,7 @@
  * stale when superseded), and commits are epoch-fenced at the record seam
  * ({@link writeServiceStatus}).
  */
-import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { ValidateFunction } from "ajv";
 import { spacePrefix } from "./subjects.js";
 import {
@@ -57,6 +57,10 @@ export interface EpServeContext {
   identity: EpServeIdentity;
   subject: ParsedEpRequest;
   request: EndpointRequest;
+  /** This process's `performance.now()` when the request arrived, taken before validation. A
+   *  host measures a request budget against it in this process only: it is never persisted, sent,
+   *  or compared with another process's clock. */
+  receivedAtMonotonicMs?: number;
   obligations?: readonly GuardObligation[];
   /** Measure the complete success reply against this connection and a handler's byte ceiling. */
   replyFits?: (data: unknown, ceiling: number) => boolean;
@@ -466,6 +470,7 @@ function encodeReply(reply: EndpointReply): Uint8Array {
     if (!parsed || parsed.plane !== "request") return; // no sender: MUST NOT be handled (§13.2)
     let env: EndpointRequest | undefined;
     let dispatched = false;
+    let returned = false;
     let reply: EndpointReply;
     try {
       const originalEnvelope: unknown = JSON.parse(dec.decode(msg.data));
@@ -524,7 +529,7 @@ function encodeReply(reply: EndpointReply): Uint8Array {
       }
       const requestId = env.id;
       const ctx: EpServeContext = {
-        identity, subject: parsed, request: env,
+        identity, subject: parsed, request: env, receivedAtMonotonicMs,
         ...(obligations !== undefined ? { obligations } : {}),
         replyFits: (data, ceiling) => {
           const maxPayload = nc.info?.max_payload;
@@ -547,6 +552,7 @@ function encodeReply(reply: EndpointReply): Uint8Array {
         return; // cast: the responder MUST NOT reply (§13.5)
       }
       const data = await def.handler(ctx);
+      returned = true;
       // §13.7: the reply validates against the output schema BEFORE it is published, under the
       // same fixed budget as args — an invalid reply is a server bug and fails loud, never
       // reaches the caller as success.
@@ -557,16 +563,20 @@ function encodeReply(reply: EndpointReply): Uint8Array {
       const error = err instanceof EpEnvelopeError
         ? err.toEpError()
         : { code: "internal", message: (err as Error)?.message ?? String(err) };
-      // §13.3: a refusal raised before dispatch MUST say nothing ran, and an omitted outcome reads
-      // as `unknown`. Deciding it here, from where the loop stands, covers every check ahead of the
-      // handler, including one added later and a body that never parsed into an envelope.
+      // §13.3: a refusal raised before dispatch MUST say nothing ran, one raised after the handler
+      // returned MUST say it ran, and an omitted outcome reads as `unknown`. Deciding it here, from
+      // where the loop stands, covers every check on either side of the handler, including one
+      // added later and a body that never parsed into an envelope. A handler's own throw keeps
+      // whatever outcome it stated: the loop cannot tell how far it got.
       // The id echoes the request where one parsed; the reply subject is already nonce-scoped
       // to exactly this request's caller, so attribution never rides the echo.
-      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: dispatched ? error : { ...error, outcome: "not-executed" } };
+      const stated = !dispatched ? "not-executed" : returned ? "executed" : undefined;
+      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: stated === undefined ? error : { ...error, outcome: stated } };
     }
     // Replacing a reply that cannot be serialized or published changes nothing about whether the
-    // command ran, so each replacement below keeps the outcome the replaced reply stated.
-    const outcome = reply.error?.outcome;
+    // command ran, so each replacement below keeps the outcome the replaced reply stated, and a
+    // success states `executed`.
+    const outcome = reply.ok ? "executed" : reply.error?.outcome;
     let bytes: Uint8Array;
     try {
       bytes = encodeReply(reply);
@@ -599,7 +609,12 @@ function encodeReply(reply: EndpointReply): Uint8Array {
 
   for (const def of defs) {
     const cmd = def.command;
-    const cb = (_err: unknown, msg: { subject: string; data: Uint8Array }) => {
+    const cb = (_err: unknown, msg: Pick<Msg, "subject" | "data" | "headers">) => {
+      // Stored-message delivery is not a caller publication on this subject. Drop native
+      // provenance before parsing, authorization or replies: there is no authenticated caller
+      // to answer. Match header names, not values; an empty marker is still a marker.
+      for (const [name] of msg.headers ?? [])
+        if (/^Nats-(Stream|Subject|Sequence|Time-Stamp)$/i.test(name)) return;
       const run = handle(def, msg).catch(() => { /* handle() reports via the reply; never unhandled */ });
       pending.add(run);
       void run.finally(() => pending.delete(run));
@@ -617,7 +632,11 @@ function encodeReply(reply: EndpointReply): Uint8Array {
 
   return {
     async stop() {
-      await Promise.all(subs.map((s) => s.drain())); // no new deliveries
+      // No new deliveries. A drain settles on the server's PONG, and nats-core rejects no pending
+      // flush when the connection closes, so a close mid-drain would strand stop() forever: each
+      // drain is bounded by the connection's own closed() instead.
+      const gone = nc.closed().then(() => undefined);
+      await Promise.all(subs.map((s) => Promise.race([s.drain().catch(() => undefined), gone])));
       await Promise.allSettled([...pending]); // in-flight handlers finish before "stopped"
     },
   };

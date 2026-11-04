@@ -23,7 +23,7 @@
     {
       "name": "the transient endpoint watches again",
       "file": "implementations/cli/src/lib/transient.ts",
-      "find": "  const readOnce = conn.bearer === undefined;",
+      "find": "  const readOnce = batchedRead(conn, presenceBucket(conn.space)) && batchedRead(conn, channelBucket(conn.space));",
       "replace": "  const readOnce = false;",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
       "expectRed": "three one-shot sends leave no consumer on the presence or channel-registry stream (#4091)",
@@ -53,7 +53,7 @@
     {
       "name": "`cotal channel` scans the registry with a consumer again",
       "file": "implementations/cli/src/commands/channels.ts",
-      "find": "{ ...options, directGet: !connection.bearer }",
+      "find": "{ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) }",
       "replace": "{ ...options, directGet: false }",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
       "expectRed": "`cotal channel` leaves no consumer on the channel-registry stream (#4091)",
@@ -63,7 +63,7 @@
     {
       "name": "a channel send's policy read scans the registry with a consumer again",
       "file": "implementations/cli/src/commands/send.ts",
-      "find": "{ creds: connection.creds }), directGet: !connection.bearer });",
+      "find": "{ creds: connection.creds }), directGet: batchedRead(connection, channelBucket(space)) });",
       "replace": "{ creds: connection.creds }), directGet: false });",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
       "expectRed": "three one-shot sends leave no consumer on the presence or channel-registry stream (#4091)",

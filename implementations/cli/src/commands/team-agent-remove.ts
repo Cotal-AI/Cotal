@@ -1,16 +1,17 @@
 import { setTimeout as delay } from "node:timers/promises";
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { DEV_OWNER, contractDigest } from "@cotal-ai/core";
-import { acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
-import { askManager, managerFailure, resolveControlTarget } from "../lib/control.js";
-import { listAdditiveTeamAttempts, type AdditiveAgentReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { writeAgentRemovalAttempt, writeAgentRemovalReceipt, writeAgentRemovalStep, type AgentRemovalAttempt, type AgentRemovalStep, type AgentRetirementObservation } from "../lib/team-agent-removal.js";
+import { ConfirmationRequired, acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
+import { listAdditiveTeamAttempts, removalOriginal, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
+import { writeAgentRemovalAttempt, writeAgentRemovalReceipt, writeAgentRemovalStep, type AgentOriginal, type AgentRemovalAttempt, type AgentRemovalStep, type AgentRetirementObservation } from "../lib/team-agent-removal.js";
 import { classifyAgent, type AgentSettlement, type SlotRow } from "../lib/team-removal-reconcile.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { TeamValues } from "./team.js";
+import { askManager, managerFailure } from "@cotal-ai/workspace/control";
+import { cliControl } from "../lib/control.js";
 
-type Agent = AdditiveAgentReceipt["createdAgents"][number];
+type Agent = AgentOriginal["createdAgents"][number];
 interface Slot {
   name: string; owner: string; actor: string; slotLifecycleUid: string; slotPhase: string;
   cleanupComplete?: boolean; slotRevision: number; headState?: string; headLifecycleUid?: string;
@@ -23,7 +24,7 @@ export interface AgentRetirementRun { intentAttempted: boolean; returned: boolea
  * reads the pinned original manager's slots; `execute` runs only under the caller's maintenance lock.
  * A stop acknowledgement never settles removal: every original UID must reach a native retired
  * slot/head with confirmed cleanup, and an unconfirmed outcome stops the sequence without replay. */
-export async function prepareAgentRetirement(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AdditiveAgentReceipt }) {
+export async function prepareAgentRetirement(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AgentOriginal }) {
   const { root, space, deploymentId, original, receipt } = input, target = { root, space, deploymentId };
   if (original.authMode !== "auth" || !original.managerInstanceId) throw new CommandFailure("refused", "UNSUPPORTED", "native agent retirement needs a static-auth deployment with its recorded manager", { target });
   const manager = original.managerInstanceId, digest = contractDigest(receipt);
@@ -34,11 +35,11 @@ export async function prepareAgentRetirement(input: { root: string; space: strin
   const unchanged = () => {
     if (JSON.stringify(findMesh(space)) !== JSON.stringify(selected)) throw new CommandFailure("refused", "CONFLICT", "the selected registration changed; no later stop was submitted", { target });
     const current = listAdditiveTeamAttempts(root);
-    const now = current.returned.find((row) => row.deploymentId === deploymentId);
+    const now = removalOriginal(current, deploymentId);
     if (current.refused.length || !now || contractDigest(now) !== digest || JSON.stringify(current.valid.find((row) => row.deploymentId === deploymentId)) !== JSON.stringify(original)) throw new CommandFailure("refused", "CONFLICT", "the original intent, returned receipt or removal records changed; no later stop was submitted", { target });
   };
   const readSlots = async (agents: readonly Agent[]) => {
-    const answer = await askManager(space, control.server, "slots", { names: agents.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
+    const answer = await askManager(cliControl, space, control.server, "slots", { names: agents.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
     if (!answer.ok) throw managerFailure(answer, "native retirement inspection", target);
     const rows = answer.data as Slot[];
     if (answer.managerInstanceId !== manager || !Number.isSafeInteger(answer.managerEpoch) || !Array.isArray(rows) || rows.length > agents.length || new Set(rows.map((row) => row.name)).size !== rows.length || rows.some((row) => !agents.some((agent) => agent.name === row.name))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the original manager did not return a bounded attributed slot query", { target });
@@ -71,7 +72,7 @@ export async function prepareAgentRetirement(input: { root: string; space: strin
         let requestId: string | undefined;
         if (!state.retired) {
           if (state.slot.slotPhase !== "active" || !state.slot.live) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original incarnation changed before stop submission; no replacement was stopped", { target: { ...target, agent: agent.name } });
-          const stopped = await askManager(space, control.server, "stop", { name: agent.name }, control.auth, "any", 10_000, { instanceId: manager, expectedTarget: { id: agent.id, lifecycleUid: agent.lifecycleUid }, journal: {
+          const stopped = await askManager(cliControl, space, control.server, "stop", { name: agent.name }, control.auth, "any", 10_000, { instanceId: manager, expectedTarget: { id: agent.id, lifecycleUid: agent.lifecycleUid }, journal: {
             beforeSubmit(request) {
               unchanged();
               if (signal.aborted) throw new Error("removal interrupted before stop");
@@ -118,7 +119,7 @@ export async function prepareAgentRetirement(input: { root: string; space: strin
 }
 
 /** One row per original incarnation: its native retirement, stop or unattempted state. */
-export function agentOutcomeRows(receipt: AdditiveAgentReceipt, run: Pick<AgentRetirementRun, "retired" | "stops">) {
+export function agentOutcomeRows(receipt: AgentOriginal, run: Pick<AgentRetirementRun, "retired" | "stops">) {
   return receipt.createdAgents.map((agent) => ({ name: agent.name, uid: agent.lifecycleUid, state: run.retired.some((row) => row.lifecycleUid === agent.lifecycleUid) ? "native retired and cleaned" : run.stops.find((row) => row.lifecycleUid === agent.lifecycleUid)?.notExecuted ? "stop refused; not executed" : run.stops.find((row) => row.lifecycleUid === agent.lifecycleUid)?.acknowledged ? "stop acknowledged; retirement unconfirmed" : run.stops.some((row) => row.lifecycleUid === agent.lifecycleUid) ? "stop outcome unknown" : "not attempted" }));
 }
 
@@ -130,7 +131,7 @@ export interface AgentReconcileRun { recorded: AgentSettlement[]; settlements: A
  * target. An unconfirmed stop settles only when the original UID's slot and head are retired with
  * cleanup complete. A live original, a successor under the alias, or an in-flight terminal stays
  * open. Never-submitted incarnations are reported unattempted and are not continued. */
-export async function prepareAgentReconcile(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AdditiveAgentReceipt; intent: AgentRemovalAttempt }) {
+export async function prepareAgentReconcile(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AgentOriginal; intent: AgentRemovalAttempt }) {
   const { root, space, deploymentId, original, receipt, intent } = input, target = { root, space, deploymentId };
   if (original.authMode !== "auth" || !original.managerInstanceId) throw new CommandFailure("refused", "UNSUPPORTED", "retirement reconciliation needs a static-auth deployment with its recorded manager; open and user-auth managers keep no durable slot projection", { target });
   const manager = original.managerInstanceId, digest = contractDigest(receipt);
@@ -142,7 +143,7 @@ export async function prepareAgentReconcile(input: { root: string; space: string
   const intentText = JSON.stringify(intent);
   const unchanged = () => {
     if (JSON.stringify(findMesh(space)) !== JSON.stringify(selected)) throw new CommandFailure("refused", "CONFLICT", "the selected registration changed; nothing further was recorded", { target });
-    const current = listAdditiveTeamAttempts(root), now = current.returned.find((row) => row.deploymentId === deploymentId);
+    const current = listAdditiveTeamAttempts(root), now = removalOriginal(current, deploymentId);
     if (current.refused.length || !now || contractDigest(now) !== digest || JSON.stringify(current.valid.find((row) => row.deploymentId === deploymentId)) !== JSON.stringify(original) || JSON.stringify(current.removal?.attempts.find((row) => row.deploymentId === deploymentId)) !== intentText || current.removal?.returned.some((row) => row.deploymentId === deploymentId)) throw new CommandFailure("refused", "CONFLICT", "the original deployment, its removal intent or its removal records changed; nothing further was recorded", { target });
     return current.removal!.steps.filter((row) => row.deploymentId === deploymentId);
   };
@@ -150,7 +151,7 @@ export async function prepareAgentReconcile(input: { root: string; space: string
     const submittedOpen = receipt.createdAgents.filter((_, ordinal) => steps.some((row) => row.ordinal === ordinal && row.phase === "submitted") && !steps.some((row) => row.ordinal === ordinal && row.phase === "retired"));
     let rows: SlotRow[] = [], epoch = 0;
     if (submittedOpen.length) {
-      const answer = await askManager(space, control.server, "slots", { names: submittedOpen.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
+      const answer = await askManager(cliControl, space, control.server, "slots", { names: submittedOpen.map((row) => row.name), includeRetired: true }, control.auth, "any", 2_000, { instanceId: manager });
       if (!answer.ok) throw managerFailure(answer, "retirement reconciliation read", target);
       const data = answer.data as SlotRow[];
       if (answer.managerInstanceId !== manager || !Number.isSafeInteger(answer.managerEpoch) || !Array.isArray(data) || data.length > submittedOpen.length || new Set(data.map((row) => row.name)).size !== data.length || data.some((row) => !submittedOpen.some((agent) => agent.name === row.name))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the original manager did not return a bounded attributed slot read; nothing was reconciled", { target });
@@ -198,7 +199,7 @@ export function agentSettlementRows(settlements: readonly AgentSettlement[]) {
 export const AGENT_RECONCILE_NOTE = "Reconciliation records only the original manager's durable retired slot and head for the original lifecycle UID, with cleanup complete. Process absence settles nothing. No stop was sent or retried, and never-submitted incarnations stay unattempted. An unsettled intent stays blocking.";
 
 /** Settle an unsettled static agent-only retirement intent from native slot observation. */
-async function reconcileAgentTeam(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AdditiveAgentReceipt; intent: AgentRemovalAttempt; values: TeamValues }): Promise<void> {
+async function reconcileAgentTeam(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: AgentOriginal; intent: AgentRemovalAttempt; values: TeamValues }): Promise<void> {
   const { root, space, deploymentId, original, receipt, intent, values } = input, target = { root, space, deploymentId };
   const phase = await prepareAgentReconcile({ root, space, deploymentId, original, receipt, intent });
   const preview = { kind: "agent-team-removal-reconcile-preview" as const, deploymentId, managerInstanceId: phase.manager, agents: phase.settlements, recordable: phase.settlements.filter((row) => row.state === "record").length, effectAttempted: false as const, continuationOffered: false as const };
@@ -207,9 +208,9 @@ async function reconcileAgentTeam(input: { root: string; space: string; deployme
     { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "uid", label: "Original lifecycle" }, { key: "state", label: "Observation" }], rows: agentSettlementRows(data.agents) },
     { kind: "lines", lines: [AGENT_RECONCILE_NOTE] },
   ] }] });
-  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial", partial: { message: "The original manager's slots were read in order, not atomically. Nothing was recorded or stopped." } }, view); return; }
+  if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...view(data).sections, { blocks: [{ kind: "lines", lines: ["The original manager's slots were read in order, not atomically. Nothing was recorded or stopped."] }] }] })); return; }
   if (!values.yes) {
-    if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted reconciliation needs --yes after reviewing which observations it records", { target });
+    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
     const answer = await prompts.confirm({ message: `Record ${preview.recordable} observed retirement(s) for this unsettled removal? No stop is sent.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "agent-team-removal-reconcile", recorded: 0 }, noOp: true }, () => ({ sections: [{ title: "Nothing recorded", blocks: [{ kind: "lines", lines: ["The unsettled intent is unchanged."] }] }] })); return; }
   }
@@ -237,14 +238,15 @@ export async function withInterruptGuard<T>(fn: (signal: AbortSignal) => Promise
   finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
 }
 
-/** Remove only a returned static agent-only deployment. */
+/** Remove a returned static agent-only deployment, or the agent allocations of a stopped attempt. */
 export async function removeAgentTeam(deploymentId: string, values: TeamValues): Promise<void> {
   const catalog = personaCatalog(values), root = canonicalRoot(catalog.root), space = catalog.space;
   const target = { root, space, deploymentId };
   const inventory = listAdditiveTeamAttempts(root), original = inventory.valid.find((row) => row.deploymentId === deploymentId);
-  const receipt = inventory.returned.find((row) => row.deploymentId === deploymentId);
+  const receipt = removalOriginal(inventory, deploymentId);
   if (inventory.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "unreadable deployment or removal records remain; no stop target was inferred", { target });
-  if (!original || !receipt || receipt.kind !== "additive-agent-receipt" || original.authMode !== "auth" || receipt.createdChannels.length || original.declaredChannels.length || !original.managerInstanceId || receipt.createdAgents.length > 100) throw new CommandFailure("refused", "UNSUPPORTED", "guarded removal currently needs a full static agent-only returned receipt; mixed/channel, open/user-auth, legacy and unsettled deployments were not routed through a weaker stop", { target });
+  const agentOnly = receipt?.kind === "additive-agent-receipt" ? !original?.declaredChannels.length : receipt?.kind === "additive-stopped-receipt" && receipt.createdAgents.length > 0;
+  if (!original || !receipt || receipt.kind === "additive-channel-receipt" || !agentOnly || original.authMode !== "auth" || receipt.createdChannels.length || !original.managerInstanceId || receipt.createdAgents.length > 100) throw new CommandFailure("refused", "UNSUPPORTED", "guarded removal currently needs a static agent-only returned receipt, or an unsettled attempt whose journal records only agent allocations; mixed/channel, open/user-auth and legacy deployments and unknown steps were not routed through a weaker stop", { target });
   if (original.space !== space || canonicalRoot(original.root) !== root) throw new CommandFailure("refused", "CONFLICT", "the deployment belongs to another selected root or space; no identity was rebound", { target });
   const manager = original.managerInstanceId;
   const prior = inventory.removal?.returned.find((row) => row.deploymentId === deploymentId);
@@ -259,7 +261,7 @@ export async function removeAgentTeam(deploymentId: string, values: TeamValues):
   const view = (data: typeof preview): Report => ({ sections: [{ title: "Agent team removal impact", blocks: [{ kind: "fields", rows: [["Deployment", deploymentId], ["Manager", manager], ["Original incarnations", String(data.agents.length)], ["Channels", "none"], ["Read consistency", "ordered, not atomic"]] }, { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "id", label: "Identity" }, { key: "uid", label: "Lifecycle" }, { key: "state", label: "Native observation" }], rows: data.agents.map((row) => ({ name: row.name, id: row.id, uid: row.lifecycleUid, state: row.observedState })) }, { kind: "lines", lines: ["Apply rechecks each original incarnation, requests each necessary stop once, and waits for native retirement and cleanup evidence. Missing rows and stop acknowledgements are not completion. No channel, service, broker or successor agent is in scope."] }] }] });
   if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview }, view); return; }
   if (!values.yes) {
-    if (!canPrompt() || values.json) throw new CommandFailure("refused", "USAGE_INVALID", "scripted agent-team removal needs --yes after reviewing its native impact", { target });
+    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted agent-team removal needs --yes after reviewing its native impact", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
     const answer = await prompts.confirm({ message: `Retire ${receipt.createdAgents.length} recorded agent incarnation(s) from ${oneLine(space)}? No channels or services will be removed.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "agent-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Team kept", blocks: [{ kind: "lines", lines: ["No removal intent or stop was submitted."] }] }] })); return; }
   }

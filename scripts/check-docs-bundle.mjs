@@ -20,10 +20,11 @@
 //
 // Exit 0 clean, 1 the bundle is hollow, 2 the generator could not run.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readGeneratedDocsBundle } from "./read-generated-docs-bundle.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,20 +45,8 @@ function graded(bundle) {
   return failures;
 }
 
-// The generator emits TypeScript, not JSON: a banner, an import, `DOCS_VERSION`, then
-// `export function loadDocsBundle(): DocsBundle { return { … }; }`. The object literal is
-// `JSON.stringify`'d, so slicing it back out and parsing it as JSON reads exactly what was written
-// with no TypeScript toolchain in the way.
-function bundleObject(source) {
-  const open = source.indexOf("return {");
-  if (open === -1) throw new Error("generated bundle does not declare loadDocsBundle");
-  const close = source.lastIndexOf("};");
-  if (close === -1 || close < open) throw new Error("generated bundle is truncated");
-  return JSON.parse(source.slice(open + "return ".length, close + 1));
-}
-
 const dir = mkdtempSync(join(tmpdir(), "cotal-docsbundle-"));
-const out = join(dir, "docs-bundle.generated.ts");
+const out = join(dir, "docs-bundle.generated.mts");
 try {
   try {
     execFileSync("node", [join(repoRoot, "scripts", "generate-docs-bundle.mjs"), "--out", out], {
@@ -72,7 +61,7 @@ try {
 
   let bundle;
   try {
-    bundle = bundleObject(readFileSync(out, "utf8"));
+    bundle = readGeneratedDocsBundle(out);
   } catch (error) {
     console.error(`check:docsbundle: the generated bundle could not be read: ${error.message}`);
     process.exit(2);

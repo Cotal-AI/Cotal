@@ -53,59 +53,59 @@
   "mutations": [
     {
       "name": "the #1205 defect restored: an open mesh again falls through to the seed requirement",
-      "file": "implementations/cli/src/commands/agents.ts",
+      "file": "packages/workspace/src/attach/attach-seat.ts",
       "find": "    case \"open\":\n      return { kind: \"bare\" };",
       "replace": "    case \"open\":\n      return t.spaceAuth ? { kind: \"mint\", auth: t.spaceAuth } : { kind: \"fatal\", message: attachNoSeedMessage(t) };",
       "expectRed": "open-without-seed attaches",
       "cell": "open-without-seed attaches",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "The pre-fix attach treated a missing seed as fatal even when the registry said the mesh was open."
     },
     {
       "name": "a sealed mesh's own seed is ignored and the redeem goes bare",
-      "file": "implementations/cli/src/commands/agents.ts",
+      "file": "packages/workspace/src/attach/attach-seat.ts",
       "find": "      return t.spaceAuth ? { kind: \"mint\", auth: t.spaceAuth } : { kind: \"fatal\", message: attachNoSeedMessage(t) };",
       "replace": "      return { kind: \"bare\" };",
       "expectRed": "ACCEPT: a sealed mesh with its seed still mints from THAT seed",
       "cell": "ACCEPT: a sealed mesh with its seed still mints from THAT seed",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "The defect in the other direction: an authenticated mesh that holds its seed is redeemed as if it were open."
     },
     {
       "name": "a missing sealed seed again tells the operator to re-register the already-resolved root",
-      "file": "implementations/cli/src/commands/agents.ts",
+      "file": "packages/workspace/src/attach/attach-seat.ts",
       "find": "  return `${head}\\n  broker ${t.server}\\n  resolved root ${t.root}\\n  This is a static-auth mesh. Attach still needs this space's seed under ${t.root}/.cotal/auth. Restore the seed at that checkout. This mesh is not open, so attach will not connect without the seed.${shadowLine}`;",
       "replace": "  return `${head}\\n  broker ${t.server}\\n  resolved root ${t.root}\\n  A static-auth mesh keeps this space's seed under <root>/.cotal/auth. That root is what this command resolved and connected with, so if it is not the checkout holding this space's auth, re-register the mesh with \\`cotal meshes add ${t.space} --server ${t.server} --root <dir>\\`.${shadowLine}`;",
       "expectRed": "REFUSE (same absent seed, mode `auth`): a sealed mesh still refuses, and names restore-at-checkout",
       "cell": "REFUSE (same absent seed, mode `auth`): a sealed mesh still refuses, and names restore-at-checkout",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "The copy issue #1205 called out: the remedy named a root the command had already resolved correctly."
     },
     {
       "name": "THE BAND-AID: a sealed mesh with no seed is rescued by the open path",
-      "file": "implementations/cli/src/commands/agents.ts",
+      "file": "packages/workspace/src/attach/attach-seat.ts",
       "find": "    default:\n      return t.spaceAuth ? { kind: \"mint\", auth: t.spaceAuth } : { kind: \"fatal\", message: attachNoSeedMessage(t) };",
       "replace": "    default:\n      return t.spaceAuth ? { kind: \"mint\", auth: t.spaceAuth } : { kind: \"bare\" };",
       "expectRed": "REFUSE (same absent seed, mode `auth`): a sealed mesh still refuses, and names restore-at-checkout",
       "cell": "REFUSE (same absent seed, mode `auth`): a sealed mesh still refuses, and names restore-at-checkout",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "This is the exact shape of a fix that makes #1205's open case pass by weakening the sealed one. MEASURED, and worth stating precisely because a reviewer challenged the original wording: applied ALONE it reddens the IN-PROCESS sealed-refusal cell, not the live one, because connectOrThrow's mode check (mutation 6's target) refuses the seedless sealed mesh one layer earlier and the live attach never reaches the redeem decision. Removing BOTH guards together reddens the LIVE sealed cell as well (re-measured on the current suite: 26 passed / 4 failed; the pass count moved when resolver cells were added, the 4 reds did not). So the sealed refusal is defended in depth by two independent guards, and each is killed by a cell that names it."
     },
     {
       "name": "the bare redeem invents a credential for an open mesh",
-      "file": "implementations/cli/src/commands/agents.ts",
+      "file": "packages/workspace/src/attach/attach-seat.ts",
       "find": "  return link.mode === \"bare\"\n    ? standaloneConnectOpts({ tls: link.tls })\n    : standaloneConnectOpts({ creds: link.creds, tls: link.tls });",
       "replace": "  return standaloneConnectOpts({ creds: (link as { creds?: string }).creds ?? \"-----BEGIN NATS USER JWT-----\\nsynthesised\\n------END NATS USER JWT------\\n\", tls: link.tls });",
       "expectRed": "a bare redeem carries NO credential: the fix does not invent or synthesise a seed for an open mesh",
       "cell": "a bare redeem carries NO credential: the fix does not invent or synthesise a seed for an open mesh",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "Synthesising a seed for an open mesh is the forbidden repair; the connect-options cell is what forbids it."
     },
     {
       "name": "a registered sealed mesh with no seed is probed and connected as open",
       "file": "packages/workspace/src/connect.ts",
-      "find": "  if (target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `✗ mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,",
-      "replace": "  if (false && target.mode === \"auth\" && !target.auth) {\n    throw new ConnectRefusal(\n      `✗ mesh \"${target.space}\" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,",
+      "find": "  if (target.mode === \"auth\" && !target.auth) {",
+      "replace": "  if (false && target.mode === \"auth\" && !target.auth) {",
       "expectRed": "connecting to a sealed mesh whose seed is gone refuses by name, and says the mesh is NOT open",
       "cell": "connecting to a sealed mesh whose seed is gone refuses by name, and says the mesh is NOT open",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build",
@@ -123,22 +123,22 @@
     },
     {
       "name": "THE SIXTH REACH: an open mesh's scatter probe tries to mint instead of riding bare",
-      "file": "implementations/cli/src/lib/control.ts",
+      "file": "packages/workspace/src/control/manager.ts",
       "find": "  if (!auth.creds && !auth.bearer) return { kind: \"bare\" };",
       "replace": "  if (false && !auth.creds && !auth.bearer) return { kind: \"bare\" };",
       "expectRed": "ACCEPT: an open mesh's scatter probes bare, minting nothing",
       "cell": "ACCEPT: an open mesh's scatter probes bare, minting nothing",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "The sixth seed reach on the attach path (attach -> pinForTarget -> locateSeat -> scatterManager). Losing the bare arm makes an open mesh fall through to the seed test at a site the redeem never sees."
     },
     {
       "name": "THE SIXTH REACH, the dangerous direction: a sealed mesh with no seed REFUSES at the scatter",
-      "file": "implementations/cli/src/lib/control.ts",
+      "file": "packages/workspace/src/control/manager.ts",
       "find": "  return { kind: \"as-is\" };",
       "replace": "  return auth.creds && !spaceAuth ? { kind: \"bare\" } : { kind: \"as-is\" };",
       "expectRed": "REFUSE (same creds, seed absent): a sealed mesh keeps what it arrived with and DEGRADES, never refusing",
       "cell": "REFUSE (same creds, seed absent): a sealed mesh keeps what it arrived with and DEGRADES, never refusing",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "A sealed mesh with no seed must DEGRADE here, not be reclassified as open. Treating it as open at this site is the same class of error as #1205, one call before the redeem."
     },
     {

@@ -135,10 +135,11 @@ await rejects(
 console.log("B. view → required-scope policy table");
 check('deployer is spawn-gated (own-team deploys are spawn-grade)', VIEW_REQUIRED_SCOPE.deployer === "spawn");
 check('manager-service is supervise-gated (remote manager authority is distinct)', VIEW_REQUIRED_SCOPE["manager-service"] === "supervise");
-for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller" && v !== "service-endpoint"))
+for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller" && v !== "service-endpoint" && v !== "dm-reader"))
   check(`${view} is admin-gated (operator authority)`, VIEW_REQUIRED_SCOPE[view] === "admin");
 check("manager-caller adds no capability requirement", VIEW_REQUIRED_SCOPE["manager-caller"] === undefined);
 check("session-caller adds no capability requirement (the redeemed session grant is the authority)", VIEW_REQUIRED_SCOPE["session-caller"] === undefined);
+check("dm-reader adds no capability requirement (the purpose-bound IdP proof is the authority)", VIEW_REQUIRED_SCOPE["dm-reader"] === undefined);
 check(
   "backup/restore are not name-only views (exact stream/session confinement needs operation-bound credentials)",
   !USER_TOKEN_VIEWS.some((view) => view === ("backup" as UserTokenView) || view === ("restore" as UserTokenView)),
@@ -208,6 +209,14 @@ type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
 {
   const agent = forView(tok(undefined, ["spawn"]), CONN, READER) as Perms;
   check("no view → agent profile (channel ACL resolver consulted)", aclConsulted === 1 && (agent.sub?.allow ?? []).length > 0);
+}
+{
+  // On a user mesh the token is delegation authority only; the bearer binds its row's own role.
+  rowScope = ["spawn", "role:worker"];
+  const agent = forView(tok(undefined, ["spawn", "role:worker"]), CONN, READER) as Perms;
+  check("a role:<r> scope token mints no task-queue row for that role on a user mesh",
+    (agent.pub?.allow ?? []).length > 0 && !(agent.pub?.allow ?? []).some((s) => s.includes("svc_worker")), agent.pub);
+  rowScope = ["spawn", "admin", "role:default"];
 }
 {
   const before = aclConsulted;

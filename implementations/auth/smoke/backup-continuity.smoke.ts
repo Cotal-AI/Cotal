@@ -271,7 +271,9 @@ try {
 
   const duplicatePath = join(dir, "actors", managedName);
   const managedRow = JSON.parse(readFileSync(join(managedDir, managedName), "utf8")) as Record<string, unknown>;
+  // A valid interactive row carries neither the agent token hash nor managed custody.
   delete managedRow.tokenHash;
+  delete managedRow.custody;
   writeFileSync(duplicatePath, JSON.stringify(managedRow, null, 2));
   await rejects(
     "the same principal in both ledger spaces is refused",

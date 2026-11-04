@@ -1,11 +1,15 @@
 /** Typecheck real consumers of the built CJS subpath, including modes NodeNext alone misses. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const require = createRequire(import.meta.url);
 const root = mkdtempSync(join(tmpdir(), "hosted-types-"));
@@ -59,3 +63,4 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 assert.equal(failed, 0, "public subpath type-consumer failures");
+emitSentinel({ passed: counted.cells(), failed: 0 });

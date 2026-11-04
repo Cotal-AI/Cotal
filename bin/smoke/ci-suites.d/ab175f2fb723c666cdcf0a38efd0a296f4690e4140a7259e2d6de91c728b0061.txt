@@ -1,0 +1,3 @@
+# Every usage error prints the error, its remedy and the command's help on stderr, nothing on
+# stdout, exit 1, including a command's own input checks, clean and help paths.
+smoke:usage-format

@@ -238,10 +238,48 @@ export function writeAdditiveAgentReceipt(root: string, attempt: AdditiveTeamAtt
   publishSynced(dir, join(dir, receiptName(original.deploymentId)), JSON.stringify(receipt, null, 2) + "\n");
 }
 
+/** What an unsettled attempt's own journal proves it created, when the journal proves all of it: in
+ * manifest order, every channel and agent either reached its accepted step or was never submitted,
+ * and nothing was submitted after a member that was not. Accepted agents are named by their native
+ * allocation, joined or not. It is derived on every read and never written, so a journal that
+ * changes later changes its digest, and a removal bound to the old digest stops matching. */
+export interface AdditiveStoppedReceipt {
+  kind: "additive-stopped-receipt"; deploymentId: string; root: string; space: string; server: string; manifestPath: string; manifestHash: string;
+  authMode: AdditiveTeamAttempt["authMode"]; tlsRequired: boolean;
+  createdChannels: AdditiveChannelReceipt["createdChannels"];
+  createdAgents: { requested: string; hash: string; name: string; id: string; lifecycleUid: string; request: z.infer<typeof RequestReceipt> }[];
+}
+/** A returned receipt, or the stopped receipt of an unsettled attempt: what a removal is bound to. */
+export type AdditiveRemovalOriginal = AdditiveTeamReceipt | AdditiveStoppedReceipt;
+
+/** The stopped receipt of `attempt`, or the step that keeps its effects unknown. */
+export function stoppedAttemptEffects(attempt: AdditiveTeamAttempt, steps: readonly AdditiveChannelStep[], agentSteps: readonly AdditiveAgentStep[]): { receipt: AdditiveStoppedReceipt } | { unknown: string } {
+  const id = attempt.deploymentId, createdChannels: AdditiveStoppedReceipt["createdChannels"] = [], createdAgents: AdditiveStoppedReceipt["createdAgents"] = [];
+  let unsubmitted: string | undefined;
+  for (const [ordinal, name] of attempt.declaredChannels.entries()) {
+    const own = steps.filter((step) => step.deploymentId === id && step.ordinal === ordinal), accepted = own.find((step) => step.phase === "accepted");
+    if (!own.length) { unsubmitted ??= `channel #${name}`; continue; }
+    if (unsubmitted) return { unknown: `channel #${name} has a step although ${unsubmitted} before it was never submitted` };
+    if (accepted?.phase !== "accepted") return { unknown: `channel #${name} was submitted with no recorded create revision` };
+    createdChannels.push({ name, revision: accepted.revision });
+  }
+  for (const [ordinal, name] of attempt.requestedAgents.entries()) {
+    const own = agentSteps.filter((step) => step.deploymentId === id && step.ordinal === ordinal), request = own.find((step) => step.phase === "accepted")?.request;
+    if (!own.length) { unsubmitted ??= `agent ${name}`; continue; }
+    if (unsubmitted) return { unknown: `agent ${name} has a step although ${unsubmitted} before it was never submitted` };
+    if (!request) return { unknown: `agent ${name} was submitted with no recorded native allocation` };
+    const allocation = request.allocation;
+    createdAgents.push({ requested: name, hash: attempt.agentHashes![ordinal]!.hash, name: allocation.name, id: allocation.owner === DEV_OWNER ? allocation.actor : `${allocation.owner}.${allocation.actor}`, lifecycleUid: allocation.lifecycleUid, request });
+  }
+  if (!createdChannels.length && !createdAgents.length) return { unknown: "no channel or agent step is recorded, so nothing shows that the attempt ended" };
+  const { deploymentId, root, space, server, manifestPath, manifestHash, authMode, tlsRequired } = attempt;
+  return { receipt: { kind: "additive-stopped-receipt", deploymentId, root, space, server, manifestPath, manifestHash, authMode, tlsRequired, createdChannels, createdAgents } };
+}
+
 /** All root-local attempts. Bad records remain visible rather than becoming absence. */
-export function listAdditiveTeamAttempts(root: string): { valid: AdditiveTeamAttempt[]; steps: AdditiveChannelStep[]; agentSteps: AdditiveAgentStep[]; returned: AdditiveTeamReceipt[]; removal?: AgentRemovalInventory; channelRemoval?: ChannelRemovalInventory; refused: { path: string; why: string }[] } {
+export function listAdditiveTeamAttempts(root: string): { valid: AdditiveTeamAttempt[]; steps: AdditiveChannelStep[]; agentSteps: AdditiveAgentStep[]; returned: AdditiveTeamReceipt[]; stopped: AdditiveStoppedReceipt[]; removal?: AgentRemovalInventory; channelRemoval?: ChannelRemovalInventory; refused: { path: string; why: string }[] } {
   const dir = realDirNoSymlink(root, ".cotal");
-  if (!dir) return { valid: [], steps: [], agentSteps: [], returned: [], refused: [] };
+  if (!dir) return { valid: [], steps: [], agentSteps: [], returned: [], stopped: [], refused: [] };
   protectedLocalDirectory(dir);
   const valid: AdditiveTeamAttempt[] = [], steps: AdditiveChannelStep[] = [], agentSteps: AdditiveAgentStep[] = [], returned: AdditiveTeamReceipt[] = [], refused: { path: string; why: string }[] = [];
   const names = readdirSync(dir).sort();
@@ -295,16 +333,32 @@ export function listAdditiveTeamAttempts(root: string): { valid: AdditiveTeamAtt
       returned.push(receipt);
     } catch { refused.push({ path, why: "the returned additive receipt is unreadable or does not settle its original intent" }); }
   }
-  const removal = readAgentTeamRemovals(root, valid, returned);
-  const channelRemoval = readChannelTeamRemovals(root, valid, returned, new Set(removal.returned.map((row) => row.deploymentId)));
-  return { valid, steps, agentSteps, returned, removal, channelRemoval, refused: [...refused, ...removal.refused, ...channelRemoval.refused] };
+  // An unreadable record of an attempt leaves its effects unknown, so it gets no stopped receipt.
+  const stopped = valid.flatMap((attempt) => {
+    if (returned.some((row) => row.deploymentId === attempt.deploymentId) || refused.some((row) => row.path.includes(attempt.deploymentId))) return [];
+    const found = stoppedAttemptEffects(attempt, steps, agentSteps);
+    return "receipt" in found ? [found.receipt] : [];
+  });
+  const originals = [...returned, ...stopped];
+  const removal = readAgentTeamRemovals(root, valid, originals);
+  const channelRemoval = readChannelTeamRemovals(root, valid, originals, new Set(removal.returned.map((row) => row.deploymentId)));
+  return { valid, steps, agentSteps, returned, stopped, removal, channelRemoval, refused: [...refused, ...removal.refused, ...channelRemoval.refused] };
 }
 
-/** Deployments whose complete scoped removal matched their original returned receipt: the agent
- *  receipt for agent-only, the card receipt for channel-only, and both for a mixed team. */
+/** The receipt a removal of `id` is bound to: its returned receipt, else its stopped receipt. */
+export function removalOriginal(inventory: ReturnType<typeof listAdditiveTeamAttempts>, id: string): AdditiveRemovalOriginal | undefined {
+  return inventory.returned.find((row) => row.deploymentId === id) ?? inventory.stopped.find((row) => row.deploymentId === id);
+}
+
+/** Deployments whose complete scoped removal matched their original receipt: the agent receipt for
+ *  agent-only, the card receipt for channel-only, and both for a mixed team. A stopped attempt needs
+ *  the receipt of each kind of effect it created. */
 export function removedAdditiveDeploymentIds(inventory: ReturnType<typeof listAdditiveTeamAttempts>): Set<string> {
   const agents = new Set(inventory.removal?.returned.map((row) => row.deploymentId) ?? []), cards = new Set(inventory.channelRemoval?.returned.map((row) => row.deploymentId) ?? []);
-  return new Set(inventory.returned.filter((row) => row.kind === "additive-agent-receipt" ? agents.has(row.deploymentId) : row.kind === "additive-channel-receipt" ? cards.has(row.deploymentId) : agents.has(row.deploymentId) && cards.has(row.deploymentId)).map((row) => row.deploymentId));
+  return new Set([
+    ...inventory.returned.filter((row) => row.kind === "additive-agent-receipt" ? agents.has(row.deploymentId) : row.kind === "additive-channel-receipt" ? cards.has(row.deploymentId) : agents.has(row.deploymentId) && cards.has(row.deploymentId)),
+    ...inventory.stopped.filter((row) => (!row.createdAgents.length || agents.has(row.deploymentId)) && (!row.createdChannels.length || cards.has(row.deploymentId))),
+  ].map((row) => row.deploymentId));
 }
 
 /** Completed scoped removals release only their own known blocker: agent-only native retirements or

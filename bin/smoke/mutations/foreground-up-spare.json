@@ -60,8 +60,8 @@
     {
       "name": "M4 ensureManager discards the reuse/start distinction, so a restored manager reports the same as one it merely found alive (#883)",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  const pid = startManagerDetached(o);\n  return { running: true, started: true, pid };",
-      "replace": "  const pid = startManagerDetached(o);\n  return { running: true, started: false, pid };",
+      "find": "  const pid = startManagerDetached(o);\n  await awaitManagerUp(space, identityRecord(pid));\n  return { running: true, started: true, pid };",
+      "replace": "  const pid = startManagerDetached(o);\n  await awaitManagerUp(space, identityRecord(pid));\n  return { running: true, started: false, pid };",
       "expectRed": "the refresh names the restored manager with a pid",
       "cell": "the refresh names the restored manager with a pid",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",

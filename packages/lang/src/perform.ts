@@ -29,6 +29,8 @@ import {
   type EffectContext,
   type CheckpointRaw,
   type EventDescriptor,
+  type InlineSpawnDefinition,
+  type ParticipantRequest,
 } from "./effects.js";
 import type { RunOptions } from "./interpret.js";
 
@@ -89,6 +91,48 @@ function isPlacementPair(v: unknown): v is { endpoint: string; instanceId: strin
  * record is shown with the keys it actually carried, because the commonest case is a pair with one
  * half missing and the author needs to see which half.
  */
+const INLINE_STRINGS = ["role", "model", "variant", "description"] as const;
+const INLINE_LISTS = ["subscribe", "allowSubscribe", "allowPublish", "capabilities"] as const;
+const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "save"];
+
+/**
+ * The inline persona a `spawn`'s first argument carries, or `undefined` for a catalog spawn (§6.1).
+ * A record with `prompt` is inline; a record with `persona` names the catalog. The record is closed
+ * and checked here, before the step key is minted, so a malformed definition is never hashed or
+ * journalled. The copy holds only the keys the program wrote, so omitting a list and writing `[]`
+ * stay different definitions, as they are to the manager.
+ */
+function inlineDefinition(subject: unknown): InlineSpawnDefinition | undefined {
+  if (subject === null || typeof subject !== "object" || Array.isArray(subject) || !("prompt" in subject)) return undefined;
+  const r = subject as Record<string, unknown>;
+  const refuse = (why: string): never => {
+    throw new RuntimeFault("L3049", `spawn's inline persona ${why}`);
+  };
+  if ("persona" in r) refuse("also names a catalog persona: a record with `prompt` defines the helper and a record with `persona` names a saved one, so pass one or the other");
+  const unknown = Object.keys(r).filter((k) => !INLINE_KEYS.includes(k));
+  if (unknown.length) refuse(`carries ${unknown.map((k) => `\`${k}\``).join(", ")}, which an inline persona has no field for; its fields are ${INLINE_KEYS.join(", ")}`);
+  const nonBlank = (v: unknown): boolean => typeof v === "string" && v.trim() !== "";
+  if (!nonBlank(r.name)) refuse("names no helper: `name` must be a non-empty string");
+  if (!nonBlank(r.prompt)) refuse("has no prompt: `prompt` must be a non-empty string, the helper's persona body");
+  const out: Record<string, unknown> = { name: r.name, prompt: r.prompt };
+  for (const k of INLINE_STRINGS) {
+    if (r[k] === undefined) continue;
+    if (!nonBlank(r[k])) refuse(`\`${k}\` must be a non-empty string when present`);
+    out[k] = r[k];
+  }
+  for (const k of INLINE_LISTS) {
+    if (r[k] === undefined) continue;
+    if (!Array.isArray(r[k]) || !(r[k] as unknown[]).every((c) => typeof c === "string"))
+      refuse(`\`${k}\` must be a list of strings when present`);
+    out[k] = [...(r[k] as string[])];
+  }
+  if (r.save !== undefined) {
+    if (typeof r.save !== "boolean") refuse("`save` must be true or false when present");
+    out.save = r.save;
+  }
+  return deepFreeze(out) as unknown as InlineSpawnDefinition;
+}
+
 function describePlacement(v: unknown): string {
   if (v === null) return "null";
   if (Array.isArray(v)) return `an array (${JSON.stringify(v)}); placement is a record, not a positional pair`;
@@ -202,6 +246,34 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
   }
 }
 
+/**
+ * Admit one live dispatch: the checks it passes after every replay verdict has been served and
+ * before its entry is begun. Every path that dispatches calls this, {@link enterStep} for an effect
+ * and {@link performScope} for a scope that dispatches, so a rule about admitting a dispatch cannot
+ * reach one path and miss another.
+ */
+function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict): void {
+  // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
+  // this side: work already in flight is another matter, and the handler owns it.
+  if (frame.signal.cancelled) {
+    throw new Cancelled(frame.signal.reason ?? "cancelled");
+  }
+
+  // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
+  // driver holds its run under an absolute work horizon and may be asked to hand it back, and
+  // neither is a fact about the program, so the place to stop is here, where no entry has been
+  // written and no handler dispatched. One step later would mean a pending entry for work nobody
+  // performed; inside the handler would mean settling a failure for work that really happened.
+  // Replays are deliberately unaffected: replaying a recorded prefix performs nothing, and a run
+  // that stopped mid-journal has to be able to walk back to where it stopped.
+  const stop = host.options.shouldStop?.();
+  if (stop !== undefined) {
+    throw new RunReleased(stop);
+  }
+
+  countEffect(host, verdict);
+}
+
 /** A live step: its entry is begun (or recovered) and its handler context is ready. */
 type LiveStep = {
   readonly key: StepKey;
@@ -255,25 +327,7 @@ async function enterStep(
       break;
   }
 
-  // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
-  // this side: work already in flight is another matter, and the handler owns it.
-  if (frame.signal.cancelled) {
-    throw new Cancelled(frame.signal.reason ?? "cancelled");
-  }
-
-  // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
-  // driver holds its run under an absolute work horizon and may be asked to hand it back, and
-  // neither is a fact about the program, so the place to stop is here, where no entry has been
-  // written and no handler dispatched. One step later would mean a pending entry for work nobody
-  // performed; inside the handler would mean settling a failure for work that really happened.
-  // Replays above are deliberately unaffected: replaying a recorded prefix performs nothing, and
-  // a run that stopped mid-journal has to be able to walk back to where it stopped.
-  const stop = host.options.shouldStop?.();
-  if (stop !== undefined) {
-    throw new RunReleased(stop);
-  }
-
-  countEffect(host, verdict);
+  admitDispatch(host, frame, verdict);
 
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
   // moved, which is exactly why it read as correct: the whole point of writing the id down is
@@ -385,21 +439,7 @@ async function dispatchStep(
     result = await perform(ctx, inputHash);
     assertCrossable(result, `the result of ${stepKeyString(key)}`);
   } catch (e) {
-    const endedAt = host.options.handler.now();
-    // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
-    // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
-    // settled `failed`, and a run started before the durable-action surface landed could never
-    // heal). The entry settles `refused` under the handler's own code, and the run halts with
-    // the uncatchable L5025: a capable host's resume finds the refusal and performs the step.
-    if (e instanceof EffectRefused) {
-      await host.journal.settle(
-        key,
-        { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
-        endedAt,
-      );
-      throw new RunHeld(stepKeyString(key), e.message);
-    }
-    return await settleThrown(host, key, frame, e, endedAt);
+    return await settleDispatchThrown(host, key, frame, e, host.options.handler.now());
   }
 
   const endedAt = host.options.handler.now();
@@ -408,9 +448,28 @@ async function dispatchStep(
   return result;
 }
 
+/** Settle a failed effect or observation dispatch, including a host's refusal to attempt it. */
+async function settleDispatchThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
+  // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
+  // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
+  // settled `failed`, and a run started before the durable-action surface landed could never
+  // heal). The entry settles `refused` under the handler's own code, and the run halts with
+  // the uncatchable L5025: a capable host's resume finds the refusal and performs the step.
+  if (e instanceof EffectRefused) {
+    await host.journal.settle(
+      key,
+      { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
+      endedAt,
+    );
+    throw new RunHeld(stepKeyString(key), e.message);
+  }
+  return await settleThrown(host, key, frame, e, endedAt);
+}
+
 /**
  * Settle a step whose dispatch threw anything but a refusal, and rethrow what the program sees.
- * {@link performEffect} and {@link performHold} differ only in what a refusal records.
+ * Effects and `waitUntil` share {@link settleDispatchThrown}; {@link performHold} keeps its own
+ * refusal rule so an at-most-once step stays pending.
  */
 async function settleThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
   // A journal that just refused an append cannot be asked to record why. It leaves by its own
@@ -595,35 +654,7 @@ async function observeUntil(
     try {
       inTime = await host.options.handler.observe({ name, every, deadlineAt, deadline, attempt }, ctx);
     } catch (e) {
-      const endedAt = host.options.handler.now();
-      if (e instanceof JournalAppendRejected) throw e;
-      // A refusal is not a failure here either: nothing was observed, so the entry settles
-      // `refused` and a capable host picks the wait up exactly where it stands, with the
-      // observations it has already made intact.
-      if (e instanceof EffectRefused) {
-        await host.journal.settle(
-          key,
-          { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
-          endedAt,
-        );
-        throw new RunHeld(stepKeyString(key), e.message);
-      }
-      if (e instanceof Cancelled) {
-        await host.journal.settle(key, { status: "cancelled" }, endedAt);
-        throw e;
-      }
-      const raised = (e as { code?: unknown } | null | undefined)?.code;
-      const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
-      const rec = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-      // The same rule as the effect site above: the probe is other people's code too.
-      const stack = stackOf(e);
-      const error: EntryError = {
-        ...(rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
-        ...(stack !== undefined ? { stack } : {}),
-      };
-      await host.journal.settle(key, { status: "failed", error }, endedAt);
-      frame.clock.advance(endedAt);
-      throw rec?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
+      return await settleDispatchThrown(host, key, frame, e, host.options.handler.now());
     }
 
     if (!inTime) {
@@ -756,6 +787,18 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
   if (spec.kind !== null && !HOLDABLE_KINDS.has(spec.kind) && atMostOnce(frame.keys.path)) throw notHoldable(spec.kind, frame.keys.path);
 
   switch (name) {
+    case "participant": {
+      const named = option(bag, "name");
+      const req: ParticipantRequest = named === undefined ? {} : { name: named as string };
+      return await performEffect(
+        host,
+        "participant",
+        req.name ?? "participant",
+        {},
+        async (ctx) => ({ ...await handler.participant(req, ctx), kind: "participant" as const }),
+        frame,
+      );
+    }
     case "spawn": {
       // The first argument is a persona name, or a record carrying the persona WITH its model
       // and variant. Only the persona was ever read, so the object form silently dropped model
@@ -763,7 +806,8 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // handler was never told which model to run. This was missed by an audit that exercised
       // only the string form, which is the same defect one level up.
       const spawnSubject = args[0];
-      const named = typeof spawnSubject === "string" ? spawnSubject : option(spawnSubject, "persona");
+      const inline = inlineDefinition(spawnSubject);
+      const named = typeof spawnSubject === "string" ? spawnSubject : inline?.name ?? option(spawnSubject, "persona");
       // `String(undefined)` is the literal persona "undefined", and it was reaching the input hash,
       // the step name and the handler. A missing persona is `undefined` crossing an effect
       // boundary, which is what L3041 names.
@@ -801,6 +845,8 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         );
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
+      // `inline` already holds the definition's model and variant, so `req.model` and `req.variant`
+      // stay what a catalog spawn's overrides are: absent for an inline one.
       // Every accepted option is forwarded, including the four that are policy rather than
       // identity. Dropping them here would be silent: the validator accepts `permits`, so an
       // author who writes a budget gets no error and no budget. They are deliberately absent
@@ -808,8 +854,9 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // recorded fact, so they are reapplied from current source on resume rather than hashed.
       const req = {
         persona,
-        ...(model !== undefined ? { model } : {}),
-        ...(variant !== undefined ? { variant } : {}),
+        ...(inline !== undefined ? { inline } : {}),
+        ...(inline === undefined && model !== undefined ? { model } : {}),
+        ...(inline === undefined && variant !== undefined ? { variant } : {}),
         ...(option(bag, "cwd") !== undefined ? { cwd: option(bag, "cwd") as string } : {}),
         // The VALIDATED value, not a second `option()` read cast into the pair type. The cast was
         // the whole defect: it asserted the shape the projection then relied on, and TypeScript
@@ -826,6 +873,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           : {}),
         ...(option(bag, "onFork") !== undefined ? { onFork: option(bag, "onFork") as "respawn" | "adopt" } : {}),
         ...(option(bag, "events") !== undefined ? { events: option(bag, "events") as boolean } : {}),
+        ...(option(bag, "runtime") !== undefined ? { runtime: option(bag, "runtime") as string } : {}),
       };
       return await performEffect(host,
         "spawn",
@@ -857,8 +905,11 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           worktree: req.worktree ?? null,
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),
+          // An inline persona IS the identity, so the whole definition is hashed. A catalog spawn
+          // adds no key, so its recorded hash is unchanged.
+          ...(inline !== undefined ? { inline } : {}),
         },
-        (ctx) => handler.spawn(req, ctx),
+        async (ctx) => ({ ...await handler.spawn(req, ctx), kind: "spawned" as const }),
         frame,
       );
     }
@@ -1008,6 +1059,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         frame,
         )) as CheckpointRaw,
         onExpiry,
+        cpTimeout,
       );
     }
     case "sleep": {
@@ -1463,13 +1515,8 @@ export async function performScope(
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
-  // A conclave's open is real work against the world, so the host's stop and the ceiling apply to
-  // it as they do to an effect (see {@link performEffect}).
-  if (dispatches) {
-    const stop = host.options.shouldStop?.();
-    if (stop !== undefined) throw new RunReleased(stop);
-    countEffect(host, verdict);
-  }
+  // A conclave's open is real work against the world, so it is admitted as an effect is.
+  if (dispatches) admitDispatch(host, frame, verdict);
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a
@@ -1553,6 +1600,11 @@ export async function performScope(
     // ran out of stack is a fact about the host, so recording it would replay as a catchable
     // `L4000` on a host with more stack, where the same branch succeeds.
     if (isStackExhaustion(reason)) throw reason;
+    // NOR IS THE COMPILED ENGINE'S OWN FAULT (#3215). An `EngineFault` is an emitter mistake the
+    // engine refuses uncatchably, so recording it would hand a resume a catchable failure where the
+    // live run unwound. Matched by name, as the engine's own uncatchable check matches it, because
+    // the class lives on the engine's side of this module.
+    if (reason instanceof Error && reason.name === "EngineFault") throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1579,16 +1631,20 @@ export async function performScope(
     // A VALUE THE PROGRAM THREW IS RECORDED WHOLE (#2845). A replay delivers nothing but this
     // record, and it used to deliver the generic fault where the live run had rethrown the value, so
     // a resumed `catch` bound `{ code: "L4000", ... }` where the live one bound `"failure"`, and a
-    // program branching on it diverged. An `Error` is never the program's (it cannot construct one)
-    // and is still rethrown as itself: some classes that reach here unwind the run (the compiled
-    // engine's `EngineFault`), and an `EffectError` built from the record would make them catchable.
+    // program branching on it diverged.
+    //
+    // ANY OTHER `Error` IS RECORDED AS THE `host` FAULT A `catch` BINDS FOR IT LIVE (#3215). It is
+    // never the program's (it cannot construct one), so it is rethrown as itself and both engines'
+    // `toProgramError` deliver it as `{ code: "L4000", kind: "host", message }`. Recorded as
+    // `scope-fault`, the replay bound a different kind than the live run had, and a program
+    // branching on it diverged on the resume of unchanged source.
     const err: EntryError =
       reason instanceof EffectError
         ? recordableError(reason, "scope-fault").error
         : reason instanceof RuntimeFault
           ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
           : reason instanceof Error
-            ? { code: "L4000", kind: "scope-fault", message: messageOf(reason) }
+            ? { code: "L4000", kind: "host", message: messageOf(reason) }
             : thrownError(reason);
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too, and a conclave that closed says so even when its body failed.
@@ -1622,29 +1678,34 @@ export async function performScope(
   // branches already ran has done work the world can see, and leaving its entry pending invites a
   // resume to run those branches a second time. The facts the success settle would have carried
   // travel with the failure, because a cancel intent this scope issued is owed whether or not its
-  // value could be written.
+  // value could be written. The kind is `host`, the one a `catch` binds for the `NotCrossable` live.
   try {
     assertScopeValueCrossable(outcome.value, `the value of ${stepKeyString(scopeKey)}`, scopeKey.kind);
   } catch (e) {
     if (!(e instanceof NotCrossable)) throw e;
     await host.journal.settle(
       scopeKey,
-      { status: "failed", error: { code: "L4000", kind: "scope-fault", message: e.message } },
+      { status: "failed", error: { code: "L4000", kind: "host", message: e.message } },
       frame.clock.now(),
       settledFacts,
     );
     throw e;
   }
 
+  // A COPY, for the thrown value's reason (`thrownError`): freezing the value itself would freeze a
+  // record a branch returned from outside the scope for the rest of the live run, where a resume,
+  // which never runs the branch, leaves it writable (#3224). The live run gets the copy its record
+  // carries, in the journal's own encoding, so it reads exactly what a replay hands back.
+  const value = outcome.value === undefined ? undefined : deepFreeze(JSON.parse(JSON.stringify(outcome.value)));
   await host.journal.settle(
     scopeKey,
-    { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+    { status: "ok", result: { branches: outcome.branches, value } },
     // The joined branch clock, for the same reason as the failure path above: this is the value
     // `now()` answers after the scope, and the stamp replay hands back must be that value.
     frame.clock.now(),
     settledFacts,
   );
-  return outcome.value;
+  return value;
 }
 
 /**
@@ -1659,7 +1720,6 @@ function throwIfStackExhausted(settled: readonly PromiseSettledResult<unknown>[]
 
 export async function runScope(
   host: EffectHost,
-  name: string,
   scopeKind: ScopeKind,
   scopeName: string | null,
   occurrence: number,
@@ -1678,7 +1738,7 @@ export async function runScope(
   /** A migration's walk: enter exactly these branches, the ones the recorded run WON with. */
   only?: ReadonlySet<string>,
 ): Promise<ScopeOutcome> {
-  if (name === "parallel" || name === "race") {
+  if (scopeKind === "parallel" || scopeKind === "race") {
     const all: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
       ? (first as ((f: Frame, a: unknown[]) => Promise<unknown>)[]).map((fn, i) => [String(i), fn])
       : Object.entries(first as Record<string, (f: Frame, a: unknown[]) => Promise<unknown>>);
@@ -1703,7 +1763,7 @@ export async function runScope(
       const present = new Set(all.map(([k]) => k));
       const missing = [...only].filter((k) => !present.has(k));
       if (missing.length > 0) {
-        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);
+        throw new ScopeBranchMissing(stepKeyString(ctx.key), scopeKind, missing, [...only], [...present]);
       }
       // AND THE EMPTY CASE, which the check above cannot see: with no recorded branches at all,
       // "every recorded branch is present" is vacuously true, so the guard passed and the walk
@@ -1712,7 +1772,7 @@ export async function runScope(
       // exactly that shape, so this refuses them by name instead of hanging on them. It cannot
       // fire on a scope that has no arms in the source either, because `all` is empty then too.
       if (only.size === 0 && all.length > 0) {
-        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, [], [], all.map(([k]) => k));
+        throw new ScopeBranchMissing(stepKeyString(ctx.key), scopeKind, [], [], all.map(([k]) => k));
       }
     }
 
@@ -1721,7 +1781,7 @@ export async function runScope(
 
     const branches = entries.map(([k]) => k);
 
-    if (name === "parallel") {
+    if (scopeKind === "parallel") {
       let failed: string | null = null;
       const tracked = running.map((p, i) =>
         p.catch((e: unknown) => {
@@ -1928,7 +1988,7 @@ export async function runScope(
     };
   }
 
-  if (name === "fanOut") {
+  if (scopeKind === "fanOut") {
     const items = first as unknown[];
     const fn = (await second()) as (f: Frame, a: unknown[]) => Promise<unknown>;
     const keyFn = option(bag, "key") as ((f: Frame, a: unknown[]) => Promise<unknown>) | undefined;
@@ -1993,7 +2053,7 @@ export async function runScope(
     }
   }
 
-  if (name === "conclave") {
+  if (scopeKind === "conclave") {
     // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`, carrying
     // the durable answer to "is this sub-team still live". That answer is the explicit `closed`
     // FACT, not the entry's state: a body that failed after a clean close settles `failed`
@@ -2067,7 +2127,7 @@ export async function runScope(
     return { branches: [branchKey], value, closed: true };
   }
 
-  if (name === "once") {
+  if (scopeKind === "once") {
     // One body, the fixed branch `in`, as `conclave`'s, with no open and no close. `only` is
     // ignored: a migration's walk always enters `in`, because one branch is never a loser.
     const branch = frame.branch(scopeKind, scopeName, occurrence, "in");
@@ -2078,5 +2138,8 @@ export async function runScope(
     }
   }
 
-  throw new InterpreterDefect(`the primitive ${name}`);
+  // Every kind returns from its arm above, so a kind added to `ScopeKind` without one stops the
+  // build here rather than reaching a program as a defect.
+  const unhandled: never = scopeKind;
+  throw new InterpreterDefect(`the primitive ${unhandled}`);
 }

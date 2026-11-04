@@ -15,7 +15,7 @@
   "mutations": [
     {
       "name": "the user-caller evidence is staged without the credential's expiry",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/callout-authority.ts",
       "find": "permissions: importNativeSubjectPermissions(perms), expiresAt: t.exp,\n",
       "replace": "permissions: importNativeSubjectPermissions(perms),\n",
       "expectRed": "R54 expired generation must not authorize delayed first admission",

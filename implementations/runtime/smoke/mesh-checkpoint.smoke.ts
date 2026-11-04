@@ -39,6 +39,8 @@ import {
   resumeCheckpoint,
   mintCheckpoint,
   activateRun,
+  createRunSpec,
+  readRunRecord,
   checkpointAnswerId,
   eptReqStreamName,
   eptStreamName,
@@ -49,14 +51,16 @@ import {
   EpfSettleWatcher,
   CheckpointAnswerMissing,
   resolveCheckpoint,
+  answerOpenCheckpoint,
   openCheckpointToken,
   CheckpointNotOpen,
   outstandingPauseTokens,
   rearmOutstandingPauses,
   startRun,
 } from "../src/index.js";
+import { resolvePins, WALKER_LANGUAGE_VERSION } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshcp";
 const EP = "manager";
@@ -111,20 +115,6 @@ const brokerFired = async (token: string, epoch = EPOCH): Promise<boolean> => {
   const subject = eptSubject(SPACE, EP, IID, epoch, token, "fire");
   const fired = await jsm.streams.getMessage(eptStreamName(SPACE), { last_by_subj: subject }).catch(() => null);
   return fired !== null && fired !== undefined;
-};
-
-/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops: a bare `await`
- *  on a pause that never expires is graded on the harness's patience rather than on the code. */
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
 };
 
 const NOW = Date.now(); // real schedules need real wall-clock deadlines
@@ -346,6 +336,9 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
 // step still pending while its checkpoint is already settled — closes the moment a live driver
 // notices, so a cell that raced for it would be flaky about the thing it is trying to prove.
 // That `openCheckpointToken` is reached through a real replay is proven by every other cell here.
+// In that window the locate half reads the pause's status and refuses the answer as settled, as a
+// later answer is refused, filing nothing. A pause that settles between the two halves reaches the
+// presentation, so that order is driven through the write half directly.
 {
   const RUN = "cp-6b";
   const TOKEN = "cnRlc3RfcHJlc2VudGF0aW9uX29yZGVy";
@@ -366,10 +359,32 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   // presentation this resolver is about to make cannot win.
   await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: TOKEN }, presenter: HOLDER, now: NOW + 500 });
 
+  let early: unknown;
+  try {
+    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "dave", value: "again", now: NOW + 1_050 });
+  } catch (e) { early = e; }
+  c("the built journal without a run record is refused as no-run",
+    early instanceof CheckpointNotOpen && early.why === "no-run", early);
+  c("and the no-run refusal files no answer record",
+    (await readCheckpointAnswer(kv, EP, TOKEN, checkpointAnswerId({ token: TOKEN, by: "dave", value: "again" }))) === undefined);
+  // A real driver creates this record before the pending entry. Build that prerequisite too.
+  await createRunSpec(kv, EP, RUN, {
+    pins: resolvePins({ runId: RUN }, NOW, WALKER_LANGUAGE_VERSION), createdAt: NOW,
+  });
+  c("the settled-window fixture has a durable run record", (await readRunRecord(kv, EP, RUN)) !== undefined);
+  early = undefined;
+  try {
+    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "dave", value: "again", now: NOW + 1_050 });
+  } catch (e) { early = e; }
+  c("an answer to a pause that settled before its step was recorded is refused as settled",
+    early instanceof CheckpointNotOpen && early.why === "settled", early);
+  c("and it files no answer record",
+    (await readCheckpointAnswer(kv, EP, TOKEN, checkpointAnswerId({ token: TOKEN, by: "dave", value: "again" }))) === undefined);
+
   const lateId = checkpointAnswerId({ token: TOKEN, by: "carol", value: "mine" });
   let refused: unknown;
   try {
-    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "carol", value: "mine", now: NOW + 1_100 });
+    await answerOpenCheckpoint(deps, { open: { runId: RUN, token: TOKEN, holder: HOLDER }, by: "carol", value: "mine", now: NOW + 1_100 });
   } catch (e) { refused = e; }
   c("a resolver whose presentation is refused is told so, not told it succeeded",
     (refused as { code?: string })?.code === "conflict", (refused as Error)?.message?.slice(0, 60));
@@ -520,7 +535,8 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   await resolveCheckpoint(deps, { runId: "r-cp", stepKey: STEP, by: "eve", value: "go", now: NOW + 1_000 }).catch(() => undefined);
   // The two pauses share a token, so one answer ends both; neither is left parked.
   await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: k.requestId }, presenter: HOLDER, now: NOW + 1_000 }).catch(() => undefined);
-  await withDeadline(Promise.all([first, again]), 15_000, "the two entries of one attempt");
+  c("the two entries of one attempt ended within its deadline",
+    await withDeadline(Promise.all([first, again]).then(() => true), 15_000, "the two entries of one attempt") === true);
 }
 
 // ── 8) a checkpoint with no timeout of its own gets the driver's PINNED one ───────────────────

@@ -45,7 +45,7 @@
     {
       "name": "M5 retry without proving the failed replacement tree stopped",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "          await replacement?.close().catch(() => {});\n          await stopPrivateJcode();\n          if (stopping) return;",
+      "find": "          await replacement?.close().catch(() => {});\n          if (!preserveInstance) await stopPrivateJcode();\n          if (stopping) return;",
       "replace": "          await replacement?.close().catch(() => {});\n          if (stopping) return;",
       "expectRed": "the failed transient replacement is stopped before the successful retry",
       "cell": "the failed transient replacement is stopped before the successful retry"

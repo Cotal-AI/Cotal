@@ -1,7 +1,8 @@
 /**
  * Credential lifetime smoke (D5 slice 1): user JWT `exp` is stamped from the profile matrix and enforced
  * by a real auth broker. This does NOT claim full credential death yet: signer rotation, live eviction,
- * and standing renewal are later D5 slices.
+ * and standing renewal are later D5 slices. A credential that expires more than 2^31-1 ms out keeps
+ * library reconnect on after start: the pre-expiry fence does not fire early.
  *
  * Run: pnpm smoke:cred-lifetime
  */
@@ -9,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { createServer, createAccount } from "@nats-io/nkeys";
 import { spawn } from "node:child_process";
+import { createServer as createTcpServer, type AddressInfo } from "node:net";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,6 +51,25 @@ const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<vo
   });
 
 const SELF = fileURLToPath(import.meta.url);
+
+// An endpoint on a credential that expires a year out: report the library reconnect policy shortly
+// after start, then stop.
+if (process.argv[2] === "long-expiry-child") {
+  const [, , , servers, childSpace, credsPath, id] = process.argv;
+  if (!servers || !childSpace || !credsPath || !id) throw new Error("long-expiry child requires servers, space, creds path, and id");
+  const ep = new CotalEndpoint({
+    space: childSpace, servers, creds: readFileSync(credsPath, "utf8"),
+    card: { name: "long-expiry-child", kind: "endpoint", id },
+    consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  await ep.start();
+  await wait(500);
+  const nc = (ep as unknown as { nc?: NatsConnection }).nc;
+  const reconnect = (nc as unknown as { protocol?: { options?: { reconnect?: boolean } } } | undefined)?.protocol?.options?.reconnect;
+  await ep.stop();
+  console.log(`LONG_EXPIRY_CHILD ${JSON.stringify({ reconnect })}`);
+  process.exit(0);
+}
 
 if (process.argv[2] === "expiry-child") {
   const [, , , servers, childSpace, credsPath, id] = process.argv;
@@ -266,6 +287,27 @@ try {
   // resolves deterministically on every OS regardless of connect latency.
   const deadProbe = await probeConnect("nats://127.0.0.1:1", { creds: expiredCreds, timeoutMs: 500 });
   check("probeConnect classifies an expired cred as stale-auth even when unreachable (the flake, killed)", !deadProbe.ok && deadProbe.reason === "stale-auth", deadProbe);
+  // On Windows a broker's auth refusal can reach the client as a bare ECONNRESET: the reset discards
+  // the `-ERR` it sent first. A listener that greets like an auth broker and resets the connection
+  // when CONNECT arrives gives the client that same view on any OS. The open greeting is the control.
+  for (const authRequired of [true, false]) {
+    const resetter = createTcpServer((socket) => {
+      socket.on("error", () => {});
+      socket.write(`INFO {"server_id":"reset-probe","version":"2.12.12","proto":1,"max_payload":1048576,"auth_required":${authRequired}}\r\n`);
+      socket.once("data", () => socket.resetAndDestroy());
+    });
+    await new Promise<void>((resolve) => resetter.listen(0, "127.0.0.1", resolve));
+    const resetPort = (resetter.address() as AddressInfo).port;
+    const resetProbe = await probeConnect(`nats://127.0.0.1:${resetPort}`, { timeoutMs: 2000 });
+    await new Promise<void>((resolve) => resetter.close(() => resolve()));
+    check(
+      authRequired
+        ? "probeConnect grades a reset after an auth-required greeting as an inferred auth-required, not a dead broker"
+        : "probeConnect still grades a reset after an open greeting as unreachable",
+      !resetProbe.ok && (authRequired ? resetProbe.reason === "auth-required" && resetProbe.inferred === true : resetProbe.reason === "unreachable"),
+      resetProbe,
+    );
+  }
 
   const fresh = newIdentity();
   const freshCreds = await mintCreds(auth, fresh, "probe", { expiresInSeconds: 60 });
@@ -289,6 +331,27 @@ try {
     "CotalEndpoint fences credential expiry and stopped replacement binds while the process stays alive",
     expiryChild.exitCode === 0 && closeReason?.reconnectDisabled === true && closeReason.name === "UserAuthenticationExpiredError" && closeReason.message === "User Authentication Expired" && closeReason.stoppedBindAttempts === 0 && closeReason.stopWaitedForClose === true,
     { exitCode: expiryChild.exitCode, signal: expiryChild.signalCode, closeReason, output: expiryOutput },
+  );
+
+  // Node fires a timer longer than 2^31-1 ms (about 24.8 days) after 1 ms. A credential that expires
+  // later must not trip the pre-expiry fence at start.
+  const distant = newIdentity();
+  const distantPath = join(dir, "distant.creds");
+  writeFileSync(distantPath, await mintCreds(auth, distant, "operator", { expiresInSeconds: 365 * 24 * 60 * 60 }), { mode: 0o600 });
+  const longChild = spawn(process.execPath, ["--import", "tsx", SELF, "long-expiry-child", SERVERS, space, distantPath, distant.id], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let longOutput = "";
+  longChild.stdout?.on("data", (chunk) => { longOutput += String(chunk); });
+  longChild.stderr?.on("data", (chunk) => { longOutput += String(chunk); });
+  await awaitExit(longChild, 12_000);
+  if (longChild.exitCode === null && longChild.signalCode === null) longChild.kill("SIGKILL");
+  const longLine = longOutput.split("\n").find((line) => line.startsWith("LONG_EXPIRY_CHILD "));
+  const longState = longLine ? JSON.parse(longLine.slice("LONG_EXPIRY_CHILD ".length)) as { reconnect?: boolean } : undefined;
+  check(
+    "a credential that expires a year out keeps reconnect on after start, with no timer overflow",
+    longChild.exitCode === 0 && longState?.reconnect === true && !longOutput.includes("TimeoutOverflowWarning"),
+    { exitCode: longChild.exitCode, signal: longChild.signalCode, longState, output: longOutput },
   );
 } finally {
   srv.kill();

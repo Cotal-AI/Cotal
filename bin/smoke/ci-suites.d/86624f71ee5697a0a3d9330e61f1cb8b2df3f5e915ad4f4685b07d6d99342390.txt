@@ -1,0 +1,4 @@
+# #5638: a chat-session and a managed-agent retirement through the real authority plane remove
+# every durable membership row of the retired uid, including a family row and a row on a channel
+# only a wildcard grants, against a real broker and a real delivery daemon.
+smoke:retire-member-rows:auth

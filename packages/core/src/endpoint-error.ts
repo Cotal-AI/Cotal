@@ -78,6 +78,8 @@ export interface EpUnansweredDetail extends EpErrorDetail {
   kind: typeof EP_UNANSWERED;
   endpoint: string;
   command: string;
+  /** The published request's envelope id, when no reply was observed. Not proof of acceptance. */
+  requestId?: string;
   /** The plane the request was published on: the legacy plane or the versioned plane (issued, SPEC 13.15). */
   rail?: string;
 }
@@ -123,6 +125,25 @@ export function registryReadFailed(e: unknown): boolean {
 }
 
 /**
+ * `details[].kind` for a refusal raised because the service registry was READ and lists no live
+ * instance of the endpoint (§13.5). An unreadable registry raises the same `failed-precondition`
+ * without it, so a surface that states "none is running" keys on this marker, never on the code.
+ */
+export const EP_NO_LIVE_INSTANCES = "ai.cotal.ep.no-live-instances";
+
+/** The {@link EP_NO_LIVE_INSTANCES} payload: the endpoint the registry lists no live instance of. */
+export interface EpNoLiveInstancesDetail extends EpErrorDetail {
+  kind: typeof EP_NO_LIVE_INSTANCES;
+  endpoint: string;
+}
+
+/** True iff `e` carries the {@link EP_NO_LIVE_INSTANCES} marker: the registry was read and lists no
+ *  live instance. */
+export function noLiveInstances(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_NO_LIVE_INSTANCES);
+}
+
+/**
  * `details[].kind` for a CALLER-side refusal raised before publish because the args carry a key the
  * resolved input contract does not declare. That contract is the one the responder serves, so the
  * key is one this caller sends and the responder does not know. Core cannot call that version skew,
@@ -131,16 +152,26 @@ export function registryReadFailed(e: unknown): boolean {
  */
 export const EP_UNDECLARED_ARG = "ai.cotal.ep.undeclared-arg";
 
-/** The {@link EP_UNDECLARED_ARG} payload: the key the contract does not declare. */
+/** The {@link EP_UNDECLARED_ARG} payload: the key the contract does not declare, and the instance
+ *  the request was bound to when it binds one. Only that instance may serve the request, so it is
+ *  the responder whose contract refused the key. */
 export interface EpUndeclaredArgDetail extends EpErrorDetail {
   kind: typeof EP_UNDECLARED_ARG;
   property: string;
+  instanceId?: string;
 }
 
 /** The key a caller-side refusal names through {@link EP_UNDECLARED_ARG}, or `undefined`. */
 export function undeclaredArg(e: unknown): string | undefined {
   if (!(e instanceof EpEnvelopeError)) return undefined;
   return (e.details?.find((d) => d.kind === EP_UNDECLARED_ARG) as EpUndeclaredArgDetail | undefined)?.property;
+}
+
+/** The bound instance a caller-side {@link EP_UNDECLARED_ARG} refusal names, or `undefined` when the
+ *  request bound none. A surface naming the version skew asks this instance for its version. */
+export function undeclaredArgInstance(e: unknown): string | undefined {
+  if (!(e instanceof EpEnvelopeError)) return undefined;
+  return (e.details?.find((d) => d.kind === EP_UNDECLARED_ARG) as EpUndeclaredArgDetail | undefined)?.instanceId;
 }
 
 /**
@@ -294,6 +325,43 @@ function detailsOf(source: unknown): EpErrorDetail[] | undefined {
 /** The lifecycle-blocked marker on a thrown envelope, an `EpError`, or a ControlReply-shaped object. */
 export function lifecycleBlockedFrom(source: unknown): EpLifecycleBlockedDetail | undefined {
   return detailsOf(source)?.find((d): d is EpLifecycleBlockedDetail => d.kind === EP_LIFECYCLE_BLOCKED);
+}
+
+/**
+ * `details[].kind` for a launch refused because the owner already holds every seat this manager
+ * admits for one owner. The message states the refusal; these are the facts behind it, which a
+ * caller needs to render a remedy or decide on its own: how many seats the owner holds right now,
+ * and the ceiling it met. Without the marker those numbers die at the reply's string boundary and
+ * a structured caller can only re-read prose.
+ */
+export const EP_SEAT_CAP = "ai.cotal.ep.seat-cap";
+
+/** What a manager counted when it refused a launch: the owner, its live seats on that manager, and
+ *  the per-owner ceiling that manager enforces. `seats` is what the manager supervises for that
+ *  owner at the moment of the refusal, so `seats >= cap` holds wherever the marker is produced. */
+export interface SeatCapFacts {
+  owner: string;
+  seats: number;
+  cap: number;
+}
+
+export interface EpSeatCapDetail extends EpErrorDetail, SeatCapFacts {
+  kind: typeof EP_SEAT_CAP;
+}
+
+export function seatCapDetail(facts: SeatCapFacts): EpSeatCapDetail {
+  return { kind: EP_SEAT_CAP, owner: facts.owner, seats: facts.seats, cap: facts.cap };
+}
+
+/** Throw-site constructor: `resource-exhausted`, the seat-cap marker, and `not-executed`, because
+ *  the ceiling is consulted before the launch reserves a name or mints anything. */
+export function seatCapRefused(message: string, facts: SeatCapFacts): EpEnvelopeError {
+  return new EpEnvelopeError("resource-exhausted", message, [seatCapDetail(facts)], "not-executed");
+}
+
+/** The seat-cap marker on a thrown envelope, an `EpError`, or a ControlReply-shaped object. */
+export function seatCapFrom(source: unknown): EpSeatCapDetail | undefined {
+  return detailsOf(source)?.find((d): d is EpSeatCapDetail => d.kind === EP_SEAT_CAP);
 }
 
 /** Append a stable `[lifecycle …]` suffix so a string-only caller still carries the facts. */

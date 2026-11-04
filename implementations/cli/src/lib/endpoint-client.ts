@@ -1,4 +1,4 @@
-import { dialerFor, issuedUserCaller, standaloneConnectOpts } from "@cotal-ai/core";
+import { dialerFor, issuedUserCaller, standaloneConnectOpts, type ResolvedCommand } from "@cotal-ai/core";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   CommandFailure, isWorkspaceTargetError, readStandaloneEndpointCaller, resolveControlTarget,
@@ -17,24 +17,29 @@ export interface EndpointConnection {
   callerCredential?: Omit<StandaloneCaller["reference"], "brokerAdmitted"> & { brokerAdmitted: true; commands: readonly string[] };
 }
 
+/** A command a paired caller file can carry: untargeted, synchronous and ephemeral. */
+export function pairedCallerCommand(command: Pick<ResolvedCommand, "class" | "targeted" | "action">): boolean {
+  return command.class === "ephemeral" && !command.targeted && command.action !== true;
+}
+
 /** One native caller connection. Explicit paired files never enter the operator-mint resolver. */
 export async function openEndpointConnection(values: Record<string, unknown>, profile: "control-caller-privileged" | "control-caller-admin", endpoint: string, instanceId?: string): Promise<EndpointConnection> {
   if (values.creds !== undefined) {
     if (typeof values.creds !== "string") throw new CommandFailure("refused", "USAGE_INVALID", "--creds needs one protected native caller file");
     if (profile === "control-caller-admin" || instanceId !== undefined || values.all === true || values.wait === true || values.self === true || values.name !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this paired caller mode supports untargeted synchronous class-one calls only; admin, instance, scatter, targeting and goal-follow authority was not added or substituted");
-    let target;
+    let nativeTarget;
     try {
       const selected = resolveMeshTarget(process.cwd(), { ...(values.space === undefined ? {} : { space: String(values.space) }), readOnly: true });
-      target = resolveNativeServiceTarget(selected.root, selected.space, values.server === undefined ? undefined : String(values.server));
+      nativeTarget = resolveNativeServiceTarget(selected.root, selected.space, values.server === undefined ? undefined : String(values.server));
     } catch (error) {
       if (isWorkspaceTargetError(error)) throw new CommandFailure("refused", targetErrorCode(error.code), "the paired caller file requires one existing registered target; no off-registry, different-root or broader connection was substituted");
       throw error;
     }
-    const credential = await readStandaloneEndpointCaller(target, values.creds, endpoint);
-    const auth: ControlAuth = { creds: credential.creds, epCaller: credential.caller, tls: target.tlsRequired };
-    const connectOpts = standaloneConnectOpts({ creds: credential.creds, tls: target.tlsRequired });
-    const nc = await dialerFor(target.server)({ servers: target.server, ...connectOpts, inboxPrefix: `_INBOX_${credential.identity}`, maxReconnectAttempts: 0 });
-    return { nc, space: target.space, server: target.server, root: target.root, account: credential.accountPub, mode: target.mode, auth,
+    const credential = await readStandaloneEndpointCaller(nativeTarget, values.creds, endpoint);
+    const auth: ControlAuth = { creds: credential.creds, epCaller: credential.caller, tls: nativeTarget.tlsRequired };
+    const connectOpts = standaloneConnectOpts({ creds: credential.creds, tls: nativeTarget.tlsRequired });
+    const nc = await dialerFor(nativeTarget.server)({ servers: nativeTarget.server, ...connectOpts, inboxPrefix: `_INBOX_${credential.identity}`, maxReconnectAttempts: 0 });
+    return { nc, space: nativeTarget.space, server: nativeTarget.server, root: nativeTarget.root, account: credential.accountPub, mode: nativeTarget.mode, auth,
       callerCredential: { ...credential.reference, brokerAdmitted: true, commands: credential.commands } };
   }
   const target = await resolveControlTarget(values as { space?: string; server?: string; creds?: string }, profile, instanceId, { endpoint, onRefusal: "throw" });

@@ -1,0 +1,3 @@
+# Two pi seats holding one role: the seat whose turn runs keeps the role request past the ack wait,
+# and the other is never handed it.
+smoke:pi-role-hold

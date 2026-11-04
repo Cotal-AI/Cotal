@@ -1,5 +1,5 @@
 /**
- * D5 slice 4 — BROKER-BACKED LIVE CONNECTION EVICTION.
+ * BROKER-BACKED LIVE CONNECTION EVICTION.
  *
  * Revocation has two halves. DENY-NEW (ledger revoke, cred expiry, stripped signer, ACL removal)
  * stops the next exchange/connect — but a client that is ALREADY connected with a still-valid JWT
@@ -17,8 +17,8 @@
  * Two credentials by design (never one broad sys user that both enumerates and kills):
  *  - the existing `membership-observer` (CONNZ-read only) does discovery;
  *  - a NEW kick-only evictor (`$SYS.REQ.SERVER.*.KICK` and nothing else) does the kill.
- * Both are system-account users mintable ONLY at the `up` that provisions the account (the $SYS
- * signing seed is never persisted) — so the evictor is a standing, high-power, renewable credential,
+ * Both are system-account users mintable ONLY at the `up` that provisions the account (the trust
+ * record carries no $SYS signing seed) — so the evictor is a standing, high-power, renewable credential,
  * classified with the observer, surfaced by the stale-auth diagnostics when absent.
  *
  * SEMANTICS, stated in the result (never inferred):
@@ -32,7 +32,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { fromPublic } from "@nats-io/nkeys";
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { credsClaims, isAccountNkey, isUserNkey } from "./identity.js";
 import { accountCensusInboxPrefix, connzRequestSubject, isPrincipalOwnerToken, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
@@ -645,7 +646,7 @@ export async function observeAccountLivenessWithCreds(opts: {
 }): Promise<LivenessSweep> {
   if (!isAccountNkey(opts.accountId))
     throw new Error("account liveness requires one account public key");
-  const observer = await connect({
+  const observer = await dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: credsAuthenticator(enc(opts.observerCreds)),
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
@@ -689,7 +690,7 @@ export async function observeAccountCensusWithCreds(opts: {
     || !exactly(nats.sub?.allow, `${prefix}.>`) || Object.hasOwn(nats, "resp")
     || typeof claims.exp !== "number" || !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000))
     throw new Error("account census requires its account-scoped request and reply credential");
-  const observer = await connect({ servers, authenticator: credsAuthenticator(enc(observerCreds)),
+  const observer = await dialerFor(servers)({ servers, authenticator: credsAuthenticator(enc(observerCreds)),
     inboxPrefix: prefix, reconnect: false, timeout: bounds.maxWaitMs });
   try {
     let invalid = false;
@@ -734,7 +735,7 @@ export async function observePlaneLivenessWithCreds(opts: {
   query: PlaneLivenessQuery;
   options?: EvictOptions;
 }): Promise<PlaneLivenessResult> {
-  const observer = await connect({
+  const observer = await dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: credsAuthenticator(enc(opts.observerCreds)),
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
@@ -837,7 +838,7 @@ export async function observePrincipalLivenessWithCreds(opts: {
   principal: string;
   options?: EvictOptions;
 }): Promise<PrincipalLivenessResult> {
-  const observer = await connect({
+  const observer = await dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: credsAuthenticator(enc(opts.observerCreds)),
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
@@ -884,7 +885,7 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
   options?: EvictOptions;
 }): Promise<EvictionResult[]> {
   const enc = (s: string) => new TextEncoder().encode(s);
-  const observer = await connect({
+  const observer = await dialerFor(opts.servers)({
     servers: opts.servers,
     authenticator: credsAuthenticator(enc(opts.observerCreds)),
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
@@ -896,7 +897,7 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
       const creds = opts.openEvictor ? await opts.openEvictor() : opts.evictorCreds;
       if (creds === undefined)
         throw new Error("evictDeniedPrincipal: a live match requires the kick-only evictor credential");
-      evictor = await connect({
+      evictor = await dialerFor(opts.servers)({
         servers: opts.servers,
         authenticator: credsAuthenticator(enc(creds)),
         maxReconnectAttempts: 0,

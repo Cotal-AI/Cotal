@@ -81,6 +81,10 @@ const Broker = z.strictObject({
   /** With `auth: "user"`: the IdP auth base URL to pin on first enable (Better Auth:
    *  `<origin>/api/auth`). Meaningless — and rejected — for other auth modes. */
   idp: z.string().min(1).optional(),
+  /** Native nats-server file logging and rotation. Relative paths are resolved beside the manifest. */
+  logFile: z.string().min(1).optional(),
+  logfileSizeLimit: z.number().int().positive().optional(),
+  logfileMaxNum: z.number().int().positive().optional(),
 });
 
 /** The whole manifest. `apiVersion`/`kind` are literals so a foreign YAML doc is rejected up front;

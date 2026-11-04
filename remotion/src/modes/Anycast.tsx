@@ -18,15 +18,17 @@ import {
   Labels,
   lerp,
   MODE_ALICE,
+  MODE_MIDDLE,
   MODE_PEERS,
   NODE_R,
   prog,
+  straightWire,
   wirePath,
   Wires,
   type Pt,
 } from "./scene";
 
-const JUNCTION: Pt = { x: 400, y: 410 };
+const JUNCTION = MODE_MIDDLE;
 
 // The role's bracket is measured from the first and last peer so it follows the
 // pool when the cast moves; below the last peer it leaves room for its name.
@@ -46,7 +48,7 @@ const SEG1: [Pt, Pt] = [
 ];
 const FAN = MODE_PEERS.map((p) => fanWire(JUNCTION, p.at));
 
-const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
+const PATH1 = straightWire(...SEG1);
 const OUT_PATHS = FAN.map((w) => wirePath(...w));
 
 const T = {
@@ -88,8 +90,7 @@ export const ModeAnycast: React.FC = () => {
   return (
     <Card>
       <Wires
-        paths={[PATH1, ...OUT_PATHS]}
-        glow={[inGlow, ...OUT_PATHS.map((_, i) => (i === claimer ? claimGlow : 0))]}
+        wires={[{ d: PATH1, glow: inGlow }, ...OUT_PATHS.map((d, i) => ({ d, glow: i === claimer ? claimGlow : 0 }))]}
       />
 
       {/* the role: a quiet bracket around the pool, labelled on its top edge */}

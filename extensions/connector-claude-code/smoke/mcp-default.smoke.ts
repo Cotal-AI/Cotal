@@ -54,7 +54,7 @@ try {
   check("current user MCP references receive only their declared environment names", ordinary.env?.USER_MCP_SECRET === values.USER_MCP_SECRET && ordinary.env?.UNRELATED_PRIVATE_SECRET === undefined);
   check("native user config is not copied into the explicit MCP configuration", Object.keys(config(ordinary).mcpServers).join() === "cotal");
   check("native configuration is never rewritten", readFileSync(profileFile, "utf8") === original);
-  check("Cotal keeps its explicit mesh server and plugin hook loader", config(ordinary).mcpServers.cotal.args?.some((arg) => arg.endsWith("mcp.cjs")) === true && ordinary.args.includes("--plugin-dir"));
+  check("Cotal keeps its explicit mesh seat entry and plugin hook loader", config(ordinary).mcpServers.cotal.args?.some((arg) => arg.endsWith("seat.cjs")) === true && ordinary.args.includes("--plugin-dir"));
 
   const none = build({ mcpServersExclusive: true, mcpServers: {} });
   check("an explicit empty selection isolates native MCP sources", none.args.includes("--strict-mcp-config") && Object.keys(config(none).mcpServers).join() === "cotal");

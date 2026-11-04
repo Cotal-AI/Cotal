@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { handleGatewayRequest, type GatewayConnection, type GatewayHost } from "@cotal-ai/connector-core";
+import { handleGatewayRequest, MeshAgent, type AgentConfig, type GatewayHost } from "@cotal-ai/connector-core";
 import { FORKED_REASON } from "../src/connection-owner.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -73,10 +73,17 @@ const refused = (r: { stdout: string; code: number | null }): boolean => {
 };
 const passed = (r: { stdout: string; code: number | null }): boolean => r.code === 0 && r.stdout === "";
 
-// The real gateway surface with a host that opens nothing: cotal_connect only needs a name and an id.
+// The real gateway now builds an orientation card on connect. An unstarted MeshAgent supplies that
+// surface without opening a broker connection or replacing the card's reads with test doubles.
 const host: GatewayHost = {
   account: () => "acct",
-  open: async (_account, name) => ({ id: randomUUID(), agent: {}, config: { name } }) as unknown as GatewayConnection,
+  open: async (_account, name) => {
+    const config: AgentConfig = {
+      name, kind: "agent", space: "connection-owner-smoke", servers: "nats://127.0.0.1:1", tls: false,
+      subscribe: [], allowSubscribe: [], allowPublish: [],
+    };
+    return { id: randomUUID(), agent: new MeshAgent(config, {}), config };
+  },
   find: async () => undefined,
   close: async () => false,
 };

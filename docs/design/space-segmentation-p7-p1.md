@@ -1,8 +1,17 @@
 # Segmenting root-scoped material per space (P7, then P1)
 
 APPROVED as a plan. The questions the first draft left open are settled in §7. The probe of §6 has
-RUN and its finding is folded in below; series P7 commits 1 (the shared foundation) and 2
-(`repairAdvice` honesty) are implemented, and nothing else here is.
+RUN and its finding is recorded below.
+
+**Status.** Both series landed on 29 August 2026 and shipped in 0.36.0: P7 commits 1 to 5
+(`cbfbf1e06`, `05d2285c4`, `7108e402c`, `12dd6a287`, `a6a7381cc`) and P1 commits 1 and 2
+(`268625595`, `897f7c859`). The foundation and resolvers are in
+`packages/workspace/src/space-segmentation.ts`, the P1 key builders and reap in
+`packages/workspace/src/agent-secrets.ts`, and the guards run under `pnpm smoke:space-segmentation`
+and `pnpm smoke:sys-repair-honesty`. The reap and its step-1 precondition still have no caller,
+because `cotal space rm` is not built ([per-space-lifecycle](./per-space-lifecycle.md)). Line
+numbers below refer to the tree the plan was written against. The "implemented" and "not
+implemented" statements in the body record the plan's state before the later commits landed.
 
 P7 and P1 in [per-space-lifecycle](./per-space-lifecycle.md) §7 are one defect in two places: material
 that is per-tenant in MEANING sits at a root-scoped path or store key, so a root holds one tenant's

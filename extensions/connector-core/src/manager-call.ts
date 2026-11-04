@@ -7,18 +7,42 @@ import {
   isPermissionDenied,
   issuedUserCaller,
   managerCallerBinding,
+  registryListingCaller,
   replyRefusedBeforeEffect,
   resolveService,
   standaloneConnectOpts,
   type EpAttributedReply,
   type EpCaller,
   type EpVerbTarget,
+  type IssuedCaller,
   type ResolvedService,
 } from "@cotal-ai/core";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { AgentConfig } from "./config.js";
 
 type ManagerConfig = Pick<AgentConfig, "space" | "servers" | "tls" | "lifecycleUid" | "userAuth" | "managerInstanceId">;
+
+/** Credentials whose manager-call view the broker refused an accepted row for. Successful legacy
+ *  calls skip that read until {@link LEGACY_RAIL_RECHECK_MS}; a permission-failed resolve rechecks
+ *  its own connection, whose issued view may have changed with the direct parent's grant.
+ *  Keyed by the credential the bearer was minted from (its renewals keep it), else by the bearer. */
+const legacyRail = new Map<string, number>();
+const LEGACY_RAIL_RECHECK_MS = 60 * 60_000;
+const LEGACY_RAIL_MAX = 32;
+function onLegacyRail(key: string): boolean {
+  const until = legacyRail.get(key);
+  if (until === undefined) return false;
+  if (Date.now() < until) return true;
+  legacyRail.delete(key);
+  return false;
+}
+function rememberLegacyRail(key: string): void {
+  legacyRail.set(key, Date.now() + LEGACY_RAIL_RECHECK_MS);
+  if (legacyRail.size > LEGACY_RAIL_MAX) legacyRail.delete(legacyRail.keys().next().value!);
+}
+
+/** Forget every remembered legacy-rail verdict. For tests that reuse a process across stacks. */
+export function forgetLegacyRail(): void { legacyRail.clear(); }
 
 /** Runs a call's submission under a goal follow. `prepare` runs the bearer command, opens the
  *  control connection and resolves the manager by the follow's deadline. It publishes nothing, so
@@ -28,6 +52,47 @@ type UserManagerFollow = (
   submit: (signal?: AbortSignal) => Promise<EpAttributedReply>,
   prepare: (signal: AbortSignal, deadline: number) => Promise<void>,
 ) => Promise<EpAttributedReply>;
+
+/** Open a manager-call connection on `token` as a manager call opens it, find the caller a registry
+ *  listing rides on it (SPEC 13.15), run `ask` over it, and close it. `exp` is the bearer's expiry,
+ *  the listing's horizon at the callout. The issued read shares the manager calls' legacy-rail
+ *  memory, so a legacy credential is refused that read once, not once per listing. */
+export async function withUserManagerListing<T>(
+  config: ManagerConfig,
+  token: string,
+  exp: number | undefined,
+  ask: (nc: NatsConnection, listing: IssuedCaller | undefined) => Promise<T>,
+): Promise<T> {
+  const user = config.userAuth!;
+  const binding = managerCallerBinding(token, {
+    space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
+  });
+  const railKey = binding.credentialId ?? token;
+  const connectOpts = standaloneConnectOpts({ bearer: token, sentinelCreds: user.sentinelCreds, tls: config.tls });
+  const connId = String(connectOpts.name);
+  const nc = await dialerFor(config.servers)({ servers: config.servers, ...connectOpts, maxReconnectAttempts: 0, timeout: 10_000 });
+  // An issued view lists as itself; any other under the listing generation its credential carries.
+  const issued = async (): Promise<IssuedCaller | undefined> => {
+    try {
+      const caller = await issuedUserCaller(nc, config.space, connId, binding.caller);
+      legacyRail.delete(railKey);
+      return caller;
+    } catch (e) {
+      if (!isPermissionDenied(e)) throw e;
+      rememberLegacyRail(railKey);
+      return undefined;
+    }
+  };
+  try {
+    const skipped = onLegacyRail(railKey);
+    const caller = skipped ? undefined : await issued();
+    const listing = caller ?? await registryListingCaller(nc, config.space, binding.caller, { connId, ...(exp !== undefined ? { exp } : {}) });
+    // A remembered legacy verdict may be stale: with no listing binding, check the issued read once.
+    return await ask(nc, listing ?? (skipped ? await issued() : undefined));
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
 
 /** A control connection never replaces the seat's presence, messages or standing bearer source. */
 export async function invokeUserManager(
@@ -44,41 +109,75 @@ export async function invokeUserManager(
   let caller: EpCaller;
   let instanceId: string;
   let service: ResolvedService;
+  let skippedAcceptedRead: { key: string; connId: string } | undefined;
   const onAbort = () => { void nc?.close(); };
-  const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, { instanceId, deadlineMs, signal });
-  const connect = async (signal = opts.signal) => {
+  const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, {
+    instanceId, deadlineMs, signal, commands: opts.follow ? [command, "goal-result"] : [command],
+    ...(opts.follow && command !== "goal-result" ? { optionalCommands: ["goal-result"] } : {}),
+  });
+  const resolvePrepared = async (signal = opts.signal, deadline = Date.now() + (opts.deadlineMs ?? 10_000)) => {
+    const remaining = () => {
+      signal?.throwIfAborted();
+      const left = deadline - Date.now();
+      if (left <= 0) throw new EpEnvelopeError("deadline-exceeded",
+        "the deadline passed before the manager was resolved; the manager request WAS NOT RUN", undefined, "not-executed");
+      return left;
+    };
+    try {
+      return await resolve(signal, remaining());
+    } catch (error) {
+      if (!skippedAcceptedRead || !isPermissionDenied(error)) throw error;
+      const { key, connId } = skippedAcceptedRead;
+      skippedAcceptedRead = undefined;
+      remaining();
+      // Only discovery failed: no command has been submitted. A fresh accepted row binds this
+      // connection to the issuer's current view without replaying a write or changing the pin.
+      caller = await issuedUserCaller(nc!, config.space, connId, caller);
+      legacyRail.delete(key);
+      return resolve(signal, remaining());
+    }
+  };
+  const connect = async (signal = opts.signal, deadline = Date.now() + (opts.deadlineMs ?? 10_000)) => {
     const token = await bearer(signal);
-    ({ caller, instanceId } = managerCallerBinding(token, {
+    let credentialId: string | undefined;
+    ({ caller, instanceId, credentialId } = managerCallerBinding(token, {
       space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
     }));
     const connectOpts = standaloneConnectOpts({ bearer: token, sentinelCreds: user.sentinelCreds, tls: config.tls });
+    signal?.throwIfAborted();
+    const left = deadline - Date.now();
+    if (left <= 0) throw new EpEnvelopeError("deadline-exceeded",
+      "the deadline passed before the manager was connected; the manager request WAS NOT RUN", undefined, "not-executed");
     nc = await dialerFor(config.servers)({
       servers: config.servers,
       ...connectOpts,
       maxReconnectAttempts: 0,
-      timeout: Math.min(opts.deadlineMs ?? 10_000, 2_000),
+      timeout: left,
     });
     // An in-flight dial has no connection handle to close yet. A late result never publishes, and
     // it is closed here because a follow that stopped or reached its deadline has already returned.
     if (signal?.aborted) onAbort();
     signal?.throwIfAborted();
     // Issued interactive views and eligible managed run views carry their own accepted-row read
-    // (SPEC 13.15). A managed view without that issuance remains on its legacy rail: the broker
-    // refuses the read as a RequestError whose cause is the permission violation.
-    try {
-      caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), caller);
-    } catch (e) {
-      if (!isPermissionDenied(e)) throw e;
+    // (SPEC 13.15). Memoize genuine legacy refusals to avoid one denied read per polling turn
+    // (#5040), but recheck a skipped read if this connection cannot resolve on the legacy rail.
+    const railKey = credentialId ?? token;
+    if (onLegacyRail(railKey)) {
+      skippedAcceptedRead = { key: railKey, connId: String(connectOpts.name) };
+    } else {
+      try {
+        caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), caller);
+      } catch (e) {
+        if (!isPermissionDenied(e)) throw e;
+        rememberLegacyRail(railKey);
+      }
     }
   };
   // The describe spends what is left of the follow's deadline, so a silent manager reports itself.
   // With nothing left it would report a silence it had no time to observe.
   const prepare = async (signal: AbortSignal, deadline: number) => {
-    await connect(signal);
-    const left = deadline - Date.now();
-    if (left <= 0) throw new EpEnvelopeError("deadline-exceeded",
-      "the deadline passed before the manager was resolved; the manager request WAS NOT RUN", undefined, "not-executed");
-    service = await resolve(signal, left);
+    await connect(signal, deadline);
+    service = await resolvePrepared(signal, deadline);
   };
   const invoke = async (signal = opts.signal) => {
     const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
@@ -106,7 +205,7 @@ export async function invokeUserManager(
   try {
     if (opts.follow) return await opts.follow(invoke, prepare);
     await connect();
-    service = await resolve();
+    service = await resolvePrepared();
     return await invoke();
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);

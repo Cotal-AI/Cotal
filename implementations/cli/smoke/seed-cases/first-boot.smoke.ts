@@ -9,7 +9,7 @@ try {
     const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => listed.includes(`connector:${n}`));
     if (names.length !== 6) console.log(`[diag] auto-seed status=${first.status}\n--stdout--\n${listed}\n--stderr--\n${first.stderr}`);
     check("auto-seed: all six connectors seeded on first command", names.length === 6, names);
-    check("auto-seed: the web dashboard seeded on first command (command:web)", listed.includes("command:web"), listed);
+    check("auto-seed: the web dashboard seeded on first command (service-preset:web)", listed.includes("service-preset:web"), listed);
     const sd = seedDir(cfg);
     check("auto-seed: authority/witness/stamp written", ["authority.json", "witness.json", "stamp.json"].every((f) => existsSync(join(sd, f))));
     const ever = readJson(join(sd, "authority.json")).everSeeded.slice().sort();

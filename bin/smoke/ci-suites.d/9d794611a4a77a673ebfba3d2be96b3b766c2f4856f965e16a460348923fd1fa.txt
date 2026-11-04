@@ -1,0 +1,2 @@
+# A running `cotal join` that could not come back retried for good and never said why.
+smoke:join-session-lost:live

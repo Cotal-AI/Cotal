@@ -166,7 +166,12 @@ const readTolerant = async (
     const cacheBefore = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
     try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "ps");
-      if (r.reply.ok === true) return { ok: true, tries: i, perAttempt };
+      if (r.reply.ok === true) {
+        // Cross-command fault injection needs a full discovered handle. A narrow ps
+        // invocation, including its recovery path, populates only the command cache.
+        await ep.describeService(MANAGER_ENDPOINT);
+        return { ok: true, tries: i, perAttempt };
+      }
       last = r.reply.error;
       const detail = (r.reply.error?.details ?? []).find(
         (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
@@ -376,7 +381,7 @@ try {
   check("...and it names the subject the credential lacked, so the remedy is readable off the error",
     (noPin.detail ?? "").includes(`.ep.inst.manager.${IID1}.describe.`), noPin.detail?.slice(0, 260));
   check("...and says the responder may be healthy (the wrong conclusion is the expensive one)",
-    /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /grant is what is missing/.test(noPin.detail ?? ""),
+    /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /no grant covers it, or it was granted after this connection authenticated/.test(noPin.detail ?? ""),
     noPin.detail?.slice(0, 260));
 
   // ---- 5. THE WATCH RELEASES ITSELF ------------------------------------------------------------
@@ -530,7 +535,12 @@ try {
       let readThrew: unknown;
       let readLanded: { reply?: { ok?: boolean; error?: EpError } } | undefined;
       try { readLanded = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
-      const afterRead = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
+      // Recovery drops the full handle and resolves only the command being retried.
+      const readCache = (ep as unknown as {
+        resolvedCommandServices: Map<string, Map<string, ResolvedService>>;
+      }).resolvedCommandServices;
+      const afterRead = (cache.get(MANAGER_ENDPOINT)
+        ?? readCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder.instanceId;
       check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
         afterRead === IID1 || afterRead === IID2, { afterRead, threw: readThrew instanceof Error ? readThrew.message.slice(0, 120) : readThrew });
       // Each re-issue rides the same class queue and can be refused again, so one call may recover
@@ -814,8 +824,11 @@ try {
       // Each command needs SCHEMA-VALID arguments or the envelope refuses it before it is ever
       // published, which is precisely how the first version passed vacuously: `{}` fails
       // `required` on all seven, so none of them left the client. The values are deliberately
-      // nonsense (no such run, no such attempt) so every handler refuses on business grounds and
-      // nothing is launched, resumed, or preserved; refusing is a REPLY, which is all this needs.
+      // nonsense (no such run, no such attempt), so most handlers refuse on business grounds and
+      // nothing is launched or resumed. `prepare-preservation` is the exception: any non-empty
+      // attempt id is a valid first attempt, so the manager that answers it is FENCED (`preserving`)
+      // for the rest of the run, and a later command that lands there gets the fence refusal
+      // instead of its own answer (#4033). Either is an attributed REPLY, which is all this grades.
       // If a schema gains a required field, `notReached` goes red rather than the cell going quiet.
       const attempt = { attemptId: `no-such-attempt-${randomUUID().slice(0, 8)}` };
       const adminArgs: Record<string, Record<string, unknown>> = {

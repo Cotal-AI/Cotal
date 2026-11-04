@@ -99,6 +99,7 @@ for (const mode of ["auth", "open", "user"]) {
   const artifact = join(home, `artifact-${mode}`);
   const backup = run(sandbox, ["backup", "create", artifact, "--json"]);
   check(`${mode}: backup create refuses UNSUPPORTED, exit 2, and names the missing cut`, refusedHere(backup) && /^backup create needs a preserved cut/.test(backup.envelope?.error?.message ?? ""), shown(backup));
+  check(`${mode}: its remedy says a full store makes down refuse, and that one way out purges the history`, /on a full store `cotal down` refuses and names how to stop the stack with or without purging that history/.test(backup.envelope?.error?.remedy ?? ""), backup.envelope?.error);
   check(`${mode}: backup create wrote no artifact`, !existsSync(artifact), artifact);
 
   const restore = run(sandbox, ["backup", "restore", artifact, "--json"]);

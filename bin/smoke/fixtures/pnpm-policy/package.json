@@ -1,0 +1,14 @@
+{
+  "name": "smoke-launcher-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.28.2",
+  "dependencies": {
+    "is-number": "7.0.0",
+    "is-odd": "3.0.1"
+  },
+  "scripts": {
+    "smoke:silent": "node -e \"\"",
+    "smoke:green": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=3 passed=3 failed=0')\""
+  }
+}

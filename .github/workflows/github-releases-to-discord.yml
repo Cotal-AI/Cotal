@@ -4,6 +4,8 @@ on:
 
 jobs:
   github-releases-to-discord:
+    # Only the version release (v1.2.3) is announced, never a per-package one.
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -15,6 +15,9 @@
  * Then the retry's bound (3): a step read replays at most three times, still fails with the race
  * when every round is lost, and raises any other failure on its first read. And the one driver-side read before activation that is not
  * `activateRun` (4): the diagnostic for a journal with no run record replays again the same way.
+ * Last (5), a paged `RunHost.status` under a reply bound far below the journal's size returns every
+ * row in order across several pages, each within the bound, and refuses `resource-exhausted` when
+ * even the record does not fit.
  *
  * The other reader in 2-4 is a second connection that pulls one record off the drive's durable
  * right after the drive creates it, which is the state `consumers.add` hands a replay when someone
@@ -84,7 +87,7 @@ import { cotalLangRunHost } from "../src/run-host.js";
 import { resolveCheckpoint } from "../src/resolve-checkpoint.js";
 import { createRunScopeAuthority } from "../src/run-scope-authority.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "hostreplay";
 const EP = "manager";
@@ -96,17 +99,6 @@ const c = (n: string, v: boolean, extra?: unknown) => {
   if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
@@ -150,6 +142,9 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
   },
 } as const;
 const SPAWN_OUTPUT = {
@@ -456,7 +451,8 @@ try {
   const answered = await answerPanel(runId, open);
   c("the three answers landed within the same second", open.length === 3 && answered.ms < 1_000 && answered.answers.every((a) => a === "ok"), answered);
   const out = await withDeadline(drive.outcome, 30_000, "the shared-id panel");
-  await withDeadline(readers, 30_000, "the status readers");
+  c("the status readers ended within its deadline",
+    await withDeadline(readers.then(() => true), 30_000, "the status readers") === true);
   const panel = await panelHeld(runId, out);
   c("no branch fails while status reads the drive's own takeover id", panel.held, panel.detail);
   const rows = views.map((v) => (typeof v === "object" ? v.journal : undefined));
@@ -529,6 +525,35 @@ try {
   c("and it still releases the run naming a journal that was activated and never pinned",
     out?.status === "released" && out.reason.message.includes("has a journal but no record"), out);
 }
+
+// ── 5) a journal read in pages, each within a reply bound ──────────────────────────────────────
+{
+  console.log("• 5: a paged status read under a reply bound far below the journal's size");
+  const runId = "paged-journal";
+  const drive = await host(runId, "new", 'const tasks = [];\nfor (let k = 0; k < 40; k++) { tasks.push(() => sleep("1ms")); }\nawait parallel(tasks);\n');
+  const out = await withDeadline(drive.outcome, 30_000, "the paged-journal run");
+  const takeoverId = newTakeoverId();
+  const whole = await cotalLangRunHost.status(driver, { endpoint: EP, runId, takeoverId });
+  // The bound stands in for a broker payload limit far below the journal's size.
+  const BOUND = 2048;
+  const measure = { replyFits: (data: unknown, ceiling: number) => JSON.stringify(data).length <= Math.min(ceiling, BOUND) };
+  const pages: RunStatusView[] = [];
+  for (let offset = 0; pages.length < 200;) {
+    const page = await cotalLangRunHost.status(driver, { endpoint: EP, runId, takeoverId, journal: { offset } }, measure);
+    if (page === undefined) break;
+    pages.push(page);
+    offset += page.journal.length;
+    if (page.journal.length === 0 || offset >= (page.journalTotal ?? 0)) break;
+  }
+  const rows = pages.flatMap((page) => page.journal);
+  c("a journal larger than the reply bound is read in several pages, every row in order, each page within the bound",
+    out?.status === "completed" && whole !== undefined && pages.length > 1 && JSON.stringify(rows) === JSON.stringify(whole.journal)
+      && pages.every((page) => page.journalTotal === whole.journal.length && JSON.stringify(page).length <= BOUND),
+    { outcome: out, pages: pages.length, rows: rows.length, total: whole?.journal.length });
+  const refused = await cotalLangRunHost.status(driver, { endpoint: EP, runId, takeoverId, journal: { offset: 0 } }, { replyFits: () => false })
+    .then(() => undefined, (e: unknown) => e as { code?: unknown });
+  c("a bound the record itself does not fit refuses resource-exhausted", refused?.code === "resource-exhausted", refused);
+}
 } finally {
   await Promise.allSettled(terminals);
   await serve.stop().catch(() => { /* teardown */ });
@@ -536,7 +561,7 @@ try {
   await nc.close();
 }
 
-const EXPECTED_CELLS = 12;
+const EXPECTED_CELLS = 15;
 const ran = ok + fail;
 console.log(`run-host-replay.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

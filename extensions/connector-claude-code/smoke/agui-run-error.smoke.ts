@@ -211,7 +211,7 @@ try {
   });
   await hook({ hook_event_name: "SessionStart", source: "startup" });
   await sleep(2_000);
-  const failurePresence = agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition;
+  const failurePresence = (await agent.readRoster()).roster.find((p) => p.card.id === agent.ep.card.id)?.condition;
   check(
     "presence:StopFailure relays the native code and detail as a rate-limit condition",
     failurePresence?.code === "rate_limit"
@@ -226,19 +226,19 @@ try {
   await sleep(500);
   check(
     "presence:a normal next turn clears the prior condition",
-    agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition === undefined,
-    agent.roster().find((p) => p.card.id === agent.ep.card.id),
+    (await agent.readRoster()).roster.find((p) => p.card.id === agent.ep.card.id)?.condition === undefined,
+    (await agent.readRoster()).roster.find((p) => p.card.id === agent.ep.card.id),
   );
   await hook({ hook_event_name: "Notification", notification_type: "permission_prompt", message: "Approve Bash" });
   await sleep(300);
   check(
     "presence:a permission notification relays approval",
-    agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition?.code === "approval",
-    agent.roster().find((p) => p.card.id === agent.ep.card.id),
+    (await agent.readRoster()).roster.find((p) => p.card.id === agent.ep.card.id)?.condition?.code === "approval",
+    (await agent.readRoster()).roster.find((p) => p.card.id === agent.ep.card.id),
   );
   await hook({ hook_event_name: "Notification", notification_type: "agent_needs_input", message: "Choose a target" });
   await sleep(300);
-  const inputCondition = agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition;
+  const inputCondition = (await agent.readRoster()).roster.find((p) => p.card.id === agent.ep.card.id)?.condition;
   check(
     "presence:an agent-needs-input notification relays input and keeps the native source",
     inputCondition?.code === "input" && inputCondition.source === "agent_needs_input",

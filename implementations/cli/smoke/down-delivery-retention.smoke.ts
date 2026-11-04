@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LocalProcess, LocalProcessContext } from "@cotal-ai/workspace";
 
+const actualStops = await import("../src/lib/local-process-stop.js");
 const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-down-retention-")));
 const cwd = process.cwd(), home = process.env.COTAL_HOME, exitCode = process.exitCode;
 const calls: string[] = [];
@@ -26,8 +27,12 @@ try {
   mock.module(new URL("../src/lib/local-process-stop.ts", import.meta.url), {
     cache: true,
     namedExports: {
-      // Record inventory is the process boundary, not the credential-cleanup rule under test.
-      processRecorded: () => true,
+      ...actualStops,
+      // No delivery daemon was recorded in this fixture. Its old credentials still
+      // belong to the stack; other process records exercise the stop ordering.
+      processRecorded: (component: LocalProcess) => component.name !== "delivery",
+      // The fixture signals nothing, so no stop is ever waiting on an exit.
+      stopInFlight: () => undefined,
       stopLocalProcess: async (component: LocalProcess, context: LocalProcessContext) => {
         assert.equal(context.root, root);
         calls.push(component.name);
@@ -41,11 +46,15 @@ try {
   process.env.COTAL_HOME = join(root, "home");
   mkdirSync(join(root, ".cotal"));
   process.chdir(root);
-  // The actual composition root registers the actual delivery and stop-last broker descriptors.
+  // The CLI registers the stop-last broker descriptor. The composition root registers delivery's
+  // through @cotal-ai/delivery, which this package does not import; its local-process fields are
+  // the workspace's DELIVERY_PROCESS.
   await import("../src/index.js");
+  const { registry } = await import("@cotal-ai/core");
+  registry.register((await import("@cotal-ai/workspace")).DELIVERY_PROCESS);
   const { down } = await import("../src/commands/down.js");
   const { stopDelivery } = await import("../src/lib/delivery-proc.js");
-  const { DELIVERY_CREDS_KIND, resolveRuntimeSpace, segmentedKey } = await import("@cotal-ai/workspace");
+  const { DELIVERY_CREDS_KIND, recordMesh, resolveRuntimeSpace, segmentedKey } = await import("@cotal-ai/workspace");
   const space = resolveRuntimeSpace(root);
   canonical = join(root, ".cotal", segmentedKey(DELIVERY_CREDS_KIND, space));
   legacy = join(root, ".cotal", DELIVERY_CREDS_KIND);
@@ -54,6 +63,8 @@ try {
     refuse = failing;
     observedCredentialsAtBroker = false;
     process.exitCode = 0;
+    // Bare down stops only a stack `up` recorded at its root, and a clean stop drops that record.
+    recordMesh({ space, server: "nats://127.0.0.1:1", root, mode: "open", origin: "up", ts: "2026-10-22T00:00:00.000Z" });
     for (const file of [canonical, legacy]) {
       rmSync(file, { recursive: true, force: true });
       mkdirSync(dirname(file), { recursive: true });
@@ -68,7 +79,7 @@ try {
   check("DR01-broker-refusal-retains-both-delivery-credentials", retained());
   check("DR02-broker-refusal-keeps-failed-verdict", process.exitCode === 1);
   check("DR03-credentials-present-before-stop-last-broker", observedCredentialsAtBroker);
-  check("DR04-delivery-stops-before-broker", calls.indexOf("delivery") < calls.indexOf("nats"));
+  check("DR04-delivery-stops-before-broker", calls.includes("delivery") && calls.indexOf("delivery") < calls.indexOf("nats"));
 
   reset("auth");
   await run();
@@ -79,10 +90,6 @@ try {
   await run();
   check("DR07-whole-stack-cleans-only-after-broker-stop", observedCredentialsAtBroker && !existsSync(canonical) && !existsSync(legacy));
   check("DR08-whole-stack-success-keeps-zero-exit", process.exitCode === 0);
-
-  reset();
-  await run(["delivery"]);
-  check("DR09-selective-delivery-cleans-without-broker-stop", !existsSync(canonical) && !existsSync(legacy) && calls.join(",") === "delivery");
 
   reset();
   await stopDelivery(space);

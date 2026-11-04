@@ -22,7 +22,7 @@ export function loadLaunchPersonaFile(path: string): AgentDef {
     const document = parseDocument(source);
     if (!document.errors.length) manifest = MeshManifestSchema.safeParse(document.toJS({ maxAliasCount: 100 })).success;
   } catch { /* A non-manifest still has to pass the native persona parser below. */ }
-  if (manifest) throw new PersonaSourceError("--file names a Mesh manifest, not a persona file; use cotal team deploy <file>. No agent was allocated");
+  if (manifest) throw new PersonaSourceError("--file names a Mesh manifest, not a persona file; use `cotal team deploy <file>`. No agent was allocated");
   try { return parseAgentFileSource(source, path); }
   catch { throw new PersonaSourceError(`persona file ${path} has invalid native frontmatter; check its name, selectors and access declarations. File contents were not echoed`); }
 }

@@ -40,6 +40,7 @@ import {
   type Delivery,
 } from "./src/index.js";
 import { pickFreePort } from "./smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Fresh OS-assigned port per run + await-exit on the broker kill (finally): a FIXED port plus a SIGKILL that
 // doesn't await the child's exit leaks the broker, and the next run collides with the squatter (the
@@ -67,9 +68,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `smoke-auth-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-smokeauth-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 try {
   let up = false;
@@ -273,6 +275,7 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv); // await actual exit so a failed run never leaks the broker onto its port
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker();
 }
 
 console.log(`\n${fail === 0 ? "AUTH SMOKE OK ✅" : "AUTH SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);

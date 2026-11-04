@@ -199,42 +199,15 @@ function holderMatches(holderProof: string, holderHash: string): boolean {
   return presented.length === stored.length && timingSafeEqual(presented, stored);
 }
 
-/**
- * Build the session authority over the plane's mint-writer registry. The chat KV records are read
- * and written on that registry's auth store, which is leader-served by shape.
- */
-export function openChatSessionAuthority(deps: ChatSessionAuthorityDeps): ChatSessionAuthority {
+/** What the chat connect checks read: the ledger dir, the auth and records stores, and the clock. */
+export type ChatConnectDeps = Pick<ChatSessionAuthorityDeps, "space" | "dir" | "registry" | "now">;
+
+/** The chat checks a connect runs, over reads only, with the helpers the session authority shares. */
+function chatConnectChecks(deps: ChatConnectDeps) {
   const { space, dir, registry } = deps;
   const { authKv, jsm } = registryStores(registry);
   const store: ChatAuthorityStore = openChatAuthorityStore(authKv, jsm, space);
-  /** The sweep's owner-quota scan position, in memory only: the durable cursor is the closed
-   *  `{rowName, holderSeq}`. After a restart the owner scan starts again from the first owner. Owners
-   *  get at least a third of each pass's reads, so a cycle completes unless restarts come faster than
-   *  one cycle. Until it does, an entry with no index (an admission paused after a1) keeps its quota
-   *  slot; it holds no authority. */
-  let ownerSeq = 0;
-
   const parentHead = (owner: string) => readChatParentHeadLeader(jsm, space, owner);
-  /** The in-process serialization key of one holder: its admissions, its closes and its sweep fence
-   *  run one at a time here. */
-  const holderKey = (owner: string, holderHash: string): string => `${space}:${owner}.${holderHash}`;
-
-  /** Preconditions 2 to 4: the parent row, its head leader-read and ensured, the pin, containment.
-   *  An absent or unstamped parent head is ensured first, so the pin is never taken over a head the
-   *  human's next ordinary exchange would move. */
-  const currentParentPin = async (owner: string, lists: { read: string[]; post: string[] }): Promise<{ pin: ChatParentPin; digest: string }> => {
-    const row = readChatParentRow(dir, owner);
-    if (typeof row.lifecycleUid !== "string" || row.lifecycleUid === "")
-      throw new EpEnvelopeError("permission-denied", `the "${CHAT_PARENT_ACTOR}" grant for owner ${owner} carries no lifecycleUid; re-grant it before opening a chat session`);
-    assertChatListsContained(row, lists);
-    let head = await parentHead(owner);
-    if (head === undefined || head.mapping.currentCredentialId === undefined) {
-      await ensureRootCredential(registry, { owner, actor: CHAT_PARENT_ACTOR, lifecycleUid: row.lifecycleUid, managerInstance: deps.managerInstance });
-      head = await parentHead(owner);
-    }
-    const pin = buildChatParentPin(row, head);
-    return { pin, digest: chatParentPinDigest(pin) };
-  };
 
   /** The pin CHECK on fresh reads (a5 re-check, exchange pre and post, connect). */
   const assertPinCurrent = async (owner: string, pin: ChatParentPin, lists: { read: string[]; post: string[] }): Promise<void> => {
@@ -258,6 +231,69 @@ export function openChatSessionAuthority(deps: ChatSessionAuthorityDeps): ChatSe
     if (rec.row.expiresAt <= deps.now())
       throw new EpEnvelopeError("permission-denied", `chat session "${owner}.${actor}" expired at ${new Date(rec.row.expiresAt).toISOString()}; open a new session`);
     return rec.row;
+  };
+
+  const isChatPrincipal = (owner: string, actor: string): boolean => chatSessionAliasPresent(dir, owner, actor);
+
+  const authorizeConnect = async (t: ValidatedUserToken): Promise<void> => {
+    const owner = assertDerivedOwnerToken(t.owner);
+    const actor = t.act.actor;
+    // The three-space read: a chat alias also present as a grant is a broken ledger and denies.
+    findActorUnified(dir, owner, actor);
+    if (t.act.view !== undefined)
+      throw new EpEnvelopeError("permission-denied", "a chat session connects only as its own agent leaf, never with a view");
+    if (t.scope.length !== 0 || (t.act.scope ?? []).length !== 0)
+      throw new EpEnvelopeError("permission-denied", "a chat session bearer carries no capability scope");
+    const row = activeRow(owner, actor);
+    if (t.act.lifecycleUid !== row.lifecycleUid)
+      throw new EpEnvelopeError("permission-denied", `bearer lifecycle ${String(t.act.lifecycleUid)} is not this chat session's ${row.lifecycleUid}`);
+    // The connect pin check: the parent head at the pinned UID and revision, the digest, containment.
+    await assertPinCurrent(owner, row.parentPin, { read: row.allowSubscribe, post: row.allowPublish });
+    await assertIndexActive(owner, row.holderHash, row.lifecycleUid);
+  };
+
+  return { authKv, store, parentHead, assertPinCurrent, assertIndexActive, activeRow, isChatPrincipal, authorizeConnect };
+}
+
+/** The callout's chat checks alone, for a callout that admits, exchanges and retires nothing. */
+export function chatConnectAuthority(deps: ChatConnectDeps): Pick<ChatSessionAuthority, "isChatPrincipal" | "authorizeConnect"> {
+  const { isChatPrincipal, authorizeConnect } = chatConnectChecks(deps);
+  return { isChatPrincipal, authorizeConnect };
+}
+
+/**
+ * Build the session authority over the plane's mint-writer registry. The chat KV records are read
+ * and written on that registry's auth store, which is leader-served by shape.
+ */
+export function openChatSessionAuthority(deps: ChatSessionAuthorityDeps): ChatSessionAuthority {
+  const { space, dir, registry } = deps;
+  const { authKv, store, parentHead, assertPinCurrent, assertIndexActive, activeRow, isChatPrincipal, authorizeConnect } = chatConnectChecks(deps);
+  /** The sweep's owner-quota scan position, in memory only: the durable cursor is the closed
+   *  `{rowName, holderSeq}`. After a restart the owner scan starts again from the first owner. Owners
+   *  get at least a third of each pass's reads, so a cycle completes unless restarts come faster than
+   *  one cycle. Until it does, an entry with no index (an admission paused after a1) keeps its quota
+   *  slot; it holds no authority. */
+  let ownerSeq = 0;
+
+  /** The in-process serialization key of one holder: its admissions, its closes and its sweep fence
+   *  run one at a time here. */
+  const holderKey = (owner: string, holderHash: string): string => `${space}:${owner}.${holderHash}`;
+
+  /** Preconditions 2 to 4: the parent row, its head leader-read and ensured, the pin, containment.
+   *  An absent or unstamped parent head is ensured first, so the pin is never taken over a head the
+   *  human's next ordinary exchange would move. */
+  const currentParentPin = async (owner: string, lists: { read: string[]; post: string[] }): Promise<{ pin: ChatParentPin; digest: string }> => {
+    const row = readChatParentRow(dir, owner);
+    if (typeof row.lifecycleUid !== "string" || row.lifecycleUid === "")
+      throw new EpEnvelopeError("permission-denied", `the "${CHAT_PARENT_ACTOR}" grant for owner ${owner} carries no lifecycleUid; re-grant it before opening a chat session`);
+    assertChatListsContained(row, lists);
+    let head = await parentHead(owner);
+    if (head === undefined || head.mapping.currentCredentialId === undefined) {
+      await ensureRootCredential(registry, { owner, actor: CHAT_PARENT_ACTOR, lifecycleUid: row.lifecycleUid, managerInstance: deps.managerInstance });
+      head = await parentHead(owner);
+    }
+    const pin = buildChatParentPin(row, head);
+    return { pin, digest: chatParentPinDigest(pin) };
   };
 
   /** Revision-pinned holder-index CAS. A loss converges when a sibling made the same move. */
@@ -933,24 +969,9 @@ export function openChatSessionAuthority(deps: ChatSessionAuthorityDeps): ChatSe
       }
     },
 
-    isChatPrincipal: (owner, actor) => chatSessionAliasPresent(dir, owner, actor),
+    isChatPrincipal,
 
-    authorizeConnect: async (t) => {
-      const owner = assertDerivedOwnerToken(t.owner);
-      const actor = t.act.actor;
-      // The three-space read: a chat alias also present as a grant is a broken ledger and denies.
-      findActorUnified(dir, owner, actor);
-      if (t.act.view !== undefined)
-        throw new EpEnvelopeError("permission-denied", "a chat session connects only as its own agent leaf, never with a view");
-      if (t.scope.length !== 0 || (t.act.scope ?? []).length !== 0)
-        throw new EpEnvelopeError("permission-denied", "a chat session bearer carries no capability scope");
-      const row = activeRow(owner, actor);
-      if (t.act.lifecycleUid !== row.lifecycleUid)
-        throw new EpEnvelopeError("permission-denied", `bearer lifecycle ${String(t.act.lifecycleUid)} is not this chat session's ${row.lifecycleUid}`);
-      // The connect pin check: the parent head at the pinned UID and revision, the digest, containment.
-      await assertPinCurrent(owner, row.parentPin, { read: row.allowSubscribe, post: row.allowPublish });
-      await assertIndexActive(owner, row.holderHash, row.lifecycleUid);
-    },
+    authorizeConnect,
 
     retire: async ({ owner: rawOwner, actor, lifecycleUid, holderProof }) => {
       let holderHash: string;

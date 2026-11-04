@@ -7,6 +7,7 @@ import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js"
 import { makeNativeIssuanceRecorder } from "./native-issuance.js";
 import { readNativeServiceAccess, readNativeServiceGate, type ServiceAssignmentBinding } from "./native-service-gate.js";
 import { nativeServiceNameAuthority } from "./native-service-name.js";
+import type { ServiceKeys } from "./store.js";
 import type { ValidatedUserToken } from "./token.js";
 
 export interface NativeServiceCalloutAuthority { readonly space: string; readonly accountPublicKey: string }
@@ -19,7 +20,7 @@ const authorities = new WeakMap<NativeServiceCalloutAuthority, Issue>();
  * host; neither callback is a public approval hook. Services receive no registry or signing key.
  */
 export function createNativeServiceCalloutAuthority(opts: {
-  registry: LifecycleRegistry; reader: () => ConnectReader; dataAccount: { pub: string; signingSeed: string };
+  registry: LifecycleRegistry; reader: () => ConnectReader; dataAccount: ServiceKeys["dataAccount"];
   resolveAssignment: (witness: ServiceRegistrationWitness) => Promise<ServiceAssignmentBinding>;
   readClusterArtifact: (digest: string) => unknown | Promise<unknown>; assertOpen: () => void;
 }): NativeServiceCalloutAuthority {

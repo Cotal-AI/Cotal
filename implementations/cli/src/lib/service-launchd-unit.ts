@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { delimiter, isAbsolute, join } from "node:path";
 import { token } from "@cotal-ai/core";
 import { CommandFailure, localRecordName, serviceOperationId } from "@cotal-ai/workspace";
+import { DAEMON_NODE_FLAGS } from "./self-exec.js";
 
 interface LaunchdUnitInput {
   space: string;
@@ -47,7 +48,9 @@ export function renderLaunchdServiceUnit(input: LaunchdUnitInput) {
   if (searchPath.split(delimiter).some((entry) => !isAbsolute(entry))) throw new CommandFailure("refused", "USAGE_INVALID", "the launch agent needs an absolute pinned PATH without empty entries");
   if (input.cli.length !== 2) throw new CommandFailure("refused", "UNSUPPORTED", "the launch agent needs the durable two-token Node and CLI entry");
   const label = launchdServiceLabel(input.space, definition, instanceId);
-  const argv = [...input.cli.map(absolute), "__service-unit", "--control-home", controlHome, "--space", input.space, "--definition", definition, "--instance", instanceId];
+  const [node, script] = input.cli.map(absolute);
+  // The unit entry is a daemon launch, so Node runs it under the daemon node flags.
+  const argv = [node!, ...DAEMON_NODE_FLAGS, script!, "__service-unit", "--control-home", controlHome, "--space", input.space, "--definition", definition, "--instance", instanceId];
   const str = (value: string) => `<string>${xml(value)}</string>`;
   const entry = (key: string, value: string) => `<key>${key}</key>${str(value)}`;
   const bytes = [

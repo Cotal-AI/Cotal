@@ -34,7 +34,7 @@ const silentConn = {
 };
 
 const blocked = lifecycleBlocked("conflict",
-  `the issuance gate for "mgr-1" is frozen; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`,
+  `the issuance gate for "mgr-1" is frozen; another barrier holds it; if the holder is a dead predecessor, run: \`cotal reconcile-gate\` (SPEC 13.8)`,
   { blockedOp: "registration", gateState: "frozen", opId: OPID, remedy: "cotal reconcile-gate" });
 
 console.log("A. a failed goal terminal carries the lifecycle-blocked facts the manager already had");

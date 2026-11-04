@@ -73,3 +73,10 @@ export function formatJoinLink(opts: {
   const query = opts.channels?.length ? `?channel=${opts.channels.join(",")}` : "";
   return `${scheme}://${cred}${opts.host}${port}/${encodeURIComponent(opts.space)}${query}`;
 }
+
+/** Whether a broker URL, or any URL in a comma-separated list, has a user name or password in it. A
+ *  value with no scheme is read as nats://, as the NATS client reads it. That client keeps only a
+ *  broker URL's host and port, so such credentials would be dropped in silence. */
+export function brokerUrlHasUserinfo(servers: string): boolean {
+  return servers.split(",").some((entry) => /^[^:/?#]+:\/\/[^/?#]*@/.test(entry.includes("://") ? entry.trim() : `nats://${entry.trim()}`));
+}

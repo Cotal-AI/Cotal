@@ -32,8 +32,9 @@ export async function seatTurnCommand(mode: "turns" | "yield", goalId: string | 
   const target = { space: seat.space, managerInstanceId: pin };
   let data: unknown;
   try {
-    const service = await resolveService(nc, seat.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, { instanceId: pin, deadlineMs: 10_000 });
-    const response = await invokeRepairingSplit(nc, seat.space, service, mode === "turns" ? "turn-pending" : "turn-yield", mode === "turns" ? undefined : {
+    const command = mode === "turns" ? "turn-pending" : "turn-yield";
+    const service = await resolveService(nc, seat.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, { instanceId: pin, deadlineMs: 10_000, commands: [command] });
+    const response = await invokeRepairingSplit(nc, seat.space, service, command, mode === "turns" ? undefined : {
       goalId, status: values.status, ...(values.to === undefined ? {} : { to: values.to }), ...(values.note === undefined ? {} : { note: values.note }),
     }, { target: { mode: "self" }, deadlineMs: 10_000 });
     if (!response.reply.ok) {

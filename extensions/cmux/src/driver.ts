@@ -88,13 +88,15 @@ export function closeWorkspace(workspace: string, opts: { timeoutMs?: number } =
   }
 }
 
-/** All open workspace lines (name + ref), or `[]` if cmux can't be reached. */
+/** One bounded inventory read. State probes need both UUIDs and short refs; listing callers keep
+ *  the CLI's default format. Any failed read propagates rather than inventing an empty inventory. */
+function workspaceInventory(bothIds = false): string {
+  return cmux(bothIds ? ["--id-format", "both", "list-workspaces"] : ["list-workspaces"], { timeoutMs: EXIT_PROBE_MS });
+}
+
+/** All open workspace lines (name + ref). An unreachable, failed or timed-out CLI throws. */
 export function listWorkspaces(): string[] {
-  try {
-    return cmux(["list-workspaces"]).split("\n").map((l) => l.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
+  return workspaceInventory().split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
 export type WorkspaceState = "running" | "exited";
@@ -105,7 +107,7 @@ export type WorkspaceState = "running" | "exited";
 export function workspaceState(workspace: string): WorkspaceState {
   let output: string;
   try {
-    output = cmux(["--id-format", "both", "list-workspaces"], { timeoutMs: EXIT_PROBE_MS });
+    output = workspaceInventory(true);
   } catch (err) {
     throw new Error(`cmux: couldn't prove workspace ${workspace} exited: ${(err as Error).message}`, {
       cause: err,

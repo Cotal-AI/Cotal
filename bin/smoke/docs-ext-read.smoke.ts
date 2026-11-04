@@ -1,9 +1,9 @@
 /**
  * `cotal docs [page]` and bare `cotal ext` on the structured output contract, driven through the built
- * binary in a fresh sandbox: the docs index, one page, a search and its empty result, `--refresh`
- * naming the copy it served, the usage refusals, and that the docs bundle loads only when `docs` runs;
- * the extension listing as one envelope and a plain report, and `ext root` staying a raw path that
- * refuses `--json`. Broker-free and, except `--refresh`, offline.
+ * binary in a fresh sandbox: the docs index, one page as its Markdown to a pipe, a search
+ * and its empty result, `--refresh` naming the copy it served, the usage refusals, and that the docs
+ * bundle loads only when `docs` runs; the extension listing as one envelope and a plain report, and
+ * `ext root` staying a raw path that refuses `--json`. Broker-free and, except `--refresh`, offline.
  *
  * Run: pnpm smoke:docs-ext-read
  */
@@ -51,9 +51,16 @@ const shown = (r: { status: number | null; stdout: string; stderr: string }) => 
 // ── docs: the index ──────────────────────────────────────────────────────────────────────────────
 {
   const json = run(["docs", "--json"]);
-  const r = json.envelope?.result as { kind: string; version: string; sources: { slug: string }[]; pages: { slug: string; summary: string }[] } | undefined;
+  const r = json.envelope?.result as { kind: string; version: string; sources: { slug: string }[]; pages: { slug: string; kind: string; category: string; summary: string }[] } | undefined;
   check("docs --json is one complete ok envelope with no target", json.status === 0 && json.envelope?.outcome === "ok" && json.envelope.completeness === "complete" && json.envelope.target === null && json.stderr === "", shown(json));
   check("the index is this version's: the three normative sources and the pages", r?.kind === "docs-index" && r.version === VERSION && JSON.stringify(r.sources.map((s) => s.slug)) === JSON.stringify(["spec", "lang", "schema"]) && r.pages.some((p) => p.slug === "architecture" && p.summary.length > 0), r && { kind: r.kind, version: r.version, sources: r.sources, pages: r.pages.length });
+  const pages = r?.pages ?? [];
+  const order = pages.map((p) => p.category).filter((category, i, all) => category !== all[i - 1]);
+  check("each page's category is one of the five, listed in the docs index's order, and telemetry is a Reference page",
+    JSON.stringify(order) === JSON.stringify(["Start here", "Guide", "Concept", "Reference", "Project"]) && pages.find((p) => p.slug === "telemetry")?.category === "Reference", order);
+  const architecture = pages.find((p) => p.slug === "architecture");
+  check("a page's kind keeps its classification line's words, which begin with its category",
+    pages.every((p) => p.kind.startsWith(p.category)) && new Set(pages.map((p) => p.kind)).size > 5 && architecture?.kind !== architecture?.category, { architecture, kinds: [...new Set(pages.map((p) => p.kind))] });
   const plain = run(["docs", "--plain"]);
   check("the plain index names the version, both groups and how to read a page", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout.startsWith(`Cotal v${VERSION} documentation`) && /^Normative sources$/m.test(plain.stdout) && /^Concept$/m.test(plain.stdout) && /^Reference$/m.test(plain.stdout) && /cotal docs <page>/.test(plain.stdout), shown(plain));
   const narrow = run(["docs", "--plain"], { COLUMNS: "80" });
@@ -71,6 +78,9 @@ let specBody = "";
   // A line of the page with no punctuation that plain writes in ASCII, so it reads the same in both.
   const asciiLine = r?.body.split("\n").find((line) => line.length > 20 && /^[\x20-\x7e]+$/.test(line));
   check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(asciiLine ?? "\u0000"), shown(plain));
+  // A page is drawn only on a terminal (the pty suite reads that); to a pipe it is its Markdown.
+  const piped = run(["docs", "cli"]);
+  check("a page read to a pipe without --plain is its Markdown", piped.status === 0 && piped.stdout.includes("\n# `cotal` CLI reference\n") && /^\|---\|---\|$/m.test(piped.stdout), shown(piped));
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
@@ -94,7 +104,7 @@ let specBody = "";
   const r = json.envelope?.result as { kind: string; query: string; hits: { slug: string; heading: string; text: string }[] } | undefined;
   check("--search returns sections that hold the query, each naming its page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && r.hits.every((h) => h.slug && h.heading && /allowsubscribe/i.test(h.text)), r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
   const plain = run(["docs", "--search", "allowSubscribe", "--plain"]);
-  check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: cotal docs \S+/.test(plain.stdout), shown(plain));
+  check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: `cotal docs [^\s`]+`/.test(plain.stdout), shown(plain));
   const none = run(["docs", "--search", "zzqqxxnomatch", "--json"]);
   check("a search with no match is an empty, complete result", none.status === 0 && none.envelope?.completeness === "complete" && (none.envelope.result as { hits: unknown[] }).hits.length === 0, shown(none));
 }
@@ -125,7 +135,7 @@ for (const [args, why] of [
   const er = empty.envelope?.result as { kind: string; root: string; items: unknown[] } | undefined;
   check("bare ext --json is one envelope naming the root, empty on a fresh machine", empty.status === 0 && empty.envelope?.command === "ext" && empty.envelope.target === null && er?.kind === "extensions" && er.root === root && er.items.length === 0, shown(empty));
   const emptyPlain = run(["ext", "--plain"]);
-  check("an empty plain listing says how to add one", emptyPlain.status === 0 && /^Extension root: /m.test(emptyPlain.stdout) && /no extensions installed/.test(emptyPlain.stdout), shown(emptyPlain));
+  check("an empty plain listing says how to add one", emptyPlain.status === 0 && /^\s*No extensions installed\.$/m.test(emptyPlain.stdout) && /^\s*cotal x add <package>\s+Install an extension$/m.test(emptyPlain.stdout), shown(emptyPlain));
 
   mkdirSync(root, { recursive: true });
   const added = { pkg: "@acme/fake-runtime", version: "1.2.3", spec: "@acme/fake-runtime@1.2.3", provides: [{ kind: "runtime", name: "fakert" }], commands: [] };
@@ -144,7 +154,7 @@ for (const [args, why] of [
     items,
   );
   const plain = run(["ext", "--plain"]);
-  check("the plain listing is a table with the source of each", plain.status === 0 && /^PACKAGE\s+VERSION\s+SOURCE\s+PROVIDES$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+built in\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+  check("the plain listing is a table with the source of each", plain.status === 0 && /^\s*Package\s+Version\s+Source\s+Provides$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+included\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
 }
 
 // ── ext: root stays raw; the other subcommands refuse the listing's flags ────────────────────────
@@ -165,7 +175,7 @@ for (const [args, why] of [
   }
   const listHelp = run(["ext", "list", "--help"]);
   const addHelp = run(["ext", "add", "--help"]);
-  check("help names the listing's structured output and no other mode's", /structured output: json, plain/.test(listHelp.stdout) && !/structured output: /.test(addHelp.stdout), { list: listHelp.stdout.slice(-200), add: addHelp.stdout.slice(-200) });
+  check("help names the listing's structured output and no other mode's", /Structured output: json, plain/.test(listHelp.stdout) && !/Structured output: /i.test(addHelp.stdout), { list: listHelp.stdout.slice(-200), add: addHelp.stdout.slice(-200) });
 }
 
 finish();

@@ -32,16 +32,19 @@ export function printPublishCensus(rows: any, log?: {
 /**
  * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
  */
-export function preflightNpmPublish({ fixedPackages, workspacePackages, registryBase, env, fetchImpl, log, }: {
+export function preflightNpmPublish({ fixedPackages, workspacePackages, registryBase, env, fetchImpl, tag, log, deadline, concurrency, }: {
     fixedPackages: any;
     workspacePackages: any;
     registryBase?: string;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
+    tag?: string;
     log?: {
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
     };
+    deadline?: number;
+    concurrency?: number;
 }): Promise<{
     state: NpmPublishPreflightState;
     rows: any[];
@@ -49,16 +52,19 @@ export function preflightNpmPublish({ fixedPackages, workspacePackages, registry
 /**
  * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
  */
-export function preflightFromRepository({ root, registryBase, env, fetchImpl, log, exec, }?: {
+export function preflightFromRepository({ root, registryBase, env, fetchImpl, tag, log, exec, deadline, concurrency, }?: {
     root?: string;
     registryBase?: string;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
+    tag?: string;
     log?: {
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
     };
     exec?: typeof execFileSync;
+    deadline?: number;
+    concurrency?: number;
 }): Promise<{
     state: NpmPublishPreflightState;
     rows: any[];

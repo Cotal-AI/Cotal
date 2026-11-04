@@ -3,9 +3,12 @@ export const PROTOCOL_VERSION = 1;
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 32;
+/** How many rows of history the attach-time screen mirror retains, so a late attach still sees
+ *  output that scrolled past. */
 export const SCROLLBACK_ROWS = 1000;
 /** How long a connector-declared startup prompt may take to appear before the seat fails loud. */
 export const CONFIRM_TIMEOUT_MS = 15_000;
+/** Grace window for a clean exit before a graceful stop escalates to SIGKILL. */
 export const GRACE_MS = 3_000;
 /**
  * How long a custodian stays up with NO authenticated controller before it stops its child and

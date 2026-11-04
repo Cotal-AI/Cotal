@@ -103,8 +103,8 @@ export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): 
   const refusal = rotationRefusal(source.root);
   if (refusal === undefined) return "re-mint it with `cotal down` then `cotal up --rotate-sys`";
   return (
-    `${refusal}. There is no other command that mints ${named}: the $SYS signing seed is discarded at provisioning, ` +
-    "so nothing can re-sign it on this root until per-space segmentation lands"
+    `${refusal}. There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +
+    "so nothing re-signs it on this root until per-space segmentation lands"
   );
 }
 

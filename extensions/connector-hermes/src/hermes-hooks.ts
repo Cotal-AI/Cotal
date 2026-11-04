@@ -15,16 +15,6 @@ import type { HookHandle } from "@cotal-ai/connector-core";
 /** Last tool the turn started — so `waiting` (approval) and `working` can name what it's doing. */
 let pendingTool: string | undefined;
 
-/** A short, human-readable preview of a tool call: "name: most-salient-input". */
-function toolDetail(name: unknown, input: unknown): string | undefined {
-  if (typeof name !== "string" || !name) return undefined;
-  const i = (input ?? {}) as Record<string, unknown>;
-  const salient = i.command ?? i.file_path ?? i.path ?? i.url ?? i.query ?? i.description;
-  let detail = typeof salient === "string" && salient ? `${name}: ${salient}` : name;
-  if (detail.length > 200) detail = `${detail.slice(0, 199)}…`;
-  return detail;
-}
-
 export const hermesHookHandle: HookHandle = async (agent, ev) => {
   const event = String(ev.hook_event_name ?? "");
   try {
@@ -40,8 +30,8 @@ export const hermesHookHandle: HookHandle = async (agent, ev) => {
       case "pre_llm_call": // a turn is running the model
         await agent.setStatus("working", pendingTool);
         return {};
-      case "pre_tool_call": // record what it's about to run
-        pendingTool = toolDetail(ev.tool_name, ev.tool_input);
+      case "pre_tool_call": // name the tool without publishing its arguments
+        pendingTool = typeof ev.tool_name === "string" && ev.tool_name ? ev.tool_name : undefined;
         await agent.setStatus("working", pendingTool);
         return {};
       case "approval_wait": // Hermes asked for command approval — blocked on a human/peer

@@ -1,4 +1,4 @@
-import * as p from "@clack/prompts";
+import * as p from "./prompts.js";
 import type { ConnectorAssist } from "@cotal-ai/core";
 import { inputDisabledByFlag } from "@cotal-ai/workspace";
 import { dim } from "./theme.js";

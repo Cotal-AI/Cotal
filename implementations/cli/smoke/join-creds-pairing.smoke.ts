@@ -7,11 +7,15 @@
  * cannot bind - the pre-fix shape connected, then failed later with a raw broker error or worse,
  * a roster ghost). Probes:
  *
- *   1. `--creds` with NO paired uid   → exit 1, the one-sentence pairing refusal, no connect.
- *   2. `--creds --lifecycle-uid BAD!` → exit 1, the lifecycle-token grammar refusal.
- *   3. `--creds --lifecycle-uid <ok>` → proceeds PAST the pairing gate (fails later at the
- *      unreachable-server preflight, which is the point: the refusal is gone).
+ *   1. `--creds` with NO paired uid   → exit 1 USAGE_INVALID, the one-sentence pairing refusal, no connect.
+ *   2. `--creds --lifecycle-uid BAD!` → exit 1 USAGE_INVALID, the lifecycle-token grammar refusal.
+ *   3. `--creds --lifecycle-uid <ok>` → proceeds PAST the pairing gate (refused later at the
+ *      unreachable-server preflight, exit 2 TARGET_UNAVAILABLE, which is the point: the refusal is gone).
  *   4. same via COTAL_LIFECYCLE_UID env (the launcher seam).
+ *   5. `--creds` / `--token` with no `--server` go to the broker the space is registered at, and an
+ *      unregistered space is refused before any dial, exit 2 TARGET_NOT_FOUND. The default address is
+ *      never assumed. With no `--space` either, the space is the selected one.
+ *   6. a `--creds` file that does not exist → exit 2 TARGET_NOT_FOUND, naming the file.
  *
  * Run: pnpm smoke:join-creds
  */
@@ -20,7 +24,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mintLifecycleUid } from "@cotal-ai/core";
+import { mintLifecycleUid, newIdentity } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -47,42 +51,70 @@ const run = (mode: string, uid = "", env: Record<string, string> = {}): Promise<
 
 const dir = mkdtempSync(pathJoin(tmpdir(), "join-pair-"));
 const credsPath = pathJoin(dir, "x.creds");
-writeFileSync(credsPath, "-----BEGIN NATS USER JWT-----\nplaceholder\n------END NATS USER JWT------\n");
+const cotalHome = pathJoin(dir, "cotal-home");
+process.env.COTAL_HOME = cotalHome; // sandbox the registry before the module that reads it loads
+const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+// The client parses a file before it dials, so the stand-in has both blocks and a real seed. The
+// broker never sees it: every probe stops at a gate or at an address nothing listens on.
+writeFileSync(credsPath, `-----BEGIN NATS USER JWT-----\nplaceholder\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${newIdentity().seed}\n------END USER NKEY SEED------\n`, { mode: 0o600 });
 
 try {
   {
     const r = await run("creds-none");
     check("--creds with NO paired uid exits 1", r.code === 1, r);
     check("…with the one-sentence pairing refusal (never invents)", /lifecycle-paired/.test(r.stderr), r.stderr);
+    check("…classified USAGE_INVALID", /Code: +USAGE_INVALID/.test(r.stderr), r.stderr);
   }
   {
     const r = await run("creds-flag", "NOT!A!UID");
-    check("--creds with a malformed uid exits 1 on the token grammar", r.code === 1 && /lifecycle/i.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
+    check("--creds with a malformed uid exits 1 on the token grammar", r.code === 1 && /Code: +USAGE_INVALID/.test(r.stderr) && /lifecycle/i.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
   }
   {
     const r = await run("creds-flag", mintLifecycleUid());
-    check("--creds with a paired uid passes the gate (dies later at preflight, not the refusal)",
-      r.code === 1 && !/lifecycle-paired/.test(r.stderr), r.stderr);
+    check("--creds with a paired uid passes the gate (refused later at preflight, exit 2 TARGET_UNAVAILABLE, not the refusal)",
+      r.code === 2 && /Code: +TARGET_UNAVAILABLE/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
   }
   {
     const r = await run("creds-envonly", "", { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
-    check("COTAL_LIFECYCLE_UID env pairs WITH --creds (the launcher seam)", r.code === 1 && !/lifecycle-paired/.test(r.stderr), r.stderr);
+    check("COTAL_LIFECYCLE_UID env pairs WITH --creds (the launcher seam)", r.code === 2 && !/lifecycle-paired/.test(r.stderr), r.stderr);
   }
   // Ambient-uid scope (residual: open/token must NEVER inherit an ambient uid).
   {
     const r = await run("token-flag", mintLifecycleUid());
     check("--lifecycle-uid WITHOUT --creds is refused (flag misuse, applies only to --creds)",
-      r.code === 1 && /applies only to an explicit/.test(r.stderr), r.stderr);
+      r.code === 1 && /Code: +USAGE_INVALID/.test(r.stderr) && /applies only to an explicit/.test(r.stderr), r.stderr);
   }
   {
     const r = await run("token-env", "", { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
     check("a --token join IGNORES an ambient COTAL_LIFECYCLE_UID (self-mints, proceeds past the gate)",
-      r.code === 1 && !/applies only to an explicit/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
+      r.code === 2 && !/applies only to an explicit/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
   }
   {
     const r = await run("open-env", "", { COTAL_LIFECYCLE_UID: mintLifecycleUid() });
     check("an OPEN join IGNORES an ambient COTAL_LIFECYCLE_UID (self-mints, proceeds past the gate)",
-      r.code === 1 && !/applies only to an explicit/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
+      r.code === 2 && !/applies only to an explicit/.test(r.stderr) && !/lifecycle-paired/.test(r.stderr), r.stderr);
+  }
+  // A credential with no --server: the registered broker, or a refusal before any dial.
+  recordMesh({ space: "jpair-rec", server: "nats://127.0.0.1:1", root: dir, mode: "auth", ts: new Date().toISOString() });
+  for (const [mode, flag] of [["creds-noserver", "--creds"], ["token-noserver", "--token"]] as const) {
+    const unregistered = await run(mode, mintLifecycleUid(), { COTAL_HOME: cotalHome, JPAIR_SPACE: "jpair-none" });
+    check(`${flag} with no --server on an unregistered space is refused before any dial`,
+      unregistered.code === 2 && /Code: +TARGET_NOT_FOUND/.test(unregistered.stderr) && unregistered.stderr.includes(`${flag} needs --server <url> or a registered --space: space "jpair-none" is not registered here, so nothing was dialed`) &&
+        !/can't reach|4222/.test(unregistered.stderr), unregistered.stderr);
+    const registered = await run(mode, mintLifecycleUid(), { COTAL_HOME: cotalHome, JPAIR_SPACE: "jpair-rec" });
+    check(`${flag} with no --server dials the broker the space is registered at`,
+      registered.code === 2 && registered.stderr.includes("nats://127.0.0.1:1\n") && !/4222/.test(registered.stderr), registered.stderr);
+  }
+  setCurrent("jpair-rec");
+  for (const [mode, flag] of [["creds-noserver", "--creds"], ["token-noserver", "--token"]] as const) {
+    const selected = await run(mode, mintLifecycleUid(), { COTAL_HOME: cotalHome });
+    check(`${flag} with no --space or --server dials the broker of the selected space, not the default space's`,
+      selected.code === 2 && selected.stderr.includes("nats://127.0.0.1:1\n") && !/4222|"main"/.test(selected.stderr), selected.stderr);
+  }
+  {
+    const r = await run("creds-missing", mintLifecycleUid());
+    check("a --creds file that does not exist is refused TARGET_NOT_FOUND, exit 2, naming the file",
+      r.code === 2 && /Code: +TARGET_NOT_FOUND/.test(r.stderr) && r.stderr.includes(`creds file not found: ${credsPath}.missing`) && !/can't reach/.test(r.stderr), r.stderr);
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

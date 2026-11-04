@@ -12,7 +12,7 @@ import {
   standaloneCallerIntent, validateCredentialMintArguments, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { staticMintAuthority } from "../lib/credential-authority.js";
-import { openEndpointConnection } from "../lib/endpoint-client.js";
+import { openEndpointConnection, pairedCallerCommand } from "../lib/endpoint-client.js";
 import { endpointFailure } from "../lib/endpoint-errors.js";
 
 async function callerSurface(expected: { root: string; space: string; server: string; account: string; tlsRequired: boolean }, endpoint: string) {
@@ -24,7 +24,7 @@ async function callerSurface(expected: { root: string; space: string; server: st
     const service = await resolveService(connection.nc, expected.space, endpoint, connection.auth.epCaller!, { deadlineMs: 10000 });
     if (!service.commands.size || service.commands.size > 512) throw new CommandFailure("refused", "UNSUPPORTED", "caller issuance needs a nonempty bounded native command surface; no empty or truncated grant was minted", { target });
     const commands = [...service.commands.values()].sort((a, b) => a.command < b.command ? -1 : a.command > b.command ? 1 : 0);
-    if (commands.some((command) => command.class !== "ephemeral" || command.targeted || command.action === true)) throw new CommandFailure("refused", "UNSUPPORTED", "this caller issuer supports untargeted synchronous ephemeral commands only; targeted, journaled or goal-follow authority was not guessed or silently omitted", { target, remedy: "use a supported native issuer for the endpoint's declared target and work policy" });
+    if (!commands.every(pairedCallerCommand)) throw new CommandFailure("refused", "UNSUPPORTED", "this caller issuer supports untargeted synchronous ephemeral commands only; targeted, journaled or goal-follow authority was not guessed or silently omitted", { target, remedy: "use a supported native issuer for the endpoint's declared target and work policy" });
     const capabilities: EpCapability[] = commands.map((command) => ({ endpoint, command: command.command }));
     return { capabilities, observation: { source: "fresh-native-resolution" as const, supportedMode: "untargeted-synchronous-ephemeral" as const, owner: service.owner, responder: { ...service.responder }, instancePinned: false, commands: commands.map((command) => ({ command: command.command, class: command.class, capability: command.capability, inputDigest: command.contract.input.closureDigest, outputDigest: command.contract.output.closureDigest })) } };
   } catch (error) { throw endpointFailure(error, target, false); }

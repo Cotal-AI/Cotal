@@ -13,7 +13,7 @@
  */
 import { closeExitCode, holdSignals } from "../src/commands/chat.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
-import type { AdmittedChatSession, Failed, PublishResult, SessionIdentity } from "../src/chat/session.js";
+import type { AdmittedChatSession, Failed, PublishResult, SessionIdentity } from "@cotal-ai/workspace/chat";
 
 const frontEnd = process.argv[2];
 if (frontEnd !== "tui" && frontEnd !== "plain" && frontEnd !== "stdio") throw new Error("usage: _chat-leave-child.ts <tui|plain|stdio>");
@@ -35,6 +35,7 @@ const session: AdmittedChatSession = {
   subscribe: () => () => {},
   send: publish,
   dm: publish,
+  resolveDm: unused,
   anycast: publish,
   setStatus: unused,
   setAttention: unused,

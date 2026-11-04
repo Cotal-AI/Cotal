@@ -37,9 +37,10 @@ import {
   serveEndpoint, epCall, epRequestSubject, epCallerReplyFilter, parseEpSubject,
   compileContract, contractDigest, parseEndpointRequest, checkRequestSubjectAgreement,
   SERVICE_READY,
-  type EpCaller, type EpCommandDef, mintLifecycleUid, type EpIssuanceBarrier, type EpGateState, type EndpointReply,
+  type EpCaller, type EpCommandDef, type EpIssuanceBarrier, type EndpointReply,
   type ParsedEpRequest, type ServiceNameAuthority, type ServiceSpec,
 } from "../src/index.js";
+import { makeIssuanceGate, type IssuanceGate } from "./_issuance-gate.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -136,19 +137,11 @@ const authority: ServiceNameAuthority = { authorize: (_n, owner) => ({ authorize
 const spec: ServiceSpec = { endpoint: EP, owner: "u_op", clusterDigests: [DC], protocol: { v: 1 } };
 
 // A faithful freeze -> (spec write) -> reopen writer; the fence internals are proven elsewhere.
-const gates = new Map<string, EpGateState>();
+const gates = new Map<string, IssuanceGate>();
 function barrierFor(instanceId: string): EpIssuanceBarrier {
-  if (!gates.has(instanceId))
-    gates.set(instanceId, { space: SPACE, endpoint: EP, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
-  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
-  return {
-    observe: () => ({ ...gates.get(instanceId)! }),
-    freeze: (rev) => { const g = gates.get(instanceId)!; if (g.state !== "open" || g.revision !== rev) return null; gates.set(instanceId, { ...g, state: "frozen", op, revision: rev + 1 }); return rev + 1; },
-    enumerate: () => [],
-    revoke: () => {},
-    evict: (holderPrincipals) => holderPrincipals.map(() => true),
-    reopen: (token, succ) => { const { op: _op, ...g } = gates.get(instanceId)!; if (g.state !== "frozen" || g.revision !== token) return false; gates.set(instanceId, { ...g, state: "open", generation: succ.generation, processEpoch: succ.processEpoch, registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision, revision: token + 1 }); return true; },
-  };
+  let gate = gates.get(instanceId);
+  if (!gate) gates.set(instanceId, gate = makeIssuanceGate({ space: SPACE, endpoint: EP, lifecycleUid: instanceId }));
+  return gate.barrier;
 }
 
 const PORT = await pickFreePort();

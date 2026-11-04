@@ -1,48 +1,46 @@
 /**
  * THE LIVE FEED IS NOT GATED BEHIND THE SLOW BOOTSTRAP READ.
  *
- * The graph page's connection pill is driven by ONE thing: `EventSource("/feed")` opening. Until it
- * does, the pill sits in its `down` state: `connecting` as the page ships it, and `disconnected`
- * once an error has fired. The page booted as
+ * The connection pill is driven by ONE thing: the feed opening. The old graph page booted as
  *
  *     load().catch((err) => console.error(err)).then(connect);
  *
  * so the feed was not opened until the ENTIRE bootstrap settled, and that bootstrap reads
- * `/api/activity?limit=400` and `/api/dms?limit=400`, both bounded by the aggregation deadline. On a
- * slow link the pill therefore stays down for the whole load window and only then goes live.
- * Reported from a real deployment observed across a WAN link: "always showing disconnected, and
- * taking long to show the graph".
+ * `/api/activity` and `/api/dms`, both bounded by the aggregation deadline. On a slow link the pill
+ * therefore stayed down for the whole load window. Reported from a real deployment observed across
+ * a WAN link: "always showing disconnected, and taking long to show the graph".
  *
- * MEASURED IN A REAL BROWSER, both arms on one link and one corpus: Chrome, a local broker behind
- * 80ms each way, 40 channels with history. Chained, the feed's `EventSource` was constructed at
- * t=8050ms and open at 8052ms, which is when the pill first said `live`; the slowest bootstrap read
- * answered at 8044ms, so the pill tracked the bootstrap exactly. Concurrent, it was constructed at
- * t=62ms and open at 88ms, with the pill `live` at 89ms while that same read still ran to 8066ms.
- * A reviewer noted that a browser can queue an `EventSource` behind six pending same-origin reads;
- * it does not queue this one, because `connect()` runs before the reads are issued.
+ * Measured in a real browser, both arms on one link and one corpus (Chrome, a local broker behind
+ * 80ms each way, 40 channels with history): chained, the feed's `EventSource` was constructed at
+ * t=8050ms; concurrent, at t=62ms, with the pill live at 89ms while the slowest read still ran to
+ * 8066ms.
  *
- * An earlier fix made `load()` never REJECT, so `connect()` always RUNS, and its comment says
- * "Nothing here can prevent `connect()` from running". That is true and it is not the property
- * needed: nothing stopped connect from being DELAYED. The same comment states the intent it misses,
- * "the live feed is exactly what a page showing stale data needs most".
+ * WHAT THIS RUNS. `startDashboard` (client/src/state/boot.ts), the boot the client ships, over a
+ * fake `openFeed` that records when it was called and a fake `Api` whose reads record when they were
+ * issued and are held until a cell releases them. Nothing is restated: a cell over a hand-written
+ * copy of the boot would pass whatever the real module did. Order is read off ONE shared event log,
+ * so "the feed opened before any read was issued" is a comparison of two positions in it, and no
+ * cell measures a wall clock.
  *
- * The Monitor page next door already gets this right: `app.js` ends with `refresh(); connect();`,
- * concurrent, not chained. The graph page was the outlier.
+ * THE OLD GRAPH PAGE'S SCRIPT TRIPWIRE IS GONE. The page's cell 0.1 pinned the list of `<script>`
+ * files the old graph page named, because the old harness executed them in a vm. There are no page scripts
+ * any more, so that list has nothing to pin.
  *
- * WHAT THIS RUNS. The two REAL served files, `snapshot.js` and `graph.js`, executed verbatim in a vm
- * context with the browser surface they touch stubbed (4 `document` uses, one canvas, one
- * `EventSource`, `fetch`, `requestAnimationFrame`). It is the shipped boot path, not a restatement
- * of it: a cell over a hand-written copy of the boot line would pass whatever the real file did.
+ * NOT CARRIED OVER: cells 4.2/4.3 asserted that a unicast naming an unknown recipient does not draw
+ * a node on the graph. The node rule belongs to the topology model, which lands in phase 2 and
+ * brings that cell with it. What survives here is what the controller owns: the handler survives
+ * the message, and the roster, the only source of who exists, is unchanged by it.
  *
  * Run: pnpm smoke:web-graph-boot
  */
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import vm from "node:vm";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const web = join(here, "..", "src", "web");
+import { openFeed, type FeedHandlers, type FeedSource } from "../client/src/api/feed.js";
+import type { ChannelInfo, CotalMessage } from "../client/src/api/types.js";
+import type { Api } from "../client/src/state/controller.js";
+import { pillState } from "../client/src/lib/membership.js";
+import { startDashboard } from "../client/src/state/boot.js";
+import { createStore } from "../client/src/state/store.js";
+import { initialState, type DashboardState } from "../client/src/state/types.js";
+import { bootReads, gate, page, unusedApi } from "./controller-harness.js";
 
 let cells = 0, failed = 0;
 function ok(name: string, cond: boolean, detail?: unknown) {
@@ -52,297 +50,400 @@ function ok(name: string, cond: boolean, detail?: unknown) {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 }
 
-/** The bootstrap read is deliberately slower than any sane "did it connect yet" threshold, because
- *  the whole defect is the feed waiting on it. 1200ms models a slow link without costing wall clock. */
-const READ_MS = 1200;
-/** connect() is concurrent or it is not. A real chained boot answers at >= READ_MS; a concurrent one
- *  answers in single-digit ms. 300ms sits in neither's neighbourhood, so the cell cannot be flaky. */
-const CONCURRENT_MS = 300;
+/** Every event the feed can deliver, by the name of its handler. */
+const FEED_EVENTS = ["open", "error", "roster", "presenceView", "membership", "membershipFailed", "message"] as const;
 
-function stubEl(drawn?: string[]) {
-  const el: Record<string, unknown> = {
-    textContent: "", hidden: false, title: "", width: 800, height: 600, onclick: null,
-    style: {}, dataset: {},
-    classList: { toggle: () => {}, add: () => {}, remove: () => {}, contains: () => false },
-    addEventListener: () => {}, removeEventListener: () => {}, appendChild: () => {},
-    getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }),
-    // The canvas records the TEXT it is asked to draw. `ctx.fillText(a.name, ...)` is how an agent
-    // appears on the graph, so "is this agent drawn" is answerable without reaching into a closure.
-    getContext: () => new Proxy({}, {
-      get: (_t, k) => (k === "fillText" ? (s: unknown) => { drawn?.push(String(s)); }
-        : k === "measureText" ? () => ({ width: 10 })
-        : k === "canvas" ? { width: 800, height: 600 }
-        // createLinearGradient / createRadialGradient must return something with addColorStop, or
-        // the very first frame dies in the starfield before a single label is drawn.
-        : typeof k === "string" && k.startsWith("create") ? () => ({ addColorStop: () => {} })
-        : () => {}),
-      set: () => true,
+/** "The feed was opened before any bootstrap read was issued", read off a log. Applied to the shipped
+ *  boot's log in 1.2 and to a chained boot's log in section 7, so the cell is shown to be able to
+ *  tell the two apart. */
+const feedFirst = (log: string[]) => log[0] === "openFeed" && log.slice(1).every((e) => e.startsWith("read:"));
+
+/** The pill's clock. Every snapshot below is stamped relative to it. */
+const NOW = 1_700_000_000_000;
+
+/** THE STALE BOOTSTRAP IS NOT EMPTY, IT IS OLD. A REST snapshot captured before the live agent
+ *  joined still HAS content: an agent that has since gone. An empty-list bootstrap can be beaten by
+ *  a defence as narrow as "ignore an empty roster", so a suite built on one proves less than it
+ *  reads; an OLDER NON-EMPTY snapshot can only be beaten by ordering. `local.O` is in the
+ *  bootstrap and absent from the live roster, and the live roster is a FULL snapshot on every
+ *  presence event, so it supersedes rather than merges: `local.O` is gone. */
+const STALE_ROSTER = [{ card: { id: "local.O", name: "old", kind: "agent" }, status: "waiting", ts: 1 }] as never;
+const STALE_MEMBERS = { asOf: 1, members: [{ id: "local.O", live: ["general"], durable: [], observedAt: 1 }] };
+const liveRoster = (id: string, name: string) => [{ card: { id, name, kind: "agent" }, status: "waiting", ts: 2 }] as never;
+const liveMembers = { asOf: NOW, members: [{ id: "local.X", live: ["general"], durable: [], observedAt: 1 }] };
+
+/** A FRESH DASHBOARD: its own store, its own feed, its own held reads. A section that needs a
+ *  different boot ordering than the section before it cannot reuse a settled one, and one that
+ *  quietly did would be asserting about a dashboard whose bootstrap had already applied. */
+function newDashboard(opts: { refuseMembershipRead?: boolean; channels?: () => ChannelInfo[] } = {}) {
+  /** One log for everything that happens, in order: `openFeed`, then each read as it is ISSUED. */
+  const log: string[] = [];
+  const held = gate<void>();
+  const store = createStore<DashboardState>(structuredClone(initialState));
+  /** Every read waits for `held`, which models the slow link: nothing answers until a cell lets it. */
+  const slow = <T>(name: string, value: () => T) => async (): Promise<T> => {
+    log.push(`read:${name}`);
+    await held.promise;
+    return value();
+  };
+  const api: Api = {
+    meta: slow("meta", () => ({ space: "s", pid: 1, post: { mode: "participant" as const } })),
+    roster: slow("roster", () => STALE_ROSTER),
+    channels: slow("channels", () => opts.channels?.() ?? []),
+    activity: slow("activity", () => page()),
+    dms: slow("dms", () => []),
+    history: async () => { throw new Error("history not expected in this boot"); },
+    membership: slow("membership", () => {
+      if (opts.refuseMembershipRead) throw new Error("membership refused with HTTP 503: membership read refused");
+      return STALE_MEMBERS;
     }),
+    deleteChannel: async () => { throw new Error("deleteChannel not expected in this boot"); },
+    send: async () => { throw new Error("send not expected in this boot"); },
+    agentEvents: async () => { throw new Error("agentEvents not expected in this boot"); },
+    watch: async () => { throw new Error("watch not expected in this boot"); },
+    unwatch: async () => { throw new Error("unwatch not expected in this boot"); },
   };
-  const kids = new Map<string, Record<string, unknown>>();
-  el.querySelector = (sel: string) => { if (!kids.has(sel)) kids.set(sel, stubEl()); return kids.get(sel)!; };
-  el.querySelectorAll = () => [];
-  return el;
-}
-
-/** The response a read REFUSES with, rather than answers. `readJson` turns a non-200 into a throw,
- *  `refreshAll` records that source stale, and the bootstrap's own failure path is reached. */
-const REFUSED = Symbol("refused");
-
-/** A FRESH PAGE: its own vm context, its own feed, its own bootstrap timing. A section that needs a
- *  different boot ordering than the section before it cannot reuse a settled page, and one that
- *  quietly did would be asserting about a page whose bootstrap had already applied. */
-function newPage(opts: { refuseMembershipRead?: boolean } = {}) {
-  const openedAt: number[] = [];
-  const fetchedAt: number[] = [];
-  const state: { feed: { listeners: Record<string, (e: { data: string }) => void> } | null } = { feed: null };
-  const thrown: string[] = [];
-  const rafs: ((t: number) => void)[] = [];
-  const drawn: string[] = [];
-
-  // THE STALE BOOTSTRAP IS NOT EMPTY, IT IS OLD. A REST snapshot captured before the live agent
-  // joined still HAS content: an agent that has since gone. An empty-list bootstrap can be beaten
-  // by a defence as narrow as "ignore an empty roster", so a suite built on one proves less than it
-  // reads; an OLDER NON-EMPTY snapshot can only be beaten by ordering. `local.O` is in the
-  // bootstrap and absent from the live roster, and the live roster is a FULL snapshot on every
-  // presence event (`ep.on("presence", () => broadcast("roster", ep.getRoster()))`, web.ts:462,
-  // the same call `/api/roster` serves), so it supersedes rather than merges: `local.O` is gone.
-  const STALE_ROSTER = [{ card: { id: "local.O", name: "old", kind: "agent" }, status: "waiting", ts: 1 }];
-  const STALE_MEMBERS = { asOf: 1, members: [{ id: "local.O", live: ["general"], durable: [] }] };
-  const payload = (u: string) => {
-    if (u.includes("/api/meta")) return { space: "s" };
-    if (u.includes("/api/channels")) return [{ channel: "general", messages: 1, replay: true, deliveryClass: "durable" }];
-    if (u.includes("/api/roster")) return STALE_ROSTER;
-    if (u.includes("/api/membership")) return opts.refuseMembershipRead ? REFUSED : STALE_MEMBERS;
-    if (u.includes("/api/activity")) return { entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 };
-    return [];
-  };
-
-  const t0 = Date.now();
-  const sandbox: Record<string, unknown> = {
-    console,
-    setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {},
-    requestAnimationFrame: (fn: (t: number) => void) => { rafs.push(fn); return rafs.length; },
-    // THE SLOW BOOTSTRAP. Every REST read the page makes answers only after READ_MS.
-    fetch: (u: string) =>
-      new Promise((res) => setTimeout(() => {
-        fetchedAt.push(Date.now() - t0);
-        const v = payload(u);
-        if (v === REFUSED) res({ ok: false, status: 503, json: async () => ({ error: "membership read refused" }) });
-        else res({ ok: true, status: 200, json: async () => v });
-      }, READ_MS)),
-    // THE FEED. Constructing it is exactly what turns the pill from `disconnected` to live.
-    EventSource: class {
-      onopen: unknown; onerror: unknown;
-      constructor(_url: string) { openedAt.push(Date.now() - t0); state.feed = this as never; }
-      listeners: Record<string, (e: { data: string }) => void> = {};
-      addEventListener(kind: string, fn: (e: { data: string }) => void) { this.listeners[kind] = fn; }
+  let handlers: FeedHandlers | null = null;
+  let opened = 0;
+  let closed = 0;
+  const dash = startDashboard({
+    store,
+    api,
+    openFeed: (h) => {
+      opened++;
+      log.push("openFeed");
+      handlers = h;
+      return () => { closed++; };
     },
-  };
-  sandbox.addEventListener = () => {};
-  sandbox.removeEventListener = () => {};
-  sandbox.matchMedia = () => ({ matches: false, addEventListener: () => {} });
-  sandbox.location = { search: "", href: "http://localhost/graph" };
-  sandbox.window = sandbox;
-  sandbox.globalThis = sandbox;
-  // STABLE ELEMENTS. `getElementById` returning a NEW stub per call throws away every write the page
-  // makes, so any assertion over the DOM would be reading an object the page never touched.
-  const els = new Map<string, Record<string, unknown>>();
-  const byId = (id: string) => { if (!els.has(id)) els.set(id, stubEl(drawn)); return els.get(id)!; };
-  sandbox.document = { getElementById: byId, addEventListener: () => {},
-    querySelector: () => byId("_q"), querySelectorAll: () => [], title: "" };
-  sandbox.devicePixelRatio = 1;
-  // A VIEWPORT, because `resize()` reads `window.innerWidth`/`innerHeight` and nothing else sets W
-  // and H. Without them W is undefined, `cam.x` is NaN, and every node's screen position is NaN, so
-  // the viewport cull rejects the whole graph and the ONLY label the page ever draws is the one the
-  // `a.status === "waiting"` escape hatch forces. A suite reading that as "the node is on the
-  // graph" is reading one gate of three. With a real viewport the on-screen footprint gate
-  // (`inView && foot >= 8`) is live, which is the path a browser always takes.
-  sandbox.innerWidth = 1440;
-  sandbox.innerHeight = 900;
-  sandbox.performance = { now: () => Date.now() - t0 };
-
-  // LOAD WHAT THE PAGE LOADS, IN THE PAGE'S ORDER, read out of graph.html rather than listed here,
-  // so a script added to the page cannot silently go missing from this harness. An earlier draft
-  // loaded only snapshot.js and graph.js; the page also loads harness.js, parts.js and
-  // agui-frame.js, and the gap surfaced as `window.COTAL_PARTS` being undefined when a message
-  // event was handled. That was the harness failing to be the page, not the page failing.
-  const html = readFileSync(join(web, "graph.html"), "utf8");
-  const scripts = [...html.matchAll(/<script src="\/([^"]+\.js)"><\/script>/g)].map((m) => m[1]);
-  // The list below is a TRIPWIRE, not the source: the harness runs whatever graph.html names, so a
-  // sixth script would be loaded here automatically. What the literal pins is that the stub surface
-  // in this file was chosen against THESE five. The last time that set changed under a hardcoded
-  // harness the gap surfaced as an undefined global in the middle of an unrelated cell rather than
-  // as a failure naming its cause. `graph.js` LAST matters on its own: its boot line runs at parse
-  // time and reads globals the other four define, so a different order is a different program.
-  const ctx = vm.createContext(sandbox);
-  for (const s of scripts)
-    vm.runInContext(readFileSync(join(web, s), "utf8"), ctx, { filename: s });
-
-  /** Deliver one SSE event through the listener THE PAGE registered, and record a throw rather than
-   *  letting it escape, so "did this break the page" is an assertion and not a crashed suite. */
-  const deliver = (kind: string, data: unknown) => {
-    const fn = state.feed?.listeners[kind];
-    if (!fn) { thrown.push(`${kind}: no listener registered`); return; }
-    try { fn({ data: typeof data === "string" ? data : JSON.stringify(data) }); }
+  });
+  const thrown: string[] = [];
+  /** Deliver one feed event through the handler the dashboard registered, recording a throw rather
+   *  than letting it escape, so "did this break the page" is an assertion and not a crashed suite. */
+  const deliver = <K extends keyof FeedHandlers>(kind: K, ...args: Parameters<FeedHandlers[K]>) => {
+    try { (handlers![kind] as (...a: unknown[]) => void)(...args); }
     catch (e) { thrown.push(`${kind}: ${e instanceof Error ? e.message : String(e)}`); }
   };
-  /** Render one frame on demand and return the labels it drew. A copy, because the next frame
-   *  clears the buffer and a caller holding the live array would watch its evidence disappear. */
-  const frame = (t: number) => { drawn.length = 0; for (const fn of rafs.splice(0)) fn(t); return [...drawn]; };
-  /** The text of a header pill, which is what a reader actually sees the page claim. */
-  const pillText = (id: string) =>
-    String((byId(id).querySelector as (s: string) => { textContent: unknown })(".t").textContent);
-
-  return { openedAt, fetchedAt, thrown, rafs, drawn, byId, scripts, state, deliver, frame, pillText };
+  /** Let every held read answer, and wait for the bootstrap to apply. */
+  const release = async () => { held.resolve(); await dash.controller.refresh(); };
+  const pill = () => pillState(store.get().membership, NOW);
+  return { log, store, dash, deliver, release, pill, thrown, stats: () => ({ opened, closed }), registered: () => handlers };
 }
 
-const PAGE_SCRIPTS = ["snapshot.js", "harness.js", "parts.js", "agui-frame.js", "graph.js"];
-
 async function main() {
-  console.log("0. the harness is the page, not a subset of it");
-  const { fetchedAt, openedAt, thrown, rafs, drawn, byId, scripts, state, deliver, frame, pillText } = newPage();
-  ok("0.1 the harness loads EXACTLY the scripts graph.html names, in the page's order, graph.js last",
-    JSON.stringify(scripts) === JSON.stringify(PAGE_SCRIPTS), { scripts, expected: PAGE_SCRIPTS });
+  console.log("0. the harness is the boot, not a stand-in for it");
+  {
+    const d = newDashboard();
+    ok("0.1 the boot registered a handler for every feed event, so no delivery below is a silent no-op",
+      FEED_EVENTS.every((k) => typeof (d.registered() as unknown as Record<string, unknown>)?.[k] === "function"),
+      { registered: Object.keys(d.registered() ?? {}), expected: FEED_EVENTS });
+    ok("0.2 the pill reports from the first moment, before any feed event or read: no feed yet reads traffic-only",
+      d.pill() === "traffic-only", d.pill());
+    await d.release();
+  }
 
   console.log("1. the feed opens without waiting for the bootstrap read");
-  await new Promise((r) => setTimeout(r, CONCURRENT_MS));
-  const openedEarly = openedAt.length > 0;
+  const d1 = newDashboard();
+  // Nothing has been released: every bootstrap read is still in flight.
   ok("1.1 THE FEED IS OPEN while the bootstrap read is still in flight, so the pill is not stuck at disconnected",
-    openedEarly, { openedAt, fetchedSoFar: fetchedAt.length, waitedMs: CONCURRENT_MS, readTakesMs: READ_MS });
-  ok("1.2 and it opened BEFORE any bootstrap read had answered, not merely early",
-    openedEarly && fetchedAt.length === 0, { openedAt, fetchedAt });
+    d1.stats().opened === 1 && d1.log.some((e) => e.startsWith("read:")) && d1.store.get().space === null,
+    { log: d1.log, space: d1.store.get().space });
+  ok("1.2 and it opened BEFORE any bootstrap read had been issued, not merely early",
+    feedFirst(d1.log), d1.log);
 
   // ── 2. OPENING FIRST MUST NOT BREAK WHAT OPENING LAST PROTECTED ──────────────────────────────
   //
-  // Connecting BEFORE the bootstrap means live events can now arrive while the structures they
-  // mutate are still empty, which the chained boot made impossible by construction. That is the
-  // hazard this change introduces, so it gets a cell rather than a reading of the source: drive a
-  // roster, a membership and a message event in while every REST read is still in flight, and
-  // require the page to survive all three.
-  console.log("2. a live event that arrives before the bootstrap finishes does not break the page");
-  const early = { roster: '[{"card":{"id":"local.X","name":"aa","kind":"agent"},"status":"waiting"}]',
-                  membership: JSON.stringify({ asOf: Date.now(), members: [{ id: "local.X", live: ["general"], durable: [] }] }),
-                  message: '{"mode":"chat","channel":"general","msg":{"id":"m","ts":1,"from":{"id":"local.X","name":"aa"},"parts":[{"kind":"text","text":"hi"}]}}' };
-  for (const [kind, data] of Object.entries(early)) deliver(kind, data);
+  // Connecting BEFORE the bootstrap means live events can now arrive while the state they write
+  // is still empty, which the chained boot made impossible by construction. That is the hazard this
+  // order introduces, so it gets a cell rather than a reading of the source: drive a roster, a
+  // membership and a message event in while every read is still in flight, and require the
+  // dashboard to survive all three.
+  console.log("2. a live event that arrives before the bootstrap finishes does not break the dashboard");
+  const early = {
+    roster: liveRoster("local.X", "aa"),
+    membership: liveMembers,
+    message: { mode: "chat" as const, channel: "general", msg: { id: "m", ts: 1, from: { id: "local.X", name: "aa" }, parts: [{ kind: "text", text: "hi" }] } as never },
+  };
+  d1.deliver("roster", early.roster);
+  d1.deliver("membership", early.membership);
+  d1.deliver("message", early.message);
   ok("2.1 a roster, membership and message event delivered BEFORE any read answered are all survived",
-    thrown.length === 0, thrown);
+    d1.thrown.length === 0, d1.thrown);
   ok("2.2 and the feed had registered a handler for each of them, so 2.1 is not vacuous",
-    Object.keys(early).every((k) => !!state.feed?.listeners[k]),
-    { registered: Object.keys(state.feed?.listeners ?? {}) });
+    (["roster", "membership", "message"] as const).every((k) => typeof (d1.registered() as unknown as Record<string, unknown>)?.[k] === "function"));
   ok("2.3 the reads were still in flight while those events were handled, which is the whole point",
-    fetchedAt.length === 0, { fetchedAt });
+    d1.store.get().space === null && d1.store.get().channels.length === 1 /* only the live message's own row */,
+    { space: d1.store.get().space, channels: d1.store.get().channels });
+  ok("2.4 the live roster is already the roster, with no read answered", d1.store.get().roster.length === 1, d1.store.get().roster);
 
   // POSITIVE CONTROL: the arm has to be able to observe a feed that opens at all, or 1.1 would pass
-  // vacuously on a page that never connects. Wait past the read and confirm the reads did land, so
-  // the timing above was a real race and not a dead harness.
-  await new Promise((r) => setTimeout(r, READ_MS));
+  // vacuously on a boot that never connects. Release the reads and confirm they did land, so the
+  // ordering above was a real race and not a dead harness.
+  await d1.release();
   ok("1.3 control: the bootstrap reads DID answer, so 1.1 measured a race and not a broken harness",
-    fetchedAt.length > 0, { fetchedAt: fetchedAt.length });
-  ok("1.4 control: the feed was opened exactly once, not re-opened per read",
-    openedAt.length === 1, { openedAt });
+    d1.store.get().space === "s", d1.store.get().space);
+  ok("1.4 control: the feed was opened exactly once, not re-opened per read", d1.stats().opened === 1, d1.stats());
+  ok("1.5 control: the six bootstrap reads were each issued once", d1.log.filter((e) => e.startsWith("read:")).length === 6, d1.log);
 
   // ── 3. EARLY LIVE TRUTH MUST SURVIVE THE LATE BOOTSTRAP ──────────────────────────────────────
   //
   // Surviving the event is not the same as keeping it, and this is the half the first version of
   // this suite missed. `refreshAll` awaits EVERY read and only then applies each one, and the feed
-  // and the bootstrap call the SAME `updateRoster` / `applyMembership` with a full snapshot. So a
-  // snapshot requested BEFORE a live event lands is applied AFTER it and silently wins. An empty
-  // bootstrap roster then sets `present = false` and deletes the agent outright unless it is still
-  // a feed member, and an empty membership clears `memberOf`, so the agent the feed just told us
-  // about disappears from the graph. Opening the feed first is what creates this ordering; the
-  // chained boot could not produce it, so the fix has to carry the rule rather than inherit it.
+  // and the bootstrap carry a FULL snapshot each. So a snapshot requested BEFORE a live event lands
+  // is applied AFTER it and silently wins, unless the boot carries the rule. Opening the feed first
+  // is what creates this ordering; the chained boot could not produce it.
   console.log("3. the live snapshot is not overwritten by an older bootstrap snapshot");
-  const afterBootstrap = frame(1000);
-  ok("3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE GRAPH after every bootstrap read has applied",
-    afterBootstrap.includes("aa"), { drawnLabels: afterBootstrap.slice(0, 12) });
-  // CONTROL: prove the renderer draws agent labels at all, or 3.1 could pass by never drawing
+  const rosterNames = () => d1.store.get().roster.map((r) => r.card.name);
+  ok("3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE ROSTER after every bootstrap read has applied",
+    rosterNames().includes("aa"), rosterNames());
+  // CONTROL: prove the roster takes a live write at all, or 3.1 could pass by never changing
   // anything and never failing for the reason it names.
-  deliver("roster", '[{"card":{"id":"local.Y","name":"zz","kind":"agent"},"status":"waiting"}]');
-  const afterLate = frame(1001);
-  ok("3.2 control: a roster delivered AFTER the bootstrap does render, so 3.1 tests ordering and not a dead renderer",
-    afterLate.includes("zz"), { drawnLabels: afterLate.slice(0, 12) });
+  d1.deliver("roster", liveRoster("local.Y", "zz"));
+  ok("3.2 control: a roster delivered AFTER the bootstrap does apply, so 3.1 tests ordering and not a dead store",
+    d1.store.get().roster.map((r) => r.card.name).includes("zz"), d1.store.get().roster.map((r) => r.card.name));
   // MEMBERSHIP IS A SECOND, INDEPENDENT HALF OF THE SAME RULE, and 3.1 is blind to it: with the
-  // roster half guarded the agent stays on the graph even when its membership has been wrongly
-  // cleared, so a mutation of the membership half SURVIVED until this cell existed. The pill is the
-  // right observable because a reverted membership reads exactly like the symptom that started this
+  // roster half guarded the roster stays right even when the membership has been wrongly replaced,
+  // so a mutation of the membership half SURVIVED until this cell existed. The pill is the right
+  // observable because a reverted membership reads exactly like the symptom that started this
   // work: a live feed reported as traffic-only or stale.
   ok("3.3 the membership PILL still reports the live feed, not the older bootstrap's stale snapshot",
-    pillText("feed") === "membership: live", { pill: pillText("feed") });
+    d1.pill() === "live", d1.pill());
   // AND THE RULE IS DROP, NOT MERGE, which 3.1 alone cannot tell apart. The bootstrap here is not
   // empty, it is OLD: it names an agent the live snapshot no longer carries. Since the feed sends
   // the WHOLE roster on every presence event, an agent missing from it is genuinely gone, so an
   // implementation that merged the two snapshots instead of dropping the older one would keep 3.1
-  // green and resurrect a departed agent onto the graph. Read off the SAME frame as 3.1.
-  ok("3.4 and the agent only the STALE bootstrap knew about is not resurrected onto the graph",
-    !afterBootstrap.includes("old"), { drawnLabels: afterBootstrap.slice(0, 12) });
+  // green and resurrect a departed agent. Read at the same moment as 3.1.
+  ok("3.4 and the agent only the STALE bootstrap knew about is not resurrected onto the roster",
+    !d1.store.get().roster.some((r) => r.card.name === "old"), d1.store.get().roster.map((r) => r.card.name));
+  ok("3.5 and the membership the bootstrap read carried (asOf 1) did not replace the live one",
+    d1.store.get().membership.snapshot?.asOf === NOW, d1.store.get().membership);
 
-  // ── 4. A UNICAST NAMING SOMEONE THE GRAPH HAS NEVER SEEN INVENTS NOTHING ─────────────────────
+  // ── 4. A UNICAST NAMING SOMEONE THE ROSTER HAS NEVER SEEN INVENTS NOTHING ────────────────────
   //
   // Opening the feed first lets a message name a recipient before any roster has introduced them,
-  // which the chained boot made impossible by construction. The page reads the recipient with
-  // `agents.get` and falls back to the raw id for the label; it deliberately does NOT `ensureAgent`
-  // them, so an unknown recipient neither crashes the handler nor becomes a node. The second half
-  // is worth more than tidiness: a node conjured out of a message's own metadata is a node no
-  // presence ever vouched for. Both halves are DRIVEN here, not read off the source.
-  console.log("4. a unicast naming an unknown recipient neither crashes nor invents a node");
+  // which the chained boot made impossible by construction. The handler must survive it, and the
+  // roster, the only source of who exists, must not gain an entry out of a message's own metadata.
+  console.log("4. a unicast naming an unknown recipient neither crashes nor invents an agent");
   const ABSENT = "local.UZZ7QK4A5MHTKC3PZWL6RGYD4XN2VJBQF5HSEMR7TW6YUAO3IPCD";
-  const before = thrown.length;
-  deliver("message", { mode: "unicast", msg: { id: "u", ts: Date.now(),
-    from: { id: "local.Y", name: "zz" }, to: ABSENT, parts: [{ kind: "text", text: "hi" }] } });
-  ok("4.1 the handler survives a recipient no roster has ever introduced", thrown.length === before,
-    thrown.slice(before));
-  // Both hide filters ship ON, and an invented node would be offline AND edgeless, so it would be
-  // hidden and 4.2 would pass for the wrong reason. Turn them off through the page's OWN controls,
-  // which is what a reader does when they want to see everything.
-  (byId("hideOffline").onclick as () => void)();
-  (byId("hideEmpty").onclick as () => void)();
-  const afterUnicast = frame(1002);
-  ok("4.2 and the unknown recipient did NOT become a node on the graph",
-    !afterUnicast.includes(ABSENT), { drawnLabels: afterUnicast.slice(0, 12) });
-  // CONTROL: the SAME id, announced by a roster whose card carries no name, takes the raw id as its
-  // label and is drawn. So 4.2 goes red when a node is invented, rather than passing because a node
-  // labelled by a raw id is something this arm could never have seen in the first place.
-  deliver("roster", [{ card: { id: ABSENT, kind: "agent" }, status: "waiting", ts: 1 }]);
-  const afterAnnounce = frame(1003);
-  ok("4.3 control: that same id, once a roster announces it, IS drawn under its raw id",
-    afterAnnounce.includes(ABSENT), { drawnLabels: afterAnnounce.slice(0, 12) });
+  const rosterBefore = JSON.stringify(d1.store.get().roster);
+  const thrownBefore = d1.thrown.length;
+  d1.deliver("message", { mode: "unicast", msg: { id: "u", ts: Date.now(),
+    from: { id: "local.Y", name: "zz" }, to: ABSENT, parts: [{ kind: "text", text: "hi" }] } as never });
+  ok("4.1 the handler survives a recipient no roster has ever introduced", d1.thrown.length === thrownBefore, d1.thrown.slice(thrownBefore));
+  ok("4.2 (roster half; the node half returns in phase 2 Task 7) and the unknown recipient did NOT enter the roster", JSON.stringify(d1.store.get().roster) === rosterBefore
+    && !d1.store.get().roster.some((r) => r.card.id === ABSENT), d1.store.get().roster);
+  // CONTROL: the SAME id, announced by a roster, IS on the roster. So 4.2 goes red when an entry is
+  // invented, rather than passing because an id could never have been there in the first place.
+  d1.deliver("roster", [{ card: { id: ABSENT, kind: "agent" }, status: "waiting", ts: 1 }] as never);
+  ok("4.3 (roster half; the node half returns in phase 2 Task 7) control: that same id, once a roster announces it, IS on the roster",
+    d1.store.get().roster.some((r) => r.card.id === ABSENT), d1.store.get().roster);
 
   // ── 5. THE MEMBERSHIP SOURCE SPEAKS TWICE, AND BOTH SENTENCES OBEY THE ORDERING RULE ─────────
   //
   // `membership` is not one signal. It is a source with TWO live sentences and TWO bootstrap ones:
-  // a snapshot, and a REFUSAL. Section 3 covers the snapshot pair, and the rule was written onto
-  // the apply wrappers, which is exactly where a snapshot lands and where a refusal does not. So
-  // both refusals slip past it, in opposite directions, and each puts a false claim into the header
-  // pill: the one place this page is asked to say how far to trust what it is showing.
+  // a snapshot, and a REFUSAL. Section 3 covers the snapshot pair, and a rule written onto the
+  // snapshot's apply covers exactly that and not a refusal. So both refusals slip past it, in
+  // opposite directions, and each puts a false claim into the header pill: the one place this
+  // dashboard is asked to say how far to trust what it is showing.
   //
-  // Two pages, booted together and read twice: once the instant the live sentence lands, once after
-  // the bootstrap has settled on top of it. The first read of each pair is what makes the second
-  // one mean something.
+  // Two dashboards, read twice: once the instant the live sentence lands, once after the bootstrap
+  // has settled on top of it. The first read of each pair is what makes the second one mean something.
   console.log("5. a membership REFUSAL obeys the same ordering rule as a membership snapshot");
   // 5a: the LIVE sentence is the refusal. The server tells the feed it could not read membership;
-  // the `/api/membership` read was issued BEFORE that and answers after it, and `applyMembership`
-  // opens with `feed.unreadable = false`, so an older success erases a newer refusal.
-  const liveRefused = newPage();
+  // the membership read was issued BEFORE that and answers after it, and a snapshot clears the
+  // refusal, so an older success would erase a newer refusal.
+  const liveRefused = newDashboard();
   // 5b: the MIRROR, which is where a one-directional rule always breaks next. The live snapshot is
-  // good and the BOOTSTRAP read refuses. Its failure path runs after every read settles and calls
-  // `membershipUnreadable()` OUTSIDE the apply wrapper, so a page whose feed is delivering
-  // membership perfectly well announces that it cannot read membership at all. On the slow link
-  // this whole lane is about, that read is the one most likely to refuse.
-  const bootRefused = newPage({ refuseMembershipRead: true });
-  liveRefused.deliver("membership-read-failed", {});
-  bootRefused.deliver("membership", { asOf: Date.now(), members: [{ id: "local.X", live: ["general"], durable: [] }] });
+  // good and the BOOTSTRAP read refuses. Its failure path runs after every read settles, so a
+  // dashboard whose feed is delivering membership perfectly well announces that it cannot read
+  // membership at all. On the slow link this whole lane is about, that read is the one most likely
+  // to refuse.
+  const bootRefused = newDashboard({ refuseMembershipRead: true });
+  liveRefused.deliver("membershipFailed", "membership read failed");
+  bootRefused.deliver("membership", { asOf: NOW, members: [{ id: "local.X", live: ["general"], durable: [], observedAt: 1 }] });
   ok("5.1 the live REFUSAL reaches the pill at once, so 5.2 has something to survive with",
-    liveRefused.pillText("feed") === "membership: unreadable", { pill: liveRefused.pillText("feed") });
+    liveRefused.pill() === "unreadable", liveRefused.pill());
   ok("5.3 the live SNAPSHOT reaches the pill at once, so 5.4 has something to survive with",
-    bootRefused.pillText("feed") === "membership: live", { pill: bootRefused.pillText("feed") });
-  await new Promise((r) => setTimeout(r, READ_MS + CONCURRENT_MS));
+    bootRefused.pill() === "live", bootRefused.pill());
+  await liveRefused.release();
+  await bootRefused.release();
   ok("5.2 AND THE REFUSAL SURVIVES the older successful bootstrap read landing on top of it",
-    liveRefused.pillText("feed") === "membership: unreadable", { pill: liveRefused.pillText("feed") });
+    liveRefused.pill() === "unreadable", liveRefused.pill());
   ok("5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read",
-    bootRefused.pillText("feed") === "membership: live", { pill: bootRefused.pillText("feed") });
+    bootRefused.pill() === "live", bootRefused.pill());
+
+  console.log("6. the feed's connection state, its reconnect and its close");
+  {
+    const d = newDashboard();
+    ok("6.0 before the feed first opens the dashboard is connecting, not disconnected", d.store.get().connection === "connecting", d.store.get().connection);
+    d.deliver("error");
+    ok("6.0b and a failed first attempt is still connecting: nothing has dropped yet", d.store.get().connection === "connecting", d.store.get().connection);
+    await d.release();
+    const readsBefore = d.log.filter((e) => e === "read:meta").length;
+    d.deliver("open");
+    ok("6.1 a feed open marks the dashboard connected", d.store.get().connection === "connected", d.store.get().connection);
+    // READ BEFORE ANYTHING ELSE CALLS refresh(): the reads are issued synchronously, so the count
+    // here is what the open handler itself did, and a later `refresh()` in this cell cannot stand in for it.
+    ok("6.2 and runs the bootstrap again, because a reconnect may have missed events",
+      d.log.filter((e) => e === "read:meta").length === readsBefore + 1, d.log);
+    await d.dash.controller.refresh();
+    d.deliver("error");
+    ok("6.3 a feed error after an open marks it reconnecting", d.store.get().connection === "reconnecting", d.store.get().connection);
+    d.deliver("error");
+    ok("6.3b and a second error while it retries is still reconnecting", d.store.get().connection === "reconnecting", d.store.get().connection);
+    d.deliver("open");
+    const readsAfterReconnect = d.log.filter((e) => e === "read:meta").length;
+    await d.dash.controller.refresh();
+    ok("6.4 and a reconnect marks it connected again, and reads again",
+      d.store.get().connection === "connected" && readsAfterReconnect === readsBefore + 2, { connection: d.store.get().connection, readsAfterReconnect, readsBefore });
+    d.deliver("closed");
+    ok("6.6 a feed the browser closed for good marks the dashboard closed", d.store.get().connection === "closed", d.store.get().connection);
+    d.dash.stop();
+    ok("6.5 stop() closes the feed it opened, once", d.stats().closed === 1, d.stats());
+
+    // The browser's one `error` event covers a drop it will retry and a refusal it will not, and only
+    // the source's readyState tells them apart.
+    const fired: string[] = [];
+    const source = (readyState: number): FeedSource => ({ readyState, addEventListener: () => undefined, onopen: null, onerror: null, close: () => undefined });
+    const record: FeedHandlers = {
+      open: () => void fired.push("open"), error: () => void fired.push("error"), closed: () => void fired.push("closed"),
+      roster: () => undefined, presenceView: () => undefined, membership: () => undefined, membershipFailed: () => undefined, message: () => undefined,
+      hello: () => undefined, agentFrame: () => undefined,
+    };
+    const retrying = source(0);
+    openFeed(record, () => retrying);
+    retrying.onerror?.();
+    ok("6.7 an error while the source is still connecting is a drop the browser retries: error, not closed", fired.join() === "error", fired);
+    fired.length = 0;
+    const refused = source(2);
+    openFeed(record, () => refused);
+    refused.onerror?.();
+    ok("6.8 an error with the source closed is final: closed, not error", fired.join() === "closed", fired);
+  }
+
+  // CONTROL for 1.2: the chained shape the old page had, `load().then(connect)`, written as a log.
+  // The same predicate that passes the shipped boot rejects it, so 1.2 is not a predicate that
+  // accepts every order.
+  console.log("7. control: the chained boot the old page had is told apart from the shipped one");
+  {
+    const chained = ["read:meta", "read:roster", "openFeed"];
+    ok("7.1 CONTROL: a log where the feed opens AFTER the reads is not feed-first", !feedFirst(chained), chained);
+    ok("7.2 CONTROL: a log where the feed is never opened is not feed-first either", !feedFirst(["read:meta"]));
+    ok("7.3 CONTROL: and the shipped boot's log is", feedFirst(d1.log), d1.log);
+  }
+
+  // `refresh()` does not reject on a refused read (`refreshAll` turns it into a stale mark), so what
+  // can reject it is a defect: an `apply` or a store subscriber that throws. The boot calls it
+  // without awaiting, so that rejection would be unhandled. It has to be visible instead.
+  console.log("8. a refresh that rejects is made visible and is not left unhandled");
+  {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on("unhandledRejection", onUnhandled);
+    const logged: unknown[][] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args); };
+    const quiet = () => new Promise<void>((r) => setTimeout(r, 20));
+    const boot = (space: string) => {
+      const store = createStore<DashboardState>(structuredClone(initialState));
+      store.subscribe(() => { if (store.get().space === "boom") throw new Error("a subscriber that throws"); });
+      startDashboard({ store, api: { ...unusedApi, ...bootReads, meta: async () => ({ space, pid: 1, post: { mode: "participant" as const } }) }, openFeed: () => () => undefined });
+    };
+    try {
+      boot("fine");
+      await quiet();
+      ok("8.1 CONTROL: a healthy boot logs nothing and rejects nothing", logged.length === 0 && unhandled.length === 0, { logged, unhandled });
+      boot("boom");
+      await quiet();
+      ok("8.2 a refresh that rejects reaches the console, with the defect's own message",
+        logged.length >= 1 && logged.some((a) => a.some((x) => x instanceof Error && /a subscriber that throws/.test(x.message))), logged);
+      ok("8.3 and is not left as an unhandled rejection", unhandled.length === 0, unhandled.map(String));
+    } finally {
+      console.error = realError;
+      process.off("unhandledRejection", onUnhandled);
+    }
+  }
+
+  // The session events ride the same `EventSource`. Fired here through the shipped `openFeed` and
+  // the shipped boot, and read back from what the controller asked the server and wrote to the store.
+  console.log("9. the feed's hello and agent frames reach the controller, and a lost feed's id is dropped");
+  {
+    const listeners = new Map<string, (e: MessageEvent) => void>();
+    const src = {
+      readyState: 1,
+      addEventListener: (type: string, fn: (e: MessageEvent) => void) => void listeners.set(type, fn),
+      onopen: null as (() => void) | null,
+      onerror: null as (() => void) | null,
+      close: () => undefined,
+    };
+    const fire = (type: string, data: unknown) => listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+    const calls: string[] = [];
+    const api: Api = {
+      ...unusedApi,
+      ...bootReads,
+      agentEvents: async (id, limit) => (calls.push(`read ${id} ${limit}`), { frames: [], more: false }),
+      watch: async (id, feed) => void calls.push(`watch ${id} ${feed}`),
+      unwatch: async (id, feed) => void calls.push(`unwatch ${id} ${feed}`),
+    };
+    const store = createStore<DashboardState>(structuredClone(initialState));
+    const dash = startDashboard({ store, api, openFeed: (h) => openFeed(h, () => src) });
+    const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+    const frame = (id: string, ts: number) =>
+      ({ id, ts, space: "main", from: { id: "local.abc" }, parts: [{ kind: "ag-ui.frame", protocol: "ag-ui/1", threadId: "t", runId: "r", epoch: 1, seq: 1, events: [{ type: "RUN_STARTED", runId: "r" }] }] }) as unknown as CotalMessage;
+    src.onopen?.();
+    fire("hello", { feed: "feed-9" });
+    dash.controller.openSession("local.abc");
+    await settle();
+    ok("9.1 the feed's hello reaches the controller: a session opened after it is watched on that feed",
+      calls[0] === "watch local.abc feed-9" && calls[1] === "read local.abc 200", calls);
+    fire("agent-frame", { id: "local.abc", msg: frame("f1", 5) });
+    const frames = store.get().sessions["local.abc"]?.frames ?? [];
+    ok("9.2 an agent-frame event reaches the open session as a live frame", frames.length === 1 && frames[0]?.live === true && frames[0]?.ts === 5, frames);
+    src.readyState = 0;
+    src.onerror?.();
+    dash.controller.openSession("local.def");
+    await settle();
+    ok("9.3 after the feed drops, a session opened before the next hello is not watched on the dropped id",
+      !calls.includes("watch local.def feed-9") && calls.includes("read local.def 200"), calls);
+    fire("hello", { feed: "feed-10" });
+    await settle();
+    src.readyState = 2;
+    src.onerror?.();
+    dash.controller.openSession("local.ghi");
+    await settle();
+    ok("9.4 after the browser closes the feed for good, a new session is not watched on its id either",
+      store.get().connection === "closed" && !calls.includes("watch local.ghi feed-10") && calls.includes("read local.ghi 200"), calls);
+    dash.stop();
+  }
 }
 
 await main();
-console.log(failed === 0 ? `web graph boot: ${cells} cells OK` : `web graph boot: ${failed}/${cells} FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+
+// ── 8. A HUB FIRST SEEN IN A POST OR A MEMBER'S ROW GETS ITS CLASS READ, ONCE ──────────────────
+// The feed's first snapshot lands before `/api/channels` answers, and a channel first seen in a post
+// has no class until that read runs again. A family link waits on the class, so the controller reads
+// the channel list again, a short wait after the first unknown hub, once for every hub in the wait.
+{
+  console.log("8. a hub first seen in a post or a member's row gets its class read, once");
+  const chans: ChannelInfo[] = [{ channel: "general", messages: 1, replay: true, deliveryClass: "durable" }];
+  const d = newDashboard({ channels: () => chans });
+  await d.release();
+  const reads = () => d.log.filter((e) => e === "read:channels").length;
+  const before = reads();
+  const post = (channel: string, id: string) =>
+    d.deliver("message", { mode: "chat" as const, channel, msg: { id, ts: 1, from: { id: "local.H", name: "hh" }, parts: [{ kind: "text", text: "first post" }] } as never });
+  post("general", "g1");
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.0 control: a post on a channel whose class is known reads nothing", reads() === before, { before, after: reads() });
+  post("team.new", "n1");
+  post("team.other", "n2");
+  ok("8.1 the read waits, so hubs that appear together share one read", reads() === before, { before, after: reads() });
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.2 a channel first seen in a post has the channel list read again, once for both hubs", reads() === before + 1, { before, after: reads() });
+  post("team.new", "n3");
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.3 a channel the list never names is read for once, not once per post", reads() === before + 1, { before, after: reads() });
+  d.deliver("membership", { asOf: NOW, members: [{ id: "local.Q", live: [], durable: ["team.quiet", "team.>"], observedAt: 1 }] });
+  await new Promise((r) => setTimeout(r, 400));
+  ok("8.4 a concrete channel first seen in a member's row is read for too, and a family pattern is not a hub", reads() === before + 2, { before, after: reads() });
+  d.dash.stop();
+}

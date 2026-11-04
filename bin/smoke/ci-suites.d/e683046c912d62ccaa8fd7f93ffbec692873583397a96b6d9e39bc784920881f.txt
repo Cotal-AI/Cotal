@@ -1,0 +1,3 @@
+# A daemon entry loads its own command's surfaces and no module of the whole CLI, which cost each
+# daemon about 40 MB of memory (AGENT-1001).
+smoke:daemon-entry-modules

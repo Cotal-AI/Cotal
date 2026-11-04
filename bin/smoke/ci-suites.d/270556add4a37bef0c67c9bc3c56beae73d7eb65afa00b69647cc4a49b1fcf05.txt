@@ -1,0 +1,2 @@
+# A once task on the Claude Code hook frames: it rides first, is claimed once, and confirms only on the relay's handoff receipt.
+smoke:claude-once-frames

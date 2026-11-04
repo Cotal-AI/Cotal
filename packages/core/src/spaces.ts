@@ -4,10 +4,10 @@
 // open/dev mesh — one server, every space's streams visible to a bare connection. Under auth a
 // server hosts a single account/space, so this is really an open-mode admin capability.
 
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { DEFAULT_SERVER } from "./endpoint.js";
+import { DEFAULT_SERVER, dialerFor } from "./endpoint.js";
 import { parseSubject, isTransferStream, mintLifecycleUid } from "./subjects.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { idFromCreds, newIdentity } from "./identity.js";
@@ -42,7 +42,7 @@ export interface ListSpacesOptions {
  *  short-lived connection (bare, or with `creds`) and closes it. Per-space stats are best-effort:
  *  a stream/bucket that can't be inspected just leaves its counts at 0. */
 export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInfo[]> {
-  const nc = await connect({
+  const nc = await dialerFor(opts.servers ?? DEFAULT_SERVER)({
     servers: opts.servers ?? DEFAULT_SERVER,
     timeout: opts.timeoutMs ?? 2000,
     reconnect: false,
@@ -101,7 +101,7 @@ async function listTransferStreams(nc: NatsConnection, space: string): Promise<s
 }
 
 async function withSpaceConnection<T>(servers: string | undefined, creds: string | undefined, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  const nc = await connect({
+  const nc = await dialerFor(servers ?? DEFAULT_SERVER)({
     servers: servers ?? DEFAULT_SERVER,
     reconnect: false,
     maxReconnectAttempts: 0,
@@ -135,7 +135,7 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; auth
     const jsm = await jetstreamManager(nc);
     // Delete EVERY stream + KV bucket `setupSpaceStreams` creates — otherwise `down` leaves the DLV/INBOX
     // streams and the members/acl/membership/delivery/manager buckets orphaned (a space leak), and since
-    // `teardown` is the sole STREAM.DELETE holder, nothing else could ever reap them.
+    // `teardown` is the only STREAM.DELETE holder for every one of them, nothing else could ever reap them.
     // The same closed target list mints teardown's exact grants. Transfer streams are enumerated
     // under this account and filtered to this space, never inferred from a prefix alone.
     const streams = spaceDeletionStreams(opts.space, await listTransferStreams(nc, opts.space));

@@ -1,6 +1,6 @@
 /**
  * The broker LAUNCH POLICY: how this mesh's broker must be served, recorded durably so that every
- * later `up` renders the same transport.
+ * later `up` renders the same transport, auth callout timeout and payload limit.
  *
  * Why this is a separate record from the mesh registry entry. `MeshEntry` lives in the machine
  * home and carries TLS-required CLIENT INTENT only — enough for a resolved connection to become
@@ -30,6 +30,13 @@ export interface BrokerPolicy {
    *  guess at one. */
   readonly version: 1;
   readonly transport: BrokerTransport;
+  /** The broker's `authorization { timeout }` in whole seconds (`cotal up --auth-timeout`), which
+   *  the auth service also takes as its callout deadline. Absent: nats-server's default. */
+  readonly authTimeout?: number;
+  /** The broker's `max_payload` in bytes (`cotal up --max-payload`). Absent: nats-server's default.
+   *  A renderer outside `up` - a hosted tenant provisioner, say - reads it from here rather than
+   *  from the rendered config, so every render of this broker carries the same limit. */
+  readonly maxPayload?: number;
 }
 
 /** Thrown for every unreadable, unparseable or unusable policy. Distinct so callers can report a
@@ -93,7 +100,15 @@ export function readBrokerPolicy(root: string): BrokerPolicy | undefined {
   if (!t || typeof t !== "object")
     throw new BrokerPolicyError(`broker policy at ${path} is missing its transport`);
 
-  if (t.kind === "plaintext") return { version: 1, transport: { kind: "plaintext" } };
+  const authTimeout = doc.authTimeout;
+  if (authTimeout !== undefined && (!Number.isSafeInteger(authTimeout) || authTimeout <= 0))
+    throw new BrokerPolicyError(`broker policy at ${path} names an auth timeout that is not a positive whole number of seconds: ${JSON.stringify(authTimeout)}`);
+  const maxPayload = doc.maxPayload;
+  if (maxPayload !== undefined && (!Number.isSafeInteger(maxPayload) || maxPayload <= 0))
+    throw new BrokerPolicyError(`broker policy at ${path} names a payload limit that is not a positive whole number of bytes: ${JSON.stringify(maxPayload)}`);
+  const limits = { ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}) };
+
+  if (t.kind === "plaintext") return { version: 1, transport: { kind: "plaintext" }, ...limits };
 
   if (t.kind !== "tls-required")
     throw new BrokerPolicyError(`broker policy at ${path} names an unknown transport ${JSON.stringify((t as { kind?: unknown }).kind)}`);
@@ -112,5 +127,10 @@ export function readBrokerPolicy(root: string): BrokerPolicy | undefined {
       );
   }
 
-  return { version: 1, transport: { kind: "tls-required", certFile: t.certFile, keyFile: t.keyFile } };
+  return { version: 1, transport: { kind: "tls-required", certFile: t.certFile, keyFile: t.keyFile }, ...limits };
 }
+
+/** Node's codes for a certificate chain this client does not trust: a self-signed certificate, or
+ *  one whose CA is not among Node's trusted CAs, which `NODE_EXTRA_CA_CERTS` adds. An expired
+ *  certificate, or one that names another host, is not among them. */
+export const UNTRUSTED_CERTIFICATE: ReadonlySet<string> = new Set(["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_UNTRUSTED"]);

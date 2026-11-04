@@ -58,7 +58,7 @@ export function assertControllerResumeEligible(space: string, cut: ControllerCut
     const value = instance?.record.value;
     const target = { space, role: member.role, instanceId: member.instanceId };
     if (!value || value.launchRequestId !== member.launchRequestId || value.state !== "stopped" || !["gone", "previous-boot"].includes(observeServiceProcess(value)))
-      refuse("LIFECYCLE_BLOCKED", "a cut member is no longer the stopped record the cut recorded; nothing was resumed", target, `inspect ${statusRemedy(member, space)}`);
+      refuse("LIFECYCLE_BLOCKED", "a cut member is no longer the stopped record the cut recorded; nothing was resumed", target, `inspect \`${statusRemedy(member, space)}\``);
     const stop = stops.find((row) => row.role === member.role)!;
     const receipt = member.role === "manager" ? value!.nativeStop : member.role === "broker" ? value!.kernelStop : value!.processStop;
     if (!receipt || receipt.requestId !== stop.receipt.requestId)
@@ -136,7 +136,7 @@ function decideMemberStart(space: string, member: ControllerMember, started: rea
   if (!row) {
     if (value.launchRequestId === member.launchRequestId && value.state === "stopped") return { kind: "start" };
     // A member relaunched outside this attempt is never adopted or stopped.
-    return refuse("LIFECYCLE_BLOCKED", "a stack member was relaunched outside this resume; inspect it with cotal service status before another resume", target, statusRemedy(member, space));
+    return refuse("LIFECYCLE_BLOCKED", "a stack member was relaunched outside this resume; inspect it with `cotal service status` before another resume", target, statusRemedy(member, space));
   }
   if (row.outcome === "running" && value.launchRequestId === row.launchRequestId && running) return { kind: "done", launchRequestId: row.launchRequestId! };
   if (value.launchRequestId === row.priorLaunchRequestId && value.state === "stopped") return { kind: "start" };
@@ -265,7 +265,7 @@ export async function relaunchCommittedManager(lock: MaintenanceLock, root: stri
   const value = serviceInstanceStore(space).read(member.instanceId)?.record.value;
   if (!row || row.outcome !== "running" || !value) return hold("the committed attempt's manager has no settled running start; it was not relaunched", target, statusRemedy(member, space));
   if (value.launchRequestId !== row.launchRequestId)
-    refuse("LIFECYCLE_BLOCKED", "a stack member was relaunched outside this resume; inspect it with cotal service status before another resume", target, statusRemedy(member, space));
+    refuse("LIFECYCLE_BLOCKED", "a stack member was relaunched outside this resume; inspect it with `cotal service status` before another resume", target, statusRemedy(member, space));
   if (value.process && observeServiceProcess(value) === "running" && value.attempt?.attemptId === attemptId) return;
   if (!exitReceipted(value)) hold("the committed attempt's manager is not running, and its exit is not proven by its own native stop receipt; it was not relaunched", target, statusRemedy(member, space));
   const prior = value.launchRequestId;

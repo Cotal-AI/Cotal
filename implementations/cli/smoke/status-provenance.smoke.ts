@@ -39,7 +39,8 @@ async function statusText(entry: string): Promise<string> {
   const lines: string[] = [];
   console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
   try {
-    await status({ values: {}, positionals: [], raw: [] });
+    // The install provenance row is in the Machine section, which only `--verbose` prints.
+    await status({ values: { verbose: true }, positionals: [], raw: [] });
   } finally {
     console.log = realLog;
   }

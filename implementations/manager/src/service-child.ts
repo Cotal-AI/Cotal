@@ -3,8 +3,8 @@ import { lstatSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { MeshLaunchSpec, ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, MANAGER_PIDFILE, answerServiceObservations, assertRecordIdentity, canonicalLocalProcessPath,
-  consumeManagerShutdownIntent, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
+  CommandFailure, MANAGER_PIDFILE, answerServiceObservations, assertManagerName, assertRecordIdentity, canonicalLocalProcessPath,
+  consumeManagerShutdownIntent, localRecordAccess, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
   publishServiceStopReceipt, readLocalRecordSource, readServiceIdentity,
   readServiceStopReceipts, readServiceStopRequest, resolveNativeServiceTarget,
   serviceMetadataDigest, serviceOperationId, serviceStopRequestPath, stopReservationPath,
@@ -44,12 +44,13 @@ export function managerServiceChild(args: ParsedArgs): ManagerServiceChild {
   }
   if (args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child takes no positional targets");
   const root = String(values.root), stateDirectory = String(values["state-directory"]);
-  if (process.platform !== "linux" || !isAbsolute(root) || !isAbsolute(stateDirectory)) throw new CommandFailure("refused", "UNSUPPORTED", "the native manager child requires protected absolute paths and Linux process creation identity");
+  if ((process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32") || !isAbsolute(root) || !isAbsolute(stateDirectory)) throw new CommandFailure("refused", "UNSUPPORTED", "the native manager child requires protected absolute paths and a Linux, macOS or Windows process creation identity");
   protectedLocalDirectory(root);
   protectedLocalDirectory(join(root, ".cotal"));
   protectedLocalDirectory(stateDirectory);
+  // Windows protects the directory with the access list Cotal sets and has no POSIX owner or mode.
   const directory = lstatSync(stateDirectory);
-  if (directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the native manager launch state must be an owned private directory");
+  if (localRecordAccess() !== "windows-acl" && (directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the native manager launch state must be an owned private directory");
   const target = resolveNativeServiceTarget(root, String(values.space), String(values.server));
   const context = Object.freeze({ space: target.space, instanceId: serviceOperationId(values["service-instance"]), launchRequestId: serviceOperationId(values["launch-request"]), stateDirectory });
   for (const [field, minimum, maximum] of [["console-port", 0, 65535], ["ws-port", 1, 65535], ["max-sessions", 1, Number.MAX_SAFE_INTEGER]] as const) {
@@ -57,6 +58,7 @@ export function managerServiceChild(args: ParsedArgs): ManagerServiceChild {
     if (value !== undefined && (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum || Number(value) > maximum)) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires valid explicit ports and a positive session ceiling");
   }
   if (values["console-host"] !== undefined && (typeof values["console-host"] !== "string" || !values["console-host"] || values["console-host"].length > 253 || /[\u0000- \u007f]/u.test(values["console-host"]))) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires a bounded explicit console host without controls");
+  if (values.name !== undefined) assertManagerName(String(values.name));
   let launchSpec: MeshLaunchSpec | undefined;
   if (values.launch !== undefined || values["launch-sha256"] !== undefined) {
     if (typeof values.launch !== "string" || typeof values["launch-sha256"] !== "string") throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires both its private launch spec and full digest");
@@ -127,6 +129,12 @@ export function managerServicePreservedExitScope(observation: ManagerServiceObse
   // not their observation carried it.
   const { observedAt: _observedAt, preservation: _preservation, ...policy } = impact;
   return serviceMetadataDigest({ registration: observation.registration, kind: "preserved-exit", attemptId: preserved.attemptId, inventorySha256: preserved.inventorySha256, impact: { ...policy, agents } });
+}
+
+/** Whether a stop request is published for this managed manager. One that cannot be read counts,
+ *  so it goes through {@link acceptManagerServiceStop} and its refusal. */
+export function managerServiceStopRequested(service: ManagerServiceChild): boolean {
+  try { return readServiceStopRequest(service.context) !== undefined; } catch { return true; }
 }
 
 /** All guards and acceptance publication are synchronous. The caller invokes mgr.stop in the

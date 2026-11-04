@@ -145,18 +145,23 @@ export async function runOnEngine(source: string, module: string, options: Engin
 
   const factory = options.evaluate(module);
   // THE RUN BOUNDARY IS THE SECOND PLACE A NATIVE ReferenceError CAN SURFACE - the first is an
-  // emitted catch, and `caught` refuses it there. A program with no `try` around the bad read has
+  // emitted catch, and `caught` refuses it there (a scope's own arms wrap it before the scope can
+  // settle it; see `asEngineFault`). A program with no `try` around the bad read has
   // nothing to route it through, so it arrives here, and here it must not look like a program error
   // either. See `EngineFault`: zero free identifiers means this can only be the engine's own bug.
-  const value = await withFrame(frame, async () => {
-    try {
-      return await factory(engine.ctx)();
-    } catch (e) {
-      throw e instanceof ReferenceError ? new EngineFault(e) : e;
-    }
-  });
-
-  return { value, journal, programHash, pins, steps: engine.steps() };
+  const unsubscribe = options.cancellation?.subscribe((reason) => frame.signal.cancel(reason));
+  try {
+    const value = await withFrame(frame, async () => {
+      try {
+        return await factory(engine.ctx)();
+      } catch (e) {
+        throw e instanceof ReferenceError ? new EngineFault(e) : e;
+      }
+    });
+    return { value, journal, programHash, pins, steps: engine.steps() };
+  } finally {
+    unsubscribe?.();
+  }
 }
 
 /** Re-run a transformed program against an existing journal. Journalled effects return recorded results. */

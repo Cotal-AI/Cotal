@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { isReachable, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
-import { extensionsDir, saveExtensionsManifest } from "@cotal-ai/workspace";
+import { connectorMetadataStale, extensionsDir, saveExtensionsManifest } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -46,12 +46,18 @@ saveExtensionsManifest({
       ],
       commands: [],
       connectors: [
-        { name: "boot-missing", requires: ["harness-that-does-not-exist-965"] },
-        { name: "boot-present", requires: ["present-harness"] },
+        { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
+        { name: "boot-present", requires: ["present-harness"], eventPlane: true },
       ],
     },
   ],
 });
+check("an older declared inventory without eventPlane is stale instead of defaulting true",
+  connectorMetadataStale({
+    pkg: "@fixture/stale-connector", version: "1.0.0", spec: ".",
+    provides: [{ kind: "connector", name: "stale" }], commands: [],
+    connectors: [{ name: "stale", requires: [], setup: null } as never],
+  }));
 
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -63,8 +69,8 @@ const oldPath = process.env.PATH;
 process.env.PATH = relative(process.cwd(), binDir);
 const manager = new Manager({ space: "harness-boot", servers, runtime: "pty", workspaceRoot, installedExtensions: true });
 const M = manager as unknown as {
-  connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; reason?: string }>;
-  managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; reason?: string }> };
+  connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }>;
+  managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }> };
 };
 let bootErr = "";
 const oldError = console.error;
@@ -86,6 +92,8 @@ try {
     bootErr,
   );
   check("manager boot continues so unrelated connectors remain usable", missing?.state === "unavailable" && available?.state === "available", M.connectorStatuses);
+  check("declared inventory event-plane facts survive without importing connector packages",
+    missing?.eventPlane === false && available?.eventPlane === true, M.connectorStatuses);
   check(
     "boot records the resolved absolute harness path from a relative PATH entry",
     available?.binaries["present-harness"] === present && isAbsolute(available.binaries["present-harness"]!),

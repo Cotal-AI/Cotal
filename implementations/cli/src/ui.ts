@@ -1,32 +1,22 @@
 import { formatAge, presenceAges, presenceText, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
-import { c, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { c } from "@cotal-ai/workspace";
 
-// The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
-// Re-exported so the CLI's many importers keep resolving them from here.
-export { c, color256 } from "@cotal-ai/workspace";
+// The ANSI helpers and the stderr line wrapper moved into `@cotal-ai/workspace`, shared with
+// @cotal-ai/web and the manager. Re-exported so the CLI's many importers keep resolving them from here.
+export { c, color256, hang, stderrLine } from "@cotal-ai/workspace";
 
-/** `prefix` then `text` wrapped to `width`, each continuation line indented under the text, each
- *  piece painted on its own. */
-export function hang(prefix: string, text: string | readonly string[], width: number, paint: (s: string) => string = (s) => s): string[] {
-  return wrapWords(text, width - prefix.length).map((piece, i) => (i === 0 ? prefix : " ".repeat(prefix.length)) + paint(piece));
-}
-
-/** A `✗` failure or `↳` hint on stderr, wrapped at spaces to the terminal, each continuation line
- *  under the text. */
-export function stderrLine(prefix: string, text: string, paint: (s: string) => string): void {
-  for (const line of hang(prefix, text, terminalWidth(process.stderr))) console.error(paint(line));
-}
-
-export function statusBadge(status: PresenceStatus): string {
+/** A presence status in words, after its mark unless `marks` is false. */
+export function statusBadge(status: PresenceStatus, marks = true): string {
+  const mark = (glyph: string): string => (marks ? `${glyph} ` : "");
   switch (status) {
     case "working":
-      return c.green("● working · progress unknown");
+      return c.green(`${mark("●")}working · progress unknown`);
     case "waiting":
-      return c.yellow("◐ waiting");
+      return c.yellow(`${mark("◐")}waiting`);
     case "idle":
-      return c.gray("○ idle");
+      return c.gray(`${mark("○")}idle`);
     case "offline":
-      return c.dim("⨯ offline");
+      return c.dim(`${mark("⨯")}offline`);
   }
 }
 
@@ -59,15 +49,10 @@ export function activityAge(p: PresenceStamps, now = Date.now()): string {
   return age === undefined ? "" : ` (set ${formatAge(age)} ago)`;
 }
 
-/** A follow-up hint for failures whose signature is stale on-disk broker state: streams/durable
- *  consumers minted by an older, incompatible Cotal generation survive every down/up cycle, and
- *  JetStream rejects a same-name re-create with a different config. Rendered dim under the red
- *  line by the error surfaces - the error itself stays the broker's own sentence. */
-export function staleStoreHint(msg: string): string | undefined {
-  // The recipe must not promise a configuration-preserving restart: a bare `cotal up` would turn
-  // a named/open/user-auth mesh into the default authenticated one, and a custom --store-dir is
-  // not recorded - so both variable parts are called out instead of implied.
-  return /consumer already exists|stream already exists/i.test(msg)
-    ? "likely stale on-disk mesh state from an older Cotal version - reset: cotal down, cotal clean store --force (repeat any custom --store-dir), then `cotal up` with your usual flags"
-    : undefined;
+/** The dimmed ` - <activity> (set <age> ago)` an ANSI presence line ends with after
+ *  {@link presenceDetail}, or nothing when the seat reports no activity. `cotal endpoints`, `cotal who`
+ *  and the console's Ink rows lay the activity out on their own, over the same text and age. */
+export function activityDetail(p: PresenceStamps, now = Date.now()): string {
+  return p.activity ? c.dim(" - " + presenceText(p.activity) + activityAge(p, now)) : "";
 }
+

@@ -52,20 +52,24 @@ export function stackResumeEligibility(rootInput: string, space: string, expecte
   if (journal.space !== space || journal.server !== expected.server || journal.mode !== expected.mode)
     refuse("CONFLICT", "the recorded stack names another space, broker address or auth mode than this manifest; nothing was resumed", { ...target, recorded: { space: journal.space, server: journal.server, mode: journal.mode } });
   if (journal.operation.kind !== "down" || journal.operation.phase !== "completed")
-    refuse("LIFECYCLE_BLOCKED", "the recorded stack's last operation is not a completed whole-stack stop; only a confirmed stopped stack is resumed", { ...target, last: { kind: journal.operation.kind, phase: journal.operation.phase } }, `stop it with cotal down, or inspect its members with cotal service --space ${space}`);
-  if (!journal.broker) refuse("LIFECYCLE_BLOCKED", "the recorded stack predates its recorded broker inputs; its store and cap cannot be frozen, so it is not resumed by a team boot", target, `restart it once with its original store named explicitly (cotal up --store-dir <original store dir> [--max-file-store <bytes>] [--host <host>] --space ${space}), which records the inputs, then cotal down, then run this team boot again`);
+    refuse("LIFECYCLE_BLOCKED", "the recorded stack's last operation is not a completed whole-stack stop; only a confirmed stopped stack is resumed", { ...target, last: { kind: journal.operation.kind, phase: journal.operation.phase } }, `stop it with \`cotal down\`, or inspect its members with \`cotal service --space ${space}\``);
+  if (!journal.broker) refuse("LIFECYCLE_BLOCKED", "the recorded stack predates its recorded broker inputs; its store and cap cannot be frozen, so it is not resumed by a team boot", target, `restart it once with its original store named explicitly (\`cotal up --store-dir <original store dir> [--max-file-store <bytes>] [--host <host>] --space ${space}\`), which records the inputs, then \`cotal down\`, then run this team boot again`);
   // A settled restore of this stack does not fence its own up and down, but its cut ran a manager,
   // and a team boot resumes only a stack whose manager never launched.
   const maintenance = stackMaintenanceFence(root, journal);
-  if (maintenance.admittedRestore) refuse("LIFECYCLE_BLOCKED", "this stack was restored from a preserved cut whose manager already ran; a team boot resumes only a stopped stack whose manager never launched, so nothing was resumed", { ...target, admittedRestore: maintenance.admittedRestore }, "start the restored stack with cotal up");
+  if (maintenance.admittedRestore) refuse("LIFECYCLE_BLOCKED", "this stack was restored from a preserved cut whose manager already ran; a team boot resumes only a stopped stack whose manager never launched, so nothing was resumed", { ...target, admittedRestore: maintenance.admittedRestore }, "start the restored stack with `cotal up`");
   if (maintenance.fenced) refuse("LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; nothing was resumed", target);
   // A previously booted team is never adopted: any recorded fresh boot attempt for this root, settled
   // or not, means a manifest launch was already planned for this stack.
   let attempts, summaries;
   try { attempts = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
   catch { return refuse("TARGET_UNAVAILABLE", "fresh boot records under this root could not be read; no earlier boot was assumed absent", target); }
-  if (attempts.valid.some((row) => row.deploymentId !== ownAttempt) || attempts.refused.length || summaries.valid.length || summaries.refused.length)
-    refuse("LIFECYCLE_BLOCKED", "this root records an earlier team boot; a stopped stack that already carried a team is not resumed with another one", { ...target, attempts: attempts.valid.map((row) => ({ deploymentId: row.deploymentId, settled: freshTeamAttemptSettled(row, summaries.valid.find((summary) => summary.deploymentId === row.deploymentId)) })) }, "inspect it with cotal team show <deployment-id>");
+  if (attempts.valid.some((row) => row.deploymentId !== ownAttempt) || attempts.refused.length || summaries.valid.length || summaries.refused.length) {
+    // That stack starts again with an ordinary up; the earlier boots are named by their recorded IDs.
+    const earlier = [...new Set([...attempts.valid, ...summaries.valid].map((row) => row.deploymentId).filter((id) => id !== ownAttempt))];
+    refuse("LIFECYCLE_BLOCKED", "this root records an earlier team boot; a stopped stack that already carried a team is not resumed with another one", { ...target, attempts: attempts.valid.map((row) => ({ deploymentId: row.deploymentId, settled: freshTeamAttemptSettled(row, summaries.valid.find((summary) => summary.deploymentId === row.deploymentId)) })) },
+      `start this stack again with \`cotal up\` in ${root}, or ${earlier.length ? `inspect the earlier boot with ${earlier.map((id) => `\`cotal team show ${id}\``).join(", ")}` : "list the recorded boots with `cotal team` there"}`);
+  }
   if (serviceSupervisorStore(space).list().length) refuse("LIFECYCLE_BLOCKED", "an OS supervisor receipt remains for this space; the controller stack is not resumed beside it", target);
 
   // The manager must never have been attempted: no instance anywhere, no retained custody, stop
@@ -81,7 +85,7 @@ export function stackResumeEligibility(rootInput: string, space: string, expecte
   // `--no-manager` defines one. Any saved stack manager definition was shaped by another writer or
   // an earlier launch, and it is never adopted or rewritten. The first manager runtime is therefore
   // the manifest's own preflighted request; there is no earlier pin to honor.
-  if (serviceDefinitionStore(space).read(STACK_DEFINITION.manager)) refuse("LIFECYCLE_BLOCKED", "a saved stack manager definition exists although the manager was never attempted; it is not adopted or rewritten", { ...target, definition: STACK_DEFINITION.manager }, `inspect it with cotal service show ${STACK_DEFINITION.manager} --space ${space}`);
+  if (serviceDefinitionStore(space).read(STACK_DEFINITION.manager)) refuse("LIFECYCLE_BLOCKED", "a saved stack manager definition exists although the manager was never attempted; it is not adopted or rewritten", { ...target, definition: STACK_DEFINITION.manager }, `inspect it with \`cotal service show ${STACK_DEFINITION.manager} --space ${space}\``);
 
   const members: StackResumeBinding["members"] = [];
   for (const row of journal.members) {

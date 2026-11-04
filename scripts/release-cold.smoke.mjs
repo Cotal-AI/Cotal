@@ -19,58 +19,94 @@ check("matrix covers every native architecture and supported Node major", () => 
   assert.deepEqual(workflow.jobs.lifecycle.strategy.matrix.node, [22, 24, 26]);
   assert.equal(workflow.jobs.lifecycle.strategy["fail-fast"], false);
 });
-check("normal and snapshot publication require the cold workflow", () => {
-  for (const name of ["version", "snapshot"]) assert(release.jobs[name].needs.includes("cold-setup"));
-  assert.equal(release.jobs["cold-setup"].uses, "./.github/workflows/cold-setup.yml");
-  assert.equal(release.jobs["cold-setup"]["continue-on-error"], undefined);
+check("optional cold qualification seals all native results independently of publication", () => {
+  assert.equal(release.jobs["cold-setup"], undefined, "publication must not start another native matrix");
+  assert.equal(release.jobs.snapshot, undefined);
   assert.deepEqual(workflow.jobs["cold-ok"].needs, ["native", "workspace-native", "candidate", "lifecycle"]);
   assert.equal(workflow.jobs["cold-ok"].if, "always()");
-  assert(workflow.jobs["cold-ok"].steps.some((step) => step.run?.includes("verify-cold-results.mjs")));
+  const steps = workflow.jobs["cold-ok"].steps;
+  const verify = steps.findIndex((step) => step.run?.includes("verify-cold-results.mjs"));
+  const requireAll = steps.findIndex((step) => step.name === "Require every cold setup");
+  const seal = steps.findIndex((step) => step.run?.includes("release-qualification.mjs record"));
+  const upload = steps.findIndex((step) => step.with?.name === "cold-qualified");
+  assert(verify >= 0 && requireAll > verify && seal > requireAll && upload > seal);
+  assert.equal(steps[seal].if, undefined); assert.equal(steps[seal]["continue-on-error"], undefined);
 });
-check("snapshot publication reuses qualified versions", () => {
-  const steps = release.jobs.snapshot.steps;
-  assert(steps.some((step) => step.run?.includes("apply-cold-versions.mjs")));
-  assert(!steps.some((step) => step.run?.includes("changeset version")));
+check("build provenance is pinned, retained and verified before native qualification", () => {
+  const job = workflow.jobs.candidate, steps = job.steps;
+  const pack = steps.findIndex((step) => step.run?.includes("pack-cold-candidate.mjs"));
+  const attest = steps.findIndex((step) => step.id === "build-attestation");
+  const retain = steps.findIndex((step) => step.run?.includes('cp "$QUALIFICATION_BUNDLE"'));
+  const verify = steps.findIndex((step) => step.run?.includes("verify-qualification-attestation.mjs"));
+  const upload = steps.findIndex((step) => step.with?.name === "cold-candidate");
+  assert(pack >= 0 && attest > pack && retain > attest && verify > retain && upload > verify);
+  assert.equal(steps[attest].uses, "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6");
+  assert.equal(steps[attest].with["subject-path"], "cold-candidate/manifest.json");
+  assert.equal(job.permissions.contents, "read"); assert.equal(job.permissions["id-token"], "write");
+  assert.equal(job.permissions.attestations, "write"); assert.equal(job.permissions["artifact-metadata"], "write");
+  assert.equal(workflow.permissions["id-token"], undefined, "build signing authority must not become global");
+  for (const index of [attest, retain, verify]) {
+    assert.equal(steps[index].if, "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository");
+    assert.equal(steps[index]["continue-on-error"], undefined);
+  }
 });
-const actionStep = (job) => {
-  const steps = release.jobs[job].steps.filter((step) => step.uses?.startsWith("changesets/action@"));
-  assert.equal(steps.length, 1, `${job} runs changesets/action exactly once`);
-  return steps[0];
-};
-const statusFunction = /\b(always|cancelled|failure|success)\s*\(/;
-check("version-only admission cannot publish", () => {
+check("version preparation cannot publish", () => {
   const job = release.jobs["version-pr"];
-  const step = actionStep("version-pr");
-  assert.equal(step.id, "changesets");
-  assert.equal(step.with.publish, undefined);
-  assert.equal(step.with.version, "pnpm ci:version");
-  assert.equal(step.env.COLD_CANDIDATE, undefined);
+  const steps = job.steps.filter((step) => step.uses?.startsWith("changesets/action/version@"));
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].with.script, "pnpm ci:version");
   assert.equal(job.permissions["id-token"], undefined);
-  assert.equal(job.environment, "npm-publish");
-  assert.equal(job.needs, undefined);
-  assert.equal(job.outputs["has-changesets"], "${{ steps.changesets.outputs.hasChangesets }}");
-  const steps = job.steps.map((step) => step.name);
-  const definite = job.steps.find((step) => step.name === "Require a definite changeset state");
-  assert(steps.indexOf("Require a definite changeset state") > steps.indexOf(step.name));
-  assert.equal(definite.run, 'test "$HAS_CHANGESETS" = true || test "$HAS_CHANGESETS" = false');
+  assert.equal(job.environment, undefined);
+  assert.equal(job.needs, "select");
+  assert.equal(job.if, "github.event_name == 'push' && needs.select.outputs.mode == 'version'");
+  assert.equal(job.outputs.sha, "${{ steps.head.outputs.sha }}");
+  assert(!job.steps.some((step) => step.uses?.startsWith("changesets/action/publish@")));
 });
-check("only an explicit no-changesets admission starts the normal cold matrix", () => {
-  const cold = release.jobs["cold-setup"];
-  assert.deepEqual(cold.needs, ["version-pr"]);
-  assert.equal(cold.if, "(github.event_name == 'workflow_dispatch' && inputs.snapshot != '') || needs.version-pr.outputs.has-changesets == 'false'");
-  assert(!statusFunction.test(cold.if));
+check("preparation and publication have separate queues", () => {
+  assert.equal(release.concurrency, undefined);
+  for (const name of ["version-pr", "publish"]) {
+    const concurrency = release.jobs[name].concurrency;
+    assert.equal(concurrency.group, `\${{ github.workflow }}-${name}`);
+    assert.equal(concurrency["cancel-in-progress"], false);
+    assert.equal(concurrency.queue, "max");
+  }
+  assert.equal(release.jobs["verify-install"].concurrency, undefined);
 });
-check("publication needs a definite no-changesets admission and a successful cold matrix", () => {
-  const job = release.jobs.version;
-  assert.deepEqual(job.needs, ["version-pr", "cold-setup"]);
-  assert.equal(job.if, "needs.version-pr.outputs.has-changesets == 'false'");
-  assert(!statusFunction.test(job.if));
+check("preparation packs the version head with its native binaries", () => {
+  const job = release.jobs.pack, steps = job.steps;
+  assert.deepEqual(job.needs, ["select", "version-pr", "native", "workspace-native"]);
+  assert.equal(steps.find((step) => step.uses?.startsWith("actions/checkout@")).with.ref, "${{ needs.version-pr.outputs.sha }}");
+  assert(steps.some((step) => step.run === 'test "$(git rev-parse HEAD^)" = "$GITHUB_SHA"'));
+  const native = steps.findIndex((step) => step.run?.includes("workspace-assemble-natives.mjs"));
+  const pack = steps.findIndex((step) => step.uses?.startsWith("changesets/action/pack@"));
+  const record = steps.findIndex((step) => step.name === "Record the release candidate");
+  assert(native >= 0 && pack > native && record > pack);
+  assert(steps[record].run.includes("HEAD^{tree}"));
+  assert.equal(steps[record].env.PACK, "${{ steps.pack.outputs.pack-dir-artifact-id }}");
+});
+check("main publication consumes the matching tree's immutable pack without rebuilding", () => {
+  const selection = release.jobs.release;
+  assert.equal(selection.if, "github.ref == 'refs/heads/main'");
+  const find = selection.steps.find((step) => step.id === "find");
+  assert(find.run.includes('--workflow changesets.yml --event push --branch main --commit "$parent" --status success'));
+  assert(find.run.includes('[ "$(jq -r .tree "$candidate")" = "$tree" ]'));
+  assert.equal(selection.outputs.pack, "${{ steps.find.outputs.pack }}");
+  assert.equal(selection.outputs.run, "${{ steps.find.outputs.run }}");
+  const job = release.jobs.publish;
+  assert.equal(job.needs, "release");
+  assert.equal(job.if, "needs.release.outputs.pack != ''");
   assert.equal(job.environment, "npm-publish");
   assert.equal(job.permissions["id-token"], "write");
-  const step = actionStep("version");
-  assert.equal(step.with.publish, "pnpm ci:publish");
-  assert.equal(step.env.COLD_CANDIDATE, "${{ runner.temp }}/cold-candidate");
-  assert.equal(step.env.COLD_RESULTS, "${{ runner.temp }}/cold-results");
+  const download = job.steps.find((step) => step.uses === "actions/download-artifact@v4");
+  assert.equal(download.with["artifact-ids"], "${{ needs.release.outputs.pack }}");
+  assert.equal(download.with["run-id"], "${{ needs.release.outputs.run }}");
+  assert.equal(download.with.pattern, undefined);
+  const upload = job.steps.findIndex((step) => step.id === "packed");
+  const publish = job.steps.findIndex((step) => step.uses?.startsWith("changesets/action/publish@"));
+  assert(upload >= 0 && publish > upload);
+  assert.equal(job.steps[publish].with["pack-dir-artifact-id"], "${{ steps.packed.outputs.artifact-id }}");
+  assert(!job.steps.some((step) => step.run?.includes("pnpm build") || step.uses?.startsWith("changesets/action/pack@") || step.uses?.startsWith("changesets/action/version@")));
+  for (const value of Object.values(release.jobs)) assert(!JSON.stringify(value.env ?? {}).includes("runner."), "runner paths belong in step context");
 });
 const source = "a".repeat(40);
 const candidateBytes = JSON.stringify({ source, syntheticVerifierFixture: true });

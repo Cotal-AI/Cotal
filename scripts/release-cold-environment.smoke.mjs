@@ -11,9 +11,9 @@ const os = {
   PUBLIC: "C:\\Users\\Public", LANG: "en_US.UTF-8", LC_ALL: "C", CI: "true",
 };
 const source = Object.freeze({ ...os, HOME: "warm-home", USERPROFILE: "warm-profile", APPDATA: "warm-roaming", LOCALAPPDATA: "warm-local", TEMP: "warm-temp", TMP: "warm-temp", TMPDIR: "warm-temp", PSModulePath: "warm-user-modules", COTAL_HOME: "operator-state", COTAL_TOKEN: "fixture-secret", OPENAI_API_KEY: "fixture-secret", GITHUB_TOKEN: "fixture-secret", NPM_TOKEN: "fixture-secret" });
-assert.deepEqual(coldOsEnvironment(source, "win32"), { ...os, PSModulePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules" }, "cold Windows env preserves only OS roots and system modules");
+assert.deepEqual(coldOsEnvironment(source, "win32"), { ...os, PSModulePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules", DO_NOT_TRACK: "1" }, "cold Windows env preserves only OS roots and system modules");
 console.log("PASS cold Windows env preserves only OS roots and system modules");
-assert.deepEqual(coldOsEnvironment({ PATH: "/usr/bin", LANG: "C", CI: "true", HOME: "/warm", COTAL_HOME: "/operator", OPENAI_API_KEY: "fixture-secret" }, "linux"), { PATH: "/usr/bin", LANG: "C", CI: "true" }, "cold POSIX env excludes personal state and credentials");
+assert.deepEqual(coldOsEnvironment({ PATH: "/usr/bin", LANG: "C", CI: "true", HOME: "/warm", COTAL_HOME: "/operator", OPENAI_API_KEY: "fixture-secret" }, "linux"), { PATH: "/usr/bin", LANG: "C", CI: "true", DO_NOT_TRACK: "1" }, "cold POSIX env excludes personal state and credentials");
 console.log("PASS cold POSIX env excludes personal state and credentials");
 assert.throws(() => coldOsEnvironment({ Path: "C:\\Windows" }, "win32"), /requires the host SystemRoot/, "cold Windows env refuses missing OS foundation");
 console.log("PASS cold Windows env refuses missing OS foundation");

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, RequestId } from "@modelcontextprotocol/sdk/types.js";
-import { cotalToolSpecs, parseToolArgs, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, DOCS_VERSION, parseToolArgs, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
 
 const MAX_REPLY_BYTES = 4 * 1024 * 1024;
 
@@ -146,7 +146,7 @@ async function invoke(name: string, args: Record<string, unknown>): Promise<Tool
  * to call the host's fixed tool relay; the MeshAgent and its Cotal credentials stay in the host. */
 export async function runMcpBridge(): Promise<void> {
   const config = relayConfig();
-  const server = new McpServer({ name: "cotal", version: "0.0.0" });
+  const server = new McpServer({ name: "cotal", version: DOCS_VERSION });
   for (const spec of cotalToolSpecs(config, "jcode")) {
     // Jcode's MCP executor injects these two harness-owned fields *before validating against the
     // advertised input schema*. The shared Cotal schema remains closed; this bridge widens only its

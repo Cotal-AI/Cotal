@@ -282,7 +282,7 @@
       "name": "C19 the phase refusal consumes the batch on its way out, so a message refused mid-cutover is acked and never driven: refused becomes dropped",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    if (phaseClosed() || driving || busy) return;\n",
-      "replace": "    if (driving || busy) return;\n    if (phaseClosed()) {\n      surfaced = agent.peekInbox(\"automatic\").map((i) => i.id);\n      ackSurfaced();\n      return;\n    }\n",
+      "replace": "    if (driving || busy) return;\n    if (phaseClosed()) {\n      batch.surface(agent.peekInbox(\"automatic\").map((i) => i.id));\n      batch.ack();\n      return;\n    }\n",
       "expectRed": "carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed"
     },
     {

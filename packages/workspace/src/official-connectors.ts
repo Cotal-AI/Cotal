@@ -40,6 +40,16 @@ export const SEEDED_EXTENSIONS: Readonly<Record<string, SeededExtension>> = {
   web: { pkg: "@cotal-ai/web", srcDir: "implementations/web", commands: ["__service-web"] },
 };
 
+/** The files every seeded connector payload carries an identical copy of: the `cotal_docs` corpus
+ *  and index each bundle reads from beside itself. The `cotal-ai` prepack ships one copy of each in
+ *  `seeded-connectors/<SEEDED_SHARED_DIR>/` and records where it removed them, and the seed store puts
+ *  a copy back at each of those paths, so an installed connector holds the files it was packed with. */
+export const SEEDED_SHARED_FILES: readonly string[] = ["docs-bundle.bin", "docs-index.bin"];
+
+/** The `seeded-connectors/` directory that holds the shared files and `placements.json`. It is not a
+ *  {@link SEEDED_EXTENSIONS} key, so no seed can read it as a payload. */
+export const SEEDED_SHARED_DIR = "_shared";
+
 /** Whether `word` names a command a seeded package registers. */
 export function isSeededCommand(word: string): boolean {
   return Object.values(SEEDED_EXTENSIONS).some((ext) => ext.commands.includes(word));
@@ -70,4 +80,10 @@ export function connectorInstallHint(name: string): string {
   return pkg
     ? `no connector "${name}" installed - add it with \`cotal ext add ${pkg}\``
     : `no connector "${name}" - install its integration with \`cotal ext add <npm-package>\`, or check the name`;
+}
+
+/** The connector a {@link connectorInstallHint} at the start of `text` names, or undefined when
+ *  `text` does not start with one. A caller reads a remote manager's refusal with it. */
+export function hintedConnector(text: string): string | undefined {
+  return /^no connector "([^"]+)"(?: installed - add it with | - install its integration with )/.exec(text)?.[1];
 }

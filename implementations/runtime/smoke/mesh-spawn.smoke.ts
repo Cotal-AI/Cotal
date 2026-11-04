@@ -67,7 +67,7 @@ import {
   type EpCaller,
   type GoalRef,
 } from "@cotal-ai/core";
-import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
+import { Cancelled, EffectError, digest, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMigration, canonicalCwd } from "../src/index.js";
 // Package imports, not sibling source paths: this package's typecheck pins rootDir to its own tree,
 // so a source import from another package fails TS6059. The fixture entries that mutate core or
@@ -75,7 +75,7 @@ import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMi
 import { runMediatorGrants, runDriverCaller, PLACEMENT_COMMANDS, PLACED_LIFECYCLE_COMMANDS } from "@cotal-ai/core";
 import { PRIMITIVES } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline as waitWithin, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshspawn";
 const EP = "manager";
@@ -88,23 +88,12 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshspawn", uid: "a".repea
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    // A rejection is a named failure, never an escape: a mutant that makes the handler throw must
-    // red the cell that called it, not kill the process before the completion marker prints.
-    const got = await Promise.race([
-      p.then((v) => ({ v })).catch((e: unknown) => ({ threw: `${(e as Error)?.name}: ${(e as Error)?.message?.slice(0, 200)}` })),
-      late,
-    ]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    if ("threw" in got) { fail++; console.log(`  ✗ FAIL: ${what} threw`, got.threw); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
+// Keep spawn rejections as diagnostic values so the caller can grade them.
+const withDeadline = <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> =>
+  waitWithin(p.catch((e: unknown) => {
+    console.log(`  ! ${what} threw`, `${(e as Error)?.name}: ${(e as Error)?.message?.slice(0, 200)}`);
+    return undefined;
+  }), ms, what);
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
@@ -161,6 +150,19 @@ const SPAWN_INPUT = {
     model: { type: "string" }, variant: { type: "string" },
     cwd: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
+    // The manager's inline persona record, as its own contract declares it.
+    persona: {
+      type: "object", additionalProperties: false, required: ["prompt"],
+      properties: {
+        prompt: { type: "string" }, role: { type: "string" }, model: { type: "string" }, variant: { type: "string" },
+        description: { type: "string" }, save: { type: "boolean" },
+        subscribe: { type: "array", items: { type: "string" } }, allowSubscribe: { type: "array", items: { type: "string" } },
+        allowPublish: { type: "array", items: { type: "string" } }, capabilities: { type: "array", items: { type: "string" } },
+      },
+    },
   },
 } as const;
 const SPAWN_OUTPUT = {
@@ -252,6 +254,10 @@ const grant = await authorizeServeGrant(kv, {
 const goalCtx = await actionContext(nc, SPACE);
 const acceptances = new Map<string, Record<string, unknown>>();
 const spawnInvokes: string[] = [];                       // every spawn submission's goalId, in order
+const spawnPersonas = new Map<string, unknown>();         // goalId -> the `persona` record the submission carried
+/** The run whose spawn journal is read as each inline submission arrives, and what that read saw. */
+let receiptRun: string | undefined;
+const journalAtReceipt = new Map<string, JournalEntry[]>(); // goalId -> the step's journal when the manager got the request
 const allocations: Array<{ goalId: string; name: string; owner: string; actor: string; uid: string; persona: string }> = [];
 const despawns: Array<{ owner: string; actor: string; lifecycleUid: string; graceful: unknown }> = [];
 const placements: Array<{ goalId: string; cwd: string; head: string }> = [];
@@ -273,6 +279,8 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   const persona = String(args.name);
   const goalId = ctx.request.id;
   spawnInvokes.push(goalId);
+  if (args.persona !== undefined) spawnPersonas.set(goalId, args.persona);
+  if (args.persona !== undefined && receiptRun !== undefined) journalAtReceipt.set(goalId, await journalEntries(receiptRun, "spawn"));
   const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
   // Idempotent same-goalId retry: the recorded acceptance, never a second allocation.
   const prior = acceptances.get(goalId);
@@ -561,6 +569,59 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     JSON.stringify(bound?.external));
 }
 
+// ── 1b) an inline persona travels whole and is journalled with its digest ─────────────────────
+{
+  console.log("• 1b — an inline persona travels whole and is journalled with its digest");
+  receiptRun = "sp-1b";
+  const out = await withDeadline(driven({
+    space: SPACE, endpoint: EP, kv, runId: "sp-1b", lease: lease(),
+    source: `const d = await spawn({ name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] });\nlog("spawned", d.agent);`,
+    handler: mk("sp-1b"),
+  }), 30_000, "the inline spawning run");
+  receiptRun = undefined;
+  c("an inline spawn completes", out?.status === "completed", JSON.stringify(out));
+  const alloc = allocations.find((a) => a.persona === "inliner");
+  c("the manager is asked for the helper by name, with the definition as its persona record",
+    alloc !== undefined && JSON.stringify(spawnPersonas.get(alloc.goalId)) === JSON.stringify({ prompt: "You check diffs.", allowPublish: ["t"] }),
+    spawnPersonas.get(alloc?.goalId ?? ""));
+  const entries = await journalEntries("sp-1b", "spawn");
+  const binds = entries.filter((e) => e.state === "pending" && e.external !== undefined);
+  const definition = { name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] };
+  const first = binds[0]?.external as { inline?: { definition?: unknown; digest?: unknown }; goalId?: unknown } | undefined;
+  // What the journal held when the manager received the request, so a bind after the submission fails.
+  const received = journalAtReceipt.get(alloc?.goalId ?? "")?.find((e) => e.state === "pending" && e.external !== undefined)?.external as { inline?: { digest?: unknown } } | undefined;
+  c("the definition and its digest are bound before the submission, with no goal yet",
+    first?.goalId === undefined && JSON.stringify(first?.inline?.definition) === JSON.stringify(definition) && first?.inline?.digest === digest(definition)
+      && received?.inline?.digest === digest(definition),
+    JSON.stringify({ first, received }));
+  const last = binds.at(-1)?.external as { inline?: { digest?: unknown }; goalId?: unknown } | undefined;
+  c("and the acceptance bind restates them beside the goal", typeof last?.goalId === "string" && last?.inline?.digest === digest(definition), JSON.stringify(last));
+
+  // A resume submits the definition it recorded, so one that differs from the program's is refused.
+  const other = { name: "inliner", prompt: "You write tests." };
+  const forged = await withDeadline(
+    mk("sp-1b-r").spawn({ persona: "inliner", inline: other }, stepCtx("sp-1b-forged", { inline: { definition, digest: digest(definition) } }).ctx)
+      .then(() => "spawned", (e: unknown) => String((e as Error)?.message)), 20_000, "the forged resume") ?? "timed out";
+  c("a resume whose recorded definition differs from the program's is refused", forged.includes("never submits another definition"), forged);
+
+  // A migration hands a seat only to a spawn of the same definition.
+  const settled = entries.find((e) => e.state === "settled");
+  const seatEntry = { ...settled!, external: binds.at(-1)!.external } as JournalEntry;
+  const handle = (settled?.result as { agent?: string } | undefined)?.agent;
+  const handOver = async (req: Record<string, unknown>, id: string): Promise<string> => {
+    const h = mk(`sp-1b-${id}`);
+    h.adoptMigratedSeats(new Map([["inliner", [seatEntry]]]));
+    return await withDeadline(h.spawn(req as never, stepCtx(`sp-1b-${id}`).ctx).then((v) => `agent ${v.agent}`, (e: unknown) => String((e as Error)?.message)), 20_000, `the ${id} hand-over`) ?? "timed out";
+  };
+  const before = spawnInvokes.length;
+  const changed = await handOver({ persona: "inliner", inline: other }, "changed");
+  c("an adopted inline seat is refused to a spawn of another definition", changed.includes("an adopted seat keeps its definition"), changed);
+  const catalog = await handOver({ persona: "inliner" }, "catalog");
+  c("and to a catalog spawn of the same name", catalog.includes("an adopted seat keeps its definition"), catalog);
+  const same = await handOver({ persona: "inliner", inline: definition }, "same");
+  c("a spawn of the same definition receives the seat and submits nothing", same === `agent ${handle}` && spawnInvokes.length === before, { same, invokes: spawnInvokes.length - before });
+}
+
 // Historical hosted enrollment could replace the provisional floor after acceptance. Drive the
 // stock interpreter and journal against both wire replies rather than construct a discharge entry.
 {
@@ -701,9 +762,9 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   // than re-asking a target that may have moved. Killed by M26 "the acceptance bind drops the
   // resolution", which is the wholesale-replace bug `journal.bind` makes easy to write.
   const aliasCtx = stepCtx(token("z"));
-  await withDeadline(
-    handler.spawn({ persona: "placed", cwd: aliasLink, placement: PLACE }, aliasCtx.ctx)
-      .then((v) => v, () => undefined), 30_000, "the second aliased placed spawn");
+  c("the second aliased placed spawn ended within its deadline",
+    await withDeadline(handler.spawn({ persona: "placed", cwd: aliasLink, placement: PLACE }, aliasCtx.ctx)
+      .then((v) => v, () => undefined).then(() => true), 30_000, "the second aliased placed spawn") === true);
   const boundRes = aliasCtx.bound.resolution as { cwd?: unknown; endpoint?: unknown; instanceId?: unknown; host?: unknown } | undefined;
   c("the step journal keeps the canonical directory beside the identity that stated it",
     boundRes?.cwd === realPrepared && boundRes.endpoint === EP && boundRes.instanceId === MGR_IID
@@ -757,10 +818,9 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   for (const [tag, place, want] of [["B1", PLACE, MGR_IID], ["B2", PLACE_B, MGR_B.instanceId], ["B3", PLACE, MGR_IID]] as const) {
     const a0 = resolves.length, b0 = MGR_B.resolves.length, ai0 = spawnInvokes.length, bi0 = MGR_B.invokes.length;
     const ctx = stepCtx(token(tag[0] === "B" ? tag[1] : tag[0]));
-    await withDeadline(
-      twoHandler.spawn({ persona: "roamer", cwd: preparedRoot, placement: place }, ctx.ctx)
-        .then((v) => v, (e: unknown) => { console.log(`  ! the ${want} placed spawn rejected:`, (e as Error)?.message?.slice(0, 120)); return undefined; }),
-      30_000, `the placed spawn pinned to ${want.slice(0, 4)}`);
+    c(`the placed spawn pinned to ${want.slice(0, 4)} ended within its deadline`,
+      await withDeadline(twoHandler.spawn({ persona: "roamer", cwd: preparedRoot, placement: place }, ctx.ctx)
+        .then((v) => v, (e: unknown) => { console.log(`  ! the ${want} placed spawn rejected:`, (e as Error)?.message?.slice(0, 120)); return undefined; }).then(() => true), 30_000, `the placed spawn pinned to ${want.slice(0, 4)}`) === true);
     trail.push({
       pinned: want, aResolves: resolves.length - a0, bResolves: MGR_B.resolves.length - b0,
       aInvokes: spawnInvokes.length - ai0, bInvokes: MGR_B.invokes.length - bi0,
@@ -962,7 +1022,8 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   console.log("• 3 — a resume with the bound acceptance re-attaches without re-invoking");
   const handler = mk("sp-3");
   const T = token("c");
-  await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }), 20_000, "the first attempt");
+  c("the first attempt ended within its deadline",
+    await withDeadline(handler.spawn({ persona: "builder" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }).then(() => true), 20_000, "the first attempt") === true);
   const invokesBefore = spawnInvokes.length;
   const resumed = await withDeadline(
     handler.spawn({ persona: "builder" }, stepCtx(T, { goalId: T }).ctx)
@@ -1089,7 +1150,8 @@ const serve2 = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
     kind: "spawn", requestId: T, state: "pending",
     external: { goalId: T, name: alloc?.name, owner: alloc?.owner, actor: alloc?.actor, uid: alloc?.uid, readinessDeadlineMs: 30_000 },
   } as unknown as JournalEntry;
-  await withDeadline(handler.discharge([entry]), 20_000, "the discharge");
+  c("the discharge ended within its deadline",
+    await withDeadline(handler.discharge([entry]).then(() => true), 20_000, "the discharge") === true);
   const hit = despawns.find((d) => d.lifecycleUid === alloc?.uid);
   c("the discharge despawned exactly the allocated incarnation",
     hit !== undefined && hit.owner === alloc?.owner && hit.actor === alloc?.actor, JSON.stringify(hit));
@@ -1108,10 +1170,12 @@ const serve2 = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   OUTCOME.racer2 = { state: "succeeded" };
   const handler = mk("sp-8");
   const T = token("h");
-  await withDeadline(handler.spawn({ persona: "racer2" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }), 20_000, "the seat spawn");
+  c("the seat spawn ended within its deadline",
+    await withDeadline(handler.spawn({ persona: "racer2" }, stepCtx(T).ctx).then((v) => v, (e: unknown) => { console.log("  ! spawn rejected:", (e as Error)?.message?.slice(0, 90)); return undefined; }).then(() => true), 20_000, "the seat spawn") === true);
   const alloc = allocations.find((a) => a.goalId === T);
   const bare = { kind: "spawn", requestId: T, state: "pending" } as unknown as JournalEntry;
-  await withDeadline(handler.discharge([bare]), 20_000, "the floor-less discharge");
+  c("the floor-less discharge ended within its deadline",
+    await withDeadline(handler.discharge([bare]).then(() => true), 20_000, "the floor-less discharge") === true);
   c("the despawn target was derived from the succeeded terminal's own identity",
     despawns.some((d) => d.lifecycleUid === alloc?.uid && d.actor === alloc?.actor), JSON.stringify(despawns.at(-1)));
 
@@ -1144,7 +1208,8 @@ const serve2 = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
     kind: "spawn", requestId: T, state: "pending",
     external: { goalId: T, name: alloc?.name, owner: alloc?.owner, actor: alloc?.actor, uid: alloc?.uid, readinessDeadlineMs: 30_000 },
   } as unknown as JournalEntry;
-  await withDeadline(handler.discharge([entry]), 20_000, "the uncertain discharge");
+  c("the uncertain discharge ended within its deadline",
+    await withDeadline(handler.discharge([entry]).then(() => true), 20_000, "the uncertain discharge") === true);
   c("the discharge despawns the possibly-live seat by its bound floor",
     alloc !== undefined && despawns.some((d) => d.lifecycleUid === alloc.uid), JSON.stringify(despawns.at(-1)));
 }
@@ -1287,7 +1352,8 @@ log("winner", out.index);
   c("committing a --release migration despawns the orphaned seat through the run's discharge, gracefully",
     done2.released.includes(handle2) && despawns.slice(before2).some((d) => d.lifecycleUid === alloc2?.uid && d.graceful === true),
     { released: done2.released, despawned: despawns.slice(before2) });
-  await withDeadline(parked2, 60_000, "the released run's parked driver");
+  c("the released run's parked driver ended within its deadline",
+    await withDeadline(parked2.then(() => true), 60_000, "the released run's parked driver") === true);
   pumpState.over = true;
   await pump;
 }
@@ -1348,7 +1414,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 90;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

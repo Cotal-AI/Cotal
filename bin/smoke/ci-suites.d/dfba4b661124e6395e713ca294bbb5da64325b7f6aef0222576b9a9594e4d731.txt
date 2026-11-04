@@ -1,0 +1,2 @@
+# The server serves the client build through an allow-list, and a missing build is a 503.
+smoke:web-client-serving

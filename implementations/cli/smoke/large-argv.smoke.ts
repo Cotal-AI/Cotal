@@ -11,10 +11,11 @@
  * XDG_CONFIG_HOME with connector seeding off, so nothing here reads or writes a real mesh:
  *   1. the module graph of `cotal --version` holds no `ink` or `yoga-layout` file. This is the
  *      cause, and it holds on every platform.
- *   2. `cotal --version` with 640 KB of argv exits 0 and prints its version. This is the symptom.
- *      The stall reproduces on macOS only (Linux with Node 22 and 24 did not stall when measured),
- *      so on Linux this cell passes either way and cell 1 is the guard. It does not run on Windows,
- *      whose command line is capped at 32,767 characters.
+ *   2. `cotal --version` with 640 KB of argv reaches the argument parser, which refuses the extra
+ *      words with exit 1. This is the symptom: the stall exits 13 before any parser runs. The stall
+ *      reproduces on macOS only (Linux with Node 22 and 24 did not stall when measured), so on Linux
+ *      this cell passes either way and cell 1 is the guard. It does not run on Windows, whose
+ *      command line is capped at 32,767 characters.
  *
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:large-argv` does that
  * first. Run: pnpm smoke:large-argv
@@ -80,8 +81,8 @@ if (process.platform === "win32") {
   const words = Array.from({ length: 10 }, () => "x".repeat(64_000));
   const r = cotal(["--version", ...words]);
   check(
-    "cotal --version with 640 KB of argv exits 0 and prints its version",
-    r.status === 0 && r.stdout.startsWith("cotal-ai "),
+    "cotal --version with 640 KB of argv reaches the argument parser, which refuses the extra words",
+    r.status === 1 && r.stderr.startsWith("✗ Unexpected argument 'xxxx") && !/top-level await/.test(r.stderr),
     { status: r.status, signal: r.signal, stdout: r.stdout.slice(0, 200), stderr: r.stderr.slice(0, 400) },
   );
 }

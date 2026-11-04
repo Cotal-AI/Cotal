@@ -13,9 +13,11 @@
  *  reason the ceiling lives in the digest-verified surface is that two conforming implementations
  *  must not be able to decide the same submission differently and durably.
  */
-import { parseClusterDocument } from "../src/endpoint-cluster.js";
+import { buildClusterArtifacts, buildClusterDocument, parseClusterDocument, verifyClusterManifest, verifyClusterRoot } from "../src/endpoint-cluster.js";
+import { singleDocumentClosure, VOID_SCHEMA } from "../src/schema-profile.js";
 import { assertActionGoalId, assertClassMatches } from "../src/endpoint-envelope.js";
 import type { EndpointRequest } from "../src/endpoint-envelope.js";
+import type { EpAuthzMode } from "../src/endpoint-subjects.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -196,5 +198,40 @@ admits("a journal-class NON-action command without goalId is admitted",
 throwsCode("an action command on the same journal class STILL requires goalId",
   () => assertActionGoalId(req({ class: "journal" }), true),
   "bad-request");
+
+// ---------------------------------------------------------------------------------------------
+// 5) Shared cluster document and single-document artifact builders (#3387).
+// ---------------------------------------------------------------------------------------------
+{
+  const callerModes: EpAuthzMode[] = ["exact", "owner"];
+  const built = buildClusterDocument("ai.cotal.test.built", 3, [
+    { name: "ping", targeted: false, capability: "test.read", input: VOID_SCHEMA, output: { type: "boolean" } },
+    { name: "kick", targeted: true, modes: callerModes, capability: "test.admin", input: { type: "string" }, output: VOID_SCHEMA },
+  ]);
+  callerModes.push("any");
+  const parsedBuilt = parseClusterDocument(built);
+  ok("buildClusterDocument produces a valid ephemeral cluster document",
+    parsedBuilt.urn === "ai.cotal.test.built"
+    && parsedBuilt.revision === 3
+    && parsedBuilt.commands.length === 2
+    && parsedBuilt.commands.every((c) => c.class === "ephemeral"));
+  ok("buildClusterDocument omits modes when untargeted and copies modes when targeted",
+    !("modes" in built.commands[0]!)
+    && JSON.stringify(built.commands[1]!.modes) === JSON.stringify(["exact", "owner"]));
+  ok("buildClusterDocument derives inputDigest and outputDigest via singleDocumentClosure",
+    built.commands[0]!.inputDigest === singleDocumentClosure(VOID_SCHEMA).closureDigest
+    && built.commands[0]!.outputDigest === singleDocumentClosure({ type: "boolean" }).closureDigest
+    && built.commands[1]!.inputDigest === singleDocumentClosure({ type: "string" }).closureDigest
+    && built.commands[1]!.outputDigest === singleDocumentClosure(VOID_SCHEMA).closureDigest);
+  const artifacts = buildClusterArtifacts(built);
+  const verifiedManifest = verifyClusterManifest(artifacts.closureDigest, artifacts.manifest);
+  const verifiedRoot = verifyClusterRoot(artifacts.rootDigest, artifacts.document);
+  ok("buildClusterArtifacts produces root and closure digests accepted by the core verifiers",
+    artifacts.document === built
+    && artifacts.rootDigest === artifacts.manifest.root
+    && verifiedManifest.root === artifacts.rootDigest
+    && artifacts.closureDigest === singleDocumentClosure(built).closureDigest
+    && verifiedRoot.commands.length === 2);
+}
 
 console.log(`\nendpoint-action-class smoke: ${pass} checks passed`);

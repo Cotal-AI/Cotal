@@ -44,8 +44,8 @@
     {
       "name": "S5 RESERVED_COTAL_CHILDREN keeps the root-scoped manager record",
       "file": "packages/workspace/src/space-segmentation.ts",
-      "find": "\"membership-observer.creds\", \"membership-rw.creds\", \"meshes\", \"nats\", \"nats.log\", \"nats.pid\",",
-      "replace": "\"membership-observer.creds\", \"membership-rw.creds\", \"meshes\", \"nats\", \"nats.log\", \"nats.pid\", \"manager.pid\",",
+      "find": "\"membership-observer.creds\", \"membership-rw.creds\", \"meshes\", \"nats\", \"nats.log\", NATS_PIDFILE,",
+      "replace": "\"membership-observer.creds\", \"membership-rw.creds\", \"meshes\", \"nats\", \"nats.log\", NATS_PIDFILE, \"manager.pid\",",
       "expectRed": "\"manager.pid\" is no longer a literal child of .cotal/",
       "cell": "\"manager.pid\" is no longer a literal child of .cotal/"
     },

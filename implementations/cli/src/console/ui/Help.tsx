@@ -48,7 +48,7 @@ export function Help({
     ["n", "toggle needs-you rail"],
     ["d", "direct-message lens"],
     ["t", "topology lens (v / 1-3 variants)"],
-    [":", "command palette (send / call / spawn / status / attach / purge / delchan)"],
+    ["Ctrl-p", "commands (spawn / send / attach / status / purge / delchan)"],
     ["c", "compose to channel / DM selected agent"],
     ["r", "reply to current message"],
     ["D", "delete - kill agent / drop space"],

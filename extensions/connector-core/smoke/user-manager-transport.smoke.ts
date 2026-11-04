@@ -92,6 +92,8 @@ const { cotalAuthProvider, grantActor, grantManagedActor, loadCalloutAuth, newAc
 const { managerAuthorityContractSource, managerClusterArtifacts } = await import(managerContractIndex);
 const { Manager } = await import("@cotal-ai/manager");
 const { MeshAgent } = await import(agentIndex);
+const { cotalToolSpecs } = await import(pathToFileURL(join(repoRoot, "extensions/connector-core/src/tool-specs.js")).href);
+const { runRegistryFixture } = await import(pathToFileURL(join(repoRoot, "implementations/registry/smoke/_fixture.js")).href);
 const { generateKeyPair, exportJWK } = await import(pathToFileURL(authRequire.resolve("jose")).href);
 const { pickFreePort } = await import("./_free-port.js");
 
@@ -181,6 +183,7 @@ let provNc: NatsConnection | undefined;
 let realManager: InstanceType<typeof Manager> | undefined;
 let agent: InstanceType<typeof MeshAgent> | undefined;
 let realAgent: InstanceType<typeof MeshAgent> | undefined;
+let registryHandle: { stop(): Promise<void> } | undefined;
 
 const actualChildProcs: ChildProcess[] = [];
 const setupConnections: NatsConnection[] = [];
@@ -238,6 +241,7 @@ class ChildHandle implements AgentHandle {
 
 const childRuntime: Runtime = {
   kind: "fixture",
+  streamsTerminal: false,
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     const child = spawn(spec.command, spec.args, {
       cwd, env: spec.env, stdio: ["ignore", "pipe", "pipe"],
@@ -302,6 +306,10 @@ const doTeardown = async () => {
   }
   for (const child of actualChildProcs) {
     try { await killAndAwaitExit(child, "SIGTERM", 5_000); } catch { /* ignore */ }
+  }
+  if (registryHandle) {
+    try { await registryHandle.stop(); } catch { /* ignore */ }
+    registryHandle = undefined;
   }
   for (const nc of setupConnections) await nc.close();
   if (responderNc) {
@@ -398,7 +406,10 @@ try {
     storeDir: jsDir,
     extraAccounts: prepared.extraAccounts,
   }));
-  broker = spawn("nats-server", ["-c", join(serverRoot, "server.conf")], { stdio: "ignore", env: cleanEnv });
+  // The broker's own log is the one witness of a refused request: a cell below counts the accepted-row
+  // reads it refused for a legacy-rail bearer.
+  const brokerLog = join(serverRoot, "nats.log");
+  broker = spawn("nats-server", ["-c", join(serverRoot, "server.conf"), "-l", brokerLog], { stdio: "ignore", env: cleanEnv });
   teardownOnSignal(broker);
 
   let up = false;
@@ -679,9 +690,11 @@ try {
   // Test 1: Real MeshAgent user mode unpinned (legacy session with NO env pin)
   // ==========================================
   console.log("\n--- Scenario 1: Real MeshAgent User-Mode Unpinned (Own-Remote Precedence) ---");
-  agent = new MeshAgent({
+  registryHandle = await runRegistryFixture({ auth, servers: SERVER, space: SPACE });
+  const scenario1Config = {
     space: SPACE,
     name: "agent-a",
+    kind: "agent",
     servers: SERVER,
     tls: false,
     lifecycleUid: ownerAUid,
@@ -695,9 +708,14 @@ try {
     subscribe: [],
     allowSubscribe: [],
     allowPublish: [],
-  });
+  };
+  agent = new MeshAgent(scenario1Config);
   await agent.start();
   check("MeshAgent started on user-auth standing connection", true);
+  // The first dial on the manager-call credential is a manager-view listing, so the legacy-rail
+  // verdict the later calls rely on is the one that listing records (checked in 7D).
+  const endpointsTool = cotalToolSpecs(scenario1Config, "smoke").find((t: { name: string }) => t.name === "cotal_endpoints");
+  const firstManagerView = await endpointsTool.run(agent, scenario1Config, { view: "manager" });
 
   // 1A. listPersonas over real wire
   const personas = await agent.listPersonas();
@@ -723,6 +741,25 @@ try {
   check("agent.inspectModel() succeeded over real wire", recorded.ok === true, recorded);
   check("inspected model matches recorded pin", (recorded as { model?: string }).model === "sonnet");
 
+  // 1E. cotal_endpoints over the session's own credential, and over its manager-call credential.
+  const pageOf = (r: { text: string; isError?: boolean }) => {
+    const json = r.text.split("\n").slice(2).join("\n");
+    return r.isError ? undefined : JSON.parse(json) as { rows: Array<{ endpoint: string; commands: Array<{ name: string; forms: Array<{ route?: string; literals: { instanceId?: string[] } }> }> }> };
+  };
+  const commandsIn = (page: ReturnType<typeof pageOf>, endpoint: string) => page?.rows.find((r) => r.endpoint === endpoint)?.commands.map((c) => c.name) ?? [];
+  const sessionView = await endpointsTool.run(agent, scenario1Config, {});
+  check("cotal_endpoints lists what this session's own credential can call, labelled as its view",
+    sessionView.isError !== true && sessionView.text.startsWith(`${pageOf(sessionView)?.rows.length} endpoints this session can call`)
+      && commandsIn(pageOf(sessionView), "registry").join() === "endpoints", sessionView.text.slice(0, 2000));
+  const managerView = await endpointsTool.run(agent, scenario1Config, { view: "manager" });
+  // The manager-call view pins every manager request to the one instance its bearer selected.
+  const managerForms = pageOf(managerView)?.rows.find((r) => r.endpoint === "manager")?.commands.flatMap((c) => c.forms) ?? [];
+  check("cotal_endpoints view=manager asks over the manager-call credential and lists its manager commands, labelled as its view",
+    firstManagerView.isError !== true && managerView.isError !== true && managerView.text.includes("endpoints the manager-call credential can call")
+      && commandsIn(pageOf(managerView), "manager").includes("list-personas") && managerForms.length > 0
+      && managerForms.every((f) => f.route === "inst" && f.literals.instanceId?.includes(ownerARemoteInstanceId) === true),
+    managerView.text.slice(0, 3000));
+
   // Spawn/model/goal checks below use the real Manager, never a synthetic success reply.
   await agent.stop();
   agent = undefined;
@@ -744,6 +781,7 @@ try {
   agent = new MeshAgent({
     space: SPACE,
     name: "agent-hosted",
+    kind: "agent",
     servers: SERVER,
     tls: false,
     lifecycleUid: ownerAUid,
@@ -951,6 +989,7 @@ try {
   realAgent = new MeshAgent({
     space: SPACE,
     name: "producer-operator",
+    kind: "agent",
     servers: SERVER,
     tls: false,
     lifecycleUid: ownerAUid,
@@ -994,6 +1033,15 @@ try {
   check("actual child stop over wire succeeded for worker 1", despawn1.ok === true, despawn1);
 
   const despawn2 = await realAgent.despawn("producer_worker_2", { graceful: false });
+  // #5040: the scenario 1 and scenario 7 manager calls and both manager-view listings dial one
+  // legacy-rail credential. The first dial, a listing, was refused the accepted-row read and
+  // recorded the verdict; no later dial on that credential asked again.
+  {
+    const refusedReads = readFileSync(brokerLog, "utf8").split("\n")
+      .filter((l) => l.includes("Publish Violation") && l.includes("KV_cotal_accepted") && l.includes(`-${AGENT_ACTOR}"`)).length;
+    check("a legacy-rail seat asks the broker for its accepted row once per credential, not once per manager call or listing (1 refused read)",
+      refusedReads === 1, `refused accepted-row reads for ${AGENT_ACTOR}: ${refusedReads}`);
+  }
   check("actual child stop over wire succeeded for worker 2", despawn2.ok === true, despawn2);
 
   await realAgent.stop();
@@ -1011,10 +1059,10 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = 50;
+const EXPECTED_CHECKS = 53;
 check("all smoke checks passed", pass + fail === EXPECTED_CHECKS, { pass, fail, expected: EXPECTED_CHECKS });
 
-const ACTUAL_COUNT_GUARD = 51;
+const ACTUAL_COUNT_GUARD = 54;
 emitSentinel({ passed: pass, failed: fail, cells: pass + fail });
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 console.log("USER-MANAGER-TRANSPORT SMOKE COMPLETE");

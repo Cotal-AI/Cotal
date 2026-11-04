@@ -10,4 +10,21 @@ export const authServiceFlags = [
   { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
   { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises (spawn POSTs it with the login bearer)" },
+  { name: "service-endpoints", type: "boolean", description: "host service endpoints: the public /service-endpoint-authority door and the /service-endpoint-host route for owner decisions and operator name binding" },
+  { name: "auth-timeout", type: "string", value: "<seconds>", description: "the broker's authorization timeout in whole seconds, which the callout answers inside (default: 2, nats-server's default)" },
 ] as const satisfies readonly FlagSpec[];
+
+/** The replica flags. Only the daemon entry takes them: the native service preset runs the one
+ *  primary that the space's `auth-service.json` names. */
+export const authCalloutOnlyFlag = {
+  name: "callout-only", type: "boolean",
+  description: "answer only the auth callout, as one more member of its queue group (no HTTP listener, no auth-service.json); for a space whose auth service already runs",
+} as const satisfies FlagSpec;
+
+/** The multi-space manifest. It replaces `--space`: the process holds one lane per space the
+ *  manifest names, all on the one `--server`, each a full auth service or, with `--callout-only`, a
+ *  callout lane. */
+export const authSpacesFlag = {
+  name: "spaces", type: "string", value: "<manifest>",
+  description: "serve every space in this JSON manifest from one process, one lane each (replaces --space): full auth services, or callout lanes with --callout-only",
+} as const satisfies FlagSpec;

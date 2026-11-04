@@ -20,7 +20,7 @@ try {
     fakeCotal(candidate, "98.0.0");
     const stale = boot(cfg, { HOME: home, PATH: reducedPath });
     const staleOut = `${stale.stdout}${stale.stderr}`;
-    check("downgrade hint: never names a candidate below the store generation", !staleOut.includes(candidate) && /run the newer cotal/.test(staleOut), staleOut.slice(0, 400));
+    check("downgrade hint: never names a candidate below the store generation", !staleOut.includes(candidate) && /from a backup taken before the store moved to 99\.0\.0$/m.test(staleOut), staleOut.slice(0, 400));
   }
 } finally {
   finishScenario();

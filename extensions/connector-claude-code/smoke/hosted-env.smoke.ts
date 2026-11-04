@@ -13,7 +13,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { createBrokerAuth, createSpaceAccountAuth, mintLifecycleUid, runAgentBearer } from "@cotal-ai/core";
 import { createCalloutAuth } from "@cotal-ai/auth";
-import { configFromEnv, cotalToolSpecs, MeshAgent } from "@cotal-ai/connector-core";
+import { configFromEnv, cotalToolSpecs, DOCS_VERSION, MeshAgent } from "@cotal-ai/connector-core";
 import type { ClaudeSession, ClaudeSessionOptions } from "../src/mcp.js";
 
 const require = createRequire(import.meta.url);
@@ -60,8 +60,11 @@ async function child(): Promise<void> {
     serveClaudeSession(opts: ClaudeSessionOptions): Promise<ClaudeSession>;
   };
   check("hosted_env_module_loaded", typeof api.serveClaudeSession === "function");
-  // Bundled dependency UMD exports are private, including their mutable crypto API.
-  check("hosted_public_exports_only", Object.keys(api).join(",") === "serveClaudeSession");
+  // Bundled dependency UMD exports are private, including their mutable crypto API. The surface is
+  // two first-party functions: the one a host calls, and the one `dist/seat.cjs` calls to start a
+  // seat after it has enabled the compile cache. Still an exact key list, so a dependency export
+  // that reaches the surface fails here whichever name it arrives under.
+  check("hosted_public_exports_only", Object.keys(api).join(",") === "serveClaudeSession,runClaudeSeat");
   const { serveClaudeSession } = api;
   const root = process.cwd();
   const hostRepo = join(root, "host-repository"); mkdirSync(hostRepo, { mode: 0o700 });
@@ -190,7 +193,8 @@ process.exitCode = 1;
       await until(() => existsSync(join(root, `${name}.json`)));
       const observed = JSON.parse(readFileSync(join(root, `${name}.json`), "utf8")) as Record<string, unknown>;
       check(`hosted_env_bearer_${label}`, observed.name === expected.COTAL_NAME && observed.space === expected.COTAL_SPACE && observed.home === expected.HOME && observed.marker === expected.FIXTURE_SESSION_MARKER && observed.hostOnly === false);
-      await request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "hosted-env-fixture", version: "1" } });
+      const hello = await request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "hosted-env-fixture", version: "1" } }) as { serverInfo?: { name?: string; version?: string } };
+      check(`hosted_env_server_info_${label}`, hello.serverInfo?.name === "cotal" && hello.serverInfo?.version === DOCS_VERSION);
       input.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
       await hook(expected, { hook_event_name: "SessionStart", source: "fork", session_id: `fork_${label}`, transcript_path: join(own.project, `fork_${label}.jsonl`) });
       check(`hosted_env_carried_${label}`, existsSync(own.record));

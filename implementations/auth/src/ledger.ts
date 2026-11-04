@@ -42,6 +42,8 @@ import {
   assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
+  capabilityWithin,
+  eventChannel,
   mintLifecycleUid,
   mkSecretDir,
   parseActorLedgerSource,
@@ -51,6 +53,7 @@ import {
   writeSecretFile,
   type IssuedSourceRef,
   type ManagedGrantCustody,
+  type RunDelegation,
 } from "@cotal-ai/core";
 import { grantCommandLine } from "./grant-command.js";
 import { chatSessionAliasPresent } from "./chat-session-row.js";
@@ -384,21 +387,9 @@ export function assertWithinSpawnerGrant(
       throw new Error(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
-    const overScope = child.scope.filter((s) => !parent.scope.includes(s));
-    const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));
-    const overPub = child.allowPublish.filter((ch) => !patternInAllow(parent.allowPublish, ch));
-    // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
-    // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
-    // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
-    // role delegation transitive for free.
-    const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
+    const { overScope, overSub, overPub, needRole } = overreachOf(parent, child);
     if (overScope.length || overSub.length || overPub.length || needRole) {
-      const wrongs = [
-        overScope.length ? `scope [${overScope.join(", ")}] beyond [${parent.scope.join(", ") || "none"}]` : "",
-        overSub.length ? `read [${overSub.join(", ")}] beyond [${parent.allowSubscribe.join(", ") || "none"}]` : "",
-        overPub.length ? `post [${overPub.join(", ")}] beyond [${parent.allowPublish.join(", ") || "none"}]` : "",
-        needRole ? `role "${child.role}" beyond scope [${parent.scope.join(", ") || "none"}] (a role is delegated with the \`${needRole}\` capability)` : "",
-      ].filter(Boolean);
+      const wrongs = describeOverreach({ overScope, overSub, overPub, needRole }, parent, child.role);
       const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
       const who = deep ? `agent "${leaf}": its ancestor "${childKey}"` : `agent "${leaf}"`;
       throw new Error(
@@ -412,6 +403,61 @@ export function assertWithinSpawnerGrant(
     }
     child = parent;
   }
+}
+
+/** What a child's grant asks for beyond its spawner's, part by part: the per-link envelope rule. */
+function overreachOf(
+  parent: { owner: string; actor: string; scope: readonly string[]; allowSubscribe: readonly string[]; allowPublish: readonly string[] },
+  child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
+): { overScope: string[]; overSub: string[]; overPub: string[]; needRole?: string } {
+  // `run` carries the whole spawn set, so a run holder hands on `spawn` too (the token rule core
+  // shares with the static bound). The vocabulary stays open: any token the parent lists is within.
+  const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));
+  const overSub = child.allowSubscribe.filter((ch) => !patternInAllow([...parent.allowSubscribe], ch));
+  // A spawner that may post its own events may hand each child that child's own event channel
+  // and no other. The channel names the child, so it reaches nothing the spawner holds, and the
+  // walk still checks the spawner's own event channel against its parent up to the root.
+  const ownEvents = patternInAllow([...parent.allowPublish], eventChannel({ owner: parent.owner, actor: parent.actor })) ? eventChannel(child) : undefined;
+  const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow([...parent.allowPublish], ch));
+  // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
+  // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
+  // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
+  // role delegation transitive for free.
+  const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
+  return { overScope, overSub, overPub, ...(needRole !== undefined ? { needRole } : {}) };
+}
+
+function describeOverreach(
+  o: ReturnType<typeof overreachOf>,
+  parent: { scope: readonly string[]; allowSubscribe: readonly string[]; allowPublish: readonly string[] },
+  role: string | undefined,
+): string[] {
+  return [
+    o.overScope.length ? `scope [${o.overScope.join(", ")}] beyond [${parent.scope.join(", ") || "none"}]` : "",
+    o.overSub.length ? `read [${o.overSub.join(", ")}] beyond [${parent.allowSubscribe.join(", ") || "none"}]` : "",
+    o.overPub.length ? `post [${o.overPub.join(", ")}] beyond [${parent.allowPublish.join(", ") || "none"}]` : "",
+    o.needRole ? `role "${role}" beyond scope [${parent.scope.join(", ") || "none"}] (a role is delegated with the \`${o.needRole}\` capability)` : "",
+  ].filter(Boolean);
+}
+
+/** A hosted run's spawn (SPEC 14.8): the helper's grant must sit within what the run's starter held
+ *  when the run was admitted, the delegation its admission recorded. This is checked beside the
+ *  chain walk over the starter's current row, so the helper is within both. An admin starter is
+ *  exempt, as the walk exempts an admin spawner. */
+export function assertWithinRunDelegation(
+  runId: string,
+  starter: { owner: string; actor: string },
+  delegation: RunDelegation,
+  child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
+): void {
+  if (delegation.scope.includes("admin")) return;
+  const o = overreachOf({ ...starter, ...delegation }, child);
+  if (!o.overScope.length && !o.overSub.length && !o.overPub.length && !o.needRole) return;
+  throw new Error(
+    `agent "${child.actor}" would exceed what run ${runId}'s starter "${starter.owner}.${starter.actor}" held when the run was admitted - a run hands on only that: ` +
+      describeOverreach(o, delegation, child.role).join("; ") +
+      " - start the run from a caller that holds these, or spawn the helper without them",
+  );
 }
 
 /** The exact re-grant that would admit the refused delegation: the spawner's CURRENT row with the
@@ -535,6 +581,10 @@ export interface ManagedGrantTransaction {
   read(owner: string, actor: string): (ActorRow & { kind: ActorKind }) | undefined;
   grantManaged(row: ManagedGrantInput): ActorRow;
   grantInteractive(row: Omit<ActorRow, "grantedAt">): ActorRow;
+  /** Set an interactive row's display label and keep every other field, its lifecycle UID and grant
+   *  time included. The label is outside the authorization digest, so a bearer issued under the row
+   *  stays valid. Undefined when the owner has no interactive row for the actor. */
+  relabelInteractive(owner: string, actor: string, label: string): ActorRow | undefined;
   revokeInteractive(owner: string, actor: string): boolean;
   revokeManaged(owner: string, actor: string): boolean;
   revokeManagedAt(owner: string, actor: string, lifecycleUid: string): boolean;
@@ -575,6 +625,13 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
     read: live((owner: string, actor: string) => findActorUnified(dir, owner, actor)),
     grantManaged: live((row: ManagedGrantInput) => rawGrantManaged(dir, row)),
     grantInteractive: live((row: Omit<ActorRow, "grantedAt">) => rawGrantInteractive(dir, row)),
+    relabelInteractive: live((owner: string, actor: string, label: string) => {
+      const row = findIn(dir, "interactive", owner, actor);
+      if (!row) return undefined;
+      const relabeled: ActorRow = { ...row, label };
+      writeRow(dir, "interactive", relabeled);
+      return relabeled;
+    }),
     revokeInteractive: live((owner: string, actor: string) => revokeIn(dir, "interactive", owner, actor)),
     revokeManaged: live((owner: string, actor: string) => revokeIn(dir, "managed-agent", owner, actor)),
     revokeManagedAt: live((owner: string, actor: string, lifecycleUid: string) => rawRevokeManagedAt(dir, owner, actor, lifecycleUid)),
@@ -592,6 +649,13 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
   }
 }
 
+/** How a refused exchange opens when the signed-in human has no interactive grant for `actor`. The
+ *  rest of that refusal is the operator's grant command. A client with no ledger for the space
+ *  recognizes this opening, because exchange services send no structured refusal code. */
+export function notGrantedReason(actor: string): string {
+  return `actor "${actor}" is not granted for this user`;
+}
+
 /** The IdP bridge's `authorizeActor` hook (bearer-MINT boundary) — INTERACTIVE rows only, by
  *  construction. A name that exists only as a managed agent gets the exact managed-path answer
  *  (never "not granted", which would read as a permissions problem, and never a mint). */
@@ -605,7 +669,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       if (findManagedActor(dir, owner, actor))
         throw new Error(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
       throw new Error(
-        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
+        `${notGrantedReason(actor)} - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
       );
     }
     // MINT-boundary lifecycle stamp (SPEC 13.1): EVERY minted bearer - view or not - carries the

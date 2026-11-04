@@ -15,8 +15,8 @@
     {
       "name": "cotal_connect retries every failure under the next name",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "if (e instanceof NameTaken) continue;",
-      "replace": "continue;",
+      "find": "if (e instanceof NameTaken) {",
+      "replace": "if (true) {",
       "expectRed": "a non-collision failure is reported",
       "cell": "a non-collision failure is reported",
       "note": "A quota refusal would then be retried as quota_probe_2 and succeed, turning a refusal the user must see into a silent rename."
@@ -88,8 +88,8 @@
     {
       "name": "a call runs on the advertising configuration instead of its connection's own",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "const own = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);",
-      "replace": "const own = cotalToolSpecs(ADVERTISED, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);",
+      "find": "const own = cotalToolSpecs(c.config, source, undefined, toolsOf(c)).find((s) => s.name === spec.name);",
+      "replace": "const own = cotalToolSpecs(ADVERTISED, source, undefined, toolsOf(c)).find((s) => s.name === spec.name);",
       "expectRed": "orientation names this connection",
       "cell": "orientation names this connection",
       "note": "The connection's own configuration carries its name into the orientation card. The default-channel cell stays green under this mutation because the MeshAgent resolves an omitted channel from its own subscription, not from the spec's configuration."
@@ -189,7 +189,7 @@
     {
       "name": "routed tools no longer say messages are waiting",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "        const notice = spec.name === \"cotal_inbox\" ? undefined : waitingNotice(c.agent);",
+      "find": "        const notice = spec.name === \"cotal_inbox\" || wake?.inboxNotice?.(c) === false ? undefined : waitingNotice(c.agent);",
       "replace": "        const notice = undefined as { type: \"text\"; text: string } | undefined;",
       "expectRed": "another tool's result says a message is waiting",
       "cell": "another tool's result says a message is waiting"
@@ -309,8 +309,8 @@
     {
       "name": "the stdio server sends no default instructions",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });",
-      "replace": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" });",
+      "find": "  const server = new McpServer({ name: \"cotal\", version: DOCS_VERSION }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });",
+      "replace": "  const server = new McpServer({ name: \"cotal\", version: DOCS_VERSION });",
       "expectRed": "the stdio server sends the default instructions",
       "cell": "the stdio server sends the default instructions"
     },

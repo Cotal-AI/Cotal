@@ -52,6 +52,7 @@ let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
 let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
+let spaceCompletion!: typeof import("../src/lib/completion.js").spaceCompletion;
 let spawnPersona!: typeof import("../src/commands/spawn.js").spawnPersona;
 let enrollmentInput!: typeof import("../src/commands/spawn.js").enrollmentInput;
 let scrubEnrollmentEnv!: typeof import("../src/commands/spawn.js").scrubEnrollmentEnv;
@@ -76,6 +77,7 @@ try {
   } = await import("@cotal-ai/workspace"));
   ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersona } = await import("../src/commands/spawn.js"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
+  ({ spaceCompletion } = await import("../src/lib/completion.js"));
   ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
 } catch (e) { cleanScratch(e); }
 
@@ -197,25 +199,28 @@ try {
     listPersonas(one.root).map((p) => p.name),
   );
 
-  // `cotal use` is authoritative even with one recorded mesh and from inside another project.
+  // `cotal use` is authoritative even with one recorded mesh, and inside a project with no space of its own.
   setCurrent("teamA");
   const oneSelected = resolveMeshTarget(projB);
-  check("1 mesh + current: selection wins inside another project", oneSelected.source === "current" && oneSelected.root === projA, oneSelected);
+  check("1 mesh + current: selection wins inside a project with no space of its own", oneSelected.source === "current" && oneSelected.root === projA, oneSelected);
   // A selected space whose broker the sweep found down is still the target, not another mesh.
   const downSelected = resolveMeshTarget(projB, { offline: ["teamA"] });
   check("an offline current stays the target", downSelected.source === "current" && downSelected.space === "teamA", downSelected);
   setCurrent("gone");
   let dangling: unknown;
   try {
-    resolveMeshTarget(projA);
+    resolveMeshTarget(neutral);
   } catch (e) {
     dangling = e;
   }
   check(
-    "dangling current refuses rather than falling back to the local project",
+    "dangling current refuses outside a project rather than falling back to another mesh",
     isWorkspaceTargetError(dangling) && dangling.code === "unknown-space" && dangling.details.requested === "gone" && dangling.details.selected === true,
     String(dangling),
   );
+  // Inside a project whose root has its own space, that space is the target over the selection.
+  const inOwn = resolveMeshTarget(projA);
+  check("inside a project with its own space, that space is the target over a dangling selection", inOwn.source === "local-recorded" && inOwn.space === "teamA", inOwn);
   clearCurrent();
 
   // 2 meshes, no current → ambiguous: error names both spaces AND their roots.
@@ -243,14 +248,14 @@ try {
   const cur = resolveMeshTarget(neutral);
   check("N meshes + current: source is 'current' on the chosen root", cur.source === "current" && cur.root === projB, cur);
 
-  // An explicit current selection must also win from inside another mesh's project. This is the
-  // contract exposed by `cotal use`: bare spawn no longer needs a matching `--space` flag.
+  // Inside another space's project, that folder's own space is the target over the selection, which
+  // applies outside it. `--space` still names any space from there.
   const sub = join(projA, "nested", "dir");
   mkdirSync(sub, { recursive: true });
   const selected = resolveMeshTarget(sub);
-  check("current selection wins inside another local project", selected.source === "current" && selected.root === projB, selected);
-  const explicitFromLocal = resolveMeshTarget(sub, { space: "teamA" });
-  check("--space overrides current inside another local project", explicitFromLocal.source === "flag-space" && explicitFromLocal.root === projA, explicitFromLocal);
+  check("inside another space's project, its own space wins over the selection", selected.source === "local-recorded" && selected.root === projA && selected.space === "teamA", selected);
+  const explicitFromLocal = resolveMeshTarget(sub, { space: "teamB" });
+  check("--space overrides inside another space's project", explicitFromLocal.source === "flag-space" && explicitFromLocal.root === projB, explicitFromLocal);
 
   // With no selected current mesh, a genuine local project remains the fallback.
   clearCurrent();
@@ -329,7 +334,8 @@ try {
     check("completion: lists the resolved mesh's personas (not cwd's)", personas.items.map((i) => i.value).join(",") === "builder", personas.items);
     const configFlag = spawnComplete(["--config", ""]);
     check("completion: --config lists the resolved mesh's personas", configFlag.items.map((i) => i.value).join(",") === "builder", configFlag.items);
-    const spaces = spawnComplete(["--space", ""]);
+    // `--space` is completed by the kernel's one rule for every command, not by spawn's own completer.
+    const spaces = spaceCompletion();
     check("completion: --space lists the running spaces", spaces.items.map((i) => i.value).sort().join(",") === "teamA,teamB", spaces.items);
   } finally {
     process.chdir(prevCwd);

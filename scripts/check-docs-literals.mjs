@@ -26,6 +26,7 @@
 // Exit 0 when every candidate is emitted, 1 when a quote names a string the source does not hold.
 import { lexer, walkTokens } from "marked";
 import ts from "typescript";
+import { readDocument } from "@cotal-ai/docs-content";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -36,7 +37,7 @@ const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encodin
   .split("\0")
   .filter(Boolean);
 
-const pages = tracked.filter((f) => f.startsWith("docs/") && f.endsWith(".md") && !f.startsWith("docs/design/"));
+const pages = tracked.filter((f) => f.startsWith("docs/") && /\.mdx?$/.test(f) && !f.startsWith("docs/design/"));
 const sources = tracked.filter(
   (f) =>
     /^(?:packages|extensions|implementations|bin)\//.test(f) &&
@@ -55,7 +56,10 @@ const commands = new Set(["cotal", "pnpm", "npm", "npx", "node", "tsx", "git", "
 // its raw text inside the block that holds it.
 const spans = [];
 for (const page of pages) {
-  const text = readFileSync(join(repoRoot, page), "utf8").replace(/\r\n?/g, "\n");
+  const text = (page.endsWith(".mdx")
+    ? (await readDocument(join(repoRoot, page))).markdown
+    : readFileSync(join(repoRoot, page), "utf8")).replace(/\r\n?/g, "\n");
+  const label = page.endsWith(".mdx") ? `${page} (Markdown export)` : page;
   let start = 0;
   for (const block of lexer(text)) {
     let from = 0;
@@ -64,7 +68,7 @@ for (const page of pages) {
       const at = block.raw.indexOf(token.raw, from);
       if (at >= 0) from = at + token.raw.length;
       const line = text.slice(0, start + Math.max(at, 0)).split("\n").length;
-      spans.push({ page, line, text: token.text });
+      spans.push({ page: label, line, text: token.text });
       const invoked = /^cotal ([a-z][a-z0-9-]*)/.exec(token.text);
       if (invoked) commands.add(invoked[1]);
     });

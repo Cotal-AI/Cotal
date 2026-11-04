@@ -8,8 +8,10 @@
  * file + line. Stages 1–4 of the plan — deterministic and unit-testable.
  */
 import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
-import { parseDocument, LineCounter } from "yaml";
-import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral } from "@cotal-ai/core";
+import { parseDocument, LineCounter, isMap, isScalar } from "yaml";
+import type { z } from "zod";
+import { assertValidChannel, assertValidName, isConcreteChannel, utf16Problem, token } from "@cotal-ai/core";
+import { checkIdpUrl } from "@cotal-ai/workspace";
 import { MeshManifestSchema, type RawManifest } from "./schema.js";
 import type { AgentPolicy, PersonaPermissions, ResolvedAgent, ResolvedChannel, ResolvedManifest } from "./model.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -17,6 +19,9 @@ import { ManifestError, type ManifestIssue } from "./errors.js";
 /** Parse + validate a manifest source into the resolved model. `sourcePath` anchors relative
  *  persona refs and locates errors. */
 export function resolveManifest(src: string, sourcePath: string): ResolvedManifest {
+  // Parsed as UTF-8, a UTF-16 file would be one string the schema calls the wrong shape.
+  const encoding = utf16Problem(src);
+  if (encoding) throw new ManifestError(sourcePath, [{ message: `${encoding}; save it as UTF-8` }]);
   const lc = new LineCounter();
   const doc = parseDocument(src, { lineCounter: lc });
   // Best-effort location: try the exact node, then walk up the path (union/object-level errors
@@ -31,7 +36,8 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
         const { line, col } = lc.linePos(node.range[0]);
         return { line, col };
       }
-      if (p.length === 0) return {};
+      // An empty document has no root node; its problem starts at its first line.
+      if (p.length === 0) return { line: 1, col: 1 };
       p.pop();
     }
   };
@@ -49,24 +55,26 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
       { message: "`spaces:` is not supported in v1 (single-space) - use a scalar `space:`", path: ["spaces"], ...locate(["spaces"]) },
     ]);
 
+  // Expanding aliases can still refuse, as an alias bomb does; that is a problem in the file too.
+  let js: unknown;
+  try {
+    js = doc.toJS();
+  } catch (e) {
+    throw new ManifestError(sourcePath, [{ message: (e as Error).message.split("\n")[0] }]);
+  }
+
   // 2. Schema (strict): shape + unknown-key rejection. Map every Zod issue back to a located line.
-  const parsed = MeshManifestSchema.safeParse(doc.toJS());
-  if (!parsed.success)
-    throw new ManifestError(
-      sourcePath,
-      parsed.error.issues.map((iss) => {
-        const path = iss.path.filter((p): p is string | number => typeof p !== "symbol");
-        // Point the line at the offending unknown key, not just its containing object.
-        const keys = (iss as { keys?: string[] }).keys;
-        const locPath = iss.code === "unrecognized_keys" && keys?.length ? [...path, keys[0]] : path;
-        return { message: iss.message, path, ...locate(locPath) };
-      }),
-    );
+  const parsed = MeshManifestSchema.safeParse(js, { error: schemaReason });
+  if (!parsed.success) throw new ManifestError(sourcePath, schemaIssues(parsed.error.issues, js, locate));
   const raw = parsed.data;
 
   // 3 + 4. Normalize/invert and run pure semantic checks, collecting every problem in one pass.
   const issues: ManifestIssue[] = [];
   const add = (message: string, path?: (string | number)[]) => issues.push({ message, path, ...locate(path) });
+
+  // `space create` and `cotal up` take a space only under a name that is one native routing token.
+  if (raw.space.length > 200 || token(raw.space) !== raw.space)
+    add(`space ${JSON.stringify(raw.space)} is not a space name: a space name is 1 to 200 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it`, ["space"]);
 
   const agentNames = new Set(Object.keys(raw.agents ?? {}));
   for (const name of agentNames)
@@ -82,9 +90,14 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
 
   if (issues.length) throw new ManifestError(sourcePath, issues);
 
+  const broker = raw.broker ? {
+    ...raw.broker,
+    ...(raw.broker.logFile !== undefined ? { logFile: isAbsolute(raw.broker.logFile) ? raw.broker.logFile : resolvePath(dirname(sourcePath), raw.broker.logFile) } : {}),
+  } : undefined;
+
   return {
     space: raw.space,
-    broker: raw.broker,
+    broker,
     runtime: raw.runtime,
     personaPermissions: raw.personaPermissions ?? "reject",
     defaults: raw.defaults,
@@ -92,6 +105,91 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
     channels,
     sourcePath,
   };
+}
+
+type Locate = (path?: (string | number)[]) => { line?: number; col?: number };
+
+/** The schema's issues as located problems. An unknown key that misspells a required key left out of
+ *  the same object is one problem naming both, where it used to count as two. */
+function schemaIssues(zodIssues: readonly { code: string; path: PropertyKey[]; message: string }[], js: unknown, locate: Locate): ManifestIssue[] {
+  const valueAt = (path: (string | number)[]): unknown =>
+    path.reduce<unknown>((value, key) => (value !== null && typeof value === "object" ? (value as Record<string | number, unknown>)[key] : undefined), js);
+  const all = zodIssues.map((iss) => ({ iss, path: iss.path.filter((p): p is string | number => typeof p !== "symbol") }));
+  const absent = all.filter(({ iss, path }) => {
+    if (iss.code !== "invalid_type" || !path.length) return false;
+    const parent = valueAt(path.slice(0, -1));
+    return parent !== null && typeof parent === "object" && !Object.hasOwn(parent, path[path.length - 1]!);
+  });
+  // Pair each unknown key with a key left out of the same object that it is a near spelling of.
+  const typos = new Map<(typeof all)[number], { key: string; meant: string }[]>();
+  const merged = new Set<(typeof all)[number]>();
+  for (const entry of all) {
+    if (entry.iss.code !== "unrecognized_keys") continue;
+    for (const key of (entry.iss as { keys?: string[] }).keys ?? []) {
+      const missing = absent.find((m) => !merged.has(m) && m.path.length === entry.path.length + 1 && m.path.slice(0, -1).join("\0") === entry.path.join("\0") && editDistance(key, String(m.path[entry.path.length])) <= 2);
+      if (!missing) continue;
+      merged.add(missing);
+      typos.set(entry, [...(typos.get(entry) ?? []), { key, meant: String(missing.path[entry.path.length]) }]);
+    }
+  }
+  return all.flatMap((entry): ManifestIssue[] => {
+    const { iss, path } = entry;
+    if (merged.has(entry)) return [];
+    if (iss.code !== "unrecognized_keys") return [{ message: iss.message, path, ...locate(path) }];
+    const paired = typos.get(entry) ?? [];
+    const unknown = ((iss as { keys?: string[] }).keys ?? []).filter((key) => !paired.some((typo) => typo.key === key));
+    // Point the line at the offending unknown key, not just its containing object.
+    return [
+      ...paired.map(({ key, meant }) => ({ message: `unknown key "${key}": did you mean "${meant}", which is required?`, path, ...locate([...path, key]) })),
+      ...(unknown.length ? [{ message: paired.length ? `Unrecognized key${unknown.length > 1 ? "s" : ""}: ${unknown.map((key) => `"${key}"`).join(", ")}` : iss.message, path, ...locate([...path, unknown[0]!]) }] : []),
+    ];
+  });
+}
+
+/** The number of single-character edits between two keys. */
+function editDistance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length]!;
+}
+
+/** The plain reason for a value the key does not take: one outside its fixed values, a missing
+ *  required key, an empty file, or a value of another YAML shape. Any other issue keeps the
+ *  validator's reason. */
+const schemaReason: z.core.$ZodErrorMap = (issue) => {
+  if (issue.code === "invalid_value") return `must be ${issue.values.map((value) => JSON.stringify(value)).join(" or ")}`;
+  if (issue.code !== "invalid_type") return undefined;
+  const key = issue.path?.at(-1);
+  if (issue.input === undefined && key !== undefined) return `\`${String(key)}:\` is required`;
+  if (issue.input == null && !issue.path?.length) return "the manifest is empty; it needs apiVersion, kind, space and channels";
+  return `expected ${yamlShape(issue.expected)}, not ${issue.input === null ? "an empty value" : yamlShape(Array.isArray(issue.input) ? "array" : typeof issue.input)}`;
+};
+
+function yamlShape(type: string): string {
+  return type === "record" || type === "object" ? "a mapping" : type === "array" ? "a list" : `a ${type}`;
+}
+
+/** Each `agents:` entry that names a persona file: the agent, the file's resolved path and the
+ *  entry's location. Diagnostics only, so a manifest that does not parse names none. */
+export function personaReferences(src: string, sourcePath: string): { name: string; persona: string; line?: number; col?: number }[] {
+  const lc = new LineCounter();
+  const doc = parseDocument(src, { lineCounter: lc });
+  const agents = doc.errors.length ? undefined : doc.get("agents", true);
+  if (!isMap(agents)) return [];
+  const dir = dirname(sourcePath);
+  return agents.items.flatMap((pair) => {
+    const name = isScalar(pair.key) ? pair.key.value : undefined;
+    if (typeof name !== "string") return [];
+    const entry = doc.getIn(["agents", name], true);
+    if (!isScalar(entry) && !isMap(entry)) return [];
+    const persona = isScalar(entry) ? entry.value : entry.get("persona");
+    if (typeof persona !== "string" || !persona) return [];
+    return [{ name, persona: isAbsolute(persona) ? persona : resolvePath(dir, persona), ...(entry.range ? lc.linePos(entry.range[0]) : {}) }];
+  });
 }
 
 /** Normalize each channel (default `allowSubscribe` ⇐ `subscribe`, dedup) and run the channel-level
@@ -196,6 +294,10 @@ function invertPolicy(name: string, channels: ResolvedChannel[]): AgentPolicy {
 function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void): void {
   if (broker.host?.includes("://"))
     add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL - drop the scheme`, ["broker", "host"]);
+  if (broker.logFile !== undefined && (!broker.logFile.trim() || /[\u0000-\u001f\u007f]/u.test(broker.logFile)))
+    add("broker.logFile must be a non-empty file path without control characters", ["broker", "logFile"]);
+  if (broker.logFile === undefined && (broker.logfileSizeLimit !== undefined || broker.logfileMaxNum !== undefined))
+    add("broker.logfileSizeLimit and broker.logfileMaxNum require broker.logFile", ["broker"]);
   if (broker.servers) for (const problem of serverUrlProblems(broker.servers, "broker.servers")) add(problem, ["broker", "servers"]);
   // `idp` pairs with user auth ONLY — on any other mode it would be silently ignored, and a
   // silently-ignored identity provider is exactly the kind of drift the no-fallback rule exists for.
@@ -234,16 +336,14 @@ export function serverUrlProblems(servers: string, what: string): string[] {
  *  would refuse. `what` names its source, because `up -f --idp` overrides `broker.idp` and must pass
  *  the same check. The message never repeats the value, which may carry a credential. */
 export function idpUrlProblem(idp: string, what: string): string | undefined {
-  let u: URL;
-  try {
-    u = new URL(idp);
-  } catch {
-    return `${what} is not a valid URL (Better Auth: <origin>/api/auth)`;
+  const checked = checkIdpUrl(idp);
+  if (checked.ok) return undefined;
+  switch (checked.reason) {
+    case "invalid-url": return `${what} is not a valid URL (Better Auth: <origin>/api/auth)`;
+    case "scheme": return `${what} must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev)`;
+    case "query-or-fragment": return `${what} must not carry a query or fragment`;
+    case "credentials": return `${what} must not embed credentials - give the IdP base URL only`;
   }
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
-    return `${what} must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev)`;
-  if (u.search || u.hash) return `${what} must not carry a query or fragment`;
-  return u.username || u.password ? `${what} must not embed credentials - give the IdP base URL only` : undefined;
 }
 
 function dedupe<T>(xs: T[]): T[] {

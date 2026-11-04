@@ -5,14 +5,17 @@ import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  acquireLock,
   globalConfigPath,
   mcpServerProblem,
   registry,
   writePrivateRecord,
   type ConnectorSetupProvider,
+  type ConnectorSkillsSetupInput,
   type ConnectorStatusInput,
   type ConnectorStatusRow,
   type McpServerSpec,
+  type SignedInSpace,
 } from "@cotal-ai/core";
 import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
@@ -25,7 +28,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 type PluginEntry = Record<string, unknown>;
 
 /** What the `cotal` plugin carries from this package. */
-const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"] as const;
+const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"] as const;
 
 /** The version the materialized `cotal` plugin carries: this release, then a digest of every file it
  *  holds, so `cotal status` can tell a copy an earlier release wrote. */
@@ -47,10 +50,33 @@ function materializeCotal(cotal: readonly string[]): string {
   for (const asset of COTAL_ASSETS) if (!existsSync(join(PACKAGE_ROOT, asset))) throw new Error(`plugin asset missing: ${join(PACKAGE_ROOT, asset)}`);
   // How the plugin's server runs the CLI for a plain session's `cotal_connect`, by absolute path:
   // Claude Desktop starts a server with a minimal PATH.
-  const files = { [`dist/${CLI_RECORD}`]: `${JSON.stringify({ argv: cotal })}\n` };
+  const files = pluginFiles(cotal);
   const version = pluginVersion(PACKAGE_ROOT, COTAL_ASSETS, files);
   materialize("cotal", PACKAGE_ROOT, COTAL_ASSETS, version, files);
   return version;
+}
+
+/** Bind every installed entrypoint to the Node runtime running setup, including minimal app PATHs. */
+function pluginFiles(cotal: readonly string[]): Record<string, string> {
+  const node = cotal[0];
+  if (!node) throw new Error("the Cotal CLI record has no Node executable");
+  if (process.platform === "win32" && /[\"%!\r\n]/.test(node))
+    throw new Error("the Node executable path contains characters Claude's Windows command hooks cannot safely run");
+  const quoted = process.platform === "win32" ? `"${node}"` : `'${node.replace(/'/g, "'\\''")}'`;
+  const mcp = JSON.parse(readFileSync(join(PACKAGE_ROOT, ".mcp.json"), "utf8")) as { mcpServers: { cotal: { command: string } } };
+  mcp.mcpServers.cotal.command = node;
+  const hooks = JSON.parse(readFileSync(join(PACKAGE_ROOT, "hooks", "hooks.json"), "utf8")) as {
+    hooks: Record<string, Array<{ hooks: Array<{ command?: string }> }>>;
+  };
+  for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
+    if (hook.command === 'node "${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs"')
+      hook.command = quoted + ' "${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs"';
+  }
+  return {
+    [`dist/${CLI_RECORD}`]: `${JSON.stringify({ argv: cotal })}\n`,
+    ".mcp.json": `${JSON.stringify(mcp, null, 2)}\n`,
+    "hooks/hooks.json": `${JSON.stringify(hooks, null, 2)}\n`,
+  };
 }
 
 /** The `cotal` entry Claude Desktop runs: the materialized server, started by the node that runs the
@@ -58,23 +84,80 @@ function materializeCotal(cotal: readonly string[]): string {
 function desktopEntry(cotal: readonly string[]): DesktopEntry {
   return {
     command: cotal[0]!,
-    args: [join(marketplaceDir(), "cotal", "dist", "mcp.cjs"), "--desktop"],
+    args: [join(marketplaceDir(), "cotal", "dist", "seat.cjs"), "--desktop"],
     ...(process.env.COTAL_HOME ? { env: { COTAL_HOME: process.env.COTAL_HOME } } : {}),
   };
 }
 
+/** Desktop chat supplies no native session, so its local server cannot join a signed-in space. It
+ *  joins one only through the hosted connector the space advertises. */
+function hostedConnector(s: SignedInSpace): string {
+  const next = s.hostedConnector ? `add ${s.hostedConnector} under Settings > Connectors > Add custom connector`
+    : s.unread ? `its hosted connector could not be read (${s.unread})`
+    : `"${s.space}" advertises no hosted connector`;
+  return `chat joins signed-in space "${s.space}" only through a hosted connector: ${next}`;
+}
+
 /** Write the `cotal` entry into Claude Desktop's config where Desktop is installed. With `add` false
- *  only an entry already there is brought current. `undefined` when there was nothing to do. */
-function desktop(cotal: readonly string[], add: boolean): string | undefined {
+ *  only an entry already there is brought current. Setup for a signed-in space writes nothing there
+ *  and names the hosted connector instead, and nothing is written while Desktop runs. `undefined`
+ *  when there was nothing to do. */
+function desktop(cotal: readonly string[], add: boolean, signedIn?: SignedInSpace): string | undefined {
   const path = desktopConfigPath();
   if (!path || !existsSync(dirname(path))) return undefined;
+  if (signedIn) return `Claude Desktop ${hostedConnector(signedIn)}`;
   if (!add && readDesktopEntry(path) === undefined) return undefined;
   const state = writeDesktopEntry(path, desktopEntry(cotal));
+  if (state === "not added" || state === "not updated")
+    return `Claude Desktop ${state}: Claude Desktop is running and writes back the config it read when it started, which would drop the entry. Quit Claude Desktop, then run \`cotal setup\` again from a terminal outside it`;
   return `Claude Desktop ${state}${state === "current" ? "" : "; quit and reopen Claude Desktop to load it"}`;
 }
 
-const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
+const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.mdx";
 const MARKETPLACE = "cotal-mesh";
+
+/** Desktop includes a Code executable even when the person has not installed the terminal CLI. */
+function claudeCommand(): string {
+  const terminal = spawnSync("claude", ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" });
+  if (terminal.status === 0) return "claude";
+  if ((terminal.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT")
+    throw new Error("The installed Claude Code command could not run. Repair it before running `cotal setup`.");
+  const config = desktopConfigPath();
+  const app = config ? dirname(config) : process.platform === "linux"
+    ? join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "Claude")
+    : undefined;
+  if (!app || !existsSync(join(app, "claude-code"))) throw new Error("Claude Code is unavailable. Install it or open Desktop's Code tab, then retry setup.");
+  const cache = join(app, "claude-code");
+  const versions = readdirSync(cache, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^\d+\.\d+\.\d+$/.test(entry.name))
+    .sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }));
+  const executable = process.platform === "win32" ? "claude.exe" : "claude";
+  for (const version of versions) {
+    const root = join(cache, version.name);
+    for (const entry of readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory()) continue;
+      const candidates = process.platform === "darwin"
+        ? [join(root, entry.name, "claude.app", "Contents", "MacOS", "claude"), join(root, entry.name, executable)]
+        : [join(root, entry.name, executable)];
+      for (const candidate of candidates) {
+        if (!existsSync(candidate)) continue;
+        if (spawnSync(candidate, ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" }).status !== 0)
+          throw new Error("Claude Desktop's bundled Code executable could not run. Update or reinstall Claude Desktop.");
+        return candidate;
+      }
+    }
+  }
+  throw new Error("Claude Code is unavailable. Install it or open Desktop's Code tab, then retry setup.");
+}
+
+function claudeAvailable(): boolean {
+  try {
+    claudeCommand();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function cotalHome(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
@@ -84,6 +167,16 @@ function cotalHome(): string {
 
 function marketplaceDir(): string {
   return join(cotalHome(), "claude-plugin");
+}
+
+/** Keep materialization, native registration and verification in one cross-process transaction. */
+function withPluginLock<T>(run: () => T): T {
+  const lock = acquireLock(join(marketplaceDir(), ".setup.lock"), { label: "Claude plugin setup" });
+  try {
+    return run();
+  } finally {
+    lock.release();
+  }
 }
 
 export function materialize(name: string, root: string, assets: readonly string[], version?: string, files: Readonly<Record<string, string>> = {}): void {
@@ -146,7 +239,7 @@ function command(...args: string[]): { status: number | null; output: string } {
 /** A spawn error (output past the limit, a directory that cannot be entered) is a failure whatever the
  *  exit status says, and its message is the output. */
 function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync("claude", args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT });
+  const result = spawnSync(claudeCommand(), args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: 120_000, killSignal: "SIGKILL" });
   if (result.error) return { status: null, output: result.error.message };
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
@@ -205,6 +298,31 @@ function writeMarketplace(): void {
   if (update.status !== 0) throw new Error(`plugin marketplace update failed:\n${update.output}`);
 }
 
+/** A missing executable must not make an already installed integration disappear from an upgrade.
+ * Only inspect native records to detect that obligation; never rewrite them ourselves. */
+function installedForRefresh(): PluginEntry[] {
+  const config = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+  const cache = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR?.trim() || join(config, "plugins");
+  const path = join(cache, "installed_plugins.json");
+  if (!existsSync(path)) return [];
+  let records: unknown;
+  try {
+    records = (JSON.parse(readFileSync(path, "utf8")) as { plugins?: unknown }).plugins;
+  } catch {
+    throw new Error("Claude's plugin records could not be read, so Cotal cannot verify their upgrade");
+  }
+  if (!records || typeof records !== "object" || Array.isArray(records))
+    throw new Error("Claude's plugin records have an unsupported shape, so Cotal cannot verify their upgrade");
+  for (const name of ["cotal", "cotal-skills"]) {
+    const entries = (records as Record<string, unknown>)[`${name}@${MARKETPLACE}`];
+    if (entries !== undefined && (!Array.isArray(entries) || entries.length > 0)) {
+      if (!claudeAvailable()) throw new Error(`${name}@${MARKETPLACE} is installed, but Claude Code is unavailable. Restore Claude Code or open Desktop's Code tab, then retry the Cotal update.`);
+      return listPlugins();
+    }
+  }
+  return [];
+}
+
 /** Every installed plugin, as `claude plugin list --json` reports it from `cwd`. It lists local-scope
  *  installs of every project, each with its `projectPath`, but `enabled` says whether the plugin is
  *  enabled in `cwd`, not in the install's own project. */
@@ -229,8 +347,8 @@ function verify(name: string, scope: string, expectedVersion?: string): void {
   if (!match) throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) is not installed`);
   if (match.enabled !== true || (match as { errors?: unknown[] }).errors?.length)
     throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) did not load: ${JSON.stringify({ enabled: match.enabled, errors: match.errors })}`);
-  if (expectedVersion && (match as { version?: unknown }).version !== expectedVersion)
-    throw new Error(`plugin ${name}@${MARKETPLACE} loaded version ${String((match as { version?: unknown }).version)}; expected ${expectedVersion}`);
+  if (expectedVersion && !resolvedPluginCurrent(match, expectedVersion, name))
+    throw new Error(`plugin ${name}@${MARKETPLACE} resolved payload does not match version ${expectedVersion}`);
 }
 
 function install(name: string, scope: string, expectedVersion?: string): void {
@@ -244,15 +362,75 @@ function install(name: string, scope: string, expectedVersion?: string): void {
   verify(name, scope, expectedVersion);
 }
 
+/** Update existing registrations through Claude, including caches from an earlier Git marketplace.
+ * Disabled installs stay disabled. Records for deleted projects cannot load and are left alone. A
+ * local or project install the update does not reach (Claude Code can apply an update run in a folder
+ * to an enclosing project that has its own install) does not stop the others: it is returned as a
+ * warning naming its project and the command that removes it. A user-scope install must update. */
+function refreshInstalls(name: string, entries: PluginEntry[], version: string): string[] {
+  const warnings: string[] = [];
+  for (const entry of entries) {
+    const scope = entry.scope;
+    if (scope !== "user" && scope !== "local" && scope !== "project")
+      throw new Error(`cannot refresh ${name}@${MARKETPLACE} at ${String(scope)} scope; its administrator must update it`);
+    const cwd = scope === "user" ? cotalHome() : entry.projectPath;
+    if (typeof cwd !== "string") throw new Error(`${name}@${MARKETPLACE} (${scope} scope) has no project path`);
+    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) continue;
+    if (resolvedPluginCurrent(entry, version, name)) continue;
+    const where = scope === "user" ? "user scope" : `${scope} scope, ${cwd}`;
+    const update = commandIn(cwd, "plugin", "update", `${name}@${MARKETPLACE}`, "--scope", scope);
+    if (update.status !== 0) throw new Error(`plugin update failed (${name}, ${where}):\n${update.output}`);
+    const current = listPlugins(cwd).find((candidate) => candidate.id === entry.id && candidate.scope === scope &&
+      (scope === "user" || candidate.projectPath === entry.projectPath));
+    if (current && resolvedPluginCurrent(current, version, name)) continue;
+    const stale = `${name}@${MARKETPLACE} (${where}) did not load the updated plugin ${version}`;
+    if (scope === "user") throw new Error(stale);
+    warnings.push(`warning: ${stale}; to remove it, run \`claude plugin uninstall ${name}@${MARKETPLACE} --scope ${scope}\` in that directory`);
+  }
+  return warnings;
+}
+
+/** Check the resolved manifest and bytes. Folder-backed installs can retain an older record version. */
+function resolvedPluginCurrent(entry: PluginEntry, version: string, name = "cotal"): boolean {
+  const sourceRoot = name === "cotal" ? PACKAGE_ROOT : join(marketplaceDir(), name);
+  const assets = name === "cotal" ? COTAL_ASSETS : [".claude-plugin", "skills"];
+  const root = entry.readFromFolder ?? entry.installPath;
+  if (typeof root !== "string") return false;
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8")) as { version?: unknown };
+    if (manifest.version !== version) return false;
+    const record = name === "cotal"
+      ? JSON.parse(readFileSync(join(marketplaceDir(), "cotal", "dist", CLI_RECORD), "utf8")) as { argv: string[] }
+      : undefined;
+    const generated = record ? pluginFiles(record.argv) : {};
+    const same = (asset: string): boolean => {
+      const source = join(sourceRoot, asset);
+      const target = join(root, asset);
+      const generatedText = generated[asset.replaceAll("\\", "/")];
+      if (generatedText !== undefined) return readFileSync(target).equals(Buffer.from(generatedText));
+      if (statSync(source).isDirectory()) return readdirSync(source).every((name) => same(join(asset, name)));
+      if (asset === join(".claude-plugin", "plugin.json")) {
+        const expected = JSON.parse(readFileSync(source, "utf8")) as Record<string, unknown>;
+        return JSON.stringify({ ...expected, version }) === JSON.stringify(manifest);
+      }
+      return readFileSync(source).equals(readFileSync(target));
+    };
+    return assets.every(same) && (name !== "cotal" || readFileSync(join(root, "dist", CLI_RECORD))
+      .equals(readFileSync(join(marketplaceDir(), "cotal", "dist", CLI_RECORD))));
+  } catch {
+    return false;
+  }
+}
+
 /** Removes the per-project installs of the `cotal` plugin that earlier releases made, once the user-scope
  *  install covers every project. Each is removed from its own project, where Claude Code keeps its
  *  record. A project path that is no longer a directory has no settings left to enable the plugin, so
  *  its record is left as it is. A project Claude Code cannot change does not stop the others; setup
  *  then fails naming each one. Returns how many it removed. */
-function retireProjectInstalls(): number {
+function retireProjectInstalls(entries: PluginEntry[] = listPlugins()): number {
   let removed = 0;
   const failed: string[] = [];
-  for (const entry of listPlugins()) {
+  for (const entry of entries) {
     if (entry.id !== `cotal@${MARKETPLACE}` || entry.scope !== "local" || typeof entry.projectPath !== "string") continue;
     if (!statSync(entry.projectPath, { throwIfNoEntry: false })?.isDirectory()) continue;
     const result = commandIn(entry.projectPath, "plugin", "uninstall", `cotal@${MARKETPLACE}`, "--scope", "local");
@@ -267,13 +445,43 @@ function retireProjectInstalls(): number {
 }
 
 
+/** Whether the account turned the `cotal` plugin off in Claude Code's user settings, which a user-scope
+ *  install would turn back on. */
+function offForAccount(): boolean {
+  const path = join(process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"), "settings.json");
+  if (!existsSync(path)) return false;
+  const settings = JSON.parse(readFileSync(path, "utf8")) as { enabledPlugins?: Record<string, unknown> };
+  return settings.enabledPlugins?.[`cotal@${MARKETPLACE}`] === false;
+}
+
+/** Before 0.92.1 setup installed the `cotal` plugin per project, at local scope, and the refresh updates
+ *  each install where it is, so a machine set up then and kept current with `cotal update` stayed
+ *  local-only: the plugin was missing in every other folder. When no user-scope or administrator install
+ *  exists, install it for the account as setup does, and retire the per-project installs that had it on
+ *  in their own project. One turned off in its project stays, so it keeps the plugin off there, and a
+ *  project-scope record is that project's shared setting and is left alone. An account that turned the
+ *  plugin off keeps its per-project installs as they are. Returns how many it retired,
+ *  or undefined when it changed nothing. */
+function promoteLocalOnly(installs: PluginEntry[], version: string): number | undefined {
+  if (installs.some((entry) => entry.scope !== "local" && entry.scope !== "project") || offForAccount()) return undefined;
+  const on = installs.filter((entry) => {
+    const project = entry.projectPath;
+    if (entry.scope !== "local" || typeof project !== "string" || !statSync(project, { throwIfNoEntry: false })?.isDirectory()) return false;
+    // `enabled` is reported for the folder the list runs in, so ask each project about its own install.
+    return listPlugins(project).some((own) => own.id === entry.id && own.scope === "local" && own.projectPath === project && own.enabled === true);
+  });
+  if (!on.length) return undefined;
+  install("cotal", "user", version);
+  return retireProjectInstalls(on);
+}
+
 /** The installed Claude Code plugins, or undefined when Claude cannot be launched or queried (both of
  *  which status renders as "unknown" rather than "absent"). ONE spawn serves both rows. */
 function pluginList(): PluginEntry[] | undefined {
-  const result = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT });
-  if (result.error || result.status !== 0) return undefined;
   try {
-    const parsed: unknown = JSON.parse(result.stdout || "[]");
+    const result = command("plugin", "list", "--json");
+    if (result.status !== 0) return undefined;
+    const parsed: unknown = JSON.parse(result.output || "[]");
     return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
   } catch {
     return undefined;
@@ -290,12 +498,11 @@ function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }
   if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
   const errors = (match.errors ?? match.error) as unknown;
   if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
-  if (match.version === version) return row("ok", "current");
+  if (resolvedPluginCurrent(match, version, "cotal-skills")) return row("ok", "current");
   return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
 }
 
-/** The `cotal` plugin against the copy setup last materialized. Claude Code runs a plugin from a local
- *  marketplace in place, so that copy is what every install runs, and it must be this release's. */
+/** The `cotal` plugin against the installed payload Claude resolves, including older cached installs. */
 function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorStatusInput): ConnectorStatusRow {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude plugin", state, text });
   if (entries === undefined) return row("off", "unknown");
@@ -310,13 +517,17 @@ function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorSta
     materialized = undefined;
   }
   if (typeof materialized !== "string" || !materialized.startsWith(`${version}+`)) return row("warn", "stale · run `cotal setup`");
+  const active = installs.filter((entry) => entry.scope === "user" || typeof entry.projectPath !== "string" ||
+    statSync(entry.projectPath, { throwIfNoEntry: false })?.isDirectory());
+  if (active.some((entry) => !resolvedPluginCurrent(entry, materialized)))
+    return row("warn", "stale · run `cotal setup`");
   if (installs.some((entry) => entry.scope === "user")) return row("ok", "current (user scope)");
   return row("ok", `current (${installs.length} install${installs.length === 1 ? "" : "s"})`);
 }
 
 /** Cotal's entry in Claude Desktop's config, where Desktop is installed. It must run the server setup
- *  materialized. */
-function desktopRow(): ConnectorStatusRow | undefined {
+ *  materialized, and for a signed-in selected space the row names the hosted connector instead. */
+function desktopRow(signedIn?: SignedInSpace): ConnectorStatusRow | undefined {
   const path = desktopConfigPath();
   if (!path || !existsSync(dirname(path))) return undefined;
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude Desktop", state, text });
@@ -326,9 +537,10 @@ function desktopRow(): ConnectorStatusRow | undefined {
   } catch (e) {
     return row("error", (e as Error).message);
   }
+  if (signedIn) return entry === undefined ? row("off", hostedConnector(signedIn)) : row("warn", `added, but Desktop ${hostedConnector(signedIn)}`);
   if (entry === undefined) return row("off", "not added · run `cotal setup`");
   const server = (entry as { args?: unknown }).args;
-  const expected = join(marketplaceDir(), "cotal", "dist", "mcp.cjs");
+  const expected = join(marketplaceDir(), "cotal", "dist", "seat.cjs");
   if (!Array.isArray(server) || server[0] !== expected || !existsSync(expected)) return row("warn", "stale · run `cotal setup`");
   return row("ok", "added");
 }
@@ -348,23 +560,43 @@ function copyable(name: string, spec: unknown): spec is McpServerSpec {
 // inherited, so pinning our own id is the only way to find the session again.
 let assistSession: string | undefined;
 
+function materializeSkills({ skillsDir, version, stateDir }: ConnectorSkillsSetupInput): void {
+  const manifestRoot = join(PACKAGE_ROOT, "skills-plugin");
+  if (!existsSync(join(manifestRoot, ".claude-plugin", "plugin.json"))) throw new Error("Claude skills plugin manifest is missing");
+  const payload = join(stateDir, `.claude-skills-payload.${process.pid}`);
+  rmSync(payload, { recursive: true, force: true });
+  try {
+    // Created here, never adopted, like the marketplace staging directory.
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(payload);
+    cpSync(join(manifestRoot, ".claude-plugin"), join(payload, ".claude-plugin"), { recursive: true, dereference: true });
+    cpSync(skillsDir, join(payload, "skills"), { recursive: true, dereference: true });
+    materialize("cotal-skills", payload, [".claude-plugin", "skills"], version);
+  } finally {
+    rmSync(payload, { recursive: true, force: true });
+  }
+}
+
 export const claudeSetupProvider: ConnectorSetupProvider = {
   kind: "connector-setup",
   name: "claude",
   requires: ["claude"],
+  available: claudeAvailable,
   connector: {
     name: "claude-plugin",
     title: "Install the Claude Code plugin",
-    explain: "Lets every Claude Code session on this machine join the web and wake on peer messages.",
+    explain: "Installs Cotal messaging for Claude Code, including supported local sessions in Desktop's Code tab. Reopen Claude after setup.",
     context: [DOCS_URL],
-    run({ cotal }) {
-      materializeCotal(cotal);
-      install("cotal", "user");
-      // Desktop first: a per-project install that cannot be removed fails the step after it.
-      const app = desktop(cotal, true);
-      const removed = retireProjectInstalls();
-      const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
-      return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
+    run({ cotal, signedIn }) {
+      return withPluginLock(() => {
+        const version = materializeCotal(cotal);
+        install("cotal", "user", version);
+        // Desktop first: a per-project install that cannot be removed fails the step after it.
+        const app = desktop(cotal, true, signedIn);
+        const removed = retireProjectInstalls();
+        const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
+        return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
+      });
     },
   },
   refresh: {
@@ -372,20 +604,35 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     title: "Refresh the Claude Code plugin",
     explain: "Rewrites the copy of the Cotal plugin that Claude Code sessions load, and Cotal's entry in Claude Desktop, for this release.",
     context: [DOCS_URL],
-    run({ cotal }) {
-      const code = listPlugins().some((entry) => entry.id === `cotal@${MARKETPLACE}`);
-      const path = desktopConfigPath();
-      const app = path !== undefined && readDesktopEntry(path) !== undefined;
-      if (!code && !app) return "not installed";
-      const version = materializeCotal(cotal);
-      const parts: string[] = [];
-      if (code) {
-        writeMarketplace();
-        parts.push(`cotal@${MARKETPLACE} ${version}; each Claude Code session loads it when it starts`);
-      }
-      const desktopText = app ? desktop(cotal, false) : undefined;
-      if (desktopText) parts.push(desktopText);
-      return parts.join("; ");
+    run({ cotal, skills }) {
+      return withPluginLock(() => {
+        const entries = installedForRefresh();
+        const installs = entries.filter((entry) => entry.id === `cotal@${MARKETPLACE}`);
+        const skillInstalls = entries.filter((entry) => entry.id === `cotal-skills@${MARKETPLACE}`);
+        const path = desktopConfigPath();
+        const app = path !== undefined && readDesktopEntry(path) !== undefined;
+        if (!installs.length && !skillInstalls.length && !app) return "not installed";
+        if (skillInstalls.length && !skills) throw new Error("current skills are required to refresh the installed Claude skills plugin");
+        const version = installs.length || app ? materializeCotal(cotal) : undefined;
+        if (skillInstalls.length) materializeSkills(skills!);
+        if (installs.length || skillInstalls.length) writeMarketplace();
+        const parts: string[] = [];
+        if (installs.length) {
+          const promoted = promoteLocalOnly(installs, version!);
+          const current = promoted === undefined ? installs : listPlugins().filter((entry) => entry.id === `cotal@${MARKETPLACE}`);
+          const warnings = refreshInstalls("cotal", current, version!);
+          if (promoted !== undefined)
+            parts.push(`cotal@${MARKETPLACE} (user scope${promoted ? `, replacing ${promoted} project install${promoted === 1 ? "" : "s"}` : ""})`);
+          parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`, ...warnings);
+        }
+        if (skillInstalls.length) {
+          const warnings = refreshInstalls("cotal-skills", skillInstalls, skills!.version);
+          parts.push(`cotal-skills@${MARKETPLACE} ${skills!.version}`, ...warnings);
+        }
+        const desktopText = app ? desktop(cotal, false) : undefined;
+        if (desktopText) parts.push(desktopText);
+        return parts.join("; ");
+      });
     },
   },
   skills: {
@@ -393,23 +640,12 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     title: "Add Cotal's skills to Claude Code",
     explain: "Installs Cotal's authored skills as a Claude Code plugin.",
     context: [DOCS_URL],
-    run({ skillsDir, version, stateDir }) {
-      const manifestRoot = join(PACKAGE_ROOT, "skills-plugin");
-      if (!existsSync(join(manifestRoot, ".claude-plugin", "plugin.json"))) throw new Error("Claude skills plugin manifest is missing");
-      const payload = join(stateDir, `.claude-skills-payload.${process.pid}`);
-      rmSync(payload, { recursive: true, force: true });
-      try {
-        // Created here, never adopted, like the marketplace staging directory.
-        mkdirSync(stateDir, { recursive: true });
-        mkdirSync(payload);
-        cpSync(join(manifestRoot, ".claude-plugin"), join(payload, ".claude-plugin"), { recursive: true, dereference: true });
-        cpSync(skillsDir, join(payload, "skills"), { recursive: true, dereference: true });
-        materialize("cotal-skills", payload, [".claude-plugin", "skills"], version);
-        install("cotal-skills", "user", version);
+    run(input) {
+      return withPluginLock(() => {
+        materializeSkills(input);
+        install("cotal-skills", "user", input.version);
         return `cotal-skills@${MARKETPLACE} (user scope)`;
-      } finally {
-        rmSync(payload, { recursive: true, force: true });
-      }
+      });
     },
   },
   mcpServers: {
@@ -435,7 +671,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     title: "Claude",
     run(prompt) {
       const sessionArgs = assistSession ? ["--resume", assistSession] : ["--session-id", (assistSession = randomUUID())];
-      const child = spawn("claude", [prompt, "--permission-mode", "auto", ...sessionArgs], { stdio: "inherit" });
+      const child = spawn(claudeCommand(), [prompt, "--permission-mode", "auto", ...sessionArgs], { stdio: "inherit" });
       return new Promise<void>((resolve, reject) => {
         child.on("exit", () => resolve());
         child.on("error", reject);
@@ -444,7 +680,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   },
   status(input) {
     const plugins = pluginList();
-    const app = desktopRow();
+    const app = desktopRow(input.signedIn);
     return [pluginRow(plugins, input), ...(app ? [app] : []), skillsRow(plugins, input)];
   },
 };

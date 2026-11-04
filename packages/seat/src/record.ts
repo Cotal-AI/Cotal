@@ -87,20 +87,43 @@ export function bootToken(): string | undefined {
   }
 }
 
+/** Read one Linux `/proc/<pid>/stat` snapshot. The returned fields start at field 3 (`state`)
+ *  after the final `) `, because `comm` may contain spaces and parentheses. Undefined when the
+ *  entry is absent, unreadable, or malformed. */
+export function processStatFields(pid: number): string[] | undefined {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    if (stat.includes("\0")) return undefined;
+    const prefix = `${pid} (`;
+    if (!stat.startsWith(prefix)) return undefined;
+    const after = stat.lastIndexOf(") ");
+    if (after < prefix.length) return undefined;
+    const rest = stat.slice(after + 2).trim();
+    if (rest.length === 0 || /[\r\n]/.test(rest)) return undefined;
+    const fields = rest.split(/[ \t]+/);
+    if (
+      fields.length < 20 ||
+      !/^[A-Za-z]$/.test(fields[0]!) ||
+      !/^\d+$/.test(fields[1]!) ||
+      !/^\d+$/.test(fields[2]!) ||
+      !/^\d+$/.test(fields[19]!) ||
+      !fields.slice(3, 19).every((f) => /^-?\d+$/.test(f))
+    ) {
+      return undefined;
+    }
+    return fields;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
  *  boot), parsed after the final `)` because comm may hold spaces and parentheses. A zombie still
  *  reports it, so a child that exited before its custodian reaped it is still readable. Undefined
  *  when the pid has no `/proc` entry. */
 export function processStartToken(pid: number): string | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.lastIndexOf(") ");
-    if (after < 0) return undefined;
-    const token = stat.slice(after + 2).split(" ")[19];
-    return token || undefined;
-  } catch {
-    return undefined;
-  }
+  return processStatFields(pid)?.[19];
 }
 
 export function writeRecord(path: string, record: SeatRecord): void {

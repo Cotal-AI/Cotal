@@ -14,15 +14,21 @@ and a **tmux wall** (`mesh-wall.sh`). Both spawn real agents; nothing here is sc
 One command brings up the whole thing (the mesh, the agents, and the web UI):
 
 ```sh
-node tools/studio.mjs                 # the full panel, cast from cotal.yaml
+node tools/studio.mjs                  # the full panel, cast from cotal.yaml
 node tools/studio.mjs -f my-panel.yaml # a smaller cast (your own manifest)
 SPACE=demo PORT=4097 node tools/studio.mjs
 # then open http://127.0.0.1:4097/
 ```
 
+The cast, the channels, the space and the broker come from the manifest (`cotal.yaml` here, or
+`-f <path>`, or `MANIFEST`). The bundled `cotal.yaml` names space `frontier` on an open broker at
+`nats://127.0.0.1:4299`, so it stays off the default `:4222`; `SPACE` overrides the space. The
+studio caps the cast at 10.
+
 What happens end to end, all real:
 
-1. it ensures a Cotal mesh is up (starts `cotal up --open` if one isn't);
+1. it ensures a Cotal mesh is up on the manifest's broker (starts `cotal up --open` if one isn't,
+   or `cotal up` with the manifest's channels when the manifest sets `auth: true`);
 2. it joins as an operator endpoint: **"you"**, the human seat in the room;
 3. it spawns each roster member as a real headless mesh agent (OpenCode + the cotal plugin);
 4. the page renders each agent's animated face driven by that agent's **live** OpenCode stream,
@@ -34,36 +40,36 @@ The bottom box **broadcasts to `#general`** (the whole panel); each face also ha
 operator posts → every (or one) agent's connector turns it into an OpenCode turn → they reply and
 coordinate over the mesh → you watch their faces talk. A face's status dot tracks its real activity
 (thinking / working / speaking); a tile flashes when that agent sends on the mesh. The studio
-fresh-boots the space's history on start, so each run begins clean. Ctrl-C tears it all down.
+clears the space's chat history when it starts the mesh itself, so each such run begins clean; a
+mesh it reuses keeps its history. Ctrl-C tears it all down.
 
 Requires `opencode` (`opencode auth login`) and a built repo (`pnpm build` at the repo root).
 
-The studio needs an **`--open`** mesh (it joins bare, as the operator). If something is already on
-the default port that rejects it (e.g. an existing **auth** mesh on `:4222`), it stops with a clear
-message; run it on its own free port + space instead:
-
-```sh
-SPACE=frontier COTAL_SERVERS=nats://127.0.0.1:4299 node tools/studio.mjs sven david garry
-```
+With an open manifest the studio joins bare, as the operator. If a mesh already on the manifest's
+broker rejects that join, such as an **auth** mesh, it stops and names the fix: stop that mesh with
+`pnpm cotal down`, or give the studio its own free port and space. A manifest without
+`broker.servers` falls back to `COTAL_SERVERS`, then `nats://127.0.0.1:4222`.
 
 ## Quick start (tmux)
 
 Requirements: Node ≥ 22, [OpenCode](https://opencode.ai) (run `opencode auth login` once;
-the personas default to `opencode-go/glm-5.1`), and `tmux`. The mesh's `nats-server` is
-bundled by the CLI, so there's nothing else to install.
+the agent files set `opencode-go/minimax-m3`), `tmux`, and a built repo (`pnpm build`; the wall
+builds the OpenCode plugin itself if it is missing). The CLI bundles a `nats-server`, so there's
+nothing else to install.
 
 ```sh
 # the whole demo in one command: start the mesh, a grid of mesh faces, and the console
-./mesh-wall.sh                 # curated roster + console
+./mesh-wall.sh                 # curated roster (sven, david, elon, garry) + console
 ./mesh-wall.sh sven david      # pick agents (agent-file basenames)
-./mesh-wall.sh all             # every agent (capped at 9 panes)
+./mesh-wall.sh all             # every agent (capped at 10 panes)
 ./mesh-wall.sh --fresh         # wipe the space's chat history first, then start (clean slate)
 ./mesh-wall.sh --stop          # tear it all down + wipe the chat history (clean restart)
 ```
 
 Standard layout: the face grid is on the **left**, the `console` (live mesh traffic) is the
-pane on the **right**, in one tmux window. Each face is a real Cotal mesh peer; type into one and
-the others can see and answer it on the shared space. Switch focus with the mouse or `Ctrl-b
+pane on the **right**, in one tmux window. The wall uses the mesh on `127.0.0.1:4222`, space `demo`
+by default, and starts one there if none answers. Each face is a real Cotal mesh peer; type into one
+and the others can see and answer it on the shared space. Switch focus with the mouse or `Ctrl-b
 ←/→`. Override the model, space, or console width with `MODEL=opencode/<free-model>`,
 `SPACE=demo`, or `CONSOLE_WIDTH=40% ./mesh-wall.sh`.
 
@@ -94,9 +100,12 @@ matrix per the note in `qr-cotal.mjs`.
 
 ## Unattended signage
 
-For a public monitor, run the live studio (above) full-screen; it self-recovers and keeps the
-panel talking. Nudge it occasionally (a question in the prompt box) to keep the conversation moving.
-The studio carries the same Cotal branding as the tmux wall's signage strip.
+For a public monitor, run the live studio (above) full-screen. Two kiosk features are off by
+default: `ATTRACT=1` seeds `#general` after a quiet spell so the panel keeps talking, and
+`AUTO_RESET=1` wipes the transcript and the agents' contexts after long idle so the next visitor
+starts clean. Without them, nudge it occasionally (a question in the prompt box). The studio does
+not restart an agent whose process exits; it logs the exit. The studio carries the same Cotal
+branding as the tmux wall's signage strip.
 
 ## Without the mesh (standalone faces)
 
@@ -119,9 +128,9 @@ node tools/serve-wall.mjs      # then open the printed URL
 ```
 
 `face-term.mjs` flags: `--persona <key>` (`--list` prints all, and any other key is refused),
-`--server`, `--model <provider/id>`, `--session <id>` to attach to an existing session,
-`--password` (default: the `OPENCODE_SERVER_PASSWORD` env) for password-protected servers,
-`--dump` to print the grid as ASCII.
+`--server`, `--model <provider/id>` (default `opencode-go/glm-5.1`), `--session <id>` to attach to
+an existing session, `--password` (default: the `OPENCODE_SERVER_PASSWORD` env) for
+password-protected servers, `--dump` to print the grid as ASCII.
 
 ## What's here
 

@@ -422,6 +422,89 @@ registry.register(recNoResumeCon);
   check("closed-stream launch exit records no live agent", agentCount() === beforeClosed, agentCount());
 }
 
+// A failed reader is not an empty screen. Drive the real launch-exit path with runtime-provided
+// backlog failures, without replacing the manager's reader or its error handling.
+for (const probe of [
+  { name: "tail-error", failure: new TypeError("tail probe failure") },
+  { name: "tail-string", failure: "tail string failure" },
+  { name: "tail-empty" },
+]) {
+  writeFileSync(join(agentsDir, `${probe.name}.md`), `---\nname: ${probe.name}\n---\n`);
+  let reads = 0;
+  const session = {
+    ...fakeSession,
+    backlog: async () => {
+      reads++;
+      if ("failure" in probe) throw probe.failure;
+      return Buffer.alloc(0);
+    },
+  };
+  (mgr as unknown as { runtime: { kind: string; spawn: (name: string) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => ({ name, kind: "fake", status: () => "exited", stop() {}, interrupt() {}, attach: () => session }),
+  };
+  const logs: string[] = [];
+  const log = console.error;
+  const before = agentCount();
+  let reply: { ok: boolean; error?: string };
+  try {
+    console.error = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+    reply = await mgr.startAgent({ name: probe.name, agent: "smoke-rec", events: false });
+  } finally {
+    console.error = log;
+  }
+  check(`${probe.name}: the runtime backlog was read`, reads > 0, reads);
+  check(`${probe.name}: launch still fails as an exit`, !reply.ok && /exited on launch/.test(reply.error ?? ""), reply);
+  check(`${probe.name}: no fabricated child output`, !/last output:/.test(reply.error ?? ""), reply);
+  check(`${probe.name}: leaves no live agent`, agentCount() === before, agentCount());
+  const reason = "failure" in probe ? probe.failure instanceof Error ? probe.failure.message : String(probe.failure) : undefined;
+  check(`${probe.name}: ${reason === undefined ? "empty screen is not a reader failure" : "reader failure names the seat and cause"}`,
+    reason === undefined ? !logs.some((line) => line.includes("last output unavailable"))
+      : logs.some((line) => line.includes(probe.name) && line.includes(reason)), logs);
+}
+
+// The same diagnostic must survive a connector refusing its supervised relaunch.
+{
+  const name = "tail-restart";
+  writeFileSync(join(agentsDir, `${name}.md`), `---\nname: ${name}\n---\n`);
+  let builds = 0, reads = 0, running = true;
+  const exits = new Set<(code: number) => void>();
+  const restartConnector: Connector = {
+    kind: "connector", name: "smoke-tail-restart", requires: ["node"],
+    buildLaunch: () => {
+      if (++builds > 1) throw new Error("recovery build probe");
+      return { command: "true", args: [], env: {} };
+    },
+  };
+  registry.register(restartConnector);
+  const session = {
+    ...fakeSession,
+    backlog: async () => { reads++; throw new TypeError("recovery tail probe"); },
+    onExit: (listener: (code: number) => void) => { exits.add(listener); return () => { exits.delete(listener); }; },
+  };
+  (mgr as unknown as { runtime: { kind: string; spawn: (name: string) => AgentHandle } }).runtime = {
+    kind: "pty",
+    spawn: (name) => ({ name, kind: "pty", status: () => running ? "running" : "exited", stop() { running = false; }, interrupt() {}, attach: () => session }),
+  };
+  const before = agentCount();
+  const started = await mgr.startAgent({ name, agent: "smoke-tail-restart", events: false, supervise: { restarts: 1, windowMs: 60_000 } });
+  check("tail restart: initial launch succeeds", started.ok, started);
+  const logs: string[] = [];
+  const log = console.error;
+  try {
+    console.error = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+    running = false;
+    for (const listener of [...exits]) listener(3);
+    const deadline = Date.now() + 1_000;
+    while (agentsMap().has(name) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  } finally { console.error = log; }
+  check("tail restart: connector relaunch refusal was reached", builds === 2, builds);
+  check("tail restart: runtime backlog failure was reached", reads > 0, reads);
+  check("tail restart: primary recovery failure remains visible", logs.some((line) => line.includes(name) && line.includes("recovery build probe")), logs);
+  check("tail restart: reader failure names the seat and cause", logs.some((line) => line.includes(name) && line.includes("recovery tail probe")), logs);
+  check("tail restart: failed recovery retires the seat", agentCount() === before, agentCount());
+}
+
 // 8 — MISSED-EXIT REAP (#159 B1, review hardening): an agent that joins presence (→ started) then dies in
 // the window before watchExit subscribes would leak — a late onExit subscriber never hears the past event.
 // watchExit re-checks status() right after subscribing and reaps it. Fake handle: status() reports

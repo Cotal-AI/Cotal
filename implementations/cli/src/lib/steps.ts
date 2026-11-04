@@ -1,4 +1,4 @@
-import * as p from "@clack/prompts";
+import * as p from "./prompts.js";
 import type { ConnectorAssist } from "@cotal-ai/core";
 import { inputDisabledByFlag } from "@cotal-ai/workspace";
 import { dim } from "./theme.js";
@@ -87,7 +87,7 @@ async function runOne(step: Step, log: SetupLog, interactive: boolean, assists: 
       if (choice === "retry") continue;
       if (choice === "skip") {
         if (!step.optional) {
-          p.log.warn(`Setup can't continue without "${step.title}". Fix it and re-run: cotal setup`);
+          p.log.warn(`Setup can't continue without "${step.title}". Fix it and re-run: \`cotal setup\``);
           return false;
         }
         log.line(`${step.name}: skipped (after failure)`);

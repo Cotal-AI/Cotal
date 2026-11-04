@@ -12,7 +12,8 @@
  * `openMembersRegistry` / `openAclRegistry`.
  */
 import { Kvm, type KV } from "@nats-io/kv";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { dialerFor } from "./endpoint.js";
 import { deliveryBucket, leaseKey, principalKey, DEV_OWNER } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
 import { standaloneConnectOpts } from "./streams.js";
@@ -112,9 +113,9 @@ export async function waitForDeliveryLease(opts: {
   timeoutMs?: number;
 }): Promise<boolean> {
   const deadline = Date.now() + (opts.timeoutMs ?? 8000);
-  let nc: Awaited<ReturnType<typeof connect>> | undefined;
+  let nc: NatsConnection | undefined;
   try {
-    nc = await connect({
+    nc = await dialerFor(opts.servers)({
       servers: opts.servers,
       authenticator: credsAuthenticator(new TextEncoder().encode(opts.creds)),
       inboxPrefix: `_INBOX_${opts.id}`,
@@ -209,7 +210,7 @@ export async function awaitDeadDeliveryLease(opts: {
   ttlMs: number;
   onWait: (remainingMs: number) => void;
 }): Promise<"free" | "other-holder" | LeaseExpiryWait> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: opts.tls }), maxReconnectAttempts: 5 });
+  const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: opts.tls }), maxReconnectAttempts: 5 });
   try {
     const kv = await openDeliveryRegistry(nc, opts.space);
     const read = async () => {

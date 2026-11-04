@@ -9,6 +9,7 @@ import {
 import {
   SEEDED_EXTENSIONS,
   CommandFailure,
+  runtimeInstallHint,
   jsonFlag,
   plainFlag,
   connectorInstallHint,
@@ -24,18 +25,9 @@ import {
 import { c } from "./ui.js";
 import { cliVersion } from "./lib/version.js";
 
-/** The official first-party runtimes, name → npm package. This is NOT authority — registration is
- *  still explicit (`cotal ext add` installs the package; importing it self-registers the provider).
- *  It is the CLI's UX source of truth so an uninstalled runtime error names a REAL package, a typo
- *  says "unknown" instead of inventing `@cotal-ai/<typo>`, and `cotal runtimes` can list what's one
- *  `cotal ext add` away. A third-party runtime installs under its own package name and, once added,
- *  resolves like any other — it just isn't listed here up front. */
-export const OFFICIAL_RUNTIMES: Readonly<Record<string, string>> = {
-  orca: "@cotal-ai/orca",
-  tmux: "@cotal-ai/tmux",
-  cmux: "@cotal-ai/cmux",
-  herdr: "@cotal-ai/herdr",
-};
+/** The official runtimes and the name list live in workspace, beside the connector table, so the
+ *  manager phrases the same refusal without importing the CLI. Re-exported for this package's readers. */
+export { OFFICIAL_RUNTIMES, knownRuntimeNames } from "@cotal-ai/workspace";
 
 /** The host tool each official runtime drives, for `cotal setup` to show before the package is
  *  installed: any one of `names` on PATH counts, and the driver's `override` variable, when set,
@@ -48,19 +40,12 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
   herdr: { names: ["herdr"] },
 };
 
-/** Every runtime name the CLI knows about without importing anything: `pty` (built in) + the officials. */
-export function knownRuntimeNames(): string[] {
-  return ["pty", ...Object.keys(OFFICIAL_RUNTIMES)];
-}
-
-/** The error for a runtime that has no installed provider: name the exact package for an official
- *  runtime, else say it's unknown and list the ones the CLI knows — never invent an `@cotal-ai/<name>`
- *  package for a typo (a custom provider installs under its own package name). */
-function unknownRuntimeError(name: string): string {
-  const pkg = OFFICIAL_RUNTIMES[name];
-  if (pkg) return `no installed extension provides runtime "${name}" - install it with \`cotal ext add ${pkg}\``;
-  return `unknown runtime "${name}" (known: ${knownRuntimeNames().join(", ")}) - install a provider with \`cotal ext add <npm-package>\`, or check the name`;
-}
+/** The commands official first-party extensions add that the binary does not seed, command name →
+ *  npm package, so running one before its extension is added names the package. Not authority, as
+ *  for {@link OFFICIAL_RUNTIMES}: the command exists only once `cotal ext add` installs it. */
+export const OFFICIAL_COMMANDS: Readonly<Record<string, string>> = {
+  linear: "@cotal-ai/linear",
+};
 
 /**
  * The installed-extensions loader — opt-in for the PUBLISHED binary only (`runCli(…, { extensions:
@@ -195,9 +180,9 @@ export function overlayExtensions(reg: Registry): Command[] {
 /** An obsolete first-party descriptor is diagnostic only. Preserve normal collision ownership,
  *  but never import its old command, repair the installation, or suggest removing the dashboard. */
 function obsoleteWebCommand(): Command {
-  const refuse = (): never => { throw new CommandFailure("refused", "CONFLICT", "this installed dashboard still declares the retired web command; no package was loaded, removed or reinstalled", { remedy: "run cotal update to refresh the matching @cotal-ai/web service preset; then use cotal service add web --preset web with its explicit options" }); };
+  const refuse = (): never => { throw new CommandFailure("refused", "CONFLICT", "this installed dashboard still declares the retired web command; no package was loaded, removed or reinstalled", { remedy: "run `cotal update` to refresh the matching @cotal-ai/web service preset; then use `cotal service add web --preset web` with its explicit options" }); };
   return { kind: "command", name: "web", hidden: true, rawArgs: true,
-    summary: "outdated dashboard descriptor; refresh it with cotal update",
+    summary: "outdated dashboard descriptor; refresh it with `cotal update`",
     flags: [jsonFlag, plainFlag], outputs: ["json", "plain"], prepareMeshTarget: false,
     validate: refuse, run: refuse,
   };
@@ -228,7 +213,7 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
   return materializeFromManifest<T>(ref, {
     hint: (r) =>
       r.kind === "runtime"
-        ? unknownRuntimeError(r.name)
+        ? runtimeInstallHint(r.name)
         : r.kind === "connector"
           ? connectorInstallHint(r.name)
           : `no installed extension provides ${r.kind} "${r.name}" - install it with \`cotal ext add <npm-package>\``,

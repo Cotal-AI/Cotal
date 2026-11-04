@@ -2,7 +2,7 @@
  * Claude seat env: the documented auth vars must reach the child; host-session markers must not.
  *
  * THE BLOCKER THIS GRADES. After launchEnv stopped inheriting, CLAUDE_CODE_OAUTH_TOKEN (the name
- * docs/deploy.md and deploy/ tell operators a container Claude authenticates with) was silently
+ * docs/deploy.mdx and deploy/ tell operators a container Claude authenticates with) was silently
  * absent: this connector called launchEnv with no providerKeys. A container has no Keychain, so
  * the seat boots and then cannot reach Anthropic. That is the fallback failure mode an allowlist
  * must not have: dropping a credential the docs promise.
@@ -19,6 +19,7 @@
  * Run: pnpm smoke:claude-launch-env
  */
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
 
 let pass = 0;
@@ -178,19 +179,27 @@ check(
 );
 
 // A managed seat has nobody at its terminal to answer a permission prompt, so the launch bypasses
-// prompts unless the operator's launch options name a permission flag themselves.
+// prompts unless the operator's launch options name a permission flag themselves. The manager marks
+// a managed launch with its `cwd`; a foreground launch has none and keeps Claude's own mode.
 const permissionModes = (args: string[]): string[] =>
   args.flatMap((a, i) => (a === "--permission-mode" ? [args[i + 1] ?? ""] : []));
-const defaultArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-3", events: false } as never).args;
+const defaultArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-3", events: false, cwd: tmpdir() } as never).args;
 check(
-  "a launch with no permission option bypasses permission prompts",
+  "a managed launch with no permission option bypasses permission prompts",
   JSON.stringify(permissionModes(defaultArgs)) === JSON.stringify(["bypassPermissions"]),
   permissionModes(defaultArgs),
+);
+const foregroundArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-6", events: false } as never).args;
+check(
+  "a foreground launch with no permission option keeps Claude's own mode",
+  permissionModes(foregroundArgs).length === 0 && !foregroundArgs.includes("--dangerously-skip-permissions"),
+  foregroundArgs.filter((a) => a.includes("permission")),
 );
 const promptedArgs = claudeConnector.buildLaunch({
   space: "smoke",
   name: "claude-4",
   events: false,
+  cwd: tmpdir(),
   launchOptions: { "permission-mode": "default" },
 } as never).args;
 check(

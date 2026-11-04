@@ -25,7 +25,7 @@ async function main() {
   const { nativeRemoteManager } = await import("./_native-remote-manager.js");
   const { nativeAccountConnections } = await import("./_native-account-connections.js");
   const { remoteManagerClient } = await import("../dist/index.js");
-  const { meshSessionTransport } = await import("../../cli/src/lib/attach-client.js");
+  const { meshSessionTransport } = await import("../../../packages/workspace/src/attach/attach-client.js");
   await import("../../runtime/dist/index.js");
   const { emitSentinel } = await import("@cotal-ai/smoke-kit");
   const { openAuthorityClient } = await import("../../auth/dist/authority-client.js");
@@ -94,8 +94,8 @@ async function main() {
     check("noexec cannot steal class spawn while participant is available", !controlServe!.subscriptions.includes(classSpawn) && participantServe!.subscriptions.includes(classSpawn));
     const exchange = async (body: any, publicFace = true) => { const response = await fetch(`${publicFace ? service!.publicUrl : service!.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", ...(!publicFace ? { authorization: `Bearer ${service!.cap}` } : {}) }, body: JSON.stringify(body) }); return { status: response.status, body: await response.json() as any }; };
     const ex = await exchange({ idpToken: token, actor: "cli", view: "manager-caller", managerInstanceId: participant.state.instanceId });
-    check("stock exchange issues immutable participant-scoped manager-caller", ex.status === 200 && ex.body.managerInstanceId === participant.state.instanceId);
     const claims = decodeJwt(ex.body.token) as any;
+    check("stock exchange issues immutable participant-scoped manager-caller", ex.status === 200 && claims.act.managerInstanceId === participant.state.instanceId);
     const connectOptions = standaloneConnectOpts({ bearer: ex.body.token, sentinelCreds: a.sentinelCreds, tls: false });
     caller = await connect({ servers: fx.servers, ...connectOptions });
     const issued = await issuedUserCaller(caller, a.space, String(connectOptions.name), { owner, actor: "cli", uid: claims.act.lifecycleUid });

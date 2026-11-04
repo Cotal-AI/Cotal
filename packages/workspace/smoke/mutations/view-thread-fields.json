@@ -1,0 +1,56 @@
+{
+  "command": "pnpm smoke:view-thread-fields",
+  "mutations": [
+    {
+      "name": "F1 replyTo is dropped, so a surface cannot list the replies to you",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "    ...(msg.replyTo !== undefined ? { replyTo: msg.replyTo } : {}),",
+      "replace": "",
+      "expectRed": "a live channel row carries replyTo",
+      "cell": "a live channel row carries replyTo"
+    },
+    {
+      "name": "F2 mentions are dropped, so a surface cannot list the messages that call you out",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "    ...(msg.mentions?.length ? { mentions: [...msg.mentions] } : {}),",
+      "replace": "",
+      "expectRed": "a live channel row carries the mentioned names",
+      "cell": "a live channel row carries the mentioned names"
+    },
+    {
+      "name": "F3 contextId is dropped, so a DM row loses the conversation id its sender set",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "    ...(msg.contextId !== undefined ? { contextId: msg.contextId } : {}),",
+      "replace": "",
+      "expectRed": "a DM row carries contextId",
+      "cell": "a DM row carries contextId"
+    },
+    {
+      "name": "F4 the history prefill skips the fields, so a row read from history loses what the live row keeps",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "          channel: msg.channel,\n          ...threadFields(msg),",
+      "replace": "          channel: msg.channel,",
+      "expectRed": "a history row carries replyTo",
+      "cell": "a history row carries replyTo"
+    },
+    {
+      "name": "F5 a coalesced DM row skips the fields, so the burst path drops them",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "      ...b.thread,\n",
+      "replace": "",
+      "expectRed": "a DM row carries replyTo",
+      "cell": "a DM row carries replyTo"
+    },
+    {
+      "name": "F6 the burst key ignores the fields, so two DMs with the same text but different context ids collapse into one row that keeps only the first id",
+      "file": "packages/workspace/src/view/mesh-view.ts",
+      "find": "    const key = JSON.stringify([msg.from.id, body, thread]);",
+      "replace": "    const key = JSON.stringify([msg.from.id, body]);",
+      "expectRed": "two DMs that differ only in contextId stay two rows, each with its own",
+      "cell": "two DMs that differ only in contextId stay two rows, each with its own"
+    }
+  ],
+  "suite": [
+    "packages/workspace/smoke/view-thread-fields.smoke.ts"
+  ]
+}

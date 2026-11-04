@@ -7,21 +7,21 @@
     {
       "name": "disable implicit foreground collision allocation",
       "file": "implementations/cli/src/commands/spawn.ts",
-      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError)) throw e;",
-      "replace": "      if (!autoName || process.pid > 0 || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError)) throw e;",
+      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
+      "replace": "      if (!autoName || process.pid > 0 || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
       "expectRed": "implicit foreground launch allocates a fresh actor while prior material is held"
     },
     {
       "name": "ignore an explicit actor pin on collision",
       "file": "implementations/cli/src/commands/spawn.ts",
-      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError)) throw e;",
-      "replace": "      if (!(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError)) throw e;",
+      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
+      "replace": "      if (!(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
       "expectRed": "explicit held identity never launches a replacement"
     },
     {
       "name": "treat an ordinary authorization failure as name occupancy",
       "file": "implementations/cli/src/commands/spawn.ts",
-      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError)) throw e;",
+      "find": "      if (!autoName || !(e instanceof ForegroundActorCollision || e instanceof AgentGrantConflictError || e instanceof AgentAlreadyRunning)) throw e;",
       "replace": "      if (!autoName || !(e instanceof Error)) throw e;",
       "expectRed": "ordinary authorization refusal never launches"
     },

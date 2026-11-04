@@ -30,6 +30,7 @@ import { resolveNatsServer } from "./nats-bin.js";
 
 const LOOPBACK = "127.0.0.1";
 const BOOT_TIMEOUT_MS = 15_000;
+const RELOAD_TIMEOUT_MS = 15_000;
 
 export interface PrivateAttemptsDirectory {
   path: string;
@@ -95,6 +96,27 @@ function freePort(): Promise<number> {
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** Whether every isolated broker and watchdog started under `root` is proven gone. Each start
+ *  creates its handshake file before it spawns the watchdog, and the watchdog writes both pids into
+ *  it, so this covers a process the attempt started but never recorded in its claim. A handshake the
+ *  watchdog never completed, or a pid that is not proven gone (ESRCH), is not proof. */
+export function attemptProcessesGone(root: string): boolean {
+  const attempts = join(resolve(root), ".cotal", "maintenance", "attempts");
+  let names: string[];
+  try { names = readdirSync(attempts); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  for (const name of names.filter((entry) => entry.endsWith(".pids"))) {
+    let pids: { broker?: unknown; watchdog?: unknown } | null;
+    try { pids = JSON.parse(readFileSync(join(attempts, name), "utf8")) as typeof pids; } catch { return false; }
+    for (const pid of [pids?.broker, pids?.watchdog]) {
+      if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
+      try { process.kill(pid, 0); return false; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+    }
+  }
+  return true;
 }
 
 function owner(child: ChildProcess, id: string): ProcessOwner {
@@ -330,14 +352,14 @@ export async function startIsolatedBroker(options: {
   mode: MaintenanceAuthMode;
   auth?: SpaceAuth;
   deadline: Date;
-  label: "backup" | "restore" | "quarantine";
+  label: "backup" | "restore" | "quarantine" | "previous";
   initialScope: IsolatedMaintenanceScope;
   /** Attempt id prefixing the run files, tying them to the journaled maintenance attempt. */
   attemptId?: string;
 }): Promise<IsolatedBroker> {
   const port = await freePort();
   const server = `nats://${LOOPBACK}:${port}`;
-  const { bin } = await resolveNatsServer();
+  const { path: bin } = await resolveNatsServer();
   const attempts = ensurePrivateAttemptsDir(options.root);
   const runDir = attempts.path;
   // Every mode gets the same single-principal, exact-subject permission matrix. Open mode differs
@@ -457,13 +479,20 @@ export async function startIsolatedBroker(options: {
           } catch {
             throw new Error(`${options.label} broker is not running for its maintenance-login reload`);
           }
-          await delay(100);
-          const reloadDiagnostics = readLogTail();
-          if (/Failed to reload server configuration/.test(reloadDiagnostics))
-            throw new Error(`${options.label} broker rejected its maintenance-login reload: ${reloadDiagnostics.trim()}`);
-          if (!/Reloaded server configuration/.test(reloadDiagnostics))
-            throw new Error(`${options.label} broker did not confirm its maintenance-login reload`);
-          return login;
+          // Accumulate partial lines from this operation's fresh cursor. A preceding phase's
+          // acknowledgement cannot confirm its replacement principal.
+          const reloadDeadline = Math.min(options.deadline.getTime(), Date.now() + RELOAD_TIMEOUT_MS);
+          let reloadDiagnostics = "";
+          while (Date.now() < reloadDeadline) {
+            if (!alive(brokerOwner!.pid))
+              throw new Error(`${options.label} broker exited during its maintenance-login reload: ${reloadDiagnostics.trim()}`);
+            reloadDiagnostics += readLogTail();
+            if (/Failed to reload server configuration/.test(reloadDiagnostics))
+              throw new Error(`${options.label} broker rejected its maintenance-login reload: ${reloadDiagnostics.trim()}`);
+            if (/Reloaded server configuration/.test(reloadDiagnostics)) return login;
+            await delay(Math.min(50, Math.max(0, reloadDeadline - Date.now())));
+          }
+          throw new Error(`${options.label} broker did not confirm its maintenance-login reload`);
         },
         async stop() {
           await stopByPid(brokerOwner!.pid, 8_000);

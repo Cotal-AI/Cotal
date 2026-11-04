@@ -36,8 +36,8 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentCredsDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, mintConnectionEvictorCreds, mintMembershipObserverCreds } from "@cotal-ai/core";
+import { agentCredsDir, saveSpaceAuth, spaceMaterialDir } from "@cotal-ai/workspace";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { doctor } from "../src/commands/doctor.js";
 
@@ -53,6 +53,11 @@ const now = Math.floor(Date.now() / 1000);
 const root = mkdtempSync(join(tmpdir(), "cotal-doctor-superseded-"));
 mkdirSync(join(root, ".cotal", "auth", "creds"), { recursive: true });
 saveSpaceAuth(join(root, ".cotal", "auth"), auth);
+// A started root holds the $SYS pair its first `up` minted with the trust; doctor reports either one missing.
+const sysDir = spaceMaterialDir(root, SPACE);
+mkdirSync(sysDir, { recursive: true, mode: 0o700 });
+writeFileSync(join(sysDir, "membership-observer.creds"), await mintMembershipObserverCreds(auth, newIdentity()), { mode: 0o600 });
+writeFileSync(join(sysDir, "connection-evictor.creds"), await mintConnectionEvictorCreds(auth, newIdentity()), { mode: 0o600 });
 
 const credsDir = agentCredsDir(root, SPACE);
 mkdirSync(credsDir, { recursive: true });

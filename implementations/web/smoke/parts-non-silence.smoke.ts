@@ -1,7 +1,7 @@
 /**
  * The dashboard must never render a message part as nothing.
  *
- * `app.js` and `graph.js` each carried
+ * The old console and graph pages each carried
  *   (msg.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ")
  * and `JSON.stringify(undefined)` returns the VALUE `undefined`, which `join` coerces to "". So a
  * part with no `data` field vanished, and its KIND was never named. A data-BEARING extension part
@@ -9,44 +9,40 @@
  * replace it with a marker.
  *
  * The downstream consequence differed by surface, and saying "both showed a blank line" was wrong:
- * `app.js` renders through `MD.render(text || "")`, so an empty rendering really is a blank body,
- * while `graph.js`'s detail row renders `esc(m.text).slice(0, 160) || "—"` and showed a visible dash
- * in a row still carrying mode, sender and channel. Both failed to name the kind; only one looked
+ * the console page rendered through `MD.render(text || "")`, so an empty rendering really was a
+ * blank body, while the graph page's detail row rendered `esc(m.text).slice(0, 160) || "—"` and
+ * showed a visible dash in a row still carrying mode, sender and channel. Both failed to name the kind; only one looked
  * like nothing had arrived.
  *
  * WHAT THESE CELLS DRIVE, AND WHY IT IS NOT A RESTATEMENT OF THE FIX. The renderer under test is
- * READ OFF DISK AND EVALUATED — the actual `src/web/parts.js` the browser is served, in a `vm`
- * context with a stub `window`, exactly as a classic `<script>` would run it. Nothing here
- * re-declares the renderer, so a cell cannot pass against a version of the function that no longer
- * exists. The route table is likewise the REAL `PAGE` export from `web.ts`, not a copy of its keys.
+ * the actual `client/src/lib/parts.ts` module, imported as the client bundle imports it. Nothing
+ * here re-declares the renderer, so a cell cannot pass against a version of the function that no
+ * longer exists.
  *
- * WHAT THEY DO NOT CLAIM. These cells measure the NO-RENDERER path, the fallbacks `parts.js` takes
+ * WHAT THEY DO NOT CLAIM. These cells measure the NO-RENDERER path, the fallbacks `parts.ts` takes
  * for a kind nothing has taught it, and that is now a precondition rather than the only case, since
- * `parts.js` consults a renderer registry and `agui-frame.js` registers into it. The precondition is
+ * `parts.ts` consults a renderer registry and `aguiFrame.ts` registers into it. The precondition is
  * asserted below, not assumed. Frame RENDERING and its parity with the node renderer belong to
- * `agui-frame-dispatch.smoke.ts` and `bin/smoke/agui-render-parity.smoke.ts`. The dashboard's
+ * `agui-frame-dispatch.smoke.ts` and `agui-render-parity.smoke.ts`. The dashboard's
  * `events.*` filter is still separate, unbuilt work: the console's filter lives in `MeshView`, which
- * these pages do not use. Nothing here says how a frame should be drawn.
+ * the dashboard client does not use. Nothing here says how a frame should be drawn.
  *
- * AND THE EXACT EDGE OF THE REACH CLAIM, because it moved once already and could be overread again.
- * Three things are checked and they are not the same thing: the shared renderer is SERVED and LOADED
- * before its consumers; each consumer's own declaration, executed, RETURNS the marker; and each
- * consumer is actually CALLED downstream. That last cell exists because a review replaced all five
- * downstream calls with "" and the executed-declaration cells stayed green — a correct helper nobody
- * invokes. What is still NOT measured is the last hop: `bodyBlock`/`MD.render` in `app.js` and
- * `recentRows` in `graph.js` turn that text into DOM, and no cell here opens a browser or asserts
- * rendered HTML. So these cells prove the marker is produced and the producer is wired in — not that
- * it survives to the pixels.
+ * AND THE EXACT EDGE OF THE REACH CLAIM. Two things are checked and they are not the same thing: the
+ * renderer RETURNS the marker, and the shell DRAWS it. That last pair of cells exists because a
+ * review replaced all five downstream calls with "" and the cells over the declaration stayed green:
+ * a correct helper nobody invokes. It renders the shell to HTML on the server (`render-shell.ts`,
+ * `renderToString` over a seeded store) and checks that the message body in that HTML carries the
+ * renderer's text and its marker. The body is drawn by `MessageRow`, which renders it as Markdown,
+ * and the Markdown sanitizer needs a DOM, so jsdom is installed first (`dom-globals.ts`). That
+ * DOM serves the sanitizer only: no cell here mounts the page or looks at pixels. So these cells
+ * prove the marker is produced and is in the shell's server-rendered HTML, not that a browser
+ * paints it.
  */
+import { closeDom } from "./dom-globals.js";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createContext, runInContext } from "node:vm";
-import { PAGE } from "../src/web.js";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const webSrc = join(here, "..", "src", "web");
+import type { CotalMessage } from "../client/src/api/types.js";
+import { partsToText } from "../client/src/lib/parts.js";
+import { renderShell, unescapeHtml } from "./render-shell.js";
 
 let cells = 0;
 const ok = (name: string, cond: boolean, detail?: unknown) => {
@@ -55,16 +51,11 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
   console.log(`  ok  ${name}`);
 };
 
-// ── The renderer, loaded the way the browser loads it ────────────────────────────────────────────
-// A classic script assigning to `window`. If parts.js ever became an ES module, or stopped
-// publishing `COTAL_PARTS`, this throws here rather than silently leaving `partsToText` undefined.
-const partsSource = readFileSync(join(webSrc, "parts.js"), "utf8");
-const sandbox: { window: Record<string, unknown> } = { window: {} };
-runInContext(partsSource, createContext(sandbox), { filename: "parts.js" });
-const api = sandbox.window.COTAL_PARTS as { partsToText(parts: unknown[]): string } | undefined;
-ok("parts.js publishes COTAL_PARTS.partsToText on window (classic-script contract)",
-  typeof api?.partsToText === "function", { got: typeof api?.partsToText });
-const render = (parts: unknown[]) => api!.partsToText(parts);
+// ── The renderer, imported the way the client bundle imports it ──────────────────────────────────
+// `aguiFrame.ts` is deliberately NOT imported here: these cells measure the no-renderer fallbacks, so
+// the registry must hold nothing for `ag-ui.frame`. `agui-frame-dispatch.smoke.ts` owns the case where
+// it does.
+const render = (parts: unknown[]) => partsToText(parts);
 
 // ── POSITIVE CONTROL on the detector, before any absence-shaped claim ────────────────────────────
 // If the renderer could not produce the ordinary case, every marker cell below would be measuring a
@@ -134,9 +125,10 @@ ok("a data part WITH data still renders its JSON (unchanged behaviour)",
 // REGRESSION VECTOR. A data-bearing EXTENSION kind was already visible through the old expression,
 // which rendered `{"x":1}` for this exact part. A first version of the renderer sent every non-core
 // kind straight to the marker and threw that away — removing information while claiming to add it.
-// Core is explicit that an unknown extension kind still falls back to its `data` on purpose
-// (`packages/core/src/parts.ts:12-13`). The cell pins BOTH halves, because either alone passes on a
-// defect: the data must survive, and the kind must be named beside it.
+// The browser's no-renderer branch in `src/web/parts.js` keeps an extension's JSON on purpose;
+// core's `partText` in `packages/core/src/parts.ts` returns only the unrenderable marker for that
+// kind without a registered renderer. The cell pins BOTH halves, because either alone passes on
+// a defect: the data must survive, and the kind must be named beside it.
 const ext = render([{ kind: "com.acme.snapshot", data: { x: 1 } }]);
 ok("a data-bearing extension keeps its data (it was visible before; dropping it is a regression)",
   ext.includes('{"x":1}'), { got: ext });
@@ -146,74 +138,29 @@ ok("an artifact part renders its actionable digest form",
   render([{ kind: "artifact", name: "x.txt", mediaType: "text/plain", size: 3, digest: "sha256:ab" }])
     === "[artifact x.txt (text/plain, 3 bytes) sha256:ab]");
 ok("no parts at all is still the empty string (absence of content, not a dropped part)",
-  render([]) === "" && api!.partsToText(undefined as unknown as unknown[]) === "");
+  render([]) === "" && partsToText(undefined) === "");
 
-// ── REACH: a shared renderer no page loads is dead code that still passes every cell above ───────
-// The route table is the real exported map, so a missing row fails here exactly as the browser
-// would 404.
+// ── REACH ─────────────────────────────────────────────────────────────────────────────────────────
+// The old pages loaded `/parts.js` ahead of their scripts and the cells here checked that order; the
+// client bundle orders its own modules, so there is no load order to assert. What is left to prove
+// is that the shell, which draws message bodies, renders them through the shared renderer. A correct
+// helper nobody invokes is the defect this cell exists for.
 //
-// NON-VACUITY IS PINNED BY COUNTING, NOT ASSERTED. An earlier version of this comment claimed
-// `.some()` was "used throughout" and was the mechanism — the suite contains no `.some()` call at
-// all, so the only occurrence of that word was the sentence claiming it. Both tables below are
-// fixed literals and their lengths are checked before the loops run, so a table that lost an entry
-// fails instead of quietly iterating fewer times.
-const served = PAGE["/parts.js"];
-ok("web.ts SERVES /parts.js from its allow-list (a missing row is a 404 for both pages)",
-  Boolean(served) && served.type.startsWith("text/javascript"), { served });
-ok("and the row points at the file this suite just evaluated",
-  Boolean(served) && readFileSync(served.path, "utf8") === partsSource, { path: served?.path });
-
-// Both pages must load it, and load it BEFORE the script that calls it: a classic script reading a
-// global defined by a LATER script gets `undefined` and throws in the browser only.
-const PAGES = [["index.html", "app.js"], ["graph.html", "graph.js"]] as const;
-ok("both pages are covered (a short table would silently check fewer)", PAGES.length === 2, { n: PAGES.length });
-for (const [page, consumer] of PAGES) {
-  const html = readFileSync(join(webSrc, page), "utf8");
-  const partsAt = html.indexOf('src="/parts.js"');
-  const consumerAt = html.indexOf(`src="/${consumer}"`);
-  ok(`${page} loads /parts.js`, partsAt !== -1, { partsAt });
-  ok(`${page} loads /parts.js BEFORE ${consumer} (later would leave the global undefined)`,
-    partsAt !== -1 && consumerAt !== -1 && partsAt < consumerAt, { partsAt, consumerAt });
+// The shell (`client/src/Shell.tsx`) is rendered on the server on a channel route, the channel open
+// and holding one message, and its HTML is read: the body is the centre's `<main>`, drawn by the
+// channel view through `ui/MessageRow.tsx`.
+// This proves what the shell draws, not that its text survives to the pixels: no cell here opens a
+// browser. `Shell` does not import `aguiFrame.ts`, so the registry stays empty for the cells above
+// and below.
+{
+  const parts = [{ kind: "text", text: "before" }, { kind: "data" }, { kind: "text", text: "after" }];
+  const msg = { id: "m1", from: { id: "alice" }, parts } as unknown as CotalMessage;
+  const html = renderShell({ open: { channel: "general", messages: [{ msg }] } }, { view: "channel", channel: "general" });
+  const body = unescapeHtml(/<main[^>]*>([\s\S]*?)<\/main>/.exec(html)?.[1] ?? "");
+  ok("the shell renders message bodies through partsToText", body.includes(partsToText(parts)), { body, want: partsToText(parts) });
+  ok("and what it draws is the shared renderer's text, marker included, not a body of its own",
+    body.includes("[empty data part]") && !body.includes("undefined"), { body });
 }
 
-// ── The copies are actually GONE, read from the shipped files rather than assumed ─────────────────
-// Deleting the duplicated expression is the point of the change; a surface that still carries its
-// own copy is unfixed no matter what the shared renderer does.
-// A substring check proves the shared call was TYPED, not that the consumer reaches the marker. So
-// each consumer's own declaration is LIFTED OUT OF THE SHIPPED FILE and executed against the real
-// renderer. Neither page can be evaluated whole — both drive the DOM at load — so the declaration
-// is extracted rather than the module imported; it is still the shipped text, never a copy of it.
-const CONSUMERS = [["app.js", "bodyText"], ["graph.js", "partsText"]] as const;
-ok("both consumers are covered (a short table would silently check fewer)",
-  CONSUMERS.length === 2, { n: CONSUMERS.length });
-for (const [file, callsite] of CONSUMERS) {
-  const src = readFileSync(join(webSrc, file), "utf8");
-  const decl = new RegExp(`const ${callsite} = [^;]*;`).exec(src)?.[0];
-  ok(`${file} declares ${callsite} in one extractable statement`, Boolean(decl), { decl });
-
-  // DOWNSTREAM REACH. Executing the declaration proves the helper is correct, NOT that anything
-  // calls it: with every downstream call replaced by "", the extracted cells below still return the
-  // marker and this suite was green. So the helper must also be REACHED. The declaration spells
-  // `const <name> = (`, so `<name>(` matches call sites only.
-  const calls = [...src.matchAll(new RegExp(`\\b${callsite}\\(`, "g"))].length;
-  ok(`${file} actually CALLS ${callsite} downstream (a dead helper passes every renderer cell)`,
-    calls > 0, { calls });
-
-  // The consumer runs in a context holding the REAL renderer, so this executes the exact path the
-  // browser takes: page expression → shared renderer → text.
-  const ctx: { window: Record<string, unknown>; out?: string } = { window: {} };
-  const c = createContext(ctx);
-  runInContext(partsSource, c, { filename: "parts.js" });
-  runInContext(`${decl}\nout = ${callsite}({ parts: [{ kind: "ag-ui.frame", frame: {} }] });`, c,
-    { filename: `${file} (${callsite})` });
-  ok(`${file}'s own ${callsite} renders the marker for a frame (the shipped expression, executed)`,
-    ctx.out === '[unrenderable part kind "ag-ui.frame" — no renderer for it on this surface]',
-    { got: ctx.out });
-
-  // Matched on the vanishing FALLBACK, not on the whole expression: that is the part that erased
-  // the message, and a reformatted copy would still carry it.
-  ok(`${file} no longer carries the vanishing JSON.stringify(p.data) fallback`,
-    !/JSON\.stringify\(p\.data\)/.test(src), { file });
-}
-
+await closeDom();
 console.log(`\n${cells} cells green`);

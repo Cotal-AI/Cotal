@@ -68,7 +68,8 @@ the hand acceptance. SPEC §13 gains one new subsection, §13.16.
 Out of scope: any change to the `manager-service` view or the `platform-control` view of the
 platform-control record, any change to its R1 to R9 or its H1 to H15, a standing delegation grant,
 an admin or operator path, a generic delegation framework, child bootstrap outside the holder's
-filesystem (#2420 owns that and has no frozen design yet), release.
+filesystem (#2420 owns that; it had no frozen design when this record was written and has since
+shipped as [portable lifecycle bootstrap](portable-lifecycle-bootstrap.md)), release.
 
 ## 3. The composition
 
@@ -788,9 +789,9 @@ platform-control door, the platform's own route for the holder, its Runtime, and
 | A20 | Admit a launch and stop the host after the consuming CAS and before step 8's activation (a breakpoint, then kill). Read the head and gate at the pinned UID, then restart it | before the restart there is no gate at the pinned UID and no row; the sweeper activates that UID, the managed retire door answers `retired: true`, the head and gate are `retired` there, and the record is `aborted`; no row exists at any point |
 | A21 | Admit a launch and stop the host inside step 8's activation, after the gate at the pinned UID is created `frozen` and before the head CAS (a breakpoint, then kill). Restart it | the sweeper's activation adopts that frozen gate and completes it, then the end state of A20 |
 | A22 | Admit a launch of `w4` while `U`'s own manager has `w4` running, so the head is `active` at another UID, and stop the host after the consuming CAS (a breakpoint, then kill). Restart it, then retire `U`'s own `w4` | while that `w4` runs, the sweeper's activation is refused, the record keeps no `outcome`, no row or gate exists at the pinned UID, and a new `w4` launch admission is `failed-precondition`; after the retirement the next scan activates and retires the pinned UID and ends the record `aborted` |
+| A23 | Run A19, and while the first process is still held, as `U` admit a new launch of `w1`, and have `U`'s own remote manager enroll `w1`; then release the first process, and launch `w1` again | while the first process is held both are `failed-precondition` with no row written; after its release sets `released`, the new launch is admitted and `enrolled` at a fresh UID, the ledger row for `w1` is at that UID, and it stays there: the first process writes nothing more |
 | A24 | Admit a launch of `w5` and make its durable provisioning throw `unavailable` once, after the ledger write (a breakpoint that throws). Keep the host running, advance the assignment revision, then have the holder resend the same request | the resend joins a new flight that resumes at step 7 and is refused there; that flight revokes the grant at the pinned UID, the managed retire door answers `retired: true`, the head and gate are `retired` there, the record is `aborted` with no `released`, the alias is free, and the resend answers `permission-denied` |
 | A25 | Run A24, and in its compensation make the head's `active` to `retiring` write throw `unavailable` once, right after the barrier froze the gate (a breakpoint that throws). Keep the host running and let its next scan retry | before the retry the head is `active` and the gate `frozen` by `managedRetirementOpId` at the pinned UID; the retry does not activate, the managed retire door resumes that op from its intent and answers `retired: true`, and the end state is A24's |
-| A23 | Run A19, and while the first process is still held, as `U` admit a new launch of `w1`, and have `U`'s own remote manager enroll `w1`; then release the first process, and launch `w1` again | while the first process is held both are `failed-precondition` with no row written; after its release sets `released`, the new launch is admitted and `enrolled` at a fresh UID, the ledger row for `w1` is at that UID, and it stays there: the first process writes nothing more |
 
 ## 13. Residual risk
 

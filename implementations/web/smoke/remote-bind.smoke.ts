@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { registry, type Command } from "@cotal-ai/core";
+import { registry } from "@cotal-ai/core";
+import type { LocalProcess } from "@cotal-ai/workspace";
 import "../src/index.js";
 import { CROSS_ORIGIN, WEB_HOST, makeAuthGate, normalizeWebHost, webUrl } from "../src/web.js";
 
@@ -12,9 +13,11 @@ const check = (name: string, condition: boolean, detail?: unknown) => {
 const req = (origin?: string) => ({ headers: origin === undefined ? {} : { origin }, url: "/" });
 const query = (token: string) => new URLSearchParams(`k=${token}`);
 
-const command = registry.resolve<Command>("command", "web");
-const hostFlag = command.flags?.find((flag) => flag.name === "host");
-check("the web command exposes explicit --host opt-in", hostFlag?.type === "string", hostFlag);
+// The dashboard starts only through the `web` service preset, whose adapter options become its flags.
+const schema = registry.resolve<LocalProcess>("local-process", "web-service").service?.optionsSchema;
+const hostOption = (schema?.properties as Record<string, { type?: unknown }> | undefined)?.host;
+check("the web service preset exposes explicit --host opt-in",
+  hostOption?.type === "string" && !(schema?.required as string[] | undefined)?.includes("host"), schema);
 
 check("the default host remains IPv4 loopback", normalizeWebHost(undefined) === WEB_HOST && WEB_HOST === "127.0.0.1");
 check("one selected remote IPv4 address is accepted", normalizeWebHost("192.0.2.10") === "192.0.2.10");
@@ -47,6 +50,8 @@ check("the untouched default keeps the branded loopback URL", webUrl(WEB_HOST, 7
 check("a custom loopback port advertises plain loopback", webUrl(WEB_HOST, 8123) === "http://127.0.0.1:8123/");
 check("a remote IPv4 selection is the advertised URL", webUrl("192.0.2.10", 8123) === "http://192.0.2.10:8123/");
 check("a remote IPv6 selection is bracketed in the advertised URL", webUrl("2001:db8::10", 8123) === "http://[2001:db8::10]:8123/");
+check("an IPv6 loopback address is bracketed", webUrl("::1", 8123) === "http://[::1]:8123/");
+check("a hostname keeps the advertised host", webUrl("dashboard.example", 8123) === "http://dashboard.example:8123/");
 
 {
   const gate = makeAuthGate(8123, "192.0.2.10");

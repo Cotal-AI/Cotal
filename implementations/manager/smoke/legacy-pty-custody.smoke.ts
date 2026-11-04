@@ -52,7 +52,9 @@ writeFileSync(
   `import { PtyRuntime } from ${JSON.stringify(pathToFileURL(join(managerRoot, "dist", "runtime", "pty.js")).href)};\n` +
     `import { writeFileSync } from "node:fs";\n` +
     `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { ...${JSON.stringify(launchEnv())}, PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
-    `writeFileSync(process.env.READY ?? "", JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined }));\n` +
+    // The record waits for the child's first output: ConPTY creates the child after spawn returns,
+    // and the pid a manager reads then must name it.
+    `const off = handle.attach().onData(() => { off(); writeFileSync(process.env.READY ?? "", JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined })); });\n` +
     `setInterval(() => {}, 1_000);\n`,
 );
 
@@ -73,7 +75,8 @@ try {
   });
   const armed = await until(() => {
     try {
-      return JSON.parse(readFileSync(ready, "utf8")).childPid !== undefined;
+      // Armed on the whole record, so an absent pid fails the pid check below by name.
+      return JSON.parse(readFileSync(ready, "utf8")).managerPid !== undefined;
     } catch {
       return false;
     }
@@ -81,6 +84,13 @@ try {
   check("isolated manager fixture armed", armed, armed ? undefined : { ownerStderr: ownerStderr.slice(-800) });
   if (!armed) throw new Error(`fixture did not write its ownership record${ownerStderr === "" ? "" : `; owner stderr: ${ownerStderr.slice(-800)}`}`);
   const ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number; hasReference: boolean };
+  // The first output can be the pseudoconsole's own before the child has written its pid.
+  let ownPid: number | undefined;
+  await until(() => {
+    try { ownPid = Number(readFileSync(pidfile, "utf8")) || undefined; } catch { /* not written yet */ }
+    return ownPid !== undefined;
+  }, 5_000);
+  check("the handle's pid at first output is the child's own pid", ids.childPid === ownPid, { childPid: ids.childPid, ownPid });
   check("counter child is live before manager death", state(ids.childPid) !== "gone" && state(ids.childPid) !== "Z", { childPid: ids.childPid, state: state(ids.childPid) });
   check("legacy PTY exposes no durable reference a successor can adopt", ids.hasReference === false, ids);
   process.kill(ids.managerPid, "SIGKILL");

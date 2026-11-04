@@ -25,8 +25,8 @@
     {
       "name": "A4 an opted-out launch is armed anyway, overriding the explicit opt-out",
       "file": "extensions/connector-codex/src/extension.ts",
-      "find": "    if (opts.events !== false) {",
-      "replace": "    if (opts.events !== false || true) {",
+      "find": "    if (launchArmsEvents(opts)) {",
+      "replace": "    if (launchArmsEvents(opts) || true) {",
       "expectRed": "--no-events does NOT set COTAL_EVENTS"
     }
   ],

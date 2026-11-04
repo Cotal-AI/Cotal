@@ -32,8 +32,8 @@
   "why": [
     "SIX MUTATIONS, ONE FOR EACH INDEPENDENT PROMISE. Extending the downgrade predicate with the",
     "deterministic runtime-false `process.pid < 0` keeps TypeScript's store-generation narrowing while",
-    "disabling the refusal at runtime. Replacing the verified recovery selection with",
-    "the generic sentence removes sufficient-path hinting while leaving the refusal intact. Making the",
+    "disabling the refusal at runtime. Dropping the verified executable from the refusal removes",
+    "sufficient-path hinting while leaving the refusal intact. Making the",
     "sufficiency predicate accept every verified executable admits a candidate below the store generation.",
     "Removing the ephemeral-npx PATH guard admits a transient cache shim while the same executable",
     "at a durable path remains verified. That mutation runs smoke:install, whose single discriminating",
@@ -65,10 +65,10 @@
       "cell": "\u2717 FAIL: downgrade: an older binary REFUSES a store stamped newer"
     },
     {
-      "name": "the sufficient executable recovery is replaced by the generic instruction",
+      "name": "the verified sufficient executable is no longer named",
       "file": "implementations/cli/src/seed/reconcile.ts",
-      "find": "    const newerExecutable = verifiedCotalExecutables().find(\n      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,\n    );\n    const recovery = newerExecutable\n      ? `run the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)}`\n      : \"run the newer cotal\";",
-      "replace": "    const recovery = \"run the newer cotal\";",
+      "find": "    const newerExecutable = verifiedCotalExecutables().find(\n      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,\n    );\n    const newer = newerExecutable\n      ? `; the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)} uses the store as it is`\n      : \"\";",
+      "replace": "    const newer = \"\";",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/seed-cases/downgrade-hint.smoke.ts",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "\u2717 FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin",
@@ -97,8 +97,8 @@
     {
       "name": "the older-than-store refusal again recommends a force downgrade",
       "file": "implementations/cli/src/seed/reconcile.ts",
-      "find": "        `${recovery}; this executable will not downgrade the shared connector store`,",
-      "replace": "        `${recovery}, or \\`cotal ext seed --force\\` to rebuild the store for this version`,",
+      "find": "        `to run this cotal, restore that store and the extensions folder ${extensionsDir()} from a backup taken before the store moved to ${storeGeneration}${newer}`,",
+      "replace": "        `to run this cotal, run \\`cotal ext seed --force\\` to rebuild the store for this version${newer}`,",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "\u2717 FAIL: downgrade: the refusal names the way out",
       "cell": "\u2717 FAIL: downgrade: the refusal names the way out"
@@ -106,8 +106,8 @@
     {
       "name": "force and reset again bypass backward-generation protection",
       "file": "implementations/cli/src/seed/reconcile.ts",
-      "find": "  if (\n    storeGeneration !== undefined &&",
-      "replace": "  if (\n    mode !== \"reset\" &&\n    mode !== \"force\" &&\n    storeGeneration !== undefined &&",
+      "find": "  const downgrade = seedDowngradeRefusal(generation);\n  if (downgrade) throw downgrade;",
+      "replace": "  const downgrade = seedDowngradeRefusal(generation);\n  if (downgrade && mode !== \"reset\" && mode !== \"force\") throw downgrade;",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/seed-cases/downgrade.smoke.ts",
       "completionMarker": "seed case:",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",

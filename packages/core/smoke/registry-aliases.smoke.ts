@@ -4,7 +4,9 @@
  * An alias resolves to its extension within that kind, and a name or alias that is already claimed
  * by a name or alias in the kind is refused at registration, live or staged, so which extension a
  * word resolves to never depends on load order. A command's own declarations refuse an alias equal
- * to its name and two subcommands sharing a word, and a subcommand resolves by name or alias.
+ * to its name and two subcommands sharing a word, and a subcommand resolves by name or alias. A
+ * declared provider is imported only when a key it declares is loaded, once, and a provider that
+ * loads without registering a key it declared is refused.
  *
  * Run: pnpm --filter @cotal-ai/core test
  */
@@ -78,6 +80,34 @@ const cmd = (name: string, extra: Partial<Command> = {}): Command => ({ kind: "c
   assert.equal(r.unregister("command", "attach"), true);
   assert.equal(r.has("command", "a"), false, "an unregistered command's alias still resolved");
   assert.doesNotThrow(() => r.register(cmd("a")), "an unregistered command's alias was still claimed");
+}
+
+// A declared provider imports nothing until a key it declares is loaded, imports once however many
+// keys or callers ask, and is refused when it loads without registering a key it declared.
+{
+  const r = new Registry();
+  let imports = 0;
+  r.provide({ provides: [{ kind: "command", name: "__daemon-x" }, { kind: "command", name: "x-service" }], load: async () => { imports++; await Promise.resolve(); r.register(cmd("__daemon-x"), cmd("x-service")); } });
+  assert.equal(imports, 0, "declaring a provider imported it");
+  assert.equal(r.provides("command", "__daemon-x"), true);
+  assert.equal(r.provides("command", "status"), false, "an undeclared key read as provided");
+  assert.equal(r.has("command", "__daemon-x"), false, "a declared key read as registered before its provider loaded");
+  assert.throws(() => r.resolve("command", "__daemon-x"), /command "__daemon-x" is declared by a provider this process has not loaded/);
+  const [a, b] = await Promise.all([r.load<Command>("command", "__daemon-x"), r.load<Command>("command", "__daemon-x")]);
+  assert.equal(a.name, "__daemon-x");
+  assert.equal(b, a);
+  assert.equal((await r.load<Command>("command", "x-service")).name, "x-service", "a provider's other key did not resolve");
+  assert.equal(imports, 1, "a provider was imported more than once");
+  assert.throws(() => r.provide({ provides: [{ kind: "command", name: "x-service" }], load: async () => {} }), /extension provider already declared: command:x-service/);
+  // A key no provider declares loads as it resolves.
+  r.register(cmd("status"));
+  assert.equal((await r.load<Command>("command", "status")).name, "status");
+  await assert.rejects(r.load("command", "absent"), /no command registered for "absent"/);
+  // A provider that registers something else is refused by the key it declared.
+  const wrong = new Registry();
+  wrong.provide({ provides: [{ kind: "command", name: "__daemon-y" }], load: async () => wrong.register(cmd("__daemon-z")) });
+  await assert.rejects(wrong.load("command", "__daemon-y"), /the provider declared for command "__daemon-y" loaded without registering it/);
+  assert.equal(wrong.has("command", "__daemon-z"), true, "the provider's own registration was rolled back");
 }
 
 // A command's own declarations.

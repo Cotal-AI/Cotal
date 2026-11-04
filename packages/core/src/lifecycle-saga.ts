@@ -5,7 +5,7 @@
  * its crash-resume, and the barrier-internal head steps (epoch advance, root stamp, retirement
  * begin/complete).
  *
- * Three-way split (the Unit B design note, panel-locked): the key/value GRAMMAR lives in
+ * Three-way split: the key/value GRAMMAR lives in
  * `lifecycle-state.ts`; THIS module is the SEQUENCING, parameterized by an injected
  * {@link LifecycleStateTransport} so every executor (the user-mesh auth service over its sealed
  * registry, the manager's static adapter over its direct KV binding) drives the SAME saga —
@@ -19,7 +19,8 @@
  */
 import { assertOrdinaryNativeMutation, parseNativeUidCustody } from "./native-uid-custody.js";
 import { EpEnvelopeError, lifecycleBlocked } from "./endpoint-envelope.js";
-import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
+import { createRecordEntry, isCasLoss, updateRecordEntry } from "./endpoint-records.js";
+import type { KV } from "@nats-io/kv";
 import { mintLifecycleUid, assertLifecycleToken } from "./subjects.js";
 import {
   type LifecycleMapping,
@@ -33,7 +34,8 @@ import {
 } from "./lifecycle-state.js";
 
 const enc = new TextEncoder();
-const isCasLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
+// A record helper reported a lost CAS as an envelope `conflict`. Core's `isCasLoss` is the raw broker rule.
+const isConflictEnvelope = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
 
 /** One raw store entry as the sequencing consumes it (a KV entry stripped to what a CAS needs). */
 export interface LifecycleKvEntry {
@@ -56,6 +58,20 @@ export interface LifecycleStateTransport {
   updateRecord(key: string, value: unknown, expectedRevision: number): Promise<number>;
   getAuth(key: string): Promise<LifecycleKvEntry | undefined>;
   putAuth(key: string, payload: Uint8Array, expectedRevision: number): Promise<number>;
+}
+
+/** The direct-KV transport over the records and auth stores, for an executor that holds one
+ *  lifecycle-executor connection pinned to the lifecycle it moves. It decides no sequencing. */
+export function kvLifecycleTransport(recordsKv: KV, authKv: KV): LifecycleStateTransport {
+  const entryOf = (e: { value: Uint8Array; revision: number; operation: string } | null): LifecycleKvEntry | undefined =>
+    e === null ? undefined : { value: e.value, revision: e.revision, operation: e.operation };
+  return {
+    getRecord: async (key) => entryOf(await recordsKv.get(key)),
+    createRecord: (key, value) => createRecordEntry(recordsKv, key, value),
+    updateRecord: (key, value, rev) => updateRecordEntry(recordsKv, key, value, rev),
+    getAuth: async (key) => entryOf(await authKv.get(key)),
+    putAuth: (key, payload, rev) => authKv.put(key, payload, { previousSeq: rev }),
+  };
 }
 
 // ---- candidate reads ------------------------------------------------------------------------
@@ -93,7 +109,7 @@ async function putGate(t: LifecycleStateTransport, lifecycleUid: string, row: Ep
   try {
     return await t.putAuth(gateKey(lifecycleUid), enc.encode(JSON.stringify(row)), expectedRevision);
   } catch (e) {
-    if (isRawCasLoss(e))
+    if (isCasLoss(e))
       throw new EpEnvelopeError("conflict", `the issuance gate CAS for ${gateKey(lifecycleUid)} lost (expected revision ${expectedRevision}); re-read and re-decide (SPEC 13.8)`);
     throw e;
   }
@@ -114,7 +130,7 @@ export async function uidTryReserve(
     await t.createRecord(uidKey(lifecycleUid), { owner: audit.owner, actor: audit.actor, mintedBy: audit.mintedBy });
     return "won";
   } catch (e) {
-    if (isCasLoss(e)) return "burned";
+    if (isConflictEnvelope(e)) return "burned";
     throw e;
   }
 }
@@ -368,7 +384,7 @@ export async function runActivationSaga(
       ? await t.createRecord(headKey(owner, actor), mapping)
       : await t.updateRecord(headKey(owner, actor), mapping, current.revision);
   } catch (e) {
-    if (isCasLoss(e)) {
+    if (isConflictEnvelope(e)) {
       // The loser terminalizes ITS OWN orphan gate; its UID stays burned (never deleted, never
       // reused). A cleanup failure is NEVER swallowed as success: the caller gets the durable
       // coordinates and resumes the SAME op (resumeActivationSaga) to finish the terminalization.
@@ -436,7 +452,7 @@ export async function runActivationSagaAtUid(
       try {
         gate = await gateCreateFrozen(t, { lifecycleUid, op: { opId, kind: "activation" } });
       } catch (e) {
-        if (isCasLoss(e)) continue; // a sibling created it; re-observe and adopt
+        if (isConflictEnvelope(e)) continue; // a sibling created it; re-observe and adopt
         throw e;
       }
     } else if (gate.row.state === "frozen") {
@@ -470,7 +486,7 @@ export async function runActivationSagaAtUid(
         if (current === undefined) await t.createRecord(headKey(owner, actor), mapping);
         else await t.updateRecord(headKey(owner, actor), mapping, current.revision);
       } catch (e) {
-        if (!isCasLoss(e)) throw e;
+        if (!isConflictEnvelope(e)) throw e;
         const head = await headCandidate(t, owner, actor);
         if (!(head !== undefined && head.mapping.state === "active" && head.mapping.lifecycleUid === lifecycleUid))
           throw new EpEnvelopeError("conflict", `activation for "${owner}/${actor}" at uid ${lifecycleUid} lost the head CAS to a foreign movement (now ${head === undefined ? "absent" : `${head.mapping.state} at ${head.mapping.lifecycleUid}`}); re-grant raced this exchange - re-exchange (SPEC 13.1)`);

@@ -6,7 +6,8 @@
  */
 import { writeSync } from "node:fs";
 import { colorEnabled, inputDisabledByFlag, terminalWidth } from "@cotal-ai/workspace";
-import type { AdmittedChatSession, CloseReport } from "./session.js";
+import { ownStdoutErrors } from "../lib/stdout-owner.js";
+import type { AdmittedChatSession, CloseReport } from "@cotal-ai/workspace/chat";
 import type { Recipient } from "./view.js";
 
 export type FrontEnd = "tui" | "plain" | "stdio";
@@ -68,13 +69,15 @@ async function runTui(
   const terminate = (): void => { process.exitCode = 143; unmount?.(); };
   // An external `kill -INT` (raw-mode Ctrl-C is a key, not this signal) is treated like SIGTERM.
   const interrupt = (): void => { process.exitCode = 130; unmount?.(); };
+  // The handlers stay registered while the view is mounted. With none of ours left, Ink's exit hook
+  // raises the signal again and the process dies before the session is closed below.
   try {
     writeSync(process.stdout.fd, "\x1b[?1049h");
     entered = true;
     process.once("exit", restore);
-    process.once("SIGHUP", hangup);
-    process.once("SIGTERM", terminate);
-    process.once("SIGINT", interrupt);
+    process.on("SIGHUP", hangup);
+    process.on("SIGTERM", terminate);
+    process.on("SIGINT", interrupt);
     const instance = render(
       createElement(ChatView, {
         session,
@@ -108,15 +111,19 @@ async function runTui(
  * Node's default kills the process and the session is never closed, leaving it to the expiry sweep.
  * A signal is therefore turned into end of input: stdin is destroyed, which drives each front end's
  * own EOF path (finish accepted work, close once, write the end record / summary). The exit code
- * records the signal. A second signal during the close falls back to the default and kills the
- * process; the session then retires by sweep, which is the disclosed crash path.
+ * records the signal, and `run` reads which signal ended input as the end's reason. A second signal
+ * during the close falls back to the default and kills the process; the session then retires by
+ * sweep, which is the disclosed crash path.
  */
-async function withLineSignals<T>(run: () => Promise<T>): Promise<T> {
+async function withLineSignals<T>(run: (endedBy: () => string | undefined) => Promise<T>): Promise<T> {
   const codes: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+  const reasons: Record<string, string> = { SIGINT: "interrupted", SIGTERM: "terminated", SIGHUP: "hangup" };
   const handlers = new Map<NodeJS.Signals, () => void>();
+  let endedBy: string | undefined;
   for (const sig of Object.keys(codes) as NodeJS.Signals[]) {
     const h = (): void => {
       process.exitCode = codes[sig];
+      endedBy = reasons[sig];
       for (const [s, f] of handlers) process.off(s, f); // the next signal gets the default
       process.stdin.destroy();
     };
@@ -124,9 +131,23 @@ async function withLineSignals<T>(run: () => Promise<T>): Promise<T> {
     process.once(sig, h);
   }
   try {
-    return await run();
+    return await run(() => endedBy);
   } finally {
     for (const [s, f] of handlers) process.off(s, f);
+  }
+}
+
+/**
+ * Line modes own stdout's errors. A reader that closes stdout, or any failed write, ends input the
+ * way a signal does, so the front end still closes its session once and the caller sets the exit
+ * status from that close. The binary's closed-pipe exit would otherwise end the process first.
+ */
+async function withOwnedStdout<T>(run: () => Promise<T>): Promise<T> {
+  const release = ownStdoutErrors(() => process.stdin.destroy());
+  try {
+    return await run();
+  } finally {
+    release();
   }
 }
 
@@ -148,11 +169,11 @@ export type StartChatFrontEnd = (opts: {
 export async function loadChatFrontEnd(frontEnd: FrontEnd): Promise<StartChatFrontEnd> {
   if (frontEnd === "stdio") {
     const { runStdio } = await import("./stdio-io.js");
-    return ({ session }) => withLineSignals(() => runStdio({ session, stdin: process.stdin, stdout: process.stdout, diagnostic: (line) => process.stderr.write(`cotal chat: ${line}\n`) }));
+    return ({ session }) => withLineSignals((endedBy) => withOwnedStdout(() => runStdio({ session, stdin: process.stdin, stdout: process.stdout, endedBy, diagnostic: (line) => process.stderr.write(`cotal chat: ${line}\n`) })));
   }
   if (frontEnd === "plain") {
     const { runPlain } = await import("./plain.js");
-    return async ({ session, initialRecipient }) => (await withLineSignals(() => runPlain({ session, input: process.stdin, output: process.stdout, width: terminalWidth(process.stdout), initialRecipient }))).ended;
+    return async ({ session, initialRecipient }) => (await withLineSignals(() => withOwnedStdout(() => runPlain({ session, input: process.stdin, output: process.stdout, width: terminalWidth(process.stdout), initialRecipient })))).ended;
   }
   const tui = await loadTui();
   return ({ session, initialRecipient, notice }) => runTui(tui, session, initialRecipient, notice);

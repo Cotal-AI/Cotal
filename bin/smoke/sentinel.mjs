@@ -39,7 +39,7 @@ export function emitSentinel(counts) {
  */
 export function skipSuite(reason) {
   const line = `${SENTINEL_PREFIX} skipped=${reason}`;
-  // The shard grades the last sentinel it reads, so a reason with a line break could end in a tally.
+  // Read back the whole reason so a line break cannot add a terminal record or discard text.
   const read = parseSentinel(line);
   if (read?.kind !== "skipped" || read.reason !== reason) {
     throw new Error(`skipSuite reason must read back as one skip line: ${JSON.stringify(reason)}`);
@@ -49,8 +49,8 @@ export function skipSuite(reason) {
 }
 
 /**
- * Last sentinel in `text`, or null if the suite never named a cell count.
- * Canonical line wins over a legacy tally when both appear; later lines win over earlier ones.
+ * Last structured count or skip record, otherwise the last legacy tally, or null.
+ * Structured records win over legacy tallies; later lines win within either group.
  * A skip carries zero cells, so a grader that does not read `kind` still refuses it.
  *
  * @param {string} text
@@ -59,6 +59,7 @@ export function skipSuite(reason) {
  */
 export function parseSentinel(text) {
   let last = null;
+  let structured = null;
   for (const raw of String(text).split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
@@ -67,12 +68,12 @@ export function parseSentinel(text) {
       const cells = Number(canonical[1]);
       const passed = Number(canonical[2]);
       const failed = Number(canonical[3]);
-      last = { cells, passed, failed, kind: "canonical" };
+      structured = { cells, passed, failed, kind: "canonical" };
       continue;
     }
     const skipped = line.match(/^COTAL_SMOKE_SENTINEL skipped=(\S.*)$/);
     if (skipped) {
-      last = { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: skipped[1] };
+      structured = { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: skipped[1] };
       continue;
     }
     // A legacy banner must own the whole line. Trailing `;…` or a double-space
@@ -186,6 +187,7 @@ export function parseSentinel(text) {
       continue;
     }
   }
+  if (structured) return structured;
   if (last) return last;
   // Suites that already print one row per cell but never a tally still named their work. A no-op
   // prints neither, so this cannot turn exit-0-with-nothing into a pass.

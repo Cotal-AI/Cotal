@@ -62,6 +62,7 @@ import {
   type PlaneLivenessResult,
 } from "@cotal-ai/core";
 import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The ONE exact claim key (`$KV.cotal_auth_<space>.plane`) — the bucket is already space-scoped;
  *  the barrier grant carries exactly this key, never `plane.>`. */
@@ -377,7 +378,7 @@ export async function acquirePlaneClaim(opts: {
 export function makeDeliveryAdminPlaneOracle(opts: {
   space: string;
   server: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): PlaneLivenessOracle {
@@ -414,7 +415,7 @@ export function makeDeliveryAdminPlaneOracle(opts: {
 export function makeDeliveryAdminPrincipalOracle(opts: {
   space: string;
   server: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): (principal: string) => Promise<import("@cotal-ai/core").PrincipalLivenessResult> {

@@ -111,7 +111,8 @@ export async function runPool(commands, { jobs, runMarker, indices, onStart }) {
     const start = performance.now();
     onStart(cmd);
     console.log(`[pool] start ${cmd}`);
-    const child = spawnWithState(bin, args, state);
+    // Suppress pnpm's own progress rows, which the legacy sentinel reader could count as cells.
+    const child = spawnWithState(bin, ["--silent", ...args], state);
     const entry = { child, stopped: undefined, grace: undefined };
     active.add(entry);
     const chunks = [];

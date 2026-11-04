@@ -13,6 +13,9 @@
  *    by that op, head retiring) is FINISHED by the door, because the door re-enters the same op.
  * D. one operation, one flight: the door and the participant rail, racing for the same uid, run ONE
  *    barrier execution (the evictor runs once) and both answer success.
+ * E. the interactive door's plane (`retireInteractiveLifecycle`): a refusal before the barrier
+ *    (a bad token, a head at another uid, a deleted head) states `not-executed`; a barrier that fails
+ *    after it began states no outcome, so its caller reads unknown.
  *
  * Run: pnpm smoke:managed-retire-door:auth   (needs nats-server on PATH)
  */
@@ -25,7 +28,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
-  AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epgateKey, epAuthBucket, epfStreamName, epwStreamName,
+  AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epgateKey, epAuthBucket, epfStreamName, epwStreamName, lifecycleHeadKey, recordsBucket,
   EpEnvelopeError,
   createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, DEV_OWNER,
   mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
@@ -45,9 +48,12 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
-const outcome = async <T>(fn: () => Promise<T>): Promise<{ value?: T; code?: string; message?: string }> => {
+const outcome = async <T>(fn: () => Promise<T>): Promise<{ value?: T; code?: string; message?: string; effect?: string }> => {
   try { return { value: await fn() }; } catch (e) {
-    return { code: e instanceof EpEnvelopeError ? e.code : "thrown", message: e instanceof Error ? e.message : String(e) };
+    return {
+      code: e instanceof EpEnvelopeError ? e.code : "thrown", message: e instanceof Error ? e.message : String(e),
+      ...(e instanceof EpEnvelopeError && e.outcome ? { effect: e.outcome } : {}),
+    };
   }
 };
 
@@ -78,8 +84,12 @@ const targetEvictions = (actor: string) => evicted.filter((p) => p === `${OWNER}
 let gateArmed = false;
 let gateEntered: (() => void) | undefined;
 let gateRelease: (() => void) | undefined;
+// A principal named here is never verified gone, so its barrier aborts after it began.
+const failEviction = new Set<string>();
 const countingEvictor: EvictPrincipal = async (principal) => {
   evicted.push(principal);
+  if (failEviction.has(principal))
+    return { principal, kicked: 0, remaining: 1, verifiedGone: false, scanComplete: true, note: "staged failure" } satisfies EvictionResult;
   if (gateArmed) {
     gateArmed = false;
     gateEntered?.();
@@ -242,6 +252,32 @@ try {
     check("exactly one barrier execution ran for this uid (the target was evicted once)", targetEvictions("wrace") === 1, { targetEvictions: targetEvictions("wrace") });
     check("...under managedRetirementOpId(uid)", (await observeGate(wreg, uid))?.row.op?.opId === managedRetirementOpId(uid));
   }
+
+  console.log("E. the interactive door's plane states which refusals retired nothing");
+  {
+    const interactive = (owner: string, actor: string, lifecycleUid: string) => outcome(() => plane!.retireInteractiveLifecycle({ owner, actor, lifecycleUid }));
+    const badOwner = await interactive("not_derived", "ibad", mintLifecycleUid());
+    check("an owner that is not a derived token refuses bad-request, not-executed", badOwner.code === "bad-request" && badOwner.effect === "not-executed", badOwner);
+
+    const uidOther = await live("iother");
+    const conflict = await interactive(OWNER, "iother", mintLifecycleUid());
+    check("a head active at ANOTHER uid refuses conflict, not-executed, and stays untouched",
+      conflict.code === "conflict" && conflict.effect === "not-executed"
+        && (await headOf("iother"))?.state === "active" && (await headOf("iother"))?.lifecycleUid === uidOther, conflict);
+
+    const uidFail = await live("ifail");
+    failEviction.add(`${OWNER}.ifail`); // kept failing, so nothing finishes this retirement later
+    const begun = await interactive(OWNER, "ifail", uidFail);
+    const begunHead = await headOf("ifail");
+    check("CONTROL: a barrier that fails after it began states no outcome, so the caller reads unknown",
+      begun.code !== undefined && begun.effect === undefined && begunHead?.state === "retiring", { begun, head: begunHead });
+
+    // Last, because it leaves a corrupt head: the plane refuses a deleted head before its barrier.
+    const uidGone = await live("igone");
+    await (await kvm.open(recordsBucket(space))).delete(lifecycleHeadKey(OWNER, "igone"));
+    const gone = await interactive(OWNER, "igone", uidGone);
+    check("a deleted head refuses failed-precondition, not-executed", gone.code === "failed-precondition" && gone.effect === "not-executed", gone);
+  }
 } catch (e) {
   fail++;
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
@@ -256,6 +292,6 @@ try {
   releaseBroker();
 }
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 22;
+const EXPECTED = 26;
 console.log(`\nMANAGED-RETIRE-DOOR SMOKE ${fail === 0 && pass + fail === EXPECTED ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, expected ${EXPECTED})`);
 process.exit(fail === 0 && pass + fail === EXPECTED ? 0 : 1);

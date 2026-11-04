@@ -3,8 +3,10 @@ import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
-import { CLAUDE_READY_TEXTS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
+import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { claudeUserMcpEnvKeys } from "./user-mcp.js";
+import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
+import { HOOK_CONTEXT_CHARS } from "./hooks.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -12,7 +14,7 @@ const MCP_SERVER_NAME = "cotal";
 /** Auth and provider-routing env `claude` actually reads for a headless or container seat.
  *  Drawn from Anthropic's authentication precedence
  *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
- *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.md` and
+ *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.mdx` and
  *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
  *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
  *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides
@@ -106,8 +108,9 @@ const CHANNEL_REF = `server:${MCP_SERVER_NAME}`;
 /** Package root (parent of dist/), which doubles as the installable plugin dir: it carries
  *  .claude-plugin/, .mcp.json, hooks/ and the dist/*.cjs bundles. */
 const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
-/** The explicit mesh server remains available when a launch restricts native MCP discovery. */
-const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
+/** The explicit mesh server remains available when a launch restricts native MCP discovery. It
+ *  names the seat entry, which enables Node's compile cache and then loads `dist/mcp.cjs`. */
+const SEAT_ENTRY = resolve(PLUGIN_ROOT, "dist", "seat.cjs");
 /** Preserve the operator's documented native MCP switches without choosing new values. */
 const CLAUDE_MCP_KEYS = ["ENABLE_CLAUDEAI_MCP_SERVERS", "ENABLE_TOOL_SEARCH", "MCP_TIMEOUT", "MCP_CONNECTION_NONBLOCKING"] as const;
 
@@ -164,7 +167,17 @@ export const claudeConnector: Connector = {
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
+  // A session wakes for a relayed task while idle only with channels on, and Claude reports that only
+  // on its startup screen: the development-channels gate, then its registration notice for this
+  // server (confirmNotice below). A once seat is served its task only when its startup watch saw
+  // both; the hooks hand it over at most once (hooks.ts).
+  supportsTurnRelay: true,
+  onceNeedsConfirmed: "its startup did not show channels on (Claude's development-channels prompt and its notice that server:cotal messages reach the session)",
+  turnFrameLimit: HOOK_CONTEXT_CHARS,
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
+  // `--opt resume=` renders a bare `--resume`, which opens Claude's session picker; the session joins
+  // the mesh only after the operator picks one. `--opt resume=<id>` resumes that session directly.
+  waitsForOperator: (launchOptions) => (launchOptions?.resume === "" ? "Claude's session picker" : undefined),
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
@@ -222,7 +235,12 @@ export const claudeConnector: Connector = {
     }
     // A carried resume needs credentials its private home can use. Managed workspace trust is
     // accepted through the native startup dialog below, without rewriting the manager's config.
-    const binary = opts.resolvedBinaries?.claude ?? "claude";
+    // A once launch starts the absolute real path of `claude` and passes it on, so the seat can tell
+    // its parent is that file before its once exit signals it (once-exit.ts).
+    const named = opts.resolvedBinaries?.claude ?? "claude";
+    const hostExe = opts.once ? resolveHostExe(named, env) : undefined;
+    if (hostExe !== undefined) env[HOST_EXE_ENV] = hostExe;
+    const binary = hostExe ?? named;
     if (opts.carried) refuseCarriedLaunch(binary, env);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
@@ -259,7 +277,7 @@ export const claudeConnector: Connector = {
     // Keep Claude's native MCP sources and policy by default. Explicit sharing selections and
     // carried private homes remain isolated. The plugin stays enabled for hooks and channel wakes.
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
-    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: ["--optimize-for-size", "--max-semi-space-size=1", MCP_CJS] } };
+    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: ["--optimize-for-size", "--max-semi-space-size=1", SEAT_ENTRY] } };
     // Every refusal below runs before the first private file is written, so a refused launch leaves
     // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus a
     // persona, which can only be applied to a `claude` session at launch.
@@ -327,9 +345,11 @@ export const claudeConnector: Connector = {
     // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
     // A managed seat has no human at its terminal, so a permission prompt under the default mode
     // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-    // to its peers. Bypass is the default; an operator who wants prompts back passes
+    // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
+    // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
+    // answers its prompts there. An operator who wants another mode passes
     // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-    if (!passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
+    if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
       args.push("--permission-mode", "bypassPermissions");
     for (const [k, val] of passthrough) {
       if (val === "") args.push(`--${k}`);
@@ -345,7 +365,12 @@ export const claudeConnector: Connector = {
       // default action. The runtime presses Enter once when this connector-owned text appears.
       // Claude skips the gate when channels are off for the session, and opens its input screen.
       confirm: "WARNING: Loading development channels",
+      // Answering the gate is not registration: Claude then prints this line for an admitted
+      // channel server, and a policy warning in its place for a blocked one. Only a once seat waits
+      // for it, because only a once seat's spawn depends on it; a missed notice stops the seat.
+      ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),
       confirmReady: CLAUDE_READY_TEXTS,
+      confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
       ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
       control,
       ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),

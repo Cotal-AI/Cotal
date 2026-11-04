@@ -36,7 +36,7 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, idFromCreds,
   mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER,
   recordsBucket, epAuthBucket, epgateKey, parseEndpointGate,
-  epcredFamilyPrefix, parseLedgerRow, rawDigest, recordSpecKey, RECORD_KINDS,
+  epcredFamilyPrefix, parseLedgerRow, credentialIdOf, recordSpecKey, RECORD_KINDS,
   epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   serveIssuanceGateKv,
   type CredentialLedgerRow,
@@ -122,7 +122,7 @@ try {
     gate.processEpoch === 0 && M.serviceServe!.grant.epoch === 0 && M.serviceServe!.grant.instanceId === iid);
   const family1 = await credRows();
   const rows1 = family1.filter((r) => r.holderPrincipal === servePrincipal);
-  const expectId = rawDigest(M.serviceServe!.creds).replace("sha256:", "sha256-");
+  const expectId = credentialIdOf(M.serviceServe!.creds);
   check("EXACTLY one ACTIVE serve ledger row exists (the released credential's §13.1 row)",
     rows1.length === 1 && rows1[0].state === "active", rows1);
   check("the §13.1 family ALSO carries the goal-writer sibling (must-5 (b): a distinct active holder the takeover barrier revokes+evicts together)",

@@ -30,7 +30,7 @@ let passed = 0;
 let failed = 0;
 /** Cells whose absence should be visible: a suite that silently skips a section reports the same
  *  green as one that proved everything, so the count is asserted against an expected floor. */
-const EXPECTED_MIN_CELLS = 98;
+const EXPECTED_MIN_CELLS = 99;
 
 /** `extra` is printed only on failure — a red cell in CI is often the only artifact anyone sees,
  *  so it should carry what was actually observed rather than just the claim that was violated. */
@@ -43,6 +43,12 @@ function ok(label: string, val: unknown, extra?: unknown) {
     failed++;
   }
 }
+
+// Declared, not discovered by catching the throw from attach(): a caller reads this to decide
+// whether to ask for an attach at all, so a foreground `cotal spawn` on this runtime launches the
+// seat and stops there instead of failing on an attach that cannot open. Graded before the first
+// herdr call, because what a backend declares does not depend on a live herdr server.
+ok("the runtime declares that it streams no terminal", new HerdrRuntime(SESSION).streamsTerminal === false);
 
 /** Synchronous sleep: these checks poll around synchronous driver calls, so there is no event
  *  loop to await on. */

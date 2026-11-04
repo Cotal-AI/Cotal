@@ -1,0 +1,4 @@
+# The folder question of a managed launch against a live static mesh: the operator instrument reads
+# resolve-cwd on the manager it pins, a manager that reports this host is not asked about, and an
+# unknown --on or a stopped mesh is refused before anything is asked.
+smoke:spawn-folder:live

@@ -25,9 +25,9 @@ import { createServer, connect as tcpConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
+import { jetstreamManager, type ConsumerAPI, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
+import { IncompleteKvScan, isReachable, liveKvEntries, liveKvValues, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -64,7 +64,8 @@ try {
   for (let i = 0; i < 100; i++) await big.put(`k${i}`, enc(String(i)));
 
   const outBefore1 = nc.stats().outMsgs;
-  const got1 = await liveKvEntries(small);
+  let scanMemory: boolean | undefined;
+  const got1 = await liveKvEntries(small, { onConsumer: (info) => { scanMemory = info.config.mem_storage; } });
   const cost1 = nc.stats().outMsgs - outBefore1;
   const outBefore100 = nc.stats().outMsgs;
   const got100 = await liveKvEntries(big);
@@ -79,6 +80,10 @@ try {
     cost100 <= cost1 + 5 && cost100 < 20,
     { cost1, cost100 },
   );
+
+  const backing = await (await jetstreamManager(nc)).streams.info("KV_shape_small");
+  check("scan keeps its backing KV stream file-backed", backing.config.storage === "file", backing.config.storage);
+  check("temporary scan consumer uses native memory-backed state", scanMemory === true, { mem_storage: scanMemory ?? false });
 
   // ── 2. COLLAPSE WITH TOMBSTONES ────────────────────────────────────────────────────────────────
   const tomb = await kvm.create("tombstones", { history: 1 });
@@ -340,6 +345,7 @@ try {
     const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
     const victim = Object.create(k) as typeof k;
     let rotatedName: string | undefined;
+    const rotatedMemory: boolean[] = [];
     Object.defineProperty(victim, "js", {
       value: {
         ...rjs,
@@ -347,6 +353,14 @@ try {
           ...rjs.consumers,
           getPushConsumer: async (...a: unknown[]) => {
             const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
+            const own = oc as unknown as { api: ConsumerAPI };
+            const nativeApi = own.api;
+            own.api = Object.assign(Object.create(nativeApi) as ConsumerAPI, {
+              add: (...args: Parameters<ConsumerAPI["add"]>) => nativeApi.add(...args).then((info) => {
+                rotatedMemory.push(info.config.mem_storage === true);
+                return info;
+              }),
+            });
             const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
             return Object.assign(oc, {
               consume: async () => {
@@ -373,6 +387,7 @@ try {
 
     const entries = await liveKvEntries(victim);
     check("rotation: scan completes and returns all entries", entries.length === 5, entries.length);
+    check("rotation: native recreated consumer keeps memory-backed state", rotatedMemory.length > 0 && rotatedMemory.every(Boolean), rotatedMemory);
     await wait(200);
     const afterRotation = (await jsm.streams.info(stream)).state.consumer_count;
     check("rotation: rotated consumer is deleted in finally (no consumer leaked on broker)", afterRotation === base, { base, afterRotation, rotatedName });
@@ -635,6 +650,76 @@ try {
     }
     const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
     check("pre-aborted call shapes create no consumer and preserve sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
+  }
+
+  // ── OVERLOAD AND HOOK DISPATCH FOR liveKvEntries AND liveKvValues (#3312) ──────────────────────
+  {
+    const hk = await kvm.create("hook_overloads", { history: 1 });
+    await hk.put("a.one", enc("1"));
+    await hk.put("a.two", enc("2"));
+    const decode = (e: { string(): string }) => e.string();
+    const makeHooks = () => {
+      const counts = { deleteOwnConsumer: 0, onConsumer: 0 };
+      return {
+        counts,
+        opts: {
+          deleteOwnConsumer: async (_stream: string, _name: string, del: () => Promise<boolean>) => {
+            counts.deleteOwnConsumer++;
+            return del();
+          },
+          onConsumer: () => {
+            counts.onConsumer++;
+          },
+        },
+      };
+    };
+
+    for (const [label, run] of [
+      ["liveKvEntries(kv, opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, h.opts)],
+      ["liveKvEntries(kv, undefined, opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, undefined, h.opts)],
+      ["liveKvEntries(kv, \">\", opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, ">", h.opts)],
+      ["liveKvEntries(kv, [\"a.>\"], opts)", (h: ReturnType<typeof makeHooks>) => liveKvEntries(hk, ["a.>"], h.opts)],
+      ["liveKvValues(kv, decode, opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, h.opts)],
+      ["liveKvValues(kv, decode, undefined, opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, undefined, h.opts)],
+      ["liveKvValues(kv, decode, \">\", opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, ">", h.opts)],
+      ["liveKvValues(kv, decode, [\"a.>\"], opts)", (h: ReturnType<typeof makeHooks>) => liveKvValues(hk, decode, ["a.>"], h.opts)],
+    ] as const) {
+      const h = makeHooks();
+      const out = await run(h);
+      check(
+        `overload control ${label}: returns 2 rows and invokes both hooks once`,
+        out.length === 2 && h.counts.deleteOwnConsumer === 1 && h.counts.onConsumer === 1,
+        { rows: out.length, counts: h.counts },
+      );
+    }
+
+    const hEntries = makeHooks();
+    let entriesErr: unknown;
+    try {
+      // @ts-expect-error options in filter slot cannot be followed by a second options argument
+      await liveKvEntries(hk, { signal: new AbortController().signal }, hEntries.opts);
+    } catch (e) {
+      entriesErr = e;
+    }
+    check(
+      "liveKvEntries(kv, opts, opts): refused at compile time and throws TypeError at runtime",
+      entriesErr instanceof TypeError && hEntries.counts.deleteOwnConsumer === 0 && hEntries.counts.onConsumer === 0,
+      { err: String(entriesErr), counts: hEntries.counts },
+    );
+
+    const hValues = makeHooks();
+    let valuesErr: unknown;
+    try {
+      // @ts-expect-error options in filter slot cannot be followed by a second options argument
+      await liveKvValues(hk, decode, { signal: new AbortController().signal }, hValues.opts);
+    } catch (e) {
+      valuesErr = e;
+    }
+    check(
+      "liveKvValues(kv, decode, opts, opts): refused at compile time and throws TypeError at runtime",
+      valuesErr instanceof TypeError && hValues.counts.deleteOwnConsumer === 0 && hValues.counts.onConsumer === 0,
+      { err: String(valuesErr), counts: hValues.counts },
+    );
   }
 
   await nc.close();

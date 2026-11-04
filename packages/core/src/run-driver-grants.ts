@@ -4,7 +4,7 @@
  * which exposes run-bound operations and never hands this credential to the driver.
  */
 import { createHash } from "node:crypto";
-import { spacePrefix, chatStream, presenceBucket, channelBucket, membersBucket, assertInboxConnId, assertPrincipalOwnerToken, DEV_OWNER } from "./subjects.js";
+import { spacePrefix, chatStream, presenceBucket, channelBucket, membersBucket, aclBucket, assertInboxConnId, assertPrincipalOwnerToken, DEV_OWNER } from "./subjects.js";
 import { endpointToken, assertIdToken, assertLifecycleToken, epCallerReplyFilter, type EpCaller } from "./endpoint-subjects.js";
 import { recordsBucket } from "./endpoint-records.js";
 import { admissionBucket } from "./run-admission.js";
@@ -132,6 +132,9 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
     `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`,
     `$KV.${membersBucket(space)}.>`,
     `$JS.API.STREAM.MSG.GET.KV_${membersBucket(space)}`,
+    // The member lifecycle's exact read-ACL row a conclave reads around each membership row it
+    // writes (#4995): a read only, keyed by the row the write names.
+    `$JS.API.STREAM.MSG.GET.KV_${aclBucket(space)}`,
     // The manager's lifecycle commands, as the run's own caller: describe (the resolve), spawn
     // (untargeted creation), inspect (whether a seat whose presence lapsed is still running), turn
     // and despawn (owner mode, pinned to the caller's owner), and the reserved goal cancel that

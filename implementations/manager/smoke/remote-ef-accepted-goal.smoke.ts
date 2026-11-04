@@ -31,6 +31,7 @@ import {
 } from "../../auth/src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
+import { approveDevice } from "../../auth/smoke/_device-approval.js";
 
 // LABELLED SCRIPTED SDK FIXTURE CHILD (stands in for a model worker; not a production provider):
 // joins the mesh with the stock endpoint using ONLY the enrolled bearer command + sentinel path.
@@ -250,11 +251,8 @@ try {
   process.env.COTAL_HOME = partHome;
   const signup = await idp.api.signUpEmail({ body: { email: "p@example.test", password: "correct-horse-battery", name: "P" }, returnHeaders: true });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
-  const approve = async (userCode: string) => {
-    await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin: idpOrigin } });
-    await fetch(`${idpUrl}/device/approve`, { method: "POST", headers: { "content-type": "application/json", cookie, origin: idpOrigin }, body: JSON.stringify({ userCode }) });
-  };
-  await establishIdpSession({ dir: partHome, idpUrl, clientId, onPrompt: (p: { userCode: string }) => void approve(p.userCode) });
+  const approve = (userCode: string) => approveDevice({ base: idpUrl, cookie, origin: idpOrigin }, userCode);
+  await establishIdpSession({ dir: partHome, idpUrl, clientId, onPrompt: (p: { userCode: string }) => approve(p.userCode) });
   const owner = deriveOwnerForIdpSubject(ownerSecret!, idpOrigin, (await idp.api.getSession({ headers: new Headers({ cookie }) }))!.user.id);
   // FIXTURE operator grant: events-required mesh arms the event plane on spawn, which is admin tier.
   grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: ["general"], allowPublish: ["general"] });
@@ -296,7 +294,7 @@ registry.register({
 `);
   writeFileSync(join(extRoot, "extensions.json"), JSON.stringify({ extensions: [{
     pkg: "ef-sdk-fixture-extension", version: "1.0.0", spec: "file:ef-sdk-fixture-extension",
-    provides: [{ kind: "connector", name: "ef-sdk-fixture" }], commands: [], connectors: [{ name: "ef-sdk-fixture", requires: [] }],
+    provides: [{ kind: "connector", name: "ef-sdk-fixture" }], commands: [], connectors: [{ name: "ef-sdk-fixture", requires: [], eventPlane: false }],
   }] }));
   mkdirSync(join(partRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(partRoot, ".cotal", "agents", "sdkfixture.md"), "---\nname: sdkfixture\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");
@@ -395,6 +393,10 @@ registry.register({
     const succReq = authorizedRequests.at(-1) as any;
     for (let i = 0; i < 50 && !sdkResults.some((r) => r.actor === "sdkfixture2"); i++) await sleep(200);
     console.log(`    evidence: successor spawn exit=${sp2.code} recorded=${JSON.stringify(succRec)} serveEpoch=${succReq?.serveEpoch} sdkResults=${JSON.stringify(sdkResults)} out=${sp2.out.replace(/\s+/g, " ").slice(0, 300)}`);
+    const diagnostic = (text: string) => text.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[jwt]").replace(/("(?:token|idpToken|actorToken|cap)"\s*:\s*")[^"]+/g, "$1[redacted]");
+    console.log(`POOLED_LIVE_PREDECESSOR ${diagnostic(first.out)}`);
+    console.log(`POOLED_LIVE_SUCCESSOR ${diagnostic(second.out)}`);
+    console.log(`POOLED_SUCCESSOR_CLI ${diagnostic(sp2.out)}`);
     ok("current successor is admitted: door-authorized enrollment at the new epoch, host-owned SDK child reports", sp2.code === 0 && succRec.some((x) => x.status === 200 && x.actor === "sdkfixture2") && succReq?.serveEpoch === Number(succReady?.[2]) && sdkResults.some((r) => r.actor === "sdkfixture2"), { code: sp2.code, succRec });
     console.log("  ? LABEL: pooled via LIBRARY construction (cotal supervise has no pooled flag); fixture runtime + execution host are test-only, not a production SandboxProvider");
     execHost.close();

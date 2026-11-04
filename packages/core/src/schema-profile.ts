@@ -8,7 +8,7 @@
  * `contract-invalid` (distinct from invocation-time `bad-request`), and all bounds are enforced
  * BEFORE compilation so a hostile descriptor cannot turn registration into a DoS.
  */
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { Ajv2020, type AnySchema, type ValidateFunction } from "ajv/dist/2020.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
 // CommonJS under NodeNext: the default import is `module.exports`, whose `default` is the function.
 import ajvStandalone from "ajv/dist/standalone/index.js";
@@ -60,6 +60,11 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
   ownProperties: true,
   validateFormats: false,
   loadSchema: undefined,
+  // PINNED TRUE, never inherited (#4012): ajv meta-validates every closure document against the
+  // 2020-12 meta-schema before it compiles, which is what refuses a malformed keyword value such
+  // as `{"type": 5}` or `{"minLength": -1}` as `contract-invalid` at registration.
+  validateSchema: true,
+  meta: true,
   // PINNED, never inherited from Ajv's default: the safe-pattern analyzer models `/u`
   // semantics exactly (astral atoms, surrogate refusals), so the engine MUST compile
   // `pattern` with the `u` flag. If this ever flipped, patterns would be proven under one
@@ -88,6 +93,29 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
   // worth more than inlining's marginal speed.
   inlineRefs: false,
 } as const);
+
+/** Built-in meta-validation is shared lazily. Caller documents are only data to this instance;
+ *  it never registers or compiles them, so their IDs and references remain closure-local. */
+let sharedMeta: { ajv: Ajv2020; keys: ReadonlySet<string> } | undefined;
+
+/** A fresh compiler per closure, reusing only the meta-schemas every native instance starts with.
+ *  A custom `$schema` stays on the closure's instance, where its members are registered. */
+class ProfileAjv extends Ajv2020 {
+  override validateSchema(schema: AnySchema, throwOrLogError?: boolean): boolean | Promise<unknown> {
+    if (schema === null || typeof schema !== "object") return super.validateSchema(schema, throwOrLogError);
+    if (!sharedMeta) {
+      const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
+      sharedMeta = { ajv, keys: new Set([...Object.keys(ajv.schemas), ...Object.keys(ajv.refs)]) };
+    }
+    if (schema.$schema !== undefined && !sharedMeta.keys.has(schema.$schema))
+      return super.validateSchema(schema, throwOrLogError);
+    try {
+      return sharedMeta.ajv.validateSchema(schema, throwOrLogError);
+    } finally {
+      this.errors = sharedMeta.ajv.errors;
+    }
+  }
+}
 
 /** The §13.7 closure of one self-contained document: the manifest naming it with no members, and
  *  that manifest's digest, the closure digest a registration or an `op` digest carries. It needs no
@@ -434,8 +462,8 @@ function widestClosurePropertyCount(bundle: SchemaBundle): number {
 
 function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   // NOTHING HERE REFUSES A SCHEMA FOR BEING EXPENSIVE, and that is deliberate rather than
-  // overlooked. The timing below is an OBSERVATION and refuses nothing; the node ceiling that was
-  // briefly going to carry the refusal is gone, for the reasons recorded at `SCHEMA_PROFILE`.
+  // overlooked. This function does not time the compile either; the node ceiling that was briefly
+  // going to carry the refusal is gone, for the reasons recorded at `SCHEMA_PROFILE`.
   //
   // SO SAY PLAINLY WHAT IS ADMITTED NOW. A document of ~1000 patterned properties is ~90KB, depth
   // 2, ref-chain 0, every pattern inside `maxPatternChars` — it passes every remaining bound and
@@ -467,16 +495,14 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   // compile work, and the same contract compiled fine in four sibling jobs on the same runner
   // image. The number was very nearly all instrument, and it made the required gate unmergeable.
   //
-  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant, so reporting rather than
-  // refusing on it needs no spec amendment. What §13.8 must be amended to say is that the profile
-  // enforces its registration bounds structurally — bytes, depth, ref-chain, pattern length,
-  // vocabulary — and treats the time budget as an observation, because no instrument available on
-  // the supported Node floor measures the quantity the budget names.
-  const startedCpu = process.cpuUsage();
-  const started = Date.now();
+  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant. The profile enforces its
+  // registration bounds structurally — bytes, depth, ref-chain, pattern length, vocabulary — and
+  // does not time the compile. A process-wide CPU sample cannot name the compile's own cost (the
+  // paragraph above), so printing it on the embedder's stderr reported an instrument, not a fact
+  // the operator could act on, and every caller of this library received it unasked.
   // Compile with deterministic local resolution only. Members register under their cotal: URI
   // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
-  const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
+  const ajv = new ProfileAjv(AJV_PROFILE_OPTIONS);
   let validate: ValidateFunction;
   try {
     // Every member is reachable and digest-verified (assertClosureProfile refuses extras), so
@@ -503,15 +529,6 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
     }
     throw new ContractInvalidError(`schema does not compile under the 2020-12 profile: ${(e as Error).message}`);
   }
-  const cpu = process.cpuUsage(startedCpu);
-  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
-  if (cpuMs > SCHEMA_PROFILE.compileBudgetMs)
-    console.error(
-      `! schema: compile took ~${cpuMs}ms of process CPU (SPEC 2458 reference budget ${SCHEMA_PROFILE.compileBudgetMs}ms; ` +
-      `${Date.now() - started}ms elapsed). Approximate - process-wide CPU includes JIT/Worker threads. ` +
-      `Not a refusal, and no schema-size ceiling stands behind it: registration is bounded structurally ` +
-      `(document/closure bytes, depth, ref-chain, pattern length, admitted vocabulary).`,
-    );
   return validate;
 }
 
@@ -569,35 +586,32 @@ export function createCompiledContractCache(capacity: number = SCHEMA_PROFILE.co
   };
 }
 
-type ContractPair = { input: CompiledContract; output: CompiledContract };
+type ContractPair = Readonly<{ input: CompiledContract; output: CompiledContract }>;
 
 /** A service's compiled command contracts and the §13.7 artifacts its registration publishes,
- *  from its command rows. `contracts` compiles a command's pair on its first access and keeps it,
- *  so a module can build its table at load while a process that only reads digests pays no Ajv
- *  compile. `artifactValues()` returns each distinct schema root followed by its closure manifest. */
+ *  from its command rows. The frozen `contracts` table compiles and freezes a command's pair on
+ *  its first access and keeps it, so a module can build its table at load while a process that only
+ *  reads digests pays no Ajv compile. `artifactValues()` returns each distinct schema root followed
+ *  by its closure manifest. */
 export function serviceContractTable(rows: ReadonlyArray<{ name: string; input: unknown; output: unknown }>): {
   contracts: Readonly<Record<string, ContractPair>>;
   artifactValues: () => unknown[];
 } {
-  const compiled = new Map<string, ContractPair>();
-  const declared = (name: string | symbol) => rows.some((r) => r.name === name);
-  const pairFor = (name: string | symbol): ContractPair | undefined => {
-    const row = rows.find((r) => r.name === name);
-    if (!row) return undefined;
-    let pair = compiled.get(row.name);
-    if (!pair) {
-      pair = { input: compileContract({ root: row.input as Record<string, unknown> }), output: compileContract({ root: row.output as Record<string, unknown> }) };
-      compiled.set(row.name, pair);
-    }
-    return pair;
-  };
+  const contracts: Record<string, ContractPair> = Object.create(null);
+  for (const row of rows) {
+    let pair: ContractPair | undefined;
+    Object.defineProperty(contracts, row.name, {
+      enumerable: true,
+      get: () => {
+        if (!pair) {
+          pair = Object.freeze({ input: compileContract({ root: row.input as Record<string, unknown> }), output: compileContract({ root: row.output as Record<string, unknown> }) });
+        }
+        return pair;
+      },
+    });
+  }
   return {
-    contracts: new Proxy({} as Record<string, ContractPair>, {
-      has: (_, name) => declared(name),
-      ownKeys: () => rows.map((r) => r.name),
-      getOwnPropertyDescriptor: (_, name) => (declared(name) ? { configurable: true, enumerable: true, get: () => pairFor(name) } : undefined),
-      get: (_, name) => pairFor(name),
-    }),
+    contracts: Object.freeze(contracts),
     artifactValues: () => {
       const values: unknown[] = [];
       const seen = new Set<string>();

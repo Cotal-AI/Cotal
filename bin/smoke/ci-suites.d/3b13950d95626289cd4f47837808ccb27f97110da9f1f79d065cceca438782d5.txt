@@ -1,0 +1,2 @@
+# Keyed run submission on a static-auth native manager: duplicates, conflicts, epochs, lost replies and the legacy rail.
+smoke:keyed-submission-native

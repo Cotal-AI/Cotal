@@ -69,7 +69,7 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 // run has no business claiming wholesale (#1791).
 const seatRoot = makeSeatRoot("spawnact-seats-");
 process.env.COTAL_SEAT_ROOT = seatRoot;
-for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1", "race", "r1", "r2", "r3"])
+for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1", "race", "r1", "r2", "r3", "window400", "window1499", "window2000"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 // A ROLE-LESS persona: its succeeded terminal data carries no `role`, which the strict
 // canonicalJson would reject if the manager left `role: undefined` on the payload (surfaced live
@@ -104,6 +104,10 @@ const stuckCon: Connector = { kind: "connector", name: "stuck", requires: ["node
 // "the agent's CLI is not installed on this host".
 const boomCon: Connector = { kind: "connector", name: "boom", requires: ["node"], buildLaunch: (): LaunchSpec => { throw new Error("boom: no launch spec"); } };
 for (const c of [joinCon, exitCon, stuckCon, boomCon]) registry.register(c);
+for (const readinessTimeoutMs of [400, 1499, 2000]) {
+  const connector: Connector = { ...stuckCon, name: `stuck-${readinessTimeoutMs}`, readinessTimeoutMs };
+  registry.register(connector);
+}
 
 /** A bare open-mesh caller: epCall on the `one` rail with a synthetic caller triple (open broker
  *  admits it; the goal scopes under this triple). */
@@ -218,6 +222,23 @@ try {
     const rw = await callSpawn({ name: "w1", agent: "stuck" });
     const fw = await followGoal(acc(rw).goalId as string, 12_000);
     check("M3 readiness window elapsed -> uncertain (bounded, never success)", fw.terminal?.state === "uncertain", fw.terminal);
+
+    const before = pass + fail;
+    for (const [ms, duration] of [[400, "400ms"], [1499, "1499ms"], [2000, "2000ms"]] as const) {
+      const name = `window${ms}`;
+      const r = await callSpawn({ name, agent: `stuck-${ms}` });
+      const d = acc(r);
+      check(`M3 ${duration} connector window is the accepted readiness budget`, d.readinessDeadlineMs === ms, d);
+      const f = await followGoal(d.goalId as string, 12_000);
+      check(`M3 ${duration} window without presence or exit remains uncertain`, f.terminal?.state === "uncertain", f.terminal);
+      const reason = (f.terminal?.data as { reason?: string } | undefined)?.reason ?? "";
+      check(`M3 uncertain diagnostic reports the configured ${duration} window`, reason.includes(`within ${duration};`), reason);
+      check(`M3 ${duration} diagnostic keeps inspection and no-stop guidance`,
+        reason.includes(`cotal attach ${name}`) && reason.includes("cotal ps") && reason.includes("do not stop it solely because this bounded wait elapsed"), reason);
+      const held = (mgr as unknown as { agents: Map<string, { handle: { status(): string } }> }).agents.get(name);
+      check(`M3 ${duration} uncertain launch keeps its running seat`, held?.handle.status() === "running", held?.handle.status());
+    }
+    check("M3 every configured-window cell ran", pass + fail - before === 15, pass + fail - before);
 
     // A ROLE-LESS spawn: its succeeded terminal data carries no `role`, so the strict-canonicalJson
     // terminal commit must not choke on an `undefined` (the readiness:live repro, guarded in-gate).

@@ -6,8 +6,8 @@
  */
 import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
-import { MAX_REQUEST_LINE, StdioParticipant, serializeRecord } from "./stdio.js";
-import type { AdmittedChatSession, CloseReport } from "./session.js";
+import { MAX_REQUEST_LINE, StdioParticipant } from "./stdio.js";
+import type { AdmittedChatSession, CloseReport } from "@cotal-ai/workspace/chat";
 
 /** Bound on buffered output records waiting for a slow reader before input is paused. Provisional. */
 export const MAX_PENDING_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -15,8 +15,9 @@ export const MAX_PENDING_OUTPUT_BYTES = 4 * 1024 * 1024;
 /**
  * Split decoded text into complete lines. A line longer than {@link MAX_REQUEST_LINE} is discarded
  * up to its next newline, and reported once with no content. A trailing `\r` before `\n` is dropped
- * (CRLF input). Invalid UTF-8 is decoded with replacement characters by StringDecoder, so it can
- * only make the JSON parse refuse, never split a line.
+ * (CRLF input). StringDecoder decodes invalid UTF-8 as U+FFFD, which never splits a line. In ordinary
+ * string content it can reach the request as U+FFFD; in an escape sequence or outside a string it
+ * makes the JSON parse refuse.
  */
 export class LineFramer {
   private readonly decoder = new StringDecoder("utf8");
@@ -84,6 +85,8 @@ export async function runStdio(opts: {
   session: AdmittedChatSession;
   stdin: Readable;
   stdout: Writable;
+  /** The signal that ended input, as the end record's reason; undefined when stdin ended. */
+  endedBy?: () => string | undefined;
   diagnostic: (line: string) => void;
 }): Promise<CloseReport | undefined> {
   const { session, stdin, stdout, diagnostic } = opts;
@@ -97,11 +100,11 @@ export async function runStdio(opts: {
     paused = false;
     if (!finished && !outputBroken && !stdin.destroyed) stdin.resume();
   };
-  const stopOutput = (): void => {
+  const stopOutput = (error: Error | null | undefined): void => {
     if (outputBroken) return;
     outputBroken = true;
     stdout.off("drain", onDrain);
-    diagnostic("stdout closed by the reader; ending the session");
+    diagnostic((error as NodeJS.ErrnoException | null | undefined)?.code === "EPIPE" ? "stdout closed by the reader; ending the session" : "stdout could not be written; ending the session");
     stdin.destroy();
   };
   const detachOutput = (): void => {
@@ -109,9 +112,9 @@ export async function runStdio(opts: {
     if (finished && pendingBytes === 0 && (!outputBroken || outputErrorObserved))
       stdout.off("error", onOutputError);
   };
-  const onOutputError = (): void => {
+  const onOutputError = (error: Error): void => {
     outputErrorObserved = true;
-    stopOutput();
+    stopOutput(error);
     detachOutput();
   };
   stdout.on("error", onOutputError);
@@ -122,7 +125,7 @@ export async function runStdio(opts: {
     pendingBytes += bytes;
     const ok = stdout.write(line, (err) => {
       pendingBytes -= bytes;
-      if (err) stopOutput();
+      if (err) stopOutput(err);
       detachOutput();
     });
     // Backpressure: stop reading requests while the reader is behind, so output cannot grow unbounded.
@@ -139,7 +142,7 @@ export async function runStdio(opts: {
     const participant = new StdioParticipant(session, write, (close) => resolveEnded(close));
     const framer = new LineFramer(
       (line) => participant.acceptLine(line),
-      () => write(serializeRecord({ schemaVersion: 1, type: "error", id: null, error: { code: "USAGE_INVALID", message: `request line exceeds ${MAX_REQUEST_LINE} characters; discarded` } })),
+      () => participant.refuseLine({ code: "USAGE_INVALID", message: `request line exceeds ${MAX_REQUEST_LINE} characters; discarded` }),
     );
 
     return await new Promise<CloseReport | undefined>((resolve) => {
@@ -154,7 +157,7 @@ export async function runStdio(opts: {
         done = true;
         detach();
         framer.end();
-        participant.endOfInput().then(resolve, (e) => {
+        participant.endOfInput(opts.endedBy?.()).then(resolve, (e) => {
           diagnostic(`session close failed: ${(e as Error).message}`);
           resolve(undefined);
         });

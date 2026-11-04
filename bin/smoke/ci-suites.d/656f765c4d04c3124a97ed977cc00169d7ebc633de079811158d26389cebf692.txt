@@ -1,0 +1,2 @@
+# Presence setters reject reader-invalid input before local state or KV changes.
+smoke:presence-writer

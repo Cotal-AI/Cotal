@@ -1,0 +1,2 @@
+# A managed dashboard logs an endpoint error by its class only, never its message.
+smoke:web-log-error-class

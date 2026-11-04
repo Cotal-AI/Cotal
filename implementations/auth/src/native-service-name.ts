@@ -18,7 +18,8 @@ interface NameRow extends NameContext {
 }
 const reserved = new Set([AUTH_ENDPOINT, BASELINE_DELIVERY_ENDPOINT, BASELINE_LIFECYCLE_ENDPOINT]);
 const decoder = new TextDecoder("utf-8", { fatal: true });
-function nameKey(endpoint: string): string {
+/** The auth-store key of one application-service name binding. Native control endpoints refuse. */
+export function serviceNameKey(endpoint: string): string {
   const token = endpointToken(endpoint);
   if (reserved.has(endpoint)) throw new EpEnvelopeError("permission-denied", "native control endpoint names cannot be service bindings");
   return `servicename.${token}`;
@@ -44,14 +45,14 @@ function parseRow(bytes: Uint8Array): NameRow {
     || typeof row.requestId !== "string" || !/^[0-9a-f]{32}$/.test(row.requestId)
     || typeof row.requestDigest !== "string" || !isContractDigest(row.requestDigest))
     throw new EpEnvelopeError("failed-precondition", "invalid native service name record");
-  spacePrefix(row.space); nameKey(row.endpoint); assertDerivedOwnerToken(row.owner);
+  spacePrefix(row.space); serviceNameKey(row.endpoint); assertDerivedOwnerToken(row.owner);
   return { v: 1, kind: "service-name", accountPublicKey: row.accountPublicKey, space: row.space,
     endpoint: row.endpoint, owner: row.owner, claimReference: row.claimReference, requestId: row.requestId, requestDigest: row.requestDigest };
 }
 
 /** One leader snapshot binds owner and revision. Missing is distinct from corrupt or deleted. */
 export async function readNativeServiceName(reg: LifecycleRegistry, expected: NameContext, endpoint: string): Promise<ServiceNameView | undefined> {
-  const binding = context(reg, expected), key = nameKey(endpoint);
+  const binding = context(reg, expected), key = serviceNameKey(endpoint);
   const entry = await registryStores(reg).authKv.get(key);
   if (!entry) return undefined;
   if (entry.operation !== "PUT") throw new EpEnvelopeError("failed-precondition", "native service name has deletion history");
@@ -62,6 +63,17 @@ export async function readNativeServiceName(reg: LifecycleRegistry, expected: Na
     requestId: row.requestId, requestDigest: row.requestDigest, revision: entry.revision };
 }
 
+function nameRow(binding: NameContext, request: Extract<ServiceHostRequest, { operation: "name-bind" }>): NameRow {
+  return { v: 1, kind: "service-name", accountPublicKey: binding.accountPublicKey, space: binding.space, endpoint: request.input.endpoint,
+    owner: request.input.owner, claimReference: request.input.claimReference, requestId: request.requestId, requestDigest: contractDigest(request) };
+}
+
+/** The exact bytes a create-only binding of this parsed request stores, the same bytes
+ *  {@link bindNativeServiceName} creates, so either writer recovers the other's identical binding. */
+export function serviceNameRowBytes(binding: NameContext, request: Extract<ServiceHostRequest, { operation: "name-bind" }>): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(nameRow(binding, request)));
+}
+
 /** Internal storage after host authentication and claim verification. No transfer or release exists. */
 export async function bindNativeServiceName(reg: LifecycleRegistry, expected: NameContext,
   raw: Extract<ServiceHostRequest, { operation: "name-bind" }>): Promise<ServiceNameView> {
@@ -69,9 +81,8 @@ export async function bindNativeServiceName(reg: LifecycleRegistry, expected: Na
   if (request.operation !== "name-bind") throw new EpEnvelopeError("bad-request", "expected a service name binding request");
   if (request.input.expectedRevision !== 0)
     throw new EpEnvelopeError("failed-precondition", "service names are create-only; transfer and release are unsupported");
-  const row: NameRow = { v: 1, kind: "service-name", ...binding, endpoint: request.input.endpoint, owner: request.input.owner,
-    claimReference: request.input.claimReference, requestId: request.requestId, requestDigest: contractDigest(request) };
-  await createRowByteIdempotent(registryStores(reg).authKv, nameKey(row.endpoint), row);
+  const row = nameRow(binding, request);
+  await createRowByteIdempotent(registryStores(reg).authKv, serviceNameKey(row.endpoint), row);
   const found = await readNativeServiceName(reg, binding, row.endpoint);
   if (!found || found.requestId !== row.requestId || found.requestDigest !== row.requestDigest
     || found.owner !== row.owner || found.claimReference !== row.claimReference)

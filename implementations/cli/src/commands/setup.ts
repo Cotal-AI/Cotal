@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import * as p from "@clack/prompts";
-import { registry, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import * as p from "../lib/prompts.js";
+import { registry, token, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
   isCommandFailure,
   renderReport,
+  assertPreferencesFolderProtected,
   canonicalRoot,
   checkUserBundle,
   extensionPackageDir,
@@ -18,6 +19,7 @@ import {
   loadMeshes,
   manifestExtensionNames,
   meshFile,
+  paintFor,
   personaDir,
   plainFlag,
   preferenceSpaceProblem,
@@ -26,6 +28,7 @@ import {
   presentationOf,
   provenance,
   readPreferences,
+  recordMesh,
   resolveOnPath,
   seedConnectorServers,
   writePreference,
@@ -44,17 +47,20 @@ import { seedWriterKind } from "../seed/paths.js";
 import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
+import { MissingFlags } from "../lib/missing-flags.js";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
+import { seedDefaultPersona } from "../lib/default-persona.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
-import { addExtension } from "./ext.js";
+import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
-import type { ManagedLaunchResult } from "./spawn.js";
+import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
-import { onInstance } from "../lib/control.js";
+import { onInstanceId } from "../lib/control.js";
+import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 
 const ONBOARD_VERSION = "2";
@@ -62,7 +68,7 @@ const ONBOARD_VERSION = "2";
 /** Setup saves its preparation before a separate start decision. Scripts name every input;
  *  an explicit start must detach so no script inherits a terminal view. */
 export const setupFlags = [
-  { name: "destination", type: "string", value: "<local|self-hosted>", description: "where the space runs: local (this machine starts it) or self-hosted (a space registered here); Cloud is in development" },
+  { name: "destination", type: "string", value: "<local|self-hosted>", description: "where the space runs: local (this machine starts it) or self-hosted (a space registered here, including a Cloud space `cotal login` discovered)" },
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "the application your agents run in: its own setup runs, and `cotal spawn` in the space launches it" },
   { name: "project", type: "string", value: "<dir>", description: "the project folder: the space's root, whose .cotal/agents holds its personas" },
   { name: "space", short: "s", type: "string", value: "<name>", description: "the space to prepare (local) or the registered space to use (self-hosted)" },
@@ -161,7 +167,7 @@ interface SetupStartup {
   stack: SetupStackStartResult | null;
   agent: ManagedLaunchResult | null;
   joinedAt: string | null;
-  failure: { code: ErrorCode; outcome: Outcome; target: unknown } | null;
+  failure: { code: ErrorCode; outcome: Outcome; target: unknown; message?: string } | null;
 }
 
 interface SetupResult {
@@ -171,7 +177,7 @@ interface SetupResult {
   /** The project folder: the space's root, whose `.cotal/agents` holds its personas. */
   readonly project: string;
   /** How setup found the space: prepared or registered by this run, or already in place. */
-  readonly spaceState: LocalSpaceState | "added" | "registered";
+  readonly spaceState: LocalSpaceState | "added" | "bound" | "registered";
   readonly harness: {
     readonly name: string;
     /** Host tools the harness needs that are not on PATH; its own setup did not run. */
@@ -195,6 +201,9 @@ interface SetupCancelled {
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
 const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name> [--runtime <name>]";
+const SELF_HOSTED_FORM = "cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>] [--runtime <name>]";
+/** What to do about a harness setup cannot set up. */
+const HARNESS_REMEDY = "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`";
 
 /** Input-only validation before connector seeding or preparation writes. */
 export function validateSetupArguments(args: ParsedArgs): void {
@@ -211,7 +220,7 @@ export function validateSetupArguments(args: ParsedArgs): void {
   if (values.detach && !values.start) throw usage("--detach requires an explicit --start");
   const interactive = presentationOf(values) === "rich" && !values.yes && canPrompt();
   if (values.on !== undefined) {
-    onInstance(values.on, "cotal setup");
+    onInstanceId(values.on, "cotal setup");
     if (values.destination === "local") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
     if (values["configure-only"] || (!values.start && !interactive)) throw usage("--on requires a possible startup; pass --start for a scripted setup");
   }
@@ -227,8 +236,9 @@ export function validateSetupArguments(args: ParsedArgs): void {
  * one no flag gave and shows the answers before it writes; in a script every one is a flag, and a
  * missing one is refused before anything is written. It then prepares or registers the space,
  * seeds the default persona into the project's `.cotal/agents`, records the application as the
- * space's `harness` preference, runs the application's own setup actions, reconciles Cotal's
- * skills and sets up the chosen runtimes. A rerun with the same answers changes nothing.
+ * space's `harness` preference and, when you have none, as your own, runs the application's own
+ * setup actions, reconciles Cotal's skills and sets up the chosen runtimes. A rerun with the same
+ * answers changes nothing.
  * `--start` launches only after preparation is complete; scripts must detach.
  * `--skills` only reconciles skills.
  */
@@ -247,7 +257,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
   const plan = await planSetup(inputs, runtimes);
-  await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on });
+  await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
 /** Skills-only write for the status card: let installed connectors reconcile their own harness,
@@ -258,12 +268,12 @@ async function runSkillsOnly(): Promise<void> {
   seedAgentSkills();
 }
 
-/** A destination this cut can prepare. Cloud is in development, so it is refused before anything is
- *  written or any endpoint is contacted. */
+/** A destination this cut can prepare. A Cloud space is a registered space, so `cloud` is refused
+ *  with the self-hosted route before anything is written or any endpoint is contacted. */
 function destinationOf(value: string): Destination {
   if (value === "local" || value === "self-hosted") return value;
   if (value === "cloud")
-    throw new CommandFailure("refused", "UNSUPPORTED", "Cotal Cloud is in development, so setup cannot prepare a Cloud space yet", { remedy: "pass --destination local or --destination self-hosted" });
+    throw new CommandFailure("refused", "UNSUPPORTED", "setup has no separate Cloud destination: a Cloud space is set up as a registered space", { remedy: "sign in with `cotal login`, which registers your Cloud spaces here (`cotal space` lists them), then run `cotal setup --destination self-hosted --space <name>`" });
   throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
 }
 
@@ -271,7 +281,7 @@ function destinationOf(value: string): Destination {
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
-  if (missing.length > 0) throw usage(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, SCRIPTED_FORM);
+  if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM);
   const project = resolve(v.project!);
   if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
   return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
@@ -339,7 +349,7 @@ async function askDestination(initial: Destination | undefined): Promise<Destina
       options: [
         { value: "local", label: "Local", hint: "this machine starts it" },
         { value: "self-hosted", label: "Self-hosted", hint: "it runs on a server and is registered here" },
-        { value: "cloud", label: "Cloud", hint: "in development", disabled: true },
+        { value: "cloud", label: "Cloud", hint: "sign in with `cotal login`, then choose Self-hosted", disabled: true },
       ],
       initialValue: initial ?? "local",
     }),
@@ -464,9 +474,9 @@ function bundleSpace(file: string): string {
  *  no official connector provides is refused as a usage error, and the remedy names `cotal ext seed`
  *  only where it runs: it refuses a source checkout unless a sandboxed release test opts in. */
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
-  const candidates = setupConnectorCandidates(await setupConnectorSurface());
+  const candidates = await setupConnectorCandidates(await setupConnectorSurface());
   if (candidates.length > 0) return candidates;
-  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness "${harness}"; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`);
+  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
     remedy: seeds ? "run `cotal ext seed`" : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
@@ -505,22 +515,27 @@ interface SetupPlan {
   readonly space: { readonly kind: "local"; readonly state: LocalSpaceState } | SelfHostedSpace;
 }
 
-/** Every check setup makes before it writes: the space name, the application, the space at the
- *  destination, and for a local space the NATS server `cotal up` will run. */
+/** Every check setup makes before it writes: the space name, the application, the preferences
+ *  folder it saves the harness in, the space at the destination, and for a local space the NATS
+ *  server `cotal up` will run. */
 async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
-  if (problem) throw usage(problem);
+  // A name with a letter or digit left after the others are replaced is offered as it would be spelled.
+  const spelled = token(inputs.space);
+  if (problem) throw usage(problem, /[A-Za-z0-9]/.test(spelled) ? `pass --space ${spelled}, or another name of letters, digits, - and _` : "pass a --space name of letters, digits, - and _");
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
-  if (!candidate) throw usage(`no harness "${inputs.harness}"; known harnesses: ${candidates.map((c) => c.value).join(", ")}`);
+  if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
+  assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
   const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);
   try {
     await resolveNatsServer();
   } catch (e) {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22 or newer" });
+    if (e instanceof CommandFailure) throw e;
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22.10 or newer" });
   }
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
@@ -548,6 +563,21 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     warnings.push(...added.warnings);
     written.push({ what: "space registration", path: meshFile(inputs.space) });
     spaceState = "added";
+  } else if (plan.space.kind === "bind") {
+    const current = findMesh(inputs.space);
+    const expectedCustodyRoot = plan.space.entry.catalogRoot ?? plan.space.entry.root;
+    if (!current || current.origin !== "catalog" || current.catalogOwner !== plan.space.entry.catalogOwner || current.server !== plan.space.entry.server)
+      throw new CommandFailure("refused", "CONFLICT", `the discovered registration for "${inputs.space}" changed before its project was bound; nothing was written`, { target, remedy: "run the same setup again against the refreshed registration" });
+    const currentCustodyRoot = current.catalogRoot ?? current.root;
+    if (canonicalRoot(currentCustodyRoot) !== canonicalRoot(expectedCustodyRoot))
+      throw new CommandFailure("refused", "CONFLICT", `the discovered registration for "${inputs.space}" changed its catalog custody root before its project was bound; nothing was written`, { target, remedy: "run the same setup again against the refreshed registration" });
+    if (canonicalRoot(current.root) !== canonicalRoot(currentCustodyRoot) && canonicalRoot(current.root) !== canonicalRoot(plan.space.project))
+      throw new CommandFailure("refused", "CONFLICT", `"${inputs.space}" was bound to the project ${current.root} before this setup could bind ${plan.space.project}; nothing was written`, { target, remedy: `pass --project ${current.root}` });
+    if (canonicalRoot(current.root) === canonicalRoot(currentCustodyRoot)) {
+      recordMesh({ ...current, root: plan.space.project, catalogRoot: currentCustodyRoot, ts: new Date().toISOString() });
+      written.push({ what: "project root binding", path: meshFile(inputs.space) });
+    }
+    spaceState = "bound";
   } else if (plan.space.kind === "registered") {
     spaceState = "registered";
   } else {
@@ -559,32 +589,38 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     spaceState = plan.space.state;
   }
 
-  const agents = personaDir(inputs.project);
-  const defaultPersona = join(agents, "default.md");
-  const seeded = reconcileDefaultAgent(defaultPersona);
-  if (seeded !== "unchanged") wrote(seeded === "seeded" ? "default persona" : "updated default persona permissions", defaultPersona);
+  const persona = seedDefaultPersona(inputs.project);
+  if (persona) wrote(persona.what, persona.path);
   if (opts.demo) {
+    const agents = personaDir(inputs.project);
     for (const [name, body] of Object.entries(DEMO_AGENTS)) writeDemoAgent(join(agents, `${name}.md`), body, wrote);
   }
   if (writePreference({ space: inputs.space }, "harness", inputs.harness, readPreferences().revision).changed) wrote(`harness preference of ${inputs.space}`, preferencesPath());
+  // A space prepared later without setup takes the application from your own value. One you
+  // already chose stays as it is.
+  const prefs = readPreferences();
+  if (prefs.defaults.harness === undefined && writePreference({}, "harness", inputs.harness, prefs.revision).changed) wrote("your harness preference", preferencesPath());
 
   const narrate = opts.presentation === "rich";
   const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
   const actions = actionRunner(narrate, opts.interactive, log);
   if (candidate.missing.length === 0) {
-    const provider = await availableSetupProvider(candidate.connector);
-    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv() }));
-    // Resolved again because the connector action can change what is on PATH, and a provider whose
-    // executables are gone must not write.
-    const share = (await availableSetupProvider(candidate.connector))?.mcpServers;
-    if (share) await actions.run(candidate.value, actionStep(share, connectorShareInput(candidate.connector)));
+    const provider = await connectorSetupProvider(candidate.connector);
+    const entry = findMesh(inputs.space);
+    const signedIn = provider?.connector && entry?.mode === "user" ? await signedInSpace(entry) : undefined;
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), ...(signedIn ? { signedIn } : {}) }, provider));
+    // Recheck inside each selected action so lost readiness is a recorded failure, never a skipped step.
+    const share = await connectorSetupProvider(candidate.connector);
+    if (share?.mcpServers) await actions.run(candidate.value, actionStep(share.mcpServers, connectorShareInput(candidate.connector), share));
+    const skills = await connectorSetupProvider(candidate.connector);
+    if (skills?.skills) await actions.run(candidate.value, actionStep(skills.skills, connectorSkillsInput(), skills));
   }
   // A connector's skills action runs for every connector whose harness is present, so someone using
   // that harness gets Cotal's skills even without joining the mesh through it.
-  for (const other of setupConnectorCandidates(await setupConnectorSurface())) {
-    if (other.missing.length > 0) continue;
-    const skills = (await availableSetupProvider(other.connector))?.skills;
-    if (skills) await actions.run(other.value, actionStep(skills, connectorSkillsInput()));
+  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
+    if (other.value === candidate.value || other.missing.length > 0) continue;
+    const provider = await connectorSetupProvider(other.connector);
+    if (provider?.skills) await actions.run(other.value, actionStep(provider.skills, connectorSkillsInput(), provider));
   }
   if (agentSkillsSkew().some((s) => s.state !== "current")) {
     const skills = seedAgentSkills(log);
@@ -617,7 +653,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   };
   const problems: Problem[] = [
     ...(candidate.missing.length > 0
-      ? [{ message: `${candidate.value} needs ${candidate.missing.join(", ")} on PATH, so its own setup did not run`, remedy: `install ${candidate.missing.join(", ")}, then run the same setup again` }]
+      ? [{ message: candidate.unavailable ? `${candidate.value} is unavailable, so its own setup did not run` : `${candidate.value} needs ${candidate.missing.join(", ")} on PATH, so its own setup did not run`, remedy: `install or repair ${candidate.missing.join(", ")}, then run the same setup again` }]
       : failed
         ? [{ message: `${failed.title} did not finish (${failed.message})`, remedy: "fix it, then run the same setup again" }]
         : []),
@@ -649,7 +685,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
           startup.joinedAt = new Date().toISOString();
           startup.state = "joined";
           warnings.push(...notices);
-          if (opts.interactive && !opts.detach) console.error(renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich"));
+          if (opts.interactive && !opts.detach) console.error(paintFor(process.stderr, () => renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich")));
         },
       });
       if (!startup.agent) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "setup received no native joined receipt; no readiness was inferred");
@@ -658,8 +694,9 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       const unknown = known === undefined || known.outcome === "unknown";
       startup.state = unknown ? "unknown" : known.outcome === "refused" ? "refused" : known.outcome === "failed" ? "failed" : "partial";
       const failureTarget = setupFailureCoordinates(known?.target, inputs.space);
-      startup.failure = { code: known?.code ?? "OPERATION_UNKNOWN", outcome: known?.outcome ?? "unknown", target: failureTarget };
-      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
+      const diagnostic = known && startup.stackAttempted && !startup.stack ? known.message : undefined;
+      startup.failure = { code: known?.code ?? "OPERATION_UNKNOWN", outcome: known?.outcome ?? "unknown", target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) };
+      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
       writeResult(opts.presentation, { command: "setup", target, result, warnings, failure }, setupView);
       return;
     }
@@ -702,6 +739,7 @@ async function setUpRuntimes(
         // With --json or --plain, stdout carries the result alone.
         await addExtension(`${r.package}@${cliVersion()}`, r.package, false, narrate ? console.log : (line) => console.error(line));
       } catch (e) {
+        if (e instanceof ExtensionAddInterrupted) throw e;
         const error = (e as Error).message;
         rows.push({ ...row, selected: true, state: "left-out", reachable: null, error });
         problems.push({ message: `the ${r.name} runtime did not install (${error.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });
@@ -783,6 +821,7 @@ const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
   prepared: "already prepared",
   started: "already started here",
   added: "registered by this setup",
+  bound: "project bound by this setup",
   registered: "already registered",
 };
 
@@ -861,12 +900,17 @@ function startupSection(s: SetupStartup): Report["sections"][number] {
     : s.state === "partial" || s.state === "preparation-incomplete" ? { text: "Startup incomplete; preparation remains saved", tone: "waiting", mark: "!" }
     : s.state === "declined" ? { text: "Start declined; preparation saved", tone: "hint" }
     : { text: "Configure only; no startup requested", tone: "hint" };
+  const localStartup: Cell = s.failure?.outcome === "refused" ? "Command refused"
+    : s.failure?.outcome === "failed" ? "Command failed"
+    : s.failure?.outcome === "partial" ? "Command returned a partial result"
+    : { text: "Command outcome unconfirmed", tone: "waiting" };
   const rows: [string, Cell][] = [
     ["Startup", label],
     ...(s.requestedManagerInstanceId ? [["Requested manager", s.requestedManagerInstanceId] as [string, Cell]] : []),
-    ...(s.stack ? [["Local startup", "Native up returned; exit status is not a stack-readiness receipt"] as [string, Cell], ["Selected manager", s.stack.managerInstanceId] as [string, Cell]] : s.stackAttempted ? [["Local startup", { text: "Command outcome unconfirmed", tone: "waiting" }] as [string, Cell]] : []),
+    ...(s.stack ? [["Local startup", "Native up returned; exit status is not a stack-readiness receipt"] as [string, Cell], ["Selected manager", s.stack.managerInstanceId] as [string, Cell]] : s.stackAttempted ? [["Local startup", localStartup] as [string, Cell]] : []),
     ...(s.agent ? [["Agent", s.agent.name], ["Identity", s.agent.id], ["Lifecycle", s.agent.lifecycleUid], ["Manager receipt", s.agent.managerInstanceId], ["Joined receipt time", s.joinedAt ?? "not recorded"], ["Application", s.agent.harness], ["Runtime", s.agent.runtime]].map(([key, value]): [string, Cell] => [key!, value!]) : []),
     ...(s.failure ? [["Cause", s.failure.code] as [string, Cell]] : []),
+    ...(s.failure?.message ? [["Detail", s.failure.message] as [string, Cell]] : []),
   ];
   return { title: "Start", blocks: [{ kind: "fields", rows }, ...(s.agent ? [{ kind: "lines" as const, lines: [{ text: "The manager confirmed the recorded presence join, not task completion or current whole-stack health.", tone: "hint" as const }] }] : [])] };
 }
@@ -939,33 +983,41 @@ export interface SetupConnectorCandidate {
   label: string;
   hint: string;
   missing: string[];
+  unavailable: boolean;
 }
 
-/** Every connector on the setup surface becomes a choice. Its OWN declarations drive the hints —
- *  `requires` for readiness, `setup` for whether it runs connector-owned setup at all, `pluginRoot`
- *  for how that reads — and connector names never gate membership. Exported for the genericity smoke. */
-export function setupConnectorCandidates(
+/** Every connector becomes a choice. Its provider owns setup readiness; the connector's launch
+ * requirements apply when no provider overrides them. Names never gate membership. */
+export async function setupConnectorCandidates(
   connectors: readonly Connector[],
   pathProbe: (bin: string) => boolean = (bin) => !!resolveOnPath(bin),
-): SetupConnectorCandidate[] {
-  return [...connectors]
+  providerFor: (connector: Connector) => Promise<ConnectorSetupProvider | null> = connectorSetupProvider,
+): Promise<SetupConnectorCandidate[]> {
+  return Promise.all([...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((connector) => {
-      const missing = (connector.requires ?? []).filter((bin) => !pathProbe(bin));
+    .map(async (connector) => {
+      const provider = await providerFor(connector);
+      const available = provider?.available?.();
+      const missing = available === undefined
+        ? (provider?.requires ?? connector.requires ?? []).filter((bin) => !pathProbe(bin))
+        : available ? [] : [provider!.name];
       return {
         connector,
         value: connector.name,
         label: connector.name,
         missing,
-        hint: missing.length
-          ? `${missing.join(", ")} not on PATH`
-          : connector.setup
-            ? connector.pluginRoot
-              ? "installs a plugin"
-              : "runs its own setup"
-            : "ready at spawn",
+        unavailable: available === false,
+        hint: available === false
+          ? `${provider!.name} unavailable`
+          : missing.length
+            ? `${missing.join(", ")} not on PATH`
+            : connector.setup
+              ? connector.pluginRoot
+                ? "installs a plugin"
+                : "runs its own setup"
+              : "ready at spawn",
       };
-    });
+    }));
 }
 
 /** Materialize every connector advertised by the registry or installed manifest. Exported so the
@@ -999,13 +1051,16 @@ async function availableSetupProvider(connector: Connector): Promise<ConnectorSe
  * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
  * `I` from the action alone: inferring it from the input too widens it to accept a dropped
  * (`undefined`) input. */
-function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>): Step {
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: ConnectorSetupProvider): Step {
   return {
     name: setup.name,
     title: setup.title,
     explain: setup.explain,
     context: [...(setup.context ?? [])],
-    async run() { return setup.run(input); },
+    async run() {
+      if (!setupProviderAvailable(provider)) throw new Error(`${provider.name} is unavailable; ${setup.title} did not run`);
+      return setup.run(input);
+    },
   };
 }
 
@@ -1032,8 +1087,10 @@ async function reconcileConnectorSkills(): Promise<void> {
 export async function refreshConnectorInstalls(): Promise<string[]> {
   const lines: string[] = [];
   for (const connector of await setupConnectorSurface()) {
-    const refresh = (await availableSetupProvider(connector))?.refresh;
-    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
+    // Refresh owns installed state even when a harness executable disappeared. Its provider must
+    // distinguish an absent integration from one it cannot update; availability must not hide it.
+    const refresh = (await connectorSetupProvider(connector))?.refresh;
+    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
   }
   return lines;
 }
@@ -1049,10 +1106,10 @@ async function connectorAssists(): Promise<ConnectorAssist[]> {
   return assists;
 }
 
-/** Pure availability rule for connector-owned setup actions. No executable means no harness write;
- * the caller still continues to the cross-vendor Agent Skills reconcile. */
-export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires">): boolean {
-  return !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
+/** Provider-owned readiness or the declared executable check. An unavailable harness is skipped;
+ * an installed integration's refresh obligation is checked separately, without this filter. */
+export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires" | "available">): boolean {
+  return provider.available?.() ?? !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
 }
 
 /** Reconcile Cotal's authored skills into the cross-vendor `~/.agents/skills` directory that Codex,
@@ -1088,73 +1145,9 @@ function writeDemoAgent(path: string, body: string, wrote: (what: string, path: 
       wrote("backup of your edited persona", `${path}.bak`);
     }
   }
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writePrivateRecord(path, body);
   wrote("persona", path);
-}
-
-/** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
- *  then the user's to shape. Unlike the demo team it is not generally refreshed; only the
- *  byte-exact legacy template below is migrated, so any edit stands. Deleting it means the next
- *  `cotal setup` writes a fresh copy.
- *
- *  Channel scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh agent
- *  isn't firehosed every channel on the mesh at boot, while the read and post ACLs permit it to
- *  join, create, read, and post channels on demand. (`subscribe: [">"]` would auto-subscribe to
- *  every channel, the old behavior.) */
-export const DEFAULT_AGENT = `---
-name: default_agent
-role: default
-description: An agent on the mesh
-tags: []
-subscribe: []
-allowSubscribe: [">"]
-allowPublish: [">"]
-capabilities: [spawn, run]
----
-
-You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
-coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
-your peers and work with them. Edit this file to give yourself a name, role, and purpose.
-`;
-
-/** The byte-exact default template shipped before wildcard post permission. Keep this frozen: a
- *  future edit to the current template must not make an older untouched file ineligible for repair. */
-export const LEGACY_DEFAULT_AGENT = [
-  "---",
-  "name: default_agent",
-  "role: default",
-  "description: An agent on the mesh",
-  "tags: []",
-  "subscribe: []",
-  'allowSubscribe: [">"]',
-  "allowPublish: []",
-  "capabilities: [spawn]",
-  "---",
-  "",
-  "You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and",
-  "coordinate as peers rather than working in silos. Use the Cotal tools available to you to find",
-  "your peers and work with them. Edit this file to give yourself a name, role, and purpose.",
-  "",
-].join("\n");
-
-/** Return the shipped replacement only for the byte-exact legacy default. Any user edit, including
- *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the
- *  static template smoke can grade the upgrade decision without touching real setup state. */
-export function migrateLegacyDefaultAgent(current: string): string | undefined {
-  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;
-}
-
-export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "unchanged" {
-  if (existsSync(path)) {
-    const replacement = migrateLegacyDefaultAgent(readFileSync(path, "utf8"));
-    if (replacement === undefined) return "unchanged";
-    writePrivateRecord(path, replacement);
-    return "migrated";
-  }
-  mkdirSync(dirname(path), { recursive: true });
-  writePrivateRecord(path, DEFAULT_AGENT);
-  return "seeded";
 }
 
 /** The guided expert team `--demo` seeds: david (the engineer), sven (the guide) and me (your
@@ -1174,9 +1167,9 @@ You are david, Cotal's engineer, live on the web for agents with the operator wh
 up. You help them set up and experiment. Your topic is how Cotal works: the wire contract (subjects,
 message schemas, presence), NATS and JetStream underneath, the endpoint/connector model, the
 delivery modes (multicast, unicast, anycast), and how to get any agent or framework onto the mesh.
-You ground every answer in the real thing, never a guess. Start from \`docs/what-is-cotal.md\` (what Cotal
-is and its core primitives) and \`docs/getting-started.md\`, then read the source for your topic:
-\`docs/architecture.md\`, \`docs/connect-claude.md\`, \`docs/setup-internals.md\`, and, in a
+You ground every answer in the real thing, never a guess. Start from \`docs/what-is-cotal.mdx\` (what Cotal
+is and its core primitives) and \`docs/getting-started.mdx\`, then read the source for your topic:
+\`docs/architecture.mdx\`, \`docs/connect-claude.mdx\`, \`docs/setup-internals.md\`, and, in a
 source checkout, \`packages/\` and \`extensions/\`. Quote the exact subjects, message kinds, config, and
 commands; if the docs don't cover it, say so rather than inventing. If they aren't on disk, look
 them up at https://github.com/Cotal-AI/Cotal. If a question is really about use-cases or what to
@@ -1195,10 +1188,10 @@ allowPublish: [welcome]
 You are sven, Cotal's guide, live on the web for agents with the operator who just set Cotal up.
 You help them set up and experiment. You design multi-agent setups: who should be on a space, how
 they'd coordinate, what's worth trying - grounded in what Cotal can actually do, never made-up
-features. Start from \`docs/what-is-cotal.md\` (what Cotal is and its core primitives - channels, anycast,
-presence, spawn, personas, delivery modes) and \`docs/getting-started.md\`; read the matching example
-in \`examples/*/README.md\` (indexed in \`docs/examples.md\`) before sketching, and reach for
-\`docs/architecture.md\` when you need a primitive to design something new. Cite the example or
+features. Start from \`docs/what-is-cotal.mdx\` (what Cotal is and its core primitives - channels, anycast,
+presence, spawn, personas, delivery modes) and \`docs/getting-started.mdx\`; read the matching example
+in \`examples/*/README.md\` (indexed in \`docs/examples.mdx\`) before sketching, and reach for
+\`docs/architecture.mdx\` when you need a primitive to design something new. Cite the example or
 primitive you're drawing on. If they aren't on disk, look them up at https://github.com/Cotal-AI/Cotal.
 For deep how-it-works or integration details, pull in your peer david.
 `,

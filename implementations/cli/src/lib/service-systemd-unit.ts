@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { delimiter, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
 import { CommandFailure, localRecordName, serviceOperationId } from "@cotal-ai/workspace";
+import { DAEMON_NODE_FLAGS } from "./self-exec.js";
 
 interface UnitInput {
   space: string;
@@ -58,7 +59,8 @@ export function renderSystemdServiceUnit(input: UnitInput) {
   const cli = input.cli.map((part) => path(part));
   if (cli[0]!.includes("$")) throw new CommandFailure("refused", "UNSUPPORTED", "the native executable path contains a systemd variable marker; the installer did not guess its first-token expansion");
   const unit = systemdServiceUnitName(input.space, definition, instanceId);
-  const argv = [...cli, "__service-unit", "--control-home", controlHome, "--space", input.space, "--definition", definition, "--instance", instanceId];
+  // The unit entry is a daemon launch, so Node runs it under the daemon node flags.
+  const argv = [cli[0]!, ...DAEMON_NODE_FLAGS, cli[1]!, "__service-unit", "--control-home", controlHome, "--space", input.space, "--definition", definition, "--instance", instanceId];
   const bytes = [
     "[Unit]",
     "Description=Cotal managed service",

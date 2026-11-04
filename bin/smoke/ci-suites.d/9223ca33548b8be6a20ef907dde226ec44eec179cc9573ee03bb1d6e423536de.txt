@@ -1,0 +1,2 @@
+# The mounted app opens the routed channel, closes it elsewhere, follows the hash and stops the dashboard on unmount.
+smoke:web-app-mount

@@ -24,6 +24,9 @@
  *   G. Saved preferences: a harness saved for the user or the space is the caller default on both
  *      paths, below COTAL_DEFAULT_AGENT and a persona pin, and a saved persona preference picks the
  *      persona of a bare spawn.
+ *   H. A foreground spawn whose catalog has no default persona writes the shipped one, create-only,
+ *      and launches it; its preview writes nothing, an edited default is kept, and a missing named
+ *      persona is still refused.
  *
  * Throwaway everything: own nats-server on an OS-assigned free port with a scratch store dir, a
  * sandboxed COTAL_HOME, a scratch workspace root, kills only the PIDs it spawns. No live stack is
@@ -32,7 +35,7 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
@@ -118,6 +121,11 @@ const cmd = (name: string): Command => {
   return c;
 };
 const run = (name: string, argv: string[]) => cmd(name).run(parseCommandArgs(cmd(name), argv));
+// A managed launch reports success as an "Agent joined" section whose fields name the agent and its
+// application. Read the field rows, so a word elsewhere in the report cannot satisfy a cell.
+const unstyled = (out: string) => out.replace(/\x1b\[[0-9;]*m/g, "");
+const field = (out: string, name: string, value: string) => new RegExp(`^\\s*${name}:\\s+${value}\\s*$`, "m").test(unstyled(out));
+const joined = (out: string, agent: string) => unstyled(out).includes("Agent joined") && field(out, "Agent", agent);
 async function capture(fn: () => Promise<void>): Promise<string> {
   let out = "";
   const realLog = console.log;
@@ -163,13 +171,13 @@ try {
   // A — the issue's exact shape: file pins `pin`, env points at `other`, no --agent, detached.
   process.env.COTAL_DEFAULT_AGENT = "other";
   const aOut = await capture(() => run("spawn", ["pinned", "--detach", "--no-events", "--space", SPACE]));
-  ok("A: detached spawn of the pinned persona succeeded", /spawned .*pinned/.test(aOut), aOut);
+  ok("A: detached spawn of the pinned persona succeeded", joined(aOut, "pinned"), aOut);
   ok("A: the persona's agent: pin built the launch (file beats env, detached)", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length });
-  ok("A: the reply names the pinned harness", /pin /.test(aOut) && !/other /.test(aOut), aOut);
+  ok("A: the reply names the pinned harness", field(aOut, "Application", "pin") && !field(aOut, "Application", "other"), aOut);
 
   // B — an explicit --agent still wins over the pin (flag > file > env > default).
   const bOut = await capture(() => run("spawn", ["pinned", "--detach", "--no-events", "--space", SPACE, "--agent", "other", "--name", "flagwins"]));
-  ok("B: explicit --agent spawn succeeded", /spawned .*flagwins/.test(bOut), bOut);
+  ok("B: explicit --agent spawn succeeded", joined(bOut, "flagwins"), bOut);
   ok("B: the flag's connector built the launch, not the pin", builds.other.length >= 1 && builds.pin.length === 1, { pin: builds.pin.length, other: builds.other.length });
 
   // Stop both detached seats via the manager's own control handler (the CLI `stop` exits the
@@ -192,7 +200,7 @@ try {
     ["exec", "tsx", "bin/cotal.ts", "spawn", "unpinned", "--detach", "--no-events", "--space", SPACE],
     { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_DEFAULT_AGENT: "other", COTAL_SKIP_CONNECTOR_SEED: "1" },
   );
-  ok("C: detached child spawn with a caller-only default succeeded", child.code === 0 && /spawned .*unpinned/.test(child.out), child);
+  ok("C: detached child spawn with a caller-only default succeeded", child.code === 0 && joined(child.out, "unpinned"), child);
   ok("C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona", builds.other.length === 1 && builds.pin.length === 0, { pin: builds.pin.length, other: builds.other.length, out: child.out });
   const stopUnpinned = await (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, ad: boolean) => Promise<{ ok: boolean; error?: string }> }).opStop({ name: "unpinned" }, "smoke", true);
   if (!stopUnpinned.ok) console.log(`  · note: stop unpinned replied ${JSON.stringify(stopUnpinned)}`);
@@ -215,7 +223,8 @@ try {
     const counts = () => ({ pin: builds.pin.length, other: builds.other.length });
     const reset = () => { builds.pin = []; builds.other = []; };
     // A foreground spawn that refuses calls process.exit(1). Intercept it so a refusal grades the
-    // cell red instead of ending the suite, and keep what the spawn printed.
+    // cell red instead of ending the suite, and keep what the spawn printed. A bare spawn is a
+    // managed launch that attaches, so direct execution is asked for with --foreground.
     const foreground = async (args: string[]): Promise<string> => {
       const realExit = process.exit.bind(process);
       (process as unknown as { exit: (c?: number) => never }).exit = ((code?: number) => {
@@ -224,7 +233,7 @@ try {
       try {
         return await capture(async () => {
           try {
-            await run("spawn", args);
+            await run("spawn", [...args, "--foreground"]);
           } catch (e) {
             console.log((e as Error).message);
           }
@@ -263,7 +272,7 @@ try {
     save("persona", "unpinned", SPACE);
     reset();
     const g5 = await childSpawn(["--name", "g5"], { COTAL_DEFAULT_AGENT: "other" });
-    ok("G5: a saved persona preference picks the persona of a bare detached spawn", g5.code === 0 && /spawned .*g5/.test(g5.out) && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g5.out });
+    ok("G5: a saved persona preference picks the persona of a bare detached spawn", g5.code === 0 && joined(g5.out, "g5") && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g5.out });
     await stopSeat("g5");
 
     save("persona", "pinned", SPACE);
@@ -278,6 +287,37 @@ try {
     const g7 = await foreground(["unpinned", "--no-events", "--space", SPACE, "--name", "g7"]);
     ok("G7: foreground, a saved user harness builds the launch of an unpinned persona", /spawning g7/.test(g7) && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g7 });
     save("harness", undefined);
+
+    // H — the catalog holds only pinned.md and unpinned.md, as a Cloud catalog that no setup or up
+    // prepared holds no default.md. Stdout is tapped too, because the preview writes its report there.
+    const { DEFAULT_AGENT } = await import("../../implementations/cli/src/lib/default-persona.js");
+    const defaultPath = join(workspaceRoot, ".cotal", "agents", "default.md");
+    const foregroundAll = async (args: string[]): Promise<string> => {
+      const realWrite = process.stdout.write;
+      let printed = "";
+      process.stdout.write = ((chunk: string | Uint8Array) => { printed += String(chunk); return true; }) as typeof process.stdout.write;
+      try { return (await foreground(args)) + printed; }
+      finally { process.stdout.write = realWrite; }
+    };
+    ok("H instrument: the catalog starts with no default persona", !existsSync(defaultPath));
+    const h1 = await foregroundAll(["--dry-run", "--no-events", "--space", SPACE, "--name", "h1"]);
+    ok("H1: a bare foreground preview says the launch writes the shipped default, and writes nothing",
+      /writes the shipped default persona/.test(unstyled(h1)) && !/process\.exit|no default persona/.test(h1) && !existsSync(defaultPath), h1);
+    process.env.COTAL_DEFAULT_AGENT = "other";
+    reset();
+    const h2 = await foreground(["--no-events", "--space", SPACE, "--name", "h2"]);
+    ok("H2: a bare foreground spawn writes the shipped default persona and launches it",
+      /spawning h2/.test(h2) && builds.other.length === 1 && existsSync(defaultPath) && readFileSync(defaultPath, "utf8") === DEFAULT_AGENT, { ...counts(), out: h2 });
+    ok("H2: the written default is private to its owner", existsSync(defaultPath) && (statSync(defaultPath).mode & 0o777) === 0o600);
+    appendFileSync(defaultPath, "\nKeep this edit.\n");
+    const edited = readFileSync(defaultPath, "utf8");
+    reset();
+    const h3 = await foreground(["--no-events", "--space", SPACE, "--name", "h3"]);
+    ok("H3: an existing default persona is launched as it stands, never rewritten", /spawning h3/.test(h3) && readFileSync(defaultPath, "utf8") === edited, h3);
+    const h4 = await foreground(["nosuch", "--no-events", "--space", SPACE, "--name", "h4"]);
+    ok("H4: a missing named persona is still refused and not created", /no persona "nosuch"/.test(h4) && !/spawning h4/.test(h4) && !existsSync(join(workspaceRoot, ".cotal", "agents", "nosuch.md")), h4);
+    delete process.env.COTAL_DEFAULT_AGENT;
+    rmSync(defaultPath, { force: true });
   }
 
   // D — FOREGROUND: same pinned persona, no --agent, env pointing at `other`. The child is
@@ -285,7 +325,7 @@ try {
   process.env.COTAL_DEFAULT_AGENT = "other";
   builds.pin = [];
   builds.other = [];
-  const cOut = await capture(() => run("spawn", ["pinned", "--no-events", "--space", SPACE, "--name", "fgpin"]));
+  const cOut = await capture(() => run("spawn", ["pinned", "--foreground", "--no-events", "--space", SPACE, "--name", "fgpin"]));
   ok("D: foreground spawn of the pinned persona ran to completion", /spawning fgpin/.test(cOut), cOut);
   ok("D: foreground honored the persona's agent: pin", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length, out: cOut });
 
@@ -352,8 +392,8 @@ try {
     // loaded any persona, naming `other`: the confusing wrong-harness refusal of the block.
     registry.unregister("connector", "pin");
     registry.unregister("connector", "other");
-    // The refusal path calls process.exit(1); intercept it so the SUITE survives to grade the
-    // cell (the real binary exits here, which is the correct operator-visible behavior).
+    // The refusal path exits; intercept it so the SUITE survives to grade the cell (the real
+    // binary exits here, which is the correct operator-visible behavior).
     const realExit = process.exit.bind(process);
     (process as unknown as { exit: (c?: number) => never }).exit = ((code?: number) => {
       throw new Error(`process.exit(${code ?? 0})`);
@@ -365,18 +405,22 @@ try {
     {
       const realLog = console.log;
       const realErr = console.error;
+      const realWrite = process.stderr.write;
       console.log = (...a: unknown[]) => void (eOut += a.join(" ") + "\n");
       console.error = (...a: unknown[]) => void (eOut += a.join(" ") + "\n");
+      // The kernel writes a typed refusal's block to stderr directly.
+      process.stderr.write = ((chunk: string | Uint8Array) => { eOut += String(chunk); return true; }) as typeof process.stderr.write;
       try {
         // Drive the REAL DISPATCHER (runCli), not cmd.run: the pre-parse hook
         // (spawnRequiredExtensions -> materializeExtension) only executes inside runCli, and the
         // pre-fix abort this cell pins lived exactly there.
-        await runCli(registry, ["spawn", "pinned", "--space", SPACE_E, "--name", "fgdiv"], { extensions: true });
+        await runCli(registry, ["spawn", "pinned", "--foreground", "--space", SPACE_E, "--name", "fgdiv"], { extensions: true });
       } catch (e) {
         eOut += `\n${(e as Error).message}`;
       } finally {
         console.log = realLog;
         console.error = realErr;
+        process.stderr.write = realWrite;
       }
     }
     // Restore the recorders for later cells/teardown parity.

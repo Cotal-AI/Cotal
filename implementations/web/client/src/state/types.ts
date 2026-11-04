@@ -1,0 +1,130 @@
+// The shape of the dashboard's state. The controller is its only writer.
+import type {
+  ActivityEntry,
+  ChannelInfo,
+  CotalMessage,
+  FeedMessage,
+  MembershipSnapshot,
+  PostCapability,
+  PresenceView,
+  RosterEntry,
+} from "../api/types.js";
+import type { OrderNote } from "../lib/eventOrder.js";
+import type { SessionFrame } from "../lib/session.js";
+import type { StaleMark } from "../lib/snapshot.js";
+
+/** A channel row. A live message can name a channel before the next `/api/channels` read does, so
+ *  such a row carries its count and nothing else: its policy is unknown until the server says it. */
+export type ChannelRow = Pick<ChannelInfo, "channel" | "messages"> & Partial<Omit<ChannelInfo, "channel" | "messages">>;
+
+/** A message as the dashboard keeps it in a channel view or the DM list: the payload, and the
+ *  publisher the server verified from the subject when it knows one. Only the live feed carries
+ *  `senderId`; core's history reads do not return the subject, so a row read from history has none
+ *  and nothing fills it in from the payload's own `from`. */
+export interface StoredMessage {
+  msg: CotalMessage;
+  senderId?: string;
+}
+
+/** The live feed's state as the pill says it. `connecting` until the feed first opens, `connected`
+ *  while it is open, `reconnecting` after it dropped while the browser retries, and `closed` once the
+ *  browser has failed it for good and will not retry. */
+export type Connection = "connecting" | "connected" | "reconnecting" | "closed";
+
+/** A post the composer sent. `id` is unset while the server has not answered, which is when the row
+ *  shows faded, and set once it went out, until the feed delivers the message itself. `seq` keys the
+ *  row. */
+export interface Outgoing {
+  seq: number;
+  text: string;
+  ts: number;
+  id?: string;
+}
+
+/** One composer's state: the text in the box, the refusal of its last post, and its posts the views
+ *  do not show yet. A refused post's text is back in `text`. */
+export interface Draft {
+  text: string;
+  refused?: string;
+  outgoing: Outgoing[];
+}
+
+/** One agent's session as this page holds it, while at least one view of it is open. */
+export interface SessionState {
+  /** Views of this agent open on this page (the panel section, the full view). */
+  views: number;
+  /** The agent's frames, oldest first, unique by message id, holding at most `SESSION_EVENT_CAP`
+   *  events. */
+  frames: SessionFrame[];
+  /** The agent's own verified chat posts (feed rows with senderId === id and mode "chat"), oldest first, at most 500. */
+  posts: StoredMessage[];
+  load: "loading" | "ok" | "refused" | "failed";
+  /** Refused: the broker's text. Failed: the read's error. */
+  reason?: string;
+  /** Refused: the command that would grant this dashboard the read, when the mesh has one. */
+  grant?: string;
+  /** True when the channel holds frames older than the ones held: the last read said so, or the
+   *  cap dropped some. */
+  more: boolean;
+  /** Frames asked for by the last read. */
+  limit: number;
+}
+
+export interface DashboardState {
+  space: string | null;
+  connection: Connection;
+  roster: RosterEntry[];
+  presenceView: PresenceView | null;
+  channels: ChannelRow[];
+  unread: Record<string, number>;
+  /** Newest last, capped at 500. The backfill holds chat and unicast entries; the live feed adds
+   *  anycast too, with its verified `senderId`. */
+  activity: (ActivityEntry | FeedMessage)[];
+  /** Newest last, capped at `DM_WINDOW` (500) space-wide. */
+  dms: StoredMessage[];
+  /** True when the DMs held may not reach back to the start: the last DM read filled the window, so
+   *  the server may hold older ones, or a live DM pushed the oldest out. A read that came back short
+   *  of the window held everything the server had, and sets it false. */
+  dmsCut: boolean;
+  open: { channel: string; messages: StoredMessage[] } | null;
+  stale: StaleMark[];
+  /** Newest last, capped at 50. */
+  orderNotes: OrderNote[];
+  membership: { snapshot?: MembershipSnapshot; unreadable?: string };
+  /** The first reads the page is still waiting on, true until that source's data lands. The shell
+   *  draws skeleton rows while either is outstanding. A store starts with nothing outstanding;
+   *  `startDashboard` marks both as it starts, and the controller clears each when its read applies
+   *  or, for the roster, when the feed delivers one. A refused read clears nothing: the page has no
+   *  data to show, and the stale marker says why while the read is retried. */
+  loading: { roster: boolean; channels: boolean };
+  /** What the dashboard can post as, null until `/api/meta` answers. */
+  post: PostCapability | null;
+  /** The id the operator posts as. `/api/meta` sets it whenever it reports one, replacing the stored
+   *  id; a post's answer sets it only while none is stored. */
+  operatorId: string | null;
+  /** By `composeKey`. */
+  drafts: Record<string, Draft>;
+  /** By roster id, one for each agent with a view open on this page. */
+  sessions: Record<string, SessionState>;
+}
+
+export const initialState: DashboardState = {
+  space: null,
+  connection: "connecting",
+  roster: [],
+  presenceView: null,
+  channels: [],
+  unread: {},
+  activity: [],
+  dms: [],
+  dmsCut: false,
+  open: null,
+  stale: [],
+  orderNotes: [],
+  membership: {},
+  loading: { roster: false, channels: false },
+  post: null,
+  operatorId: null,
+  drafts: {},
+  sessions: {},
+};

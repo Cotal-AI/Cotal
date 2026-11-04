@@ -3,20 +3,21 @@
  * throughout (pid/log names carry the space): `cotal down` on one space must never kill another
  * space's auth service once multi-space-per-root lands. The CLI stays provider-agnostic: it
  * resolves the ONE registered `auth-provider` extension, re-execs its self-registered daemon
- * command via {@link selfArgv} (argv array — never shell interpolation), and delegates readiness
+ * command via {@link daemonArgv} (argv array — never shell interpolation), and delegates readiness
  * to the provider's `ready()` contract. No `@cotal-ai/auth` import anywhere in this package.
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { openPrivateAppend, type AuthPrepared } from "@cotal-ai/core";
+import { EpEnvelopeError, openPrivateAppend, type AuthPrepared } from "@cotal-ai/core";
 import { AUTH_PIDFILE, spaceKey } from "@cotal-ai/workspace";
 import { parsePid, probeLiveness, readPidfile, writePidPair, type LocalProcess } from "@cotal-ai/workspace";
 import { stopLocalProcess } from "./local-process-stop.js";
 
-import { selfArgv } from "./self-exec.js";
+import { daemonArgv } from "./self-exec.js";
 import { cotalPath, cotalRoot } from "./paths.js";
+import { seedBeforeLaunch } from "../seed/launch.js";
 
 const PID_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.pid`);
 const LOG_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.log`);
@@ -159,7 +160,7 @@ function startAuthServiceDetached(space: string, server: string, command: string
   //
   // Then: a pre-hex crash leaves a dead legacy pidfile; clear it or the canonical claim produces the
   // both-present wedge readPidPath refuses.
-  const [node, ...self] = selfArgv();
+  const [node, ...self] = daemonArgv();
   reclaimDeadLegacyPid(space);
   const slot = claimAuthPidSlot(space);
   if (slot === undefined) return 0;
@@ -190,13 +191,15 @@ function startAuthServiceDetached(space: string, server: string, command: string
  *  call launched (startAuthServiceDetached returns the spawned child's pid, or the live holder a
  *  claimed slot yielded to), else the live pid authServiceUp found in the pidfile. 0 means a
  *  spawn was attempted but nothing was claimed — the wait stays clock-only rather than binding
- *  to a pid nobody can attribute. */
-function authServiceWaitPid(space: string, launched: number | undefined): number | undefined {
-  if (launched !== undefined && launched > 0) return launched;
-  const raw = readPidfile(readPidPath(space));
-  if (raw === undefined) return undefined;
+ *  to a pid nobody can attribute. `record` is the pidfile that pid came from, resolved once, so a
+ *  failure names the file the wait was bound to (#3715). */
+function authServiceWaitPid(space: string, launched: number | undefined): { pid: number | undefined; record: string } {
+  if (launched !== undefined && launched > 0) return { pid: launched, record: PID_PATH(space) };
+  const record = readPidPath(space);
+  const raw = readPidfile(record);
+  if (raw === undefined) return { pid: undefined, record };
   const pid = parsePid(raw);
-  return pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined;
+  return { pid: pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined, record };
 }
 
 /** Make the user-auth service available for a space: start the provider's daemon unless it's
@@ -218,12 +221,20 @@ export async function ensureAuthService(opts: {
   extraArgs?: string[];
 }): Promise<Record<string, unknown>> {
   let launched: number | undefined;
-  if (!authServiceUp(opts.space)) launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
-  const pid = authServiceWaitPid(opts.space, launched);
+  if (!authServiceUp(opts.space)) {
+    await seedBeforeLaunch();
+    launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
+  }
+  const { pid, record } = authServiceWaitPid(opts.space, launched);
   try {
     return await opts.prepared.service.ready({ dir: opts.stateDir, pid });
   } catch (e) {
-    throw new Error(`${e instanceof Error ? e.message : String(e)} - the daemon's pid is recorded at ${readPidPath(opts.space)}, its log is at ${LOG_PATH(opts.space)}`);
+    // The record the wait read, not a fresh resolution: a spelling that appeared since would throw
+    // its ambiguity error in place of this reason, and a moved record would name an unread file.
+    const where = ` - the daemon's pid is recorded at ${record}, its log is at ${LOG_PATH(opts.space)}`;
+    // A typed refusal stays typed, so the caller can tell its code and reason apart (#3947).
+    if (e instanceof EpEnvelopeError) throw new EpEnvelopeError(e.code, e.message + where, e.details, e.outcome);
+    throw new Error(`${e instanceof Error ? e.message : String(e)}${where}`);
   }
 }
 
@@ -238,9 +249,9 @@ export const AUTH_PROCESS: LocalProcess = {
   visibleWhen: "user-auth",
 };
 
-/** Stop THIS space's auth service with the stop `cotal down auth` runs. Scoped by the space-carrying
- *  pidfile, never a root-global kill. Throws, with the record kept, when the stop is refused or the
- *  death is not confirmed. */
+/** Stop THIS space's auth service with the stop bare `cotal down` runs for it. Scoped by the
+ *  space-carrying pidfile, never a root-global kill. Throws, with the record kept, when the stop is
+ *  refused or the death is not confirmed. */
 export async function stopAuthService(space: string): Promise<void> {
   await stopLocalProcess(AUTH_PROCESS, { root: cotalRoot(), space });
 }

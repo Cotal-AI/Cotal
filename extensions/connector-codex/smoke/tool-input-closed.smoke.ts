@@ -57,7 +57,7 @@ const spec = cotalToolSpecs(config, "codex").find((s) => s.name === TOOL);
 if (!spec?.schema) throw new Error(`${TOOL} is no longer a schema-bearing tool — repoint this suite`);
 
 const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
-const endpoint = await startCotalMcp(agent, config, () => { /* quiet */ });
+const endpoint = await startCotalMcp(agent, config, () => { /* quiet */ }, () => "bound-thread");
 const client = new Client({ name: "codex-tool-closed", version: "0.0.0" });
 
 try {
@@ -93,9 +93,9 @@ try {
   check("...and the refusal precedes the effect: the tool never reached the mesh agent",
     reached.length === 0, { reached });
 
-  // cotal_inbox is this connector's one override: it drops the spec's own arguments and supplies
-  // `scope` itself. Registered without an `inputSchema` that substitution silently ate whatever the
-  // caller sent, on that tool alone — the seam open at exactly the point nobody looks.
+  // cotal_inbox is this connector's one override: it passes `peek` on and supplies `scope` itself.
+  // Registered without an `inputSchema` that substitution silently ate whatever the caller sent, on
+  // that tool alone — the seam open at exactly the point nobody looks.
   let inboxRefusal: string | undefined;
   let inboxSucceeded = false;
   try {
@@ -111,7 +111,7 @@ try {
 
   // POSITIVE CONTROL. `reached` is the witness for all three assertions above, and a witness that
   // cannot fire is indistinguishable from a refusal that works.
-  await client.callTool({ name: TOOL, arguments: {} }).catch(() => { /* the stub agent is inert */ });
+  await client.callTool({ name: TOOL, arguments: {}, _meta: { threadId: "bound-thread" } }).catch(() => { /* the stub agent is inert */ });
   check("CONTROL: a well-formed call DOES reach the agent — the witness can fire",
     reached.length > 0, { reached });
 } finally {

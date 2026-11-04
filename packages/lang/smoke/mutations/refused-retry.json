@@ -9,7 +9,7 @@
     {
       "name": "a refusal rides the ordinary failure path and settles the entry failed",
       "file": "packages/lang/src/perform.ts",
-      "find": "    if (e instanceof EffectRefused) {\n      await host.journal.settle(\n        key,\n        { status: \"refused\", error: { code: e.code, kind: \"refused\", message: e.message } },\n        endedAt,\n      );\n      throw new RunHeld(stepKeyString(key), e.message);\n    }",
+      "find": "  if (e instanceof EffectRefused) {\n    await host.journal.settle(\n      key,\n      { status: \"refused\", error: { code: e.code, kind: \"refused\", message: e.message } },\n      endedAt,\n    );\n    throw new RunHeld(stepKeyString(key), e.message);\n  }",
       "replace": "    // mutant: a refusal is an ordinary handler failure",
       "expectRed": "a held arm inside a race unwinds the run even though a sibling won",
       "completionMarker": "ok and the refused step is still pending, not recorded as anything it is not",

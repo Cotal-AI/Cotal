@@ -7,7 +7,8 @@ import { feedbackTesters, runFeedbackIntake } from "./feedback-intake.js";
 /** This preset supplies references and native options only, never an operator-wide credential. */
 export const feedbackIntakePreset: ServicePreset = {
   kind: "service-preset", name: "feedback-intake", adapter: "feedback-intake",
-  summary: "self-hosted intake using explicit protected keys and broker credentials", timeoutMs: 30000,
+  summary: "a self-hosted feedback form, with your own tester keys and broker credential", timeoutMs: 30000,
+  defaults: { root: { space: "root" } },
 };
 
 export const feedbackIntakeProcess: LocalProcess = {

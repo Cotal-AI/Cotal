@@ -1,0 +1,4 @@
+# `cotal history limit` against real brokers: refusals before any connection, the provisioner minted
+# from the space root, the lowering prompt and its read-time snapshot under a real terminal, a stream
+# that moved while the prompt waited (CONFLICT), and the receipts.
+smoke:history-limit

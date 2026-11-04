@@ -76,13 +76,18 @@ export function loadAccount(name: string): LinearAccount {
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    throw new Error(`no Linear account "${name}" (${path}): ${(e as Error).message}. Add one with \`cotal linear account add\``);
+    throw new Error(`no Linear account "${name}" (${path}): ${(e as Error).message}. Add one with \`cotal linear account add\``, { cause: e });
   }
   const a = raw as { name?: unknown; mode?: unknown; auth?: unknown; tokenFile?: unknown };
   if (a.name !== name || !isLinearMode(a.mode)) throw new Error(`${path} is not a valid Linear account record`);
   if (a.auth === "token" && typeof a.tokenFile === "string") return { name, mode: a.mode, auth: "token", tokenFile: a.tokenFile };
   if (a.auth === "oauth") return { name, mode: a.mode, auth: "oauth" };
   throw new Error(`${path} is not a valid Linear account record`);
+}
+
+/** Whether a {@link loadAccount} failure means no record exists under that name. */
+export function accountMissing(error: unknown): boolean {
+  return error instanceof Error && (error.cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
 /** Read the bearer fresh each time, so a rotated token file is picked up without a restart. */

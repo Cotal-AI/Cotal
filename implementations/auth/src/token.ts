@@ -17,7 +17,7 @@
  *    long spans (short-lived tokens are the v1 revocation lever — an unbounded or post-dated
  *    token would quietly disable it).
  */
-import { decodeProtectedHeader, jwtVerify } from "jose";
+import { decodeProtectedHeader, errors, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, credentialLifetime, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
 
@@ -44,7 +44,7 @@ export const CLOCK_TOLERANCE_SEC = 5;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer", "service-endpoint"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer", "service-endpoint", "dm-reader"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Views the public exchange face will mint (still ledger-gated). Every other
@@ -72,6 +72,9 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   // `manager.admin` row, so writing them needs the same scope.
   "transfer-writer": "admin",
   "service-endpoint": undefined, // dedicated service authority only, never ordinary exchange
+  // #4189: no ledger scope. The authority is the purpose-bound IdP proof the exchange requires, and
+  // the profile reads only the principal's own DM durable. Loopback-only (not public).
+  "dm-reader": undefined,
 };
 
 /** The longest a bearer of `view` may live. A transfer-writer bearer is the user-mode form of the
@@ -335,4 +338,19 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     ver: USER_TOKEN_VER,
     exp: payload.exp,
   };
+}
+
+/** The owner and actor of a bearer that {@link validateUserToken} refused only for its expiry. jose
+ *  checks expiry after the signature, the issuer and the audience, so these claims are the issuer's
+ *  word; the issuer is checked again here so that order is not load-bearing. Undefined for any other
+ *  refusal. The callout charges an expired bearer's reconnects to this principal. */
+export function expiredBearerPrincipal(refusal: unknown, issuer: string): { owner: string; actor: string } | undefined {
+  if (!(refusal instanceof errors.JWTExpired)) return undefined;
+  const { iss, sub, act } = refusal.payload as { iss?: unknown; sub?: unknown; act?: { owner?: unknown; actor?: unknown } };
+  if (iss !== issuer || typeof sub !== "string" || act?.owner !== sub || typeof act.actor !== "string") return undefined;
+  try {
+    return { owner: assertDerivedOwnerToken(sub), actor: assertValidOwnerToken(act.actor) };
+  } catch {
+    return undefined;
+  }
 }

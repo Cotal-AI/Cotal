@@ -12,8 +12,8 @@
 // roles so the structure reads while symbols carry vendor identity.
 // 1920x1080 @ 30fps.
 //
-//   Phase 1  0-40    peer-to-peer  ·  Phase 2  40-78   supervised
-//   Phase 3  78-115  hierarchical  ·  Phase 4  115-150 hybrid
+// Phases: peer-to-peer -> supervised -> hierarchical -> hybrid.
+// Timing follows the G12, G23 and G34 glide windows below.
 
 import React from "react";
 import {
@@ -146,28 +146,38 @@ const TopologyShuffleBase: React.FC<{ logos: string[] }> = ({ logos }) => {
   const e_bc = edge(p1b, p1c);
   const e_cd = edge(p1c, p1d);
   const e_da = edge(p1d, p1a);
-  const p1Paths = [e_ab.d, e_bc.d, e_cd.d, e_da.d];
   const t_p1a = prog(frame, 10, 42);
   const t_p1b = prog(frame, 19, 51);
-  const p1Glow = [arrival(frame, 10, 42), 0, arrival(frame, 19, 51), 0].map((g) => g * s1);
+  const p1Wires = [
+    { d: e_ab.d, glow: arrival(frame, 10, 42) * s1 },
+    { d: e_bc.d, glow: 0 },
+    { d: e_cd.d, glow: arrival(frame, 19, 51) * s1 },
+    { d: e_da.d, glow: 0 },
+  ];
 
   // phase 2: supervised — leader(slot0) -> member1/2/3, same timing as base.
   const [p2lead, p2m1, p2m2, p2m3] = s2Slot;
   const e_a_b = edge(p2lead, p2m1);
   const e_a_c = edge(p2lead, p2m2);
   const e_a_d = edge(p2lead, p2m3);
-  const p2Paths = [e_a_b.d, e_a_c.d, e_a_d.d];
   const t_p2 = [prog(frame, 77, 106), prog(frame, 86, 115), prog(frame, 96, 122)];
-  const p2Glow = [arrival(frame, 77, 106), arrival(frame, 86, 115), arrival(frame, 96, 122)].map((g) => g * s2);
+  const p2Wires = [
+    { d: e_a_b.d, glow: arrival(frame, 77, 106) * s2 },
+    { d: e_a_c.d, glow: arrival(frame, 86, 115) * s2 },
+    { d: e_a_d.d, glow: arrival(frame, 96, 122) * s2 },
+  ];
 
   // phase 3: hierarchical — root(slot0) -> mid(slot1); mid -> leaf(slot2); mid -> leaf(slot3).
   const [p3root, p3mid, p3l1, p3l2] = s3Slot;
   const h_ab = edge(p3root, p3mid);
   const h_bc = edge(p3mid, p3l1);
   const h_bd = edge(p3mid, p3l2);
-  const p3Paths = [h_ab.d, h_bc.d, h_bd.d];
   const t_p3 = [prog(frame, 134, 157), prog(frame, 157, 176), prog(frame, 163, 181)];
-  const p3Glow = [arrival(frame, 134, 157), arrival(frame, 157, 176), arrival(frame, 163, 181)].map((g) => g * s3);
+  const p3Wires = [
+    { d: h_ab.d, glow: arrival(frame, 134, 157) * s3 },
+    { d: h_bc.d, glow: arrival(frame, 157, 176) * s3 },
+    { d: h_bd.d, glow: arrival(frame, 163, 181) * s3 },
+  ];
 
   // phase 4: hybrid — manager(slot0) -> 3 members + two lateral peer links among members.
   const [p4mgr, p4m1, p4m2, p4m3] = s4Slot;
@@ -176,16 +186,15 @@ const TopologyShuffleBase: React.FC<{ logos: string[] }> = ({ logos }) => {
   const y_ad = edge(p4mgr, p4m3);
   const y_bd = edge(p4m1, p4m3, 26);
   const y_cd = edge(p4m2, p4m3, -26);
-  const p4Paths = [y_ab.d, y_ac.d, y_ad.d, y_bd.d, y_cd.d];
   const t_p4mgr = prog(frame, 195, 221);
   const t_p4lat = prog(frame, 208, 234);
-  const p4Glow = [
-    arrival(frame, 195, 221),
-    arrival(frame, 195, 221) * 0.6,
-    0,
-    arrival(frame, 208, 234),
-    arrival(frame, 208, 234) * 0.7,
-  ].map((g) => g * s4);
+  const p4Wires = [
+    { d: y_ab.d, glow: arrival(frame, 195, 221) * s4 },
+    { d: y_ac.d, glow: (arrival(frame, 195, 221) * 0.6) * s4 },
+    { d: y_ad.d, glow: 0 },
+    { d: y_bd.d, glow: arrival(frame, 208, 234) * s4 },
+    { d: y_cd.d, glow: (arrival(frame, 208, 234) * 0.7) * s4 },
+  ];
 
   // per-SLOT arrival flashes (base timing keyed to the receiving slot), then map
   // slot -> node via the per-phase order and take the max per node.
@@ -246,10 +255,10 @@ const TopologyShuffleBase: React.FC<{ logos: string[] }> = ({ logos }) => {
   return (
     <CreamStage>
       <div style={{ position: "absolute", inset: 0, opacity: rootOpacity }}>
-        <div style={{ opacity: s1 }}><WireLines paths={p1Paths} glow={p1Glow} /></div>
-        <div style={{ opacity: s2 }}><WireLines paths={p2Paths} glow={p2Glow} /></div>
-        <div style={{ opacity: s3 }}><WireLines paths={p3Paths} glow={p3Glow} /></div>
-        <div style={{ opacity: s4 }}><WireLines paths={p4Paths} glow={p4Glow} /></div>
+        <div style={{ opacity: s1 }}><WireLines wires={p1Wires} /></div>
+        <div style={{ opacity: s2 }}><WireLines wires={p2Wires} /></div>
+        <div style={{ opacity: s3 }}><WireLines wires={p3Wires} /></div>
+        <div style={{ opacity: s4 }}><WireLines wires={p4Wires} /></div>
 
         {/* the four agents are vendor symbols, gliding between layouts */}
         {n.map((at, i) => (

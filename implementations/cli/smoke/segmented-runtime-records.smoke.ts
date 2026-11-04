@@ -83,8 +83,8 @@ try {
     readFileSync(record(MANAGER_PIDFILE, ALPHA), "utf8") === String(aPid)
       && readFileSync(record(MANAGER_PIDFILE, BETA), "utf8") === String(bPid),
     { aPid, bPid });
-  check("alpha reads its own manager as alive", managerUp(ALPHA) && managerLiveness(undefined, undefined, ALPHA) === "alive");
-  check("beta reads its own manager as alive", managerUp(BETA) && managerLiveness(undefined, undefined, BETA) === "alive");
+  check("alpha reads its own manager as alive", managerUp(ALPHA) && managerLiveness(ALPHA) === "alive");
+  check("beta reads its own manager as alive", managerUp(BETA) && managerLiveness(BETA) === "alive");
 
   console.log("\n2) the delivery-aware marker is per-space too");
   place(MANAGER_DELIVERY_AWARE_MARKER, ALPHA, aPid);
@@ -117,7 +117,7 @@ try {
   check("both spaces' delivery records coexist", deliveryUp(ALPHA) && deliveryUp(BETA));
   await stopDelivery(ALPHA);
   await waitDead(d1Pid);
-  check("stopDelivery(alpha) stops alpha's daemon", !alive(d1Pid) && deliveryLiveness(undefined, ALPHA) === "absent");
+  check("stopDelivery(alpha) stops alpha's daemon", !alive(d1Pid) && deliveryLiveness(ALPHA) === "absent");
   check("...and beta's daemon survives with its record intact", alive(d2Pid) && deliveryUp(BETA));
 
   console.log("\n5) a pre-segmentation root still upgrades without orphaning its daemon");
@@ -126,7 +126,7 @@ try {
   const legacy = daemon();
   const legacyPid = legacy.pid!;
   writeFileSync(join(root, ".cotal", "manager.pid"), String(legacyPid));
-  check("the CLI still FINDS the pre-upgrade manager", managerUp(ALPHA), managerLiveness(undefined, undefined, ALPHA));
+  check("the CLI still FINDS the pre-upgrade manager", managerUp(ALPHA), managerLiveness(ALPHA));
   const legacyStop = await stopManager(ALPHA);
   await waitDead(legacyPid);
   check("...and still STOPS it, rather than leaving it orphaned", legacyStop && !alive(legacyPid), legacyStop);

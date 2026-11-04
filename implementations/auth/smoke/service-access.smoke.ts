@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { createAccount } from "@nats-io/nkeys";
 import { decodeJwt, decodeProtectedHeader, SignJWT } from "jose";
 import { contractDigest, serviceEndpointActor, type ServiceRegistrationWitness } from "@cotal-ai/core";
@@ -8,6 +9,9 @@ import { createIdpBridge } from "../src/idp.js";
 import { calloutPermissions } from "../src/permissions.js";
 import { profileFixtures } from "./prototypes/issued-profile-census.js";
 import { validateServiceRenewalProof } from "../src/service-renewal.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const identity = { accountPublicKey: createAccount().getPublicKey(), space: "service-access", owner: `u_${"a".repeat(26)}`,
   endpoint: "org.example.orders", instanceId: "i".repeat(32) };
@@ -62,3 +66,4 @@ await validateUserToken(bearer, options); issuer.retire(key.kid);
 await assert.rejects(validateUserToken(bearer, options)); await validateUserToken(successor, options);
 assert.ok((await profileFixtures("service-access-census")).length > 0, "ordinary profile census still builds and refuses service view");
 console.log("service access: closed witness-bound claims, fixed expiry, rotation and ordinary-path refusal passed; native host authorization remains separate");
+emitSentinel({ passed: counted.cells(), failed: 0 });

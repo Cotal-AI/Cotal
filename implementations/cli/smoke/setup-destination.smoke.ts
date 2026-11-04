@@ -4,10 +4,12 @@
  * with a PATH that holds `codex` and `tmux` (stand-ins) and not `claude` or `cmux`. A stand-in npm
  * registry serves the tmux and herdr runtimes packed from this checkout.
  *
- * Scripted: every input is a flag, a missing one is refused before anything is written, Cloud is
- * refused as in development, and a refusal leaves the sandbox as it was. A local space is prepared
+ * Scripted: every input is a flag, a missing one is refused before anything is written with the
+ * scripted form of the destination, a bad space name or harness gets a remedy, Cloud is
+ * refused with the route a Cloud space takes today, and a refusal leaves the sandbox as it was. A local space is prepared
  * the way `space create` prepares it, its default persona lands in the project's `.cotal/agents`,
- * and the application becomes the space's `harness` preference. A rerun changes nothing. A harness
+ * and the application becomes the space's `harness` preference, and yours when you have none. A
+ * rerun changes nothing. A harness
  * whose host tool is missing leaves the rest saved and the result partial. A self-hosted space is
  * one registered here, whose root is the project, or one registered from a connection file; either
  * way the persona lands in the catalog `cotal spawn` reads for that space. Without `--runtime` no
@@ -237,20 +239,28 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
     refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
+  const missingHosted = await json(["setup", "--destination", "self-hosted", "--harness", "codex", "--space", "ok1"]);
+  check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
+    refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
+      && (missingHosted.env?.error?.remedy ?? "").startsWith("cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>]"), shown(missingHosted));
   const yes = await run(["setup", "--yes"]);
-  check("setup --yes alone is refused the same way, exit 1", yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr), shown(yes));
+  check("setup --yes alone is refused the same way, exit 1, with the scripted form and no command help",
+    yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) && /--destination local --harness <connector>/.test(yes.stderr) && !/^Usage$/m.test(yes.stderr), shown(yes));
   const cloud = await json(FULL("c1", dirs.cloud).map((a) => (a === "local" ? "cloud" : a)));
-  check("--destination cloud is UNSUPPORTED, exit 2, as in development", refused(cloud, 2, "UNSUPPORTED") && /in development/.test(cloud.env?.error?.message ?? ""), shown(cloud));
+  check("--destination cloud is UNSUPPORTED, exit 2, naming the self-hosted route after cotal login",
+    refused(cloud, 2, "UNSUPPORTED") && /no separate Cloud destination/.test(cloud.env?.error?.message ?? "") && /`cotal login`.*--destination self-hosted --space <name>/.test(cloud.env?.error?.remedy ?? ""), shown(cloud));
   const cloudAlone = await json(["setup", "--destination", "cloud"]);
   check("--destination cloud is refused as UNSUPPORTED before any missing input", refused(cloudAlone, 2, "UNSUPPORTED"), shown(cloudAlone));
   const mars = await json(FULL("m1", dirs.mars).map((a) => (a === "local" ? "mars" : a)));
   check("an unknown destination is USAGE_INVALID", refused(mars, 1, "USAGE_INVALID") && /local or self-hosted/.test(mars.env?.error?.message ?? ""), shown(mars));
   const harness = await json(FULL("h1", dirs.harness, "nope"));
-  check("an unknown harness is USAGE_INVALID, naming the installed ones", refused(harness, 1, "USAGE_INVALID") && /no harness "nope"; known harnesses: .*codex/.test(harness.env?.error?.message ?? ""), shown(harness));
+  check("an unknown harness is USAGE_INVALID, naming the installed ones and cotal ext add",
+    refused(harness, 1, "USAGE_INVALID") && /no harness "nope"; known harnesses: .*codex/.test(harness.env?.error?.message ?? "") && /`cotal ext add <npm-package>`/.test(harness.env?.error?.remedy ?? ""), shown(harness));
   const absent = await json(FULL("a1", join(home, "absent")));
   check("a script's project folder must exist: USAGE_INVALID", refused(absent, 1, "USAGE_INVALID") && /is not a directory/.test(absent.env?.error?.message ?? "") && !existsSync(join(home, "absent")), shown(absent));
   const name = await json(FULL("bad name", dirs.name));
-  check("a space name that is not a token is USAGE_INVALID", refused(name, 1, "USAGE_INVALID"), shown(name));
+  check("a space name that is not a token is USAGE_INVALID, with the name respelled as the remedy",
+    refused(name, 1, "USAGE_INVALID") && name.env?.error?.remedy === "pass --space bad_name, or another name of letters, digits, - and _", shown(name));
   const homeProject = await json(FULL("h2", home));
   check("the home folder is no project: CONFLICT naming --project", refused(homeProject, 2, "CONFLICT") && /--project <dir>/.test(homeProject.env?.error?.remedy ?? ""), shown(homeProject));
   const fileLocal = await json([...FULL("f1", dirs.file), "--connection-file", join(home, "x.json")]);
@@ -281,6 +291,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const persona = join(dir, ".cotal", "agents", "default.md");
   check("the default persona lands in the project's .cotal/agents and parses", existsSync(persona) && loadAgentFile(persona).name === "default_agent");
   check("the application is the space's harness preference", harnessOf("research") === "codex", readPreferences().spaces);
+  check("with no harness of your own, setup records the application as yours and lists the write",
+    readPreferences().defaults.harness === "codex" && written.includes("your harness preference"), { defaults: readPreferences().defaults, written });
   check("the next command is cotal up in the project", r?.next?.command === `${commandPrefix} up` && r.next.cwd === dir, r?.next);
   const space = await json(["space"]);
   check("cotal space lists it as prepared in the project", space.env?.result?.prepared?.some((p: { space: string; root: string }) => p.space === "research" && p.root === dir), shown(space));
@@ -300,6 +312,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
+  check("...and its next step creates it in another folder with --project, or starts, selects or forgets research",
+    literal(`create "research2" in another folder with --project <dir>; for "research", which uses this folder, start it with \`cotal up\` from ${dir}, select it with \`cotal use research\`, or forget it with \`cotal space forget research\``).test(other.env?.error?.remedy ?? ""), other.env?.error);
   const moved = await json(FULL("research", project("elsewhere")));
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
@@ -309,9 +323,11 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const dir = project("p-claude");
   const partial = await json(FULL("claudespace", dir, "claude"));
   check("a harness not on PATH is partial, exit 4, naming the tool",
-    partial.status === 4 && partial.env?.outcome === "partial" && partial.env.error?.code === "OPERATION_PARTIAL" && /claude needs claude on PATH/.test(partial.env.error.message) && partial.env.result.harness.missing.join() === "claude", shown(partial));
+    partial.status === 4 && partial.env?.outcome === "partial" && partial.env.error?.code === "OPERATION_PARTIAL" && /claude is unavailable/.test(partial.env.error.message) && partial.env.result.harness.missing.join() === "claude", shown(partial));
   check("and the rest is saved: the space, the persona and the preference",
     findPreparedSpace("claudespace")?.root === dir && existsSync(join(dir, ".cotal", "agents", "default.md")) && harnessOf("claudespace") === "claude");
+  check("a later setup with another application leaves your own harness as it was",
+    readPreferences().defaults.harness === "codex" && !partial.env?.result.written.some((w: { what: string }) => w.what === "your harness preference"), readPreferences().defaults);
   const human = await run(FULL("claudespace", dir, "claude"));
   check("its report does not call the space set up", human.status === 4 && /saved claudespace; claude is not set up yet/.test(human.stdout) && !/already set up/.test(human.stdout), shown(human));
 }
@@ -336,6 +352,39 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("a registered space is set up where spawn reads its personas",
     ok.status === 0 && ok.env?.result.spaceState === "registered" && existsSync(join(target.personaRoot, "default.md")) && target.root === teamRoot, { run: shown(ok), personaRoot: target.personaRoot });
   check("its next command is spawn in that space", ok.env?.result.next.command === `${commandPrefix} spawn --space team` && ok.env.result.next.cwd === null, ok.env?.result.next);
+
+  const catalogCustodyRoot = project("catalog-custody");
+  const catalogProject = project("catalog-project");
+  const sentinelCredsPath = join(catalogCustodyRoot, ".cotal", "auth", "spaces", "catalog-team", "user-auth", "sentinel.creds");
+  mkdirSync(join(sentinelCredsPath, ".."), { recursive: true });
+  writeFileSync(sentinelCredsPath, "fixture-sentinel", { mode: 0o600 });
+  recordMesh({
+    space: "catalog-team", server: "nats://127.0.0.1:4997", root: catalogCustodyRoot, catalogRoot: catalogCustodyRoot,
+    mode: "user", origin: "catalog", catalogOwner: "fixture-account", catalogId: "catalog-space", catalogSlug: "catalog-team",
+    userAuth: { provider: "cotal", idp: { url: "https://idp.example.test", issuer: "https://idp.example.test", audience: "cotal-mesh" }, endpoints: { url: "https://auth.example.test" }, remote: true, sentinelCredsPath },
+    ts: new Date(0).toISOString(),
+  });
+  const bound = await json(hosted("catalog-team", catalogProject));
+  const boundEntry = findMesh("catalog-team");
+  const boundTarget = resolveMeshTarget(home, { space: "catalog-team" });
+  check("a discovered signed-in space binds its project root without moving catalog custody",
+    bound.status === 0 && bound.env?.result.spaceState === "bound" && boundEntry?.root === catalogProject && boundEntry.catalogRoot === catalogCustodyRoot &&
+      boundEntry.userAuth?.sentinelCredsPath === sentinelCredsPath && existsSync(sentinelCredsPath), { run: shown(bound), entry: boundEntry });
+  check("the bound project is the persona root while the catalog sentinel remains outside it",
+    boundTarget.root === catalogProject && boundTarget.personaRoot === join(catalogProject, ".cotal", "agents") &&
+      existsSync(join(boundTarget.personaRoot, "default.md")) && !sentinelCredsPath.startsWith(catalogProject), boundTarget);
+  const boundAgain = await json(hosted("catalog-team", catalogProject));
+  check("the same discovered project binding again is a no-op", boundAgain.status === 0 && boundAgain.env?.outcome === "no-op" && boundAgain.env.result.spaceState === "registered", shown(boundAgain));
+  const otherCatalogProject = project("catalog-project-other");
+  const rebound = await json(hosted("catalog-team", otherCatalogProject));
+  check("a discovered space already bound to another project refuses instead of moving again",
+    refused(rebound, 2, "CONFLICT") && rebound.env?.error?.remedy === `pass --project ${catalogProject}` && findMesh("catalog-team")?.root === catalogProject, shown(rebound));
+  const controlProject = join(process.env.COTAL_HOME!, "catalog-project");
+  mkdirSync(controlProject, { recursive: true });
+  recordMesh({ ...boundEntry!, space: "catalog-control", root: catalogCustodyRoot, catalogRoot: catalogCustodyRoot, catalogSlug: "catalog-control", userAuth: { ...boundEntry!.userAuth!, sentinelCredsPath } });
+  const control = await json(hosted("catalog-control", controlProject));
+  check("a discovered space still refuses a project inside the Cotal control directory",
+    refused(control, 2, "CONFLICT") && findMesh("catalog-control")?.root === catalogCustodyRoot && !existsSync(join(controlProject, ".cotal")), shown(control));
 
   const userRoot = project("hosted-root");
   const bundle = {
@@ -431,13 +480,16 @@ const RUNTIMES = "Which runtimes do your agents run in?";
 const PROJECT = "Project folder";
 const SPACE_NAME = "Space name";
 const SAVE = "Save it?";
+// After a successful save the terminal offers startup separately, with No selected.
+const START_LOCAL = "Start this local space and open the default agent?";
+const START_HOSTED = "Launch the default agent on the registered space's manager?";
 
 if (process.platform !== "win32") {
   {
     const dir = project("pty-cloud");
     const before = files();
     const t = terminal(dir);
-    check("a terminal is asked where the space runs, with Cloud shown as in development", (await t.at(DESTINATION)) && /Cloud \(in development\)/.test(t.s.text()), t.s.text().slice(-600));
+    check("a terminal is asked where the space runs, with Cloud pointing to cotal login", (await t.at(DESTINATION)) && /Cloud \(sign in with `cotal login`/.test(t.s.text()), t.s.text().slice(-600));
     t.write(DOWN);
     await wait(300);
     t.write(DOWN);
@@ -462,6 +514,9 @@ if (process.platform !== "win32") {
       (await t.at(SAVE)) && t.s.text().includes(`project      ${dir}`) && /space\s+pty-local/.test(t.s.text()) && /application\s+codex/.test(t.s.text()) && /runtimes\s+pty, tmux/.test(t.s.text()), t.s.text().slice(-900));
     check("nothing is written before the save", findPreparedSpace("pty-local") === undefined);
     await t.answer(SAVE, ENTER);
+    check("after the save the terminal offers to start, and Enter alone keeps No",
+      (await t.at(START_LOCAL, t.cursor())) && /type y to confirm; Enter keeps No/.test(t.s.text().slice(t.cursor())), t.s.text().slice(-600));
+    await t.answer(START_LOCAL, ENTER);
     check("saving prepares the space and records the application", (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-local")?.root === dir && harnessOf("pty-local") === "codex" && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, out: t.s.text().slice(-900) });
   }
   {
@@ -494,6 +549,7 @@ if (process.platform !== "win32") {
     await t.answer(SPACE_NAME, ENTER);
     check("the review says it is created on save", (await t.at(SAVE)) && /\(created on save\)/.test(t.s.text()) && !existsSync(fresh), t.s.text().slice(-600));
     await t.answer(SAVE, ENTER);
+    await t.answer(START_LOCAL, ENTER);
     check("saving creates it and prepares the space there", (await t.exited()) && t.s.code === 0 && statSync(fresh).isDirectory() && findPreparedSpace("pty-fresh")?.root === fresh, { code: t.s.code, out: t.s.text().slice(-600) });
   }
   {
@@ -506,6 +562,7 @@ if (process.platform !== "win32") {
     await t.answer("Which space?", DOWN.repeat(registered.indexOf("team")) + ENTER);
     check("a registered space takes its root as the project, unasked", (await t.at(SAVE, t.cursor())) && t.s.text().includes(`project      ${join(home, "team")}`) && !t.s.text().includes(PROJECT), t.s.text().slice(-700));
     await t.answer(SAVE, ENTER);
+    await t.answer(START_HOSTED, ENTER);
     check("and saving sets it up", (await t.exited()) && t.s.code === 0, { code: t.s.code, out: t.s.text().slice(-500) });
   }
   {

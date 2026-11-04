@@ -2,6 +2,12 @@
 
 Private helpers for the repository's smoke suites. Shipped code must not import this package.
 
+`withDeadline(promise, ms, label)` logs a timeout and returns `undefined`; it never counts an
+assertion. Rejections propagate. Check the result at the call site, including waits used only to
+drain work. For a void promise, pass `promise.then(() => true)` and check for `true`, so successful
+completion cannot be mistaken for a timeout. Include any added assertions in the suite's expected
+cell count. The helper does not cancel the underlying work.
+
 Use `freePort()` when a suite or its child needs a loopback port. Ports come from 20000-26383,
 below the kernel's ephemeral range, so no bind of port 0 and no outgoing connection on the host can
 be given one. A lock listener held until the process exits keeps every other caller of the kit, in
@@ -18,7 +24,14 @@ way; a number derived from another port was never checked by the OS.
 
 Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and register the child
 with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
-to the suite.
+to the suite. Use `await killAndAwaitExit(child)` before removing the broker store, then release
+its ownership registration. A fixed delay after SIGTERM does not establish that the broker exited.
+`pnpm smoke:broker-stop-order` observes this order through the real manager smoke helper on Linux,
+including a native broker briefly paused before shutdown.
+
+`pnpm smoke:broker-migration` checks broker adoption in test-shaped paths and in direct Node/tsx
+entrypoints declared by root `smoke` and `smoke:*` scripts. A declared smoke stays in scope even
+when its filename is unconventional. A source path passed as an argument is not an entrypoint.
 
 Suites spawn the bare `nats-server` name, so the server under test is whichever one the spawn's
 PATH reaches first. `teardownOnSignal` names it: it reads each running child's binary from
@@ -52,6 +65,11 @@ dropping the kernel's `--no-color` and `--no-input` as the CLI does. It then req
 working directory, `COTAL_HOME` and `XDG_CONFIG_HOME` to be the recorded sandbox. A flag `down` does
 not declare refuses the call.
 
+`assertSmokeSandboxLinkedDown` checks a `cotal down` run in a folder whose `.cotal` is a link, which
+the CLI refuses before any effect. The folder must sit below the recorded root, whose `.cotal` is still
+the recorded one, and the link must lead nowhere or below that root. `COTAL_HOME` and
+`XDG_CONFIG_HOME` must be the recorded ones.
+
 The CI shard runner also assigns each suite a `SMOKE_BROKER_SCOPE`. This non-secret test marker
 is separate from `COTAL_*` connection settings, so their normal scrub leaves it intact. The token
 carries a compact digest of the scope; Linux descendants can also recover it from ancestor
@@ -66,3 +84,10 @@ environment. The reaper reports when its platform cannot enumerate brokers.
 The serial shard runner sets the scope before launching each suite. Existing environment
 inheritance stays unchanged, including caller-supplied test pins, budgets and private paths.
 Each suite remains responsible for isolating the environments of its own children.
+
+Use `backdateMessages(streamMsgsDir(storeDir, stream), stream, ages)` to give a suite messages older
+than the broker it runs on. The broker dates a message by its own clock, so this rewrites the
+timestamps in a stopped broker's file store and writes each changed record's checksum again
+(HighwayHash-64, checked against minio's vectors in the package test). Start the broker afterwards
+and read the messages back: a record with a wrong checksum is dropped with every record after it.
+It does not handle an encrypted or compressed store.

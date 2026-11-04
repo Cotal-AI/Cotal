@@ -10,10 +10,11 @@
 import { createHash } from "node:crypto";
 import {
   EP_ERROR_CODES, isEpErrorCode, EpEnvelopeError,
-  parseEndpointRequest, parseEndpointReply, parseEndpointEvent,
+  parseEndpointRequest, parseEndpointReply, parseEndpointEvent, controlReplyFrom, controlReplyFromThrown,
   checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, assertOutputValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
   compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
+  compileContract, epCast, undeclaredArg, undeclaredArgInstance,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -198,6 +199,25 @@ c("toEpError() carries the outcome the fence sets",
 c("...and omits it entirely on a caller-raised refusal, which is not a reply",
   !("outcome" in new EpEnvelopeError("internal", "x").toEpError()));
 
+for (const outcome of ["executed", "not-executed", "unknown"] as const) {
+  const reply = parseEndpointReply({ v: 1, id: "req-control", ok: false,
+    error: { code: "failed-precondition", message: "the operation failed", outcome } });
+  const converted = controlReplyFrom(reply);
+  c(`ControlReply preserves the reply's ${outcome} outcome`,
+    converted.outcome === outcome && converted.code === "failed-precondition", converted);
+  const thrown = controlReplyFromThrown(new EpEnvelopeError("bad-request", "schema refusal", undefined, outcome), "caller context");
+  c(`ControlReply preserves the envelope error's ${outcome} outcome`,
+    thrown.outcome === outcome && thrown.code === "bad-request" && thrown.error === "caller context", thrown);
+}
+const withoutOutcome = controlReplyFrom(errReply);
+c("ControlReply keeps an absent reply outcome absent and preserves details",
+  !("outcome" in withoutOutcome) && withoutOutcome.details === errReply.error?.details, withoutOutcome);
+const thrownWithoutOutcome = controlReplyFromThrown(new EpEnvelopeError("internal", "x"), "caller context");
+c("ControlReply keeps an absent envelope error outcome absent", !("outcome" in thrownWithoutOutcome), thrownWithoutOutcome);
+const successfulControl = controlReplyFrom(okReply);
+c("successful ControlReply keeps its data without inventing an outcome",
+  successfulControl.ok && successfulControl.data === okReply.data && !("outcome" in successfulControl), successfulControl);
+
 const ev = parseEndpointEvent({ v: 1, topic: "ev.ai_cotal_lifecycle.started", ts: 1720500000000, data: null });
 c("event parses (a null data field IS data)", ev.topic.startsWith("ev.") && ev.data === null);
 rejects("an event without data is bad-request", "bad-request", () => parseEndpointEvent({ v: 1, topic: "t", ts: 1 }));
@@ -230,6 +250,23 @@ rejects("present args against the void schema are bad-request", "bad-request",
   let typeMsg = "";
   try { assertArgsValid(closed, { name: 7 }); } catch (e) { typeMsg = (e as Error).message; }
   c("a non-additionalProperties refusal does not grow a property name", !typeMsg.includes("additional properties:"), typeMsg);
+}
+
+// The caller-side refusal marks the key AND the instance the request binds, so a surface can ask
+// that instance which release it runs. Refused before publish, so the connection is never touched.
+{
+  const contract = { input: compileContract({ root: { type: "object", properties: { name: { type: "string" } }, additionalProperties: false } }), output: compileContract({ root: VOID_SCHEMA }) };
+  const IID = "b".repeat(26);
+  const refusal = async (bind?: { instanceId: string; epoch: number }): Promise<unknown> => {
+    try { await epCast(undefined as never, "s", { mode: "one" }, { endpoint: "manager", command: "spawn", contract, caller, args: { name: "x", runtime: "pty" }, ...(bind ? { bind } : {}) }); }
+    catch (e) { return e; }
+    return undefined;
+  };
+  const bound = await refusal({ instanceId: IID, epoch: 3 });
+  c("an undeclared key in a bound request names the key and the bound instance, not-executed",
+    undeclaredArg(bound) === "runtime" && undeclaredArgInstance(bound) === IID && (bound as EpEnvelopeError).outcome === "not-executed", bound);
+  const unbound = await refusal();
+  c("an unbound request names the key and no instance", undeclaredArg(unbound) === "runtime" && undeclaredArgInstance(unbound) === undefined, unbound);
 }
 
 // The §13.8 validation budget on the REQUEST path is REPORTED, not enforced. No available

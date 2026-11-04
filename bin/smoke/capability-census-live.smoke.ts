@@ -81,7 +81,7 @@ try {
   // what a command issues, so a native refusal (an open manager has no static slots, and no
   // connector is installed here) is still a complete observation.
   const cases: { argv: string[]; expect: Expectation }[] = [
-    { argv: ["ps"], expect: { issues: ["ep:manager:ps"] } },
+    { argv: ["ps"], expect: { issues: ["ep:manager:ps", "ep:manager:status"] } },
     { argv: ["ps", "--slots"], expect: { issues: ["ep:manager:slots"] } },
     { argv: ["models", "--harness", "claude", "--refresh"], expect: { issues: ["ep:manager:models"] } },
     { argv: ["spawn", "scout", "--detach", "--agent", "claude", "--opt", "effort=high"], expect: { issues: ["ep:manager:spawn"] } },

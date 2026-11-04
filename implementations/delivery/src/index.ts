@@ -5,11 +5,12 @@
  * a distinct long-lived infra role with its own scoped cred profile and lifecycle. It NEVER imports
  * `@cotal-ai/manager` or `@cotal-ai/cli` (one-way tiering).
  */
-import { deprecatedDaemonEntry, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
+import { deprecatedDaemonEntry, deprecatedDaemonEntrySummary, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
 import { feedbackIntakePreset, feedbackIntakeProcess, runNativeFeedbackIntake, validateNativeIntakeArguments } from "./feedback-intake-service.js";
 import { registry, type Command } from "@cotal-ai/core";
-import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService } from "./delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog } from "./delivery.js";
 import { runFeedbackIntake } from "./feedback-intake.js";
+import { runDeliveryHost } from "./delivery-host.js";
 import { deliveryPreset, deliveryService, nativeDeliveryCommand } from "./delivery-service.js";
 import { runPending } from "./pending.js";
 import { pendingFlags, pendingView, validatePendingArguments } from "./pending-view.js";
@@ -21,7 +22,7 @@ const deliveryCommands: Command[] = [
     positionals: "<agent>", usage: "cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]",
     flags: pendingFlags, outputs: ["json", "plain"], reads: true, prepareMeshTarget: false,
     validate: validatePendingArguments, run: pendingView,
-    examples: ["cotal pending reviewer", "cotal pending reviewer --durable <exact-dm-durable> --json"],
+    examples: [{ command: "cotal pending <agent>", note: "count the DMs waiting for an agent, unread" }, { command: "cotal pending <agent> --json", note: "the same as one JSON document" }],
   },
   {
     kind: "command",
@@ -31,10 +32,11 @@ const deliveryCommands: Command[] = [
     hidden: true,
     group: "Manager",
     summary:
-      "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1); or `deliver pending <name>` to inspect a recipient's held DMs",
+      "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1); or one lane per space from one process with --spaces <manifest> --server <url>; or `deliver pending <name>` to inspect a recipient's held DMs",
     positionals: "[pending <name> [--limit <n>] [--durable <name>]]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required; the scoped cred doesn't encode it)" },
+      { name: "spaces", type: "string", value: "<manifest>", description: "serve every space in this JSON manifest from one process, one delivery lane each, all on --server (replaces --space)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the broker recorded for --space, else the local mesh)" },
       { name: "tls", type: "boolean", description: "REQUIRE TLS to the broker - refuse to connect if it is not offered" },
       { name: "creds", type: "string", value: "<file>", description: "pre-minted scoped delivery cred, or (with `pending`) an admin cred" },
@@ -47,7 +49,7 @@ const deliveryCommands: Command[] = [
       { name: "json", type: "boolean", description: "pending: print the facts as one JSON object" },
     ],
     prepareMeshTarget: false,
-    run: (args) => (args.positionals[0] === "pending" ? runPending(args) : runDelivery(args)),
+    run: (args) => (args.values.spaces !== undefined ? runDeliveryHost(args) : args.positionals[0] === "pending" ? runPending(args) : runDelivery(args)),
   },
   {
     kind: "command",
@@ -62,7 +64,7 @@ const deliveryCommands: Command[] = [
       { name: "store", type: "string", value: "<file>", description: "append records here (default: .cotal/feedback/feedback.jsonl)" },
       { name: "space", type: "string", value: "<s>", description: "space to announce feedback into (default: beta-feedback)" },
       { name: "channel", type: "string", value: "<name>", description: "channel to multicast feedback to (default: feedback)" },
-      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the broker --space is registered at)" },
       { name: "creds", type: "string", value: "<file>", description: "scoped feedback-intake NATS cred (required)" },
       { name: "max-bytes", type: "string", value: "<n>", description: "max request body size in bytes (default: 65536)" },
       { name: "rate-limit", type: "string", value: "<n>", description: "max requests per tester per minute (default: 30)" },
@@ -90,10 +92,11 @@ const nativeIntake: Command = {
 };
 // The deprecated entries keep their pre-cut parsers and runners for persisted callers, hidden from
 // help: `feedback-intake` as declared, `deliver` as its daemon twin plus the warning.
-const commands = deliveryCommands.map((command): Command => command === intake ? { ...command, hidden: true } : command);
+const commands = deliveryCommands.map((command): Command => command === intake ? { ...command, hidden: true, summary: deprecatedDaemonEntrySummary("feedback-intake", command.summary) } : command);
 const daemonDeliver = deliveryCommands.find((command) => command.name === "__daemon-deliver")!;
 const deliver = deprecatedDaemonEntry("deliver", daemonDeliver, (args) => args.positionals[0] === "pending" ? "deliver pending" : "deliver");
 registry.register(...commands, deliver, nativeIntake, feedbackIntakePreset, feedbackIntakeProcess, nativeDeliveryCommand, deliveryPreset, deliveryService);
 
-export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService };
+export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog };
+export { runDeliveryHost } from "./delivery-host.js";
 export { runFeedbackIntake };

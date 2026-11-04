@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { resolve } from "node:path";
 import type { FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
@@ -46,7 +47,9 @@ function intakeUrl(text: string): URL {
   return url;
 }
 
-function feedbackKey(values: Values): { key?: string; source: "private-file" | "configured" | "public" } {
+type KeySource = "private-file" | "configured" | "public";
+
+function feedbackKey(values: Values): { key?: string; source: KeySource } {
   if (values["key-file"] !== undefined) {
     const path = resolve(values["key-file"]);
     protectedCredentialReference(path);
@@ -97,14 +100,29 @@ export async function feedback(args: ParsedArgs): Promise<void> {
     if (!email || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email)) throw new CommandFailure("refused", "USAGE_INVALID", "the public intake needs a traceable contact email; none was sent", { remedy: "pass --email <contact>; no environment setup is required" });
     body.email = email;
   }
+  // Node's fetch reports a connection that never opened on this channel, with the same error it
+  // gives as the failure's cause. No request byte was written on such a connection.
+  const unopened = new WeakSet<object>();
+  const onConnectError = (message: unknown) => { const { error } = message as { error?: unknown }; if (typeof error === "object" && error !== null) unopened.add(error); };
+  subscribe("undici:client:connectError", onConnectError);
   let response: Response;
   try { response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(20_000) }); }
-  catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "feedback acceptance is unconfirmed; the request may have reached the intake and was not retried", { target, remedy: "check the original intake before submitting again; network, URL, response-body and credential details were not printed" }); }
+  catch (error) {
+    const cause = (error as { cause?: unknown } | null)?.cause;
+    if (typeof cause === "object" && cause !== null && unopened.has(cause)) {
+      const code = (cause as { code?: unknown }).code;
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no connection to the intake opened, so the report was not sent", { target, remedy: `check that ${url.origin} is reachable and serves ${url.protocol === "https:" ? "HTTPS" : "HTTP"}, then submit again`, ...(typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code) ? { native: { code } } : {}) });
+    }
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "feedback acceptance is unconfirmed; the request may have reached the intake and was not retried", { target, remedy: "check the original intake before submitting again; network, URL, response-body and credential details were not printed" });
+  }
+  finally { unsubscribe("undici:client:connectError", onConnectError); }
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
     const codes: Record<number, RefusalCode> = { 400: "SCHEMA_INVALID", 401: "AUTH_REQUIRED", 403: "PERMISSION_DENIED", 404: "TARGET_NOT_FOUND", 413: "SCHEMA_INVALID", 422: "SCHEMA_INVALID", 429: "TARGET_UNAVAILABLE" };
     const code = codes[response.status];
-    throw new CommandFailure(code ? "refused" : "unknown", code ?? "OPERATION_UNKNOWN", code ? "the intake rejected the request; its response body was not echoed and no alternate intake or key was tried" : "the intake returned a non-success response without a confirmed acceptance outcome; no request was retried", { target, native: { code: `HTTP_${response.status}` } });
+    if (!code) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the intake returned a non-success response without a confirmed acceptance outcome; no request was retried", { target, native: { code: `HTTP_${response.status}` } });
+    const { message, remedy } = rejection(response, credential.source, url);
+    throw new CommandFailure("refused", code, message, { target, ...(remedy ? { remedy } : {}), native: { code: `HTTP_${response.status}` } });
   }
   const id = await responseId(response);
   const warnings: OutputWarning[] = id === null ? [{ code: "FEEDBACK_ID_UNAVAILABLE", target, message: "The intake returned HTTP success, but no bounded record ID was established. Do not resend merely to obtain an ID." }] : [];
@@ -113,6 +131,23 @@ export async function feedback(args: ParsedArgs): Promise<void> {
     { kind: "fields", rows: [["Intake", data.intakeOrigin], ["HTTP status", String(data.httpStatus)], ["Record", data.recordId ?? "not provided or not established"], ["Authentication", data.authentication], ["Contact", data.contactIncluded ? "included; not printed" : "not included on keyed intake"], ["Read or action by developers", "not confirmed"]] },
     { kind: "lines", lines: [{ text: "HTTP acceptance is not proof that someone read the report or took action. Summary, details, contact values, key contents and intake response bodies are not printed. No redirect, alternate credential or automatic retry was used.", tone: "hint" }] },
   ] }] }));
+}
+
+/** The cause and next step for an intake refusal. The response body is never echoed. */
+function rejection(response: Response, source: KeySource, url: URL): { message: string; remedy?: string } {
+  if (response.status === 401 && source === "public") return { message: "the intake requires a feedback key, and the report was not accepted", remedy: "pass --key-file <private-file> holding a key this intake issued" };
+  if (response.status === 401) return { message: "the intake refused the feedback key, and the report was not accepted", remedy: `check that the key in ${source === "private-file" ? "--key-file" : "COTAL_FEEDBACK_KEY"} is one this intake issued, then submit again` };
+  if (response.status === 404) return { message: "the intake has no feedback endpoint at this URL, and the report was not accepted", remedy: url.pathname === "/v1/feedback" ? `check that ${url.origin} runs a Cotal feedback intake` : `set --url to ${url.origin}/v1/feedback, the path a Cotal intake serves` };
+  if (response.status === 429) {
+    // Retry-After is either delay seconds or an HTTP date; anything else is treated as absent.
+    const header = response.headers.get("retry-after")?.trim() ?? "";
+    const at = /^\d{1,9}$/.test(header) ? Date.now() + Number(header) * 1000
+      : /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(header) ? Date.parse(header) : Number.NaN;
+    if (!Number.isFinite(at)) return { message: "the intake is rate limiting submissions and did not say for how long, and the report was not accepted", remedy: "wait, then submit again" };
+    const when = new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
+    return { message: `the intake is rate limiting submissions until ${when}, and the report was not accepted`, remedy: `submit again after ${when}` };
+  }
+  return { message: "the intake rejected the request; its response body was not echoed and no alternate intake or key was tried" };
 }
 
 function gitEmail(): string | undefined {

@@ -17,6 +17,9 @@ export interface ServiceDefinitionInput {
     | { readonly type: "adapter"; readonly timeoutMs: number };
   readonly envRefs?: Readonly<Record<string, string>>;
   readonly credentialRef?: { readonly kind: "file"; readonly path: string };
+  /** The space root `service add` saved the definition in. A definition an earlier release saved has
+   *  none. */
+  readonly root?: string;
 }
 
 /** Byte cap applied to JSON content. A file reader must impose the same cap while reading, before
@@ -33,19 +36,60 @@ function definitionValidator(): ValidateFunction<ServiceDefinitionInput> {
 }
 
 const refuse = (message: string): never => { throw new Error(`service definition: ${message}`); };
+
+/** The schema's bound on one process launch argument, in characters as it counts them. */
+const MAX_LAUNCH_ARG = (schema.properties.launch.oneOf[0] as { properties: { args: { items: { maxLength: number } } } }).properties.args.items.maxLength;
+
+/** The first process launch argument over {@link MAX_LAUNCH_ARG}, by its position, which the schema's
+ *  own error at `launch` does not name. Undefined when there is none or `input` has no such list. */
+function overLongLaunchArg(input: unknown): string | undefined {
+  const launch = typeof input === "object" && input !== null ? (input as { launch?: unknown }).launch : undefined;
+  const args = typeof launch === "object" && launch !== null && (launch as { type?: unknown }).type === "process" ? (launch as { args?: unknown }).args : undefined;
+  if (!Array.isArray(args)) return undefined;
+  for (const [index, arg] of args.entries()) {
+    const length = typeof arg === "string" ? [...arg].length : 0;
+    if (length > MAX_LAUNCH_ARG) return `launch argument ${index + 1} (launch.args[${index}]) has ${length} characters, and a launch argument holds at most ${MAX_LAUNCH_ARG}`;
+  }
+  return undefined;
+}
 const nativeString = (value: string): boolean => !/[\u0000-\u001f\u007f]/u.test(value);
 
 /** Where a closed-schema validator stopped, from its last error, as ` at <field path>` and what is
  *  wrong there. Each segment is printed only when it is a plain identifier or an index, so an
- *  arbitrary user-controlled property name never reaches a message. Empty when it cannot say. */
-export function schemaErrorLocation(errors: readonly { keyword: string; instancePath: string; params: Record<string, unknown> }[] | null | undefined): string {
+ *  arbitrary user-controlled property name never reaches a message. `name` gives how the first
+ *  segment reads, such as the flag a preset option takes. Empty when it cannot say. */
+export function schemaErrorLocation(errors: readonly { keyword: string; instancePath: string; params: Record<string, unknown> }[] | null | undefined, name = (field: string) => field): string {
   const last = errors?.at(-1);
   if (!last) return "";
   const field = last.keyword === "additionalProperties" ? last.params.additionalProperty : last.keyword === "required" ? last.params.missingProperty : undefined;
   const parts = [...last.instancePath.split("/").filter(Boolean), ...(field === undefined ? [] : [String(field)])];
   if (!parts.length || parts.some((part) => !/^(?:[A-Za-z_][A-Za-z0-9_-]{0,63}|[0-9]{1,4})$/.test(part))) return "";
-  const at = parts.join(".");
+  const at = [name(parts[0]!), ...parts.slice(1)].join(".");
   return last.keyword === "additionalProperties" ? ` at ${at}, which the schema does not declare` : last.keyword === "required" ? ` at ${at}, which is required` : ` at ${at}`;
+}
+
+const READINESS_FIELDS: Readonly<Record<string, readonly string[]>> = { process: ["type", "timeoutMs"], http: ["type", "url", "expectedStatus", "timeoutMs"], adapter: ["type", "timeoutMs"] };
+
+/** The rule a `readiness` value breaks, for a schema that stopped there. The schema offers three
+ *  shapes at once, so its own error names only the field. A field name is printed only when it is a
+ *  plain identifier, and no value is echoed. Undefined when no rule here is broken. */
+function readinessProblem(readiness: unknown): string | undefined {
+  if (typeof readiness !== "object" || readiness === null || Array.isArray(readiness)) return "readiness must be an object with a type of process, http or adapter and a timeoutMs";
+  const value = readiness as Record<string, unknown>;
+  if (value.type === undefined) return "readiness.type is required: process, http or adapter";
+  const fields = typeof value.type === "string" && Object.hasOwn(READINESS_FIELDS, value.type) ? READINESS_FIELDS[value.type]! : undefined;
+  if (!fields) return "readiness.type must be process, http or adapter";
+  const extra = Object.keys(value).find((key) => !fields.includes(key));
+  if (extra !== undefined) return `${/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(extra) ? `readiness.${extra} is` : "readiness has a field that is"} not a field of ${value.type} readiness, which takes ${fields.join(", ")}`;
+  const missing = fields.find((field) => value[field] === undefined);
+  if (missing !== undefined) return `readiness.${missing} is required for ${value.type} readiness, which takes ${fields.join(", ")}`;
+  const whole = (n: unknown, min: number, max: number): boolean => typeof n === "number" && Number.isInteger(n) && n >= min && n <= max;
+  if (!whole(value.timeoutMs, 1, 120000)) return "readiness.timeoutMs must be a whole number of milliseconds from 1 to 120000";
+  if (value.type === "http") {
+    if (typeof value.url !== "string" || !/^http:\/\/(127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?\//.test(value.url)) return "readiness.url must be an http:// URL on 127.0.0.1 or [::1] with a path, such as http://127.0.0.1:8080/health";
+    if (!whole(value.expectedStatus, 100, 599)) return "readiness.expectedStatus must be a whole number from 100 to 599";
+  }
+  return undefined;
 }
 
 /** Check a case-sensitive definition name before deriving its case-safe storage key. */
@@ -68,8 +112,14 @@ export function parseServiceDefinitionInput(raw: string, selectedSpace: string):
   try { input = JSON.parse(raw); } catch { return refuse("input is not JSON"); }
   // Validator details can contain user-controlled property names. Never publish the raw input or
   // the validator's mutable error array as a diagnostic; only an identifier-shaped location.
+  const overLong = overLongLaunchArg(input);
+  if (overLong) return refuse(overLong);
   const validator = definitionValidator();
-  if (!validator(input)) return refuse(`input does not match the version-1 definition schema${schemaErrorLocation(validator.errors)}`);
+  if (!validator(input)) {
+    const stopped = validator.errors?.at(-1)?.instancePath ?? "";
+    const readiness = stopped === "/readiness" || stopped.startsWith("/readiness/") ? readinessProblem((input as { readiness?: unknown }).readiness) : undefined;
+    return refuse(readiness ?? `input does not match the version-1 definition schema${schemaErrorLocation(validator.errors)}`);
+  }
   if (input.space !== selectedSpace) return refuse(`the definition names ${token(input.space) === input.space ? `space "${input.space}"` : "another space"}, and the selected space is "${selectedSpace}"`);
   if (input.launch.type === "process") {
     if (!nativeString(input.launch.executable) || !nativeString(input.launch.cwd) || input.launch.args.some((arg) => arg.includes("\0")))
@@ -80,6 +130,8 @@ export function parseServiceDefinitionInput(raw: string, selectedSpace: string):
   }
   if (input.credentialRef && (!isAbsolute(input.credentialRef.path) || !nativeString(input.credentialRef.path)))
     return refuse("the credential reference must name an absolute local path");
+  if (input.root !== undefined && (!isAbsolute(input.root) || !nativeString(input.root)))
+    return refuse("the recorded root must be an absolute local path");
   if (input.readiness.type === "http") {
     let url: URL;
     try { url = new URL(input.readiness.url); } catch { return refuse("the HTTP readiness URL is invalid"); }

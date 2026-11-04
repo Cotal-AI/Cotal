@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/once-exit.smoke.ts"
+  ],
+  "guard": "a Claude once seat ends only the claude process it recorded as running the launched file, rereading it before each signal, and declines with no signal what it cannot prove",
+  "command": "pnpm smoke:claude-once-exit",
+  "completionMarker": "once-exit.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/once-exit.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN.",
+    "",
+    "X1 never escalates to SIGKILL. X2 signals without rereading the pid, so a pid another process now",
+    "holds is signalled. X3 stops comparing the executable. X4 records a wrapper as the host. X5 resolves",
+    "a matching file that cannot be executed."
+  ],
+  "mutations": [
+    {
+      "name": "X1 a host that ignores SIGTERM is never killed",
+      "file": "extensions/connector-claude-code/src/once-exit.ts",
+      "find": "[[\"SIGTERM\", TERM_WAIT_MS], [\"SIGKILL\", KILL_WAIT_MS]]",
+      "replace": "[[\"SIGTERM\", TERM_WAIT_MS]]",
+      "expectRed": "a host that ignores SIGTERM is killed five seconds later"
+    },
+    {
+      "name": "X2 the host is signalled without reading it again",
+      "file": "extensions/connector-claude-code/src/once-exit.ts",
+      "find": "    const state = hostState(host);\n    if (state !== \"same\") return state === \"gone\";\n",
+      "replace": "",
+      "expectRed": "a pid now held by another process (its start token changed) counts as the host gone, and is not signalled"
+    },
+    {
+      "name": "X3 the host's executable is not compared",
+      "file": "extensions/connector-claude-code/src/once-exit.ts",
+      "find": "  try { return realpathSync(`/proc/${host.pid}/exe`) === host.exe ? \"same\" : \"unknown\"; }",
+      "replace": "  try { realpathSync(`/proc/${host.pid}/exe`); return \"same\"; }",
+      "expectRed": "a host whose executable is now another file is declined, and not signalled"
+    },
+    {
+      "name": "X4 a wrapper is recorded as the host",
+      "file": "extensions/connector-claude-code/src/once-exit.ts",
+      "find": "    if (!start || realpathSync(`/proc/${pid}/exe`) !== exe) return undefined;\n",
+      "replace": "    if (!start) return undefined;\n",
+      "expectRed": "a parent running another file, as a wrapper does, is not recorded, and nothing recorded declines"
+    },
+    {
+      "name": "X5 a match that cannot be executed is resolved",
+      "file": "extensions/connector-claude-code/src/once-exit.ts",
+      "find": "      accessSync(c, constants.X_OK);\n",
+      "replace": "",
+      "expectRed": "a bare name resolves on the launch's PATH, through a symlink, to the real file; a non-executable match and a relative entry are passed over"
+    }
+  ]
+}

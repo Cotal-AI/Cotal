@@ -27,6 +27,7 @@
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
 import { fromPublic } from "@nats-io/nkeys";
+import type { Presence, PresenceStatus } from "./types.js";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 
@@ -49,6 +50,12 @@ export function normalizeMentions(mentions?: string[]): string[] | undefined {
   if (!mentions?.length) return undefined;
   const out = [...new Set(mentions.map((m) => m.trim().toLowerCase()).filter((m) => m.length > 0))];
   return out.length ? out : undefined;
+}
+
+/** The `@name` mentions inside a message body, as bare names, for a multicast's `mentions` (a
+ *  priority/wake hint). Every surface that posts typed text derives them the same way. */
+export function mentionsIn(text: string): string[] {
+  return [...text.matchAll(/@([A-Za-z0-9_.-]+)/g)].map((m) => m[1]);
 }
 
 /**
@@ -116,6 +123,22 @@ export function isConcreteChannel(channel: string): boolean {
   return !channel.split(".").some((s) => s.trim() === "*" || s.trim() === ">");
 }
 
+/** True if `channel` is a channel FAMILY: one or more NATS-safe segments and then a final `>`
+ *  (`review.>`, `team.backend.>`). A family is the one pattern that can hold a durable membership; the
+ *  root `>` and any pattern with `*` stay live only. It covers every channel under its segments, not
+ *  the bare prefix (`review.>` covers `review.a` and `review.a.b`, not `review`). */
+export function isChannelFamily(channel: string): boolean {
+  const segs = channel.split(".");
+  return channel.length <= MAX_CHANNEL_LENGTH && segs.length >= 2 && segs[segs.length - 1] === ">" &&
+    segs.slice(0, -1).every((s) => /^[A-Za-z0-9_-]+$/.test(s));
+}
+
+/** The families that cover concrete `channel`, nearest last: `a.>` and `a.b.>` for `a.b.c`. */
+export function familiesCovering(channel: string): string[] {
+  const segs = channel.split(".");
+  return segs.slice(1).map((_, i) => `${segs.slice(0, i + 1).join(".")}.>`);
+}
+
 /** Does NATS subject `pattern` (with `*`/`>`) match `subject`? Also reused for channel-level
  *  matching ("is a member on `team.>` a member of `team.backend`?") — channels are dotted
  *  token strings, same rules. */
@@ -157,9 +180,11 @@ export function assertValidChannel(channel: string): string {
       return;
     }
     if (s === "*") return;
+    // The wildcard segments are named only to a segment that holds one, so a refusal never offers
+    // `*` or `>` to a name that did not try a wildcard.
     if (!/^[A-Za-z0-9_-]+$/.test(s))
       throw new Error(
-        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-]), '*', or '>' - ` +
+        `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-])${/[*>]/.test(s) ? ", '*', or '>'" : ""} - ` +
           `policy channel names can't contain characters the wire layer would rewrite`,
       );
   });
@@ -185,11 +210,7 @@ export function assertValidChannel(channel: string): string {
  */
 export const MAX_CHANNEL_LENGTH = 4096;
 
-/** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
- *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys
- *  ({@link memberKey}, {@link aclKey}, {@link dinboxSubject}, {@link dlvSubject}) still ride raw
- *  nkeys through `token()`/`routeToken()` (a no-op on base32) — the cutover wires this in at every
- *  mint/callout boundary and persisted owner/actor-bearing key. STRICTER than
+/** Validate an **owner or actor token** of the owner+actor grammar. STRICTER than
  *  {@link assertValidChannel}: a token is exactly ONE NATS-safe segment — `[A-Za-z0-9_]+`, with NO
  *  dots, NO `*`, NO `>`, and NO `-`. Dots/wildcards in an id are lane breakout or aliasing (they would
  *  let one owner's grant span, or collide with, another's); `-` is excluded because it is reserved as
@@ -297,8 +318,8 @@ export interface DeprovisionTarget {
   principal: string;
   /** The retired/target incarnation's lifecycle UID — the successor's differs by construction. */
   lifecycleUid: string;
-  /** Concrete channels whose durable membership rows (`memberKey(channel, principal, uid)`) this
-   *  teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
+  /** Concrete channels and families whose durable membership rows (`memberKey(channel, principal, uid)`)
+   *  this teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
   memberChannels?: readonly string[];
 }
 
@@ -308,7 +329,8 @@ export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: 
   const pr = parsePrincipalKey(target.principal) ?? { owner: DEV_OWNER, actor: target.principal };
   const memberChannels = [...new Set(target.memberChannels ?? [])].map((ch) => {
     assertValidChannel(ch);
-    if (!isConcreteChannel(ch)) throw new Error(`deprovision target: member channel "${ch}" must be concrete (membership rows are per concrete channel)`);
+    if (!isConcreteChannel(ch) && !isChannelFamily(ch))
+      throw new Error(`deprovision target: member channel "${ch}" must be concrete or a family such as review.> (membership rows are per concrete channel or family)`);
     return ch;
   });
   return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid), memberChannels };
@@ -513,13 +535,14 @@ export function channelInAllow(allow: string[], channel: string): boolean {
 }
 
 /** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
- *  `subscribe`. Throws when a subscription lies outside it. Every site that resolves an agent's
- *  read list calls this, so a launcher, the session it starts and the provisioner cannot disagree
- *  on the default. */
+ *  `subscribe`. Throws when a subscription lies outside it: a concrete channel must match an entry,
+ *  and a pattern must lie inside one entry ({@link patternInAllow}), as `cotal_join` checks it, so
+ *  `perm.>` is outside `perm.*`. Every site that resolves an agent's read list calls this, so a
+ *  launcher, the session it starts and the provisioner cannot disagree on the default. */
 export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
   const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
   for (const ch of subscribe)
-    if (!channelInAllow(allow, ch))
+    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch))
       throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
   return allow;
 }
@@ -554,6 +577,13 @@ export function patternCovers(cap: string, pattern: string): boolean {
  *  and keeps the refusal explainable ("name the entry that covers it, or widen the grant"). */
 export function patternInAllow(allow: string[], pattern: string): boolean {
   return allow.some((a) => patternCovers(a, pattern));
+}
+
+/** Does read ACL `allow` admit a durable membership on `channel`? A family must lie inside one entry
+ *  ({@link patternInAllow}), so every channel under it is readable; a concrete channel must be covered
+ *  ({@link channelInAllow}). */
+export function membershipInAllow(allow: string[], channel: string): boolean {
+  return isChannelFamily(channel) ? patternInAllow(allow, channel) : channelInAllow(allow, channel);
 }
 
 // ---- Principal-keyed channel grants ----
@@ -892,6 +922,57 @@ export function presenceBucket(space: string): string {
   return `cotal_presence_${token(space)}`;
 }
 
+/** The publish subject of one principal's own presence key. Every agent mint carries it; an
+ *  operator instrument's never does. */
+export function presenceKeySubject(space: string, owner: string, actor: string): string {
+  return `$KV.${presenceBucket(space)}.${principalKey(owner, actor).key}`;
+}
+
+const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
+
+function presenceRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function presenceOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+/** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
+ *  its KV key, whose `card.name` or `status` has the wrong type, whose `ts` is not finite, whose
+ *  printed display fields are present and not strings, or whose `condition` is present and is not
+ *  an object with a string `code`, is not a row. `card.id` must be a non-empty string and equal the
+ *  key it was read under: the key is the identity the write grant proves, and an empty id matches
+ *  no key. */
+export function isPresenceRow(value: unknown, key: string): value is Presence {
+  return presenceRowProblem(value, key) === undefined;
+}
+
+function presenceRowProblem(value: unknown, key: string): string | undefined {
+  if (!presenceRecord(value)) return "row";
+  if (!presenceRecord(value.card)) return "card";
+  const card = value.card;
+  if (typeof card.id !== "string" || card.id.length === 0 || card.id !== key) return "card.id";
+  if (typeof card.name !== "string") return "card.name";
+  if (!presenceOptionalString(card.role)) return "card.role";
+  if (typeof value.status !== "string" || !Object.hasOwn(PRESENCE_STATUSES, value.status)) return "status";
+  if (typeof value.ts !== "number" || !Number.isFinite(value.ts)) return "ts";
+  if (!presenceOptionalString(value.activity)) return "activity";
+  if (!presenceOptionalString(value.attention)) return "attention";
+  if (value.condition !== undefined) {
+    if (!presenceRecord(value.condition)) return "condition";
+    if (typeof value.condition.code !== "string") return "condition.code";
+  }
+  return undefined;
+}
+
+/** Enforce the same wire shape as {@link isPresenceRow}, naming the invalid field without
+ *  coercing it or including its value. Writers call this before changing their local state. */
+export function assertPresenceRow(value: unknown, key: string): asserts value is Presence {
+  const field = presenceRowProblem(value, key);
+  if (field !== undefined) throw new TypeError(`invalid presence ${field}`);
+}
+
 /** Name of the KV bucket holding the channel registry (config) for a space — sibling of
  *  the presence bucket. Key = the concrete channel token (`review`, `team.backend`). */
 export function channelBucket(space: string): string {
@@ -914,22 +995,34 @@ export function membersBucket(space: string): string {
 /** KV key for one membership record: `<channel>/<principal>.<lifecycleUid>`, where the tail is the
  *  member's lifecycle-scoped dot-form ({@link lifecycleSubjectKey}, SPEC §13.1: membership rows are
  *  lifecycle-keyed, so a same-alias successor starts unjoined and inherits no cursors — the
- *  join/leave cursors ride this row). The channel is concrete (no `*`/`>`, validated at the write
- *  path) so it is dotted-but-`/`-free, and the tail is `[A-Za-z0-9_.]` (also `/`-free), so the single
- *  `/` separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`, `.`, and
- *  `[A-Za-z0-9_]` are all legal KV-key chars (`/^[-/=.\w]+$/`), so no encoding is needed. */
+ *  join/leave cursors ride this row). The channel is a valid concrete channel or a family
+ *  ({@link isChannelFamily}); anything else throws. A family's final `>` is stored as `=`
+ *  (`review.=/…`): a raw `>` in this key would be a wildcard in every grant and purge built from it,
+ *  reaching every member row. `=` never occurs in a channel segment (`[A-Za-z0-9_-]`), so the two forms
+ *  cannot collide. The channel is `/`-free and the tail is `[A-Za-z0-9_.]`, so the single `/`
+ *  separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`, `.`, `=` and
+ *  `[A-Za-z0-9_-]` are all legal KV-key chars (`/^[-/=.\w]+$/`). */
 export function memberKey(channel: string, principal: string, lifecycleUid: string): string {
-  return `${channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;
+  const family = isChannelFamily(channel);
+  if (!family && !isConcreteChannel(assertValidChannel(channel)))
+    throw new Error(`member key: "${channel}" must be a concrete channel or a family such as review.>`);
+  return `${family ? `${channel.slice(0, -1)}=` : channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;
 }
 
 /** Inverse of {@link memberKey}: split a member key back into `{ channel, principal, lifecycleUid }`,
- *  or `null` if it isn't one (no `/`, or the tail is not a lifecycle-scoped dot-form). Splits on the
- *  single `/`, then peels the trailing `.<uid>` token — owner/actor tokens are dot-free, so the last
- *  dot separates the uid unambiguously. */
+ *  or `null` if it isn't one (no `/`, an `=` anywhere but a whole last channel segment, or the tail
+ *  is not a lifecycle-scoped dot-form). Splits on the single `/`, decodes a final `=` back to `>`,
+ *  then peels the trailing `.<uid>` token — owner/actor tokens are dot-free, so the last dot separates
+ *  the uid unambiguously. */
 export function parseMemberKey(key: string): { channel: string; principal: string; lifecycleUid: string } | null {
   const i = key.indexOf("/");
   if (i <= 0 || i >= key.length - 1) return null;
-  const channel = key.slice(0, i);
+  let channel = key.slice(0, i);
+  const eq = channel.indexOf("=");
+  if (eq !== -1) {
+    if (eq !== channel.length - 1 || !channel.endsWith(".=")) return null;
+    channel = `${channel.slice(0, -1)}>`;
+  }
   const tail = key.slice(i + 1);
   const dot = tail.lastIndexOf(".");
   if (dot <= 0 || dot >= tail.length - 1) return null;

@@ -464,8 +464,10 @@ try {
   }
   const tornOut = tornLines.join("\n").replace(/\[[0-9;]*m/g, "");
   check("doctor does NOT report a torn $SYS pair as healthy", !tornOut.includes("auth: healthy"), tornOut);
-  check("doctor names the RETIRED system account as the cause", tornOut.includes("RETIRED system account"), tornOut);
-  check("doctor exits non-zero on a torn pair", tornCode === 1, tornCode);
+  // The finding names the issuer the torn file claims, the retired system account, beside this root's.
+  const current = await getSpaceAuth(store, SPACE);
+  check("doctor names the RETIRED system account as the cause", tornOut.replace(/\s+/g, " ").includes(`the claimed system-account issuer ${before?.sys.pub} differs from this root's ${current?.sys.pub}`), tornOut);
+  check("doctor exits 5 (failed) on a torn pair", tornCode === 5, tornCode);
   check("the torn-pair repair is still the rotation", tornOut.includes("up --rotate-sys"), tornOut);
   writeFileSync(evPath, evAfter, { mode: 0o600 }); // restore the complete generation
   console.log("\n7) the SUCCESS path, through the real CLI, not the helper");

@@ -31,7 +31,7 @@ import {
 import { SignJWT, decodeJwt, generateKeyPair, type CryptoKey } from "jose";
 import { decode, encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { createSpaceAuth, isReachable, newIdentity, serverConfig } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, newIdentity, serverConfig, standaloneConnectOpts } from "@cotal-ai/core";
 import { createCalloutAuth, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -86,6 +86,15 @@ async function bearer(opts: { actor?: string; ver?: number; expiredBy?: number; 
     .sign((opts.key ?? privateKey) as CryptoKey);
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+const authorizeEntered = deferred(), authorizeRelease = deferred();
+const recordEntered = deferred(), recordRelease = deferred();
+const releasedPrincipals = new Set<string>();
+const calloutLog: string[] = [];
 let calloutNc: NatsConnection | undefined;
 const conns: NatsConnection[] = [];
 async function tryConnect(token?: string): Promise<{ nc?: NatsConnection; err?: string; nonce?: string }> {
@@ -93,10 +102,11 @@ async function tryConnect(token?: string): Promise<{ nc?: NatsConnection; err?: 
     // User-mode contract: the client picks a random inbox nonce and passes it as BOTH the connection
     // `name` (the callout scopes `_INBOX_<nonce>.>` on it) and `inboxPrefix` (so its own request/reply
     // lands on the granted subject). No wide `_INBOX.>` anywhere.
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
-    const authenticators = [credsAuthenticator(enc(callout.sentinelCreds))];
-    if (token) authenticators.push(tokenAuthenticator(token));
-    const nc = await connect({ servers: SERVERS, authenticator: authenticators, maxReconnectAttempts: 0, timeout: 4000, name: nonce, inboxPrefix: `_INBOX_${nonce}` });
+    const options = token
+      ? standaloneConnectOpts({ bearer: token, sentinelCreds: callout.sentinelCreds, tls: false })
+      : standaloneConnectOpts({ creds: callout.sentinelCreds, tls: false });
+    const nonce = options.name as string | undefined;
+    const nc = await connect({ servers: SERVERS, ...options, maxReconnectAttempts: 0, timeout: 4000 });
     conns.push(nc);
     return { nc, nonce };
   } catch (e) {
@@ -122,9 +132,20 @@ try {
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     space,
     token: { key: publicKey as never, issuer: ISS },
-    recordIssuance: async () => {},
-    authorizeActor: (t) => {
-      if (t.act.actor !== "agent_1") throw new Error(`actor ${t.act.actor} not in the spawn ledger`);
+    recordIssuance: async ({ token }) => {
+      if (token.act.actor === "held_record") {
+        recordEntered.resolve();
+        await recordRelease.promise;
+        throw new Error("fixture recorder refused");
+      }
+    },
+    authorizeActor: async (t) => {
+      if (t.act.actor === "held_auth") {
+        authorizeEntered.resolve();
+        await authorizeRelease.promise;
+      } else if (t.act.actor !== "agent_1" && t.act.actor !== "held_record") {
+        throw new Error(`actor ${t.act.actor} not in the spawn ledger`);
+      }
     },
     // connId is the client's inbox nonce (req.connect_opts.name) — scope the reply inbox on it, NOT the
     // wide `_INBOX.>`. This is the least-privilege user-mode grant the cutover requires.
@@ -132,8 +153,8 @@ try {
       pub: { allow: ["smoke.allowed", `_INBOX_${connId}.>`] },
       sub: { allow: ["smoke.allowed", `_INBOX_${connId}.>`] },
     }),
-    onMint: (info) => { minted = info; },
-    log: () => {},
+    onMint: (info) => { minted = info; releasedPrincipals.add(info.principal); },
+    log: (line) => calloutLog.push(line),
   });
 
   // A DATA-account witness: a known connection minted directly against the data account's signing key
@@ -193,6 +214,14 @@ try {
   const badActor = await tryConnect(await bearer({ actor: "agent_2" }));
   check("ledger-denied actor refused", !badActor.nc);
 
+  // Each answered request writes one line naming the request, its space, the principal, the
+  // outcome and the time each step took.
+  const steps = "queue_ms=\\d+ verify_ms=\\d+ ledger_ms=\\d+ policy_ms=\\d+ sign_ms=\\d+ total_ms=\\d+";
+  check("a mint writes its callout line with the request id, owner, actor and step times",
+    calloutLog.some((line) => new RegExp(`^auth callout: level=info outcome=minted space=${space} req=\\S+ cid=\\d+ owner=${owner} actor=agent_1 ${steps}$`).test(line)));
+  check("a ledger denial writes its line with the reason",
+    calloutLog.some((line) => new RegExp(`^auth callout: level=info outcome=denied space=${space} req=\\S+ cid=\\d+ owner=${owner} actor=agent_2 ${steps} reason="actor agent_2 not in the spawn ledger"$`).test(line)));
+
   // Inbox-escalation guard: a client that supplies a wildcard-bearing inbox nonce (connection `name`)
   // to widen its `_INBOX_<nonce>.>` grant toward `_INBOX_>.>` is refused at connect — assertInboxConnId
   // (core) throws, the callout turns it into a signed deny. Even a VALID bearer can't buy a wide inbox.
@@ -204,12 +233,36 @@ try {
   } catch (e) { evilErr = e instanceof Error ? e.message : String(e); }
   check("client-chosen wildcard inbox nonce refused (no _INBOX_>.> escalation)", !!evilErr, "(connected!)");
 
+  // One awaited hook must not spend another connection's broker authorization deadline.
+  let heldSettled = false;
+  const heldAuth = tryConnect(await bearer({ actor: "held_auth" })).then((result) => { heldSettled = true; return result; });
+  try {
+    await Promise.race([authorizeEntered.promise, wait(4000).then(() => { throw new Error("authorizer hook was not reached"); })]);
+    const independent = await tryConnect(await bearer());
+    check("an independent valid client connects while another authorizer is held", !!independent.nc && !heldSettled);
+  } finally { authorizeRelease.resolve(); }
+  const authorized = await heldAuth;
+  check("the held client is admitted only after its own authorizer completes", !!authorized.nc);
+
+  let recordSettled = false;
+  const heldRecord = tryConnect(await bearer({ actor: "held_record" })).then((result) => { recordSettled = true; return result; });
+  try {
+    await Promise.race([recordEntered.promise, wait(4000).then(() => { throw new Error("recorder hook was not reached"); })]);
+    const independent = await tryConnect(await bearer());
+    check("an independent valid client connects while another issuance recorder is held", !!independent.nc && !recordSettled);
+  } finally { recordRelease.resolve(); }
+  const unrecorded = await heldRecord;
+  check("a failed held recorder denies only its own client and releases no JWT",
+    !unrecorded.nc && !releasedPrincipals.has(`${owner}.held_record`) && calloutLog.some((line) => line.includes("fixture recorder refused")));
+
   console.log(`\nauth-callout smoke: ${pass} passed, ${fail} failed`);
   if (fail > 0) process.exitCode = 1;
 } catch (e) {
   console.error("auth-callout smoke: fatal:", e);
   process.exitCode = 1;
 } finally {
+  authorizeRelease.resolve();
+  recordRelease.resolve();
   for (const nc of conns) await nc.close().catch(() => {});
   await calloutNc?.close().catch(() => {});
   srv.kill("SIGKILL");

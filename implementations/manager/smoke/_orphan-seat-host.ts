@@ -18,6 +18,7 @@ registry.register({ kind: "connector", name: "orphan-repro", requires: ["node"],
 const session: AttachSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 class DetachedRuntime implements Runtime {
   readonly kind = "orphan-repro";
+  readonly streamsTerminal = true;
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     const child = spawn(spec.command, spec.args, { cwd, env: spec.env, detached: true, stdio: "ignore" });
     const pid = child.pid!; child.unref();

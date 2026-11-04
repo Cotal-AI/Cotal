@@ -56,6 +56,7 @@ import {
   bindGoal,
   createGoal,
   commitGoalResult,
+  requestGoalCancel,
   mintCheckpoint,
   expireCheckpoint,
   goalRefOf,
@@ -77,7 +78,7 @@ import {
 import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshturn";
 const EP = "manager";
@@ -88,17 +89,7 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshturn", uid: "a".repeat
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
+
 /** Grade a rejection as a value rather than a process kill (the bare-call trap). */
 const safe = (p: Promise<unknown>): Promise<unknown> =>
   p.catch((e: unknown) => ({ threw: true, name: (e as Error)?.name, code: (e as { code?: string })?.code, kind: (e as { kind?: string })?.kind, message: (e as Error)?.message ?? String(e) }));
@@ -146,6 +137,9 @@ const SPAWN_INPUT = {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
+    runtime: { type: "string" },
+    // The run id a run's spawn names, as the manager's contract declares it.
+    runId: { type: "string", pattern: "^\\s*\\S" },
     supervise: {
       type: "object", additionalProperties: false, required: ["restarts", "windowMs"],
       properties: { restarts: { type: "integer", minimum: 1 }, windowMs: { type: "integer", minimum: 1 } },
@@ -176,11 +170,22 @@ const DESPAWN_OUTPUT = {
 // it runs no seat process, so every seat whose presence lapsed is one it no longer holds.
 const INSPECT_INPUT = { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 } } } as const;
 const INSPECT_OUTPUT = { type: "object" } as const;
+// A cancelled step withdraws its relay through the manager's reserved `cancel` (SPEC 13.6 item 4)
+// before the cancellation leaves the step, so the stand-in serves it with the manager's schemas.
+const CANCEL_INPUT = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
+} as const;
+const CANCEL_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["goalId", "state"],
+  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
+} as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
   inspect: { input: cc(INSPECT_INPUT), output: cc(INSPECT_OUTPUT) },
+  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.turnmgr", revision: 1, attributes: [], events: [],
@@ -189,6 +194,7 @@ const DOCUMENT = {
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
     { name: "inspect", class: "ephemeral" as const, targeted: false, capability: "manager.read", inputDigest: COMPILED.inspect.input.closureDigest, outputDigest: COMPILED.inspect.output.closureDigest },
+    { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -200,7 +206,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -386,6 +392,19 @@ const defs: EpCommandDef[] = [
   } },
   { command: "inspect", contract: COMPILED.inspect, handler: (ctx: EpServeContext) => {
     throw new EpEnvelopeError("not-found", `no agent "${String((ctx.request.args as { name?: unknown }).name)}"`);
+  } },
+  // As the manager does, it moves a relay this stand-in accepted to `cancelling` and then commits
+  // the cancel terminal, and refuses a goal it never accepted.
+  { command: "cancel", contract: COMPILED.cancel, handler: async (ctx: EpServeContext) => {
+    const raw = (ctx.request.args ?? {}) as { goalId?: unknown; mode?: unknown };
+    const goalId = String(raw.goalId);
+    if (!turnAccepts.has(goalId)) throw new EpEnvelopeError("failed-precondition", `no turn "${goalId}" of this caller is pending on this manager`);
+    await requestGoalCancel(goalCtx, { request: ctx.subject, goalId, mode: (raw.mode ?? "graceful") as "graceful" | "terminate" });
+    const { fact } = await commitGoalResult(goalCtx, {
+      ref: goalRefOf(ctx.subject, goalId), now: Date.now(), cause: "cancel", data: { cancelledBy: "caller" },
+      committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH },
+    });
+    return { goalId, state: fact.state };
   } },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
@@ -627,6 +646,36 @@ if (!placedHostOnly) {
   }
 }
 
+// ── 8b) the same watch: a live successor under the name is superseded, not lapsed ───────────────
+{
+  console.log("• 8b — a successor under the name is superseded before the lapse window");
+  const handler = mk("tn-8b");
+  const a = await spawnSeat(handler, "n8b");
+  if (a !== undefined) {
+    const alloc = allocations.find((x) => `${x.name}#${x.uid}` === a.agent);
+    const T = token("o8b");
+    const p = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(T).ctx));
+    await wait(1_200);
+    if (alloc !== undefined) {
+      await presenceKv.delete(`local.${alloc.actor}`);
+      const successor: Presence = {
+        card: { id: `local.${alloc.actor}`, name: alloc.name, kind: "agent" },
+        lifecycleUid: `z${"0".repeat(25)}`,
+        status: "idle",
+        ts: Date.now(),
+      };
+      await presenceKv.put(successor.card.id, JSON.stringify(successor));
+    }
+    const got = await withDeadline(p, 15_000, "the superseded turn");
+    c("a live successor reads as superseded through the turn's own watch",
+      (got as { code?: string })?.code === "L4002" && String((got as { message?: string })?.message).includes("superseded")
+        && !String((got as { message?: string })?.message).includes("lapsed"),
+      JSON.stringify(got));
+    const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: T });
+    c("the superseded death claims the armed pause", settle !== undefined, settle?.settle);
+  }
+}
+
 // ── 9) handoff honored: the roster resolves `to`, the link and the owner move ─────────────────
 {
   console.log("• 9 — a handoff yield resolves to the roster handle; the next turn links the chain");
@@ -703,12 +752,15 @@ if (!placedHostOnly) {
     const bName = b.agent.split("#")[0]!;
     // Not-honored-immediately: a handoff to b, then a turn on d (not b) spends the memo.
     turnEndings.push({ state: "succeeded", status: "handoff", to: bName, delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(token("B")).ctx)), 20_000, "the ignored handoff");
+    c("the ignored handoff ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(token("B")).ctx)).then(() => true), 20_000, "the ignored handoff") === true);
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(token("C")).ctx)), 20_000, "the intervening turn");
+    c("the intervening turn ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(token("C")).ctx)).then(() => true), 20_000, "the intervening turn") === true);
     const T3 = token("D");
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T3).ctx)), 20_000, "the late turn on b");
+    c("the late turn on b ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T3).ctx)).then(() => true), 20_000, "the late turn on b") === true);
     c("a handoff not honored by the NEXT turn in the scope links nothing",
       turnInvokes.find((i) => i.goalId === T3)?.handoffFrom === undefined,
       JSON.stringify(turnInvokes.find((i) => i.goalId === T3)));
@@ -720,10 +772,12 @@ if (!placedHostOnly) {
     const pa = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(TA).ctx));
     await wait(150);
     const pb = safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(TB).ctx));
-    await withDeadline(Promise.all([pa, pb]), 20_000, "the concurrent handoffs");
+    c("the concurrent handoffs ended within its deadline",
+      await withDeadline(Promise.all([pa, pb]).then(() => true), 20_000, "the concurrent handoffs") === true);
     const T4 = token("G");
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T4).ctx)), 20_000, "the post-ambiguity turn");
+    c("the post-ambiguity turn ended within its deadline",
+      await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T4).ctx)).then(() => true), 20_000, "the post-ambiguity turn") === true);
     c("two pending handoffs naming one agent record no linkage at all",
       turnInvokes.find((i) => i.goalId === T4)?.handoffFrom === undefined,
       JSON.stringify(turnInvokes.find((i) => i.goalId === T4)));
@@ -942,7 +996,7 @@ if (!placedHostOnly) {
     JSON.stringify(sup));
   const well = await withDeadline(safe(handler.spawn({ persona: "builder", supervise: { restarts: 2, window: "5m" } }, stepCtx(token("S1")).ctx)), 10_000, "the well-formed supervise spawn");
   c("a well-formed supervise travels as restarts and windowMs and the spawn is submitted",
-    (well as { threw?: boolean })?.threw !== true && spawnAccepts.size === before + 1,
+    well !== undefined && (well as { threw?: boolean })?.threw !== true && spawnAccepts.size === before + 1,
     JSON.stringify({ well, accepts: spawnAccepts.size, before }));
 }
 
@@ -1105,10 +1159,20 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
   return fact?.data as Record<string, unknown> | undefined;
 }
 
+// A wait supplies an assertion's input; it must not manufacture another assertion.
+{
+  const before = ok + fail;
+  const settled = await withDeadline(Promise.resolve("settled"), 1_000, "the settled accounting control");
+  c("a settled wait leaves the assertion tally to its caller", settled === "settled" && ok + fail === before);
+  const beforeTimeout = ok + fail;
+  const timedOut = await withDeadline(new Promise<never>(() => {}), 1, "the deadline accounting probe");
+  c("a timed-out wait leaves the assertion tally to its caller", timedOut === undefined && ok + fail === beforeTimeout);
+}
+
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = placedHostOnly ? 11 : 60;
+const EXPECTED_CELLS = placedHostOnly ? 13 : 69;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

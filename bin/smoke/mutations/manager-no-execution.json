@@ -13,8 +13,8 @@
     {
       "name": "none accepts a supplied runtime option",
       "file": "implementations/manager/src/manager.ts",
-      "find": "if (opts.execution === \"none\" && (!opts.pooled || !opts.remoteAuthority || opts.runtime !== undefined))",
-      "replace": "if (opts.execution === \"none\" && (!opts.pooled || !opts.remoteAuthority))",
+      "find": "if (opts.execution === \"none\" && (opts.runtime !== undefined || (!!opts.pooled !== !!opts.remoteAuthority)))",
+      "replace": "if (opts.execution === \"none\" && (!!opts.pooled !== !!opts.remoteAuthority))",
       "expectRed": "none constructor refuses supplied runtime auto",
       "cell": "none constructor refuses supplied runtime auto",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
@@ -22,8 +22,8 @@
     {
       "name": "none defaults without pooled opt-in",
       "file": "implementations/manager/src/manager.ts",
-      "find": "if (opts.execution === \"none\" && (!opts.pooled || !opts.remoteAuthority || opts.runtime !== undefined))",
-      "replace": "if (opts.execution === \"none\" && (!opts.remoteAuthority || opts.runtime !== undefined))",
+      "find": "if (opts.execution === \"none\" && (opts.runtime !== undefined || (!!opts.pooled !== !!opts.remoteAuthority)))",
+      "replace": "if (opts.execution === \"none\" && (opts.runtime !== undefined || !opts.remoteAuthority))",
       "expectRed": "none requires explicit pooled composition",
       "cell": "none requires explicit pooled composition",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"

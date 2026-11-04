@@ -13,7 +13,8 @@
  *   - each call runs on its connection's own channels, and the advertised send default names none;
  *   - two connections of one account are independent mesh identities;
  *   - disconnect closes one connection and leaves the other working;
- *   - only the remote subset is offered, and the orientation card says so;
+ *   - only the remote subset is offered, and the orientation card says so; the docs it points to
+ *     are offered and answer; connect names the connection's own access;
  *   - cotal_wait returns a message as soon as it arrives, at once when one is waiting, and after its
  *     bound with none; it follows attention, counts a focus @mention that landed between waits,
  *     ignores a run turn the gateway cannot surface, ends when its connection closes, and leaves
@@ -38,7 +39,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { ApprovalRequired, GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { DOCS_VERSION } from "../src/docs.js";
+import { REPLY_ETIQUETTE } from "../src/briefing.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -50,12 +53,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
-// A second broker for the "down" connection alone, so one cell can take its transport away.
-const DOWN_PORT = await pickFreePort();
-const downServers = `nats://127.0.0.1:${DOWN_PORT}`;
-const downDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const downSrv = spawn("nats-server", ["-js", "-p", String(DOWN_PORT), "-sd", join(downDir, "js")], { stdio: "ignore" });
-const releaseDownBroker = teardownOnSignal(downSrv, downDir);
+// A second broker for the "severed" connection alone, so one cell can take its transport away.
+const SEVERED_PORT = await pickFreePort();
+const severedServers = `nats://127.0.0.1:${SEVERED_PORT}`;
+const severedDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const severedSrv = spawn("nats-server", ["-js", "-p", String(SEVERED_PORT), "-sd", join(severedDir, "js")], { stdio: "ignore" });
+const releaseSeveredBroker = teardownOnSignal(severedSrv, severedDir);
 // The bound this embedder sets for cotal_wait, short enough for a suite and long enough for a DM.
 const WAIT = 20;
 
@@ -73,7 +76,7 @@ const configFor = (name: string): AgentConfig => {
   return {
   space,
   name,
-  servers: name.startsWith("down") ? downServers : servers,
+  servers: name.startsWith("severed") ? severedServers : servers,
   subscribe: [channel],
   allowSubscribe: [channel],
   allowPublish: [channel],
@@ -90,16 +93,30 @@ const configFor = (name: string): AgentConfig => {
 const BEARERS: Record<string, string> = { "tok-a": "acct_a", "tok-b": "acct_b" };
 const live = new Map<string, { account: string; conn: GatewayConnection }>();
 const opened: string[] = [];
+const selections = new Map<string, unknown>();
 const reserved = new Set<string>();
+const pendingApproval = { requestId: "approval-request-0123456789012345", proposed: null,
+  approval: { id: "a".repeat(26), url: `https://authority.example/approve/${"a".repeat(26)}`, expiresAt: "2099-01-01T00:00:00.000Z" } };
+const resumedApprovals: string[] = [];
 const host: GatewayHost = {
   account(auth: AuthInfo | undefined): string {
     const account = auth?.extra?.account;
     if (typeof account !== "string") throw new Error("no valid bearer");
     return account;
   },
-  async open(account, name) {
+  async open(account, name, _context, selection, approvalId) {
     opened.push(`${account}/${name}`);
+    selections.set(`${account}/${name}`, selection);
+    if (name === "approval_probe") {
+      if (approvalId) {
+        resumedApprovals.push(`${account}/${approvalId}`);
+        throw new Error("the authority has not recorded the person's approval");
+      }
+      throw new ApprovalRequired(pendingApproval);
+    }
+    if (name === "approval_collision") throw new NameTaken(name);
     if (name === "quota_probe") throw new Error("quota exceeded");
+    if (name === "business-model") throw new Error("Cloud agent names must be 1–64 lowercase letters, numbers, or underscores; dots and hyphens are not allowed.");
     if (name === "full" || name.startsWith("full_")) throw new NameTaken(name);
     const key = `${account}/${name}`;
     if (reserved.has(key)) throw new NameTaken(name);
@@ -145,17 +162,20 @@ const http = createServer(async (req, res) => {
   const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
   const account = token ? BEARERS[token] : undefined;
   const auth: AuthInfo | undefined = account ? { token: token!, clientId: "smoke", scopes: [], extra: { account } } : undefined;
-  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, ...(auth ? { auth } : {}) });
+  // /mcp-selection is the same embedder with permission requests turned on, as Cotal Cloud serves it.
+  const selection = req.url === "/mcp-selection";
+  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalResume: true, selection, ...(auth ? { auth } : {}) });
 });
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
 
 const clients: Client[] = [];
-const clientFor = async (token?: string): Promise<Client> => {
+const selectionUrl = new URL(`http://127.0.0.1:${httpPort}/mcp-selection`);
+const clientFor = async (token?: string, at = url): Promise<Client> => {
   const client = new Client({ name: "gateway-smoke-client", version: "0.0.0" });
   clients.push(client);
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
-  await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }));
+  await client.connect(new StreamableHTTPClientTransport(at, { requestInit: { headers } }));
   return client;
 };
 type CallResult = { text: string; isError: boolean };
@@ -176,11 +196,25 @@ observer.on("message", (m: CotalMessage, d: Delivery) => {
   d.ack();
 });
 
+// A follower of the lobby family, joined only through the pattern: what one post to a concrete
+// channel under it reaches, which the cotal_send refusal tells a pattern sender to do.
+const follower = new CotalEndpoint({ space, servers, card: { name: "follower", kind: "agent", id: "follower" }, channels: ["lobby.>"], registerPresence: false, lifecycleUid: mintLifecycleUid() });
+follower.on("error", () => {});
+const followed: string[] = [];
+const followedOn = new Map<string, string>();
+follower.on("message", (m: CotalMessage, d: Delivery) => {
+  const text = m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
+  followed.push(text);
+  if (m.channel) followedOn.set(text, m.channel);
+  d.ack();
+});
+
 let failure: unknown;
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
-  await awaitBrokerReady(() => isReachable(downServers), { servers: downServers, attempts: 50, delayMs: 200 });
+  await awaitBrokerReady(() => isReachable(severedServers), { servers: severedServers, attempts: 50, delayMs: 200 });
   await observer.start();
+  await follower.start();
 
   const a = await clientFor("tok-a");
   const b = await clientFor("tok-b");
@@ -188,6 +222,7 @@ try {
 
   // ---- the handler ----
   check("the handler sends the default instructions", a.getInstructions() === GATEWAY_INSTRUCTIONS, a.getInstructions());
+  check("the handler's serverInfo names the loaded Cotal release", a.getServerVersion()?.name === "cotal" && a.getServerVersion()?.version === DOCS_VERSION, a.getServerVersion());
   for (const method of ["GET", "DELETE"]) {
     const r = await fetch(url, { method, headers: { authorization: "Bearer tok-a", accept: "text/event-stream, application/json" } });
     const allow = r.headers.get("allow");
@@ -206,12 +241,43 @@ try {
   // ---- the offered surface ----
   const tools = (await a.listTools()).tools;
   const names = new Set(tools.map((t) => t.name));
+  const readOnly = new Set(["cotal_orientation", "cotal_connection_status", "cotal_roster", "cotal_docs", "cotal_channel_info", "cotal_channels"]);
+  const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_anycast", "cotal_join"]);
+  const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
+  check(
+    "every gateway tool declares its read and update effects",
+    tools.length === readOnly.size + additive.size + destructive.size && tools.every((t) =>
+      (readOnly.has(t.name) || additive.has(t.name) || destructive.has(t.name)) &&
+      t.annotations?.readOnlyHint === readOnly.has(t.name) &&
+      t.annotations?.destructiveHint === destructive.has(t.name)),
+    tools.map((t) => ({ name: t.name, annotations: t.annotations })),
+  );
   check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
+  check("a hosted gateway does not offer native space selection", tools.find((t) => t.name === "cotal_connect")?.inputSchema.properties?.space === undefined);
+  const plainConnect = tools.find((t) => t.name === "cotal_connect");
+  check("without selection a hosted connect offers no permission request",
+    ["channels", "role", "capabilities"].every((k) => plainConnect?.inputSchema.properties?.[k] === undefined) && !plainConnect?.description?.includes("Ask for what"),
+    plainConnect?.inputSchema.properties);
+  const selecting = await clientFor("tok-a", selectionUrl);
+  const selectingConnect = (await selecting.listTools()).tools.find((t) => t.name === "cotal_connect");
+  check("with selection a hosted connect takes channels, role and capabilities and says to ask up front",
+    ["channels", "role", "capabilities"].every((k) => selectingConnect?.inputSchema.properties?.[k] !== undefined) &&
+      selectingConnect?.inputSchema.properties?.space === undefined && !!selectingConnect?.description?.includes("Ask for what this conversation already knows it needs"),
+    selectingConnect);
+  const requested = await call(selecting, "cotal_connect", { name: "approval_probe",
+    channels: [{ channel: "team.>", access: "read-post" }, { channel: "lobby", access: "read" }], role: "reviewer", capabilities: ["spawn"] });
+  check("the requested permissions reach the host as one proposal and nothing is issued", !requested.isError && requested.text.includes('"status":"pending"') &&
+    JSON.stringify(selections.get("acct_a/approval_probe")) === JSON.stringify({ v: 1, channels: [{ channel: "lobby", access: "read" }, { channel: "team.>", access: "read-post" }], role: "reviewer", capabilities: ["role:reviewer", "spawn"], endpoints: [] }),
+    { requested, selection: selections.get("acct_a/approval_probe") });
+  opened.length = 0;
+  selections.clear();
+  const hostedSpace = await call(a, "cotal_connect", { name: "space_probe", space: "another_mesh" }).catch(() => ({ isError: true, text: "schema refusal" }));
+  check("a hosted caller cannot retarget its signed-in space", hostedSpace.isError && opened.length === 0, hostedSpace);
   check("seat authority is not offered", !["cotal_spawn", "cotal_despawn", "cotal_persona", "cotal_run", "cotal_reconnect", "cotal_yield"].some((n) => names.has(n)));
   const routed = tools.filter((t) => t.name !== "cotal_connect");
   check(
     "every routed tool requires connection_id",
-    routed.length === 15 && routed.every((t) => (t.inputSchema.required ?? []).includes("connection_id")),
+    routed.length === 16 && routed.every((t) => (t.inputSchema.required ?? []).includes("connection_id")),
     routed.map((t) => t.name),
   );
 
@@ -224,6 +290,13 @@ try {
   const first = await call(a, "cotal_connect", { name: "claude" });
   const id1 = idOf(first);
   check("the requested name is used when free", !first.isError && first.text.startsWith("Connected as claude.") && id1 !== "", first);
+  check("connect names the connection's own read, join and post access", first.text.includes("\nReads #lobby; may join #lobby; may post to #lobby."), first);
+  check(
+    "connect hands over the orientation card and the shared briefing",
+    first.text.includes("\nIdentity state: ") && first.text.includes("Act → read: cotal_inbox") &&
+      first.text.includes('\n\nYou are connected to the Cotal mesh as "claude" in space') && first.text.endsWith(REPLY_ETIQUETTE),
+    first,
+  );
   const second = await call(a, "cotal_connect", { name: "claude" });
   const id2 = idOf(second);
   check("a taken name moves to the next one and says so", !second.isError && second.text.startsWith('Connected as claude_2 ("claude" was taken).'), second);
@@ -232,6 +305,9 @@ try {
   const quota = await call(a, "cotal_connect", { name: "quota_probe" });
   check("a non-collision failure is reported", quota.isError && quota.text.includes("quota exceeded"), quota);
   check("a non-collision failure is not retried under another name", !opened.includes("acct_a/quota_probe_2") && opened.filter((o) => o === "acct_a/quota_probe").length === 1, opened);
+  const cloudInvalid = await call(a, "cotal_connect", { name: "business-model" });
+  check("an embedder's stricter name error reaches the real MCP caller unchanged", cloudInvalid.isError && cloudInvalid.text === 'cotal_connect failed for "business-model": Cloud agent names must be 1–64 lowercase letters, numbers, or underscores; dots and hyphens are not allowed.', cloudInvalid);
+  check("an embedder's name validation refusal is neither retried nor reserved", opened.filter((o) => o === "acct_a/business-model").length === 1 && !opened.includes("acct_a/business-model_2") && !reserved.has("acct_a/business-model"), opened);
   const other = await call(b, "cotal_connect", { name: "claude" });
   check("another account's names are its own", !other.isError && other.text.startsWith("Connected as claude."), other);
   const idB = idOf(other);
@@ -248,6 +324,32 @@ try {
   const burst = await Promise.all(Array.from({ length: 4 }, () => call(a, "cotal_connect", { name: "burst" })));
   const burstNames = burst.map((r) => /^Connected as (\S+?)[. ]/.exec(r.text)?.[1] ?? "").sort();
   check("concurrent connects get distinct names", burstNames.join(",") === "burst,burst_2,burst_3,burst_4", burst);
+
+  // ---- permission requests are not connections ----
+  const beforeApproval = live.size;
+  const pendingResult = await a.callTool({ name: "cotal_connect", arguments: { name: "approval_probe" } });
+  const approvalBody = pendingResult.structuredContent as Record<string, unknown>;
+  const approvalText = (pendingResult.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+  check("pending approval returns the person's link and no usable connection", !pendingResult.isError &&
+    approvalBody.status === "pending" && approvalBody.name === "approval_probe" &&
+    approvalBody.requestId === pendingApproval.requestId && !("connection_id" in approvalBody) &&
+    approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") && live.size === beforeApproval);
+  check("structured-only clients receive the same person-only approval and retry instructions", typeof approvalBody.message === "string" &&
+    approvalBody.message.includes("do not open the decision page or approve on their behalf") &&
+    approvalBody.message.includes("retry cotal_connect") && approvalBody.message.includes("Do not poll") &&
+    approvalBody.message.includes(pendingApproval.approval.id));
+  check("pending approval never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length === 1 &&
+    !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe"));
+  const resume = await call(a, "cotal_connect", { name: "approval_probe", approval_id: pendingApproval.approval.id });
+  check("approval_id reaches the host but cannot approve its request", resume.isError &&
+    resume.text.includes("has not recorded") && resumedApprovals[0] === `acct_a/${pendingApproval.approval.id}` && live.size === beforeApproval);
+  const changedName = await call(a, "cotal_connect", { name: "approval_collision", approval_id: pendingApproval.approval.id });
+  check("an approval resume never renames on collision", changedName.isError && changedName.text.includes("new permission approval") &&
+    !opened.includes("acct_a/approval_collision_2"));
+  const beforeSelfApproval = opened.length;
+  const selfApproval = await call(a, "cotal_connect", { name: "approval_probe", approved: true }).catch(() => ({ isError: true, text: "schema refusal" }));
+  const foreignFlag = await call(a, "cotal_connect", { name: "approval_probe", approval_id: "INVALID" }).catch(() => ({ isError: true, text: "schema refusal" }));
+  check("self-approval flags and invalid resume handles run nothing", selfApproval.isError && foreignFlag.isError && opened.length === beforeSelfApproval);
 
   // ---- no fallback ----
   const missing = await a.callTool({ name: "cotal_roster", arguments: {} }).then(
@@ -272,10 +374,31 @@ try {
   for (let i = 0; i < 30 && !heard.includes("hello-from-claude"); i++) await sleep(100);
   check("the send reached the mesh", heard.includes("hello-from-claude"), heard);
   check("refused sends reached nothing", !heard.includes("from-unknown") && !heard.includes("from-foreign") && !heard.includes("from-anon"), heard);
+  // lobby.** is no channel name. Before the refusal the endpoint rewrote it to lobby.__, which a
+  // follower of lobby.> received while the receipt named #lobby.**.
+  const malformedSend = await call(a, "cotal_send", { connection_id: id1, text: "malformed-probe", channel: "lobby.**" });
+  for (let i = 0; i < 10 && !followed.includes("malformed-probe"); i++) await sleep(100);
+  check(
+    "a malformed wildcard through the gateway is refused as no channel name and reaches no one",
+    malformedSend.isError && malformedSend.text.includes('"lobby.**" is not a channel name.') && !followed.includes("malformed-probe") && !heard.includes("malformed-probe"),
+    { malformedSend, followerGotItOn: followedOn.get("malformed-probe") },
+  );
+  const patternSend = await call(a, "cotal_send", { connection_id: id1, text: "pattern-probe", channel: "lobby.>" });
+  check(
+    "a pattern send through the gateway is refused and names both ways",
+    patternSend.isError && patternSend.text.includes('"lobby.>" is a pattern') && patternSend.text.includes("post once to one channel it matches") &&
+      patternSend.text.includes("one that is away gets a stored copy if that channel is durable") && patternSend.text.includes("cotal_channels lists the existing ones"),
+    patternSend,
+  );
+  const familySend = await call(a, "cotal_send", { connection_id: id1, text: "family-probe", channel: "lobby.news" });
+  for (let i = 0; i < 30 && !followed.includes("family-probe"); i++) await sleep(100);
+  check("a follower of lobby.> receives one post to lobby.news", !familySend.isError && followed.filter((t) => t === "family-probe").length === 1, { familySend, followed });
+  check("the refused pattern send reached no one", !followed.includes("pattern-probe") && !heard.includes("pattern-probe"), { followed, heard });
 
   const sendTool = tools.find((t) => t.name === "cotal_send");
   const channelText = JSON.stringify((sendTool?.inputSchema.properties as Record<string, unknown> | undefined)?.channel ?? "");
   check("the advertised send default names no connection's channel", channelText.includes("this connection's default") && !channelText.includes("lobby"), channelText);
+  check("the advertised send channel names both ways to reach a family", channelText.includes("post once to one channel it matches") && channelText.includes("cotal_channels lists the existing ones"), channelText);
   const inc = await call(a, "cotal_connect", { name: "inc_watch" });
   const incSent = await call(a, "cotal_send", { connection_id: idOf(inc), text: "default-channel-probe" });
   for (let i = 0; i < 30 && !heardOn.has("default-channel-probe"); i++) await sleep(100);
@@ -301,6 +424,10 @@ try {
   const card = await call(a, "cotal_orientation", { connection_id: id2 });
   check("orientation names this connection", card.text.includes("claude_2"), card.text.slice(0, 400));
   check("orientation lists only offered tools", card.text.includes("cotal_inbox") && !card.text.includes("cotal_spawn") && !card.text.includes("cotal_reconnect"), card.text);
+  // The card tells every agent to call cotal_docs, so the gateway must offer it and it must answer.
+  check("orientation recommends cotal_docs and lists it as offered", card.text.includes("call cotal_docs") && /Tools — more: .*cotal_docs/.test(card.text), card.text);
+  const docs = await call(a, "cotal_docs", { connection_id: id2, page: "spec" });
+  check("cotal_docs answers through the gateway with the bundled page", !docs.isError && docs.text.includes(`(bundled v${DOCS_VERSION})`), docs.text.slice(0, 300));
 
   // ---- listening ----
   const listener = idOf(await call(a, "cotal_connect", { name: "listener" }));
@@ -515,22 +642,22 @@ try {
 
   // A connection whose transport is already down when it closes still ends a wait held on it: its
   // agent's stop then has no transport left to report going down.
-  const downSeat = idOf(await call(a, "cotal_connect", { name: "down_seat" }));
-  const downAgent = live.get(downSeat)!.conn.agent;
-  await killAndAwaitExit(downSrv);
-  for (let i = 0; i < 50 && downAgent.transportConnected; i++) await sleep(100);
-  check("the stopped broker takes that connection's transport down", !downAgent.transportConnected);
-  const downWait = call(a, "cotal_wait", { connection_id: downSeat });
+  const severedSeat = idOf(await call(a, "cotal_connect", { name: "severed_seat" }));
+  const severedAgent = live.get(severedSeat)!.conn.agent;
+  await killAndAwaitExit(severedSrv);
+  for (let i = 0; i < 50 && severedAgent.transportConnected; i++) await sleep(100);
+  check("the stopped broker takes that connection's transport down", !severedAgent.transportConnected);
+  const severedWait = call(a, "cotal_wait", { connection_id: severedSeat });
   await sleep(500);
-  const downAt = Date.now();
-  const downClose = call(a, "cotal_disconnect", { connection_id: downSeat });
-  const downEnded = await downWait;
+  const severedAt = Date.now();
+  const severedClose = call(a, "cotal_disconnect", { connection_id: severedSeat });
+  const severedEnded = await severedWait;
   check(
     "disconnecting a connection whose transport is down ends its held wait",
-    downEnded.isError && downEnded.text.startsWith("CONNECTION_REQUIRED") && Date.now() - downAt < 3000,
-    { ...downEnded, ms: Date.now() - downAt },
+    severedEnded.isError && severedEnded.text.startsWith("CONNECTION_REQUIRED") && Date.now() - severedAt < 3000,
+    { ...severedEnded, ms: Date.now() - severedAt },
   );
-  await downClose;
+  await severedClose;
 
   // A run turn the gateway has no way to surface. Set by hand: a gateway connection cannot take one
   // through any tool it offers, so this is the only way to hold one open here.
@@ -582,8 +709,9 @@ try {
     const r = await rpc("tools/call", { name, arguments: args });
     return { text: (r.result?.content ?? []).map((c) => c.text).join("\n"), isError: r.result?.isError === true };
   };
-  const hello = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "stdio-smoke", version: "0" } })) as { result?: { instructions?: string } };
+  const hello = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "stdio-smoke", version: "0" } })) as { result?: { instructions?: string; serverInfo?: { name?: string; version?: string } } };
   check("the stdio server sends the default instructions", hello.result?.instructions === GATEWAY_INSTRUCTIONS, hello.result?.instructions);
+  check("the stdio server's serverInfo names the loaded Cotal release", hello.result?.serverInfo?.name === "cotal" && hello.result?.serverInfo?.version === DOCS_VERSION, hello.result?.serverInfo);
   send({ method: "notifications/initialized" });
   const stdioTools = (await rpc("tools/list", {})).result?.tools?.map((t) => t.name) ?? [];
   check("the stdio server offers the gateway surface", ["cotal_connect", "cotal_wait", "cotal_inbox"].every((n) => stdioTools.includes(n)), stdioTools);
@@ -641,10 +769,11 @@ try {
   await new Promise<void>((resolve) => http.close(() => resolve()));
   for (const { conn } of live.values()) await conn.agent.stop().catch(() => {});
   await observer.stop().catch(() => {});
+  await follower.stop().catch(() => {});
   await killAndAwaitExit(srv);
   releaseBroker();
-  await killAndAwaitExit(downSrv);
-  releaseDownBroker();
+  await killAndAwaitExit(severedSrv);
+  releaseSeveredBroker();
 }
 if (failure !== undefined) {
   console.error(failure);

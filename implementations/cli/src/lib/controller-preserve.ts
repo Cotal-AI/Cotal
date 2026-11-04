@@ -22,13 +22,14 @@ import {
   type ControllerMember, type ControllerStop, type JsonValue, type MaintenanceCutCommittedRecord, type MaintenanceLock,
   type NativeServiceIdentity, type NativeServiceStopRequest, type PreservedExitCapability, type PreservedStopAttempt, type ServiceAdapterPreservedStop,
 } from "@cotal-ai/workspace";
-import { askManager } from "./control.js";
 import { waitForEndpointUnreachable } from "./endpoint-cut.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstanceStore, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { prepareKernelServiceStop, prepareNativeServiceStop, startProcessService, stopProcessService } from "./service-process.js";
 import { readStackJournal, stackScopeRefusals, writeStackJournal, STACK_DEFINITION, type StackJournal, type StackJournalSnapshot, type StackRole } from "./stack-journal.js";
 import { assertControlPlaneQuiesced, assertSeatsCheckpointable, captureSeatCheckpoints, readPresenceWithoutConsumer, retainedPrincipalKeys } from "../commands/down.js";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "./control.js";
 
 const MANAGER_ENDPOINT = "manager";
 
@@ -112,7 +113,7 @@ async function provePreservedExitCapability(journal: StackJournal, manager: Memb
     if (!auth) epoch = await openReceiptEpoch(context, value.process!, binding.native, unsupported);
     else {
       const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined ? await issuedUserCaller(nc, journal.space, String(options.name), auth.epCaller!) : auth.epCaller!;
-      const service = await resolveService(nc, journal.space, MANAGER_ENDPOINT, caller, { instanceId: value.instanceId, deadlineMs: 5000 });
+      const service = await resolveService(nc, journal.space, MANAGER_ENDPOINT, caller, { instanceId: value.instanceId, deadlineMs: 5000, commands: ["status"] });
       if (service.responder.instanceId !== binding.native.instanceId || service.owner !== binding.native.principal.owner) return unsupported("its attributed instance differs");
       if (service.commands.get("status")?.contract.output.closureDigest !== statusRow.outputDigest)
         refuse("CONFLICT", "the instance's described status contract differs from its served-contract file; nothing was changed", { space: journal.space, instanceId: value.instanceId });
@@ -201,7 +202,7 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
     // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
     if (existing?.state === "active")
       refuse("LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { root, space, attemptId: existing.restore.attemptId },
-        existing.restore.previousSource ? `review it with cotal backup cleanup-fallback ${existing.restore.attemptId} --dry-run, then run it without --dry-run to remove only the retained old store and retire the journal` : undefined);
+        existing.restore.previousSource ? `review it with \`cotal backup cleanup-fallback ${existing.restore.attemptId} --dry-run\`, then run it without --dry-run to remove only the retained old store and retire the journal` : undefined);
     if (existing && (!existingCut || existingCut.stackOperationId !== journal0.operation.id || !["cut-intent", "cut-committed", "ready"].includes(existing.state)))
       refuse("LIFECYCLE_BLOCKED", "this root retains another maintenance attempt; the controller preserve did not continue it", { root, space, state: existing.state });
     if (existing?.state === "ready") {
@@ -210,16 +211,16 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
     }
     // A retry checks the stack's scope again before any further stop.
     if (existing?.state === "cut-committed") {
-      stackScopeRefusals(journal0, "cotal down --preserve-state");
+      stackScopeRefusals(journal0, "`cotal down --preserve-state`");
       return await finishCommittedCut(lock, root, space, journal0, sessionStores);
     }
     if (existing?.state === "cut-intent")
       hold("a controller cut intent is retained without its recorded commit; it was not aborted or continued", { root, space, attemptId: existing.cut.attemptId }, "inspect the manager's preservation state and the maintenance journal before any action");
     if (["planned", "applying", "unknown"].includes(journal0.operation.phase))
-      hold("an earlier whole-stack operation on this root has no settled outcome; it was not retried", { root, space, operation: journal0.operation }, "inspect each member with cotal service status");
+      hold("an earlier whole-stack operation on this root has no settled outcome; it was not retried", { root, space, operation: journal0.operation }, "inspect each member with `cotal service status`");
     const members = cutMembers(journal0);
     // A read: what the broker's stop would cut off refuses before any effect.
-    stackScopeRefusals(journal0, "cotal down --preserve-state");
+    stackScopeRefusals(journal0, "`cotal down --preserve-state`");
     const manager = members.find((row) => row.role === "manager")!;
     // A read. A refusal here has written nothing and stopped nothing.
     const capability = await provePreservedExitCapability(journal0, manager);
@@ -236,11 +237,11 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
     if (delivery) {
       const definition = serviceDefinitionStore(space).read(delivery.instance.record.value.definition)!;
       const stopped = await stopProcessService(definition, delivery.instance);
-      if (!stopped.instance.record.value.processStop) hold("the delivery fence recorded no exit receipt of its own; preservation did not continue", { root, space }, `inspect cotal service status ${STACK_DEFINITION.delivery} --instance ${delivery.instance.name} --space ${space}`);
+      if (!stopped.instance.record.value.processStop) hold("the delivery fence recorded no exit receipt of its own; preservation did not continue", { root, space }, `inspect \`cotal service status ${STACK_DEFINITION.delivery} --instance ${delivery.instance.name} --space ${space}\``);
     }
     let inventory: unknown;
     try {
-      const prepared = await askManager(space, journal0.server, "preparePreservation", { attemptId }, control.auth, "any", 60_000, pin);
+      const prepared = await askManager(cliControl, space, journal0.server, "preparePreservation", { attemptId }, control.auth, "any", 60_000, pin);
       if (!prepared.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", prepared.error ?? "the manager refused preservation", { target: { root, space } });
       // Recheck (a): the responder is the proved incarnation.
       if (prepared.managerInstanceId !== capability.instanceId || prepared.managerEpoch !== capability.epoch)
@@ -256,7 +257,7 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
       assertSeatsCheckpointable(plan.inventory);
       inventory = plan.inventory;
     } catch (cause) {
-      const aborted = await askManager(space, journal0.server, "abortPreservation", { attemptId }, control.auth, "any", 30_000, pin).then((reply) => reply.ok, () => false);
+      const aborted = await askManager(cliControl, space, journal0.server, "abortPreservation", { attemptId }, control.auth, "any", 30_000, pin).then((reply) => reply.ok, () => false);
       clearPreservationPrepareIntent(lock);
       stack = settleStack(root, "refused");
       // Compensation: delivery restarts once, only after a confirmed abort and with no commit intent.
@@ -273,7 +274,7 @@ export async function preserveControllerStack(rootInput: string, storeOverride: 
     beginMaintenanceCut(lock, { attemptId, space, mode: journal0.mode, sourcePath: storeDir, resume, launch: { server: journal0.server, storeDir, custody: "controller", controller: controller as unknown as JsonValue } });
     clearPreservationPrepareIntent(lock);
     writePreservationCommitIntent(lock, { attemptId });
-    const commit = await askManager(space, journal0.server, "commitPreservation", { attemptId }, control.auth, "any", 120_000, pin);
+    const commit = await askManager(cliControl, space, journal0.server, "commitPreservation", { attemptId }, control.auth, "any", 120_000, pin);
     const committed = commit.data as { state?: string; failures?: unknown[] } | undefined;
     if (!commit.ok || committed?.state !== "preserved" || (committed.failures?.length ?? 0) !== 0)
       hold("the manager preservation commit was not confirmed; the cut and commit intents are retained", { root, space, attemptId }, "inspect the manager's preservation state before any action");

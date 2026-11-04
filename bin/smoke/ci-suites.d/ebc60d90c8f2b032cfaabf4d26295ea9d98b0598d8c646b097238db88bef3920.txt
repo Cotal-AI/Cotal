@@ -1,0 +1,2 @@
+# Backup/restore refusals never echo a private endpoint. Added with the suite, which defined the script but not this fragment.
+smoke:restore-endpoint-redaction:live

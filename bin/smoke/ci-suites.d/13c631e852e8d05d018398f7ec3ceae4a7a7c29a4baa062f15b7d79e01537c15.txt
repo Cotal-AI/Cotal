@@ -1,0 +1,2 @@
+# The auth callout's connect limits: the signed RATE_LIMITED denial and the exchange's typed 429.
+smoke:connect-limit:auth

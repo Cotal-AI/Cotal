@@ -154,7 +154,7 @@ if (process.platform !== "linux") {
     recordMesh({ ...trusted, tlsRequired: true });
     const tlsProbe = launch({ space: a.space, name: "tls-probe" });
     const tlsClosed = await until(() => tlsProbe.closed);
-    check("recorded TLS requirement refuses plaintext with a concise actionable diagnostic", tlsClosed && tlsProbe.code === 1 && /TLS is required to join .*server does not support TLS/.test(tlsProbe.output) && /Ask the mesh operator for its TLS-enabled broker address/.test(tlsProbe.output) && !/ConnectionError:|\n\s+at (?:async )?\S+/.test(tlsProbe.output) && !tlsProbe.output.includes("Joined "));
+    check("recorded TLS requirement refuses plaintext with a concise actionable diagnostic", tlsClosed && tlsProbe.code === 2 && /Code: +UNSUPPORTED/.test(tlsProbe.output) && /TLS is required to join .*server does not support TLS/.test(tlsProbe.output) && /ask the mesh operator for its TLS-enabled broker address/.test(tlsProbe.output) && !/ConnectionError:|\n\s+at (?:async )?\S+/.test(tlsProbe.output) && !tlsProbe.output.includes("Joined "));
     check("native delivery lease remained owned throughout", leaseFailure === undefined);
     console.log(`join-user: ${passed} assertions passed`);
     emitSentinel({ passed, failed: 0 });
@@ -166,7 +166,8 @@ if (process.platform !== "linux") {
     await sender?.stop();
     await witness?.stop();
     clearInterval(leaseTimer);
-    await daemon?.releaseDeliveryLease(0, leaseRevision);
+    // A renew still in flight can move the row past `leaseRevision`, refusing the release.
+    await daemon?.releaseDeliveryLease(0, leaseRevision).catch(() => {});
     await daemon?.stop();
     await prov?.stop();
     await service?.close();

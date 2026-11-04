@@ -8,9 +8,10 @@ import { connect, credsAuthenticator, NoRespondersError, RequestError, type Nats
 import {
   CotalEndpoint, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds,
   mintMembershipObserverCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
-  controlServiceSubject, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, CONTROL_DELIVERY, DEV_OWNER,
+  controlServiceSubject, connzRequestSubject, eptReqStreamName, MEMBERSHIP_INBOX_PREFIX, CONTROL_DELIVERY, DEV_OWNER,
   type SecretStore, type SpaceAuth,
 } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, type HostedServiceHandle } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, countedAssert, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startDeliveryService } from "../src/index.js";
@@ -155,6 +156,25 @@ try {
   await second.close();
   await second.close();
   assert.equal((await inspectors[1].readDeliveryLease(0))?.ready, undefined, "B releases only its own lease");
+
+  // ---- #3633: a close() that lands during the timer writer's retry backoff returns at once ----
+  // With B's `.schedule` request stream gone the writer's start fails and the daemon's retry loop
+  // sleeps its first backoff (five seconds). close() used to wait out that sleep, because the loop
+  // checked `stopping` only at the top of the next iteration.
+  {
+    const tid = newIdentity();
+    const teardown = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auths[1], tid, "teardown", { lifecycleUid: mintLifecycleUid() }))), inboxPrefix: `_INBOX_${tid.id}` });
+    callers.push(teardown);
+    await (await jetstreamManager(teardown)).streams.delete(eptReqStreamName(spaces[1]));
+    const backing = await startDeliveryService(inputs[1]);
+    handles.push(backing);
+    await wait(1_000); // the writer's start has refused by now and the loop is in its first backoff
+    const t0 = Date.now();
+    await backing.close();
+    handles.splice(handles.indexOf(backing), 1);
+    const closeMs = Date.now() - t0;
+    assert.ok(closeMs < 2_500, `close() during the timer writer's retry backoff returns without waiting out the backoff (took ${closeMs}ms)`);
+  }
   console.log(`hosted delivery lifetime: ${cells()} two-account assertions passed`);
   emitSentinel({ passed: cells(), failed: 0 });
 } finally {

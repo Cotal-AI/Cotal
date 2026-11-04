@@ -107,6 +107,33 @@ const manager = new Manager({ space: "smoke", workspaceRoot, runtime: "pty" });
   off: () => {},
 };
 
+// A connector that reaches its native project-trust prompt but never starts a session names that
+// prompt and directory. It must not degrade to the generic missing-session-state failure.
+{
+  const promptCwd = join(workspaceRoot, "project-with-resources");
+  writeFileSync(statePath, JSON.stringify({
+    version: 2,
+    connector: "pi",
+    status: "prompt",
+    prompt: "Trust project folder?",
+    cwd: promptCwd,
+  }) + "\n");
+  const stopped = makeHandle("pi-prompt", { command: "true", args: [], env: {} });
+  stopped.stop();
+  const promptAgent = {
+    handle: stopped,
+    restart: { sessionStatePath: statePath },
+  };
+  await assert.rejects(
+    () => (manager as unknown as { awaitManagedSessionState(agent: typeof promptAgent): Promise<unknown> }).awaitManagedSessionState(promptAgent),
+    (error: unknown) => error instanceof Error && error.message.includes("Trust project folder?") && error.message.includes(promptCwd) &&
+      !error.message.includes("connector did not write session state"),
+    "a failed Pi startup names the native prompt and directory",
+  );
+  checks++;
+  writeFileSync(statePath, JSON.stringify({ version: 1, sessionId, status: "running" }) + "\n");
+}
+
 const initialOpts: LaunchOpts = {
   space: "smoke",
   name: "pi-seat",

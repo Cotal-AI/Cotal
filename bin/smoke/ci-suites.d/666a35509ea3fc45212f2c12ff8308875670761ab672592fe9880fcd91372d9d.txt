@@ -1,0 +1,2 @@
+# Auth client decoding over loopback HTTP, including the shipped bearer CLI.
+smoke:auth-response-json

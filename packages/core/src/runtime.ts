@@ -1,6 +1,8 @@
 import type { Extension } from "./registry.js";
 import type { LaunchSpec } from "./connector.js";
+import type { StartupOutcome } from "./startup-confirm.js";
 import { MANAGED_HANDOFF_FILE_ENV, type ManagedLifecycleHandoff, type ManagedLifecycleTarget } from "./managed-handoff.js";
+import { assertLifecycleToken } from "./subjects.js";
 
 /** Which backend a manager spawns through. Open-ended: `pty` ships with the manager; every other
  *  name is contributed by a {@link RuntimeProvider}. */
@@ -88,8 +90,13 @@ export interface AgentHandle {
    *  connector's `[cotal-<name>]` or `[cotal-<name>/<part>]` prefix, for a backend that reads the
    *  child's output; absent when there is neither. */
   exitInfo?(): { code?: number; signal?: number; diagnostic?: string } | undefined;
-  /** Open a live attach. Throws on backends that can't stream (e.g. tmux/cmux, which
-   *  you attach to natively). */
+  /** How the connector's startup watch ended for this child, from the screen read that ended it.
+   *  Present on every handle spawned by a runtime that declares {@link Runtime.reportsStartupOutcome}
+   *  (an adopted handle may omit it); a launch with no `confirm` reports `pending` forever. */
+  startupOutcome?(): StartupOutcome;
+  /** Open a live attach. Throws on a backend that cannot stream, which is every backend whose
+   *  runtime declares {@link Runtime.streamsTerminal} false: the throw carries that backend's own
+   *  guidance for watching the agent where it actually runs. */
   attach(): AttachSession;
 }
 
@@ -97,10 +104,24 @@ export interface AgentHandle {
  *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
+  /**
+   * Whether a handle this runtime creates can open a live {@link AttachSession}. A backend that
+   * owns the child's pseudo-terminal streams it; a backend that attaches to a process it does not
+   * own holds no stream for it, and its {@link AgentHandle.attach} throws its own guidance instead.
+   *
+   * REQUIRED, and a backend that streams nothing says so rather than leaving a caller to find out
+   * by catching the throw: the manager reports this to its callers, so a foreground `cotal spawn`
+   * on such a runtime launches the seat without attempting an attach that cannot open, and
+   * `cotal attach` refuses by name. Omitting it on a streaming backend would silence that terminal.
+   */
+  readonly streamsTerminal: boolean;
   /** True only when every handle this runtime creates can release manager-local custody without
    * stopping the underlying agent. Absent is false for PTY runtimes and irrelevant for runtimes
    * that hold no process-owning PTY master. */
   readonly supportsRelease?: boolean;
+  /** True when every handle this runtime spawns reports {@link AgentHandle.startupOutcome}. A `once`
+   *  spawn on a connector with {@link Connector.onceNeedsConfirmed} is refused without it. */
+  readonly reportsStartupOutcome?: boolean;
   /**
    * Mint the durable custody reference for a seat this runtime is ABOUT to spawn, before any
    * process exists. The caller records it durably and then hands the SAME reference back to
@@ -177,6 +198,8 @@ export interface DelegatedSeatLaunch {
   readonly agent: string;
   /** The agent-definition file text the manager resolved for this spawn. */
   readonly persona: string;
+  /** The launching manager's stable instance id (`COTAL_MANAGER_INSTANCE`). */
+  readonly managerInstanceId: string;
   /** The role the manager resolved (the `--role` override, else the persona's `role:`), the same
    *  value the enrollment carried. */
   readonly role?: string;
@@ -196,6 +219,7 @@ export function delegatedSeatCommand(
   target: ManagedLifecycleTarget,
   files: { readonly handoff: string; readonly persona: string },
 ): { readonly args: readonly string[]; readonly env: Readonly<Record<string, string>> } {
+  const managerInstanceId = assertLifecycleToken(launch.managerInstanceId, "COTAL_MANAGER_INSTANCE");
   const args = [
     "spawn", "--config", files.persona, "--space", target.space, "--name", target.actor, "--agent", launch.agent,
     "--expect-owner", target.owner, "--expect-lifecycle-uid", target.lifecycleUid,
@@ -206,7 +230,7 @@ export function delegatedSeatCommand(
   if (launch.prompt !== undefined) args.push("--prompt", launch.prompt);
   for (const [k, v] of Object.entries(launch.launchOptions ?? {})) args.push("--opt", `${k}=${v}`);
   if (launch.events !== undefined) args.push(launch.events ? "--events" : "--no-events");
-  return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff } };
+  return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff, COTAL_MANAGER_INSTANCE: managerInstanceId } };
 }
 
 

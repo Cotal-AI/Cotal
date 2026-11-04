@@ -18,7 +18,7 @@ export async function chooseMeshTarget(args: ParsedArgs): Promise<void> {
   if (!runningChoices([])) return;
   const spaces = runningChoices((await pruneStaleMeshes()).offline);
   if (!spaces) return;
-  const p = await import("@clack/prompts");
+  const p = await import("./prompts.js");
   const chosen = await p.select({ message: "Several spaces are running. Which one?", options: spaces.map((space) => ({ value: space, label: space })) });
   if (p.isCancel(chosen)) {
     p.cancel("nothing was done - no space was chosen");

@@ -30,8 +30,8 @@
     {
       "name": "the liveness read is inverted, so a dead holder still blocks its tree",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))",
-      "replace": "    if (true || rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))",
+      "find": "    if (rows.some((p) => p.card.name === holder.name && p.lifecycleUid === holder.uid))",
+      "replace": "    if (true || rows.some((p) => p.card.name === holder.name && p.lifecycleUid === holder.uid))",
       "expectRed": "a spawn into the dead holder's tree performs: sequential reuse is legal",
       "cell": "a spawn into the dead holder's tree performs: sequential reuse is legal",
       "note": "Presence IS the release: nothing else ever unbinds a tree. Measured 2026-09-03: both sequential-reuse cells red — the dead holder's tree and the lapsed adopted holder's tree stay refused — 7 passed, 2 failed."

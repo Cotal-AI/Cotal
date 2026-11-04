@@ -2,16 +2,17 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SpawnRefused, type AgentHandle, type AttachSession, type LaunchSpec, type Runtime, type RuntimeReference } from "@cotal-ai/core";
-import { ConnectorDiagnosticReader, StartupConfirmGate, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
+import {
+  ConnectorDiagnosticReader,
+  DEFAULT_COLS,
+  DEFAULT_ROWS,
+  GRACE_MS,
+  SCROLLBACK_ROWS,
+  StartupConfirmGate,
+  unsupportedTransport,
+  preferSeatForOomKill,
+} from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
-
-const DEFAULT_COLS = 120;
-const DEFAULT_ROWS = 32;
-/** How many rows of history the attach-time screen mirror retains (see spawn) so a late attach
- *  still sees output that scrolled past. */
-const SCROLLBACK_ROWS = 1000;
-/** Grace window for a clean exit before a graceful stop escalates to SIGKILL. */
-const GRACE_MS = 3_000;
 
 /**
  * In-process node-pty ownership. The worker is the child's parent, so killing
@@ -21,20 +22,22 @@ const GRACE_MS = 3_000;
  */
 export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
+  readonly streamsTerminal = true;
+  readonly reportsStartupOutcome = true;
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     // POSIX: passthrough (node-pty's exec resolves the bare name). win32: resolve the EXACT file and
     // adapt — a `.cmd`/`.bat` shim runs through cmd.exe with a pre-escaped command line. Resolve
     // against `spec.env` (the env we actually launch with), not the manager's, so executable
-    // selection stays inside P3 isolation.
+    // selection stays inside the launch env's isolation.
     const { command, args } = preparePtyLaunch(spec.command, spec.args, spec.env ?? {});
     // Honor LaunchSpec.confirm literally: match the connector-owned text in normalized early output,
     // press Enter exactly once when it appears, and fail loud if the declared gate never materializes.
     // Built before the child exists, so a prompt that cannot match is a refusal.
     let confirmGate: StartupConfirmGate | undefined;
     try {
-      if ((spec.confirmBefore?.length || spec.confirmReady?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm, spec.confirmBefore, spec.confirmReady);
+      if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
     } catch (err) {
       throw new SpawnRefused((err as Error).message);
     }
@@ -43,7 +46,7 @@ export class LegacyPtyRuntime implements Runtime {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cwd,
-      // P3: pass ONLY the connector-declared env (OS allow-list + identity + named model key) —
+      // Pass ONLY the connector-declared env (OS allow-list + identity + named model key) —
       // never `...process.env`. The operator's unrelated secrets (AWS/GH/other service keys) don't
       // bleed into the child. `spec.env ?? {}` so a connector that forgets env fails loud (no
       // PATH) instead of silently inheriting the manager's env.
@@ -100,9 +103,14 @@ export class LegacyPtyRuntime implements Runtime {
     const handle: AgentHandle = {
       name,
       kind: "pty",
-      pid: proc.pid,
+      // Read when asked: node-pty's ConPTY backend creates the child after `spawn` returns and
+      // reports pid 0 until then, so a copy taken here named no process. Absent until it exists.
+      get pid() {
+        return proc.pid > 0 ? proc.pid : undefined;
+      },
       status: () => (alive ? "running" : "exited"),
       exitInfo: () => exit,
+      startupOutcome: () => confirmGate?.outcome ?? "pending",
       stop: (opts) => {
         if (!alive) return;
         // node-pty's ConPTY backend has no signals: kill(<signal>) throws on Windows, and a

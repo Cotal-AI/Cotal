@@ -32,6 +32,7 @@ import {
   DEV_OWNER,
 } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
+import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
 import { pickFreePort } from "./_free-port.js";
@@ -78,7 +79,7 @@ try {
   // and the two peers' bind-only durables + scoped "agent" creds.
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: mgrCreds });
-  await seedChannelRegistry({ servers, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { "fx51-durable": { deliveryClass: "durable" } } } });
+  await seedChannelRegistry({ servers, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { "fx51-durable": { deliveryClass: "durable" }, "fx51fam.dur": { deliveryClass: "durable" }, "fx51star.dur": { deliveryClass: "durable" }, "fx51left.dur": { deliveryClass: "durable" }, "fx51left.sub.dur": { deliveryClass: "durable" } } } });
   const mgr = new CotalEndpoint({ space, servers, creds: mgrCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
   mgr.on("error", () => {});
   await mgr.start();
@@ -89,7 +90,7 @@ try {
   const ottoPrincipal = `${DEV_OWNER}.${ottoId.id}`;
   const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1)
   const pubbyUid = mintLifecycleUid();
-  const chACL = { subscribe: channels, allowSubscribe: [...channels, "fx51-durable"], allowPublish: channels };
+  const chACL = { subscribe: channels, allowSubscribe: [...channels, "fx51-durable", "fx51fam.>", "fx51star.*"], allowPublish: [...channels, "fx51-durable", "fx51fam.dur", "fx51star.dur"] };
   const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist", lifecycleUid: ottoUid });
   const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL, lifecycleUid: pubbyUid });
   // A reader provisioned WITHOUT any durable-read grant: it cannot join fx51-durable's backstop, so
@@ -131,7 +132,7 @@ try {
   await daemon.startPlane3((owner, lifecycleUid) => daemon.aclForOwner(owner, lifecycleUid));
   const dcfg: AgentConfig = {
     space, name: "Otto", role: "generalist", servers, creds: ottoCreds,
-    subscribe: [...channels, "fx51-durable"], allowSubscribe: [...channels, "fx51-durable"], allowPublish: channels,
+    subscribe: [...channels, "fx51-durable", "fx51fam.>", "fx51star.*"], allowSubscribe: [...channels, "fx51-durable", "fx51fam.>", "fx51star.*"], allowPublish: channels,
     quiet: ["quiet-ch"], muted: ["muted-ch"], kind: "agent", tls: false, id: ottoId.id, lifecycleUid: ottoUid,
   };
   const dagent = new MeshAgent(dcfg);
@@ -141,15 +142,39 @@ try {
   let durableUp = false;
   for (let i = 0; i < 20; i++) { if (dagent.ep.hasDurableMembership("fx51-durable")) { durableUp = true; break; } await sleep(500); }
   check("durable membership established (daemon serving)", durableUp);
+  // Otto also follows the family fx51fam.> from boot: its own membership row covers the durable
+  // channel fx51fam.dur, which Otto never joins by name (#5404).
+  let familyUp = false;
+  for (let i = 0; i < 20; i++) { if (dagent.ep.hasDurableMembership("fx51fam.>")) { familyUp = true; break; } await sleep(500); }
+  check("the family follow fx51fam.> holds a durable membership from boot", familyUp);
   // The daemon's readiness flip (lease ready:true) can lag the join responder; the active control
   // must wait for it, else it grades a still-binding daemon. In-process daemons acquire + flip the
   // lease themselves (the CLI daemon does this in runStartedDelivery).
   await daemon.acquireDeliveryLease(0).then((rev) => daemon.markDeliveryLeaseReady(0, rev)).catch(() => {});
+  // listChannels enumerates retained traffic and cached channel registry rows. Seed an owned
+  // retained message so the durable health assertions actually select this channel.
+  await dagent.ep.multicast("owned durable health control", { channel: "fx51-durable" });
+  await dagent.ep.multicast("owned family health control", { channel: "fx51fam.dur" });
+  await dagent.ep.multicast("owned live pattern control", { channel: "fx51star.dur" });
   let leaseReady = false;
   for (let i = 0; i < 30; i++) { if ((await dagent.ep.readDeliveryLease(0))?.ready === true) { leaseReady = true; break; } await sleep(500); }
   check("daemon lease reads ready:true (serving)", leaseReady);
   const liveRows = await dagent.listChannels();
   check("deliveryHealth reads active while the daemon serves", liveRows.find((c) => c.channel === "fx51-durable")?.deliveryHealth === "active", liveRows.find((c) => c.channel === "fx51-durable"));
+  const familyRow = liveRows.find((c) => c.channel === "fx51fam.>");
+  check("the family follow is a row of its own, joined, with its membership's health active", familyRow?.follow === "family" && familyRow.joined && familyRow.deliveryHealth === "active", familyRow);
+  const childRow = liveRows.find((c) => c.channel === "fx51fam.dur");
+  check("a durable channel under the family reads active through the family's membership", childRow?.joined === true && childRow.deliveryHealth === "active", childRow);
+  // A durable channel Otto reads only through the live pattern fx51star.* has no stored copies to
+  // be healthy or not: no delivery health, never the degraded backstop warning.
+  const starRow = liveRows.find((c) => c.channel === "fx51star.dur");
+  check("a durable channel followed only through a pattern with * carries no delivery health", starRow?.joined === true && starRow.deliveryHealth === undefined, starRow);
+  const channelsTool = cotalToolSpecs(dcfg, "smoke").find((t) => t.name === "cotal_channels")!;
+  const listed = (await channelsTool.run(dagent, dcfg, {})).text;
+  check("cotal_channels does not warn of a backstop on a channel followed only through a pattern with *",
+    /#fx51star\.dur \(subscribed, replay on\)\n/.test(listed + "\n") && !/#fx51star\.dur[^\n]*durable backstop/.test(listed), listed);
+  check("cotal_channels shows the family follow and its stored copies",
+    listed.includes("● #fx51fam.> — family you follow: every channel under fx51fam, stored copies on for its durable channels"), listed);
   await daemon.stop(); // no graceful lease release — the ready:true residue stays
   const leaseAfterStop = await dagent.ep.readDeliveryLease(0);
   check("daemon stopped but its lease row still reads ready:true (residue)", leaseAfterStop?.ready === true, leaseAfterStop);
@@ -157,6 +182,8 @@ try {
   const deadRow = deadRows.find((c) => c.channel === "fx51-durable");
   check("daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)", deadRow?.deliveryHealth === "degraded", deadRow);
   check("…while hasDurableMembership still true (session-local residue)", dagent.ep.hasDurableMembership("fx51-durable") === true);
+  const deadFamily = deadRows.find((c) => c.channel === "fx51fam.>");
+  check("daemon gone ⇒ the family row reads degraded, never active", deadFamily?.deliveryHealth === "degraded", deadFamily);
 
   // The cannot-establish ("unknown") arm, driven through the route the fix actually has: a
   // responder-PRESENT error on fetchMemberships(). Every minted agent profile carries a read of the
@@ -195,9 +222,82 @@ try {
   const errRow = errRows.find((c) => c.channel === "fx51-durable");
   check("a daemon answering errors (responder present, op refused) renders health unknown, never active/degraded/omitted (#445)",
     membershipsThrew && errRow?.deliveryHealth === "unknown", { membershipsThrew, errRow });
+  const errFamily = errRows.find((c) => c.channel === "fx51fam.>");
+  check("a daemon answering errors renders the family row unknown too", errFamily?.deliveryHealth === "unknown", errFamily);
   try { errSub.unsubscribe(); } catch { /* already gone */ }
   await errdaemon.stop();
   await dagent.stop();
+
+  // ---- #5404: a sub-family held through the family above it, and a family a late refusal forces out ----
+  // Fred follows fx51left.> from boot. With no daemon answering he joins fx51left.sub.>, which gets no
+  // row of its own, and with a daemon back that sub-family still reads active, because fx51left.>'s
+  // row stores its posts too. Then his credential renews onto one without fx51left.>: the broker
+  // refuses the family's resubscription, and with the daemon answering errors its tombstone stays
+  // pending, so cotal_channels shows a family he no longer follows with its cleanup pending.
+  const fredId = newIdentity();
+  const fredUid = mintLifecycleUid();
+  const fredRead = ["normal-ch", "fx51left.>"];
+  const fredWrite = ["normal-ch", "fx51left.dur", "fx51left.sub.dur"];
+  await provisionAgent(mgr, auth, fredId, { subscribe: fredRead, allowSubscribe: fredRead, allowPublish: fredWrite, role: "generalist", lifecycleUid: fredUid });
+  let fredNarrowed = false;
+  const fredNarrow = await mintCreds(auth, fredId, "agent", { allowSubscribe: ["normal-ch"], allowPublish: fredWrite, role: "generalist", lifecycleUid: fredUid, expiresInSeconds: 600 });
+  // A standing-renewal source: a fresh 40s credential each time until the switch, then the narrowed one.
+  const fredCreds = async () => fredNarrowed
+    ? fredNarrow
+    : mintCreds(auth, fredId, "agent", { allowSubscribe: fredRead, allowPublish: fredWrite, role: "generalist", lifecycleUid: fredUid, expiresInSeconds: 40 });
+  const newDaemon = async (name: string) => {
+    const d = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name, role: "delivery", kind: "endpoint" } });
+    d.on("error", () => {});
+    await d.start();
+    await d.startPlane3((owner, lifecycleUid) => d.aclForOwner(owner, lifecycleUid));
+    await d.acquireDeliveryLease(0).then((rev) => d.markDeliveryLeaseReady(0, rev)).catch(() => {});
+    return d;
+  };
+  const daemonB = await newDaemon("delivery-b");
+  const fcfg: AgentConfig = {
+    space, name: "Fred", role: "generalist", servers, creds: fredCreds,
+    subscribe: fredRead, allowSubscribe: fredRead, allowPublish: fredWrite,
+    kind: "agent", tls: false, id: fredId.id, lifecycleUid: fredUid,
+  };
+  const fred = new MeshAgent(fcfg);
+  fred.on("error", () => {});
+  fred.start();
+  for (let i = 0; i < 50; i++) { if (fred.connected) break; await sleep(200); }
+  let fredFamily = false;
+  for (let i = 0; i < 20; i++) { if (fred.ep.hasDurableMembership("fx51left.>")) { fredFamily = true; break; } await sleep(500); }
+  check("Fred's family fx51left.> holds a durable membership from boot", fredFamily);
+  await daemonB.stop();
+  const subJoin = await fred.joinChannel("fx51left.sub.>");
+  check("with no daemon answering, the sub-family fx51left.sub.> joins live only, with no row of its own",
+    subJoin.joined && !subJoin.durable && !fred.ep.hasDurableMembership("fx51left.sub.>"), subJoin);
+  const daemonC = await newDaemon("delivery-c");
+  let subRow: Awaited<ReturnType<MeshAgent["listChannels"]>>[number] | undefined;
+  for (let i = 0; i < 20; i++) {
+    subRow = (await fred.listChannels()).find((c) => c.channel === "fx51left.sub.>");
+    if (subRow?.deliveryHealth === "active") break;
+    await sleep(500);
+  }
+  check("a sub-family with no row of its own reads active through the family above it, whose row stores its posts",
+    subRow?.follow === "family" && subRow.deliveryHealth === "active", subRow);
+  await daemonC.stop();
+  const errdaemon2 = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery-err", role: "delivery", kind: "endpoint" } });
+  errdaemon2.on("error", () => {});
+  await errdaemon2.start();
+  const errSub2 = errdaemon2.serveControl(CONTROL_DELIVERY, () => ({ ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" }), { boundReply: true });
+  fredNarrowed = true;
+  let leftPending = false;
+  for (let i = 0; i < 120; i++) { if (fred.ep.pendingDurableLeaves().includes("fx51left.>")) { leftPending = true; break; } await sleep(500); }
+  check("a renewal onto a credential without fx51left.> has the broker refuse it, and its tombstone stays pending while the daemon errs",
+    leftPending && !fred.ep.joinedChannels().includes("fx51left.>"), { pending: fred.ep.pendingDurableLeaves(), joined: fred.ep.joinedChannels() });
+  const leftRow = (await fred.listChannels()).find((c) => c.channel === "fx51left.>");
+  check("the family left with its cleanup pending is still a family row, not followed", leftRow?.follow === "family" && leftRow.joined === false && leftRow.durableUnclosed === true, leftRow);
+  const fredChannels = cotalToolSpecs(fcfg, "smoke").find((t) => t.name === "cotal_channels")!;
+  const fredListed = (await fredChannels.run(fred, fcfg, {})).text;
+  check("cotal_channels shows a family no longer followed with its cleanup pending",
+    fredListed.includes("○ #fx51left.> — family you no longer follow · durable cleanup pending (§7 backstop may still deliver — retrying)"), fredListed);
+  try { errSub2.unsubscribe(); } catch { /* already gone */ }
+  await fred.stop();
+  await errdaemon2.stop();
 
   // ---- boot seed from config (before connecting) ----
   const agent = new MeshAgent(cfg);
@@ -285,7 +385,7 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-const EXPECTED_CELLS = 22;
+const EXPECTED_CELLS = 36;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

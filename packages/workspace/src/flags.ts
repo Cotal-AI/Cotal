@@ -1,4 +1,12 @@
 import type { FlagSpec } from "@cotal-ai/core";
+import { CommandFailure } from "./output.js";
+
+/** Split a comma-list flag without treating an explicit empty list as an absent override. */
+export function parseCommaList(value: string): string[];
+export function parseCommaList(value: string | undefined): string[] | undefined;
+export function parseCommaList(value: string | undefined): string[] | undefined {
+  return value === undefined ? undefined : value.split(",").map(item => item.trim()).filter(Boolean);
+}
 
 /**
  * The shared flag vocabulary of the workstation layer. Commands spread these specs instead of
@@ -9,7 +17,7 @@ import type { FlagSpec } from "@cotal-ai/core";
  */
 export const spaceFlag = { name: "space", short: "s", type: "string", value: "<s>", description: "target space (default: the resolved mesh)" } as const satisfies FlagSpec;
 export const serverFlag = { name: "server", type: "string", value: "<url>", description: "broker URL (overrides the mesh registry entry)" } as const satisfies FlagSpec;
-export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection" } as const satisfies FlagSpec;
+export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection", completion: "files" } as const satisfies FlagSpec;
 
 /** The mesh-target bundle: which space, which broker, and (off-registry) which credential.
  *  Resolution order is `resolveMeshTarget`'s: explicit flags > the selected `current` mesh > the
@@ -83,12 +91,13 @@ export function mergeLaunchOptions(
 /**
  * Parse a positive integer CLI flag. Absent stays undefined (the callee's default); anything else
  * that is not a safe integer ≥ 1 fails loud naming the flag, never silently becoming NaN or the
- * default. Used by `--max-sessions` so a typo cannot drop the live-session ceiling to 64.
+ * default. Used by `--max-sessions` so a typo cannot drop the live-session ceiling to 64. The
+ * failure is a usage refusal, so a command checks its flag values before any effect.
  */
 export function parsePositiveIntegerFlag(flag: string, raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const n = Number(raw);
   if (!Number.isSafeInteger(n) || n < 1)
-    throw new Error(`${flag} must be a positive integer (got ${JSON.stringify(raw)})`);
+    throw new CommandFailure("refused", "USAGE_INVALID", `${flag} must be a positive integer (got ${JSON.stringify(raw)})`);
   return n;
 }

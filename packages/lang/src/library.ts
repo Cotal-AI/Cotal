@@ -224,7 +224,7 @@ function canonicalOf(v: unknown): string | undefined {
 export type Method = (frame: LibFrame, receiver: never, args: unknown[]) => unknown;
 
 /** Methods that write to their receiver. The static L2032 walk and the runtime write check read this. */
-export const MUTATING_METHODS: ReadonlySet<string> = new Set(["push", "pop", "shift", "unshift", "splice"]);
+export const MUTATING_METHODS: readonly string[] = Object.freeze(["push", "pop", "shift", "unshift", "splice"]);
 
 /** The array methods, JavaScript's meaning, callbacks awaited. */
 export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Method>> {

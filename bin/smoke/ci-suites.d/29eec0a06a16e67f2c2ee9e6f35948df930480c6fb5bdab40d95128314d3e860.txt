@@ -1,0 +1,3 @@
+# The §13.19 result journal: a RESULT may not create its own entry, and an audience fixed at START
+# may only ever shrink. Both are answer-leaks rather than wire-leaks, so no egress gate covers them.
+smoke:tool-result-journal

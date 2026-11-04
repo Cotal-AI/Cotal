@@ -32,7 +32,7 @@ import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { assertIdToken, endpointToken } from "./endpoint-subjects.js";
 import { digestIdToken } from "./digest-id.js";
-import { RECORD_KINDS, createRecordEntry, recordAtomicKey } from "./endpoint-records.js";
+import { RECORD_KINDS, createRecordEntry, recordAtomicKey, decodeRecordJson } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
 import { walkKvEntries } from "./kv-scan.js";
 
@@ -113,9 +113,12 @@ export function checkpointAnswerId(a: { token: string; by: string; value?: unkno
  * the third for a retry of the first: it succeeds, files nothing, and the listing ends on approve.
  * Nothing races an amendment and no settle names one, so it needs no retry identity; a filing
  * repeated after a lost reply lists the same position twice, which leaves the current one right.
+ *
+ * 32 random bytes encode to exactly 43 base64url characters, the same length as a
+ * {@link digestIdToken}, so the id fits the `<id>` token grammar whole and nothing is cut.
  */
 export function newAmendmentId(): string {
-  return randomBytes(32).toString("base64url").slice(0, 43);
+  return randomBytes(32).toString("base64url");
 }
 
 /**
@@ -159,7 +162,7 @@ export async function readCheckpointAnswer(
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the checkpoint answer ${key} carries a ${entry.operation} marker; an answer is something that happened and is never erased - reconcile the store`);
-  return parseAnswer(JSON.parse(new TextDecoder().decode(entry.value)), key);
+  return parseAnswer(decodeRecordJson(entry.value, key), key);
 }
 
 /** Every amendment filed under one checkpoint token, in the order the store committed them: the
@@ -174,7 +177,7 @@ export async function listCheckpointAmendments(kv: KV, endpoint: string, token: 
   const filter = [RECORD_KINDS.answer.kind, endpointToken(endpoint), assertIdToken(token, "token"), "*"].join(".");
   const found: { revision: number; answer: CheckpointAnswerValue }[] = [];
   for (const entry of await walkKvEntries(kv, filter)) {
-    const answer = parseAnswer(JSON.parse(new TextDecoder().decode(entry.value)), entry.key);
+    const answer = parseAnswer(decodeRecordJson(entry.value, entry.key), entry.key);
     if (answer.supersedes !== undefined) found.push({ revision: entry.revision, answer });
   }
   return found.sort((a, b) => a.revision - b.revision).map((f) => f.answer);

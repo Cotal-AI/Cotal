@@ -55,6 +55,14 @@ export type RunAdmissionProvenance =
   | { readonly kind: "issued"; readonly ref: IssuedAuthorityRef; readonly resolvedRevision: number }
   | { readonly kind: "operator"; readonly by: string; readonly reason: string };
 
+/** What a user-auth run's starter could hand on when the run was admitted: its ledger row's scope
+ *  and channel lists, as the issuing host read them (§14.8). */
+export interface RunDelegation {
+  readonly scope: readonly string[];
+  readonly allowSubscribe: readonly string[];
+  readonly allowPublish: readonly string[];
+}
+
 export interface RunAdmission {
   readonly version: 1;
   readonly space: string;
@@ -69,6 +77,15 @@ export interface RunAdmission {
   readonly ceiling: IssuedSubjectPermissions;
   readonly provenance: RunAdmissionProvenance;
   readonly admittedAt: number;
+  /** Present when the starter was an operator instrument or held the admin set at admission
+   *  (SPEC 13.15): the run's spawns are exempt from the spawn bound, as the starter's own are.
+   *  Absent, every spawn the run makes is bounded by `ceiling`. An instrument's evidence expires
+   *  minutes after issue, so a long run could not tell this later. */
+  readonly spawnExempt?: true;
+  /** On a user-auth space, the starter's grant as admitted. Every spawn the run makes is bounded by
+   *  it together with the starter's current ledger row, so a grant the starter gains later is never
+   *  handed on. The issuing host writes it; a static admission carries none. */
+  readonly delegation?: RunDelegation;
 }
 
 export interface RunRevocation {
@@ -113,12 +130,22 @@ function provenanceSnapshot(value: unknown): RunAdmissionProvenance {
   throw new Error("unsupported admission provenance");
 }
 
+function delegationSnapshot(value: unknown): RunDelegation {
+  const raw = closed(value, ["scope", "allowSubscribe", "allowPublish"], "admission delegation");
+  const list = (v: unknown): readonly string[] => {
+    if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) throw new Error("admission delegation lists must be arrays of strings");
+    return Object.freeze([...v as string[]]);
+  };
+  return Object.freeze({ scope: list(raw.scope), allowSubscribe: list(raw.allowSubscribe), allowPublish: list(raw.allowPublish) });
+}
+
 /** Validate a record at the consuming boundary: closed schema, version, coordinates. */
 export function admissionSnapshot(value: unknown): RunAdmission {
-  const raw = closed(value, ["version", "space", "endpoint", "runId", "instanceId", "caller", "ceiling", "provenance", "admittedAt"], "run admission");
+  const raw = closed(value, ["version", "space", "endpoint", "runId", "instanceId", "caller", "ceiling", "provenance", "admittedAt", "spawnExempt", "delegation"], "run admission");
   if (raw.version !== 1) throw new Error(`unsupported run admission version ${String(raw.version)}`);
   if (typeof raw.space !== "string" || typeof raw.endpoint !== "string" || typeof raw.runId !== "string" || typeof raw.instanceId !== "string"
-    || typeof raw.admittedAt !== "number" || !Number.isSafeInteger(raw.admittedAt) || raw.admittedAt <= 0)
+    || typeof raw.admittedAt !== "number" || !Number.isSafeInteger(raw.admittedAt) || raw.admittedAt <= 0
+    || (raw.spawnExempt !== undefined && raw.spawnExempt !== true))
     throw new Error("run admission is malformed");
   assertIssuedSpace(raw.space);
   endpointToken(raw.endpoint);
@@ -133,6 +160,8 @@ export function admissionSnapshot(value: unknown): RunAdmission {
   return Object.freeze({
     version: 1, space: raw.space, endpoint: raw.endpoint, runId: raw.runId, instanceId: raw.instanceId,
     caller, ceiling: readIssuedSubjectPermissions(raw.ceiling), provenance, admittedAt: raw.admittedAt,
+    ...(raw.spawnExempt === true ? { spawnExempt: true as const } : {}),
+    ...(raw.delegation !== undefined ? { delegation: delegationSnapshot(raw.delegation) } : {}),
   });
 }
 
@@ -192,9 +221,47 @@ export async function revokeRunAdmission(kv: KV, endpoint: string, revocation: R
   }
 }
 
+/** One create-only cancellation dispatch. Unlike KV.create, put with expected sequence zero never
+ *  follows a failed create with a tombstone read and another write. The caller owns the guard and
+ *  records possible dispatch there; no awaited preparation follows it. */
+export async function commitRunCancellation(
+  kv: KV,
+  endpoint: string,
+  revocation: RunRevocation,
+  beforeDispatch: () => void,
+): Promise<"created" | "existed"> {
+  const snap = revocationSnapshot(revocation, revocation.runId);
+  if (snap.by.length === 0 || snap.reason.length === 0)
+    throw new Error("run cancellation must name who revoked it and why");
+  const key = revocationKey(endpoint, snap.runId);
+  const bytes = enc.encode(canonicalJson(snap));
+  beforeDispatch();
+  try {
+    await kv.put(key, bytes, { previousSeq: 0 });
+    return "created";
+  } catch (error) {
+    if (isCasLoss(error)) return "existed";
+    throw error;
+  }
+}
+
 export interface RunAdmissionView {
   readonly admission: RunAdmission;
   readonly revoked: RunRevocation | undefined;
+}
+
+/** Cancellation distinguishes absent authority from unreadable trusted state without parsing messages. */
+export async function readCancellationAdmission(jsm: JetStreamManager, space: string, endpoint: string, runId: string): Promise<RunAdmissionView> {
+  let entry: Awaited<ReturnType<typeof readLeader>>;
+  try { entry = await readLeader(jsm, space, admissionKey(endpoint, runId)); }
+  catch { throw new EpEnvelopeError("unavailable", "run-cancel admission is unreadable"); }
+  if (!entry) throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+  try {
+    const admission = admissionSnapshot(entry.value);
+    if (admission.space !== space || admission.endpoint !== endpoint || admission.runId !== runId) throw new Error("coordinates differ");
+    const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
+    return { admission, revoked: marker ? revocationSnapshot(marker.value, runId) : undefined };
+  } catch { throw new EpEnvelopeError("unavailable", "run-cancel admission or marker is unreadable"); }
 }
 
 /** The admission a host acts on: the record must exist, match its coordinates, and carry no

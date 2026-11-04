@@ -3,11 +3,15 @@
  * session cache (plan §"How it lands in today's code" → Client).
  *
  * Flow: ask the IdP for a device code, show the human a verification URL + user code, poll until
- * the sign-in is approved in a browser. What comes back — and the ONLY thing ever cached — is the
- * IdP SESSION token. The short-lived IdP JWT the bridge exchanges is fetched fresh from `/token`
- * per use ({@link fetchIdpJwt}): caching the JWT would let a revoked session keep minting mesh
- * access until the JWT expired, so instead revocation at the IdP bites at the very next fetch —
- * a 401 surfaces as a legible "run `cotal login` again", never a silent hang.
+ * the sign-in is approved in a browser. What comes back — and the ONLY thing ever persisted — is
+ * the IdP SESSION token. The short-lived IdP JWT the bridge exchanges is fetched from `/token`
+ * ({@link fetchIdpJwt}) and held in memory for at most {@link JWT_CACHE_CAP_MS} (and never past
+ * its own `exp` minus a margin), one entry per (IdP, session), concurrent callers sharing one
+ * request. Persisting the JWT would let a revoked session keep minting mesh access until the JWT
+ * expired; the bounded in-process hold means revocation at the IdP bites within a minute, and a
+ * 401 surfaces as a legible "run `cotal login` again", never a silent hang. Without the hold, a
+ * manager hosting dozens of runs posted one `/token` per authority call and tripped the IdP's
+ * per-source rate limit, failing unrelated spawns and reads with a bare HTTP 429.
  *
  * Device code, not auth-code+PKCE: it works headless (agents, SSH) and needs nothing beyond the
  * IdP's device endpoints — no OIDC provider metadata, no loopback redirect server (the plan
@@ -32,7 +36,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
 import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { CommandFailure, acquireLock, credentialFailure } from "@cotal-ai/workspace";
+import { CommandFailure, acquireLock, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -65,6 +69,8 @@ interface CatalogAccountState {
   /** The consumer applied this snapshot in full. Absent while a fetched snapshot is being applied,
    *  so a preparation that finds it absent applies the cached snapshot again. */
   applied?: boolean;
+  /** The last refresh failed. A successful refresh clears it. */
+  failing?: boolean;
 }
 
 interface CatalogsFile {
@@ -88,42 +94,37 @@ export interface DeviceLoginOpts {
   /** Shows the human the verification URL + code. Called exactly once; polling starts only after
    *  it settles, a rejection fails the login, and the device code's lifetime bounds it. */
   onPrompt: (prompt: DeviceLoginPrompt) => void | Promise<void>;
+  /** Stops this sign-in: no further IdP request is sent and nothing is persisted. It is local only
+   *  and revokes nothing at the IdP. Omitted, the sign-in runs until approval, denial or expiry. */
+  signal?: AbortSignal;
 }
 
 /** Normalize + guard the IdP base URL: https (or http on a loopback IP literal for dev), no
  *  query/hash, no trailing slash — the normalized string is also the session-cache key, so
  *  `…/api/auth` and `…/api/auth/` must land on the same entry. */
 export function normalizeIdpUrl(idpUrl: string): string {
-  let u: URL;
-  try {
-    u = new URL(idpUrl);
-  } catch {
-    throw new Error(`idp url "${idpUrl}" is not a valid URL`);
+  const checked = checkIdpUrl(idpUrl);
+  if (!checked.ok) {
+    switch (checked.reason) {
+      case "invalid-url": throw new Error(`idp url "${idpUrl}" is not a valid URL`);
+      case "scheme": throw new Error(`idp url must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev) - got "${idpUrl}"`);
+      case "query-or-fragment": throw new Error(`idp url must not carry a query or fragment - got "${idpUrl}"`);
+      case "credentials": throw new Error(`idp url must not embed credentials before the host - the host it would actually contact is "${checked.host}"`);
+    }
   }
-  // `localhost` gets no exception: this base also derives the pinned JWKS origin, and a hosts
-  // entry would then choose the key the callout trusts.
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
-    throw new Error(`idp url must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev) - got "${idpUrl}"`);
-  // A query/hash would be silently DROPPED by the normalization below — and a silently altered
-  // auth base is a different IdP than the operator asked for. Refuse instead.
-  if (u.search !== "" || u.hash !== "")
-    throw new Error(`idp url must not carry a query or fragment - got "${idpUrl}"`);
-  // Same class: `--idp https://real-idp.example@evil.example/api/auth` parses to host
-  // evil.example, so an operator who eyeballed "real-idp.example" would sign in against evil.
-  // The normalization below drops the userinfo silently — refuse it (don't echo the password).
-  if (u.username !== "" || u.password !== "")
-    throw new Error(`idp url must not embed credentials before the host - the host it would actually contact is "${u.host}"`);
-  return u.origin + u.pathname.replace(/\/+$/, "");
+  return checked.url.origin + checked.url.pathname.replace(/\/+$/, "");
 }
 
 interface OAuthError {
   error?: string;
   error_description?: string;
 }
-async function oauthError(res: Response): Promise<OAuthError> {
+async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthError> {
   try {
     return (await res.json()) as OAuthError;
   } catch {
+    // An unreadable error body is treated as "no detail", unless the caller cancelled mid-read.
+    throwIfCancelled(cancel);
     return {};
   }
 }
@@ -142,14 +143,57 @@ function idpTimeoutMs(): number {
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
 
+/** The IdP answered 401 to a cached session: it expired or was revoked there. */
+export class IdpSessionRejectedError extends Error {}
+
+/** A sign-in stopped by the caller's AbortSignal. It stops this local operation only: nothing
+ *  is revoked at the IdP, and an approval already given there is left as it is. */
+export class IdpLoginCancelled extends Error {}
+
+const CANCELLED = "idp login: the sign-in was cancelled on this machine; nothing was saved and nothing was revoked at the IdP";
+
+/** Throw {@link IdpLoginCancelled} when the caller's signal has fired. */
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new IdpLoginCancelled(CANCELLED);
+}
+
+/** A promise that rejects with {@link IdpLoginCancelled} once `signal` fires, and never settles
+ *  without one. `dispose` removes the listener so a finished race leaves nothing attached. */
+function cancelled(signal: AbortSignal | undefined): { promise: Promise<never>; dispose: () => void } {
+  if (!signal) return { promise: new Promise<never>(() => {}), dispose: () => {} };
+  let onAbort: () => void = () => {};
+  const promise = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new IdpLoginCancelled(CANCELLED));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  promise.catch(() => {});
+  return { promise, dispose: () => signal.removeEventListener("abort", onAbort) };
+}
+
+/** Sleep `ms`, or reject with {@link IdpLoginCancelled} as soon as `signal` fires. */
+async function sleepUnlessCancelled(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = cancelled(signal);
+  try {
+    await Promise.race([new Promise<void>((r) => { timer = setTimeout(r, ms); }), stop.promise]);
+  } finally {
+    clearTimeout(timer);
+    stop.dispose();
+  }
+}
+
 /** `fetch` with a hard per-request timeout, so a hung IdP connection can never stall the client
  *  (Node's global fetch has no default timeout). A timeout or transport failure surfaces as a
  *  legible sentence rather than a raw DOMException/TypeError. */
-async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
+async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal): Promise<Response> {
   const ms = idpTimeoutMs();
+  throwIfCancelled(cancel);
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+    const timeout = AbortSignal.timeout(ms);
+    return await fetch(url, { ...init, signal: cancel ? AbortSignal.any([timeout, cancel]) : timeout });
   } catch (e) {
+    throwIfCancelled(cancel);
     if (e instanceof DOMException && e.name === "TimeoutError")
       throw new IdpUnreachableError(`idp request to ${url} timed out after ${ms}ms - the IdP is unreachable or not responding`);
     throw new IdpUnreachableError(`idp request to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -160,10 +204,11 @@ async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
  *  DURING the body read (an IdP that flushes headers then stalls or truncates the body), and that
  *  abort is raised from `res.json()` — outside idpFetch's catch — so without this it would leak a
  *  raw DOMException/parse error instead of the legible "idp request to …" sentence. */
-async function idpJson<T>(url: string, res: Response): Promise<T> {
+async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Promise<T> {
   try {
     return (await res.json()) as T;
   } catch (e) {
+    throwIfCancelled(cancel);
     if (e instanceof DOMException && e.name === "TimeoutError")
       throw new IdpUnreachableError(`idp request to ${url} timed out reading the response body - the IdP flushed headers then stalled`);
     throw new Error(`idp request to ${url} returned an unreadable response body: ${e instanceof Error ? e.message : String(e)}`);
@@ -174,10 +219,14 @@ async function idpJson<T>(url: string, res: Response): Promise<T> {
  *  so a dead or typo'd `--idp` fails loud BEFORE a space is provisioned around it, instead of only
  *  surfacing far away at the first user connect (the pin is written but the JWKS is fetched lazily).
  *  Normalizes the URL exactly as the pin does (`<base>/jwks`). Throws a legible sentence on an
- *  unreachable host, a non-2xx, or a body that is not a JWKS key set. */
+ *  unreachable host, a redirect, a non-2xx, or a body that is not a JWKS key set. A redirect is
+ *  refused because it could move the check onto another host or onto plaintext, away from the URL
+ *  the space pins. */
 export async function probeIdpJwks(idpUrl: string): Promise<void> {
   const jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`; // a bad scheme throws its own message here
-  const res = await idpFetch(jwksUri);
+  const res = await idpFetch(jwksUri, { redirect: "manual" });
+  if (res.status >= 300 && res.status < 400)
+    throw new Error(`the IdP at ${idpUrl} answered ${jwksUri} with HTTP ${res.status}, a redirect; redirects are refused, so its target was not fetched. Check --idp <auth base URL>; it must serve <base>/jwks itself.`);
   if (!res.ok)
     throw new Error(`the IdP at ${idpUrl} did not serve a JWKS: ${jwksUri} returned HTTP ${res.status}. Check --idp <auth base URL>.`);
   const body = await idpJson<{ keys?: unknown }>(jwksUri, res);
@@ -206,9 +255,9 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ client_id: opts.clientId }),
-  });
+  }, opts.signal);
   if (!res.ok) {
-    const e = await oauthError(res);
+    const e = await oauthError(res, opts.signal);
     throw new Error(
       `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
@@ -220,7 +269,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     verification_uri_complete: string;
     expires_in: number;
     interval: number;
-  }>(`${base}/device/code`, res);
+  }>(`${base}/device/code`, res, opts.signal);
   // The WHOLE grant is shape-checked before anything is shown or polled — the timing fields
   // especially: a malicious IdP handing back `interval: "abc"` or a non-finite/absurd
   // `expires_in` would otherwise turn the poll loop into a tight (setTimeout coerces garbage to
@@ -241,6 +290,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   // expiry instead of holding it open.
   const deadline = Date.now() + grant.expires_in * 1000;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = cancelled(opts.signal);
   try {
     await Promise.race([
       opts.onPrompt({
@@ -250,15 +300,17 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
         expiresInSec: grant.expires_in,
       }),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(expired)), deadline - Date.now()); }),
+      stop.promise,
     ]);
   } finally {
     clearTimeout(timer);
+    stop.dispose();
   }
 
   // RFC 8628 §3.5: poll at the server's interval; `slow_down` adds 5s to it, permanently.
   let intervalSec = Math.max(1, grant.interval || 5);
   for (;;) {
-    await new Promise((r) => setTimeout(r, intervalSec * 1000));
+    await sleepUnlessCancelled(intervalSec * 1000, opts.signal);
     if (Date.now() > deadline) throw new Error(expired);
     const poll = await idpFetch(`${base}/device/token`, {
       method: "POST",
@@ -268,9 +320,9 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
         device_code: grant.device_code,
         client_id: opts.clientId,
       }),
-    });
+    }, opts.signal);
     if (poll.ok) {
-      const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll);
+      const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll, opts.signal);
       // Bound the session lifetime like the device grant's timing fields above (finite, positive,
       // not past a year). `expiresAt` is advisory only — the server is the revocation authority —
       // so this is a legibility/symmetry guard, not a security boundary: it refuses a hostile
@@ -285,7 +337,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
         throw new Error(`idp login: ${base} returned a JWT as the device access token - the session token must be an opaque revocable handle, refusing to cache it; re-run \`cotal login\` after fixing the IdP`);
       return { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in };
     }
-    const e = await oauthError(poll);
+    const e = await oauthError(poll, opts.signal);
     if (e.error === "authorization_pending") continue;
     if (e.error === "slow_down") {
       intervalSec += 5;
@@ -300,18 +352,73 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }
 }
 
-/** Fetch a fresh short-lived IdP user JWT for the cached session — the input to the bridge
- *  exchange. A 401 means the session was revoked or expired at the IdP: the error says exactly
- *  how to recover. The JWT is returned, never stored. */
-async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string): Promise<{ jwt: string; response: Response }> {
+type IdpJwtResult = { jwt: string; response: Response };
+
+/** Longest an IdP JWT is reused from memory. The bound on how long a session revoked at the IdP
+ *  can still mint mesh access from a process that already held a JWT. */
+const JWT_CACHE_CAP_MS = 60_000;
+/** A held JWT is dropped this long before its own `exp`, so a reuse never hands the bridge a
+ *  token that expires in flight. */
+const JWT_CACHE_MARGIN_MS = 30_000;
+type JwtCacheEntry = { result: IdpJwtResult; until: number } | { inflight: Promise<IdpJwtResult> };
+const jwtCache = new Map<string, JwtCacheEntry>();
+
+/** When a JWT stops being reusable: the cap, or its `exp` minus the margin, whichever is sooner.
+ *  A token with no decodable `exp` is never held, because nothing bounds its lifetime. */
+function jwtCacheUntil(jwt: string, now: number): number {
+  let exp: unknown;
+  try {
+    exp = decodeJwt(jwt).exp;
+  } catch {
+    return now;
+  }
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return now;
+  return Math.min(now + JWT_CACHE_CAP_MS, exp * 1000 - JWT_CACHE_MARGIN_MS);
+}
+
+/** A short-lived IdP user JWT for the cached session — the input to the bridge exchange. A 401
+ *  means the session was revoked or expired at the IdP: the error says exactly how to recover.
+ *  The JWT is held in memory within the bounds above and never written anywhere; a failure is
+ *  never held, so a rate-limited or unreachable IdP is retried on the next call. Concurrent
+ *  callers without a cancel signal share one request; a cancellable call makes its own request,
+ *  so one caller's abort rejects nobody else. */
+async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const base = normalizeIdpUrl(idpUrl);
-  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } });
+  const key = `${base}\0${sessionToken}`;
+  const now = Date.now();
+  const hit = jwtCache.get(key);
+  if (hit) {
+    if ("inflight" in hit) {
+      if (!cancel) return hit.inflight;
+    } else if (hit.until > now) return hit.result;
+    else jwtCache.delete(key);
+  }
+  const inflight = fetchIdpJwtUncached(base, sessionToken, cancel).then(
+    (result) => {
+      for (const [k, e] of jwtCache) if ("until" in e && e.until <= Date.now()) jwtCache.delete(k);
+      const until = jwtCacheUntil(result.jwt, Date.now());
+      if (until > Date.now()) jwtCache.set(key, { result, until });
+      else if (jwtCache.get(key) === entry) jwtCache.delete(key);
+      return result;
+    },
+    (e: unknown) => {
+      if (jwtCache.get(key) === entry) jwtCache.delete(key);
+      throw e;
+    },
+  );
+  const entry: JwtCacheEntry = { inflight };
+  if (!cancel) jwtCache.set(key, entry);
+  return inflight;
+}
+
+async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
+  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel);
   if (res.status === 401)
-    throw new Error(
+    throw new IdpSessionRejectedError(
       `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
     );
   if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
-  const body = await idpJson<{ token?: string }>(`${base}/token`, res);
+  const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
   if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
   return { jwt: body.token, response: res };
 }
@@ -332,7 +439,7 @@ export async function establishIdpSession(
 ): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
-  const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token);
+  const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
   const jwt = tokenResult.jwt;
   let claims: Record<string, unknown>;
   try {
@@ -346,6 +453,9 @@ export async function establishIdpSession(
   if (typeof sub !== "string" || !sub)
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
+  // The persistence fence: a cancel that lands after approval, while the proof was in flight,
+  // must leave no session and no catalog entry on disk.
+  throwIfCancelled(opts.signal);
   saveIdpSession(opts.dir, opts.idpUrl, session);
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
   const label = [claims.email, claims.name, claims.preferred_username].find(
@@ -536,6 +646,11 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         }
         const catalogUrl = state.catalogUrl;
         if (!catalogUrl) {
+          if (state.failing) {
+            state = { ...state, failing: undefined };
+            file.accounts[key] = state;
+            changed = true;
+          }
           results.push({ account: accountView(state), state: "no-catalog", ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}) });
           continue;
         }
@@ -562,7 +677,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         const response = await idpFetch(catalogUrl, { headers, redirect: "manual" });
         if (response.status === 304) {
           if (state.snapshot === undefined) throw new Error("the catalog returned 304 before this machine had a snapshot");
-          state = { ...state, fetchedAt: new Date().toISOString() };
+          state = { ...state, fetchedAt: new Date().toISOString(), failing: undefined };
           file.accounts[key] = state;
           changed = true;
           const result: AuthSpaceCatalogResult = { account: accountView(state), state: "not-modified", snapshot: state.snapshot, fetchedAt: state.fetchedAt };
@@ -579,6 +694,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
           fetchedAt: new Date().toISOString(),
           ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : { etag: undefined }),
           applied: false,
+          failing: undefined,
         };
         // Commit the candidate as NOT applied before the first registry write. A death anywhere in
         // the application leaves a cache that names the snapshot and says it is incomplete.
@@ -592,12 +708,19 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         changed = true;
         results.push(result);
       } catch (e) {
+        const ongoing = state.failing === true;
+        if (!ongoing) {
+          state = { ...state, failing: true };
+          file.accounts[key] = state;
+          changed = true;
+        }
         const result: AuthSpaceCatalogResult = {
           account: accountView(state),
           state: "failed",
           ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}),
           ...(state.fetchedAt ? { fetchedAt: state.fetchedAt } : {}),
           error: e instanceof Error ? e.message : String(e),
+          ...(ongoing ? { ongoing: true } : {}),
         };
         opts.apply(result);
         results.push(result);
@@ -629,6 +752,7 @@ export function hasIdpSpaceCatalog(dir: string, idpUrl: string, sub: string): bo
  *  server-side session is a real leak the operator must hear about. */
 export async function revokeIdpSession(idpUrl: string, sessionToken: string): Promise<void> {
   const base = normalizeIdpUrl(idpUrl);
+  jwtCache.delete(`${base}\0${sessionToken}`); // this process stops minting from it now, not within the hold
   const res = await idpFetch(`${base}/sign-out`, {
     method: "POST",
     headers: { authorization: `Bearer ${sessionToken}`, "content-type": "application/json" },

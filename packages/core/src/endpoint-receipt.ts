@@ -32,6 +32,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { withDeadline } from "./deadline.js";
+import { isCasLoss } from "./endpoint-records.js";
 import { epfSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
 import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, signArtifact, type AnchorResolver, type SignerAnchor } from "./endpoint-signing.js";
@@ -346,10 +347,10 @@ export function parseReceipt(raw: unknown, ref: ReceiptRef, space: string): Rece
   if (cal.id !== `${ref.caller.owner}.${ref.caller.actor}` || cal.lifecycleUid !== ref.caller.uid)
     garbled(`the receipt's caller evidence (${String(cal.id)}/${String(cal.lifecycleUid)}) does not name its subject's caller (${ref.caller.owner}.${ref.caller.actor}/${ref.caller.uid}); a cross-caller receipt never attests`);
   const sd = o.schemaDigests as Record<string, unknown>;
-  if (!isRec(sd) || !isContractDigest(sd.input as string) || !isContractDigest(sd.output as string))
+  if (!isRec(sd) || !isContractDigest(sd.input) || !isContractDigest(sd.output))
     garbled("the receipt schemaDigests are not sha256 digests");
-  if (!isContractDigest(o.argsDigest as string)) garbled("the receipt argsDigest is not a sha256 digest");
-  if (o.resultDigest !== undefined && !isContractDigest(o.resultDigest as string)) garbled("the receipt resultDigest is not a sha256 digest");
+  if (!isContractDigest(o.argsDigest)) garbled("the receipt argsDigest is not a sha256 digest");
+  if (o.resultDigest !== undefined && !isContractDigest(o.resultDigest)) garbled("the receipt resultDigest is not a sha256 digest");
   const out = o.outcome as Record<string, unknown>;
   if (!isRec(out) || typeof out.ok !== "boolean" || (out.code !== undefined && typeof out.code !== "string"))
     garbled("the receipt outcome is not { ok, code? }");
@@ -386,8 +387,7 @@ export async function publishReceipt(
     await js.publish(subject, new TextEncoder().encode(canonicalJson(candidate)), { headers: h });
     return { won: true, receipt: candidate };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    if (!isCasLoss(e)) throw e;
     const winner = await readReceipt(ctx, refSnap);
     if (winner === undefined)
       throw new EpEnvelopeError("internal", `the receipt CAS for ${subject} was lost but no winning receipt is readable (SPEC 13.4)`);
