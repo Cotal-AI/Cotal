@@ -18,7 +18,6 @@ import { DmView } from "./ui/views/DmView.tsx";
 import { AgentsView } from "./ui/views/AgentsView.tsx";
 import { AgentPicker } from "./ui/panel/picker.js";
 import { BadgeOf, badgeLookup } from "./ui/identity.js";
-import { SheetMenu } from "./ui/sheet.js";
 import { panelShown, RightPanel, usePanel, type Panel } from "./ui/panel/RightPanel.tsx";
 import { SkeletonView } from "./ui/Skeleton.tsx";
 import { Navigate } from "./ui/navigate.js";
@@ -107,9 +106,11 @@ function centreView(
   }
 }
 
-/** What the dashboard draws from the store and the route, and nothing else: no feed, no fetch, no
- *  DOM access, so it renders the same in a browser and in `renderToString`. `controller` is null
- *  until the dashboard has started. `msgPerSecond` is where the sidebar reads the message rate.
+/** What the dashboard draws from the store and the route, and nothing else: no feed, no fetch, and
+ *  no DOM access of its own, so it renders the same in a browser and in `renderToString`. shadcn's
+ *  Sidebar is the exception: after mount it reads the window's width, keeps Ctrl or Cmd+B, and writes
+ *  a cookie when the sidebar is collapsed or expanded. `controller` is null until the dashboard has
+ *  started. `msgPerSecond` is where the sidebar reads the message rate.
  *  `clock` is the topology view's and the panel's clock, `Date.now` unless a caller passes its own.
  *  `paneOpen` says whether the route has a panel beside it (a channel route does).
  *
@@ -125,8 +126,9 @@ function centreView(
  *  While the first roster and channel reads are outstanding (`loading`) the centre draws skeleton
  *  rows in place of the view, as the sidebar does in place of the places.
  *
- *  `phone` draws mock section F (see `AppShell`): the places sheet opens from the channel header's
- *  menu button (through `SheetMenu`) and closes on Escape, on the scrim or on any new route.
+ *  `phone` draws mock section F (see `AppShell`). It has to be what `useIsMobile` says, as `App`
+ *  passes it, because the Sidebar reads that hook for itself: the places sheet is the Sidebar's own,
+ *  opened from a view header's SidebarToggle and closed on Escape, on the overlay or on any new route.
  *  `theme` and `onTheme` are the Settings menu's; without `onTheme` Settings is disabled.
  *
  *  The composers the views draw reach the controller's `send` and `draft` through `Compose`, and
@@ -164,41 +166,30 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const page = { controller, phone, back, panelOpen: shown, toggle: panel.toggle };
   const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown, pick, page);
   const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} route={route} panel={panel} clock={clock} />;
-  // The sheet remembers the route it was opened on, so any new route closes it, during render and
-  // with no effect to run, and coming back to that route does not reopen it.
-  const [sheetAt, setSheetAt] = useState<string | null>(null);
-  const here = formatRoute(route);
-  if (sheetAt !== null && sheetAt !== here) setSheetAt(null);
-  const sheetOpen = phone && sheetAt === here;
-  const menu = useMemo(() => (phone ? { open: sheetOpen, show: () => setSheetAt(here) } : null), [phone, sheetOpen, here]);
   return (
     <Compose.Provider value={controller}>
     <AgentPicker.Provider value={pick}>
     <BadgeOf.Provider value={badgeOf}>
     <TooltipProvider>
-      <SheetMenu.Provider value={menu}>
-        <AppShell
-          route={route}
-          controller={controller}
-          paneOpen={shown}
-          panel={panelBody}
-          places={places}
-          theme={theme}
-          onTheme={onTheme}
-          phone={phone}
-          waiting={needing}
-          working={busy}
-          stale={lastSeen}
-          sheetOpen={sheetOpen}
-          onSheetClose={() => setSheetAt(null)}
-          onPanelClose={panel.close}
-          sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}
-        >
-          <title>{documentTitle(space)}</title>
-          <StatusLines store={store} />
-          <section className="ui-view" data-view={route.view}>{view}</section>
-        </AppShell>
-      </SheetMenu.Provider>
+      <AppShell
+        route={route}
+        controller={controller}
+        paneOpen={shown}
+        panel={panelBody}
+        places={places}
+        theme={theme}
+        onTheme={onTheme}
+        phone={phone}
+        waiting={needing}
+        working={busy}
+        stale={lastSeen}
+        onPanelClose={panel.close}
+        sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}
+      >
+        <title>{documentTitle(space)}</title>
+        <StatusLines store={store} />
+        <section className="ui-view" data-view={route.view}>{view}</section>
+      </AppShell>
     </TooltipProvider>
     </BadgeOf.Provider>
     </AgentPicker.Provider>

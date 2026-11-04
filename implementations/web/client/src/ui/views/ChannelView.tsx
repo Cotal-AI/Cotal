@@ -1,11 +1,12 @@
-import { Loading03Icon, Menu01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons";
-import { useContext, useMemo, type ReactNode } from "react";
+import { Loading03Icon, SidebarRightIcon } from "@hugeicons/core-free-icons";
+import { useMemo, type ReactNode } from "react";
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
 import { Marker, MarkerContent } from "#client/ui/shadcn/marker.tsx";
 import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
+import { useSidebar } from "#client/ui/shadcn/sidebar.tsx";
 import { Toggle } from "#client/ui/shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
@@ -21,7 +22,7 @@ import { useBadgeOf } from "../identity.js";
 import { Composer, OutgoingRows } from "../Composer.tsx";
 import { MessageRow } from "../MessageRow.tsx";
 import { NeedsCard, needsKey, useDismissed } from "../NeedsCard.tsx";
-import { SheetMenu } from "../sheet.js";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { WorkingLine } from "../WorkingLine.tsx";
 import { reducedMotion } from "../../viewport.ts";
 
@@ -141,8 +142,9 @@ export function JumpToLatest() {
  *    no panel) their buttons are disabled.
  *  - `onTogglePanel` adds the header's Toggle panel button, pressed while `panelOpen`, so a reader
  *    who closed the panel can bring it back.
- *  - On a phone (`SheetMenu`) the header opens with the menu button that shows the places sheet, the
- *    panel button is named Open agent panel, and the composer's mode line names the channel alone. */
+ *  - The header opens with the SidebarToggle, which on a phone shows the places sheet.
+ *  - On a phone (`useSidebar().isMobile`) the panel button is named Open agent panel, and the
+ *    composer's mode line names the channel alone. */
 export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen = false, onTogglePanel }: {
   store: Store<DashboardState>;
   channel: string;
@@ -173,28 +175,19 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const [dismissed, dismiss] = useDismissed();
   const needing = waiting(everyone).find((r) => !dismissed.has(needsKey(r)));
   const count = members.length;
-  const sheet = useContext(SheetMenu);
+  const phone = useSidebar().isMobile;
   // On a phone the panel opens as a sheet over the page, so the button says what it does there, as mock F does.
-  const panelLabel = sheet ? "Open agent panel" : "Toggle panel";
+  const panelLabel = phone ? "Open agent panel" : "Toggle panel";
   const memberCount = `${count} member${count === 1 ? "" : "s"}`;
   const workingNow = `Working now: ${working.map((r) => r.name).join(", ")}`;
   return (
     <>
       <header className="ui-bar">
-        {sheet && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button type="button" variant="ghost" size="icon" aria-label="Open sidebar" aria-haspopup="dialog" aria-expanded={sheet.open} onClick={sheet.show}>
-                <Icon icon={Menu01Icon} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Open sidebar</TooltipContent>
-          </Tooltip>
-        )}
+        <SidebarToggle />
         <h1>{`# ${channel}`}</h1>
         {info?.description && <span className="ui-topic">{info.description}</span>}
         <span className="ui-sp" />
-        {!sheet && policyChips(info).map((c) => (
+        {!phone && policyChips(info).map((c) => (
           <Tooltip key={c.text}>
             <TooltipTrigger asChild>
               <Badge variant="outline">{c.text}<span className="ui-sr">{` ${c.title}`}</span></Badge>
@@ -207,7 +200,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
             <TooltipTrigger asChild>
               <span className="ox-hchip">
                 <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />
-                {sheet ? working.length : `${working.length} working`}
+                {phone ? working.length : `${working.length} working`}
                 <span className="ui-sr">{` ${workingNow}`}</span>
               </span>
             </TooltipTrigger>
@@ -259,7 +252,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
         <div className="ui-dock">
           <div className="ui-dock-in">
             {needing && <NeedsCard row={needing} onViewAgent={onViewAgent} onDismiss={() => dismiss(needsKey(needing))} post={post} selfId={self} />}
-            <Composer store={store} target={target} where={`#${channel}`} to={sheet ? `to #${channel}` : `to #${channel} · ${count} member${count === 1 ? "" : "s"}`} />
+            <Composer store={store} target={target} where={`#${channel}`} to={phone ? `to #${channel}` : `to #${channel} · ${count} member${count === 1 ? "" : "s"}`} />
           </div>
         </div>
       )}

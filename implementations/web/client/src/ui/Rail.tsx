@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { mark } from "../art/index.ts";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "#client/ui/shadcn/dropdown-menu.tsx";
+import { SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "#client/ui/shadcn/sidebar.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { RailIcon, type RailIconName } from "../icons/rail.js";
 import { formatRoute, type Route } from "../lib/route.js";
@@ -77,11 +78,12 @@ function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => v
         {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it, which
             takes the focus while the button cannot. */}
         <TooltipTrigger asChild>
-          <span className="inline-flex" tabIndex={onTheme ? undefined : 0}>
+          <span className="flex" tabIndex={onTheme ? undefined : 0}>
             <DropdownMenuTrigger asChild>
-              <button type="button" className="ui-rail-btn" aria-label="Settings" disabled={!onTheme}>
-                <RailIcon name="gear" size={22} />
-              </button>
+              <SidebarMenuButton disabled={!onTheme}>
+                <RailIcon name="gear" />
+                <span>Settings</span>
+              </SidebarMenuButton>
             </DropdownMenuTrigger>
           </span>
         </TooltipTrigger>
@@ -109,44 +111,68 @@ function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => v
   );
 }
 
-/** The view rail down the left edge, under the Cotal mark. `places` says where Channels and Direct
- *  messages lead when the route is not already on them. Agents is current on an agent's page too.
- *  Each item's Tooltip names it. An item that leads nowhere yet is a button marked disabled, which
- *  keyboard and screen readers still reach, with the empty state it would show as its Tooltip and its
- *  accessible description. Settings opens the theme menu when `onTheme` is given and is disabled
- *  until then. The mark is drawn in `currentColor`, so the
- *  stylesheet's `--mark` token gives it the brand navy by day and cream at night. */
+/** The view rail: the Cotal mark in the header, the views as shadcn's sidebar menu, and Settings in
+ *  the footer. The shell draws it as the icon column of its nested Sidebar, so it is the inside of a
+ *  Sidebar, not one of its own. `places` says where Channels and Direct messages lead when the route
+ *  is not already on them. Agents is current on an agent's page too, marked active and
+ *  `aria-current`. Each item's label is clipped by the narrow column and named again by its Tooltip,
+ *  which shows whether or not the sidebar is collapsed. An item that leads nowhere yet is a button
+ *  marked disabled, which keyboard and screen readers still reach, with the empty state it would show
+ *  as its Tooltip and its accessible description. A button marked so takes no pointer events, so that
+ *  Tooltip hangs on a span around it. Settings opens the theme menu when `onTheme` is given and is
+ *  disabled until then. The mark is drawn in `currentColor`, so the stylesheet's `--mark` token gives
+ *  it the brand navy by day and cream at night. */
 export function Rail({ route, places, theme, onTheme }: { route: Route; places: Places; theme?: Theme; onTheme?: (t: Theme) => void }) {
   return (
-    <nav className="ui-rail" aria-label="Views">
-      <span className="ui-rail-mark" dangerouslySetInnerHTML={{ __html: mark("currentColor") }} />
-      {VIEWS.map(({ label, icon, view }) => {
-        const to = leadsTo(view, route, places);
-        const here = route.view === view || (view === "agents" && route.view === "agent");
-        const Item = to ? "a" : "button";
-        const why = to ? undefined : EMPTY_TITLE[view];
-        return (
-          <Tooltip key={view}>
-            <TooltipTrigger asChild>
-              <Item
-                className="ui-rail-btn"
-                href={to ? formatRoute(to) : undefined}
-                type={to ? undefined : "button"}
-                aria-disabled={to ? undefined : true}
-                aria-current={here ? "page" : undefined}
-                aria-label={label}
-                aria-describedby={why ? `rail-why-${view}` : undefined}
-              >
-                <RailIcon name={icon} size={22} />
-                {why && <span id={`rail-why-${view}`} className="ui-sr">{why}</span>}
-              </Item>
-            </TooltipTrigger>
-            <TooltipContent side="right">{why ?? label}</TooltipContent>
-          </Tooltip>
-        );
-      })}
-      <div className="ui-grow" />
-      <Settings theme={theme} onTheme={onTheme} />
-    </nav>
+    <>
+      <SidebarHeader>
+        <span className="ui-rail-mark self-center" dangerouslySetInnerHTML={{ __html: mark("currentColor") }} />
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {VIEWS.map(({ label, icon, view }) => {
+                const to = leadsTo(view, route, places);
+                const here = route.view === view || (view === "agents" && route.view === "agent");
+                const why = EMPTY_TITLE[view];
+                return (
+                  <SidebarMenuItem key={view}>
+                    {to ? (
+                      <SidebarMenuButton asChild isActive={here} tooltip={{ children: label, hidden: false }}>
+                        <a href={formatRoute(to)} aria-current={here ? "page" : undefined}>
+                          <RailIcon name={icon} />
+                          <span>{label}</span>
+                        </a>
+                      </SidebarMenuButton>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="flex">
+                            <SidebarMenuButton type="button" aria-disabled aria-label={label} aria-describedby={`rail-why-${view}`}>
+                              <RailIcon name={icon} />
+                              <span>{label}</span>
+                              <span id={`rail-why-${view}`} className="ui-sr">{why}</span>
+                            </SidebarMenuButton>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">{why}</TooltipContent>
+                      </Tooltip>
+                    )}
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <Settings theme={theme} onTheme={onTheme} />
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+    </>
   );
 }

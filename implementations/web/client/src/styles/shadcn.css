@@ -43,6 +43,14 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --font-sans: var(--body);
   --font-mono: var(--mono);
   /* Rhea's rounded-2xl buttons, badges and tabs land on our 9px. */

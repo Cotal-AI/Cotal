@@ -13,6 +13,7 @@ import { Empty, EmptyHeader, EmptyTitle } from "#client/ui/shadcn/empty.tsx";
 import { Marker, MarkerContent } from "#client/ui/shadcn/marker.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
 import { harnessName, Unverified } from "../MessageRow.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { WorkingLine } from "../WorkingLine.tsx";
 import { JumpToLatest, MessageList } from "./ChannelView.tsx";
 
@@ -70,6 +71,7 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
   return (
     <>
       <header className="ui-bar">
+        <SidebarToggle />
         <Avatar vendor={me?.harness} status={me?.status ?? "offline"} size={22} badge={me ? badgeOf(peer) : undefined} />
         <h1>{name}</h1>
         {sub && <span className="ui-topic">{sub}</span>}

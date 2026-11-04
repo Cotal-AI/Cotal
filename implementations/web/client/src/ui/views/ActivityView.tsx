@@ -13,6 +13,7 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { MessageRow } from "../MessageRow.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { StaleMarker } from "../StaleMarker.tsx";
 import { EmptySpace, hasAgents } from "./EmptySpace.tsx";
 
@@ -90,6 +91,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
   return (
     <>
       <header className="ui-bar">
+        <SidebarToggle />
         <h1>Activity</h1>
         {!partial && <StaleMarker store={store} inHeader />}
         <span className="ui-sp" />

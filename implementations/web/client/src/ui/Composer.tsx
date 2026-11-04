@@ -4,6 +4,7 @@ import { Icon } from "../icons/Icon.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Field, FieldDescription, FieldError } from "#client/ui/shadcn/field.tsx";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupText, InputGroupTextarea } from "#client/ui/shadcn/input-group.tsx";
+import { useSidebar } from "#client/ui/shadcn/sidebar.tsx";
 import { Spinner } from "#client/ui/shadcn/spinner.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { composeKey, composerNote, messageRoute, POST_OFF_CREDS, sendCommand, type ComposeTarget } from "../lib/compose.js";
@@ -13,7 +14,6 @@ import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { DashboardState, Draft } from "../state/types.js";
 import { CopyCommand } from "./CopyCommand.tsx";
-import { SheetMenu } from "./sheet.js";
 import { clock } from "../lib/time.js";
 
 /** The controller's two composer calls, for the composers the views draw. Null before the dashboard
@@ -55,9 +55,9 @@ const BLANK: Draft = { text: "", outgoing: [] };
  *  - Refused: the draft is back in the box, the box is marked invalid, Try again replaces the row,
  *    and the note is the refusal, as plain text: the server's part of it is not ours to format.
  *
- *  On a phone (`SheetMenu`) the row fits the screen as mock D draws it: Mention is its icon alone,
- *  named for assistive tech, and "as operator" is left out. The mode line shrinks before the send
- *  button moves.
+ *  On a phone (`useSidebar().isMobile`) the row fits the screen as mock D draws it: Mention is its
+ *  icon alone, named for assistive tech, and "as operator" is left out. The mode line shrinks before
+ *  the send button moves.
  *
  *  `where` is `#review` or the agent's name; `to` is the mode line, `to #review · 5 members`. */
 export function Composer({ store, target, where, to }: { store: Store<DashboardState>; target: ComposeTarget; where: string; to: string }) {
@@ -65,7 +65,7 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
   const post = useStore(store, (s) => s.post);
   const draft = useStore(store, (s) => s.drafts[key]) ?? BLANK;
   const ctl = useContext(Compose);
-  const phone = useContext(SheetMenu) !== null;
+  const phone = useSidebar().isMobile;
   const box = useRef<HTMLTextAreaElement>(null);
   const field = () => box.current as unknown as TextBox | null;
   useLayoutEffect(() => {

@@ -17,43 +17,15 @@
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 }
 
-/* Hugeicons: Stroke Rounded at 1.5. The mock's round 3 blanket size (18) beat the earlier per-context
-   sizes of the space chevron, the section button and the rail button, so those sit here as 18 and 22. */
+/* Hugeicons: Stroke Rounded at 1.5, 18 by the mock's round 3 blanket size. Inside a shadcn part the
+   part sizes the icon instead. */
 .ui-ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .ui-mono { font-family: var(--mono); }
-/* ---------- rail ---------- */
-.ui-rail { background: var(--side); color: var(--rail-ink); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; border-right: 1px solid var(--side-line); min-height: 0; }
-.ui-rail-mark { width: 26px; height: 26px; margin-bottom: 12px; color: var(--mark); }
+/* ---------- the shell's sidebar (shadcn's Sidebar): the mark atop the rail and the space's name ---------- */
+.ui-rail-mark { width: 26px; height: 26px; color: var(--mark); }
 .ui-rail-mark svg { width: 100%; height: 100%; display: block; }
-.ui-rail-btn { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; position: relative; }
-.ui-rail-btn:hover { background: var(--side-hover); }
-.ui-rail-btn[aria-current="page"] { background: var(--side-sel); color: var(--side-ink); }
-.ui-rail-btn .ui-ic { width: 22px; height: 22px; }
-.ui-grow { flex: 1; }
-
-/* ---------- sidebar ---------- */
-.ui-side { background: var(--side); color: var(--side-ink); display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--side-line); }
-.ui-side-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 14px 12px 6px 16px; }
-.ui-space { display: flex; align-items: center; gap: 6px; font: 600 17px/1 var(--body); letter-spacing: -0.01em; padding: 5px 6px; margin-left: -6px; border-radius: 7px; }
-.ui-space:hover { background: var(--side-hover); }
-.ui-space .ui-ic { color: var(--side-dim); }
-.ui-side-scroll { overflow-y: auto; overflow-x: hidden; flex: 1; padding: 4px 8px 12px; min-height: 0; }
-.ui-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 8px; border-radius: 7px; text-align: left; color: var(--side-ink); white-space: nowrap; overflow: hidden; }
-.ui-row:hover { background: var(--side-hover); }
-.ui-row[aria-current="page"] { background: var(--side-sel); }
-.ui-row .ui-ic { color: var(--side-dim); }
-.ui-row-lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ui-row-n { font: 500 11px/1 var(--mono); color: var(--side-dim); }
-.ui-row-bold .ui-row-lbl { font-weight: 600; }
-.ui-sec { display: flex; align-items: center; justify-content: space-between; padding: 16px 8px 4px; font: 500 12.5px/1 var(--body); color: var(--side-dim); }
-.ui-sec button { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; }
-.ui-side-foot { border-top: 1px solid var(--side-line); padding: 10px 12px; display: flex; align-items: center; gap: 9px; }
-.ui-me { width: 26px; height: 26px; border-radius: 50%; background: var(--me-bg); color: var(--me-ink); display: grid; place-items: center; font: 600 11px/1 var(--mono); flex: none; }
-.ui-side-foot .ui-who { flex: 1; line-height: 1.25; min-width: 0; }
-.ui-side-foot .ui-who b { font-weight: 600; font-size: 13px; display: block; }
-.ui-side-foot .ui-who span { font-size: 11.5px; color: var(--side-dim); }
-.ui-live { display: inline-flex; align-items: center; gap: 6px; font: 500 11px/1 var(--mono); color: var(--side-dim); }
-.ui-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--any); box-shadow: 0 0 0 3px color-mix(in srgb, var(--any) 20%, transparent); }
+/* The space has no menu yet, so its name is a title and not a button. */
+.ui-space { font: 600 16px/1 var(--body); letter-spacing: -0.01em; }
 
 /* ---------- avatars and status dots ---------- */
 .ui-av { --s: 32px; width: var(--s); height: var(--s); position: relative; flex: none; display: grid; place-items: center; }
@@ -62,7 +34,7 @@
 .ui-av .ui-st { position: absolute; right: -2px; bottom: -1px; }
 .ui-av-ep { border-radius: 8px; background: var(--side-hover); color: var(--side-dim); }
 .ui-st { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; box-shadow: 0 0 0 2px var(--ring-bg, var(--bg)); }
-.ui-side .ui-st { --ring-bg: var(--side); }
+[data-slot="sidebar"] .ui-st { --ring-bg: var(--sidebar); }
 .ui-st-working { background: var(--any); }
 .ui-st-waiting { background: linear-gradient(90deg, var(--gold) 50%, var(--ring-bg, var(--bg)) 50%); border: 1.6px solid var(--gold); }
 .ui-st-idle { background: var(--ring-bg, var(--bg)); border: 1.6px solid var(--idle); }
@@ -80,7 +52,7 @@
 .ui-idb-2 { font-size: max(7px, calc(var(--s) * .22)); }
 .ui-idb-dot { font-size: 0; }
 .ui-idb-off { background: var(--id-off); }
-.ui-side .ui-idb { --ring-bg: var(--side); }
+[data-slot="sidebar"] .ui-idb { --ring-bg: var(--sidebar); }
 .ui-sline .ui-idb { --ring-bg: var(--soft); }
 .v3-arow[aria-current="true"] .ui-idb { --ring-bg: var(--soft); }
 .ui-msg:hover .ui-idb { --ring-bg: var(--hover); }
@@ -89,7 +61,6 @@
 .ui-tidb circle { stroke: var(--bg); stroke-width: 2; }
 .ui-tidb text { fill: var(--id-ink); font-family: var(--body); font-weight: 700; }
 /* ---------- centre ---------- */
-.ui-center { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .ui-bar { height: 52px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 22px; border-bottom: 1px solid var(--line); min-width: 0; }
 .ui-bar h1 { margin: 0; font: 600 16px/1 var(--body); letter-spacing: -0.01em; white-space: nowrap; }
 .ui-topic { color: var(--dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -124,13 +95,15 @@
 .ui-mode-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
 .ui-pending { opacity: .6; }
 .ui-pending time::after { content: " sending"; }
+/* The operator's mark on a post the view does not show yet. */
+.ui-me { width: 26px; height: 26px; border-radius: 50%; background: var(--me-bg); color: var(--me-ink); display: grid; place-items: center; font: 600 11px/1 var(--body); flex: none; }
 
 /* copyable CLI command */
 .ui-cmd { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--soft); border: 1px solid var(--card-line); border-radius: 7px; padding: 4px 4px 4px 9px; white-space: nowrap; }
 .ui-cmd code { background: none; padding: 0; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* ---------- right pane ---------- */
-.ui-pane { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); }
+.ui-pane { width: 360px; flex: none; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); }
 .ui-tabs { height: 52px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
 .ui-pane-body { overflow-y: auto; flex: 1; padding: 18px 18px 24px; min-height: 0; }
 .ui-big { width: 72px; height: 72px; margin-bottom: 8px; }
@@ -159,12 +132,13 @@
 .ui-mdot-live { background: var(--any); }
 .ui-mdot-stale { background: linear-gradient(90deg, var(--gold) 50%, transparent 50%); border: 1.5px solid var(--gold); }
 .ui-mdot-traffic { border: 1.5px solid var(--idle); }
+/* A feed that is down: hollow and dashed, so the state is its shape and its word. */
+.ui-mdot-down { border: 1.5px dashed var(--faint); }
 .ui-mdot-unread { border-radius: 2px; background: none; position: relative; }
 .ui-mdot-unread::before, .ui-mdot-unread::after { content: ""; position: absolute; left: 4px; top: -1px; width: 1.6px; height: 11px; background: var(--red); transform: rotate(45deg); }
 .ui-mdot-unread::after { transform: rotate(-45deg); }
 
 /* ---------- loading and empty ---------- */
-.ui-skel-row { display: flex; gap: 9px; align-items: center; padding: 7px 8px; }
 .ui-skel-msg { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 8px 0; }
 
 /* ---------- topology ---------- */
@@ -208,17 +182,15 @@
 .ui-col-wide { max-width: 1040px; }
 
 /* ---------- type rules, on top of the shared parts ---------- */
-.ui-row-n, .ui-mh time, .ui-live, .ui-sline small, .ui-chrow span:last-child, .ui-route {
+.ui-mh time, .ui-sline small, .ui-chrow span:last-child, .ui-route {
   font-family: var(--body); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .ui-mh time { font-size: 12px; font-weight: 400; }
-.ui-row-n, .ui-live, .ui-sline small { font-size: 12px; font-weight: 400; }
+.ui-sline small { font-size: 12px; font-weight: 400; }
 .ui-route { font-size: 12px; }
 .ui-sline small { padding-left: 24px; }
 .ui-num { font-variant-numeric: tabular-nums; }
-.ui-space { font-size: 16px; }
-/* Hugeicons sizes: 22 rail, 18 sidebar and header (the .ui-ic rule above), 16 inline status */
+/* Hugeicons sizes: 18 in a header (the .ui-ic rule above), 16 inline status */
 .ui-ic.ui-ic16 { width: 16px; height: 16px; }
-.ui-rail-btn { width: 38px; height: 38px; }
 
 /* status colours: shape (the icon) plus colour, never colour alone */
 .v3-s-waiting { color: var(--gold-ink); } .v3-s-working { color: var(--any-ink); }
@@ -258,7 +230,6 @@
 .v3-arow > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
 .ui-sline > [data-slot="badge"] { flex: none; }
 .ui-cmd { padding-left: 8px; }
-.ui-me { font: 600 11px/1 var(--body); }
 .s-lastseen .v3-arow { opacity: .62; }
 /* phone bottom tab bar */
 .v3-tabbar { height: 60px; flex: none; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); background: var(--bg); }
@@ -267,23 +238,9 @@
 .v3-tabbar button[aria-current="page"] { color: var(--ink); font-weight: 500; }
 .v3-tabbar [data-slot="badge"] { position: absolute; top: 6px; left: calc(50% + 6px); }
 
-/* ---------- app shell (the mock's frame was a fixed demo box, so the page grid is written here) ---------- */
-.ui-app { height: 100vh; display: grid; grid-template-columns: 52px 264px minmax(0, 1fr) 360px; background: var(--bg); }
-.ui-app.no-pane { grid-template-columns: 52px 264px minmax(0, 1fr); }
-.ui-rail-btn { color: inherit; text-decoration: none; }
-.ui-rail-btn[aria-disabled="true"], .ui-rail-btn:disabled { opacity: .4; cursor: default; }
-.ui-rail-btn:disabled:hover, .ui-rail-btn[aria-disabled="true"]:hover { background: none; }
-.ui-row { color: inherit; text-decoration: none; }
-/* The space name has no menu yet, so it does not answer a hover as a button would. */
-.ui-space-static { cursor: default; }
-.ui-space-static:hover { background: none; }
-/* The sidebar's "Show all" toggle under the conversations: a row, quieter than the rows it lists. */
-.ui-row-more .ui-row-lbl { color: var(--side-dim); }
-/* A feed that is down: a hollow dashed dot in place of the filled green one, so the state is its shape and its word. */
-.ui-live-down i { background: transparent; border: 1.5px dashed var(--faint); box-shadow: none; }
-/* A view fills the centre with the mock's bar, scroll and dock. The phase 1 roster list that still
-   stands in for the views not built yet scrolls with padding. */
-.ui-center > .ui-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* ---------- app shell ---------- */
+/* A view fills the centre with the mock's bar, scroll and dock. */
+.ui-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* ---------- right panel ---------- */
 /* The attach and stop rows lead with their icon, dimmed as the mock draws it. */
 .ui-cmd > .ui-ic { color: var(--dim); flex: none; }
@@ -291,14 +248,12 @@
 .ui-msg .ui-who { display: inline-flex; border-radius: 6px; }
 .ui-msg .ui-who:hover b { text-decoration: underline; }
 /* ---------- states (mock section B) ---------- */
-/* Focus rings: 2px in the accent, offset from the fill. A row clips what spills past its edge, so its
-   ring sits just inside, as the mock's focused sidebar row does. */
-.ui-row:focus-visible, .v3-mrow:focus-visible { outline-offset: -2px; }
+/* Focus rings: 2px in the accent, offset from the fill. A member row clips what spills past its edge,
+   so its ring sits just inside. */
+.v3-mrow:focus-visible { outline-offset: -2px; }
 
 /* ---------- phone, below 768px (mock section F) ---------- */
-/* The centre over the bottom tab bar. The sizes are the mock's phone frame (.d-screen) rules. */
-.ui-app.ui-phone { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
-.ui-phone > .ui-center { flex: 1; }
+/* The sizes are the mock's phone frame (.d-screen) rules. */
 .ui-phone .ui-bar { padding: 0 8px; gap: 4px; }
 .ui-phone .ui-bar h1 { font-size: 16px; margin-left: 2px; }
 .ui-phone .ui-bar .ui-topic { display: none; }
@@ -311,9 +266,6 @@
 .v3-tabbar > a { display: grid; justify-items: center; align-content: center; gap: 3px; font-size: 11.5px; color: var(--dim); position: relative; text-decoration: none; }
 .v3-tabbar > [aria-current="page"] { color: var(--ink); font-weight: 500; }
 .v3-tabbar > [aria-disabled="true"] { opacity: .4; cursor: default; }
-/* The places sheet over the page. */
-.ui-sheet-scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 3; }
-.ui-side.ui-sheet { position: fixed; top: 0; left: 0; bottom: 0; width: 308px; max-width: calc(100vw - 48px); z-index: 4; border-right: 0; box-shadow: var(--sheet-shadow); }
 
 /* `.ui-sr` holds text for screen readers only, such as the footer line's reason. */
 .ui-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
@@ -321,7 +273,7 @@
 /* ---------- session parts (agents round 1: sections S, C and E) ----------
    The header, notes, prompt, run error and empty states around an agent's work. The work itself is
    the work block at the end of this file. */
-.ui-crumb { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 13px; padding: 5px 8px 5px 4px; border-radius: 7px; margin-left: -10px; white-space: nowrap; text-decoration: none; }
+.ui-crumb { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 13px; padding: 5px 8px 5px 4px; border-radius: 7px; white-space: nowrap; text-decoration: none; }
 .ui-crumb:hover { background: var(--hover); color: var(--ink); }
 .ui-crumb .ui-ic { width: 16px; height: 16px; }
 .ui-prompt { border: 1px solid var(--card-line); border-radius: 12px; padding: 9px 12px 8px; margin: 4px 0 6px; background: var(--card); }

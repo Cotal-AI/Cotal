@@ -21,6 +21,7 @@ import { harnessName } from "../MessageRow.tsx";
 import { Navigate } from "../navigate.js";
 import { PlaneNote } from "../session/PlaneNote.tsx";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { Button } from "../shadcn/button.tsx";
 import { Marker, MarkerContent } from "../shadcn/marker.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
@@ -103,10 +104,10 @@ function NewSteps({ steps, away }: { steps: readonly StepKey[]; away: boolean })
 /** One agent as a place (overhaul mock B1, C, D and E): `#/agent/<id>` with Work, Messages and
  *  Profile tabs.
  *
- *  - The header: the crumb back to `back` with its label, the avatar with its badge, the name, role
- *    and harness, the status Badge (the working icon turns), Message to the operator's conversation
- *    with the agent with its composer focused, and the panel button. On a phone the crumb is the back
- *    button, the role and harness are left out and Message is an icon.
+ *  - The header: the SidebarToggle, the crumb back to `back` with its label, the avatar with its
+ *    badge, the name, role and harness, the status Badge (the working icon turns), Message to the
+ *    operator's conversation with the agent with its composer focused, and the panel button. On a
+ *    phone the crumb is the back button, the role and harness are left out and Message is an icon.
  *  - The tabs are the route: choosing a tab writes `#/agent/<id>/<tab>` through `Navigate`, so back
  *    and reload keep it. Arrow keys only move focus (manual activation), so they add no history.
  *    Messages carries the count of the posts and direct messages it lists.
@@ -279,6 +280,7 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   return (
     <>
       <header className="ox-head">
+        <SidebarToggle />
         {phone ? (
           <Tooltip>
             <TooltipTrigger asChild>

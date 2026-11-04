@@ -17,6 +17,7 @@ import { useBadgeOf } from "../identity.js";
 import { clock as clockTime } from "../../lib/time.js";
 import { harnessName } from "../MessageRow.tsx";
 import { needsDetail } from "../NeedsCard.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { STATUS_ICON, statusIconClass, StatusWord, word } from "../Status.tsx";
 import { useOwnMessages, useSession } from "../agent/work.ts";
 import { ToolLine } from "../work/ToolLine.tsx";
@@ -301,6 +302,7 @@ export function AgentsView({ store, controller = null, group, focusWaiting = fal
   return (
     <>
       <header className="ui-bar">
+        <SidebarToggle />
         <h1>Agents</h1>
         {!empty && (
           <span className="ui-topic">
