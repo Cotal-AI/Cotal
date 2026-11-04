@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs"
 import { flushCompileCache } from "node:module"
 import { createCliRenderer } from "@opentui/core"
 import { render } from "@opentui/solid"
@@ -26,6 +27,10 @@ const clipboard = {
 
 const renderer = await createCliRenderer({ targetFps: 60, exitOnCtrlC: false, autoFocus: false, openConsoleOnError: true, useKittyKeyboard: {} })
 renderer.once("destroy", () => process.exit(0))
+// How the chat session closed, as `cotal chat` prints it. The renderer restores the terminal in its
+// own exit listener, which runs before this later one, so the line lands on the normal screen.
+let farewell: string | undefined
+process.once("exit", () => farewell && writeSync(1, `${farewell}\n`))
 const mode = (await renderer.waitForThemeMode(THEME_QUERY_MS)) ?? DEFAULT_THEME_MODE
 const config = Config.resolve({}, { terminalSuspend: false })
 
@@ -54,7 +59,14 @@ await render(
           <ToastProvider>
             <ThemeProvider mode={mode} source={{ discover: async () => ({}) }}>
               <DialogProvider>
-                <Shell quit={() => renderer.destroy()} readCatalog={readCatalog} openSpace={openSpace} />
+                <Shell
+                  quit={(text) => {
+                    farewell = text
+                    renderer.destroy()
+                  }}
+                  readCatalog={readCatalog}
+                  openSpace={openSpace}
+                />
               </DialogProvider>
               <Toast />
             </ThemeProvider>

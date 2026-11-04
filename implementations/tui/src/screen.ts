@@ -43,10 +43,6 @@ const inConversation = (e: FeedEntry, open: Open) => {
   return false
 }
 
-export function feedFor(mesh: Mesh, open: Open): FeedEntry[] {
-  return mesh.feed.filter((e) => inConversation(e, open))
-}
-
 /** The open conversation's newest `limit` rows. Where the observer cannot see direct messages, as
  *  on an auth space, the session's own directed traffic joins the observer's feed, deduplicated by
  *  id and ordered by time. */

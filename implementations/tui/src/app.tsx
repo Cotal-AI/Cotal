@@ -1,6 +1,6 @@
-import { TextAttributes, type KeyEvent, type RGBA } from "@opentui/core"
+import { TextAttributes, type InputRenderable, type KeyEvent, type RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js"
 import { COMMAND_PALETTE_COMMAND, Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
 import { SplitBorder } from "../vendor/opencode/packages/tui/src/ui/border"
@@ -8,16 +8,20 @@ import { DialogHeader, DialogLayout, useDialog } from "../vendor/opencode/packag
 import { DialogSelect } from "../vendor/opencode/packages/tui/src/ui/dialog-select"
 import { useToast } from "../vendor/opencode/packages/tui/src/ui/toast"
 import type { Catalog, Entry } from "./catalog.js"
+import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
-import { clock, entryKey, feedFor, meshOf, type Open, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import { clock, conversationFeed, conversationRecipient, entryKey, meshOf, type Open, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import type { Talk } from "./talk.js"
+
+type ComposerModule = typeof import("./composer.js")
 
 /** The catalog read, which starts after the first frame so the frame never waits on it. */
 type Load = { phase: "loading" } | { phase: "ready"; catalog: Catalog } | { phase: "failed"; message: string }
 
 /** One table drives the key bindings, the help dialog (rows with `keys`) and the palette (rows with
  *  `palette`). A `global` command also runs while a dialog is open. */
-type Command = { id: string; bind: string; keys?: string; title: string; group: string; palette?: true; global?: true; run: (event?: KeyEvent) => void }
+type Command = { id: string; bind?: string; keys?: string; title: string; group: string; palette?: true; global?: true; run: (event?: KeyEvent) => void }
 
 type Line = { text: string; fg: RGBA }
 
@@ -33,7 +37,7 @@ const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
 // Workspace messages start with the file they name, which the row already shows.
 const reason = (e: Extract<Entry, { kind: "unusable" }>) => (e.message.startsWith(e.source) ? e.message.slice(e.source.length).trim() : e.message)
 
-export function Shell(props: { quit: () => void; readCatalog: () => Promise<Catalog>; openSpace: (space?: string) => Promise<Session> }) {
+export function Shell(props: { quit: (farewell?: string) => void; readCatalog: () => Promise<Catalog>; openSpace: (space?: string) => Promise<Session> }) {
   const theme = useTheme()
   const dialog = useDialog()
   const toast = useToast()
@@ -45,6 +49,13 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   const [seen, setSeen] = createSignal<Record<string, number>>({})
   const [now, setNow] = createSignal(Date.now())
   const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
+  const [composer, setComposer] = createSignal<ComposerState>({ drafts: {} })
+  const [composing, setComposing] = createSignal(false)
+  // The composer imports the chat library, a few hundred milliseconds of loading, so it loads once a
+  // space is opening and never delays the first frame. Solid's lazy() is not used: with no Suspense
+  // boundary it leaves the shell's effects stalled.
+  const [ui, setUi] = createSignal<ComposerModule>()
+  const keymap = Keymap.use()
   const clockTimer = setInterval(() => setNow(Date.now()), 1000)
   onCleanup(() => clearInterval(clockTimer))
 
@@ -55,6 +66,11 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   const conn = (): Conn => session()?.conn() ?? { phase: "connecting" }
   const mesh = () => meshOf(conn())
   const managed = (): Managed => session()?.managed() ?? { phase: "loading" }
+  const talk = (): Talk | undefined => session()?.talk()
+  const self = () => {
+    const p = talk()?.phase()
+    return p?.phase === "open" ? p.identity.principal : undefined
+  }
   const waiting = () => mesh()?.signals.waiting ?? []
   const items = createMemo(() => treeItems(entries(), conn(), seen()))
   const rows = createMemo(() => items().filter((i): i is Row => i.kind !== "header"))
@@ -82,18 +98,44 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     if (seen()[o.channel] !== arrivals) setSeen((s) => ({ ...s, [o.channel!]: arrivals }))
   })
 
+  // The compose mode is pushed before the textarea takes focus, so letters reach the text and the
+  // tree's keys stay off until esc pops it. Writing opens the session when none is open.
+  let popMode: (() => void) | undefined
+  const startCompose = () => {
+    const t = talk()
+    const m = mesh()
+    const o = open()
+    if (!t || !m || o.kind === "entry") return toast.show({ variant: "info", message: "Open a space to write in it" })
+    const p = t.phase().phase
+    if (p === "watching" || p === "ended" || p === "refused") {
+      const r = conversationRecipient(o, m)
+      void t.open(r?.kind === "channel" ? r.channel : undefined)
+    }
+    popMode ??= keymap.mode.push("compose")
+    setComposing(true)
+  }
+  function stopCompose() {
+    popMode?.()
+    popMode = undefined
+    setComposing(false)
+  }
+
   // Each switch takes a number. One that a later switch or the app closing overtook while it waited
   // closes the session it opened instead of showing it.
   let switches = 0
   const switchTo = async (space?: string) => {
     const mine = ++switches
     const old = session()
+    const was = conn().space
+    stopCompose()
     setSession(undefined)
     setOpen({ kind: "channel" })
     setSeen({})
     setStop({ phase: "idle" })
-    await old?.close()
+    const chat = await old?.close()
+    if (chat && !chat.clean) toast.show({ variant: "warning", message: `your session on ${was} did not close cleanly: ${chat.summary}` })
     const next = await props.openSpace(space)
+    if (!ui()) void import("./composer.js").then((m) => setUi(() => m))
     if (mine !== switches) return void next.close()
     setSession(next)
   }
@@ -142,6 +184,42 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     openWaiting(at + 1 < waiting().length ? at + 1 : 0)
   }
 
+  // The shared-name warning, once per session that finds its name taken.
+  createEffect(
+    on(
+      () => {
+        const p = talk()?.phase()
+        return p?.phase === "open" ? p.shared : undefined
+      },
+      (shared) => shared && toast.show({ variant: "warning", message: shared, duration: 10_000 }),
+    ),
+  )
+
+  const unsent = () => Object.values(composer().drafts).filter((d) => d.text.trim()).length
+  // Quitting closes the chat session first, as `cotal chat` does, and prints how it closed.
+  const quit = async () => {
+    dialog.clear()
+    switches++
+    const s = session()
+    const space = conn().space
+    const chat = await s?.close()
+    props.quit(chat && space ? `${space}: ${chat.summary}` : undefined)
+  }
+  const requestQuit = () => {
+    const n = unsent()
+    if (n === 0) return void quit()
+    dialog.replace(() => <ConfirmQuit drafts={n} answer={(yes) => (yes ? void quit() : dialog.clear())} />)
+  }
+  const endSession = async () => {
+    const closed = await talk()?.end()
+    toast.show(closed ? { variant: closed.clean ? "success" : "warning", message: `chat session ended: ${closed.summary}` } : { variant: "info", message: "No chat session is open" })
+  }
+  const rename = () => {
+    const t = talk()
+    if (!t) return toast.show({ variant: "info", message: "Open a space to change your name in it" })
+    dialog.replace(() => <NameDialog talk={t} done={() => dialog.clear()} />)
+  }
+
   // The stop names the seat, so it is offered only for a seat a manager reports, under a name no
   // other managed seat holds.
   const askStop = () => {
@@ -183,12 +261,16 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     { id: "cotal.reload", bind: "ctrl+r", keys: "ctrl+r", title: "Reread spaces", group: "System", palette: true, run: () => void read(true) },
     { id: COMMAND_PALETTE_COMMAND, bind: "ctrl+p", keys: "ctrl+p", title: "Commands", group: "System", global: true, run: () => dialog.replace(() => <Palette commands={commands} />) },
     { id: "cotal.help", bind: "?", keys: "?", title: "Keys", group: "System", palette: true, run: () => dialog.replace(() => <Help commands={commands} />, undefined, { size: "large" }) },
-    { id: "cotal.quit", bind: "q", keys: "q ctrl+c", title: "Quit", group: "System", palette: true, run: props.quit },
-    { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: props.quit },
+    { id: "cotal.quit", bind: "q", keys: "q ctrl+c", title: "Quit", group: "System", palette: true, run: requestQuit },
+    { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: requestQuit },
     { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
+    // Last, so the palette at 80x24 still opens on the commands above.
+    { id: "cotal.write", bind: "c", keys: "c", title: "Write to the open conversation", group: "Talk", palette: true, run: startCompose },
+    { id: "cotal.name", title: "Change your name", group: "Talk", palette: true, run: rename },
+    { id: "cotal.end-session", title: "End your chat session", group: "Talk", palette: true, run: () => void endSession() },
   ]
   const toLayer = (c: Command) => ({ ...c, run: (_input?: string, event?: KeyEvent) => c.run(event) })
-  Keymap.createLayer(() => ({ commands: commands.filter((c) => !c.global).map(toLayer) }))
+  Keymap.createLayer(() => ({ commands: commands.filter((c) => !c.global && c.bind).map(toLayer) }))
   Keymap.createLayer(() => ({ mode: "global", commands: commands.filter((c) => c.global).map(toLayer) }))
 
   const statusFg = (p: Presence) =>
@@ -225,7 +307,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
     if (r.kind === "peer") {
       const p = r.presence
       const mark = p.card.kind === "agent" ? STATUS[p.status].mark : "⚙"
-      const tag = p.card.role ?? ""
+      const tag = p.card.id === self() ? "you" : (p.card.role ?? "")
       return { mark, markFg: statusFg(p), name: fit(p.card.name, width - tag.length - 5), tag: fit(tag, Math.max(0, width - 12)), fg: p.status === "offline" ? theme.text.faint : theme.text.base }
     }
     const e = r.entry
@@ -320,6 +402,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
         <text wrapMode="none" fg={theme.text.base} attributes={TextAttributes.BOLD}>
           {p.entry.from.name}
           <span style={{ fg: theme.text.faint }}>{` ${route(p.entry, p.withChannel)}`}</span>
+          <span style={{ fg: theme.text.action.primary.base }}>{talk()?.mentionsYou(p.entry) ? "  @you" : ""}</span>
         </text>
         <text wrapMode="none" fg={theme.text.faint}>
           {clock(p.entry.ts)}
@@ -338,10 +421,12 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
       const o = open()
       return o.kind === "channel" ? o : undefined
     }
-    const feed = () => feedFor(p.mesh, open()).slice(-FEED_ROWS)
+    const feed = () => conversationFeed(p.mesh, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS)
     const title = () => {
       const c = channel()
       if (c) return c.channel === undefined ? "all traffic" : `#${c.channel}`
+      const o = open()
+      if (o.kind === "role") return `role:${o.role}`
       return peer()?.card.name ?? "gone from the roster"
     }
     return (
@@ -360,7 +445,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
                 <text fg={theme.text.feedback.warning.base}>{`◐ ${pr().card.name} is waiting`}</text>
                 <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : "It reported no question."}</text>
               </Show>
-              <Show when={layout().kind === "two"}>
+              <Show when={layout().kind === "two" && !composing()}>
                 <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>
               </Show>
             </box>
@@ -373,6 +458,29 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
             </scrollbox>
           </Show>
         </box>
+        <Show when={ui()}>
+          {(m) => (
+            <Show when={talk()}>
+              {(t) => {
+                const Composer = m().Composer
+                return (
+                  <Composer
+                    talk={t()}
+                    space={p.mesh.status.space}
+                    open={open()}
+                    mesh={p.mesh}
+                    state={composer()}
+                    setState={setComposer}
+                    setOpen={setOpen}
+                    composing={composing()}
+                    stop={stopCompose}
+                    maxRows={dims().height >= 40 ? 6 : 3}
+                  />
+                )
+              }}
+            </Show>
+          )}
+        </Show>
       </>
     )
   }
@@ -476,7 +584,7 @@ export function Shell(props: { quit: () => void; readCatalog: () => Promise<Cata
   const StatusBar = () => (
     <box flexShrink={0} flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.high}>
       <text wrapMode="none" fg={theme.text.faint} flexShrink={1}>
-        {fit("j k move · enter open · w next · ? help · ctrl+p commands · q quit", dims().width - indicator().text.length - 4)}
+        {fit(composing() ? "enter send · ctrl+j newline · tab where · esc back" : "j k move · enter open · c write · w next · ? help · ctrl+p commands · q quit", dims().width - indicator().text.length - 4)}
       </text>
       <text wrapMode="none" fg={indicator().fg} flexShrink={0}>
         {indicator().text}
@@ -573,5 +681,61 @@ function Palette(props: { commands: Command[] }) {
           },
         }))}
     />
+  )
+}
+
+/** Quit with unsent drafts. `y` quits; `n`, esc and enter stay, so a stray Enter is safe. */
+function ConfirmQuit(props: { drafts: number; answer: (quit: boolean) => void }) {
+  const theme = useTheme().surface("dialog")
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    commands: [
+      { id: "cotal.quit.yes", bind: "y", title: "Quit", group: "Dialog", run: () => props.answer(true) },
+      { id: "cotal.quit.no", bind: "n,return", title: "Stay", group: "Dialog", run: () => props.answer(false) },
+    ],
+  }))
+  return (
+    <DialogLayout header={<DialogHeader title={`Quit with ${props.drafts} unsent draft${props.drafts === 1 ? "" : "s"}?`} />}>
+      <text>
+        <span style={{ fg: theme.text.action.primary.base }}>y</span>
+        <span style={{ fg: theme.text.base }}> quit · </span>
+        <span style={{ fg: theme.text.action.primary.base }}>n esc enter</span>
+        <span style={{ fg: theme.text.base }}> stay</span>
+      </text>
+    </DialogLayout>
+  )
+}
+
+/** Change your name: saves the `name` preference every chat session on this machine uses. An empty
+ *  name unsets it. An open session keeps its name until it ends. */
+function NameDialog(props: { talk: Talk; done: () => void }) {
+  const theme = useTheme().surface("dialog")
+  const [error, setError] = createSignal<string>()
+  const current = () => {
+    const n = props.talk.name()
+    return n.state === "ok" ? n.name : undefined
+  }
+  let input: InputRenderable | undefined
+  const save = async () => {
+    const value = input?.value.trim() ?? ""
+    const refused = await props.talk.rename(value === "" ? undefined : value)
+    if (refused) return setError(refused)
+    props.done()
+  }
+  return (
+    <DialogLayout header={<DialogHeader title="Change your name" />}>
+      <text fg={theme.text.muted}>{current() ? `You appear as ${current()!.name}, from ${current()!.from}.` : "Your name is not resolved yet."}</text>
+      <text fg={theme.text.muted}>{props.talk.phase().phase === "open" ? "The open session keeps its name until it ends." : "Every chat session on this machine uses it."}</text>
+      <box height={1} />
+      <input
+        ref={(r: InputRenderable) => {
+          input = r
+          setTimeout(() => r.focus(), 1)
+        }}
+        placeholder="a name, or empty for your sign-in name or OS login"
+        onSubmit={() => void save()}
+      />
+      <Show when={error()}>{(e) => <text fg={theme.text.feedback.error.base}>{e()}</text>}</Show>
+    </DialogLayout>
   )
 }
