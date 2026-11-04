@@ -603,7 +603,8 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
    was, and the lines after it fold up beneath it over 160ms. */
 .ox-fold { --fold-n: 1; display: flex; flex-direction: column; gap: 6px; overflow: hidden; animation: ox-foldup 160ms ease-in forwards; }
 @keyframes ox-foldup { from { opacity: 1; max-height: calc(var(--fold-n) * 26px); } to { opacity: 0; max-height: 0; margin-top: -6px; } }
-/* Reduced motion: the fold is not drawn, and the spinner and the shimmer stop in their own parts. */
+/* Reduced motion: the fold is not drawn. The shimmer stops in its own utility and the spinner by the
+   rule under "working, everywhere". */
 @media (prefers-reduced-motion: reduce) {
   .ox-fold { animation: none; display: none; }
 }
@@ -726,9 +727,10 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 [data-presence="stale"] .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }
 [data-presence="stale"] .ox-shimmer, [data-presence="stale"] [data-slot="trace-title"] { animation: none; background-image: none; -webkit-text-fill-color: currentColor; }
 /* Reduced motion: no spin, no breathing (the dot keeps a still halo, so its shape still differs), no
-   shimmer, and the arc stays. The clocks keep counting. */
+   shimmer, and the arc stays. The clocks keep counting. The registry Spinner has no reduced-motion
+   stop of its own, so it stops here by its slot. */
 @media (prefers-reduced-motion: reduce) {
-  .ox-spin { animation: none; }
+  .ox-spin, [data-slot="spinner"] { animation: none; }
   .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }
   .ox-shimmer { animation: none; background-image: none; -webkit-text-fill-color: currentColor; }
   .ui-orbit { animation: none; }

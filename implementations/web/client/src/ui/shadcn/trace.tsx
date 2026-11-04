@@ -1,6 +1,3 @@
-// Copied from the shadcn/ui registry, version 4.22.1 (radix base, Rhea style, Hugeicons icons) on
-// 2026-10-22. MIT licence, copyright (c) 2023 shadcn.
-// Edited: a running title shimmers over 2.4s with the foreground as its band.
 import * as React from "react"
 import { cn } from "cn"
 
@@ -37,7 +34,7 @@ function TraceLine({
       data-slot="trace-line"
       data-status={status}
       className={cn(
-        "flex w-fit max-w-full min-w-0 items-center gap-2 text-sm text-muted-foreground transition-colors in-[a,button]:cursor-pointer in-[a:hover,button:hover]:text-foreground data-[status=error]:text-destructive data-[status=error]:in-[a:hover,button:hover]:text-destructive data-[status=pending]:opacity-60 data-[status=running]:*:data-[slot=trace-title]:shimmer data-[status=running]:*:data-[slot=trace-title]:shimmer-color-foreground data-[status=running]:*:data-[slot=trace-title]:shimmer-duration-2400",
+        "flex w-fit max-w-full min-w-0 items-center gap-2 text-sm text-muted-foreground transition-colors in-[a,button]:cursor-pointer in-[a:hover,button:hover]:text-foreground data-[status=error]:text-destructive data-[status=error]:in-[a:hover,button:hover]:text-destructive data-[status=pending]:opacity-60 data-[status=running]:*:data-[slot=trace-title]:shimmer",
         className
       )}
       {...props}

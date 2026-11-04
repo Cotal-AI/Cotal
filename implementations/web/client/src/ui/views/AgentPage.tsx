@@ -58,12 +58,13 @@ type Scroller = {
 };
 
 /** The status in the page's header (mock B1, `sh-badge`): shadcn's Badge in the status's colour, with
- *  its icon and word. The working icon turns. */
+ *  its icon and word. The working icon turns. The icon is hidden from assistive tech, so the Spinner's
+ *  "Loading" label does not join the word. */
 function StatusBadge({ row }: { row: RosterRow }) {
   const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
   return (
     <Badge variant="secondary" className={`ox-badge ox-badge-${row.status}`}>
-      <span className="ox-badge-i">
+      <span className="ox-badge-i" aria-hidden="true">
         {row.status === "working" ? <Spinner /> : icon && <Icon icon={icon} size={16} />}
       </span>
       {word(statusLabel(row))}
