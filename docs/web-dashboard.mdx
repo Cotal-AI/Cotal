@@ -65,7 +65,10 @@ An old cached web command needs the matching extension update, rather than an im
 
 The rail on the left picks a view; the sidebar lists the places in that view with counts and unread
 marks; the content sits in the center; the panel on the right has Members, Agent and Topology tabs.
-On a phone the sidebar and the panel open as sheets.
+The button at the start of each view's header, or Ctrl+B (Cmd+B on a Mac), collapses the sidebar to
+the rail and opens it again.
+On a phone that button opens the sidebar as a sheet, the panel opens as a sheet too, and a long
+press on a message opens its actions from the bottom.
 
 | View | What it shows |
 | --- | --- |
@@ -210,8 +213,8 @@ Ordinary bodyless requests keep their connection. The configured read-only servi
 
 Monitor, channel, and DM messages render sanitized Markdown, including headings, lists, emphasis, code, blockquotes, and links.
 Raw HTML is removed. Links permit only HTTP, HTTPS, and mailto targets.
-Peer names, roles, and activities remain plain text, including attribute values such as hover titles.
-Use **show more** for a long message or **expand / collapse all** for a whole channel.
+Peer names, roles, and activities remain plain text, including in tooltips.
+A long message opens with **Show more**.
 
 The wire supports reported `approval` and `failed` presence conditions, which the waiting cards and
 the agent page show. The dashboard shows only data the observer can read.
