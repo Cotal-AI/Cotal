@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.141.6
+
+### Patch Changes
+
+- 75d9182: Reuse the workspace PID-file reader in component status so unreadable records name their path while preserving missing, malformed and liveness classifications.
+- @cotal-ai/core@0.141.6
+  - @cotal-ai/workspace@0.141.6
+
 ## 0.141.5
 
 ### Patch Changes
