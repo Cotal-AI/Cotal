@@ -1,0 +1,54 @@
+{
+  "suite": [
+    "packages/workspace/smoke/chat-name.smoke.ts"
+  ],
+  "guard": "a chat session's name is --name, else the saved name preference, else the account name in user mode or the OS login in open and static mode, with no suffix and no fallback across modes; every name is held to one rule; a name in use is found ignoring case",
+  "command": "pnpm smoke:chat-name",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/chat-name.json",
+  "why": [
+    "An agent reaches the human by name only when the name is stable and the human's to choose. Each mutation restores one way it was not: the random host suffix, a saved name that is ignored, a user-mode login problem hidden behind the OS login, a name with control characters, and a shared name missed because its letter case differs. The suite imports the workspace source, so no build is needed."
+  ],
+  "mutations": [
+    {
+      "name": "the resolver appends a host suffix to the OS login",
+      "file": "packages/workspace/src/chat/name.ts",
+      "find": "found = { name: (opts.login ?? osLogin)(), source: \"login\"",
+      "replace": "found = { name: `${(opts.login ?? osLogin)()}@host-1a2b`, source: \"login\"",
+      "expectRed": "an open space names the session the OS login, with no host or suffix",
+      "cell": "an open space names the session the OS login, with no host or suffix"
+    },
+    {
+      "name": "the resolver ignores the saved name",
+      "file": "packages/workspace/src/chat/name.ts",
+      "find": "  else if (chosen) found = { name: chosen.value, source: \"preference\", from: \"your saved name\" };\n",
+      "replace": "",
+      "expectRed": "a saved name wins over the OS login",
+      "cell": "a saved name wins over the OS login"
+    },
+    {
+      "name": "user mode falls back to the OS login when the sign-in cannot name the session",
+      "file": "packages/workspace/src/chat/name.ts",
+      "find": "  else if (target.mode === \"user\") found = await accountName(target);",
+      "replace": "  else if (target.mode === \"user\") found = await accountName(target).catch(() => ({ name: (opts.login ?? osLogin)(), source: \"login\" as const, from: \"your OS login\" }));",
+      "expectRed": "no cached login refuses as AUTH_REQUIRED naming the login command, with no OS-login fallback",
+      "cell": "no cached login refuses as AUTH_REQUIRED naming the login command, with no OS-login fallback"
+    },
+    {
+      "name": "the name rule admits control characters",
+      "file": "packages/workspace/src/chat-name.ts",
+      "find": " || /[\\u0000-\\u001f\\u007f]/u.test(value)",
+      "replace": "",
+      "expectRed": "an empty, blank, 129-character or control-character name is refused with the rule",
+      "cell": "an empty, blank, 129-character or control-character name is refused with the rule"
+    },
+    {
+      "name": "nameInUse compares case-sensitively",
+      "file": "packages/workspace/src/chat/name.ts",
+      "find": "row.name.toLowerCase() === self.label.toLowerCase()",
+      "replace": "row.name === self.label",
+      "expectRed": "live holders of the name in another letter case are found, each with its kind",
+      "cell": "live holders of the name in another letter case are found, each with its kind"
+    }
+  ]
+}

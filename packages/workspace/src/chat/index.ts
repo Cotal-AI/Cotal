@@ -7,3 +7,4 @@ export * from "./static-session.js";
 export * from "./admission.js";
 export * from "./compose.js";
 export * from "./words.js";
+export * from "./name.js";

@@ -47,6 +47,9 @@ export interface IdpSession {
   /** The IdP subject this session proved at login (display + local owner derivation). Absent only
    *  in caches written by older builds — consumers that need it fail loud naming `cotal login`. */
   sub?: string;
+  /** The account name the IdP gave at login (email, else name, else preferred_username), display
+   *  only. Absent when the IdP gave none and in caches written by older builds. */
+  name?: string;
 }
 
 const SPACE_CATALOG_REL = "https://cotal.ai/relations/space-catalog";
@@ -453,14 +456,15 @@ export async function establishIdpSession(
   if (typeof sub !== "string" || !sub)
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
+  const label = [claims.email, claims.name, claims.preferred_username].find(
+    (c): c is string => typeof c === "string" && c.length > 0,
+  );
+  if (label) session.name = label;
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
   throwIfCancelled(opts.signal);
   saveIdpSession(opts.dir, opts.idpUrl, session);
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
-  const label = [claims.email, claims.name, claims.preferred_username].find(
-    (c): c is string => typeof c === "string" && c.length > 0,
-  );
   return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
 }
 
@@ -814,7 +818,12 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   // `sub` rides the cache round-trip (offline owner derivation for the spawn paths) — every
   // consumer of ownerForLogin is a SEPARATE process re-reading this file, so dropping it here
   // broke both user-mode spawn entry points while every in-process test passed.
-  return { token: s.token, expiresAt: s.expiresAt, ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}) };
+  return {
+    token: s.token,
+    expiresAt: s.expiresAt,
+    ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}),
+    ...(typeof s.name === "string" && s.name ? { name: s.name } : {}),
+  };
 }
 
 /** Whether this machine carries any cached human login. Enrollment URLs are single-use credentials,
@@ -830,6 +839,7 @@ export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession)
     token: session.token,
     expiresAt: session.expiresAt,
     ...(session.sub ? { sub: session.sub } : {}),
+    ...(session.name ? { name: session.name } : {}),
   };
   mkSecretDir(dir); // harden the dir BEFORE the secret lands (0700 POSIX, private ACL win32)
   writeSecretFileAtomic(join(dir, SESSIONS_FILE), JSON.stringify(file, null, 2));

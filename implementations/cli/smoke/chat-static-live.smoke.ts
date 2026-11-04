@@ -13,6 +13,10 @@
  *  7. A `chat --stdio` session's `status` request with an activity reaches a second stdio session as
  *     one presence `updated` record carrying both, and its `attention` and `channelMode` requests,
  *     which change no row field, reach it as none.
+ *  7. A session opened without --name is on the roster as the OS login, with no suffix, and a
+ *     `--stdio` peer's `send` with `mentions: [<login>]` reaches it with `mentionsMe: true`.
+ *  8. A second session under the same name is warned at join, naming both ways to change it.
+ *  9. A name saved with `cotal config set name` replaces the OS login.
  *
  * Sandboxes COTAL_HOME and a temp project root, and stops the stack with `cotal down`; it signals
  * only the chat child it started. Needs `nats-server` on PATH.
@@ -20,7 +24,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -139,6 +143,64 @@ try {
       if (watcher.exitCode !== null) { clearTimeout(t); r(watcher.exitCode); }
     });
     if (code === null) watcher.kill("SIGTERM");
+  }
+
+  // The name a session takes with no --name, and the mention that reaches it by that name.
+  const login = userInfo().username.trim();
+  type Line = { type: string; id?: string; outcome?: string; result?: { rows?: { name: string; sessionKind?: string }[] }; message?: { text: string; mentionsMe: boolean } };
+  const session = (...args: string[]) => {
+    const child = spawn(TSX, [CLI, "chat", "general", "--stdio", ...args], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+    const s = { child, out: "", err: "", records: (): Line[] => s.out.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Line) };
+    child.stdout.on("data", (b: Buffer) => { s.out += b.toString(); });
+    child.stderr.on("data", (b: Buffer) => { s.err += b.toString(); });
+    return s;
+  };
+  const reply = async (s: ReturnType<typeof session>, id: string) => {
+    for (let i = 0; i < 150 && !s.records().some((r) => r.id === id); i++) await sleep(200);
+    return s.records().find((r) => r.id === id);
+  };
+  const named = async (peer: ReturnType<typeof session>, id: string) => ((await reply(peer, id))?.result?.rows ?? []).filter((r) => r.sessionKind === "chat").map((r) => r.name);
+  const opened: ReturnType<typeof session>[] = [];
+  try {
+    const human = session();
+    opened.push(human);
+    human.child.stdin.write(request({ type: "connection", id: "c0" }));
+    await reply(human, "c0");
+    const peer = session("--name", "mention-peer");
+    opened.push(peer);
+    peer.child.stdin.write(request({ type: "roster", id: "r1" }));
+    const roster = await named(peer, "r1");
+    check("a session opened without --name is on the roster as the OS login, with no suffix", roster.includes(login), { login, roster, err: human.err });
+    peer.child.stdin.write(request({ type: "send", id: "s1", channel: "general", text: `over to you @${login}`, mentions: [login] }));
+    const mentioned = () => human.records().find((r) => r.type === "message" && r.message?.text === `over to you @${login}`);
+    for (let i = 0; i < 150 && !mentioned(); i++) await sleep(200);
+    check("a peer's send with mentions: [<login>] reaches it with mentionsMe: true", mentioned()?.message?.mentionsMe === true, { message: mentioned(), human: human.out.slice(-600) });
+
+    const second = session();
+    opened.push(second);
+    second.child.stdin.write(request({ type: "connection", id: "c0" }));
+    await reply(second, "c0");
+    check("a second session under the same name is warned at join, naming both ways to change it",
+      new RegExp(`cotal chat: the name "${login}" is already in use here by \\S+ \\(chat session\\); a direct message to "${login}" refuses as ambiguous while both are present, so pass another --name, or save one with \`cotal config set name <name>\`, to be reached by name`).test(plain(second.err)), plain(second.err));
+
+    const saved = cli("config", "set", "name", "Ops Lead");
+    const lead = session();
+    opened.push(lead);
+    lead.child.stdin.write(request({ type: "connection", id: "c0" }));
+    await reply(lead, "c0");
+    peer.child.stdin.write(request({ type: "roster", id: "r2" }));
+    const after = await named(peer, "r2");
+    check("a name saved with cotal config set name replaces the OS login", saved.status === 0 && after.includes("Ops Lead"), { after, saved: plain(saved.stdout + saved.stderr) });
+  } finally {
+    for (const s of opened) s.child.stdin.end();
+    for (const s of opened) {
+      const code = await new Promise<number | null>((r) => {
+        const t = setTimeout(() => r(null), 30_000);
+        s.child.once("exit", (c) => { clearTimeout(t); r(c); });
+        if (s.child.exitCode !== null) { clearTimeout(t); r(s.child.exitCode); }
+      });
+      if (code === null) s.child.kill("SIGTERM");
+    }
   }
 } finally {
   const down = cli("down", "--yes");

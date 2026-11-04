@@ -69,7 +69,7 @@ const ansi = /\x1b\[/;
   const r = run(["config", "--json"]);
   const res = r.envelope?.result as { kind: string; file: string; revision: number; scope: { space: unknown }; settings: Setting[] } | undefined;
   check("config --json with no file is one ok envelope for your defaults", r.status === 0 && r.envelope?.outcome === "ok" && r.envelope.target === null && res?.kind === "preferences" && res.file === file && res.revision === 0 && res.scope.space === null, shown(r));
-  check("every key is listed, in order", JSON.stringify(res?.settings.map((s) => s.key)) === JSON.stringify(["harness", "persona", "detach-key", "color", "editor"]), res?.settings.map((s) => s.key));
+  check("every key is listed, in order", JSON.stringify(res?.settings.map((s) => s.key)) === JSON.stringify(["harness", "persona", "detach-key", "color", "editor", "name"]), res?.settings.map((s) => s.key));
   check("each key with a product default resolves to it, and the editor to nothing", settingOf(r, "harness")?.winner?.source === "default" && settingOf(r, "persona")?.value === "default" && settingOf(r, "detach-key")?.value === "ctrl-]" && settingOf(r, "color")?.value === "auto" && settingOf(r, "editor")?.value === null && settingOf(r, "editor")?.winner === null, res?.settings);
   check("reading writes nothing", !existsSync(file));
   // The file is in the Storage section, which only --verbose prints.
@@ -113,7 +113,7 @@ const ansi = /\x1b\[/;
 {
   const before = fileText();
   const refusals: [string, string[], RegExp][] = [
-    ["an unknown key names the valid keys", ["config", "set", "colour", "never"], /unknown preference "colour"; valid keys: harness, persona, detach-key, color, editor/],
+    ["an unknown key names the valid keys", ["config", "set", "colour", "never"], /unknown preference "colour"; valid keys: harness, persona, detach-key, color, editor, name/],
     ["a color outside auto, always and never", ["config", "set", "color", "purple"], /invalid color "purple": use auto, always, never/],
     ["a detach key that is not ctrl-<char> or ^<char>", ["config", "set", "detach-key", "alt-x"], /invalid detach-key "alt-x"/],
     ["an empty persona", ["config", "set", "persona", " "], /invalid persona " ": it cannot be empty/],
