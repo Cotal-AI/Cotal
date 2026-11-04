@@ -8,6 +8,7 @@ import { clock } from "../lib/time.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
 import { MessageActions } from "./MessageActions.tsx";
@@ -20,6 +21,21 @@ const CLAMP = 280;
  *  history row, or the claimer of an anycast whose reply came from history. */
 export const UNVERIFIED =
   "History does not record who sent this message. The sender shown is the one the message names, and it has not been checked.";
+
+/** What an anycast's route chip means. */
+const ANYCAST = "Anycast: one free agent with this role takes it.";
+
+/** The unverified mark: an outline Badge with `UNVERIFIED` as its Tooltip and its screen reader text. */
+export function Unverified() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="outline">unverified<span className="ui-sr">{` ${UNVERIFIED}`}</span></Badge>
+      </TooltipTrigger>
+      <TooltipContent>{UNVERIFIED}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 /** The name a harness goes by, for the Badge beside the sender. A connector the dashboard has no
  *  brand for is shown as the connector reports it. */
@@ -92,7 +108,7 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
         {!cont && (
           <div className="ui-mh">
             {pick && senderId !== undefined ? <button type="button" className="ui-who" onClick={() => pick(senderId)}><b>{name}</b></button> : <b>{name}</b>}
-            {senderId === undefined && <Badge variant="outline" title={UNVERIFIED}>unverified</Badge>}
+            {senderId === undefined && <Unverified />}
             {place && <Badge variant="secondary">{place}</Badge>}
             {place === undefined && peer?.role && <Badge variant="secondary">{peer.role}</Badge>}
             {place === undefined && peer?.harness && <Badge variant="outline">{harnessName(peer.harness)}</Badge>}
@@ -102,17 +118,23 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
         <div className={clamped ? "ui-tx ui-clamp" : "ui-tx"} dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
         {clamped && <Button type="button" variant="link" size="sm" className="px-0" onClick={() => setOpened(true)}>Show more</Button>}
         {mode === "anycast" && role !== undefined && (
-          <div className="ui-route ui-route-any" title="Anycast: one free agent with this role takes it.">
-            <i />
-            {`To any ${role}`}
-            {claim !== undefined && (
-              <>
-                {" "}<span className="ui-route-sep">·</span>{" "}
-                {`claimed by ${displayNameOf(claim.id, idx)}`}
-                {!claim.verified && <>{" "}<Badge variant="outline" title={UNVERIFIED}>unverified</Badge></>}
-              </>
-            )}
-          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="ui-route ui-route-any">
+                <i />
+                {`To any ${role}`}
+                <span className="ui-sr">{` ${ANYCAST}`}</span>
+                {claim !== undefined && (
+                  <>
+                    {" "}<span className="ui-route-sep">·</span>{" "}
+                    {`claimed by ${displayNameOf(claim.id, idx)}`}
+                    {!claim.verified && <>{" "}<Unverified /></>}
+                  </>
+                )}
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>{ANYCAST}</TooltipContent>
+          </Tooltip>
         )}
       </div>
       {senderId !== undefined && peer !== undefined && peers.has(senderId) && (

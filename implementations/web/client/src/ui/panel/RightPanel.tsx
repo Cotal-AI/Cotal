@@ -2,6 +2,7 @@ import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#client/ui/shadcn/tabs.tsx";
 import { formatRoute, type Route } from "../../lib/route.js";
 import type { Controller } from "../../state/controller.js";
@@ -156,9 +157,14 @@ export function RightPanel({ store, controller, channel, route, panel, clock }: 
           ))}
         </TabsList>
         <span className="ui-sp" />
-        <Button type="button" variant="ghost" size="icon" title="Close panel" aria-label="Close panel" onClick={panel.close}>
-          <Icon icon={Cancel01Icon} />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="icon" aria-label="Close panel" onClick={panel.close}>
+              <Icon icon={Cancel01Icon} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Close panel</TooltipContent>
+        </Tooltip>
       </div>
       <TabsContent value="members" className="ui-pane-body">
         {channel !== null && <MembersTab store={store} controller={controller} channel={channel} now={clock()} onPick={panel.selectAgent} />}

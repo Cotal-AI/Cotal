@@ -2,6 +2,7 @@ import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { useLayoutEffect, useState } from "react";
 import { Icon } from "../icons/Icon.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import type { PostCapability } from "../api/types.js";
 import { messageRoute, sendCommand } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
@@ -116,9 +117,14 @@ export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = n
           </Button>
         )}
       </div>
-      <Button type="button" variant="ghost" size="icon-sm" title={DISMISS} aria-label={DISMISS} onClick={onDismiss}>
-        <Icon icon={Cancel01Icon} />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={DISMISS} onClick={onDismiss}>
+            <Icon icon={Cancel01Icon} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{DISMISS}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

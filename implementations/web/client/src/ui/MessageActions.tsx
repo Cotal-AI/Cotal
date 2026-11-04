@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CotalMessage } from "../api/types.js";
 import { Icon } from "../icons/Icon.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { partsToText } from "../lib/parts.js";
 import type { RosterRow } from "../lib/roster.js";
 import { formatRoute } from "../lib/route.js";
@@ -106,7 +107,8 @@ function useLongPress(child: { current: unknown }, onPress: () => void): void {
 /** The hover action row, and on touch the long-press sheet (agents mock S3, C "Focus", D and E).
  *
  *  - The action row (`ui-msg-acts`) holds one link, View work, to the sender's page at this message
- *    (`#/agent/<id>/work/<message id>`), titled "View <name>'s work at <hh:mm>". It shows on hover and
+ *    (`#/agent/<id>/work/<message id>`), with "View <name>'s work at <hh:mm>" as its Tooltip and its
+ *    accessible description. It shows on hover and
  *    while it holds focus, and stays in the tab order.
  *  - A touch held on the row opens a bottom sheet: the sender, "Message at <hh:mm>", then the same
  *    link, View agent (`onViewAgent`) and Copy text. It holds focus while open and closes on the
@@ -127,13 +129,21 @@ export function MessageActions({ msg, senderId, name, peer, onViewAgent }: {
   useLongPress(acts, () => setSheet(true));
   const at = hhmm(msg.ts);
   const href = formatRoute({ view: "agent", id: senderId, tab: "work", at: msg.id });
+  const hint = at ? `View ${name}'s work at ${at}` : `View ${name}'s work`;
+  const hintId = useId();
   return (
     <>
       <div ref={acts} className="ui-msg-acts">
-        <a href={href} title={at ? `View ${name}'s work at ${at}` : `View ${name}'s work`}>
-          <Icon icon={ArrowUpRight01Icon} size={16} className="ui-ic ui-ic16" />
-          View work
-        </a>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <a href={href} aria-describedby={hintId}>
+              <Icon icon={ArrowUpRight01Icon} size={16} className="ui-ic ui-ic16" />
+              View work
+            </a>
+          </TooltipTrigger>
+          <TooltipContent>{hint}</TooltipContent>
+        </Tooltip>
+        <span id={hintId} className="ui-sr">{hint}</span>
       </div>
       {sheet && (
         <ActionSheet msg={msg} senderId={senderId} name={name} peer={peer} at={at} href={href} onViewAgent={onViewAgent} onClose={() => setSheet(false)} />

@@ -13,9 +13,10 @@ import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { Connection, DashboardState } from "../state/types.js";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
-import { UNVERIFIED } from "./MessageRow.tsx";
+import { Unverified } from "./MessageRow.tsx";
 import { SkeletonPlaces } from "./Skeleton.tsx";
 import { StaleMarker } from "./StaleMarker.tsx";
 
@@ -37,12 +38,24 @@ const PILL: Record<Exclude<Connection, "connected">, { text: string; title: stri
   closed: { text: "Disconnected", title: "The live feed closed and will not retry. Reload the page, or open the link cotal web printed when it started." },
 };
 
-/** One link row: `to` is the route it opens and `here` whether that route is the page now. */
+/** What a channel row's working count says: how many members work, and who. */
+const workingTitle = (working: RosterRow[]): string => `${working.length} member${working.length === 1 ? "" : "s"} working: ${working.map((r) => r.name).join(", ")}`;
+
+/** One link row: `to` is the route it opens and `here` whether that route is the page now. `title`,
+ *  when given, is the row's Tooltip and is read after its name. */
 function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bold?: boolean; title?: string; children: ReactNode }) {
-  return (
-    <a className={bold ? "ui-row ui-row-bold" : "ui-row"} href={formatRoute(to)} aria-current={here ? "page" : undefined} title={title}>
+  const row = (
+    <a className={bold ? "ui-row ui-row-bold" : "ui-row"} href={formatRoute(to)} aria-current={here ? "page" : undefined}>
       {children}
+      {title && <span className="ui-sr">{title}</span>}
     </a>
+  );
+  if (!title) return row;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{row}</TooltipTrigger>
+      <TooltipContent side="right">{title}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -52,12 +65,13 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *  `msgPerSecond` is read on every render and again every second, so the Activity row follows the
  *  rate as it falls. The rate itself lives outside the store, which holds serializable state.
  *
- *  A channel with members presence says are working shows the turning spokes and how many, titled
- *  with their names, before its unread count. Its members are `channelMembers` over the broker's
- *  membership alone, with no posts, so the count reads presence and membership and never the event
- *  plane: with no authoritative feed no channel shows one. A direct message row draws each party's
- *  status dot when the roster holds it, so a working agent's dot breathes there. The avatars are
- *  hidden from assistive tech, so the row's name is the two names it shows.
+ *  A channel with members presence says are working shows the turning spokes and how many, with their
+ *  names in its Tooltip and its screen reader text, before its unread count. Its members are
+ *  `channelMembers` over the broker's membership alone, with no posts, so the count reads presence
+ *  and membership and never the event plane: with no authoritative feed no channel shows one. A
+ *  direct message row draws each party's status dot when the roster holds it, so a working agent's
+ *  dot breathes there. The avatars are hidden from assistive tech, so the row's name is the two names
+ *  it shows.
  *
  *  A direct message conversation holding a row read from history says unverified, as a message row
  *  does, because it was grouped by what the payload says about its own sender. A conversation is
@@ -122,7 +136,14 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
         <Row to={{ view: "needs" }} here={route.view === "needs"}>
           <RailIcon name="inbox" />
           <span className="ui-row-lbl">Needs you</span>
-          {needing > 0 && <Badge title={`${needing} agent${needing === 1 ? "" : "s"} waiting`}>{needing}</Badge>}
+          {needing > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge><span aria-hidden="true">{needing}</span><span className="ui-sr">{`${needing} agent${needing === 1 ? "" : "s"} waiting`}</span></Badge>
+              </TooltipTrigger>
+              <TooltipContent>{`${needing} agent${needing === 1 ? "" : "s"} waiting`}</TooltipContent>
+            </Tooltip>
+          )}
         </Row>
         <Row to={{ view: "activity" }} here={route.view === "activity"}>
           <RailIcon name="activity" />
@@ -146,10 +167,16 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
               {event ? <Icon icon={Plug01Icon} size={18} className="ui-ic" /> : <RailIcon name="hash" />}
               <span className="ui-row-lbl">{c.channel}</span>
               {working.length > 0 && (
-                <span className="ox-sbw" title={`${working.length} member${working.length === 1 ? "" : "s"} working: ${working.map((r) => r.name).join(", ")}`}>
-                  <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />
-                  {working.length}
-                </span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="ox-sbw">
+                      <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />
+                      <span aria-hidden="true">{working.length}</span>
+                      <span className="ui-sr">{workingTitle(working)}</span>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{workingTitle(working)}</TooltipContent>
+                </Tooltip>
               )}
               {count > 0 && <Badge variant="secondary">{count}</Badge>}
             </Row>
@@ -166,7 +193,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
                 ))}
               </span>
               <span className="ui-row-lbl">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>
-              {!verified && <Badge variant="outline" title={UNVERIFIED}>unverified</Badge>}
+              {!verified && <Unverified />}
             </Row>
           );
         })}
@@ -180,14 +207,26 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
         <span className="ui-me">OP</span>
         <div className="ui-who">
           <b>operator</b>
-          {line && <span title={line.title} tabIndex={0} aria-describedby="operator-line-why">{line.text}</span>}
+          {line && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0} aria-describedby="operator-line-why">{line.text}</span>
+              </TooltipTrigger>
+              <TooltipContent>{line.title}</TooltipContent>
+            </Tooltip>
+          )}
           {line && <span id="operator-line-why" className="ui-sr">{line.title}</span>}
         </div>
-        {connection === "connected" ? (
-          <span className="ui-live" title="Connected to cotal web"><i></i>Connected</span>
-        ) : (
-          <span className="ui-live ui-live-down" title={PILL[connection].title}><i></i>{PILL[connection].text}</span>
-        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {connection === "connected" ? (
+              <span className="ui-live"><i></i>Connected<span className="ui-sr"> Connected to cotal web</span></span>
+            ) : (
+              <span className="ui-live ui-live-down"><i></i>{PILL[connection].text}<span className="ui-sr">{` ${PILL[connection].title}`}</span></span>
+            )}
+          </TooltipTrigger>
+          <TooltipContent>{connection === "connected" ? "Connected to cotal web" : PILL[connection].title}</TooltipContent>
+        </Tooltip>
       </div>
     </>
   );

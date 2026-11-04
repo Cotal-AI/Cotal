@@ -3,6 +3,7 @@ import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } fr
 import { Icon } from "../icons/Icon.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { composeKey, composerNote, messageRoute, POST_OFF_CREDS, sendCommand, type ComposeTarget } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
 import type { Controller } from "../state/controller.js";
@@ -88,9 +89,18 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
           <div className="ui-crow">
             <CopyCommand command={sendCommand(target)} />
             <span className="ui-sp" />
-            <button type="button" className="ui-send" disabled title={post.reason} aria-label="Send">
-              <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />
-            </button>
+            <Tooltip>
+              {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it,
+                  which takes the focus instead. The reason is also the card's first line. */}
+              <TooltipTrigger asChild>
+                <span className="inline-flex" tabIndex={0}>
+                  <button type="button" className="ui-send" disabled aria-label="Send">
+                    <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />
+                  </button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{post.reason}</TooltipContent>
+            </Tooltip>
           </div>
         </div>
         <div className="ui-cnote">{withCode(composerNote(post))}</div>
@@ -109,6 +119,14 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
     ctl?.draft(target, `${draft.text}@`);
     field()?.focus();
   };
+  // A disabled control fires no pointer events, so where a Tooltip names it, it hangs on a span
+  // around the control, which takes the focus while the control cannot.
+  const pick = (
+    <button type="button" className="ui-pick" disabled={ctl === null} onClick={mention} aria-label={phone ? "Mention" : undefined}>
+      <Icon icon={AtIcon} size={16} className="ui-ic" />
+      {!phone && "Mention"}
+    </button>
+  );
   return (
     <>
       <div className={refused === undefined ? "ui-card ui-composer" : "ui-card ui-composer ui-composer-err"}>
@@ -129,19 +147,30 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
         <div className="ui-crow">
           {refused === undefined ? (
             <>
-              <button type="button" className="ui-pick" disabled={ctl === null} onClick={mention} title={phone ? "Mention" : undefined} aria-label={phone ? "Mention" : undefined}>
-                <Icon icon={AtIcon} size={16} className="ui-ic" />
-                {!phone && "Mention"}
-              </button>
+              {phone ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex" tabIndex={ctl === null ? 0 : undefined}>{pick}</span>
+                  </TooltipTrigger>
+                  <TooltipContent>Mention</TooltipContent>
+                </Tooltip>
+              ) : pick}
               <span className="ui-sp" />
               <span className="ui-pick">
                 <i className="ui-mode-dot" style={{ background: target.kind === "msg" ? "var(--multi)" : "var(--uni)" }} />
                 {to}
               </span>
               {!phone && <span className="ui-pick">as operator</span>}
-              <button type="button" className="ui-send" title={sending ? "Sending" : "Send"} aria-label={sending ? "Sending" : "Send"} disabled={!ready} onClick={submit}>
-                {sending ? <span className="ui-spin" /> : <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />}
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" tabIndex={ready ? undefined : 0}>
+                    <button type="button" className="ui-send" aria-label={sending ? "Sending" : "Send"} disabled={!ready} onClick={submit}>
+                      {sending ? <span className="ui-spin" /> : <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />}
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{sending ? "Sending" : "Send"}</TooltipContent>
+              </Tooltip>
             </>
           ) : (
             <>
@@ -154,7 +183,12 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
       {refused === undefined ? (
         <div className="ui-cnote">{withCode(composerNote(post))}</div>
       ) : (
-        <div className="ui-cnote ui-cnote-err" role="alert" title={refused}>{refused}</div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="ui-cnote ui-cnote-err" role="alert">{refused}</div>
+          </TooltipTrigger>
+          <TooltipContent>{refused}</TooltipContent>
+        </Tooltip>
       )}
     </>
   );

@@ -4,6 +4,7 @@ import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { composeKey, type ComposeTarget } from "../../lib/compose.js";
 import { channelMembers } from "../../lib/members.js";
@@ -142,9 +143,10 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *    where the reader left it.
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
  *    The member stack draws each one's status dot, so a working member's dot breathes. The stack is
- *    hidden from assistive tech, so the button's name stays its count.
+ *    hidden from assistive tech, and the button's name is the count in words ("3 members"), which its
+ *    Tooltip repeats.
  *  - The members presence says are working, in that order, make the header chip ("<n> working", or
- *    on a phone just the count, with the spokes turning and their names in its title) and the
+ *    on a phone just the count, with the spokes turning and their names in its Tooltip) and the
  *    working line under the messages (`WorkingLine`). With nobody working neither is drawn.
  *  - The dock holds the card for the first waiting agent this browser has not dismissed, and the
  *    composer under it once `/api/meta` has said what the dashboard can post as. With neither it is
@@ -154,7 +156,7 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *  - `onTogglePanel` adds the header's Toggle panel button, pressed while `panelOpen`, so a reader
  *    who closed the panel can bring it back.
  *  - On a phone (`SheetMenu`) the header opens with the menu button that shows the places sheet, the
- *    panel button is titled Open agent panel, and the composer's mode line names the channel alone. */
+ *    panel button is named Open agent panel, and the composer's mode line names the channel alone. */
 export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen = false, onTogglePanel }: {
   store: Store<DashboardState>;
   channel: string;
@@ -192,37 +194,71 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const sheet = useContext(SheetMenu);
   // On a phone the panel opens over the whole page, so the button says what it does there, as mock F does.
   const panelLabel = sheet ? "Open agent panel" : "Toggle panel";
+  const memberCount = `${count} member${count === 1 ? "" : "s"}`;
+  const workingNow = `Working now: ${working.map((r) => r.name).join(", ")}`;
   return (
     <>
       <header className="ui-bar">
         {sheet && (
-          <Button type="button" variant="ghost" size="icon" title="Open sidebar" aria-label="Open sidebar" aria-haspopup="dialog" aria-expanded={sheet.open} onClick={sheet.show}>
-            <Icon icon={Menu01Icon} />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" aria-label="Open sidebar" aria-haspopup="dialog" aria-expanded={sheet.open} onClick={sheet.show}>
+                <Icon icon={Menu01Icon} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Open sidebar</TooltipContent>
+          </Tooltip>
         )}
         <h1>{`# ${channel}`}</h1>
         {info?.description && <span className="ui-topic">{info.description}</span>}
         <span className="ui-sp" />
-        {!sheet && policyChips(info).map((c) => <Badge key={c.text} variant="outline" title={c.title}>{c.text}</Badge>)}
+        {!sheet && policyChips(info).map((c) => (
+          <Tooltip key={c.text}>
+            <TooltipTrigger asChild>
+              <Badge variant="outline">{c.text}<span className="ui-sr">{` ${c.title}`}</span></Badge>
+            </TooltipTrigger>
+            <TooltipContent>{c.title}</TooltipContent>
+          </Tooltip>
+        ))}
         {working.length > 0 && (
-          <span className="ox-hchip" title={`Working now: ${working.map((r) => r.name).join(", ")}`}>
-            <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />
-            {sheet ? working.length : `${working.length} working`}
-          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="ox-hchip">
+                <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />
+                {sheet ? working.length : `${working.length} working`}
+                <span className="ui-sr">{` ${workingNow}`}</span>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{workingNow}</TooltipContent>
+          </Tooltip>
         )}
-        <Button type="button" variant="ghost" size="sm" title={`${count} member${count === 1 ? "" : "s"}`} disabled={!onMembers} onClick={onMembers}>
-          <span className="ui-stack" aria-hidden="true">
-            {members.slice(0, STACK).map((m) => {
-              const r = peers.get(m.id);
-              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? "offline"} badge={r ? badgeOf(m.id) : undefined} size={22} />;
-            })}
-          </span>
-          {count}
-        </Button>
+        <Tooltip>
+          {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it, which
+              takes the focus while the button cannot. */}
+          <TooltipTrigger asChild>
+            <span className="inline-flex" tabIndex={onMembers ? undefined : 0}>
+              <Button type="button" variant="ghost" size="sm" aria-label={memberCount} disabled={!onMembers} onClick={onMembers}>
+                <span className="ui-stack" aria-hidden="true">
+                  {members.slice(0, STACK).map((m) => {
+                    const r = peers.get(m.id);
+                    return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? "offline"} badge={r ? badgeOf(m.id) : undefined} size={22} />;
+                  })}
+                </span>
+                {count}
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{memberCount}</TooltipContent>
+        </Tooltip>
         {onTogglePanel && (
-          <Button type="button" variant="ghost" size="icon" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
-            <Icon icon={SidebarRightIcon} />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
+                <Icon icon={SidebarRightIcon} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{panelLabel}</TooltipContent>
+          </Tooltip>
         )}
       </header>
       <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>

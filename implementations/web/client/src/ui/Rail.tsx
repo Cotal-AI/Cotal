@@ -2,6 +2,7 @@ import { Tick02Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { mark } from "../art/index.ts";
 import { Icon } from "../icons/Icon.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { pageDocument } from "./focusTrap.tsx";
 import { RailIcon, type RailIconName } from "../icons/rail.js";
 import { formatRoute, type Route } from "../lib/route.js";
@@ -114,19 +115,27 @@ function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => v
   };
   return (
     <div className="ui-rail-set">
-      <button
-        ref={button}
-        type="button"
-        className="ui-rail-btn"
-        aria-label="Settings"
-        title="Settings"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={!onTheme}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <RailIcon name="gear" size={22} />
-      </button>
+      <Tooltip>
+        {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it, which
+            takes the focus while the button cannot. */}
+        <TooltipTrigger asChild>
+          <span className="inline-flex" tabIndex={onTheme ? undefined : 0}>
+            <button
+              ref={button}
+              type="button"
+              className="ui-rail-btn"
+              aria-label="Settings"
+              aria-haspopup="menu"
+              aria-expanded={open}
+              disabled={!onTheme}
+              onClick={() => setOpen((o) => !o)}
+            >
+              <RailIcon name="gear" size={22} />
+            </button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="right">Settings</TooltipContent>
+      </Tooltip>
       {open && onTheme && (
         <div ref={menu} className="ui-card ui-menu" role="menu" aria-label="Theme" onKeyDown={onKey}>
           <div className="ui-menu-h" aria-hidden="true">Theme</div>
@@ -154,9 +163,10 @@ function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => v
 
 /** The view rail down the left edge, under the Cotal mark. `places` says where Channels and Direct
  *  messages lead when the route is not already on them. Agents is current on an agent's page too.
- *  An item that leads nowhere yet is a button marked disabled, which keyboard and screen readers
- *  still reach, titled with the empty state it would show. Settings opens the theme menu when
- *  `onTheme` is given and is disabled until then. The mark is drawn in `currentColor`, so the
+ *  Each item's Tooltip names it. An item that leads nowhere yet is a button marked disabled, which
+ *  keyboard and screen readers still reach, with the empty state it would show as its Tooltip and its
+ *  accessible description. Settings opens the theme menu when `onTheme` is given and is disabled
+ *  until then. The mark is drawn in `currentColor`, so the
  *  stylesheet's `--mark` token gives it the brand navy by day and cream at night. */
 export function Rail({ route, places, theme, onTheme }: { route: Route; places: Places; theme?: Theme; onTheme?: (t: Theme) => void }) {
   return (
@@ -166,19 +176,25 @@ export function Rail({ route, places, theme, onTheme }: { route: Route; places: 
         const to = leadsTo(view, route, places);
         const here = route.view === view || (view === "agents" && route.view === "agent");
         const Item = to ? "a" : "button";
+        const why = to ? undefined : EMPTY_TITLE[view];
         return (
-          <Item
-            key={view}
-            className="ui-rail-btn"
-            href={to ? formatRoute(to) : undefined}
-            type={to ? undefined : "button"}
-            aria-disabled={to ? undefined : true}
-            aria-current={here ? "page" : undefined}
-            aria-label={label}
-            title={to ? label : (EMPTY_TITLE[view] ?? label)}
-          >
-            <RailIcon name={icon} size={22} />
-          </Item>
+          <Tooltip key={view}>
+            <TooltipTrigger asChild>
+              <Item
+                className="ui-rail-btn"
+                href={to ? formatRoute(to) : undefined}
+                type={to ? undefined : "button"}
+                aria-disabled={to ? undefined : true}
+                aria-current={here ? "page" : undefined}
+                aria-label={label}
+                aria-describedby={why ? `rail-why-${view}` : undefined}
+              >
+                <RailIcon name={icon} size={22} />
+                {why && <span id={`rail-why-${view}`} className="ui-sr">{why}</span>}
+              </Item>
+            </TooltipTrigger>
+            <TooltipContent side="right">{why ?? label}</TooltipContent>
+          </Tooltip>
         );
       })}
       <div className="ui-grow" />

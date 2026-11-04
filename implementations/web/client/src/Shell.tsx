@@ -23,6 +23,7 @@ import { panelShown, RightPanel, usePanel, type Panel } from "./ui/panel/RightPa
 import { SkeletonView } from "./ui/Skeleton.tsx";
 import { Navigate } from "./ui/navigate.js";
 import { TopologyView } from "./ui/views/TopologyView.tsx";
+import { TooltipProvider } from "#client/ui/shadcn/tooltip.tsx";
 
 type AgentPageModule = typeof import("./ui/views/AgentPage.tsx");
 /** The agent page's module once it has loaded. */
@@ -129,7 +130,8 @@ function centreView(
  *  `theme` and `onTheme` are the Settings menu's; without `onTheme` Settings is disabled.
  *
  *  The composers the views draw reach the controller's `send` and `draft` through `Compose`, and
- *  every avatar of a roster row finds its initial badge through `BadgeOf`. */
+ *  every avatar of a roster row finds its initial badge through `BadgeOf`. The dashboard's one
+ *  TooltipProvider sits here too, so every shadcn Tooltip in it shares one delay. */
 export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false, theme, onTheme }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -173,6 +175,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
     <Compose.Provider value={controller}>
     <AgentPicker.Provider value={pick}>
     <BadgeOf.Provider value={badgeOf}>
+    <TooltipProvider>
       <SheetMenu.Provider value={menu}>
         <AppShell
           route={route}
@@ -196,6 +199,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
           <section className="ui-view" data-view={route.view}>{view}</section>
         </AppShell>
       </SheetMenu.Provider>
+    </TooltipProvider>
     </BadgeOf.Provider>
     </AgentPicker.Provider>
     </Compose.Provider>

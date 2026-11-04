@@ -2,6 +2,7 @@ import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { useMemo, useState } from "react";
 import type { ActivityEntry, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { displayNameOf, nameIndex, type NameIndex } from "../../lib/names.js";
 import { rosterRows } from "../../lib/roster.js";
@@ -33,17 +34,24 @@ function placeOf(e: Entry, idx: NameIndex): string | null {
 }
 
 /** The banner over a partial page (mock section B, Partial): the marker, how many sources answered,
- *  which half of the feed the page holds, and the server's reasons on hover. */
+ *  which half of the feed the page holds, and the server's reasons as its Tooltip and its screen reader
+ *  text. */
 function PartialBanner({ banner }: { banner: NonNullable<ReturnType<typeof partialBanner>> }) {
   return (
-    <div className="s-banner" role="status" title={banner.title}>
-      <Icon icon={Alert02Icon} size={18} className="ui-ic" />
-      <div>
-        <b>{banner.label}</b>
-        {banner.count && <> <span>{banner.count}</span></>}
-        {banner.body && <><br /><span>{banner.body}</span></>}
-      </div>
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="s-banner" role="status">
+          <Icon icon={Alert02Icon} size={18} className="ui-ic" />
+          <div>
+            <b>{banner.label}</b>
+            {banner.count && <> <span>{banner.count}</span></>}
+            {banner.body && <><br /><span>{banner.body}</span></>}
+          </div>
+          <div className="ui-sr">{banner.title}</div>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent>{banner.title}</TooltipContent>
+    </Tooltip>
   );
 }
 

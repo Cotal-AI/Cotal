@@ -6,11 +6,10 @@ import { rosterRows, type RosterRow } from "../../lib/roster.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
-import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Avatar } from "../Avatar.tsx";
 import { useBadgeOf } from "../identity.js";
 import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
-import { harnessName, UNVERIFIED } from "../MessageRow.tsx";
+import { harnessName, Unverified } from "../MessageRow.tsx";
 import { WorkingLine } from "../WorkingLine.tsx";
 import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
 
@@ -73,7 +72,7 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
         <h1>{name}</h1>
         {sub && <span className="ui-topic">{sub}</span>}
         {conv && withWhom !== undefined && <span className="ui-topic">{`with ${displayNameOf(withWhom, idx, self)}`}</span>}
-        {conv && !conv.verified && <Badge variant="outline" title={UNVERIFIED}>unverified</Badge>}
+        {conv && !conv.verified && <Unverified />}
       </header>
       <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
         {conv || sent > 0 ? (

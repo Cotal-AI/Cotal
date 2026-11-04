@@ -24,6 +24,7 @@ import { SessionEmpty } from "../session/SessionEmpty.tsx";
 import { Button } from "../shadcn/button.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
 import { StatusWord } from "../Status.tsx";
 import { WorkList } from "../work/WorkList.tsx";
 
@@ -278,17 +279,27 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
     <>
       <header className="ox-head">
         {phone ? (
-          <Button asChild variant="ghost" size="icon">
-            <a href={formatRoute(back.route)} title={backTitle} aria-label={backTitle}>
-              <Icon icon={ArrowLeft01Icon} />
-            </a>
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button asChild variant="ghost" size="icon">
+                <a href={formatRoute(back.route)} aria-label={backTitle}>
+                  <Icon icon={ArrowLeft01Icon} />
+                </a>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{backTitle}</TooltipContent>
+          </Tooltip>
         ) : (
           <>
-            <a className="ui-crumb" href={formatRoute(back.route)} title={backTitle}>
-              <Icon icon={ArrowLeft01Icon} size={16} className="ui-ic" />
-              {back.label}
-            </a>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a className="ui-crumb" href={formatRoute(back.route)} aria-label={backTitle}>
+                  <Icon icon={ArrowLeft01Icon} size={16} className="ui-ic" />
+                  {back.label}
+                </a>
+              </TooltipTrigger>
+              <TooltipContent>{backTitle}</TooltipContent>
+            </Tooltip>
             <span className="ox-sep" />
           </>
         )}
@@ -298,11 +309,16 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
         {known && <StatusWord row={known} />}
         <span className="ui-sp" />
         {phone ? (
-          <Button asChild variant="ghost" size="icon">
-            <a href={messageHref} title={`Message ${name}`} aria-label={`Message ${name}`} onClick={focus}>
-              <Icon icon={Message01Icon} />
-            </a>
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button asChild variant="ghost" size="icon">
+                <a href={messageHref} aria-label={`Message ${name}`} onClick={focus}>
+                  <Icon icon={Message01Icon} />
+                </a>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{`Message ${name}`}</TooltipContent>
+          </Tooltip>
         ) : (
           <>
             <Button asChild variant="outline" size="sm">
@@ -312,9 +328,14 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
               </a>
             </Button>
             {onTogglePanel && (
-              <Button type="button" variant="ghost" size="icon" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
-                <Icon icon={SidebarRightIcon} />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button type="button" variant="ghost" size="icon" aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
+                    <Icon icon={SidebarRightIcon} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{panelLabel}</TooltipContent>
+              </Tooltip>
             )}
           </>
         )}

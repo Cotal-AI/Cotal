@@ -1,11 +1,12 @@
 import { CancelCircleIcon, CommandLineIcon, File01Icon, FileEditIcon, HourglassIcon, InboxDownloadIcon, SentIcon, UnavailableIcon, Wrench01Icon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
-import { lazy, Suspense } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { callDescription, callTitle, shownName, type CallState, type ToolCall, type ToolKind } from "../../lib/session.js";
 import { useXfade } from "../session/xfade.js";
 import { Spinner } from "../shadcn/spinner.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
 import { TraceDescription, TraceIcon, TraceLine, TraceTitle } from "../shadcn/trace.tsx";
+import { FailedTip } from "./FailedTip.tsx";
 import { useNow } from "./useNow.ts";
 
 const KIND_ICON: Readonly<Record<ToolKind, IconSvgElement>> = {
@@ -27,9 +28,6 @@ export const kindIcon = (kind: ToolKind): IconSvgElement => KIND_ICON[kind];
 const FAILED_COMMAND = "The connector reports the call returned an error. It doesn't publish the error text or the command.";
 const FAILED_OTHER = "The connector reports the call returned an error. It doesn't publish the error text or the tool's input.";
 
-/** The failed call's tooltip, in its own chunk: Radix's tooltip loads when a failed call is drawn. */
-const FailedTip = lazy(() => import("./FailedTip.tsx"));
-
 /** The icon for a call in `state`: the spinner while it runs, the cross when it failed, the hourglass
  *  while it waits, the struck circle when no result arrived, and otherwise its kind's. */
 function callIcon(call: ToolCall, state: CallState) {
@@ -39,15 +37,17 @@ function callIcon(call: ToolCall, state: CallState) {
 }
 
 /** One tool call (mock B1, C and G, `sh-line`): its icon, a title that says what kind of call it was
- *  and how it went, and a description with the tool name in `<code>` as text (capped at 64 characters,
- *  the whole name in its `title`) and its time.
+ *  and how it went, and a description with the tool name in `<code>` as text (capped at 64 characters)
+ *  and its time. When the line shows less than the whole name, the whole name is in a Tooltip and in
+ *  text for screen readers; a failed line is itself a tooltip's trigger, so there it is in the screen
+ *  reader text alone.
  *
  *  - running: the spinner, `status="running"` with the title's shimmer and `role="status"`, and the
  *    seconds counting, hidden from the live region so it announces the title and not every tick.
  *    Only the latest running line of a list shimmers: the others pass `shimmer={false}` and keep the
  *    spinner and the count.
  *  - failed: the cross, `status="error"`, and a tooltip that says what the connector does not publish
- *    (`FailedTip`, loaded on first use; the line draws at once and gains its tooltip then).
+ *    (`FailedTip`).
  *  - pending and noResult: the hourglass or the struck circle, `status="pending"`, and when it started.
  *  - done: the kind's icon and how long it took. called: `Called <name>` and its time only.
  *
@@ -60,22 +60,33 @@ export function ToolLine({ call, state, shimmer = true, className }: { call: Too
   const desc = callDescription(call, state, now);
   const name = shownName(call.name);
   const classes = ["ox-line", className, fade].filter(Boolean).join(" ");
+  // The whole name, when the line shows less of it: capped, or without its server prefix.
+  const whole = call.full !== name ? call.full : undefined;
+  const code = whole === undefined ? <code>{name}</code> : <code><span aria-hidden="true">{name}</span><span className="ui-sr">{whole}</span></code>;
+  const titled = state === "called" && whole !== undefined;
+  const title = <TraceTitle>{callTitle(call.kind, state, call.name)}{titled && <span className="ui-sr">{` ${whole}`}</span>}</TraceTitle>;
   const line = (
     <TraceLine key={state} status={tone} role={tone === "running" ? "status" : undefined} className={classes}>
       <TraceIcon>{callIcon(call, state)}</TraceIcon>
-      <TraceTitle title={state === "called" ? call.full : undefined}>{callTitle(call.kind, state, call.name)}</TraceTitle>
+      {titled ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{title}</TooltipTrigger>
+          <TooltipContent>{whole}</TooltipContent>
+        </Tooltip>
+      ) : title}
       {" "}
       {desc && (
         <TraceDescription>
-          {state === "called" ? desc : <><code title={call.full}>{name}</code>{state === "running" ? <span aria-hidden="true">{desc.slice(name.length)}</span> : desc.slice(name.length)}</>}
+          {state === "called" ? desc : <>{whole === undefined || state === "failed" ? code : (
+            <Tooltip>
+              <TooltipTrigger asChild>{code}</TooltipTrigger>
+              <TooltipContent>{whole}</TooltipContent>
+            </Tooltip>
+          )}{state === "running" ? <span aria-hidden="true">{desc.slice(name.length)}</span> : desc.slice(name.length)}</>}
         </TraceDescription>
       )}
     </TraceLine>
   );
   if (state !== "failed") return line;
-  return (
-    <Suspense fallback={line}>
-      <FailedTip line={line} words={call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER} />
-    </Suspense>
-  );
+  return <FailedTip line={line} words={call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER} />;
 }
