@@ -289,6 +289,17 @@ try {
     check("and a refused record writes no snapshot", JSON.stringify(snapshots(workspaceRoot)) === JSON.stringify(before), snapshots(workspaceRoot));
     const define = S.M.opDefinePersona({ name: "orphan_def", persona: "x", capabilities: ["spawn"] }, principalKey(DEV_OWNER, unissued.actor).key, false, unissued);
     check("a definer with no evidence puts no capability into a persona", refused(await define, /definer holds no issued evidence.*capabilities spawn/) && !existsSync(catalog("orphan_def")));
+    // The record is admitted as the caller passed it. startAgent reaches its ownership seam before
+    // its first await, so a write to the caller's record after the call returns, while the spawn is
+    // still in flight, must change nothing: not the bound, not the mint.
+    const held = { prompt: "x", allowSubscribe: ["review"], allowPublish: ["review"] };
+    const pending = spawnAs(lead, "held_input", { persona: held });
+    held.allowPublish[0] = "ops";
+    held.allowSubscribe.push("general");
+    const heldReply = await pending;
+    const heldAcl = minted(heldReply);
+    check("a caller's write to its inline record after the call changes neither the bound nor the mint",
+      heldReply.ok && posts(heldAcl, "review") && !posts(heldAcl, "ops") && !reads(heldAcl, "general"), heldReply.ok ? heldAcl : heldReply.error);
   }
 
   console.log("save");

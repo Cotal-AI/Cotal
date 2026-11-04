@@ -504,6 +504,23 @@ function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: re
   };
 }
 
+/** The inline record is admitted the same way, one level deeper: the record itself, its lists, and
+ *  each `endpoints` entry with its commands. It is still untrusted here, so a shape the validator
+ *  will refuse is copied as far as it goes and refused where it is read. */
+function ownPersona(record: InlinePersona): InlinePersona {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) return record;
+  const owned = ownLists({ ...record });
+  const endpoints: unknown = owned.endpoints;
+  if (Array.isArray(endpoints))
+    owned.endpoints = endpoints.map((e: unknown) => {
+      if (e === null || typeof e !== "object" || Array.isArray(e)) return e;
+      const entry = { ...(e as Record<string, unknown>) };
+      if (Array.isArray(entry.commands)) entry.commands = [...entry.commands];
+      return entry;
+    }) as InlinePersona["endpoints"];
+  return owned;
+}
+
 export interface ManagerOptions {
   space: string;
   /** Hosted pooled control requires signerless authority and either an explicit non-custodial
@@ -6972,6 +6989,7 @@ export class Manager {
     // the lists and the restart policy as admitted.
     opts = ownLists(opts);
     if (opts.resolved) opts.resolved = ownLists(opts.resolved);
+    if (opts.persona !== undefined) opts.persona = ownPersona(opts.persona);
     if (opts.supervise) {
       opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
       // The budget is checked here, where it is held, not only at the wire: an in-process caller of
