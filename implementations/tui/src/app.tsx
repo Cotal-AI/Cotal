@@ -552,7 +552,9 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
               mesh={b().mesh}
               state={composer()}
               setState={setComposer}
-              focused={focus() === "box"}
+              // A dialog hands focus back to whatever held it when it opened, which is not the box
+              // when a palette command opens a second dialog, so the box takes it back itself.
+              focused={focus() === "box" && dialog.stack.length === 0}
               toTree={() => setFocus("tree")}
               maxRows={dims().height >= 40 ? 6 : 3}
             />

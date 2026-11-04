@@ -7007,7 +7007,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(b) => {\n          const Composer = b().Composer\n          return (\n            <Composer\n              talk={b().talk}\n              space={b().mesh.status.space}\n              open={open()}\n              mesh={b().mesh}\n              state={composer()}\n              setState={setComposer}\n              focused={focus() === \"box\"}\n              toTree={() => setFocus(\"tree\")}\n              maxRows={dims().height >= 40 ? 6 : 3}\n            />\n          )\n        }}",
+      "anchor": "{(b) => {\n          const Composer = b().Composer\n          return (\n            <Composer\n              talk={b().talk}\n              space={b().mesh.status.space}\n              open={open()}\n              mesh={b().mesh}\n              state={composer()}\n              setState={setComposer}\n              // A dialog hands focus back to whatever held it when it opened, which is not the box\n              // when a palette command opens a second dialog, so the box takes it back itself.\n              focused={focus() === \"box\" && dialog.stack.length === 0}\n              toTree={() => setFocus(\"tree\")}\n              maxRows={dims().height >= 40 ? 6 : 3}\n            />\n          )\n        }}",
       "class": "non-render/control",
       "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
     },
