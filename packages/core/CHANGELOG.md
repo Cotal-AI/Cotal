@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.140.8
+
+### Patch Changes
+
+- e477c34: `disarmMembershipWatch` no longer computes a `dyingEpochTimeout` term when a consumer delete fails. The term was a timeout on a reconnecting or closed connection, and the branch it fed already caught every timeout, so it read the connection state on each delete timeout and never changed the result. The catch now branches on a timeout or a closed connection alone. Behavior is unchanged.
+
 ## 0.140.7
 
 ### Patch Changes
