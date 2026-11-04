@@ -28,6 +28,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: 57a005a0e0f907faa42043280249cf93f440f594
+      - name: Verify checked-out source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "57a005a0e0f907faa42043280249cf93f440f594"
+          git rev-parse HEAD 'HEAD^{tree}'
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
@@ -75,3 +82,11 @@ jobs:
       - run: pnpm --filter cotal-ai seeded-connectors
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime
+      - name: Build unsigned validation packages
+        run: pnpm --dir desktop exec tauri build --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-validation-${{ runner.os }}-${{ runner.arch }}
+          path: desktop/src-tauri/target/release/bundle/
+          if-no-files-found: error
+          retention-days: 7
