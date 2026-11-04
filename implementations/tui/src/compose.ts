@@ -117,7 +117,8 @@ export function submit(
 }
 
 /** A send's outcome. The draft clears only when it still holds the text sent, a stored reply drops
- *  its quote, and a refused or unknown send keeps the draft and is never resent. */
+ *  its quote, and a refused or unknown send keeps the draft and is never resent. A plain stored send
+ *  says nothing: the message shows in the conversation. */
 export function settled(state: ComposerState, result: PublishResult): ComposerState {
   const s = state.sending
   if (!s) return state
@@ -128,6 +129,7 @@ export function settled(state: ComposerState, result: PublishResult): ComposerSt
   const said = publishOutcome(result)
   const lines = result.outcome === "unknown" ? [out.notice!.text] : [said.text, ...(out.notice ? [out.notice.text] : [])]
   const { sending: _, ...rest } = withDraft(state, s.key, { text: out.draft, ...(reply ? { reply } : {}) })
+  if (result.outcome === "stored" && !out.notice) return { ...rest, notice: undefined }
   return { ...rest, notice: { key: s.key, tone: out.notice?.tone ?? said.tone, lines } }
 }
 

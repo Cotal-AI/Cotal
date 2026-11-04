@@ -322,8 +322,16 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return { mark: r.open ? "▸" : " ", markFg: theme.text.action.primary.base, name: fit(e.space, width - tag.length - 5), tag, fg: e.kind === "prepared" ? theme.text.muted : theme.text.base }
   }
 
+  /** The human's name: dim while watching unseen, plain once a session puts them on the roster. */
+  const me = () => {
+    const p = talk()?.phase()
+    if (p?.phase === "open") return { name: p.identity.label, seen: true }
+    const n = talk()?.name()
+    return n?.state === "ok" ? { name: n.name.name, seen: false } : undefined
+  }
+
   const Tree = (p: { width: number }) => {
-    const height = () => Math.max(1, dims().height - 4)
+    const height = () => Math.max(1, dims().height - 6)
     const start = () => {
       const at = items().findIndex((i) => i.kind !== "header" && i.key === selection()?.key)
       return Math.max(0, Math.min(at - height() + 1, items().length - height()))
@@ -360,6 +368,16 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
             )
           }}
         </For>
+        <box flexGrow={1} />
+        <Show when={me()}>
+          {(m) => (
+            <box flexShrink={0} paddingBottom={1}>
+              <text wrapMode="none" fg={m().seen ? theme.text.base : theme.text.faint}>
+                {fit(m().name, p.width - 2)}
+              </text>
+            </box>
+          )}
+        </Show>
       </box>
     )
   }
@@ -392,11 +410,10 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       return { title: c.space ?? "Opening a space", lines: [{ text: c.space ? `Connecting to ${c.space}…` : "Finding the space for this folder…", fg: theme.text.muted }] }
     if (c.phase === "closed") return { title: c.space ?? "No space open", lines: [{ text: "Closed.", fg: theme.text.muted }] }
     if (c.phase === "failed") {
-      const pick = entries().some((e) => e.kind === "space") ? [{ text: "Pick a space on the left and press enter to open it.", fg: theme.text.muted }] : []
       const none = entries().length === 0 && load().phase === "ready" ? [{ text: "Prepare one with `cotal space create <name>`, or start one in a project with `cotal up`.", fg: theme.text.muted }] : []
       return {
         title: c.space ?? "No space open",
-        lines: [{ text: c.message, fg: theme.text.feedback.error.base }, ...(c.remedy ? [{ text: c.remedy, fg: theme.text.base }] : []), ...pick, ...none],
+        lines: [{ text: c.message, fg: theme.text.feedback.error.base }, ...(c.remedy ? [{ text: c.remedy, fg: theme.text.base }] : []), ...none],
       }
     }
     return undefined
@@ -468,11 +485,6 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     )
   }
 
-  const summary = () => {
-    const n = waiting().length
-    return n === 0 ? "nothing needs you" : `${n} need${n === 1 ? "s" : ""} you · w opens the next`
-  }
-
   /** The input box: on screen while a space's conversation is, and once the composer has loaded. */
   const box = () => {
     const m = mesh()
@@ -504,10 +516,12 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
           </>
         )}
       </Show>
-      <Show when={layout().kind === "two"}>
-        <text wrapMode="none" fg={waiting().length ? theme.text.feedback.warning.base : theme.text.faint} flexShrink={0}>
-          {summary()}
-        </text>
+      <Show when={layout().kind === "two" && waiting().length}>
+        {(n) => (
+          <text wrapMode="none" fg={theme.text.feedback.warning.base} flexShrink={0}>
+            {`${n()} need${n() === 1 ? "s" : ""} you`}
+          </text>
+        )}
       </Show>
       <Show when={box()}>
         {(b) => {
@@ -537,16 +551,11 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     }
     return (
       <box width={p.width} flexShrink={0} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} backgroundColor={theme.background.raised.base}>
-        <Section title={`NEEDS YOU · ${waiting().length}`} right={waiting().length && p.width >= 40 ? `1-${Math.min(9, waiting().length)} open · w next` : ""} />
+        <Section title={`NEEDS YOU · ${waiting().length}`} />
         <box height={1} flexShrink={0} />
         <Show
           when={waiting().length}
-          fallback={
-            <>
-              <text fg={theme.text.base}>Nothing needs you.</text>
-              <text fg={theme.text.muted}>{mesh() ? "Agents that wait for an answer show here." : "Waiting agents show here once a space is open."}</text>
-            </>
-          }
+          fallback={<text fg={theme.text.muted}>Nothing needs you.</text>}
         >
           <For each={waiting()}>
             {(a, i) => (
@@ -574,13 +583,12 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     )
   }
 
-  const indicator = (): { text: string; fg: RGBA } => {
+  // The footer speaks only when the connection is in trouble; the middle column says why.
+  const indicator = (): Line | undefined => {
     const c = conn()
-    if (c.phase === "live") return { text: `● live · ${c.space}`, fg: theme.text.feedback.success.base }
-    if (c.phase === "reconnecting") return { text: `◐ reconnecting · ${c.space}`, fg: theme.text.feedback.warning.base }
-    if (c.phase === "connecting") return { text: c.space ? `◌ connecting · ${c.space}` : "◌ connecting", fg: theme.text.muted }
-    if (c.phase === "closed") return { text: "○ closed", fg: theme.text.muted }
-    return { text: "✗ not connected", fg: theme.text.feedback.error.base }
+    if (c.phase === "reconnecting") return { text: "◐ reconnecting", fg: theme.text.feedback.warning.base }
+    if (c.phase === "failed") return { text: "✗ not connected", fg: theme.text.feedback.error.base }
+    return undefined
   }
 
   const stopLine = (): Line | undefined => {
@@ -592,11 +600,11 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
 
   const StatusBar = () => (
     <box flexShrink={0} flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.high}>
-      <text wrapMode="none" fg={theme.text.faint} flexShrink={1}>
-        {fit(composing() ? "enter send · ctrl+j newline · tab tree" : "j k move · enter open · esc box · w next · ? help · ctrl+p commands · q quit", dims().width - indicator().text.length - 4)}
+      <text wrapMode="none" fg={indicator()?.fg ?? theme.text.faint} flexShrink={1}>
+        {indicator()?.text ?? ""}
       </text>
-      <text wrapMode="none" fg={indicator().fg} flexShrink={0}>
-        {indicator().text}
+      <text wrapMode="none" fg={theme.text.faint} flexShrink={0}>
+        ? help · ctrl+p commands
       </text>
     </box>
   )
@@ -733,7 +741,7 @@ function NameDialog(props: { talk: Talk; done: () => void }) {
   }
   return (
     <DialogLayout header={<DialogHeader title="Change your name" />}>
-      <text fg={theme.text.muted}>{current() ? `You appear as ${current()!.name}, from ${current()!.from}.` : "Your name is not resolved yet."}</text>
+      <text fg={theme.text.muted}>{current() ? `Your name is ${current()!.name}, from ${current()!.from}.` : "Your name is not resolved yet."}</text>
       <text fg={theme.text.muted}>{props.talk.phase().phase === "open" ? "The open session keeps its name until it ends." : "Every chat session on this machine uses it."}</text>
       <box height={1} />
       <input

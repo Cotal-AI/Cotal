@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 982,
+    "total": 979,
     "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 764
+    "non-render/control": 761
   },
   "renderers": [
     {
@@ -6865,27 +6865,6 @@
       "anchor": "{(m) => <Conversation mesh={m()} />}",
       "class": "non-render/control",
       "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "fallback={\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
-      "class": "non-render/control",
-      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
-      "class": "non-render/control",
-      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}",
-      "class": "non-render/control",
-      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
     },
     {
       "path": "implementations/tui/src/live.ts",

@@ -32,12 +32,12 @@ command launches the app.
 
 ## Layout
 
-Three columns. The left one lists the spaces, then the open space's channels, agents and endpoints.
-The middle shows the open conversation, with the input box under it:
+Three columns. The left one lists the spaces, then the open space's channels, agents and endpoints,
+with your name at the bottom. The middle shows the open conversation, with the input box under it:
 all traffic, one channel, or one agent with its question pinned when it waits. A space opens on
 `#general`. The inspector on the right lists the agents waiting for an answer and the selected
 agent's status, model, harness and uptime. When the conversation would get fewer than 40 columns, as
-at 80x24, the inspector shrinks to a one-line summary above the input box, and the agent
+at 80x24, the inspector shrinks to a count such as `1 needs you` above the input box, and the agent
 overview shows in the conversation while the tree has the keys.
 
 The cursor starts in the input box. `tab` moves it to the tree, where the arrows or `j` and `k`
@@ -60,14 +60,15 @@ or `force-killing <name>…` until the manager answers, then `stopped <name>`, `
 `stop: <error>`, cut to one line. The stop names the agent and not one run of it, as `cotal stop`
 and the console do, so an agent restarted under the same name in the meantime is the one stopped.
 
-The status bar shows the connection: connecting, live, reconnecting while the broker is away (the
-last model stays on screen), closed, or not connected with the reason in the middle.
+The status bar shows `reconnecting` while the broker is away (the last model stays on screen) and
+`not connected` when the space did not open, with the reason in the middle. While the space is
+connected it shows only `? help` and `ctrl+p commands`.
 
 ## Talking
 
 You watch a space without appearing in it. Your first message opens a chat session and sends in one
 step, and you appear on the roster under your name: your saved `name` preference, else your OS
-login.
+login. The name at the bottom of the left column is dim until then.
 
 - The input box writes to the open conversation, and the line under it names where the message
   goes, such as `#general` or `answering coder-2`. A channel gets a post, an agent or endpoint gets
