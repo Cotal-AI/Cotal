@@ -6,9 +6,9 @@ built on OpenCode's terminal UI components (Solid on OpenTUI) and runs on Node.
 This package is private. The app lists the spaces registered on this machine and opens one: the
 space every command in the launch folder would pick, or the one you open with enter. It shows the
 roster, the channels, the message feed, the agents waiting for an answer and the state of the
-connection, and it can stop an agent through the manager that runs it. It cannot send anything yet.
-Its observer is invisible to peers, and opening a space writes nothing to the registry and starts no
-service.
+connection. You can write to a channel or an agent from it, and stop an agent through the manager
+that runs it. Its observer is invisible to peers, and opening a space writes nothing to the registry
+and starts no service.
 
 ## Running it
 
@@ -23,8 +23,9 @@ node implementations/tui/bin/cotal-tui.mjs
 
 The `cotal` binary does not start this app yet.
 
-Only open spaces open for now. A user-auth space is refused with `uses the "cotal" auth provider,
-which this build does not register`. Its credentials come from the auth provider in
+Open and static-auth spaces open. On a static-auth space the app mints its observer's credential
+in memory from the project's trust material, so the space must have been started on this machine. A
+user-auth space is refused with `uses the "cotal" auth provider, which this build does not register`. Its credentials come from the auth provider in
 `@cotal-ai/auth`, which this standalone launcher does not register, and this package cannot import
 it without depending on another implementation. User-auth spaces will open once the bare `cotal`
 command launches the app.
@@ -56,6 +57,37 @@ and the console do, so an agent restarted under the same name in the meantime is
 The status bar shows the connection: connecting, live, reconnecting while the broker is away (the
 last model stays on screen), closed, or not connected with the reason in the middle.
 
+## Talking
+
+You watch a space without appearing in it. The first time you write, the app opens a chat session
+for you and you appear on the roster under your name: your saved `name` preference, else your OS
+login. The line under the conversation says it, as in `c write to #general · you appear as manas`.
+
+- `c` writes to the open conversation. A channel gets a post, an agent or endpoint gets a direct
+  message, and a waiting agent gets your answer. `enter` sends, `ctrl+j` starts a new line, `tab`
+  sends the draft somewhere else (a listed channel or peer, or a typed `#channel` or `role:<role>`),
+  and `esc` goes back with the draft kept. Every conversation keeps its own draft, in every space.
+- `@name` in a channel post mentions that peer, as `cotal send` does. A message that mentions you
+  is marked `@you`.
+- A line that starts with `/` is a command: `/reply` quotes the newest direct message you received
+  so the next `enter` answers it, and `/whoami`, `/connection`, `/reconnect`, `/status`, `/help` and
+  `/quit` run as in `cotal chat`. `/quit` ends your session. `//` sends a line that starts with `/`.
+  The other `cotal chat` commands are refused with a line that says where they run.
+- `ctrl+p`, Change your name, saves the `name` preference for every chat session on this machine.
+  An open session keeps its name until it ends. When another participant already holds your name,
+  a warning says so.
+- `ctrl+p`, End your chat session, does what `/quit` does.
+
+On a static-auth space the space's manager admits the session, as it admits a `cotal chat`
+session. The session may post only to the channel it opened on, or to none when it opened on an
+agent, and it ends 15 minutes after it opened; the line shows the time. Posting elsewhere means
+`/quit` and `c` on that channel.
+
+Your session ends when you switch spaces, quit, or type `/quit`. The next `c`, or `enter` once the
+line says the session ended, opens a new session under a new identity, and opening a session never
+sends anything. Quitting with unsent drafts asks first. Quitting closes the session and prints how
+it closed.
+
 ## Vendored OpenCode code
 
 `vendor/opencode/` holds files copied from one pinned OpenCode commit under its MIT license
@@ -85,7 +117,15 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   seats and covers the overview, the confirm and both kinds of stop, a stop refused for an unmanaged
   agent and for a name two managers hold, a space with no manager, and a broker that turns auth on
   while the app reads its managers, after which the space is still registered.
-  They need Node 26.4, tmux and nats-server, and the control smoke needs the manager built, so they
-  are not in `smoke:ci`.
+  `smoke/composer.smoke.ts` writes from the composer at 209x52 and 80x24 on an open space and on a
+  static-auth space that a real `cotal up --detach` stack serves. It reads each send off the broker:
+  a post with its mention, a direct message to one of two agents that share a name, an answer to a
+  waiting agent, `/reply` with the message it answers, and a message to an offline agent. It also
+  covers watching unseen until the first `c`, the shared-name warning, the refusals for no
+  recipient, your own session, unknown commands, the post grant and an unreachable broker, `/quit`
+  and the next session, a space switch that closes the session and keeps the draft, quitting with a
+  draft, and Change your name.
+  They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
+  built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
   list under tmux.
