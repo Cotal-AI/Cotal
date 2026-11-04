@@ -31,7 +31,7 @@ const FAILED_OTHER = "The connector reports the call returned an error. It doesn
 /** The icon for a call in `state`: the spinner while it runs, the cross when it failed, the hourglass
  *  while it waits, the struck circle when no result arrived, and otherwise its kind's. */
 function callIcon(call: ToolCall, state: CallState) {
-  if (state === "running") return <Spinner />;
+  if (state === "running") return <Spinner role={undefined} aria-label={undefined} aria-hidden />;
   const icon = state === "failed" ? CancelCircleIcon : state === "pending" ? HourglassIcon : state === "noResult" ? UnavailableIcon : kindIcon(call.kind);
   return <Icon icon={icon} size={16} />;
 }
