@@ -1,9 +1,11 @@
+import { Skeleton } from "#client/ui/shadcn/skeleton.tsx";
+
 /** One skeleton row: a square where the icon goes and a bar `width` wide where the label goes. */
 function Row({ width }: { width: string }) {
   return (
     <div className="ui-skel-row">
-      <span className="ui-skel-av" />
-      <span className="ui-skel" style={{ width }} />
+      <Skeleton className="size-5 shrink-0" />
+      <Skeleton className="h-2.5" style={{ width }} />
     </div>
   );
 }
@@ -12,9 +14,9 @@ function Row({ width }: { width: string }) {
 function Message({ lines }: { lines: string[] }) {
   return (
     <div className="ui-skel-msg">
-      <span className="ui-skel-av" />
+      <Skeleton className="size-8.5" />
       <div style={{ display: "grid", gap: 8, paddingTop: 4 }}>
-        {lines.map((w, i) => <span key={i} className="ui-skel" style={{ width: w }} />)}
+        {lines.map((w, i) => <Skeleton key={i} className="h-2.5" style={{ width: w }} />)}
       </div>
     </div>
   );
@@ -46,7 +48,7 @@ export function SkeletonPlaces() {
 export function SkeletonView() {
   return (
     <div aria-hidden="true" style={{ display: "contents" }}>
-      <header className="ui-bar"><span className="ui-skel" style={{ width: 120, height: 12 }} /></header>
+      <header className="ui-bar"><Skeleton className="h-3 w-30" /></header>
       <div className="ui-col" style={{ width: "100%" }}>
         <Message lines={["30%", "85%"]} />
         <Message lines={["24%", "70%", "52%"]} />

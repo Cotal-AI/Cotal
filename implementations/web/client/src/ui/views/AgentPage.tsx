@@ -23,6 +23,7 @@ import { PlaneNote } from "../session/PlaneNote.tsx";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
 import { Button } from "../shadcn/button.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
+import { Skeleton } from "../shadcn/skeleton.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
 import { Toggle } from "../shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
@@ -59,10 +60,10 @@ type Scroller = {
 
 /** The skeleton rows of mock C, Loading. The bars are drawing, so assistive tech skips them. */
 function WorkSkeleton() {
-  const bar = (width: string) => <span className="ui-skel" style={{ width }} />;
+  const bar = (width: string) => <Skeleton className="h-2.5" style={{ width }} />;
   return (
-    <div className="ox-col ox-skel" aria-busy="true">
-      <div aria-hidden="true">
+    <div className="ox-col" aria-busy="true">
+      <div className="flex flex-col gap-3" aria-hidden="true">
         {bar("36%")}
         {bar("88%")}
         {bar("64%")}

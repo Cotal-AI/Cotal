@@ -194,13 +194,8 @@
 .ui-mdot-unread::after { transform: rotate(-45deg); }
 
 /* ---------- loading and empty ---------- */
-.ui-skel { display: block; height: 10px; border-radius: 5px; background: var(--skel); position: relative; overflow: hidden; }
-.ui-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--shimmer), transparent); transform: translateX(-100%); animation: ui-shimmer 1.4s infinite; }
-@keyframes ui-shimmer { to { transform: translateX(100%); } }
 .ui-skel-row { display: flex; gap: 9px; align-items: center; padding: 7px 8px; }
-.ui-skel-av { width: 20px; height: 20px; border-radius: 6px; background: var(--skel); flex: none; }
 .ui-skel-msg { display: grid; grid-template-columns: 36px 1fr; gap: 12px; padding: 8px 0; }
-.ui-skel-msg .ui-skel-av { width: 34px; height: 34px; border-radius: 10px; }
 .ui-empty { display: grid; justify-items: center; text-align: center; gap: 10px; padding: 60px 20px; color: var(--dim); }
 .ui-empty svg { width: 150px; height: 150px; overflow: visible; }
 .ui-empty b { color: var(--ink); font-size: 16px; font-weight: 600; }
@@ -421,14 +416,15 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 @keyframes ui-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .ui-xfade { animation: ui-fade 160ms ease-out both; }
 @keyframes ui-fade { from { opacity: 0; } to { opacity: 1; } }
-/* Reduced motion stops every animation here. The caret and spinner stand still, and the skeleton bar
-   keeps its fill without the sweep. */
+/* Reduced motion stops every animation here. The caret and spinner stand still, and the skeleton
+   keeps its fill without the pulse. The registry Skeleton has no reduced-motion stop of its own, so
+   it stops here by its slot. */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .ui-in, .ui-xfade { animation: none; }
   .ui-caret { animation: none; }
   .ui-spin { animation: none; }
-  .ui-skel::after { animation: none; }
+  [data-slot="skeleton"] { animation: none; }
 }
 /* ---------- message actions (agents round 1: sections S, C, D and E) ----------
    The Session action on a verified roster agent's message. It is in the tab order, so it shows on
@@ -555,7 +551,6 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 .ox-tabc { min-height: 0; flex-direction: column; font-size: inherit; }
 .ox-tabc:not([hidden]) { display: flex; }
 .ox-col { max-width: 760px; width: 100%; margin: 0 auto; padding: 18px 28px 10px; }
-.ox-skel .ui-skel { margin-bottom: 12px; }
 /* Work: the scroller fills the tab, and its button counts the steps that arrived below */
 .ox-scroller { flex: 1; min-height: 0; }
 .ox-viewport { outline: none; }
