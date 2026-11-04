@@ -203,7 +203,8 @@ export function aclEnv(opts: {
   // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.
   if (opts.capabilities?.length) env.COTAL_CAPABILITIES = opts.capabilities.join(",");
   // The endpoint commands the seat was handed at launch, as JSON, so the session can say what it holds.
-  if (opts.endpoints?.length) env.COTAL_ENDPOINTS = JSON.stringify(opts.endpoints);
+  // An empty list is written too: the session then reads the launch's answer, not the persona file.
+  if (opts.endpoints !== undefined) env.COTAL_ENDPOINTS = JSON.stringify(opts.endpoints);
   return env;
 }
 

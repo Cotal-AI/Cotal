@@ -60,8 +60,9 @@ export interface AgentConfig {
    *  so the gate is permissive there. Same file the manager minted creds from, so the tool gate
    *  mirrors the wire grant exactly. */
   capabilities?: string[];
-  /** The endpoint commands this session was handed at launch (`COTAL_ENDPOINTS`, else the agent
-   *  file's `endpoints:`). Launch metadata, not a reading of the credential: `cotal_endpoints` lists
+  /** The endpoint commands this session was handed at launch. A launcher always writes
+   *  `COTAL_ENDPOINTS`, `[]` included; only a session started with no such variable reads the agent
+   *  file's `endpoints:`. Launch metadata, not a reading of the credential: `cotal_endpoints` lists
    *  what the credential's grants cover. */
   endpoints?: PersonaEndpoint[];
   servers: string;
@@ -154,15 +155,17 @@ function splitList(v: string | undefined): string[] {
     .filter(Boolean);
 }
 
-/** `COTAL_ENDPOINTS`, the JSON list the launcher wrote, read under the persona field's own rule. */
-function endpointsEnv(v: string): PersonaEndpoint[] | undefined {
+/** `COTAL_ENDPOINTS`, the JSON list the launcher wrote, read under the persona field's own rule. A
+ *  value that is not a list, empty or `null` included, is refused rather than read as absent. */
+function endpointsEnv(v: string): PersonaEndpoint[] {
   let raw: unknown;
   try {
     raw = JSON.parse(v);
   } catch {
-    throw new Error("COTAL_ENDPOINTS: expected the JSON list the launcher writes");
+    raw = undefined;
   }
-  return parsePersonaEndpoints(raw, "COTAL_ENDPOINTS");
+  if (!Array.isArray(raw)) throw new Error("COTAL_ENDPOINTS: expected the JSON list the launcher writes");
+  return parsePersonaEndpoints(raw, "COTAL_ENDPOINTS")!;
 }
 
 /** A launcher-resolved list: `undefined` only when the variable is unset. A set but empty one is a
@@ -375,7 +378,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     tags: def?.tags,
     meta: def?.meta,
     capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
-    endpoints: env.COTAL_ENDPOINTS ? endpointsEnv(env.COTAL_ENDPOINTS) : def?.endpoints,
+    endpoints: env.COTAL_ENDPOINTS !== undefined ? endpointsEnv(env.COTAL_ENDPOINTS) : def?.endpoints,
     model: env.COTAL_MODEL?.trim() || undefined,
     variant: env.COTAL_VARIANT?.trim() || undefined,
     servers: material?.servers || env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,

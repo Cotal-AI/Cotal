@@ -358,6 +358,9 @@ try {
       inlineOne.ok && hasCommand(inlineAcl, "list") && !hasCommand(inlineAcl, "create"), inlineOne.ok ? inlineAcl?.filter((r) => r.includes("orders")) : inlineOne.error);
     check("and the session is handed the same list it was minted",
       JSON.stringify(launched.get("ep_inline")?.endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), launched.get("ep_inline")?.endpoints);
+    const noEp = await spawnAs(epLead, "ep_none_named", { persona: { prompt: "x", subscribe: [] } });
+    check("a persona that names no endpoint commands hands the session an empty list, so it never reads the file for them",
+      noEp.ok && JSON.stringify(launched.get("ep_none_named")?.endpoints) === "[]", noEp.ok ? launched.get("ep_none_named")?.endpoints : noEp.error);
     // The broker enforces what the mint granted. On the helper's own credential a request on
     // com.example.orders' `create`, which it was not handed, draws a permission violation, and one on
     // `list` does not. The broker answers publishes in order, so once the later `create` violation has

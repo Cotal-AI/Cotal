@@ -30,8 +30,8 @@ if (process.argv[2] === "worker") {
     kind: "connector", name: "foreground-issuance-fixture", requires: [], eventChannel,
     buildLaunch: (options: import("@cotal-ai/core").LaunchOpts) => ({
       command: process.execPath,
-      args: ["-e", "console.log('FIXTURE_SEAT '+JSON.stringify({token:process.env.FIXTURE_TOKEN,creds:process.env.FIXTURE_CREDS,uid:process.env.FIXTURE_UID,id:process.env.FIXTURE_ID}));process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
-      env: { FIXTURE_TOKEN: options.acceptedToken ?? "", FIXTURE_CREDS: options.creds ?? "", FIXTURE_UID: options.lifecycleUid ?? "", FIXTURE_ID: options.id ?? "" },
+      args: ["-e", "console.log('FIXTURE_SEAT '+JSON.stringify({token:process.env.FIXTURE_TOKEN,creds:process.env.FIXTURE_CREDS,uid:process.env.FIXTURE_UID,id:process.env.FIXTURE_ID,endpoints:process.env.FIXTURE_ENDPOINTS}));process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
+      env: { FIXTURE_TOKEN: options.acceptedToken ?? "", FIXTURE_CREDS: options.creds ?? "", FIXTURE_UID: options.lifecycleUid ?? "", FIXTURE_ID: options.id ?? "", FIXTURE_ENDPOINTS: JSON.stringify(options.endpoints ?? null) },
     }),
   } as import("@cotal-ai/core").Connector);
   await runCli(registry, ["spawn", ...process.argv.slice(3)]);
@@ -70,7 +70,7 @@ const env: NodeJS.ProcessEnv = {
 };
 for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]) mkdirSync(env[key]!, { recursive: true });
 
-type Seat = { token: string; creds: string; uid: string; id: string };
+type Seat = { token: string; creds: string; uid: string; id: string; endpoints: string };
 type Worker = { child: ChildProcessWithoutNullStreams; output: string; seat: Promise<Seat | undefined>; closed: Promise<number | null>; exited: boolean };
 const workers: Worker[] = [];
 function launch(extra: string[]): Worker {
@@ -115,6 +115,7 @@ try {
   const w = launch([]);
   const seat = await w.seat;
   check("the foreground seat is handed an accepted token", seat !== undefined && /^[0-9a-f]{32}$/.test(seat.token), w.output);
+  check("a persona that names no endpoint commands hands the session an empty list", seat?.endpoints === "[]", seat?.endpoints);
   const ref = seat ? await outcome(() => refOf(seat)) : { error: "no seat" };
   check("its own credential reads its accepted row", ref.value?.owner === DEV_OWNER && ref.value.actor === seat?.id && ref.value.uid === seat?.uid, ref);
   const resolved = ref.value ? await outcome(() => resolveRef(ref.value!)) : { error: "no ref" };
@@ -157,6 +158,8 @@ try {
   check("the seat's credential carries the request row for each command its persona names",
     pubE.some((r) => listRow.test(r)), pubE.filter((r) => r.includes("orders")));
   check("and no row for a command it does not name", !pubE.some((r) => r.includes(".com_example_orders.create.")), pubE.filter((r) => r.includes("orders")));
+  check("and the session is handed the list it minted, not a later read of the file",
+    seatE?.endpoints === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), seatE?.endpoints);
   await stop(we);
   const wp = launch(["ep-pin"]);
   await wp.closed;

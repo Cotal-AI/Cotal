@@ -29,6 +29,7 @@ import {
   provisionAgent,
   provisionAgentDurables,
   lowerPersonaEndpoints,
+  copyPersonaEndpoints,
   registry,
   resolveAuthProvider,
   resolveReadAcl,
@@ -1740,6 +1741,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       subscribe,
       allowSubscribe,
       allowPublish,
+      // The endpoint commands this launch minted (on a static mesh) or names (on an open one), so the
+      // session reads them from the launch rather than from a persona file that may change.
+      endpoints: copyPersonaEndpoints(def.endpoints) ?? [],
       prompt: values.prompt,
       // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
       // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.

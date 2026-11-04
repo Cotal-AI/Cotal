@@ -449,7 +449,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const handed = [{ endpoint: "com.example.orders", commands: ["create", "list"] }];
   const env = aclEnv({ endpoints: handed });
   assert.equal(env.COTAL_ENDPOINTS, JSON.stringify(handed), "the launcher writes the handed list as JSON");
-  assert.equal(aclEnv({ endpoints: [] }).COTAL_ENDPOINTS, undefined, "an empty list writes no variable");
+  assert.equal(aclEnv({}).COTAL_ENDPOINTS, undefined, "a launch that names no list writes no variable");
   const base = { COTAL_NAME: "alice", COTAL_SPACE: "demo" };
   const c = configFromEnv({ ...base, ...env });
   assert.deepEqual(c.endpoints, handed, "the session reads the list the launcher wrote");
@@ -459,6 +459,19 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.ok(!none.includes("endpoint commands handed at launch"), "a seat handed none shows no line");
   assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "com.example.orders" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
   assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: JSON.stringify([{ endpoint: "com.example.orders", commands: ["describe"] }]) }), /reserved command "describe"/);
+  // A launch that resolved no endpoint commands says so, and the session believes the launch over the
+  // persona file, which can change after launch. Only a hand-driven session, with no variable at
+  // all, reads the file. A value that is not the list, empty or `null` included, is refused.
+  const dir = mkdtempSync(join(tmpdir(), "cotal-orientation-endpoints-"));
+  const file = join(dir, "agent.md");
+  writeFileSync(file, "---\nname: alice\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [refund]\n---\nbody\n");
+  const resolvedNone = aclEnv({ endpoints: [] });
+  assert.equal(resolvedNone.COTAL_ENDPOINTS, "[]", "a launch that resolved none writes an empty list");
+  assert.deepEqual(configFromEnv({ ...base, COTAL_AGENT_FILE: file, ...resolvedNone }).endpoints, [], "the session reads the launch's empty list, not the file's");
+  assert.deepEqual(configFromEnv({ ...base, COTAL_AGENT_FILE: file, ...env }).endpoints, handed, "and the launch's list over the file's");
+  assert.deepEqual(configFromEnv({ ...base, COTAL_AGENT_FILE: file }).endpoints, [{ endpoint: "com.example.orders", commands: ["refund"] }], "a hand-driven session with no variable reads the file");
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "null" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
 }
 
 console.log("✓ orientation smoke passed");

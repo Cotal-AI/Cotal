@@ -7715,7 +7715,9 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         capabilities,
-        ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
+        // Always the list the launch resolved, `[]` included, so the session never reads a persona
+        // file that may have changed since.
+        endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
         cwd,
       };
@@ -8480,7 +8482,7 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
-          ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
+          endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
           cwd: entry.launch.cwd,
         };
