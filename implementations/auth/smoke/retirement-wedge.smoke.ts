@@ -51,6 +51,7 @@ import {
   resolveService, invokeCommand, idFromCreds,
   type EvictionResult, type PlaneConnTuple, type PlaneLivenessQuery, type PlaneLivenessResult,
 } from "@cotal-ai/core";
+
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { openLifecycleRegistry, observeGate, readLifecycleHeadForOperation, registryStores, retireGate, activateLifecycleAtUid } from "../src/lifecycle-registry.js";
@@ -59,6 +60,10 @@ import { stageIntentKey, type EvictPrincipal } from "../src/credential-ledger.js
 import { runAgentRetirementBarrier, resumeAgentRetirement, type RetirementDeps } from "../src/retirement-barrier.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+function replyError(value: { ok: boolean; error?: { message: string; code?: string; details?: Array<{ kind: string }> } } | undefined) {
+  return value?.ok === false ? value.error : undefined;
+}
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -121,7 +126,7 @@ async function railRequest(
       deadlineMs: 8_000,
     });
     const r = attributed.reply;
-    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(r.error ? { error: r.error.message } : {}) };
+    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(replyError(r) ? { error: replyError(r)!.message } : {}) };
   } catch (e) {
     if (/timeout|no responders|permission|deadline-exceeded|unavailable/i.test((e as Error).message)) return "no-reply";
     throw e;

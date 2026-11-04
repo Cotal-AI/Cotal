@@ -34,6 +34,7 @@ import {
   mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
   resolveService, invokeCommand, idFromCreds,
 } from "@cotal-ai/core";
+
 import { deriveOwnerToken, grantManagedActor, newActorToken, openAuthAuthorityPlane, revokeManagedActor } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { ensureRootCredential } from "../src/root-credential.js";
@@ -42,6 +43,10 @@ import { runAgentRetirementBarrier, type RetirementDeps } from "../src/retiremen
 import type { EvictPrincipal } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+function replyError(value: { ok: boolean; error?: { message: string; code?: string; details?: Array<{ kind: string }> } } | undefined) {
+  return value?.ok === false ? value.error : undefined;
+}
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -118,7 +123,7 @@ async function railRequest(target: { owner: string; actor: string; lifecycleUid:
       deadlineMs: 8_000,
     });
     const r = attributed.reply;
-    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(r.error ? { error: r.error.message } : {}) };
+    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(replyError(r) ? { error: replyError(r)!.message } : {}) };
   } catch (e) {
     if (/timeout|no responders|permission|deadline-exceeded|unavailable/i.test((e as Error).message)) return "no-reply";
     throw e;

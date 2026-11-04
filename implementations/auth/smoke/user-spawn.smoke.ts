@@ -73,6 +73,10 @@ type LaunchOpts = import("@cotal-ai/core").LaunchOpts;
 type LaunchSpec = import("@cotal-ai/core").LaunchSpec;
 type ControlReply = import("@cotal-ai/core").ControlReply;
 
+function replyError(value: { ok: boolean; error?: { message: string; code?: string; details?: Array<{ kind: string }> } } | undefined) {
+  return value?.ok === false ? value.error : undefined;
+}
+
 const { spawn, execFile, execFileSync } = await import("node:child_process");
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
 
@@ -779,12 +783,12 @@ try {
     const t0 = Date.now();
     const r = await follower.invokeService("manager", "spawn", { name: "beta", agent: "e2e", events: false }, { deadlineMs: 20_000, follow: true });
     const elapsed = Date.now() - t0;
-    const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
+    const code = r.reply.ok === true ? "ok" : (replyError(r.reply)?.code ?? "?");
     // THE ASSERTION THE FIX EXISTS FOR: a real terminal, not a deadline and not a refusal to listen.
     check("a spawn-scope caller HEARS its own goal's terminal (not a deadline, not a denied subscription)",
-      code === "failed", { code, elapsed, message: r.reply.error?.message?.slice(0, 160), connErrors });
+      code === "failed", { code, elapsed, message: replyError(r.reply)?.message?.slice(0, 160), connErrors });
     check("...and the terminal carries the refusal's own reason, so the caller learns WHY",
-      (r.reply.error?.message ?? "").includes("would exceed its spawner's grant"), r.reply.error?.message?.slice(0, 200));
+      (replyError(r.reply)?.message ?? "").includes("would exceed its spawner's grant"), replyError(r.reply)?.message?.slice(0, 200));
     check(`...delivered on the goal's own timing, well inside the caller's budget (${elapsed}ms of 20000ms)`,
       elapsed < 15_000, elapsed);
     check("...with no broker refusal on the follower's connection", connErrors.length === 0, connErrors);
@@ -814,8 +818,8 @@ try {
       let detail = "";
       try {
         const rp = await invokeCommand(epNc, SPACE, svc, "ps", undefined, { deadlineMs: 2500 });
-        refused = rp.reply.ok === false ? rp.reply.error?.code : "SERVED-OK";
-        detail = rp.reply.ok === false ? rp.reply.error?.message ?? "" : "";
+        refused = rp.reply.ok === false ? replyError(rp.reply)?.code : "SERVED-OK";
+        detail = rp.reply.ok === false ? replyError(rp.reply)?.message ?? "" : "";
       } catch (e) {
         refused = e instanceof EpEnvelopeError ? e.code : String(e);
         detail = e instanceof Error ? e.message : String(e);
@@ -884,7 +888,7 @@ try {
       const svc = await resolveService(grantNc, SPACE, "manager", { owner: claims0.sub, actor: claims0.act.actor, uid: claims0.act.lifecycleUid }, { deadlineMs: 10_000 });
       const row = (await invokeCommand(grantNc, SPACE, svc, "inspect", { name: "alpha" }, {})).reply.data as { lifecycleUid: string };
       const attached = await invokeCommand(grantNc, SPACE, svc, "attach", undefined, { target: { mode: "owner", owner: OWNER, actor: "alpha", lifecycleUid: row.lifecycleUid } });
-      check("#2312 precondition: the manager's attach issues a real session grant to the operator", attached.reply.ok === true, attached.reply.error);
+      check("#2312 precondition: the manager's attach issues a real session grant to the operator", attached.reply.ok === true, replyError(attached.reply));
       const grant = (attached.reply.data as { grant: { sessionId: string; endpoint: string; sig: string; serving: { instanceId: string; epoch: number } } }).grant;
       const idpToken = await fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => approve(p.userCode) })).session.token);
 
@@ -1163,7 +1167,7 @@ try {
     let info;
     try { info = await ep.invokeService("manager", "inspect", { name }); }
     catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
-    if (info.reply.ok !== true) return { ok: false, error: info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed" };
+    if (info.reply.ok !== true) return { ok: false, error: replyError(info.reply)?.message ?? replyError(info.reply)?.code ?? "inspect failed" };
     const rowInfo = info.reply.data as { id: string; lifecycleUid: string };
     const dot = rowInfo.id.indexOf(".");
     const [tOwner, tActor] = dot > 0 ? [rowInfo.id.slice(0, dot), rowInfo.id.slice(dot + 1)] : [ep.principal.owner, rowInfo.id];
@@ -1178,13 +1182,13 @@ try {
     const body = op === "input" ? { text: "/compact", enter: false } : undefined;
     try {
       const r = await ep.invokeService("manager", command, body, { target: { mode, owner: tOwner, actor: tActor, lifecycleUid: rowInfo.lifecycleUid } });
-      return r.reply.ok === true ? { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+      return r.reply.ok === true ? { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) } : { ok: false, error: replyError(r.reply)?.message ?? replyError(r.reply)?.code };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
   const epPs = async (ep: InstanceType<typeof CotalEndpoint>): Promise<EpReply> => {
     try {
       const r = await ep.invokeService("manager", "ps");
-      return r.reply.ok === true ? { ok: true, data: r.reply.data } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+      return r.reply.ok === true ? { ok: true, data: r.reply.data } : { ok: false, error: replyError(r.reply)?.message ?? replyError(r.reply)?.code };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
   // The target: `delta`, already live from the envelope section (spawned WITH spawner `u_….cli`),
@@ -1363,10 +1367,10 @@ try {
     const t0 = Date.now();
     const r = await adminFollower.invokeService("manager", "spawn", { name: "beta", agent: "e2e", events: false }, { deadlineMs: 20_000, follow: true });
     const elapsed = Date.now() - t0;
-    const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
-    console.log(`   [D1 observed] code=${code} elapsed=${elapsed} msg=${(r.reply.error?.message ?? "").slice(0, 140)} errs=${JSON.stringify(followErrors)}`);
+    const code = r.reply.ok === true ? "ok" : (replyError(r.reply)?.code ?? "?");
+    console.log(`   [D1 observed] code=${code} elapsed=${elapsed} msg=${(replyError(r.reply)?.message ?? "").slice(0, 140)} errs=${JSON.stringify(followErrors)}`);
     check("an admin-scope caller HEARS its own goal's terminal (the admin mint branch folds the progress row too)",
-      code === "ok" || code === "failed", { code, elapsed, message: r.reply.error?.message?.slice(0, 160), followErrors });
+      code === "ok" || code === "failed", { code, elapsed, message: replyError(r.reply)?.message?.slice(0, 160), followErrors });
     check(`...on the goal's own timing, not at the caller's budget (${elapsed}ms of 20000ms)`, elapsed < 15_000, elapsed);
     check("...with no broker refusal on the admin follower's connection", followErrors.length === 0, followErrors);
     if (r.reply.ok === true) {
@@ -1401,7 +1405,7 @@ try {
       try {
         const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: managerInstanceId, deadlineMs: 10_000 });
         const r = await invokeCommand(nc, SPACE, svc, "status", undefined, { deadlineMs: 10_000 });
-        return r.reply.ok ? (r.reply.data as { agentCount: number }).agentCount : `refused ${r.reply.error?.code}`;
+        return r.reply.ok ? (r.reply.data as { agentCount: number }).agentCount : `refused ${replyError(r.reply)?.code}`;
       } catch (e) {
         return `refused ${(e as Error).message.slice(0, 200)}`;
       } finally {
@@ -1447,7 +1451,7 @@ try {
   const epSpawnAccept = async (ep: InstanceType<typeof CotalEndpoint>, args: Record<string, unknown>): Promise<Accepted> => {
     try {
       const r = await ep.invokeService("manager", "spawn", args, { deadlineMs: 15_000 });
-      if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+      if (r.reply.ok !== true) return { ok: false, error: replyError(r.reply)?.message ?? replyError(r.reply)?.code };
       const d = r.reply.data as { name?: string; eventsNotice?: string };
       return { ok: true, name: d.name, eventsNotice: d.eventsNotice };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
@@ -1469,7 +1473,7 @@ try {
       const d = r.reply.data as { name?: string; eventsNotice?: string };
       return r.reply.ok === true
         ? { ok: true, name: d.name, eventsNotice: d.eventsNotice }
-        : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+        : { ok: false, error: replyError(r.reply)?.message ?? replyError(r.reply)?.code };
     } catch (e) {
       return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message };
     }
@@ -1887,7 +1891,7 @@ try {
     const result = await ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e", ...(explicit ? { events: true } : {}) },
       { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
     check(explicit ? "cell 2: owned explicit events spawn is served under required policy" : "cell 1: owned bare spawn is served under required policy",
-      result.reply.ok === true, { ok: result.reply.ok, error: result.reply.error?.message });
+      result.reply.ok === true, { ok: result.reply.ok, error: replyError(result.reply)?.message });
     const childRow = existsSync(rowFile("managed", OWNER, name))
       ? JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { allowPublish?: string[] } : undefined;
     const childPid = psList(participant).find((a) => a.name === name)?.pid;
@@ -1911,7 +1915,7 @@ try {
     try {
       const result = await ep.invokeService("manager", "spawn", args, { deadlineMs: 20_000 });
       const data = result.reply.data as { eventsNotice?: string } | undefined;
-      return { ok: result.reply.ok, eventsNotice: data?.eventsNotice, error: result.reply.error?.message };
+      return { ok: result.reply.ok, eventsNotice: data?.eventsNotice, error: replyError(result.reply)?.message };
     } catch (e) { return { ok: false, error: (e as Error).message }; }
   };
   const foreignOwner = `u_${"b".repeat(26)}`;
@@ -1927,7 +1931,7 @@ try {
     ? JSON.parse(readFileSync(rowFile("managed", OWNER, "adminprobe"), "utf8")) as { allowPublish?: string[] } : undefined;
   check("cell 4: admin explicit plane remains served with the own-channel grant",
     adminResult.reply.ok === true && adminRow?.allowPublish?.includes(eventChannel({ owner: OWNER, actor: "adminprobe" })) === true,
-    { ok: adminResult.reply.ok, error: adminResult.reply.error?.message });
+    { ok: adminResult.reply.ok, error: replyError(adminResult.reply)?.message });
   (participant as unknown as { eventsRequired: boolean }).eventsRequired = false;
   // Observe the options entering the real provisioning method, not a stubbed success reply.
   // A u_-owner foreign caller is refused later by enrollment, so its notice never reaches the wire.

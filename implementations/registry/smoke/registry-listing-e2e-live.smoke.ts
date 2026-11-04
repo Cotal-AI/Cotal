@@ -13,9 +13,14 @@ import {
   recordsBucket, serverConfig, setupSpaceStreams, standaloneConnectOpts,
   withIssuerSession, type EpCapability, type RegistryEndpointsOutput,
 } from "@cotal-ai/core";
+
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { fixtureCluster, registerFixture, runRegistryFixture } from "./_fixture.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+
+function replyError(value: { ok: boolean; error?: { message: string; code?: string; details?: Array<{ kind: string }> } } | undefined) {
+  return value?.ok === false ? value.error : undefined;
+}
 
 const suite = createSuite();
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -124,7 +129,7 @@ try {
     const records = await new Kvm(executor).open(recordsBucket(space));
     await records.put(zetaKey, JSON.stringify({ endpoint: "zeta.example" }));
     const refused = await listed.listEndpoints({}).catch((e: unknown) => e as Error);
-    const error = refused instanceof Error || refused.unbound ? undefined : refused.reply.reply.error;
+    const error = refused instanceof Error || refused.unbound ? undefined : replyError(refused.reply.reply);
     suite.check("a failed records read reaches the agent as a fixed refusal that names no endpoint or key, and its detail goes to the registry's log",
       error?.code === "unavailable" && error.message === "the registry could not read the space's endpoint records; nothing is listed"
         && registry!.logged.some((line) => line.includes("service record does not validate")),

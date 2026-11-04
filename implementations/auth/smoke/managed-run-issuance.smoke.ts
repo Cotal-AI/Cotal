@@ -33,6 +33,7 @@ import {
   CotalEndpoint, type Connector, type LaunchOpts, type RuntimeProvider, type AgentHandle,
   runDriverCaller, epRequestSubject,
 } from "@cotal-ai/core";
+
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
   cotalAuthProvider, deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
@@ -50,6 +51,10 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { decode, encodeUser, type AuthorizationRequest, type AuthorizationResponse } from "@nats-io/jwt";
 import { fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
 import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
+
+function replyError(value: { ok: boolean; error?: { message: string; code?: string; details?: Array<{ kind: string }> } } | undefined) {
+  return value?.ok === false ? value.error : undefined;
+}
 
 const names = [
   "U1 eligible managed seat receives issued authority and accepted-row read",
@@ -232,7 +237,7 @@ try {
   const readyStatus = async (d: Awaited<ReturnType<typeof dial>>, caller: EpCaller, runId: string, wanted: string, stepKey?: string): Promise<RunStatusView> => {
     for (let n = 0; n < 100; n++) {
       const reply = await call(d, caller, "run-status", { runId });
-      assert.ok(reply.ok, reply.error?.message);
+      assert.ok(reply.ok, replyError(reply)?.message);
       const view = reply.data as RunStatusView;
       if ((stepKey === undefined && view.status?.state === wanted) || view.journal.some((r) => r.kind === "step" && r.state === wanted && (stepKey === undefined || r.step === stepKey))) return view;
       if (view.status?.state === "failed") throw new Error(`the real run failed before reaching its requested step: ${view.status.failure?.message ?? "no recorded cause"}`);
@@ -242,7 +247,7 @@ try {
   };
   const workflow = async (d: Awaited<ReturnType<typeof dial>>, caller: EpCaller) => {
     const started = await call(d, caller, "run-start", { source: 'await checkpoint("approve", "Continue?"); await checkpoint("finish", "Finish?"); log("done");' });
-    assert.ok(started.ok, started.error?.message);
+    assert.ok(started.ok, replyError(started)?.message);
     const runId = (started.data as { runId: string }).runId;
     const waiting = await readyStatus(d, caller, runId, "pending");
     const step = waiting.journal.find((r) => r.kind === "step" && r.state === "pending");
@@ -251,14 +256,14 @@ try {
     assert.ok(drive);
     drive.release("native resume fixture releases the first attempt");
     const answer = await call(d, caller, "run-answer", { runId, stepKey: step.step, value: true });
-    assert.ok(answer.ok, answer.error?.message);
+    assert.ok(answer.ok, replyError(answer)?.message);
     assert.equal((await drive.done).status, "released");
     await readyStatus(d, caller, runId, "released");
     const resumed = await call(d, caller, "run-resume", { runId });
-    assert.ok(resumed.ok, resumed.error?.message);
+    assert.ok(resumed.ok, replyError(resumed)?.message);
     await readyStatus(d, caller, runId, "pending", "/checkpoint:finish#0");
     const finished = await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:finish#0", value: true });
-    assert.ok(finished.ok, finished.error?.message);
+    assert.ok(finished.ok, replyError(finished)?.message);
     await readyStatus(d, caller, runId, "completed");
     return runId;
   };
@@ -324,7 +329,7 @@ try {
   await cell(8, async () => {
     assert.ok(d && caller);
     const started = await call(d, caller, "run-start", { source: 'await checkpoint("outside", "Outside relay?");' });
-    assert.ok(started.ok, started.error?.message);
+    assert.ok(started.ok, replyError(started)?.message);
     const runId = (started.data as { runId: string }).runId;
     await readyStatus(d, caller, runId, "pending", "/checkpoint:outside#0");
     const row = findManagedActor(a.stateDir, owner, "baseline")!;
@@ -334,14 +339,14 @@ try {
     assert.equal(refused.error?.code, "permission-denied");
     assert.match(refused.error?.message ?? "", /baseline seat only for a pending ask or escalation/);
     const answer = await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:outside#0", value: true });
-    assert.ok(answer.ok, answer.error?.message);
+    assert.ok(answer.ok, replyError(answer)?.message);
     await readyStatus(d, caller, runId, "completed");
   });
   await cell(11, async () => {
     assert.ok(d && caller);
     writeFileSync(join(managerRoot, ".cotal", "agents", "owned.md"), "---\nname: owned\nagent: u1-fixture\ncapabilities: []\n---\n");
     const started = await call(d, caller, "run-start", { source: 'await spawn("owned", { events: false }); await checkpoint("owned", "Owner boundary?");' });
-    assert.ok(started.ok, started.error?.message);
+    assert.ok(started.ok, replyError(started)?.message);
     const runId = (started.data as { runId: string }).runId;
     await readyStatus(d, caller, runId, "pending", "/checkpoint:owned#0");
     const child = findManagedActor(a.stateDir, owner, "owned");
@@ -365,15 +370,15 @@ try {
   await cell(12, async () => {
     assert.ok(d && caller);
     const reply = await call(d, caller, "spawn", { name: "asked", agent: "u1-fixture", persona: { prompt: "A helper the runner asked for." }, events: false });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     assert.equal(findManagedActor(a.stateDir, owner, "asked")?.parent, `${owner}.runner`);
   });
   await cell(13, async () => {
     assert.ok(d && caller);
     const reply = await call(d, caller, "spawn", { name: "toowide", agent: "u1-fixture", persona: { prompt: "A helper wider than the runner.", allowPublish: ["secret"] }, events: false });
     assert.equal(reply.ok, false);
-    assert.match(reply.error?.message ?? "", /would exceed its spawner's grant/);
-    assert.match(reply.error?.message ?? "", /post \[secret\]/);
+    assert.match(replyError(reply)?.message ?? "", /would exceed its spawner's grant/);
+    assert.match(replyError(reply)?.message ?? "", /post \[secret\]/);
     assert.equal(findManagedActor(a.stateDir, owner, "toowide"), undefined);
   });
   await cell(14, async () => {
@@ -389,7 +394,7 @@ try {
     assert.ok(d && caller);
     writeFileSync(join(managerRoot, ".cotal", "agents", "late.md"), "---\nname: late\nagent: u1-fixture\ncapabilities: []\nallowPublish: [secret]\n---\n");
     const started = await call(d, caller, "run-start", { source: 'await checkpoint("widen", "Widen the starter?"); await spawn("late", { events: false });' });
-    assert.ok(started.ok, started.error?.message);
+    assert.ok(started.ok, replyError(started)?.message);
     const runId = (started.data as { runId: string }).runId;
     await readyStatus(d, caller, runId, "pending", "/checkpoint:widen#0");
     const row = findManagedActor(a.stateDir, owner, "runner")!;
@@ -407,7 +412,7 @@ try {
       let view: RunStatusView | undefined;
       for (let n = 0; n < 100 && view?.status?.state !== "failed"; n++) {
         const reply = await call(d, caller, "run-status", { runId });
-        assert.ok(reply.ok, reply.error?.message);
+        assert.ok(reply.ok, replyError(reply)?.message);
         view = reply.data as RunStatusView;
         if (view.status?.state !== "failed") await new Promise((resolve) => setTimeout(resolve, 100));
       }
@@ -449,7 +454,7 @@ try {
   await cell(19, async () => {
     assert.ok(d && caller);
     const started = await call(d, caller, "run-start", { source: 'await checkpoint("verifywiden", "Widen the starter?");' });
-    assert.ok(started.ok, started.error?.message);
+    assert.ok(started.ok, replyError(started)?.message);
     const runId = (started.data as { runId: string }).runId;
     await readyStatus(d, caller, runId, "pending", "/checkpoint:verifywiden#0");
     // The starter gains `secret` after the run began, so only the admission's frozen grant refuses.
@@ -493,14 +498,14 @@ try {
     process.env.COTAL_DEFAULT_AGENT = "u1-fixture";
     try {
       const started = await call(d, caller, "run-start", { source: 'await spawn({ name: "runsaved", prompt: "A helper a run saved.", save: true }, { events: false }); await spawn("runsaved", { events: false }); await checkpoint("saved", "Saved?");' });
-      assert.ok(started.ok, started.error?.message);
+      assert.ok(started.ok, replyError(started)?.message);
       const runId = (started.data as { runId: string }).runId;
       await readyStatus(d, caller, runId, "pending", "/checkpoint:saved#0");
       assert.match(readFileSync(join(managerRoot, ".cotal", "agents", "runsaved.md"), "utf8"), new RegExp(`^owner: ${owner}\\.runner$`, "m"));
       // While the run's helpers still hold the name, so the starter's helper is numbered beside them
       // rather than waiting on their retirement.
       const reply = await call(d, caller, "spawn", { name: "runsaved", agent: "u1-fixture", events: false });
-      assert.ok(reply.ok, reply.error?.message);
+      assert.ok(reply.ok, replyError(reply)?.message);
       assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:saved#0", value: true })).ok);
       await readyStatus(d, caller, runId, "completed");
     } finally {
@@ -561,8 +566,8 @@ try {
     await assert.rejects(issuedUserCaller(conn.nc, a.space, conn.nonce, expected), /Permissions Violation/);
     const result = await call(conn, expected, "run-start", { source: 'log("not admitted");' });
     assert.equal(result.ok, false);
-    assert.equal(result.error?.code, "permission-denied");
-    assert.ok(result.error?.details?.some((detail) => detail.kind === EP_UNBOUND_CALLER_AUTHORITY));
+    assert.equal(replyError(result)?.code, "permission-denied");
+    assert.ok(replyError(result)?.details?.some((detail) => detail.kind === EP_UNBOUND_CALLER_AUTHORITY));
     const exchange = await post<{ token: string }>("/exchange", { owner, actor: "denied", actorToken: secret.actorToken, view: "manager-caller", managerInstanceId: state.instanceId });
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["spawn"], allowSubscribe: [], allowPublish: [] });
     const nonce = mintLifecycleUid();
@@ -570,8 +575,8 @@ try {
     conns.push(nc);
     await assert.rejects(issuedUserCaller(nc, a.space, nonce, expected), /Permissions Violation/);
     const nonAdmin = await call({ nc, nonce, token: exchange.token }, expected, "run-start", { source: 'log("denied");' });
-    assert.equal(nonAdmin.error?.code, "permission-denied");
-    assert.ok(nonAdmin.error?.details?.some((detail) => detail.kind === EP_UNBOUND_CALLER_AUTHORITY));
+    assert.equal(replyError(nonAdmin)?.code, "permission-denied");
+    assert.ok(replyError(nonAdmin)?.details?.some((detail) => detail.kind === EP_UNBOUND_CALLER_AUTHORITY));
   });
   await cell(9, async () => {
     const parent = grantActor(a.stateDir, { owner, actor: "changing", scope: ["admin", "run"], allowSubscribe: [], allowPublish: [] });
@@ -585,8 +590,8 @@ try {
     conns.push(nc);
     await assert.rejects(issuedUserCaller(nc, a.space, nonce, { owner, actor: "freshparent", uid: lifecycleUid }), /Permissions Violation/);
     const result = await call({ nc, nonce, token: exchange.token }, { owner, actor: "freshparent", uid: lifecycleUid }, "run-start", { source: 'log("refused");' });
-    assert.equal(result.error?.code, "permission-denied");
-    assert.ok(result.error?.details?.some((detail) => detail.kind === EP_UNBOUND_CALLER_AUTHORITY));
+    assert.equal(replyError(result)?.code, "permission-denied");
+    assert.ok(replyError(result)?.details?.some((detail) => detail.kind === EP_UNBOUND_CALLER_AUTHORITY));
   });
   await cell(10, async () => {
     const foreignOwner = `u_${"z".repeat(26)}`;

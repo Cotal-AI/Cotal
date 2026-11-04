@@ -41,6 +41,7 @@ import {
   epCallerReplyFilter, parseEndpointReply,
   EpEnvelopeError,
 } from "@cotal-ai/core";
+
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { loadAuthInstanceIdentity } from "@cotal-ai/workspace";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -50,6 +51,10 @@ import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../src/lif
 import type { EvictPrincipal } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+function replyError(value: { ok: boolean; error?: { message: string; code?: string; details?: Array<{ kind: string }> } } | undefined) {
+  return value?.ok === false ? value.error : undefined;
+}
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -136,7 +141,7 @@ async function request(
       deadlineMs: 8_000,
     });
     const r = attributed.reply;
-    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(r.error ? { error: r.error.message } : {}) };
+    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(replyError(r) ? { error: replyError(r)!.message } : {}) };
   } catch (e) {
     if (/timeout|no responders|permission|deadline-exceeded|unavailable/i.test((e as Error).message)) return "no-reply";
     throw e;

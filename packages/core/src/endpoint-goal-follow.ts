@@ -9,11 +9,13 @@ import { callerTokens, endpointToken, epGoalProgressGrantRow, type EpCaller } fr
 import { spacePrefix } from "./subjects.js";
 import { GOAL_FOLLOW_MARGIN_MS, dec } from "./endpoint-caller.js";
 
-/** A reply this follow reports in place of the acceptance. The acceptance is a success, so it has
- *  data and no error; the replacement keeps its identity and receipt and carries exactly one arm. */
-function followedReply(reply: EndpointReply, next: { ok: true; data: unknown } | { ok: false; error: EpError }): EndpointReply {
+/** A reply this follow reports in place of the acceptance. It keeps the acceptance identity and
+ *  receipt. A success carries the terminal data. A failure carries its error and, when the
+ *  acceptance had already named what was allocated, that data too. */
+function followedReply(reply: EndpointReply, next: { ok: true; data: unknown } | { ok: false; error: EpError; data?: unknown }): EndpointReply {
   const kept = { v: reply.v, id: reply.id, ...(reply.receipt !== undefined ? { receipt: reply.receipt } : {}) };
-  return next.ok ? { ...kept, ok: true, data: next.data } : { ...kept, ok: false, error: next.error };
+  if (next.ok) return { ...kept, ok: true, data: next.data };
+  return { ...kept, ok: false, error: next.error, ...(next.data !== undefined ? { data: next.data } : {}) };
 }
 
 export interface SubmitAndFollowGoalOptions {
@@ -297,7 +299,7 @@ export async function submitAndFollowGoalWith(
     const raw = typeof d.error === "string" ? d.error : typeof d.reason === "string" ? d.reason : `the goal settled ${terminal.state}`;
     const details = Array.isArray(d.details) ? d.details as import("./endpoint-error.js").EpErrorDetail[] : undefined;
     const message = renderLifecycleBlocked(raw, details ? { details } : undefined);
-    return { ...attributed, reply: followedReply(attributed.reply, { ok: false, error: { code: terminal.state, message, ...(details ? { details } : {}) } }) };
+    return { ...attributed, reply: followedReply(attributed.reply, { ok: false, error: { code: terminal.state, message, ...(details ? { details } : {}) }, ...(attributed.reply.data !== undefined ? { data: attributed.reply.data } : {}) }) };
   } finally {
     completed = true;
     opts?.signal?.removeEventListener("abort", onAbort);

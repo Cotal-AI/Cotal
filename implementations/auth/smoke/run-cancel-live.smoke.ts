@@ -14,6 +14,7 @@ import {
   type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
   type RemoteRunCancelResult, type RunCancelResult, type RunStatusView, type EndpointReply,
 } from "@cotal-ai/core";
+
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
   deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
@@ -25,6 +26,10 @@ import * as remote from "../../manager/src/remote-authority.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import "../../runtime/src/index.js";
 import { printRunDetail } from "../../runtime/src/workflow-views.js";
+
+function replyError(value: { ok: boolean; error?: { message: string; code?: string; details?: Array<{ kind: string }> } } | undefined) {
+  return value?.ok === false ? value.error : undefined;
+}
 
 function renderDetail(space: string, view: RunStatusView) {
   const output: string[] = [];
@@ -175,7 +180,7 @@ async function call(client: Client, command: string, args: Record<string, unknow
 async function status(client: Client, runId: string, wanted: "pending" | "released" | "completed"): Promise<RunStatusView> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const reply = await call(client, "run-status", { runId });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     const view = reply.data as RunStatusView;
     if (wanted !== "pending" ? view.status?.state === wanted : view.journal.some(r => r.kind === "step" && r.state === wanted)) return view;
     assert.notEqual(view.status?.state, "failed", "workflow failed before expected observation");
@@ -185,7 +190,7 @@ async function status(client: Client, runId: string, wanted: "pending" | "releas
 }
 async function start(client: Client, source: string) {
   const reply = await call(client, "run-start", { source });
-  assert.ok(reply.ok, reply.error?.message);
+  assert.ok(reply.ok, replyError(reply)?.message);
   const runId = (reply.data as { runId: string }).runId;
   const pending = await status(client, runId, "pending");
   assert.equal(pending.revoked, undefined);
@@ -281,7 +286,7 @@ try {
   await cell("original caller cancels a parked checkpoint through issuer inspect and commit", async () => {
     firstRun = await start(original, 'await checkpoint("parked", "Await input"); log("must not execute");');
     const reply = await call(original, "run-cancel", { runId: firstRun, reason: "checkpoint fixture finished" });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     firstResult = reply.data as RunCancelResult;
     assert.equal(firstResult.authority, "original");
     assert.equal(firstResult.observed.phase, "stopped");
@@ -301,7 +306,7 @@ try {
     failStatusMarkerRead = true;
     try {
       const reply = await call(original, "run-status", { runId: firstRun });
-      assert.ok(reply.ok, reply.error?.message);
+      assert.ok(reply.ok, replyError(reply)?.message);
       const view = reply.data as RunStatusView;
       assert.equal(failStatusMarkerRead, false, "the actual status marker reader reached the injected failure");
       assert.equal(view.status?.state, "released");
@@ -323,7 +328,7 @@ try {
   });
   await cell("fresh duplicate keeps the first marker", async () => {
     const reply = await call(original, "run-cancel", { runId: firstRun, reason: "later reason" });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     const result = reply.data as RunCancelResult;
     assert.equal(result.duplicate, true);
     assert.deepEqual(result.revocation, firstResult!.revocation);
@@ -333,7 +338,7 @@ try {
     const fresh = await dial("cli", cli.lifecycleUid!);
     assert.notEqual(fresh.caller.generation, original.caller.generation);
     const reply = await call(fresh, "run-cancel", { runId, reason: "sleep fixture finished" });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     assert.equal((reply.data as RunCancelResult).duplicate, false);
     await status(original, runId, "released");
   });
@@ -341,7 +346,7 @@ try {
     const runId = await start(original, 'await checkpoint("operator", "Await input");');
     const interactive = await dial("operator", operator.lifecycleUid!);
     const reply = await call(interactive, "run-cancel", { runId, reason: "operator fixture finished" });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     const result = reply.data as RunCancelResult;
     assert.equal(result.authority, "owner-interactive");
     assert.equal(result.revocation?.by, `${owner}.operator`);
@@ -351,7 +356,7 @@ try {
     const runId = await start(original, 'await checkpoint("lost", "Await input");');
     loseCommitReply = true;
     const reply = await call(original, "run-cancel", { runId, reason: "lost reply fixture" });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     const result = reply.data as RunCancelResult;
     assert.equal(loseCommitReply, false, "the real commit completed before its reply was lost");
     assert.equal(result.duplicate, null);
@@ -366,7 +371,7 @@ try {
       call(original, "run-cancel", { runId, reason: "first concurrent request" }),
       call(original, "run-cancel", { runId, reason: "second concurrent request" }),
     ]);
-    for (const reply of replies) assert.ok(reply.ok, reply.error?.message);
+    for (const reply of replies) assert.ok(reply.ok, replyError(reply)?.message);
     const results = replies.map(reply => reply.data as RunCancelResult);
     assert.deepEqual(results.map(r => r.duplicate).sort(), [false, true]);
     assert.deepEqual(results[0]!.revocation, results[1]!.revocation);
@@ -375,11 +380,11 @@ try {
   });
   await cell("completed run is observed without creating a revocation marker", async () => {
     const started = await call(original, "run-start", { source: 'log("complete normally");' });
-    assert.ok(started.ok, started.error?.message);
+    assert.ok(started.ok, replyError(started)?.message);
     const runId = (started.data as { runId: string }).runId;
     await status(original, runId, "completed");
     const reply = await call(original, "run-cancel", { runId, reason: "already complete" });
-    assert.ok(reply.ok, reply.error?.message);
+    assert.ok(reply.ok, replyError(reply)?.message);
     const result = reply.data as RunCancelResult;
     assert.equal(result.observed.phase, "terminal");
     assert.equal(result.observed.recordedState, "completed");
@@ -402,7 +407,7 @@ try {
       await bounded(hold.marker.promise, "actual issuer marker commit");
       hold.release.resolve();
       const reply = await cancelling;
-      assert.ok(reply.ok, reply.error?.message);
+      assert.ok(reply.ok, replyError(reply)?.message);
       const result = reply.data as RunCancelResult;
       assert.equal(result.observed.phase, "launch-abandoned");
       assert.equal(result.observed.driveOutcome, undefined);
@@ -411,7 +416,7 @@ try {
       assert.equal(startResult.status, "fulfilled");
       if (startResult.status === "fulfilled") {
         assert.equal(startResult.value.ok, false);
-        assert.equal(startResult.value.error?.code, "failed-precondition");
+        assert.equal(replyError(startResult.value)?.code, "failed-precondition");
       }
       const after = await call(original, "run-status", { runId });
       assert.equal(after.ok, false);
@@ -427,7 +432,7 @@ try {
     completionHold = hold;
     try {
       const started = await call(original, "run-start", { source: 'log("complete after the held native status write");' });
-      assert.ok(started.ok, started.error?.message);
+      assert.ok(started.ok, replyError(started)?.message);
       const runId = (started.data as { runId: string }).runId;
       assert.equal(await bounded(hold.entered.promise, "actual completed-status write"), runId);
       loseCommitReply = true;
@@ -439,7 +444,7 @@ try {
       hold.release.resolve();
       await status(original, runId, "completed");
       const resend = await call(original, "run-cancel", { runId, reason: "observe terminal marker" });
-      assert.ok(resend.ok, resend.error?.message);
+      assert.ok(resend.ok, replyError(resend)?.message);
       const result = resend.data as RunCancelResult;
       assert.equal(result.observed.phase, "terminal");
       assert.equal(result.duplicate, true);
@@ -465,7 +470,7 @@ try {
       const until = performance.now() + 7000;
       while (performance.now() < until) {
         const reply = await call(channel, "run-status", { runId });
-        assert.ok(reply.ok, reply.error?.message);
+        assert.ok(reply.ok, replyError(reply)?.message);
         observed = reply.data as RunStatusView;
         if (observed.status?.state !== "running") break;
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -475,7 +480,7 @@ try {
       hold.release.resolve();
       const result = await cancelling;
       assert.ok(result.status === "fulfilled");
-      assert.ok(result.value.ok, result.value.error?.message);
+      assert.ok(result.value.ok, replyError(result.value)?.message);
       const receipt = result.value.data as RunCancelResult;
       console.log(`ended drive receipt: ${JSON.stringify(receipt.observed)}`);
       assert.equal(observed?.status?.state, "released", "an observed cancellation marker must classify the channel exit as cancellation");
@@ -505,7 +510,7 @@ try {
         const result = await cancelling;
         hold.release.resolve();
         assert.ok(result.status === "rejected" || !result.value.ok, "no stopped receipt is invented without the required holder read");
-        const error = result.status === "rejected" ? result.reason : result.value.error;
+        const error = result.status === "rejected" ? result.reason : replyError(result.value);
         // SPEC 13.3 reads an omitted wire outcome as unknown too.
         assert.equal(error?.outcome ?? "unknown", "unknown");
         console.log(`holder failure observation: ${JSON.stringify({ failure, code: error?.code,
@@ -514,7 +519,7 @@ try {
         assert.equal(pending.status?.state, "running", "the parked checkpoint was not signalled before the holder fence");
         assert.equal(pending.revoked?.reason, `holder ${failure} fixture`);
         const retry = await call(original, "run-cancel", { runId, reason: "fresh observed-holder cancellation" });
-        assert.ok(retry.ok, retry.error?.message);
+        assert.ok(retry.ok, replyError(retry)?.message);
         const receipt = retry.data as RunCancelResult;
         assert.equal(receipt.duplicate, true);
         assert.equal(receipt.revocation?.reason, `holder ${failure} fixture`);

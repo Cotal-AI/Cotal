@@ -131,9 +131,10 @@ export interface EndpointRequest {
   auth?: string;
 }
 
-/** The fields every reply carries. `ok` selects which of `data` and `error` may be present: the
- *  parser refuses an ok reply that carries an error and a failed reply that carries data or omits
- *  its error, so the type admits only the replies {@link parseEndpointReply} returns. */
+/** The fields every reply carries. `ok` selects the error: a success has no error, and a failure
+ *  has one. The parser refuses an ok reply that carries an error and a failed reply that carries
+ *  data or omits its error. A follower that already holds an acceptance may retain that data on
+ *  the failure it reports locally; {@link parseEndpointReply} never puts data on a failed reply. */
 interface EndpointReplyBase {
   v: typeof EP_ENVELOPE_V;
   id: string;
@@ -143,7 +144,7 @@ interface EndpointReplyBase {
 
 export type EndpointReply =
   | (EndpointReplyBase & { ok: true; data?: unknown })
-  | (EndpointReplyBase & { ok: false; error: EpError });
+  | (EndpointReplyBase & { ok: false; error: EpError; data?: unknown });
 
 /** The {@link ControlReply} a caller hands on for an endpoint reply. Every caller converts here, so
  *  whether it can act on a refusal's code, its details, or the acceptance a non-succeeded terminal
@@ -155,6 +156,7 @@ export function controlReplyFrom(reply: EndpointReply): ControlReply {
     ok: false,
     error: renderLifecycleBlocked(error.message, error),
     code: error.code,
+    ...(reply.data !== undefined ? { data: reply.data } : {}),
     ...(error.details ? { details: error.details } : {}),
     ...(error.outcome !== undefined ? { outcome: error.outcome } : {}),
   };
