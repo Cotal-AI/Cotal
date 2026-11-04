@@ -331,6 +331,27 @@ try {
     check("an operator persona's endpoints are minted for the seat it starts",
       root.ok && hasCommand(rootAcl, "list") && hasCommand(rootAcl, "create") && !hasCommand(rootAcl, "refund"), root.ok ? rootAcl?.filter((r) => r.includes("orders")) : root.error);
     const epLead = issuedCallerOf("ep_lead");
+    // The caller's own endpoints input, changed while the spawn is in flight: the entry's commands
+    // (to one the spawner holds and one it does not), a second entry, and the list on the record.
+    // Every consumer reads the list as it was passed: the bound, the mint, the managed launch, the
+    // saved copy and the session's launch options.
+    const heldEp = { prompt: "x", subscribe: [] as string[], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }], save: true };
+    const heldEntry = heldEp.endpoints[0]!;
+    const pendingEp = spawnAs(epLead, "ep_held", { persona: heldEp });
+    heldEntry.commands[0] = "create";
+    heldEntry.commands.push("refund");
+    heldEp.endpoints.push({ endpoint: "com.example.billing", commands: ["quote"] });
+    (heldEp as { endpoints: unknown }).endpoints = [{ endpoint: "com.example.orders", commands: ["refund"] }];
+    const heldEpReply = await pendingEp;
+    const heldEpAcl = mintedPub(heldEpReply);
+    const passed = JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]);
+    check("a caller's change to its endpoints input in flight changes neither the bound nor the mint",
+      heldEpReply.ok && hasCommand(heldEpAcl, "list") && !hasCommand(heldEpAcl, "create") && !hasCommand(heldEpAcl, "refund") && !(heldEpAcl ?? []).some((r) => r.includes("com_example_billing")),
+      heldEpReply.ok ? heldEpAcl?.filter((r) => r.includes("com_example")) : heldEpReply.error);
+    const heldSeat = seatOf(S.M, "ep_held") as unknown as { launch: { endpoints?: unknown } } | undefined;
+    check("nor the managed launch record", JSON.stringify(heldSeat?.launch.endpoints) === passed, heldSeat?.launch.endpoints);
+    check("nor the saved copy", JSON.stringify(loadAgentFile(join(workspaceRoot, ".cotal", "agents", "ep_held.md")).endpoints) === passed);
+    check("nor the session's launch options", JSON.stringify(launched.get("ep_held")?.endpoints) === passed, launched.get("ep_held")?.endpoints);
     const inlineOne = await spawnAs(epLead, "ep_inline", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] } });
     const inlineAcl = mintedPub(inlineOne);
     check("a seat hands one held command on through an inline persona, and only that one",
