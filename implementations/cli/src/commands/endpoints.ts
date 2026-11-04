@@ -1,4 +1,4 @@
-import { peerLabel, presenceText, type FlagSpec, type ParsedArgs, type Presence, type PresenceStamps } from "@cotal-ai/core";
+import { peerLabel, presenceText, sharedNameIds, type FlagSpec, type ParsedArgs, type Presence, type PresenceStamps } from "@cotal-ai/core";
 import { jsonFlag, recordOperationSpace, plainFlag, presentationOf, renderReport, targetFlags, writeResult, type Report } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../ui.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -57,13 +57,16 @@ export function printEndpoints(roster: Presence[], space: string): void {
 }
 
 function endpointsView(items: readonly Row[], space: string): Report {
+  // The Identity column lists every id. A shared name is still the cell an operator copies, so that
+  // cell carries the id too, and a unique name stays bare.
+  const shared = sharedNameIds(items.map((item) => ({ card: { id: item.id, name: item.name } })));
   return { sections: [
     { title: `Live presence · ${space}`, blocks: [items.length ? {
       kind: "table",
       columns: [{ key: "name", label: "Participant" }, { key: "role", label: "Role" }, { key: "kind", label: "Kind" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Activity" }, { key: "id", label: "Identity" }],
       rows: items.map((item) => ({
         // The bare name, which `endpoint describe` takes; the role has its own column.
-        name: { text: peerLabel({ name: item.name }), tone: "command" },
+        name: { text: shared.has(item.id) ? `${peerLabel({ name: item.name })} [${item.id}]` : peerLabel({ name: item.name }), tone: "command" },
         role: item.role === null ? "none" : peerLabel({ name: item.role }),
         kind: item.kind ?? "not reported",
         state: { text: `${item.reportedStatus === "working" ? "working · progress unknown" : item.reportedStatus}${factsText(item)}`, tone: item.reportedStatus === "waiting" ? "waiting" : "hint" },

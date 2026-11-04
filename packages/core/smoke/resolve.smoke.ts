@@ -3,7 +3,7 @@
  * Asserts the deterministic, fail-loud rules in src/resolve.ts.
  */
 import assert from "node:assert/strict";
-import { resolvePeer, AmbiguousPeerError, assertValidName } from "../src/resolve.js";
+import { resolvePeer, AmbiguousPeerError, assertValidName, sharedNameIds } from "../src/resolve.js";
 import type { Presence, PresenceStatus } from "../src/types.js";
 
 let seq = 0;
@@ -53,5 +53,15 @@ assert.equal(resolvePeer([p("alice")], "nobody"), undefined);
 assert.doesNotThrow(() => assertValidName("review-general"));
 assert.doesNotThrow(() => assertValidName("Ada Lovelace"));
 for (const bad of ["", " bob", "bob ", "a/b", "a\nb"]) assert.throws(() => assertValidName(bad));
+
+// a repeated name marks every row, and the caller's own row counts
+{
+  const me = p("twin", "idle", "ME");
+  const other = p("Twin", "offline", "OTHER");
+  const solo = p("solo", "idle", "SOLO");
+  const ids = sharedNameIds([me, other, solo]);
+  assert.deepEqual([...ids].sort(), ["ME", "OTHER"]);
+  assert.equal(ids.has(solo.card.id), false);
+}
 
 console.log("resolve.smoke: all assertions passed");

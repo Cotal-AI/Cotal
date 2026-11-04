@@ -48,6 +48,23 @@ function candidate(p: Presence): PeerCandidate {
   return { id: p.card.id, name: p.card.name, role: p.card.role, status: p.status, ts: p.ts };
 }
 
+/** The comparison a display name uses when it is an address: case-insensitive, as
+ *  {@link resolvePeer} matches one. A published name has no surrounding whitespace
+ *  ({@link assertValidName}), so this does not trim. */
+function nameKey(name: string): string {
+  return name.toLowerCase();
+}
+
+/** The instance ids on `roster` whose display name another row shares. A shared name is not an
+ *  address ({@link resolvePeer} throws for it), so a renderer shows the id on each of those rows
+ *  and leaves a unique row clean. Offline rows count, and so does the caller's own row: the name
+ *  is shared on the roster even when a DM cannot be sent to yourself. */
+export function sharedNameIds(roster: readonly { card: { id: string; name: string } }[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const peer of roster) counts.set(nameKey(peer.card.name), (counts.get(nameKey(peer.card.name)) ?? 0) + 1);
+  return new Set(roster.filter((peer) => (counts.get(nameKey(peer.card.name)) ?? 0) > 1).map((peer) => peer.card.id));
+}
+
 /**
  * Resolve a `target` (an exact instance id, or a display name) to one peer on `roster`.
  *
@@ -71,9 +88,9 @@ export function resolvePeer(
   const byId = peers.find((p) => p.card.id === target);
   if (byId) return byId;
 
-  const want = target.trim().toLowerCase();
+  const want = nameKey(target.trim());
   if (!want) return undefined;
-  const matches = peers.filter((p) => p.card.name.toLowerCase() === want);
+  const matches = peers.filter((p) => nameKey(p.card.name) === want);
   if (matches.length === 0) {
     // Rosters print a peer as `name/role`, so that label is what gets copied into a target. It is
     // refused rather than resolved: `/` is reserved for `owner/name` handles, and reading it as a

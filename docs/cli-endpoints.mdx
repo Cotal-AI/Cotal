@@ -19,7 +19,9 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
 it is not limited to child processes owned by the manager. The Participant column holds the name
-that `endpoint describe` takes, and the role has its own column.
+that `endpoint describe` takes, and the role has its own column. When two rows share a name, each
+of those rows also shows its instance id in brackets. A unique name stays bare. The Identity column
+lists every id either way.
 
 
 ## who [#who]
@@ -44,7 +46,9 @@ infrastructure. The report adds a Kind column that names it `chat session`, and 
 space, `--all` shows each of your managers as a row whose id ends in `manager_<instanceId>`, the id
 `--on` takes, with its host and its runtime in the activity, such as `supervisor (tmux)`. A manager
 row reads `manager <name>`, with the name the manager was started with, or `manager <host>/<runtime>`
-for one started without a name.
+for one started without a name. When two rows share a name, counting a hidden infrastructure row,
+each of those rows also shows its instance id in brackets. A unique name stays bare. The JSON row
+keeps `name` and `id` separate either way.
 
 
 ### Manager census

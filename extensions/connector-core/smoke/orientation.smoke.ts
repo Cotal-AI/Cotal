@@ -151,6 +151,25 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.match(result.text, /bob/, "the row is shown");
 }
 
+// A repeated name carries each peer's id in brackets. A name that appears once stays bare.
+{
+  const shared = "SHAREDID00000000000000000000000000000000000";
+  const other = "OTHERID000000000000000000000000000000000000";
+  const only = "ONLYID0000000000000000000000000000000000000";
+  const agent = agentStub({
+    roster: [
+      presence(shared, "ada", "worker"),
+      presence(other, "ada", "worker"),
+      presence(only, "bea", "worker"),
+    ],
+  });
+  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
+  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
+  assert.match(result.text, new RegExp(`ada/worker — idle \\[${shared}\\]`), "a shared name is followed by that peer's id");
+  assert.match(result.text, new RegExp(`ada/worker — idle \\[${other}\\]`), "the other peer with that name carries its own id");
+  assert.doesNotMatch(result.text, new RegExp(`\\[${only}\\]`), "a name that appears once is not followed by its id");
+}
+
 // 2 — identity + access mapping, and auth vs open.
 {
   const authCfg = cfg({ creds: "CREDS", subscribe: ["general"], allowSubscribe: ["general", "incident"], allowPublish: [] });
