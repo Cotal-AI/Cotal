@@ -25,6 +25,22 @@ const manager = new Manager({ space, servers, runtime: "tmux", workspaceRoot: ro
     options: { maxVerifyRounds: 12 },
   });
 await manager.start();
+// A suite that grades a renewal sets REPRO_RENEW_ON_STDIN and writes `RENEW <name>` on stdin. The
+// host runs the manager's own renewal of that seat, the one its renewal timer calls, and answers
+// `REPRO_RENEWED <name> ok` or the error.
+if (process.env.REPRO_RENEW_ON_STDIN === "1") {
+  const { createInterface } = await import("node:readline");
+  const m = manager as unknown as { agents: Map<string, unknown>; renewManagedStaticCred: (a: unknown) => Promise<void> };
+  createInterface({ input: process.stdin }).on("line", (line) => {
+    const name = /^RENEW (\S+)$/.exec(line)?.[1];
+    if (name === undefined) return;
+    const seat = m.agents.get(name);
+    void (seat ? m.renewManagedStaticCred(seat) : Promise.reject(new Error(`no seat named ${name}`))).then(
+      () => process.stdout.write(`REPRO_RENEWED ${name} ok\n`),
+      (e: unknown) => process.stdout.write(`REPRO_RENEWED ${name} ${JSON.stringify(String((e as Error).message))}\n`),
+    );
+  });
+}
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
 await new Promise<void>(() => {});

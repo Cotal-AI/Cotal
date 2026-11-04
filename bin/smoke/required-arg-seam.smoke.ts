@@ -526,7 +526,11 @@ const SEAMS: Seam[] = [
   // and core/smoke/delete-space-auth each add one call. core/smoke/chat-history-limit also has
   // a fifth call for its unstamped delivery-copy writer. All four dial their suite's plaintext
   // loopback broker and state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 386, untypecheckedSites: 303 },
+  // 386/303 -> 389/306: persona endpoints add three smoke calls. manager/smoke/spawn-inline-persona
+  // connects a helper's credential, and manager/smoke/persona-endpoints-served connects each
+  // credential it probes and a copy that the despawn evicts. All dial the plaintext loopback broker
+  // their suite starts and state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 389, untypecheckedSites: 306 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
