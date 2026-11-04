@@ -21,6 +21,15 @@
    with asChild over an <a>) takes the browser's link blue and underline. The variant's own colour and
    the link variant's hover underline are utilities, so they still win. */
 @layer base { a[data-slot] { color: inherit; text-decoration: inherit; } }
+/* Preflight also zeroes the browser's margins and padding, drops list markers, and makes form fields
+   take the page's font. Without that, a Sidebar menu (a <ul>) indents its items 40px past the icon
+   rail with a bullet each, a Sheet's title keeps a heading's margins, and the composer's textarea is
+   monospace. Scoped to the parts themselves, so Markdown lists inside a Bubble keep their markers. */
+@layer base {
+  :where([data-slot]) { margin: 0; padding: 0; }
+  :where(ul[data-slot], ol[data-slot]) { list-style: none; }
+  :where(input[data-slot], textarea[data-slot], select[data-slot]) { font: inherit; color: inherit; letter-spacing: inherit; }
+}
 
 /* shadcn's colour names, radii and fonts onto ours. tokens.css sets each shadcn name from one of our
    tokens on :root, so Night follows from its own blocks. */

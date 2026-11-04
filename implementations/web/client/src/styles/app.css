@@ -85,7 +85,9 @@
 
 /* ---------- dock: notice card + composer ---------- */
 .ui-dock { flex: none; padding: 0 28px 16px; }
-.ui-dock-in { max-width: 820px; margin: 0 auto; display: grid; gap: 10px; }
+/* One column that may shrink below its content, so the composer's one-line addons truncate instead of
+   widening the page. */
+.ui-dock-in { max-width: 820px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .ui-caret { display: inline-block; width: 1.5px; height: 1.1em; background: var(--ink); vertical-align: -2px; margin-left: 1px; animation: ui-caret 1s steps(1) infinite; }
 @keyframes ui-caret { 50% { opacity: 0; } }
 .ui-mode-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
@@ -95,7 +97,9 @@
 .ui-cmd code { background: none; padding: 0; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* ---------- right pane ---------- */
-.ui-pane { width: 360px; flex: none; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); }
+/* Positioned, so it paints over a centre header too wide for a narrow window, as it did before the
+   centre became the positioned SidebarInset. */
+.ui-pane { position: relative; width: 360px; flex: none; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); }
 .ui-tabs { height: 52px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
 .ui-pane-body { overflow-y: auto; flex: 1; padding: 18px 18px 24px; min-height: 0; }
 .ui-big { width: 72px; height: 72px; margin-bottom: 8px; }
