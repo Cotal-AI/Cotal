@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.140.5
+
+### Patch Changes
+
+- bcdf7b6: `assertValidName` and `spaceKey` now use the exported `isWellFormedUnicode` instead of their own copies of the lone-surrogate scan, so the check is written once. Which strings they accept and refuse, and their error messages, are unchanged.
+- Updated dependencies [bcdf7b6]
+  - @cotal-ai/core@0.140.5
+
 ## 0.140.4
 
 ### Patch Changes
