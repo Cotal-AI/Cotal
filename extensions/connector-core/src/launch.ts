@@ -25,6 +25,7 @@ import {
   writeLaunchMaterial,
   type LaunchMaterial,
   type McpServerSpec,
+  type UserAuthLaunch,
 } from "@cotal-ai/core";
 import { dirname } from "node:path";
 
@@ -268,7 +269,7 @@ export function materialEnv(
     token?: string;
     controlToken?: string;
     eventsRequired?: boolean;
-    userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+    userAuth?: UserAuthLaunch;
   },
   artifacts: string[],
 ): Record<string, string> {

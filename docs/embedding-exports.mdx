@@ -41,6 +41,16 @@ inferring broad access from a bearer, successful exchange or broker ping.
 the auth-service recovery hint on decoding failures. It does not verify a signature or authorize
 access; the broker and issuer remain responsible for those checks.
 
+## User-mode launch identity
+
+`@cotal-ai/core` exports `UserAuthLaunch` as a type. It names the `owner`, `actor`,
+`sentinelCredsPath` and `bearerCmd` fields carried by `LaunchOpts.userAuth`,
+`LaunchMaterial.userAuth`, connector launch options and the manager's provisioning and resume data.
+Import it with `import type`. The sentinel field is a path, not credential content.
+
+The material reader checks its reconstructed value against `Required<UserAuthLaunch>` at build
+time. Runtime field validation and the policy of ignoring unknown input fields are unchanged.
+
 ## Login confirmation
 
 `AuthProvider.confirmLogin` asks the space's IdP whether this machine's cached login still holds.
