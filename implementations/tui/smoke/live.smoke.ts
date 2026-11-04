@@ -88,6 +88,8 @@ function boxLine(frame: string, width: number): string {
   const lines = frame.trimEnd().split("\n").slice(0, -1).map((line) => [...line].slice(l.tree, end).join("").trim())
   return lines.filter(Boolean).at(-1) ?? ""
 }
+/** The colors a name is drawn in, wherever it starts a colored run, as in a tree row or a waiting entry. */
+const colorsOf = (name: string) => [...tmux("capture-pane", "-p", "-e", "-t", "t").matchAll(new RegExp(`\\x1b\\[38;2;([\\d;]+)m ?${name}\\b`, "g"))].map((m) => m[1])
 const live = (at: string) => (frame: string) => showing(at)(frame) && footer(frame) === "? help · ctrl+p commands"
 const save = (dir: string, name: string) => {
   mkdirSync(dir, { recursive: true })
@@ -190,6 +192,8 @@ try {
     check(`${size}: the space opens on #general with the input box naming it, and a quiet footer`, titleOf(first).includes(`#general  ${space}`) && boxLine(first, width) === "#general" && footer(first) === "? help · ctrl+p commands", first)
     if (width >= 97) {
       check(`${size}: the inspector lists the waiting agent first`, first.includes("NEEDS YOU · 1") && first.includes("1 ◐ coder-2") && first.includes("needs approval: run"), first)
+      const tints = colorsOf("coder-2")
+      check(`${size}: the waiting entry draws coder-2 in the same color as its tree row`, tints.length === 2 && tints[0] === tints[1], tints.join(" | "))
     } else {
       check(`${size}: with no inspector the conversation counts who waits`, !first.includes("NEEDS YOU") && first.includes("1 needs you"), first)
     }

@@ -582,7 +582,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
               <box flexShrink={0} marginBottom={1} backgroundColor={openPeer() === a.card.id ? theme.background.raised.high : undefined}>
                 <text wrapMode="none" fg={theme.text.feedback.warning.base}>
                   <span style={{ fg: theme.text.base }}>{`${i() + 1} `}</span>
-                  {`◐ ${fit(a.card.name, p.width - 8 - (a.card.role?.length ?? 0))}`}
+                  {"◐ "}
+                  <span style={{ fg: nameFg(a.card) }}>{fit(a.card.name, p.width - 8 - (a.card.role?.length ?? 0))}</span>
                   <span style={{ fg: theme.text.faint }}>{a.card.role ? `  ${a.card.role}` : ""}</span>
                 </text>
                 <text fg={theme.text.muted}>{fit(a.activity ?? "reported no question", (p.width - 4) * 3)}</text>
