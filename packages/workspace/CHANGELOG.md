@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.141.10
+
+### Patch Changes
+
+- 392b738: Read installed extension metadata through one parser and pass the operation's parsed result through version checks, peer binding, entry selection and import diagnosis. Missing packages remain distinct from damaged metadata and unreadable files. A package that changes its own metadata during import no longer changes the declared peer floor used to diagnose that import.
+- @cotal-ai/core@0.141.10
+
 ## 0.141.9
 
 ### Patch Changes
