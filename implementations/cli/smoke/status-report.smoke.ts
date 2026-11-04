@@ -11,6 +11,8 @@
  * `smoke:up-tls-routes`.
  *
  * Run: pnpm smoke:status-report
+ * PID-file regression only: pnpm exec tsx implementations/cli/smoke/status-report.smoke.ts --pidfile-only
+ * Add --bin=<installed-cli-path> to exercise an installed CLI.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -19,11 +21,11 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFile
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
-import { acquireMaintenanceLock, beginMaintenanceCut, findMesh, recordMesh, releaseMaintenanceLock, renderReport, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
 import { restoreNextStep } from "../src/lib/restore.js";
 
-const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
+const BIN = process.argv.find(arg => arg.startsWith("--bin="))?.slice("--bin=".length) ?? join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
   console.error(`✗ ${BIN} missing - build first: pnpm --filter cotal-ai... build`);
   process.exit(1);
@@ -91,6 +93,41 @@ const asPlain = (rich: string) => ascii(strip(rich).replace(/[●○] /g, ""));
 const words = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
 
 const brokerDisplayOnly = process.argv.includes("--broker-display-only");
+const pidfileOnly = process.argv.includes("--pidfile-only");
+// Component pidfile reads share the folder report's path-bearing diagnostics.
+if (!brokerDisplayOnly) {
+  const { home, run } = sandbox();
+  const space = "pid-reader";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  try { recordMesh({ space, server, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() }); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: home, space, userAuth: false });
+  const args = ["status", "--space", space, "--verbose", "--components"];
+  const component = (r: ReturnType<typeof run>, name: string) => r.stdout.split("Component Health")[1]?.split("\n").find(line => line.trimStart().startsWith(`${name} `)) ?? "";
+  const missing = run(args, { NO_COLOR: "1" });
+  check("component control: a missing web pidfile is absent or not installed",
+    /web\s+(absent|not-installed)/.test(component(missing, "web")), shown(missing));
+  writeFileSync(webPid, " \n");
+  const empty = run(args, { NO_COLOR: "1" });
+  check("component control: an empty web pidfile has the same classification as a missing file",
+    empty.status === missing.status && component(empty, "web") === component(missing, "web"), shown(empty));
+  writeFileSync(webPid, "not-a-pid");
+  const malformed = run(args, { NO_COLOR: "1" });
+  check("component control: a malformed web pidfile is refused, not absent",
+    /web\s+refused.*unattributable pidfile/.test(component(malformed, "web")), shown(malformed));
+  rmSync(webPid);
+  mkdirSync(webPid);
+  const unreadable = run(args, { NO_COLOR: "1" });
+  check("component control: an unreadable web pidfile refuses its row without aborting the report",
+    unreadable.status === 3 && /web\s+refused.*pidfile unreadable/.test(component(unreadable, "web")) && component(unreadable, "manager") !== "" && component(unreadable, "broker") !== "", shown(unreadable));
+  check("the folder report names the unreadable web pidfile",
+    unreadable.stdout.includes(`pidfile unreadable · cannot read ${webPid}: EISDIR`), shown(unreadable));
+  check("the component row names the unreadable web pidfile",
+    component(unreadable, "web").includes(`pidfile unreadable: cannot read ${webPid}: EISDIR`), component(unreadable, "web"));
+}
+if (!pidfileOnly) {
 let brokerDisplayCases = 0;
 if (!brokerDisplayOnly) {
 // ── a fresh machine: one envelope, one report, the agreed order ──────────────────────────────────
@@ -728,4 +765,5 @@ if (process.platform !== "win32") {
 }
 
 if (brokerDisplayOnly) check("broker display profile reaches all five fixtures", brokerDisplayCases === 5);
+}
 finish();

@@ -1019,6 +1019,9 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
+An unreadable component PID file is `refused`, and its row names the file path and read error.
+A missing or empty PID file still means no local process record.
+
 If a user-auth exchange returns a bearer whose principal cannot be decoded, the component probe
 reports the shared auth-service build and restart guidance instead of a bare JSON or missing-claim error.
 
