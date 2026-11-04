@@ -1,4 +1,4 @@
-name: Desktop apps
+name: Desktop runtime diagnosis
 on:
   workflow_dispatch:
   pull_request:
@@ -11,6 +11,8 @@ on:
       - 'pnpm-lock.yaml'
 permissions:
   contents: read
+env:
+  DO_NOT_TRACK: '1'
 concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: true
@@ -20,12 +22,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            bundles: deb,rpm
-          - os: macos-15
-            bundles: app,dmg
-          - os: macos-15-intel
-            bundles: app,dmg
           - os: windows-2022
             bundles: nsis,msi
     runs-on: ${{ matrix.os }}
@@ -35,7 +31,7 @@ jobs:
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
+          node-version: '24.22.2'
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux webview and tray build dependencies
@@ -79,11 +75,3 @@ jobs:
       - run: pnpm --filter cotal-ai seeded-connectors
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime
-      - name: Build unsigned validation packages
-        run: pnpm --dir desktop exec tauri build --bundles ${{ matrix.bundles }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-validation-${{ runner.os }}-${{ runner.arch }}
-          path: desktop/src-tauri/target/release/bundle/
-          if-no-files-found: error
-          retention-days: 7

@@ -21,7 +21,13 @@ try {
   const run = (args, input) => spawnSync(node, [cli, ...args], { cwd: scratch, env, input, encoding: 'utf8', timeout: 30000 });
   const version = run(['--version']); assert.equal(version.status, 0); assert.equal(version.stdout.trim(), `cotal-ai ${manifest.version}`);
   console.log('PASS relocated stock CLI reports its pinned version');
-  const about = run(['daemon', 'desktop'], '{"op":"about"}\n'); assert.equal(about.status, 0); assert.equal(JSON.parse(about.stdout).result.version, manifest.version);
+  const about = run(['daemon', 'desktop'], '{"op":"about"}\n');
+  if (about.status !== 0) console.error(JSON.stringify({
+    check: 'desktop-about', status: about.status, signal: about.signal,
+    error: about.error?.message,
+    stdout: (about.stdout ?? '').slice(-4000), stderr: (about.stderr ?? '').slice(-4000),
+  }));
+  assert.equal(about.status, 0); assert.equal(JSON.parse(about.stdout).result.version, manifest.version);
   console.log('PASS relocated desktop bridge runs with bundled Node');
   const status = run(['daemon', 'desktop'], '{"op":"status"}\n'); assert.equal(status.status, 0); assert.equal(JSON.parse(status.stdout).ok, false);
   assert.equal(existsSync(join(env.XDG_RUNTIME_DIR, 'cotal/daemon.sock')), false);
