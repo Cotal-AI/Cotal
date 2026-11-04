@@ -37,13 +37,15 @@ import {
   serveEndpoint, epCall, epRequestSubject, epCallerReplyFilter, parseEpSubject,
   compileContract, contractDigest, parseEndpointRequest, checkRequestSubjectAgreement,
   SERVICE_READY,
-  type EpCaller, type EpCommandDef, type EpIssuanceBarrier, type EndpointReply,
+  type EpCaller, type EpCommandDef, type EpIssuanceBarrier, type EndpointReply, type EpError,
   type ParsedEpRequest, type ServiceNameAuthority, type ServiceSpec,
 } from "../src/index.js";
 import { makeIssuanceGate, type IssuanceGate } from "./_issuance-gate.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const replyError = (reply: EndpointReply): EpError | undefined => reply.ok === false ? reply.error : undefined;
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict and never throws: one throwing cell would take every cell below it
@@ -190,9 +192,9 @@ try {
 
   const refused = await call({ instanceId: GHOST, epoch: EPOCH });
   c("a call bound to another incarnation comes back ok:false failed-precondition",
-    refused.reply.ok === false && refused.reply.error?.code === "failed-precondition", refused.reply);
+    refused.reply.ok === false && replyError(refused.reply)?.code === "failed-precondition", refused.reply);
   c("...carrying the bind-refused marker (what a caller keys on, never the code)",
-    replyRefusedBeforeEffect(refused.reply.error), refused.reply.error);
+    replyRefusedBeforeEffect(replyError(refused.reply)), replyError(refused.reply));
   c("...AND THE HANDLER DID NOT RUN — the count is unmoved from the control's 1",
     runs[IID_A] === 1, runs[IID_A]);
   c("...the reply is still attributed to the instance that refused, off the SUBJECT",
@@ -204,7 +206,7 @@ try {
   // responder set it before dispatching to the handler, it crossed the wire, and the reply parser
   // preserved it rather than rebuilding the error without it.
   c("...and `outcome: not-executed`, the field a peer that does not know the marker reads",
-    refused.reply.error?.outcome === "not-executed", refused.reply.error);
+    replyError(refused.reply)?.outcome === "not-executed", replyError(refused.reply));
   // THE CONFORMING PATH STILL HEALS, asserted on a LIVE refusal rather than a hand-built one,
   // because tightening the predicate to require `not-executed` is only safe if a real responder
   // actually emits it. This is the pair the tightening depends on: the same reply carries the
@@ -212,16 +214,16 @@ try {
   // It proves the LICENCE, not the repair; the end-to-end repair is graded in the manager's
   // split suite, which drives a real re-issue against two live incarnations.
   c("A CONFORMING REFUSAL STILL LICENSES THE REPAIR: marker and `not-executed` on one live reply",
-    replyRefusedBeforeEffect(refused.reply.error) === true && refused.reply.error?.outcome === "not-executed",
-    refused.reply.error);
+    replyRefusedBeforeEffect(replyError(refused.reply)) === true && replyError(refused.reply)?.outcome === "not-executed",
+    replyError(refused.reply));
 
   console.log("\n2. the same instance at another epoch is a different incarnation");
   const stale = await call({ instanceId: IID_A, epoch: EPOCH + 7 });
   c("a bind to a later epoch of the SAME instance is expired, not failed-precondition",
-    stale.reply.ok === false && stale.reply.error?.code === "expired" && replyRefusedBeforeEffect(stale.reply.error), stale.reply);
+    stale.reply.ok === false && replyError(stale.reply)?.code === "expired" && replyRefusedBeforeEffect(replyError(stale.reply)), stale.reply);
   c("...and it too ran nothing", runs[IID_A] === 1, runs[IID_A]);
   c("...and it too states `not-executed`: both fence arms are refusals BEFORE the handler",
-    stale.reply.error?.outcome === "not-executed", stale.reply.error);
+    replyError(stale.reply)?.outcome === "not-executed", replyError(stale.reply));
   const exact = await call({ instanceId: IID_A, epoch: EPOCH });
   c("a bind to the EXACT incarnation is served (the fence admits, it does not just refuse)",
     exact.reply.ok === true && runs[IID_A] === 2, { reply: exact.reply, runs: runs[IID_A] });
@@ -254,13 +256,13 @@ try {
 
   const badArgs = await raw({ bind: { instanceId: GHOST, epoch: EPOCH }, args: { n: "not a number" } });
   c("a bind mismatch with INVALID ARGS answers the bind refusal, not bad-request",
-    badArgs.ok === false && badArgs.error?.code === "failed-precondition" && replyRefusedBeforeEffect(badArgs.error), badArgs.error);
+    badArgs.ok === false && replyError(badArgs)?.code === "failed-precondition" && replyRefusedBeforeEffect(replyError(badArgs)), replyError(badArgs));
   const badDigest = await raw({
     bind: { instanceId: GHOST, epoch: EPOCH }, args: { n: 1 },
     op: { endpoint: EP, command: "poke", inputDigest: `sha256:${"f".repeat(64)}`, outputDigest: outContract.closureDigest },
   });
   c("a bind mismatch with a WRONG CONTRACT DIGEST answers the bind refusal, not contract-mismatch",
-    badDigest.ok === false && badDigest.error?.code === "failed-precondition" && replyRefusedBeforeEffect(badDigest.error), badDigest.error);
+    badDigest.ok === false && replyError(badDigest)?.code === "failed-precondition" && replyRefusedBeforeEffect(replyError(badDigest)), replyError(badDigest));
   c("...and neither malformed request ran anything either", runs[IID_A] === 2, runs[IID_A]);
 
   console.log("\n4. where a bind has no reading, it is refused rather than ignored");
@@ -338,7 +340,7 @@ try {
   for (let i = 0; i < 12; i++) {
     const r = await call({ instanceId: IID_A, epoch: EPOCH });
     if (r.reply.ok === true) servedByA++;
-    else if (replyRefusedBeforeEffect(r.reply.error) && r.responder.instanceId === IID_B) refusedByB++;
+    else if (replyRefusedBeforeEffect(replyError(r.reply)) && r.responder.instanceId === IID_B) refusedByB++;
   }
   // AN OBSERVATION, NOT THE CLAIM. Which member the queue picks is the broker's business, and
   // `smoke:queue-win` measured it as sticky on one box — so this cell is VACUOUS on a run where

@@ -2,12 +2,19 @@
  *  the browser Manager caller. The host passes how a goal-result fact is verified, because the
  *  outcome digest is hashed synchronously in Node and through Web Crypto in a browser. */
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/nats-core";
-import { EpEnvelopeError, renderLifecycleBlocked, lifecycleBlockedFrom, unansweredRequest } from "./endpoint-envelope.js";
+import { EpEnvelopeError, renderLifecycleBlocked, unansweredRequest, type EndpointReply, type EpError } from "./endpoint-envelope.js";
 import type { GoalResultFact, GoalRef } from "./endpoint-action.js";
 import type { EpAttributedReply } from "./endpoint-call.js";
 import { callerTokens, endpointToken, epGoalProgressGrantRow, type EpCaller } from "./endpoint-subjects.js";
 import { spacePrefix } from "./subjects.js";
 import { GOAL_FOLLOW_MARGIN_MS, dec } from "./endpoint-caller.js";
+
+/** A reply this follow reports in place of the acceptance. The acceptance is a success, so it has
+ *  data and no error; the replacement keeps its identity and receipt and carries exactly one arm. */
+function followedReply(reply: EndpointReply, next: { ok: true; data: unknown } | { ok: false; error: EpError }): EndpointReply {
+  const kept = { v: reply.v, id: reply.id, ...(reply.receipt !== undefined ? { receipt: reply.receipt } : {}) };
+  return next.ok ? { ...kept, ok: true, data: next.data } : { ...kept, ok: false, error: next.error };
+}
 
 export interface SubmitAndFollowGoalOptions {
   /** Read through the current authorized transport. Cancellation owns this read, not the goal. */
@@ -273,10 +280,10 @@ export async function submitAndFollowGoalWith(
     const terminal = terminals.get(acceptedKey);
     const observationFailure = (code: "unavailable" | "permission-denied" | "deadline-exceeded", reason: string) => ({
       ...attributed,
-      reply: { ...attributed.reply, ok: false as const, data: undefined, error: {
+      reply: followedReply(attributed.reply, { ok: false, error: {
         code, outcome: "unknown" as const,
         message: `the goal "${goalId}" was accepted, but ${reason}. THE GOAL IS UNAFFECTED - it may already have succeeded; this is not evidence the goal failed. Do NOT retry: another submission could duplicate the effect. Inspect 'ps'/'inspect' first (SPEC 13.6)`,
-      } },
+      } }),
     });
     if (stopped) return observationFailure("unavailable", "the endpoint was stopped while awaiting its outcome");
     if (observationError) return observationFailure("unavailable", `following its outcome failed: ${observationError.message}`);
@@ -285,14 +292,12 @@ export async function submitAndFollowGoalWith(
       : observationFailure("unavailable", `the per-goal progress subscription \"${progressSubject}\" FAILED (${subError.name}: ${subError.message}); this is NOT a grant refusal, so changing ACLs is the wrong remedy`);
     if (!terminal) return observationFailure("deadline-exceeded", `no terminal arrived within ${followDeadlineMs}ms; this is a timeout on the WAIT`);
     if (terminal.state === "succeeded")
-      return { ...attributed, reply: { ...attributed.reply, ok: true, data: terminal.data, error: undefined } };
+      return { ...attributed, reply: followedReply(attributed.reply, { ok: true, data: terminal.data }) };
     const d = (terminal.data ?? {}) as { error?: unknown; reason?: unknown; details?: unknown };
     const raw = typeof d.error === "string" ? d.error : typeof d.reason === "string" ? d.reason : `the goal settled ${terminal.state}`;
     const details = Array.isArray(d.details) ? d.details as import("./endpoint-error.js").EpErrorDetail[] : undefined;
     const message = renderLifecycleBlocked(raw, details ? { details } : undefined);
-    const fromAccept = lifecycleBlockedFrom(attributed.reply.error);
-    const merged = details ?? (fromAccept ? [fromAccept] : undefined);
-    return { ...attributed, reply: { ...attributed.reply, ok: false, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };
+    return { ...attributed, reply: followedReply(attributed.reply, { ok: false, error: { code: terminal.state, message, ...(details ? { details } : {}) } }) };
   } finally {
     completed = true;
     opts?.signal?.removeEventListener("abort", onAbort);

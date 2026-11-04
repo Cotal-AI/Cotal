@@ -67,7 +67,7 @@ export async function invokeRepairingSplit(
   let unmapped: EpAttributedReply | undefined;
   for (let reissues = 0; ; reissues += 1) {
     const r = await invokeCommand(nc, space, handle, command, args, opts);
-    if (replyTargetUnmapped(r.reply.error)) unmapped = r;
+    if (r.reply.ok === false && replyTargetUnmapped(r.reply.error)) unmapped = r;
     else if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
     if (handle.pinnedInstanceId !== undefined) return r;
     if (reissues === BIND_SPLIT_REISSUES) return unmapped ?? r;

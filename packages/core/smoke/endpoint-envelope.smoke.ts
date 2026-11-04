@@ -15,7 +15,11 @@ import {
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
   compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
   compileContract, epCast, undeclaredArg, undeclaredArgInstance,
+  type EndpointReply, type EpError,
 } from "../src/index.js";
+
+const replyData = (reply: EndpointReply): unknown => reply.ok === true ? reply.data : undefined;
+const replyError = (reply: EndpointReply): EpError | undefined => reply.ok === false ? reply.error : undefined;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -152,9 +156,9 @@ admits("a scatter cast WITH a deadline agrees",
 
 // ── reply / event shapes ──
 const okReply = parseEndpointReply({ v: 1, id: "req-1", ok: true, data: { pid: 1 }, junk: 1 });
-c("ok reply parses, unknown fields dropped", okReply.ok && (okReply.data as { pid: number }).pid === 1 && !("junk" in okReply));
+c("ok reply parses, unknown fields dropped", okReply.ok && (replyData(okReply) as { pid: number }).pid === 1 && !("junk" in okReply));
 const errReply = parseEndpointReply({ v: 1, id: "req-1", ok: false, error: { code: "expired", message: "mapping moved", details: [{ kind: "ai.cotal.mapping", revision: 4 }] } });
-c("error reply parses with reverse-DNS detail kinds", errReply.error?.code === "expired" && errReply.error.details?.[0].kind === "ai.cotal.mapping");
+c("error reply parses with reverse-DNS detail kinds", replyError(errReply)?.code === "expired" && replyError(errReply)?.details?.[0].kind === "ai.cotal.mapping");
 rejects("an ok reply with an error is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: true, error: { code: "internal", message: "x" } }));
 rejects("a failed reply with data is bad-request", "bad-request",
@@ -176,16 +180,16 @@ rejects("reply version skew is unsupported-version", "unsupported-version",
 const outcomeReply = parseEndpointReply({ v: 1, id: "req-o", ok: false,
   error: { code: "failed-precondition", message: "not this incarnation", outcome: "not-executed" } });
 c("a peer's `outcome: not-executed` SURVIVES the parse — it is not rebuilt away",
-  outcomeReply.error?.outcome === "not-executed", outcomeReply.error);
+  replyError(outcomeReply)?.outcome === "not-executed", replyError(outcomeReply));
 const execReply = parseEndpointReply({ v: 1, id: "req-o2", ok: false,
   error: { code: "internal", message: "the handler ran and then failed", outcome: "executed" } });
 c("...and so does `executed`, which is the one that must never be read as a refusal",
-  execReply.error?.outcome === "executed", execReply.error);
+  replyError(execReply)?.outcome === "executed", replyError(execReply));
 // Absence stays absence. The parser must not MANUFACTURE `unknown`: §13.3 puts that reading on the
 // consumer, and a parser that fills it in makes "the peer said unknown" and "the peer said nothing"
 // indistinguishable on the wire, which is a different fact.
 c("an omitted outcome stays omitted — the parser does not invent `unknown`",
-  errReply.error !== undefined && !("outcome" in errReply.error), errReply.error);
+  replyError(errReply) !== undefined && !("outcome" in replyError(errReply)!), replyError(errReply));
 rejects("an unrecognised outcome is bad-request, not passed through and not coerced", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "internal", message: "x", outcome: "maybe" } }));
 rejects("...and neither is a non-string outcome", "bad-request",
@@ -211,12 +215,12 @@ for (const outcome of ["executed", "not-executed", "unknown"] as const) {
 }
 const withoutOutcome = controlReplyFrom(errReply);
 c("ControlReply keeps an absent reply outcome absent and preserves details",
-  !("outcome" in withoutOutcome) && withoutOutcome.details === errReply.error?.details, withoutOutcome);
+  !("outcome" in withoutOutcome) && withoutOutcome.details === replyError(errReply)?.details, withoutOutcome);
 const thrownWithoutOutcome = controlReplyFromThrown(new EpEnvelopeError("internal", "x"), "caller context");
 c("ControlReply keeps an absent envelope error outcome absent", !("outcome" in thrownWithoutOutcome), thrownWithoutOutcome);
 const successfulControl = controlReplyFrom(okReply);
 c("successful ControlReply keeps its data without inventing an outcome",
-  successfulControl.ok && successfulControl.data === okReply.data && !("outcome" in successfulControl), successfulControl);
+  successfulControl.ok && successfulControl.data === replyData(okReply) && !("outcome" in successfulControl), successfulControl);
 
 const ev = parseEndpointEvent({ v: 1, topic: "ev.ai_cotal_lifecycle.started", ts: 1720500000000, data: null });
 c("event parses (a null data field IS data)", ev.topic.startsWith("ev.") && ev.data === null);

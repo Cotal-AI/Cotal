@@ -34,7 +34,7 @@ import {
   compileContract, contractDigest, VOID_SCHEMA,
   parseClusterDocument, verifyClusterManifest, verifyClusterRoot,
   epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, recordStatusKey, RECORD_KINDS,
-  type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
+  type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply, type EpError,
   type EpCommandDef, type DescribeAnswer, type EpServeGrant, type CompiledContract,
   type EpIssuanceBarrier, type EpVerbOp,
 } from "../src/index.js";
@@ -42,6 +42,15 @@ import { makeIssuanceGate, type IssuanceGate } from "./_issuance-gate.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const replyData = (reply: EndpointReply | undefined): unknown => {
+  if (reply?.ok === true) return reply.data;
+  return undefined;
+};
+const replyError = (reply: EndpointReply | undefined): EpError | undefined => {
+  if (reply?.ok === false) return reply.error;
+  return undefined;
+};
 
 /** READING THIS SUITE'S OUTPUT — the reporting is INVERTED and the inversion is a trap.
  *
@@ -590,13 +599,13 @@ try {
   const attr1 = parseEpSubject(r1!.subject);
   c("the reply subject attributes the responding instance + epoch (structural, never body)",
     attr1?.plane === "reply"
-    && ((attr1.instanceId === IID_A && attr1.epoch === 3 && (r1!.reply.data as { which: string }).which === "A")
-      || (attr1.instanceId === IID_B && attr1.epoch === 1 && (r1!.reply.data as { which: string }).which === "B")));
+    && ((attr1.instanceId === IID_A && attr1.epoch === 3 && (replyData(r1!.reply) as { which: string }).which === "A")
+      || (attr1.instanceId === IID_B && attr1.epoch === 1 && (replyData(r1!.reply) as { which: string }).which === "B")));
 
   // inst rail addresses ONE stable instance
   const r2 = await send(epRequestSubject(SPACE, { route: { mode: "inst", instanceId: IID_B }, endpoint: "manager", command: "status", caller, nonce: nonce() }), req());
   c("an instance call lands on exactly the addressed instance",
-    r2 !== undefined && (r2.reply.data as { which: string }).which === "B"
+    r2 !== undefined && (replyData(r2.reply) as { which: string }).which === "B"
     && (parseEpSubject(r2.subject) as { instanceId: string }).instanceId === IID_B);
 
   // all rail: every instance answers (gather semantics are D5's; here both replies arrive)
@@ -611,30 +620,30 @@ try {
   // digest binding + runtime schema validation
   const r3 = await send(oneSubj("status"), req({ op: { endpoint: "manager", command: "status", inputDigest: D_OTHER, outputDigest: D_OUT } }));
   c("a pinned digest the member cannot honor is contract-mismatch, never coerced",
-    r3 !== undefined && r3.reply.ok === false && r3.reply.error?.code === "contract-mismatch");
+    r3 !== undefined && r3.reply.ok === false && replyError(r3.reply)?.code === "contract-mismatch");
   const r3b = await send(oneSubj("status"), req({ args: { name: 42 } }));
   c("args violating the input schema are bad-request BEFORE any effect",
-    r3b !== undefined && r3b.reply.error?.code === "bad-request");
+    r3b !== undefined && replyError(r3b.reply)?.code === "bad-request");
   const r3x = await send(oneSubj("status"), req({ args: { name: "x", events: true } }));
   c("a closed-contract refusal names the offending property over the wire (skew diagnosis starts there)",
-    r3x !== undefined && r3x.reply.error?.code === "bad-request" && (r3x.reply.error?.message ?? "").includes('"events"'),
-    JSON.stringify(r3x?.reply.error));
+    r3x !== undefined && replyError(r3x.reply)?.code === "bad-request" && (replyError(r3x.reply)?.message ?? "").includes('"events"'),
+    JSON.stringify(replyError(r3x?.reply)));
   const r3n = await send(oneSubj("status"), req({ args: null }));
   c("explicit-null args on an OBJECT-input command are bad-request through the SCHEMA (not the parser)",
-    r3n !== undefined && r3n.reply.error?.code === "bad-request", JSON.stringify(r3n?.reply));
+    r3n !== undefined && replyError(r3n.reply)?.code === "bad-request", JSON.stringify(r3n?.reply));
   const r3c = await send(oneSubj("badout"), req({ op: { endpoint: "manager", command: "badout", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("handler output violating the output schema is internal, never published as success",
-    r3c !== undefined && r3c.reply.ok === false && r3c.reply.error?.code === "internal");
+    r3c !== undefined && r3c.reply.ok === false && replyError(r3c.reply)?.code === "internal");
   // §13.3: each refusal below is raised AFTER the handler returned, so the effect landed and the
   // reply MUST say `executed`; an omitted outcome reads as `unknown` (#3397).
   c("the output-schema refusal states `executed`: the handler ran to completion",
-    r3c?.reply.error?.outcome === "executed", JSON.stringify(r3c?.reply.error));
+    replyError(r3c?.reply)?.outcome === "executed", JSON.stringify(replyError(r3c?.reply)));
   const r3d = await send(oneSubj("cyclic"), req({ op: { endpoint: "manager", command: "cyclic", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a non-serializable reply is replaced by a structured internal error, never dropped",
-    r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal"
-      && (r3d.reply.error?.message ?? "").includes("does not serialize"), JSON.stringify(r3d?.reply.error));
+    r3d !== undefined && r3d.reply.ok === false && replyError(r3d.reply)?.code === "internal"
+      && (replyError(r3d.reply)?.message ?? "").includes("does not serialize"), JSON.stringify(replyError(r3d?.reply)));
   c("the non-serializable replacement states `executed`: it replaces a success",
-    r3d?.reply.error?.outcome === "executed", JSON.stringify(r3d?.reply.error));
+    replyError(r3d?.reply)?.outcome === "executed", JSON.stringify(replyError(r3d?.reply)));
   // Tee console.error: the demoted budget's ONLY observable is its report, and asserting the reply
   // alone would pass just as well if the validation had never been over budget. Tee rather than
   // swallow, so the serve side's diagnostics still reach the log.
@@ -655,10 +664,10 @@ try {
   c("an over-budget OUTPUT validation is REPORTED, not refused (the §13.8 demotion)",
     budgetReports.some((l) => /output validation took ~\d+ms/.test(l)), `reports: ${budgetReports.length}`);
   c("a reply too large to publish is answered `resource-exhausted`, never silently dropped",
-    r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "resource-exhausted",
+    r3e !== undefined && r3e.reply.ok === false && replyError(r3e.reply)?.code === "resource-exhausted",
     r3e === undefined ? "NO REPLY - the caller was left with silence" : JSON.stringify(r3e.reply).slice(0, 220));
   c("the unpublishable replacement states `executed`: it replaces a success",
-    r3e?.reply.error?.outcome === "executed", JSON.stringify(r3e?.reply.error).slice(0, 220));
+    replyError(r3e?.reply)?.outcome === "executed", JSON.stringify(replyError(r3e?.reply)).slice(0, 220));
 
   // §13.7 canonical void: absent OR explicit null args both validate on a void-input command
   const pingOp = { endpoint: "manager", command: "ping", inputDigest: D_VOID, outputDigest: D_OUT };
@@ -669,7 +678,7 @@ try {
     rv2?.reply.ok === true, JSON.stringify(rv2?.reply));
   const rv3 = await send(oneSubj("ping"), req({ op: pingOp }));
   c("a void-input command rejects an object payload (the void schema decides)",
-    rv3 !== undefined && rv3.reply.error?.code === "bad-request", JSON.stringify(rv3?.reply));
+    rv3 !== undefined && replyError(rv3.reply)?.code === "bad-request", JSON.stringify(rv3?.reply));
 
   // class discipline: a journal-declared call on a rail dies at the boundary (§13.4: a journal
   // submission is a cast observing its decision subtree, so journal+replyExpected:true is the
@@ -677,17 +686,17 @@ try {
   // seam guards it without a reply to witness).
   const r4 = await send(oneSubj("status"), req({ class: "journal" }));
   c("a journal-class call on a rail is refused at the boundary",
-    r4 !== undefined && r4.reply.ok === false && r4.reply.error?.code === "bad-request");
+    r4 !== undefined && r4.reply.ok === false && replyError(r4.reply)?.code === "bad-request");
 
   // body-subject agreement
   const r5 = await send(oneSubj("status"), req({ op: { endpoint: "other", command: "status", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a body op disagreeing with the subject is op-mismatch",
-    r5 !== undefined && r5.reply.error?.code === "op-mismatch");
+    r5 !== undefined && replyError(r5.reply)?.code === "op-mismatch");
 
   // a malformed body still answers the call boundary (the reply subject is nonce-scoped)
   const r6 = await send(oneSubj("status"), { v: 1, id: "req-x" });
   c("a malformed call body draws a structured boundary error",
-    r6 !== undefined && r6.reply.ok === false && typeof r6.reply.error?.code === "string");
+    r6 !== undefined && r6.reply.ok === false && typeof replyError(r6.reply)?.code === "string");
 
   // target currency (§13.3/§13.9): fresh mapping immediately before effect, on the REGISTERED
   // targeted command (inspect: targeted, modes [owner]).
@@ -698,13 +707,13 @@ try {
   c("a CURRENT target dispatches", r7a !== undefined && r7a.reply.ok === true, JSON.stringify(r7a?.reply));
   const r7b = await send(oneSubj("inspect", { target: tgt }), iReq({ owner: "u_abc", actor: "svc", lifecycleUid: OTHER_UID }));
   c("a superseded/foreign target lifecycleUid is expired (fresh mapping, not static agreement)",
-    r7b !== undefined && r7b.reply.error?.code === "expired");
+    r7b !== undefined && replyError(r7b.reply)?.code === "expired");
   const r7c = await send(oneSubj("inspect", { target: tgt }), iReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID, mappingRevision: 3 }));
   c("a pinned mappingRevision that is not the current one is expired (the pin is exact)",
-    r7c !== undefined && r7c.reply.error?.code === "expired");
+    r7c !== undefined && replyError(r7c.reply)?.code === "expired");
   const r7d = await send(oneSubj("inspect", { target: tgt }), iReq({ owner: "u_abc", actor: "gone", lifecycleUid: T_UID }));
   c("a target alias with NO current mapping is expired",
-    r7d !== undefined && r7d.reply.error?.code === "expired");
+    r7d !== undefined && replyError(r7d.reply)?.code === "expired");
   // no resolver seam = targeted modes REFUSED, never dispatched unchecked. manager2 registers a
   // NARROW single-command cluster (its whole surface is `inspect`), per the full-surface rule.
   await reg(kv, { spec: { endpoint: "manager2", owner: "u_op", clusterDigests: [DC_INSPECT], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
@@ -718,18 +727,18 @@ try {
     epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager2", command: "inspect", caller, nonce: nonce(), target: tgt }),
     req({ op: { ...iOp, endpoint: "manager2" }, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } }));
   c("a targeted request with NO resolver seam is unavailable (fail closed, never unchecked dispatch)",
-    r7e !== undefined && r7e.reply.error?.code === "unavailable");
+    r7e !== undefined && replyError(r7e.reply)?.code === "unavailable");
   await srvNoRes.stop();
 
   // §13.2/§13.7 registered admission: default-deny both ways
   const r7f = await send(oneSubj("inspect", { target: { mode: "any", tOwner: "u_abc" } }),
     iReq({ owner: "u_abc", actor: "svc", lifecycleUid: T_UID }));
   c("an UNREGISTERED authorization mode is permission-denied (inspect admits only owner)",
-    r7f !== undefined && r7f.reply.error?.code === "permission-denied");
+    r7f !== undefined && replyError(r7f.reply)?.code === "permission-denied");
   const r7g = await send(oneSubj("badout", { target: tgt }),
     req({ op: { endpoint: "manager", command: "badout", inputDigest: D_IN, outputDigest: D_OUT }, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } }));
   c("a registered-UNTARGETED command refuses every targeted form (default-deny)",
-    r7g !== undefined && r7g.reply.error?.code === "permission-denied");
+    r7g !== undefined && replyError(r7g.reply)?.code === "permission-denied");
 
   // §13.2 child/ledger: fresh per-mode authorization through the seams, fail closed without them
   const childCalls: { caller: EpCaller; target: { owner: string; actor: string; lifecycleUid: string } }[] = [];
@@ -755,10 +764,10 @@ try {
   await nc.flush();
   const r11a = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a child-mode request with NO spawner seam is unavailable (fail closed, never the grant alone)",
-    r11a !== undefined && r11a.reply.error?.code === "unavailable");
+    r11a !== undefined && replyError(r11a.reply)?.code === "unavailable");
   const r11b = await send(m3Subj("audit", "ledger"), m3Req("audit"));
   c("a ledger-mode request with NO ledger seam is unavailable (fail closed)",
-    r11b !== undefined && r11b.reply.error?.code === "unavailable");
+    r11b !== undefined && replyError(r11b.reply)?.code === "unavailable");
   await srvNoSeam.stop();
   const srvSeamed = serveEndpoint(nc, SPACE, grant3, m3Defs(), { public: true }, {
     resolveTarget,
@@ -781,7 +790,7 @@ try {
     epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "manager3", command: "adopt", caller, nonce: nonce() }),
     req({ op: { endpoint: "manager3", command: "adopt", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a registered-TARGETED command refuses the UNTARGETED form; handler and seam are never reached",
-    r11u !== undefined && r11u.reply.error?.code === "permission-denied" && adoptRuns === 0 && childCalls.length === 0,
+    r11u !== undefined && replyError(r11u.reply)?.code === "permission-denied" && adoptRuns === 0 && childCalls.length === 0,
     JSON.stringify({ r: r11u?.reply, adoptRuns, childCalls: childCalls.length }));
   const r11c = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a spawner-confirmed child-mode request dispatches, the seam fed the SUBJECT-borne caller",
@@ -791,11 +800,11 @@ try {
   childAnswer = false;
   const r11d = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a spawner record NOT naming the caller is permission-denied (fresh check, not the grant)",
-    r11d !== undefined && r11d.reply.error?.code === "permission-denied");
+    r11d !== undefined && replyError(r11d.reply)?.code === "permission-denied");
   childAnswer = new Error("registry read failed");
   const r11e = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a FAILING spawner seam is unavailable (fail closed, never dispatched on doubt)",
-    r11e !== undefined && r11e.reply.error?.code === "unavailable");
+    r11e !== undefined && replyError(r11e.reply)?.code === "unavailable");
   // The finding-6 regression: the mapping rotates DURING the child-authority await — the
   // post-seam currency re-read must refuse `expired`, and the handler must never run.
   childAnswer = true;
@@ -803,7 +812,7 @@ try {
   const adoptBefore = adoptRuns;
   const r11h = await send(m3Subj("adopt", "child"), m3Req("adopt"));
   c("a mapping ROTATED during the authority read is expired at the post-seam re-check; no effect happens",
-    r11h !== undefined && r11h.reply.error?.code === "expired" && adoptRuns === adoptBefore,
+    r11h !== undefined && replyError(r11h.reply)?.code === "expired" && adoptRuns === adoptBefore,
     JSON.stringify({ r: r11h?.reply, adoptRuns, adoptBefore }));
   rotateDuringSeam = false;
   targets.set("u_abc.svc", { lifecycleUid: T_UID, mappingRevision: 7 });
@@ -814,7 +823,7 @@ try {
   ledgerAnswer = false;
   const r11g = await send(m3Subj("audit", "ledger"), m3Req("audit"));
   c("a ledger with no live grant is permission-denied (fresh read, fail closed)",
-    r11g !== undefined && r11g.reply.error?.code === "permission-denied");
+    r11g !== undefined && replyError(r11g.reply)?.code === "permission-denied");
   await srvSeamed.stop();
 
   // cast: at-most-once, never replied to — even when the handler throws
@@ -830,7 +839,7 @@ try {
   // artifact's DERIVED descriptor
   const dReq = req({ op: { endpoint: "manager", command: "describe" }, args: undefined });
   const r8 = await send(oneSubj("describe"), dReq);
-  const answer = r8?.reply.data as DescribeAnswer | undefined;
+  const answer = replyData(r8?.reply) as DescribeAnswer | undefined;
   c("describe answers scoped: exactly the authorized command intersection per verified cluster",
     r8?.reply.ok === true && answer?.public === false
     && answer.descriptor.clusters.length === 2
@@ -843,24 +852,24 @@ try {
     answer !== undefined && answer.descriptor.clusters[1].document !== undefined);
   const r8b = await send(oneSubj("describe"), req({ op: { endpoint: "manager", command: "describe", inputDigest: D_IN, outputDigest: D_OUT }, args: undefined }));
   c("a digest carried on describe is contract-mismatch (nothing to honor)",
-    r8b !== undefined && r8b.reply.error?.code === "contract-mismatch");
+    r8b !== undefined && replyError(r8b.reply)?.code === "contract-mismatch");
   const viewsBefore = viewCalls;
   const r8c = await send(oneSubj("describe"), req({ op: { endpoint: "manager", command: "describe" }, args: { name: "x" } }));
   c("describe with non-void args is bad-request BEFORE the authorization-view lookup",
-    r8c !== undefined && r8c.reply.error?.code === "bad-request" && viewCalls === viewsBefore,
+    r8c !== undefined && replyError(r8c.reply)?.code === "bad-request" && viewCalls === viewsBefore,
     JSON.stringify({ r: r8c?.reply, viewsBefore, viewCalls }));
   const r8n = await send(oneSubj("describe"), req({ op: { endpoint: "manager", command: "describe" }, args: null }));
   c("describe accepts EXPLICIT NULL args (canonical void: absent or null, SPEC 13.7)",
     r8n?.reply.ok === true, JSON.stringify(r8n?.reply));
   const r8d = await send(oneSubj("describe", { target: tgt }), req({ op: { endpoint: "manager", command: "describe" }, args: undefined, target: { owner: "u_abc", actor: "svc", lifecycleUid: T_UID } }));
   c("a TARGETED describe is permission-denied (reserved untargeted, SPEC 13.7)",
-    r8d !== undefined && r8d.reply.error?.code === "permission-denied");
+    r8d !== undefined && replyError(r8d.reply)?.code === "permission-denied");
   // Finding-4 (mutable authz) regression: flip the caller-supplied authz to {public:true} AFTER
   // construction — the snapshotted scoped policy must ignore it and never leak the full surface.
   (scoped as { public?: boolean }).public = true;
   const r8m = await send(oneSubj("describe"), dReq);
   c("a post-construction authz mutation ({view}->{public:true}) does NOT change the snapshotted policy",
-    (r8m?.reply.data as DescribeAnswer | undefined)?.public === false, JSON.stringify(r8m?.reply));
+    (replyData(r8m?.reply) as DescribeAnswer | undefined)?.public === false, JSON.stringify(r8m?.reply));
   delete (scoped as { public?: boolean }).public;
 
   // stop(): drains AND awaits in-flight handlers before reporting stopped
@@ -887,12 +896,12 @@ try {
   await nc.flush();
   const r9 = await send(oneSubj("describe"), dReq);
   c("describe with no fresh trusted view is unavailable (fail closed, never a weaker source)",
-    r9 !== undefined && r9.reply.ok === false && r9.reply.error?.code === "unavailable");
+    r9 !== undefined && r9.reply.ok === false && replyError(r9.reply)?.code === "unavailable");
   await srvClosed.stop();
   const srvPub = serveEndpoint(nc, SPACE, grantD, fullDefs(), { public: true });
   await nc.flush();
   const r10 = await send(oneSubj("describe"), dReq);
-  const pub = r10?.reply.data as DescribeAnswer | undefined;
+  const pub = replyData(r10?.reply) as DescribeAnswer | undefined;
   c("a declared-public descriptor answers unscoped and SAYS it is public",
     pub?.public === true && pub.descriptor.clusters[0].commands.includes("status"), JSON.stringify(pub));
   await srvPub.stop();
@@ -913,7 +922,7 @@ try {
   const srvJournal = serveEndpoint(nc, SPACE, grantJournal, [], { public: true });
   await nc.flush();
   const rj = await describeOn("mgrjob");
-  const ja = rj?.reply.data as DescribeAnswer | undefined;
+  const ja = replyData(rj?.reply) as DescribeAnswer | undefined;
   c("a JOURNAL-ONLY endpoint constructs serveEndpoint (no ephemeral defs) and serves mandatory describe (SPEC 13.7)",
     rj?.reply.ok === true && ja?.public === true && ja.descriptor.clusters.some((cl) => cl.commands.includes("submitjob")), JSON.stringify(rj?.reply));
   await srvJournal.stop();
@@ -924,7 +933,7 @@ try {
   const srvMixed = serveEndpoint(nc, SPACE, grantMixed, [def("run")], { public: true });
   await nc.flush();
   const rm = await describeOn("mgrmix");
-  const ma = rm?.reply.data as DescribeAnswer | undefined;
+  const ma = replyData(rm?.reply) as DescribeAnswer | undefined;
   c("a MIXED (ephemeral+journal) endpoint constructs with the ephemeral def only and serves describe advertising BOTH commands",
     rm?.reply.ok === true && !!ma && ma.descriptor.clusters.some((cl) => cl.commands.includes("run") && cl.commands.includes("submitjob")), JSON.stringify(rm?.reply));
   const runSubj = epRequestSubject(SPACE, { route: { mode: "one" }, endpoint: "mgrmix", command: "run", caller, nonce: nonce() });

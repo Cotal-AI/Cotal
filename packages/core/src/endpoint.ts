@@ -3144,7 +3144,7 @@ export class CotalEndpoint extends EventEmitter {
         // sibling may host it. A pinned call named its instance, so that refusal is its answer.
         // That member looked the target up, so when the re-issues run out its refusal is surfaced
         // in place of a trailing bind refusal, which says nothing about the target.
-        const unmappedHere = (x: EpAttributedReply) => opts.instanceId === undefined && replyTargetUnmapped(x.reply.error);
+        const unmappedHere = (x: EpAttributedReply) => opts.instanceId === undefined && x.reply.ok === false && replyTargetUnmapped(x.reply.error);
         let unmapped = unmappedHere(r) ? r : undefined;
         for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false
           && (replyRefusedBeforeEffect(r.reply.error) || unmappedHere(r)); reissues++) {
@@ -3188,7 +3188,7 @@ export class CotalEndpoint extends EventEmitter {
           try {
             reissueTarget = await resolve(signal);
             const unfollowable = opts.follow ? goalFollowRefusal(reissueTarget) : undefined;
-            if (unfollowable) throw new Error(unfollowable.reply.error!.message);
+            if (unfollowable?.reply.ok === false) throw new Error(unfollowable.reply.error.message);
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,
@@ -3204,7 +3204,7 @@ export class CotalEndpoint extends EventEmitter {
           r = await invokeResolved(reissueTarget, signal);
           if (unmappedHere(r)) unmapped = r;
         }
-        return replyRefusedBeforeEffect(r.reply.error) ? unmapped ?? r : r;
+        return r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error) ? unmapped ?? r : r;
       } catch (e) {
         // DO NOT auto-retry a command a responder already ANSWERED. This path covers the responders
         // WITHOUT the fence above: they ignore `bind`, run the command, and the error is raised
