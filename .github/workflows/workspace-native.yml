@@ -66,7 +66,7 @@ jobs:
   # asks for it, because its prepack requires both Windows and both macOS bindings.
   darwin:
     if: inputs.darwin
-    runs-on: ${{ fromJSON('{"x64":"macos-15-intel","arm64":"macos-15"}')[matrix.arch] }}
+    runs-on: ${{ fromJSON('{"x64":"macos-26-intel","arm64":"macos-26"}')[matrix.arch] }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
