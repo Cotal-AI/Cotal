@@ -1,7 +1,7 @@
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
@@ -2008,8 +2008,22 @@ export class Manager {
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
-      const local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
-      if (local && existsSync(this.executionRecordPath(local.instanceId))) this.claimExecutionRecord(local.instanceId);
+      // A fresh root has no execution record, so construction does not read the identity. A restart's
+      // record names the instance, and its identity is read only to claim that record before start.
+      const prefix = `manager-execution.${spaceKey(this.space)}.`;
+      const dir = join(this.workspaceRoot, ".cotal");
+      const names = existsSync(dir) ? readdirSync(dir).filter((name) => name.startsWith(prefix) && name.endsWith(".json")) : [];
+      if (names.length > 1) throw new Error(`space "${this.space}" has more than one manager execution record; refusing to choose one`);
+      const instanceId = names[0]?.slice(prefix.length, -".json".length);
+      if (instanceId && existsSync(this.executionRecordPath(instanceId))) {
+        const local = createManagerInstanceIdentity(this.workspaceRoot, this.space, () => {
+          throw new Error(`manager execution record ${instanceId} has no manager identity to claim`);
+        });
+        if (local.instanceId === instanceId) {
+          this.claimExecutionRecord(instanceId);
+          this.admittedLocalIdentity = local;
+        }
+      }
     }
     if (this.executionState.kind === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     if (opts.pooled && this.executionState.kind === "runtime" && isCustodialRuntime(this.requiredRuntime))
@@ -2277,15 +2291,15 @@ export class Manager {
 
   private async admitExecutionState(): Promise<void> {
     if (!this.remoteAuthority) {
-      // execution none must see a record that already exists before it decides. The ordinary path
-      // claims once: a load here and the claim below would each stat a record the claim reads itself.
-      let local = this.execution === "none" ? loadManagerInstanceIdentity(this.workspaceRoot, this.space) : undefined;
+      let local = this.admittedLocalIdentity;
+      this.admittedLocalIdentity = undefined;
       if (this.execution === "none") {
         const recorded = loadMeshes().find((m) => m.space === this.space);
         const auth = hasUserAuthState(this.workspaceRoot, this.space) && recorded?.mode === "user"
           ? await getSpaceAuth(this.secrets, this.space) : undefined;
         if (!auth)
           throw new Error("execution: none requires a genuine hosting user-auth root and its user-mode mesh record");
+        if (!local) local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
         if (local && !existsSync(this.executionRecordPath(local.instanceId)))
           throw new Error("execution: none refuses an existing unclassified manager instance; keep its runtime and retained state, or register a fresh control instance");
         if (!local) {
@@ -2304,6 +2318,7 @@ export class Manager {
           if (entries.some((entry) => entry.iid === localInstanceId && (entry.allocated !== undefined || entry.note !== undefined)))
             throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
         } finally { await nc.drain().catch(() => nc.close()); }
+        this.admittedLocalIdentity = local;
       } else {
         local ??= createManagerInstanceIdentity(this.workspaceRoot, this.space, () => ({ instanceId: mintLifecycleUid(), serveIdentity: newIdentity() }));
         this.claimExecutionRecord(local.instanceId);
