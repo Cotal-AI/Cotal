@@ -640,6 +640,18 @@ try {
     S.seats.get("steady")!.exit();
     await until(() => (S.spawned.get("steady") ?? 0) > 1);
     check("control: an unchanged snapshot restarts", (S.spawned.get("steady") ?? 0) > 1, S.spawned.get("steady"));
+    // A seat's endpoint commands survive its record and an in-place restart: the record reads back
+    // through the resume schema with them, and the relaunch hands the session the same list.
+    const epList = [{ endpoint: "com.example.orders", commands: ["list"] }];
+    const steadyEp = okData(await spawnAs(undefined, "steady_ep", { persona: { prompt: "x", endpoints: epList }, supervise }));
+    const epRecord = readSeatRecord(workspaceRoot, space, "steady_ep") as unknown as { agent: { launch: { endpoints?: unknown } } } | undefined;
+    check("a seat's record reads back through the resume schema with its endpoints",
+      steadyEp !== undefined && JSON.stringify(epRecord?.agent.launch.endpoints) === JSON.stringify(epList), epRecord?.agent.launch.endpoints);
+    launched.delete("steady_ep");
+    S.seats.get("steady_ep")!.exit();
+    await until(() => (S.spawned.get("steady_ep") ?? 0) > 1);
+    check("and an in-place restart hands the session the same endpoints",
+      (S.spawned.get("steady_ep") ?? 0) > 1 && JSON.stringify(launched.get("steady_ep")?.endpoints) === JSON.stringify(epList), launched.get("steady_ep")?.endpoints);
     // A seat whose recorded path, or whose relaunch path, names another file. Each is refused alone.
     // The recorded path moves and keeps the digest of the file the relaunch reads.
     const foreign = join(scratch, "foreign.md");
