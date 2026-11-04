@@ -87,7 +87,7 @@ import { cotalLangRunHost } from "../src/run-host.js";
 import { resolveCheckpoint } from "../src/resolve-checkpoint.js";
 import { createRunScopeAuthority } from "../src/run-scope-authority.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "hostreplay";
 const EP = "manager";
@@ -99,17 +99,6 @@ const c = (n: string, v: boolean, extra?: unknown) => {
   if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
@@ -462,7 +451,8 @@ try {
   const answered = await answerPanel(runId, open);
   c("the three answers landed within the same second", open.length === 3 && answered.ms < 1_000 && answered.answers.every((a) => a === "ok"), answered);
   const out = await withDeadline(drive.outcome, 30_000, "the shared-id panel");
-  await withDeadline(readers, 30_000, "the status readers");
+  c("the status readers ended within its deadline",
+    await withDeadline(readers.then(() => true), 30_000, "the status readers") === true);
   const panel = await panelHeld(runId, out);
   c("no branch fails while status reads the drive's own takeover id", panel.held, panel.detail);
   const rows = views.map((v) => (typeof v === "object" ? v.journal : undefined));
@@ -571,7 +561,7 @@ try {
   await nc.close();
 }
 
-const EXPECTED_CELLS = 14;
+const EXPECTED_CELLS = 15;
 const ran = ok + fail;
 console.log(`run-host-replay.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
