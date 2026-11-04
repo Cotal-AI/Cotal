@@ -43,6 +43,7 @@
  * clock that only moves forward at its own rate.
  */
 import { EffectError } from "@cotal-ai/lang";
+import { TimeoutError } from "@nats-io/transport-node";
 import { delay } from "./delay.js";
 
 /**
@@ -235,26 +236,20 @@ export const STARVED_SHARE_DIVISOR = 4;
  *  reports large lag while losing no ticks is a clock that moved, not a loop that stopped. */
 export const STARVED_TICK_KEPT_DIVISOR = 2;
 
-const nameOf = (e: unknown): string | undefined => {
-  const n = (e as { name?: unknown } | null | undefined)?.name;
-  return typeof n === "string" ? n : undefined;
-};
-
 /**
  * Is this failure the SHAPE a client-side deadline produces?
  *
- * Read off the error's CLASS, never its message. The NATS client's timeout carries the bare text
- * `timeout`, and so do several unrelated failures in this tree and in other people's, so matching the
- * word would classify a broker's refusal as starvation the moment somebody phrased one that way.
- *
- * Two accepting branches, because the client raises the deadline in two shapes: on its own for a
- * plain API call, and wrapped in a `RequestError` when the deadline ends a request. Each has a
- * refusing cell that differs from it only in the class involved.
+ * Read off the client's CLASS, never its name and never its message. The deadline this host's own
+ * client raises is a `TimeoutError` with no cause: a plain API call rejects one, and so does a
+ * request, because the client keeps the stack it captured for the deadline and does not wrap it.
+ * Both the class and `AbortSignal.timeout`'s `DOMException` set `name` to `TimeoutError`, and so
+ * does any other error somebody renamed. Matching that name classified all of them as a late
+ * pause-plane reply, so the wrapper retried them and, after the bound, failed the step as `L4026`.
+ * A renamed error and a DOM exception are not instances of the client's class. Neither is a
+ * `RequestError` built around a `TimeoutError`: the pinned client never attaches that cause.
  */
 export function isDeadlineShaped(error: unknown): boolean {
-  if (nameOf(error) === "TimeoutError") return true;
-  if (nameOf(error) === "RequestError" && nameOf((error as { cause?: unknown }).cause) === "TimeoutError") return true;
-  return false;
+  return error instanceof TimeoutError;
 }
 
 /** Was this process demonstrably not scheduled across the window? */
