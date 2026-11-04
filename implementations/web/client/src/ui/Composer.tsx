@@ -1,6 +1,7 @@
 import { ArrowUp02Icon, AtIcon, SquareLock02Icon } from "@hugeicons/core-free-icons";
 import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
 import { composeKey, composerNote, messageRoute, POST_OFF_CREDS, sendCommand, type ComposeTarget } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
@@ -172,7 +173,7 @@ export function OutgoingRows({ store, target, shown }: { store: Store<DashboardS
           <div key={o.seq} className={o.id === undefined ? "ui-msg ui-pending" : "ui-msg"}>
             <div className="ui-gut"><span className="ui-me" style={{ width: 34, height: 34 }}>OP</span></div>
             <div>
-              <div className="ui-mh"><b>operator</b><span className="ui-role">operator</span><time dateTime={at.toISOString()}>{clock(at)}</time></div>
+              <div className="ui-mh"><b>operator</b><Badge variant="secondary">operator</Badge><time dateTime={at.toISOString()}>{clock(at)}</time></div>
               <div className="ui-tx"><p style={{ whiteSpace: "pre-wrap" }}>{o.text}</p></div>
             </div>
           </div>

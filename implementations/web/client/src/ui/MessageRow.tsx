@@ -6,6 +6,7 @@ import { displayNameOf, type NameIndex } from "../lib/names.js";
 import { partsToText } from "../lib/parts.js";
 import { clock } from "../lib/time.js";
 import type { RosterRow } from "../lib/roster.js";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
@@ -20,7 +21,7 @@ const CLAMP = 280;
 export const UNVERIFIED =
   "History does not record who sent this message. The sender shown is the one the message names, and it has not been checked.";
 
-/** The name a harness goes by, for the chip beside the sender. A connector the dashboard has no
+/** The name a harness goes by, for the Badge beside the sender. A connector the dashboard has no
  *  brand for is shown as the connector reports it. */
 export function harnessName(connector: string): string {
   const key = connector === "claude-code" ? "claude" : connector;
@@ -91,10 +92,10 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
         {!cont && (
           <div className="ui-mh">
             {pick && senderId !== undefined ? <button type="button" className="ui-who" onClick={() => pick(senderId)}><b>{name}</b></button> : <b>{name}</b>}
-            {senderId === undefined && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
-            {place && <span className="ui-role">{place}</span>}
-            {place === undefined && peer?.role && <span className="ui-role">{peer.role}</span>}
-            {place === undefined && peer?.harness && <span className="ui-hz">{harnessName(peer.harness)}</span>}
+            {senderId === undefined && <Badge variant="outline" title={UNVERIFIED}>unverified</Badge>}
+            {place && <Badge variant="secondary">{place}</Badge>}
+            {place === undefined && peer?.role && <Badge variant="secondary">{peer.role}</Badge>}
+            {place === undefined && peer?.harness && <Badge variant="outline">{harnessName(peer.harness)}</Badge>}
             {at && <time dateTime={at.toISOString()}>{clock(at)}</time>}
           </div>
         )}
@@ -108,7 +109,7 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
               <>
                 {" "}<span className="ui-route-sep">·</span>{" "}
                 {`claimed by ${displayNameOf(claim.id, idx)}`}
-                {!claim.verified && <>{" "}<span className="ui-unverified" title={UNVERIFIED}>unverified</span></>}
+                {!claim.verified && <>{" "}<Badge variant="outline" title={UNVERIFIED}>unverified</Badge></>}
               </>
             )}
           </div>

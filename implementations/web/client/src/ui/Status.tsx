@@ -1,6 +1,7 @@
 import { HourglassIcon, Loading03Icon, Moon02Icon, UnavailableIcon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { Icon } from "../icons/Icon.tsx";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { statusLabel, type RosterRow, type Status } from "../lib/roster.js";
 
 /** Each status's own shape, so a status never rests on colour alone: hourglass for waiting, the
@@ -25,15 +26,25 @@ export function StatusDot({ status }: { status: Status }) {
  *  under reduced motion), and every other status stands still. */
 export const statusIconClass = (status: string, base: string): string => (status === "working" ? `${base} ox-spin` : base);
 
-/** A status as icon and word, in the status pill. The word is `statusLabel`'s, so a working agent
- *  reads "Working", and its spokes turn while presence says so. A status outside the four has no
- *  icon to draw and shows its word alone. */
+/** Each status's Badge variant. Waiting asks for the operator, so it is the solid badge; working is
+ *  filled, and idle and offline are outlined. */
+const STATUS_VARIANT: Record<Status, "default" | "secondary" | "outline"> = {
+  waiting: "default",
+  working: "secondary",
+  idle: "outline",
+  offline: "outline",
+};
+
+/** A status as icon and word in a Badge. The word is `statusLabel`'s, so a working agent reads
+ *  "Working", and its spokes turn while presence says so. A status outside the four has no icon to
+ *  draw and shows its word alone, outlined. */
 export function StatusWord({ row }: { row: RosterRow }) {
   const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
+  const variant = Object.hasOwn(STATUS_VARIANT, row.status) ? STATUS_VARIANT[row.status] : "outline";
   return (
-    <span className={`v3-spill v3-s-${row.status}`}>
-      {icon && <Icon icon={icon} size={16} className={statusIconClass(row.status, "ui-ic ui-ic16")} />}
+    <Badge variant={variant}>
+      {icon && <Icon icon={icon} data-icon="inline-start" className={row.status === "working" ? "ox-spin" : undefined} />}
       {word(statusLabel(row))}
-    </span>
+    </Badge>
   );
 }

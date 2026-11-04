@@ -3,7 +3,7 @@ import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { messageRoute, type ComposeTarget } from "../../lib/compose.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
-import { rosterRows, statusLabel, type RosterRow } from "../../lib/roster.js";
+import { rosterRows, type RosterRow } from "../../lib/roster.js";
 import { formatRoute, type AgentTab, type Route } from "../../lib/route.js";
 import { eventCount, foldWork, SESSION_EVENT_CAP, type SessionFrame, type Work, type WorkItem } from "../../lib/session.js";
 import { SESSION_LIMIT_MAX, type Controller } from "../../state/controller.js";
@@ -21,12 +21,10 @@ import { harnessName } from "../MessageRow.tsx";
 import { Navigate } from "../navigate.js";
 import { PlaneNote } from "../session/PlaneNote.tsx";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
-import { Badge } from "../shadcn/badge.tsx";
 import { Button } from "../shadcn/button.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
-import { Spinner } from "../shadcn/spinner.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
-import { STATUS_ICON, word } from "../Status.tsx";
+import { StatusWord } from "../Status.tsx";
 import { WorkList } from "../work/WorkList.tsx";
 
 /** A reader within this many pixels of the bottom is following the work again. */
@@ -56,21 +54,6 @@ type Scroller = {
   clientHeight: number;
   querySelectorAll(selector: string): ArrayLike<{ getAttribute(name: string): string | null; scrollIntoView?(opts?: { block?: string }): void }>;
 };
-
-/** The status in the page's header (mock B1, `sh-badge`): shadcn's Badge in the status's colour, with
- *  its icon and word. The working icon turns. The icon is hidden from assistive tech, so the Spinner's
- *  "Loading" label does not join the word. */
-function StatusBadge({ row }: { row: RosterRow }) {
-  const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
-  return (
-    <Badge variant="secondary" className={`ox-badge ox-badge-${row.status}`}>
-      <span className="ox-badge-i" aria-hidden="true">
-        {row.status === "working" ? <Spinner /> : icon && <Icon icon={icon} size={16} />}
-      </span>
-      {word(statusLabel(row))}
-    </Badge>
-  );
-}
 
 /** The skeleton rows of mock C, Loading. The bars are drawing, so assistive tech skips them. */
 function WorkSkeleton() {
@@ -312,7 +295,7 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
         <Avatar vendor={known?.harness} status={row.status} size={30} badge={known ? badgeOf(id) : undefined} />
         <h1>{name}</h1>
         {!phone && sub && <span className="ui-topic">{sub}</span>}
-        {known && <StatusBadge row={known} />}
+        {known && <StatusWord row={known} />}
         <span className="ui-sp" />
         {phone ? (
           <Button asChild variant="ghost" size="icon">

@@ -2,6 +2,7 @@ import { Loading03Icon, Menu01Icon, SidebarRightIcon } from "@hugeicons/core-fre
 import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { composeKey, type ComposeTarget } from "../../lib/compose.js";
@@ -33,8 +34,9 @@ export const modeOf = (msg: CotalMessage): FeedMessage["mode"] =>
 /** The unit words a replay window is written in (`30m`, `24h`, `7d`), one and many. */
 const UNIT: Record<string, [string, string]> = { s: ["second", "seconds"], m: ["minute", "minutes"], h: ["hour", "hours"], d: ["day", "days"] };
 
-/** The header chips for a channel's policy, with the notes' tooltips. A channel whose policy the
- *  server has not sent yet (a row a live message created) gets none, rather than a guess. */
+/** The header Badges for a channel's policy, with the notes' tooltips. A channel whose policy the
+ *  server has not sent yet (a row a live message created) gets none, rather than a guess. A phone's
+ *  header has no room for them, so it draws none. */
 function policyChips(info: ChannelRow | undefined): { text: string; title: string }[] {
   const out: { text: string; title: string }[] = [];
   if (info?.deliveryClass === "durable") out.push({ text: "durable", title: "Kept for members who are offline" });
@@ -201,7 +203,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
         <h1>{`# ${channel}`}</h1>
         {info?.description && <span className="ui-topic">{info.description}</span>}
         <span className="ui-sp" />
-        {policyChips(info).map((c) => <span key={c.text} className="ui-chip" title={c.title}>{c.text}</span>)}
+        {!sheet && policyChips(info).map((c) => <Badge key={c.text} variant="outline" title={c.title}>{c.text}</Badge>)}
         {working.length > 0 && (
           <span className="ox-hchip" title={`Working now: ${working.map((r) => r.name).join(", ")}`}>
             <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />

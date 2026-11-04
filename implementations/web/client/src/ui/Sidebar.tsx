@@ -12,6 +12,7 @@ import { rateText } from "../lib/shellText.js";
 import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { Connection, DashboardState } from "../state/types.js";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
 import { UNVERIFIED } from "./MessageRow.tsx";
@@ -121,7 +122,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
         <Row to={{ view: "needs" }} here={route.view === "needs"}>
           <RailIcon name="inbox" />
           <span className="ui-row-lbl">Needs you</span>
-          {needing > 0 && <span className="ui-badge-gold" title={`${needing} agent${needing === 1 ? "" : "s"} waiting`}>{needing}</span>}
+          {needing > 0 && <Badge title={`${needing} agent${needing === 1 ? "" : "s"} waiting`}>{needing}</Badge>}
         </Row>
         <Row to={{ view: "activity" }} here={route.view === "activity"}>
           <RailIcon name="activity" />
@@ -150,7 +151,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
                   {working.length}
                 </span>
               )}
-              {count > 0 && <span className="ui-badge-blue">{count}</span>}
+              {count > 0 && <Badge variant="secondary">{count}</Badge>}
             </Row>
           );
         })}
@@ -165,7 +166,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
                 ))}
               </span>
               <span className="ui-row-lbl">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>
-              {!verified && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
+              {!verified && <Badge variant="outline" title={UNVERIFIED}>unverified</Badge>}
             </Row>
           );
         })}
