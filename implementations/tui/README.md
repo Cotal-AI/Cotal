@@ -38,7 +38,8 @@ all traffic, one channel, or one agent with its question pinned when it waits. A
 `#general`. The inspector on the right lists the agents waiting for an answer and the selected
 agent's status, model, harness and uptime. When the conversation would get fewer than 40 columns, as
 at 80x24, the inspector shrinks to a count such as `1 needs you` above the input box, and the agent
-overview shows in the conversation while the tree has the keys.
+overview shows in the conversation while the tree has the keys. Each agent's name keeps one color in
+the tree, the feed and the waiting list, and yours is gold.
 
 The cursor starts in the input box. `tab` moves it to the tree, where the arrows or `j` and `k`
 move, `enter` opens the row and returns to the box, and `esc` or `tab` returns without opening.
@@ -68,7 +69,7 @@ connected it shows only `? help` and `ctrl+p commands`.
 
 You watch a space without appearing in it. Your first message opens a chat session and sends in one
 step, and you appear on the roster under your name: your saved `name` preference, else your OS
-login. The name at the bottom of the left column is dim until then.
+login. The name at the bottom of the left column is dim until then and gold after.
 
 - The input box writes to the open conversation, and the line under it names where the message
   goes, such as `#general` or `answering coder-2`. A channel gets a post, an agent or endpoint gets
@@ -120,17 +121,19 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
 - `pnpm --filter @cotal-ai/tui smoke` drives the launcher in tmux at 209x52, 97x49 and 80x24
   against an isolated HOME and asserts the frame text. `smoke/shell.smoke.ts` covers the catalog
   and a space that cannot be opened. `smoke/live.smoke.ts` starts its own broker and peers and
-  covers the live screens and a broker restart. `smoke/control.smoke.ts` runs a real manager with two
-  seats and covers the overview, the confirm and both kinds of stop, a stop refused for an unmanaged
-  agent and for a name two managers hold, a space with no manager, and a broker that turns auth on
-  while the app reads its managers, after which the space is still registered.
-  `smoke/composer.smoke.ts` writes from the composer at 209x52 and 80x24 on an open space and on a
+  covers the live screens, the letter keys typing into the box until `tab`, and a broker restart.
+  `smoke/control.smoke.ts` runs a real manager with two seats and covers the overview, the confirm
+  and both kinds of stop, a stop refused for an unmanaged agent and for a name two managers hold, a
+  space with no manager, and a broker that turns auth on while the app reads its managers, after
+  which the space is still registered.
+  `smoke/composer.smoke.ts` writes from the input box at 209x52 and 80x24 on an open space and on a
   static-auth space that a real `cotal up --detach` stack serves. It reads each send off the broker:
   a post with its mention, a direct message to one of two agents that share a name, an answer to a
-  waiting agent, `/reply` with the message it answers, and a message to an offline agent. It also
-  covers watching unseen until the first `c`, the shared-name warning, the refusals for no
-  recipient, your own session, unknown commands, the post grant and an unreachable broker, `/quit`
-  and the next session, a space switch that closes the session and keeps the draft, quitting with a
+  waiting agent, `/reply` with the message it answers, and a message to an offline agent. It reads
+  each refusal off the screen: no recipient, your own session, unknown commands, the post grant and
+  an unreachable broker. It also covers watching unseen while you type, the first `enter` opening
+  the session and sending, your name turning gold, the shared-name warning, `/quit` and the
+  two-step reopen, a space switch that closes the session and keeps the draft, `ctrl+c` with a
   draft, and Change your name.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
