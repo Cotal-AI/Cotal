@@ -28,6 +28,8 @@ export const MODE_PEERS = [
   { name: "carol", at: { x: 700, y: 410 }, status: "idle" },
   { name: "dave", at: { x: 700, y: 580 }, status: "working" },
 ] as const;
+// The card middle: on alice's row, halfway to the peer column.
+export const MODE_MIDDLE: Pt = { x: (MODE_ALICE.at.x + MODE_PEERS[0].at.x) / 2, y: MODE_ALICE.at.y };
 
 // --- palette (cool cream + gold + ink) -----------------------------------------
 

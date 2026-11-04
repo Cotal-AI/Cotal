@@ -1,0 +1,169 @@
+{
+  "command": "pnpm smoke:web-markdown",
+  "suite": [
+    "implementations/web/smoke/markdown.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "MD1 img joins the allow-list, so a message can load a remote image and any tracker behind it",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "\"a\", \"hr\", \"span\"],",
+      "replace": "\"a\", \"hr\", \"span\", \"img\"],",
+      "expectRed": "2.2 a raw img with onerror is removed",
+      "cell": "2.2 a raw img with onerror is removed"
+    },
+    {
+      "name": "MD2 iframe joins the allow-list, so a message can embed another page",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "\"a\", \"hr\", \"span\"],",
+      "replace": "\"a\", \"hr\", \"span\", \"iframe\"],",
+      "expectRed": "2.4 an iframe is removed",
+      "cell": "2.4 an iframe is removed"
+    },
+    {
+      "name": "MD3 style joins the allowed attributes, so a message can paint over the page",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "ALLOWED_ATTR: [\"href\", \"title\", \"target\", \"rel\"],",
+      "replace": "ALLOWED_ATTR: [\"href\", \"title\", \"target\", \"rel\", \"style\"],",
+      "expectRed": "2.6 style and class attributes are removed",
+      "cell": "2.6 style and class attributes are removed"
+    },
+    {
+      "name": "MD4 class joins the allowed attributes, so a message can wear the dashboard's own classes and pass for its controls",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "ALLOWED_ATTR: [\"href\", \"title\", \"target\", \"rel\"],",
+      "replace": "ALLOWED_ATTR: [\"href\", \"title\", \"target\", \"rel\", \"class\"],",
+      "expectRed": "2.6 style and class attributes are removed",
+      "cell": "2.6 style and class attributes are removed"
+    },
+    {
+      "name": "MD5 the link pattern admits data:, so a link can open a page the message wrote",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\\/)/i,",
+      "replace": "ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|data:|#|\\/)/i,",
+      "expectRed": "3.2 a data: link loses its href",
+      "cell": "3.2 a data: link loses its href"
+    },
+    {
+      "name": "MD6 the link pattern admits javascript:, so a link runs script in the dashboard's origin",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\\/)/i,",
+      "replace": "ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|javascript:|#|\\/)/i,",
+      "expectRed": "3.1 a javascript: or vbscript: link loses its href, in any letter case",
+      "cell": "3.1 a javascript: or vbscript: link loses its href, in any letter case"
+    },
+    {
+      "name": "MD7 the link hook stops setting rel, so an opened page gets window.opener and the referrer",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "      el.setAttribute(\"rel\", \"noopener noreferrer nofollow\");\n",
+      "replace": "",
+      "expectRed": "3.5 with no opener, no referrer and no follow",
+      "cell": "3.5 with no opener, no referrer and no follow"
+    },
+    {
+      "name": "MD8 the link hook stops setting target, so a link replaces the dashboard itself",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "      el.setAttribute(\"target\", \"_blank\");\n",
+      "replace": "",
+      "expectRed": "3.4 and open in a new tab",
+      "cell": "3.4 and open in a new tab"
+    },
+    {
+      "name": "MD9 the link hook matches a lowercase tag name, which a DOM never reports, so it never runs",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "if (el.tagName === \"A\" && el.getAttribute(\"href\")) {",
+      "replace": "if (el.tagName === \"a\" && el.getAttribute(\"href\")) {",
+      "expectRed": "3.4 and open in a new tab",
+      "cell": "3.4 and open in a new tab"
+    },
+    {
+      "name": "MD10 the purifier runs with DOMPurify's defaults instead of the allow-list, so images, classes and styles come back",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "  return getPurifier().sanitize(html, CLEAN);",
+      "replace": "  return getPurifier().sanitize(html);",
+      "expectRed": "2.2 a raw img with onerror is removed",
+      "cell": "2.2 a raw img with onerror is removed"
+    },
+    {
+      "name": "MD11 the sanitize pass hands its input back, so marked's HTML reaches the page as is",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "  return getPurifier().sanitize(html, CLEAN);",
+      "replace": "  return (getPurifier(), html);",
+      "expectRed": "2.1 a script element is removed with its content",
+      "cell": "2.1 a script element is removed with its content"
+    },
+    {
+      "name": "MD12 pre leaves the allow-list, so a code block loses its block and runs into the text",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "\"code\", \"pre\", ",
+      "replace": "\"code\", ",
+      "expectRed": "4.2 a code block survives with HTML inside it escaped, not parsed",
+      "cell": "4.2 a code block survives with HTML inside it escaped, not parsed"
+    },
+    {
+      "name": "MD13 a single newline stops being a line break, so a multi-line message reads as one run-on line",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "marked.setOptions({ gfm: true, breaks: true });",
+      "replace": "marked.setOptions({ gfm: true, breaks: false });",
+      "expectRed": "4.5 a single newline is a line break, as in chat",
+      "cell": "4.5 a single newline is a line break, as in chat"
+    },
+    {
+      "name": "MD14 an unsupported purifier is no longer refused, so it is cached and hands every body back unsanitized",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "  if (!p.isSupported) throw new Error(\"renderMarkdown: DOMPurify cannot sanitize in this environment (no usable DOM), so it refuses to render rather than return unsanitized HTML\");\n",
+      "replace": "",
+      "expectRed": "1.1 a purifier that cannot run here makes renderMarkdown throw, never return the HTML unsanitized",
+      "cell": "1.1 a purifier that cannot run here makes renderMarkdown throw, never return the HTML unsanitized"
+    },
+    {
+      "name": "MD15 disallowed elements take their content with them, which under this allow-list drops every text node, so a message renders as empty paragraphs",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\\/)/i,\n",
+      "replace": "  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\\/)/i,\n  KEEP_CONTENT: false,\n",
+      "expectRed": "2.1 a script element is removed with its content",
+      "cell": "2.1 a script element is removed with its content"
+    },
+    {
+      "name": "MD16 the link pattern loses its anchor, so a javascript: link passes because https appears later in it",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\\/)/i,",
+      "replace": "ALLOWED_URI_REGEXP: /(?:https?:|mailto:|#|\\/)/i,",
+      "expectRed": "3.1b a javascript: link that names https further on still loses its href: the pattern is anchored",
+      "cell": "3.1b a javascript: link that names https further on still loses its href: the pattern is anchored"
+    },
+    {
+      "name": "MD17 fences are never split out, so a code block's text renders as prose HTML and is never highlighted",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "    if (token.type === \"code\" && token.codeBlockStyle !== \"indented\") {",
+      "replace": "    if (false) {",
+      "expectRed": "6.1 markdownSegments splits prose and fences in order, each fence with the first word of its info string",
+      "cell": "6.1 markdownSegments splits prose and fences in order, each fence with the first word of its info string"
+    },
+    {
+      "name": "MD18 prose pieces skip the sanitizer, so an img with onerror between two fences reaches the page",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "    const html = renderMarkdown(prose);",
+      "replace": "    const html = marked.parse(prose, { async: false });",
+      "expectRed": "6.2 each prose piece is renderMarkdown of its own source, so it is sanitized",
+      "cell": "6.2 each prose piece is renderMarkdown of its own source, so it is sanitized"
+    },
+    {
+      "name": "MD19 a fence's text is sent through renderMarkdown, so the code block draws markup and loses what the sanitizer strips",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "text: String(token.text) });",
+      "replace": "text: renderMarkdown(String(token.text)) });",
+      "expectRed": "6.3 a fence's text is raw: not escaped and not sanitized as HTML",
+      "cell": "6.3 a fence's text is raw: not escaped and not sanitized as HTML"
+    },
+    {
+      "name": "MD20 a fence's whole info string becomes its language, so a fence written sh title=x is never highlighted",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": ".trim().split(/\\s+/)[0] ?? \"\"",
+      "replace": ".trim()",
+      "expectRed": "6.4 a fence with no closing line runs to the end of the source and keeps its language",
+      "cell": "6.4 a fence with no closing line runs to the end of the source and keeps its language"
+    }
+  ]
+}

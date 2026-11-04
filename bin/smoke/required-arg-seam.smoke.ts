@@ -515,7 +515,14 @@ const SEAMS: Seam[] = [
   // plaintext loopback broker and states `tls: false`.
   // 371/289 -> 372/290: the run-ps latency smoke's caller dials its suite's plaintext loopback
   // broker and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 372, untypecheckedSites: 290 },
+  // 372/290 -> 382/299. The inline persona and hosted helper bound add ten. The core issuer
+  // session's lifecycle-executor connection passes the caller's resolved tls. The nine smoke calls
+  // dial the plaintext loopback broker their suite starts and state `tls: false`: in
+  // bin/smoke/run-host-live a caller pinned to the run's host, an admin caller, an admission
+  // reader and a run-admitter writing an admission as an earlier release wrote it; in
+  // auth/smoke/managed-run-issuance an admission reader; in cli/smoke/foreground-issuance-live the
+  // foreground seat; and in manager/smoke/spawn-grant-door the spawner, a rival and a definer.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 382, untypecheckedSites: 299 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

@@ -17,9 +17,9 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   canonicalBackupStreamConfig,
-  chatHistoryLimitOf,
-  chatHistoryRestoreStaging,
-  chatStream,
+  historyLimitOf,
+  historyLimitRestoreStaging,
+  historyLimitStreamOf,
   consumerConfigFromCheckpoint,
   deliveryBucket,
   downloadStreamSnapshot,
@@ -44,9 +44,10 @@ import {
   createEndpointStreams,
   ensureArtifactStore,
   hardenedAuthorityStreamNames,
-  setChatHistoryLimit,
+  setHistoryLimit,
   wfjStreamName,
-  type ChatHistoryLimit,
+  type HistoryLimit,
+  type HistoryLimitStream,
 } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -465,8 +466,9 @@ async function validateManifest(
 type RestorePass = "quarantine" | "target";
 
 /** Smoke hook: `COTAL_SMOKE_FAIL_RESTORE_STREAM=<stream>` fires on any pass; `<pass>:<stream>`
- *  fires only on that pass (so the target pass is reachable after quarantine succeeded). */
-function smokeFailRestoreStream(pass: RestorePass, stream: string): boolean {
+ *  fires only on that pass (so the target pass is reachable after quarantine succeeded), and
+ *  `age:<stream>` as the restore applies that stream's recorded age. */
+function smokeFailRestoreStream(pass: RestorePass | "age", stream: string): boolean {
   const spec = process.env.COTAL_SMOKE_FAIL_RESTORE_STREAM;
   if (!spec) return false;
   const separator = spec.indexOf(":");
@@ -474,11 +476,12 @@ function smokeFailRestoreStream(pass: RestorePass, stream: string): boolean {
   return spec.slice(0, separator) === pass && spec.slice(separator + 1) === stream;
 }
 
-/** The chat history limit the backup recorded, when `record` is the chat stream's. Every restore
- *  check holds that stream at {@link chatHistoryRestoreStaging} of it, which keeps the recorded
- *  count and sets no age, so nothing expires while the restored state is compared. */
-function recordedChatHistory(space: string, record: BackupManifest["streams"][number]): ChatHistoryLimit | undefined {
-  return record.stream === chatStream(space) ? chatHistoryLimitOf(record.config) : undefined;
+/** The history limit the backup recorded, when `record` is CHAT's, INBOX's, DLV's or DM's. Every
+ *  restore check holds that stream at {@link historyLimitRestoreStaging} of it, which keeps the
+ *  recorded count and sets no age, so nothing expires while the restored state is compared. */
+function recordedHistoryLimit(space: string, record: BackupManifest["streams"][number]): { kind: HistoryLimitStream; limit: HistoryLimit } | undefined {
+  const kind = historyLimitStreamOf(space, record.stream);
+  return kind && { kind, limit: historyLimitOf(record.config) };
 }
 
 async function restoreStream(
@@ -488,7 +491,7 @@ async function restoreStream(
   pass: RestorePass,
   stream: BackupManifest["streams"][number],
 ): Promise<void> {
-  const recorded = recordedChatHistory(space, stream);
+  const recorded = recordedHistoryLimit(space, stream);
   const initLogin = await broker.addLogin({
     profile: "restore",
     scope: { operation: "initiate", stream: stream.stream },
@@ -500,7 +503,7 @@ async function restoreStream(
       init,
       space,
       stream.stream,
-      canonicalBackupStreamConfig(space, stream.stream, recorded && chatHistoryRestoreStaging(recorded)),
+      canonicalBackupStreamConfig(space, stream.stream, recorded && historyLimitRestoreStaging(recorded.kind, recorded.limit)),
       stream.state as unknown as Readonly<Record<string, unknown>>,
       RESTORE_TIMEOUT_MS,
     );
@@ -523,7 +526,7 @@ async function restoreStream(
       await uploadStreamRestoreChunk(upload, session, buffer.subarray(0, count), RESTORE_TIMEOUT_MS);
     }
     const restored = await finalizeStreamRestore(upload, session, RESTORE_TIMEOUT_MS);
-    validateCanonicalBackupStreamConfig(space, stream.stream, restored.config, { restoreStagingFor: recorded });
+    validateCanonicalBackupStreamConfig(space, stream.stream, restored.config, { restoreStagingFor: recorded?.limit });
     assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, restored.state as unknown as Readonly<Record<string, unknown>>);
   } finally {
     closeSync(fd);
@@ -565,7 +568,7 @@ async function sanitizeStreamSnapshot(
         }
       },
     });
-    validateCanonicalBackupStreamConfig(space, stream.stream, metadata.config, { restoreStagingFor: recordedChatHistory(space, stream) });
+    validateCanonicalBackupStreamConfig(space, stream.stream, metadata.config, { restoreStagingFor: recordedHistoryLimit(space, stream)?.limit });
     assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, metadata.state as unknown as Readonly<Record<string, unknown>>);
     fsyncSync(fd);
   } finally {
@@ -594,7 +597,7 @@ async function validateRestoredStream(
     };
     if (info.error) throw new Error(info.error.description ?? `${record.stream} validation failed`);
     if (!info.config || !info.state) throw new Error(`${record.stream} validation returned an incomplete response`);
-    validateCanonicalBackupStreamConfig(space, record.stream, info.config as unknown as Record<string, unknown>, { restoreStagingFor: recordedChatHistory(space, record) });
+    validateCanonicalBackupStreamConfig(space, record.stream, info.config as unknown as Record<string, unknown>, { restoreStagingFor: recordedHistoryLimit(space, record)?.limit });
     assertRestoredState(record.stream, record.state as unknown as Readonly<Record<string, unknown>>, info.state as unknown as Readonly<Record<string, unknown>>);
     if (info.state.consumer_count !== expectedConsumers)
       throw new Error(`${record.stream} has ${info.state.consumer_count} consumers after restore; expected ${expectedConsumers}`);
@@ -603,19 +606,19 @@ async function validateRestoredStream(
   }
 }
 
-/** Give the restored chat stream the age the backup recorded, after the target's last check, and
- *  read it back; a failure fails the restore. No full-state comparison runs after it, since the
- *  broker may expire posts as soon as it lands. A process that dies before this write leaves the
- *  target at age 0, before commit intent, so the attempt rolls back with it. The login reaches the
- *  chat stream alone. */
-async function applyRecordedChatAge(broker: IsolatedBroker, space: string, record: BackupManifest["streams"][number]): Promise<void> {
-  const recorded = chatHistoryLimitOf(record.config);
-  if (recorded.maxAgeMs === 0) return;
-  const stream = chatStream(space);
-  const login = await broker.addLogin({ profile: "infrastructure", streams: [stream], updateStreams: [stream] });
+/** Give a restored CHAT, INBOX, DLV or DM stream the age the backup recorded, after the target's last
+ *  check, and read it back; a failure fails the restore. No full-state comparison runs after it,
+ *  since the broker may expire entries as soon as it lands. A process that dies before this write
+ *  leaves the target at age 0, before commit intent, so the attempt rolls back with it. Each login
+ *  reaches its one stream alone and only updates it. */
+async function applyRecordedAge(broker: IsolatedBroker, space: string, record: BackupManifest["streams"][number]): Promise<void> {
+  const recorded = recordedHistoryLimit(space, record);
+  if (!recorded || recorded.limit.maxAgeMs === 0) return;
+  if (smokeFailRestoreStream("age", record.stream)) throw new Error(`smoke-injected failure applying the recorded age of ${record.stream}`);
+  const login = await broker.addLogin({ profile: "infrastructure", streams: [record.stream], updateStreams: [record.stream] });
   const nc = await connectIsolatedBroker(broker, login);
   try {
-    await setChatHistoryLimit(await jetstreamManager(nc), space, recorded, chatHistoryRestoreStaging(recorded));
+    await setHistoryLimit(await jetstreamManager(nc), space, recorded.kind, recorded.limit, historyLimitRestoreStaging(recorded.kind, recorded.limit));
   } finally {
     await nc.drain().catch(() => {});
   }
@@ -1190,8 +1193,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // journals of both stores: the restored one here, the set-aside one from a private clone.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
-    const chatRecord = artifact.manifest.streams.find((entry) => entry.stream === chatStream(journal.space));
-    if (chatRecord && wanted.includes(chatRecord.stream)) await applyRecordedChatAge(broker, journal.space, chatRecord);
+    for (const record of artifact.manifest.streams)
+      if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);
     await broker.stop();
     broker = undefined;
     const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;

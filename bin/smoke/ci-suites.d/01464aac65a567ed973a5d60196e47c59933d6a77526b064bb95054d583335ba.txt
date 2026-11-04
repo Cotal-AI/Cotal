@@ -1,0 +1,2 @@
+# Every route the dashboard client calls reads through the HTTP status gate.
+smoke:web-http-api

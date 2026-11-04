@@ -75,7 +75,8 @@ const seatPids = () => {
 };
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth);
-writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n");
+// No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n");
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir);
 let daemon: DeliveryDaemon | undefined; const managers: ChildProcess[] = [];

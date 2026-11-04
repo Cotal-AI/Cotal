@@ -208,8 +208,9 @@ This split confines broker credentials; it is not process isolation for injected
 The runtime and its effect host share the manager process. A run's channel reach is the admitted
 ceiling ([SPEC §14.8](../SPEC.md#148-run-admission)): the starting caller's issued channel scope,
 recorded once in `cotal_admission_<space>` under a per-run `run-admitter` credential the driver
-never holds, and re-read by the host before every channel effect. Spawn and turn keep their own
-delegated checks; `notify` writes agent-addressed notices and is not channel publication. Treat
+never holds, and re-read by the host before every channel effect. On a static mesh every spawn
+the run makes is bounded by that ceiling too; turn keeps its own delegated check, and `notify`
+writes agent-addressed notices and is not channel publication. Treat
 `run` as program-execution authority bounded by that ceiling, not as sandboxing of the program.
 
 A version-1 fork can replay its settled parent history through the host. Inherited checkpoint

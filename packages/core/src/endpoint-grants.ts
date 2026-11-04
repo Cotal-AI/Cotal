@@ -215,11 +215,9 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  the feature is for. Measured: no profile carried a `turn` row at all until it joined this set,
  *  so a run on an auth mesh had its every turn submit dropped at the broker. */
 export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
-/** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
- *  persona writes (`define-persona` / `remove-persona`, caller-scoped by the pinned triple), per-agent status read
- *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
- *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
- *  today; minting them with `spawn` keeps that tier's surface 1:1. */
+/** Untargeted manager endpoint additions for the `spawn` capability: persona writes, persona-catalog
+ *  reads, per-agent inspection, and goal outcome reads. Each command's responder enforces its
+ *  caller scope. */
 export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "remove-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
  *  writes start a run, take one over and answer its open pause, and the keyed pair starts a run

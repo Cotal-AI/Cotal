@@ -44,11 +44,11 @@ import {
   createRunAdmission,
   readRunAdmission,
   revokeRunAdmission,
-  chatSubject,
+  channelCeiling,
   DEV_OWNER,
+  mintLifecycleUid,
   type RunAdmission,
   type RunAdmissionView,
-  type IssuedSubjectAllow,
   readRunProgram,
   readRunRecord,
   renderLifecycleBlocked,
@@ -222,11 +222,12 @@ async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<Ru
  * activation barrier deliberately relaxes the exact (token, holder, epoch) tuple as a process
  * picking its own run back up — so a constant id would let a second concurrent drive co-activate
  * through that relaxation instead of being refused. The local admission also uses this id as
- * its actor, so it must use the owner-token alphabet.
+ * its actor, so it must use the owner-token alphabet, and the lifecycle UID as its uid, so that is
+ * a lifecycle token: the run's helpers are measured through the agent mint at that coordinate.
  */
 function cliHolder(): { id: string; lifecycleUid: string; instanceId: string } {
   const uid = randomUUID().replaceAll("-", "");
-  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
+  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: mintLifecycleUid(), instanceId: uid.slice(0, 26) };
 }
 
 function readProgram(values: RunValues): string {
@@ -317,11 +318,11 @@ async function admitLocal(values: RunValues, planes: Planes, a: { endpoint: stri
     process.exit(1);
   }
   const caller = { owner: DEV_OWNER, actor: a.who.id, uid: a.who.lifecycleUid };
-  const allow = (spec: string, direction: "read" | "publish"): IssuedSubjectAllow => {
+  const named = (spec: string, direction: "read" | "publish"): string[] => {
     const channels = spec.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-    if (channels.length === 1 && channels[0] === "none") return { mode: "none" };
+    if (channels.length === 1 && channels[0] === "none") return [];
     if (channels.length === 0) throw new Error(`--admit-${direction}: name at least one channel, or \`none\``);
-    return { mode: "patterns", patterns: channels.map((ch) => direction === "read" ? chatSubject(conn.space, "*", "*", ch) : chatSubject(conn.space, caller.owner, caller.actor, ch)) };
+    return channels;
   };
   const admission: RunAdmission = {
     version: 1,
@@ -330,7 +331,9 @@ async function admitLocal(values: RunValues, planes: Planes, a: { endpoint: stri
     runId: a.runId,
     instanceId: a.who.instanceId,
     caller,
-    ceiling: { publish: { allow: allow(publish, "publish"), deny: [] }, subscribe: { allow: allow(read, "read"), deny: [] } },
+    // The rows the named channels add to an agent's credential here, the shape a hosted
+    // admission's evidence states, so the run's helpers are bounded as a hosted starter's are.
+    ceiling: channelCeiling(conn.space, caller, named(read, "read"), named(publish, "publish")),
     provenance: { kind: "operator", by: a.who.id, reason: `cotal run start --local --admit-read ${read} --admit-publish ${publish}` },
     admittedAt: Date.now(),
   };

@@ -12,6 +12,10 @@
  * 2. Unknown top-level property (`smuggled: "secret"`)
  * 3. Unknown field nested inside an allowed event (`events[0].leaked: "<bytes>"`)
  *
+ * THE TOOL RESULT MARKER'S VALUE IS CLOSED TOO. `cotal.toolResult` stands in for the result the
+ * fence drops, so its `value` holds `toolCallId` and `isError` and nothing else. A marker carrying
+ * content, or missing a key, or carrying a non-boolean `isError`, is `extra-property`.
+ *
  * POSITIVE CONTROLS:
  * - A well-formed frame with only known keys passes.
  * - A well-formed frame with `cotal` metadata on events passes.
@@ -47,6 +51,10 @@ import {
   textMessageStart,
   toolCallEnd,
   toolCallStart,
+  toolResultMarker,
+  AguiBrackets,
+  AguiVocabularyError,
+  applyAguiEgressPolicy,
   type AguiEvent,
 } from "../src/agui.js";
 import {
@@ -280,6 +288,51 @@ try {
     c("control:tool-call-start-end (no args/result) passes", frozenBodyEgressVerdict([frame]) === "clean");
   }
 
+  // ── THE TOOL RESULT MARKER ─────────────────────────────────────────────────────────────────
+  // The marker's value is checked as a closed shape: a call id and a boolean, no more.
+  const markerFrame = (value: unknown) => ({
+    kind: "ag-ui.frame" as const,
+    protocol: "ag-ui/0.0.57",
+    threadId: "t1",
+    runId: "r1",
+    epoch: "e1",
+    seq: 0,
+    events: [{ type: "CUSTOM", name: "cotal.toolResult", value, timestamp: 1 }],
+  });
+
+  {
+    const frame = aguiFrame({
+      threadId: "t1", runId: "r1", epoch: "e1", seq: 6,
+      events: [toolResultMarker({ toolCallId: "tc1", isError: false, timestamp: 9 })],
+    });
+    c("closed-schema:marker a frame holding a well-formed marker is clean", frozenBodyEgressVerdict([frame]) === "clean",
+      { verdict: frozenBodyEgressVerdict([frame]), path: extraPropertyPath(frame as unknown as Record<string, unknown>) });
+  }
+
+  {
+    const frame = markerFrame({ toolCallId: "tc1", isError: false, content: NESTED_TOOL_BYTES });
+    const verdict = frozenBodyEgressVerdict([frame]);
+    const path = extraPropertyPath(frame as Record<string, unknown>);
+    c("closed-schema:marker a marker whose value also carries content is refused at events[0].value.content",
+      verdict === "extra-property" && path === "events[0].value.content", { verdict, path });
+  }
+
+  {
+    const frame = markerFrame({ toolCallId: "tc1" });
+    const verdict = frozenBodyEgressVerdict([frame]);
+    const path = extraPropertyPath(frame as Record<string, unknown>);
+    c("closed-schema:marker a marker with no isError is refused at events[0].value",
+      verdict === "extra-property" && path === "events[0].value", { verdict, path });
+  }
+
+  {
+    const frame = markerFrame({ toolCallId: "tc1", isError: "yes" });
+    const verdict = frozenBodyEgressVerdict([frame]);
+    const path = extraPropertyPath(frame as Record<string, unknown>);
+    c("closed-schema:marker a marker whose isError is not a boolean is refused at events[0].value",
+      verdict === "extra-property" && path === "events[0].value", { verdict, path });
+  }
+
   // Well-formed frame with rawEvent field (AG-UI schema key)
   {
     const frame = {
@@ -354,6 +407,57 @@ try {
       "recover:sibling tool bytes do NOT reach the wire",
       !publishedWire(ep).includes(SIBLING_TOOL_BYTES),
     );
+  }
+
+
+  // ── THE MARKER IS GATED BEFORE THE WAL, AND CLOSED AGAINST rawEvent ──────
+  // The emitter validates every unit on a brackets probe before `beginSend` freezes the frame. A
+  // marker the closed schema would halt on must be refused there, as a vocabulary error, or the
+  // frozen frame halts recovery on every restart until someone abandons it by hand.
+  {
+    const gate = (value: unknown, extra: Record<string, unknown> = {}): string | undefined => {
+      const b = new AguiBrackets();
+      b.accept(runStarted({ threadId: "t1", runId: "r1", timestamp: 1 }) as AguiEvent);
+      b.accept(toolCallStart({ toolCallId: "tc1", toolCallName: "Read", timestamp: 1 }) as AguiEvent);
+      b.accept(toolCallEnd({ toolCallId: "tc1", timestamp: 1 }) as AguiEvent);
+      try {
+        b.accept({ type: "CUSTOM", name: "cotal.toolResult", value, timestamp: 1, ...extra } as unknown as AguiEvent);
+        return undefined;
+      } catch (e) {
+        return e instanceof AguiVocabularyError ? e.message : `not a vocabulary error: ${String(e)}`;
+      }
+    };
+    c("gate:control a well-formed marker after its call's END is accepted", gate({ toolCallId: "tc1", isError: false }) === undefined,
+      gate({ toolCallId: "tc1", isError: false }));
+    c("gate:a marker whose value is {} is refused by the brackets, before any frame is written",
+      /value is not/.test(gate({}) ?? ""), gate({}));
+    c("gate:a marker whose toolCallId is null is refused by the brackets",
+      /value is not/.test(gate({ toolCallId: null, isError: false }) ?? ""), gate({ toolCallId: null, isError: false }));
+    c("gate:a marker whose value carries an extra key is refused by the brackets, naming the key",
+      /value\.content is not a key/.test(gate({ toolCallId: "tc1", isError: false, content: NESTED_TOOL_BYTES }) ?? ""),
+      gate({ toolCallId: "tc1", isError: false, content: NESTED_TOOL_BYTES }));
+    c("gate:a marker carrying rawEvent is refused by the brackets",
+      /rawEvent/.test(gate({ toolCallId: "tc1", isError: false }, { rawEvent: { content: NESTED_TOOL_BYTES } }) ?? ""),
+      gate({ toolCallId: "tc1", isError: false }, { rawEvent: { content: NESTED_TOOL_BYTES } }));
+  }
+  {
+    const marker = { ...toolResultMarker({ toolCallId: "tc1", isError: true, timestamp: 9 }), rawEvent: { content: NESTED_TOOL_BYTES } } as unknown as AguiEvent;
+    const lifecycle = { ...runStarted({ threadId: "t1", runId: "r1", timestamp: 1 }), rawEvent: { foo: "bar" } } as unknown as AguiEvent;
+    const out = applyAguiEgressPolicy([lifecycle, marker]);
+    const m = out[1] as Record<string, unknown>;
+    c("policy:the write path strips rawEvent from the marker and keeps its value and timestamp",
+      out.length === 2 && !("rawEvent" in m) && JSON.stringify(m.value) === JSON.stringify({ toolCallId: "tc1", isError: true }) && m.timestamp === 9, m);
+    c("policy:control RUN_STARTED keeps its rawEvent, a schema key everywhere but the marker",
+      "rawEvent" in (out[0] as Record<string, unknown>), out[0]);
+    c("policy:the marker's bytes do not survive the policy", !JSON.stringify(out).includes(NESTED_TOOL_BYTES));
+  }
+  {
+    const frame = { ...markerFrame({ toolCallId: "tc1", isError: false }) };
+    (frame.events[0] as Record<string, unknown>).rawEvent = { content: NESTED_TOOL_BYTES };
+    const verdict = frozenBodyEgressVerdict([frame]);
+    const path = extraPropertyPath(frame as Record<string, unknown>);
+    c("closed-schema:marker a frozen marker carrying rawEvent is refused at events[0].rawEvent",
+      verdict === "extra-property" && path === "events[0].rawEvent", { verdict, path });
   }
 
   console.log(`agui-egress-closed-schema smoke: ${pass} passed, ${fail} failed`);

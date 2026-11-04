@@ -26,7 +26,7 @@ import { credentialEnded } from "../lib/connect.js";
 import { shownTime } from "../lib/shown-time.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
-import { historyLimit, historyLimitRequest } from "./history-limit.js";
+import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
@@ -44,13 +44,17 @@ const limitFlag = { name: "limit", type: "string", value: "<n>", description: "h
 const fromFlag = { name: "from", type: "string", value: "<name>", description: "keep messages from this sender name or id (filters the window)" } as const;
 const grepFlag = { name: "grep", type: "string", value: "<text>", description: "keep messages whose text contains this, case-insensitive (filters the window)" } as const;
 const followFlag = { name: "follow", type: "boolean", description: "keep listening and print each new message (NDJSON with --json)" } as const;
-const maxAgeFlag = { name: "max-age", type: "string", value: "<age>", description: "limit: delete a channel post once it is older than this, such as 30d or 12h (at least 2m)" } as const;
-const perSenderFlag = { name: "per-sender", type: "string", value: "<n>", description: "limit: keep this many of each sender's newest posts on each channel" } as const;
-export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, maxAgeFlag, perSenderFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+const maxAgeFlag = { name: "max-age", type: "string", value: "<age|none>", description: "limit: delete a channel post once it is older than this, such as 30d or 12h (at least 2m), or none" } as const;
+const perSenderFlag = { name: "per-sender", type: "string", value: "<n|none>", description: "limit: keep this many of each sender's newest posts on each channel, or none" } as const;
+const inboxMaxAgeFlag = { name: "inbox-max-age", type: "string", value: "<age|none>", description: "limit: delete an agent's stored copy of a channel post once it is older than this (at least 2h), or none" } as const;
+const inboxPerAgentFlag = { name: "inbox-per-agent", type: "string", value: "<n|none>", description: "limit: keep this many of each agent's newest stored copies, or none" } as const;
+const dmMaxAgeFlag = { name: "dm-max-age", type: "string", value: "<age|none>", description: "limit: delete a DM once it is older than this (at least 2m), or none" } as const;
+const dmPerSenderFlag = { name: "dm-per-sender", type: "string", value: "<n|none>", description: "limit: keep this many of each sender's newest DMs to each agent, or none" } as const;
+export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, maxAgeFlag, perSenderFlag, inboxMaxAgeFlag, inboxPerAgentFlag, dmMaxAgeFlag, dmPerSenderFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
   { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", examples: [{ command: "cotal history clear --dry-run", note: "show what clearing history would delete" }, { command: "cotal history clear --yes", note: "delete the retained channel history" }], usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
-  { name: "limit", flagNames: ["space", "max-age", "per-sender", "yes", "json", "plain"], summary: "set how long the space keeps channel posts, by age and per sender; run it from the space root on the broker host", examples: [{ command: "cotal history limit --max-age 7d", note: "delete channel posts once they are a week old" }, { command: "cotal history limit --per-sender 500 --yes", note: "keep each sender's newest 500 posts on each channel, without a prompt" }], usage: "cotal history limit [--max-age <age>] [--per-sender <n>] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "limit", flagNames: ["space", "max-age", "per-sender", "inbox-max-age", "inbox-per-agent", "dm-max-age", "dm-per-sender", "yes", "json", "plain"], summary: "show or set how long the space keeps channel posts, stored copies and DMs, by age and count; run it from the space root on the broker host", examples: [{ command: "cotal history limit", note: "show the limits the space holds" }, { command: "cotal history limit --max-age 7d", note: "delete channel posts once they are a week old" }, { command: "cotal history limit --per-sender 500 --yes", note: "keep each sender's newest 500 posts on each channel, without a prompt" }, { command: "cotal history limit --inbox-per-agent 5000", note: "keep each agent's newest 5000 stored copies" }, { command: "cotal history limit --dm-max-age 90d", note: "delete DMs once they are 90 days old" }], usage: "cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-age <age|none>] [--inbox-per-agent <n|none>] [--dm-max-age <age|none>] [--dm-per-sender <n|none>] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete the subcommands and the channels the target space's personas declare, as `send -c` offers, then
@@ -237,16 +241,16 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (args.positionals[0] === "clear") {
     if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");
-    if (values["max-age"] !== undefined || values["per-sender"] !== undefined) throw usage("--max-age and --per-sender belong to history limit");
+    if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
     return;
   }
   if (args.positionals[0] === "limit") {
     if (args.positionals.length !== 1) throw usage("history limit takes no channel; one limit holds for every channel in the space");
-    if ((["server", "creds", "dms", "dry-run", "since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history limit takes only --max-age, --per-sender, --yes, --space and an output flag; it reaches the broker from the space root");
+    if ((["server", "creds", "dms", "dry-run", "since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history limit takes only its limit flags, --yes, --space and an output flag; it reaches the broker from the space root");
     historyLimitRequest(values);
     return;
   }
-  if (values["max-age"] !== undefined || values["per-sender"] !== undefined) throw usage("--max-age and --per-sender belong to history limit");
+  if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
   if (values.yes !== undefined || values["dry-run"] !== undefined) throw usage("--yes belongs to history clear and history limit, and --dry-run to history clear");
   if (args.positionals.length > 1) throw usage("history reads one channel at a time");
   if (args.positionals[0] !== undefined && values.dms) throw usage("name a channel or request --dms, not both");

@@ -17,11 +17,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
-  createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
+  createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, setupSpaceStreams,
   DEV_OWNER, digestIdToken, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, readGoalIndex, registry,
   type AgentHandle, type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type OnceSeat, type Runtime,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, mintControlInstrument, workspaceSecretStore } from "@cotal-ai/workspace";
 import "@cotal-ai/connector-claude-code";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
@@ -152,12 +152,12 @@ try {
   type Seat = { id: string; lifecycleUid: string; handle: AgentHandle; issued?: { generation: string; acceptedToken: string } };
   const M = manager as unknown as { agents: Map<string, Seat>; reserved: Map<string, string> };
 
-  // The spawner: a caller that may spawn and turn seats, exactly as a run's instrument connects.
-  const runnerId = newIdentity();
-  const runner: EpCaller = { owner: DEV_OWNER, actor: runnerId.id, uid: mintLifecycleUid() };
+  // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
+  // bound reads its evidence and it hands on the helper's role (SPEC 13.15).
+  const { creds: runnerCreds, epCaller: runner } = await mintControlInstrument({ server: broker.servers, space, tlsRequired: false, auth }, "admin");
   runnerNc = await connect({
     servers: broker.servers,
-    ...standaloneConnectOpts({ creds: await mintCreds(auth, runnerId, "control-caller-admin", { lifecycleUid: runner.uid }), tls: false }),
+    ...standaloneConnectOpts({ creds: runnerCreds, tls: false }),
     maxReconnectAttempts: 0,
   });
   const call = (command: string, args: Record<string, unknown> | undefined, opts: { id?: string; target?: { actor: string; lifecycleUid: string; mode?: "owner" | "any" } } = {}) =>

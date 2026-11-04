@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { generateKeyPairSync } from "node:crypto";
 import { SignJWT } from "jose";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -30,7 +30,15 @@ const ACCOUNT = `A${"A".repeat(55)}`;
 const SECRET = "suite-proof-secret";
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+// The deployment's control-line floor (SPEC 13.12): the host's issuer credential carries every
+// served subject it observes, and its CONNECT outgrows the broker default of 4096.
+writeFileSync(join(sd, "server.conf"), `
+port: ${PORT}
+listen: 127.0.0.1:${PORT}
+max_control_line: 65536
+jetstream { store_dir: ${JSON.stringify(sd)} }
+`);
+const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
 const release = teardownOnSignal(broker, sd);
 try {
   const servers = `nats://127.0.0.1:${PORT}`;
@@ -69,7 +77,7 @@ try {
     request: { ...base, requestId: `req-${run.runId}`, registrationProof: proof, run, ...over },
     owner: OWNER, space: SPACE, accountPublicKey: ACCOUNT, proofSecret: SECRET, endpoint: "manager",
     observeManagerGate: async () => gateOver === null ? null : { ...gate, ...gateOver },
-    issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions,
+    issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions, delegationOf: () => undefined,
   });
   const absent = async (id: string) => (await admissions.get(`admission.v1.manager.${id}`)) === null;
 
@@ -80,7 +88,7 @@ try {
   const result = await admitRemoteRun({
     request: { ...base, requestId: `req-${okRun}`, registrationProof: proof, run: { runId: okRun, subject: okSubject } },
     owner: OWNER, space: SPACE, accountPublicKey: ACCOUNT, proofSecret: SECRET, endpoint: "manager",
-    observeManagerGate: async () => gate, issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions,
+    observeManagerGate: async () => gate, issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions, delegationOf: () => undefined,
   }).catch((e: Error) => e);
   const view = await readRunAdmission(jsm, SPACE, "manager", okRun).catch((e: Error) => e);
   c("a registered manager's forwarded v1 run-start admits under the caller's real issued generation",

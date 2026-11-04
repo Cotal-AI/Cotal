@@ -64,10 +64,14 @@ try {
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const any = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
   await nc.close();
+  // An issued caller pinned to the manager instance. It is minted as an agent because an agent holds
+  // its own presence key, and the issuer refuses a source-free issuance without one (SPEC 13.15).
+  const pinnedRun = (instanceId: string) => core.instanceOnlyManagerCapabilities(
+    [{ endpoint: "manager", command: "describe" }, ...core.runCallerCapabilities(core.DEV_OWNER)], instanceId);
   const pinnedIssued = { generation: core.mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: core.mintAcceptedToken() };
   Object.assign(caller, { generation: pinnedIssued.generation });
-  const pinnedCreds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "manager-caller", {
-    lifecycleUid: uid, managerInstanceId: any.responder.instanceId, capabilities: ["run"], expiresInSeconds: 300, issued: pinnedIssued,
+  const pinnedCreds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "agent", {
+    lifecycleUid: uid, capabilities: ["run"], endpointCapabilities: pinnedRun(any.responder.instanceId), expiresInSeconds: 300, issued: pinnedIssued,
     issuance: { mode: "issue", store: session.store, accepted: session.accepted, sources: [] },
   }));
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds: pinnedCreds, tls: false }), maxReconnectAttempts: 0 });
