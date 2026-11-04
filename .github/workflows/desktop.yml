@@ -1,6 +1,8 @@
 name: Desktop apps
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
   pull_request:
     paths:
       - 'desktop/**'
@@ -8,7 +10,6 @@ on:
       - 'packages/seat/**'
       - 'packages/workspace/native/**'
       - '.github/workflows/desktop.yml'
-      - 'pnpm-lock.yaml'
 permissions:
   contents: read
 concurrency:
