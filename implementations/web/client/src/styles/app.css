@@ -402,13 +402,9 @@
 .ox-head h1 { margin: 0; font: 600 16px/1 var(--body); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ox-sep { width: 1px; height: 18px; background: var(--border); flex: none; }
 /* the status Badge, coloured per status; the icon sits in a span so the Badge's own icon size skips it */
-/* the tabs: a line under the header, the selected tab underlined in the ink */
+/* the tabs: shadcn's default TabsList in a row under the header, ruled off below it */
 .ox-tabs { flex: 1; min-height: 0; gap: 0; }
-.ox-tablist { width: 100%; height: 40px; flex: none; justify-content: flex-start; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--border); border-radius: 0; }
-.ox-tab { flex: none; height: 100%; gap: 6px; padding: 0 10px; border-radius: 8px 8px 0 0; font-size: 13.5px; font-weight: 500; color: var(--muted-foreground); background: none; }
-.ox-tab:hover, .ox-tab[data-state="active"] { color: var(--foreground); }
-.ox-tab::after { inset-inline: 8px; bottom: -1px; height: 2px; border-radius: 2px; }
-.ox-tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ring); }
+.ox-tablist { display: flex; align-items: center; flex: none; padding: 6px 16px; border-bottom: 1px solid var(--border); }
 .ox-n { font-size: 12px; font-weight: 500; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 /* a tab's panel fills the page; a hidden one stays hidden, which a display rule would undo */
 .ox-tabc { min-height: 0; flex-direction: column; font-size: inherit; }

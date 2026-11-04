@@ -151,7 +151,7 @@ export function RightPanel({ store, controller, channel, route, panel, clock }: 
   return (
     <Tabs value={panel.tab} onValueChange={(next) => (next === "members" || next === "agent" || next === "topology") && panel.setTab(next)} className="min-h-0 flex-1 gap-0">
       <div className="ui-tabs">
-        <TabsList variant="line" aria-label="Details">
+        <TabsList aria-label="Details">
           {tabs.map((t) => (
             <TabsTrigger key={t.id} value={t.id} disabled={t.off}>{t.label}</TabsTrigger>
           ))}

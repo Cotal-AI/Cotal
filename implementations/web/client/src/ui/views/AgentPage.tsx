@@ -344,11 +344,13 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
         )}
       </header>
       <Tabs value={tab} activationMode="manual" onValueChange={(next) => (next === "work" || next === "messages" || next === "profile") && navigate({ view: "agent", id, tab: next })} className="ox-tabs">
-        <TabsList variant="line" aria-label={name} className="ox-tablist">
-          <TabsTrigger value="work" className="ox-tab">Work</TabsTrigger>
-          <TabsTrigger value="messages" className="ox-tab">Messages <span className="ox-n">{count}</span></TabsTrigger>
-          <TabsTrigger value="profile" className="ox-tab">Profile</TabsTrigger>
-        </TabsList>
+        <div className="ox-tablist">
+          <TabsList aria-label={name}>
+            <TabsTrigger value="work">Work</TabsTrigger>
+            <TabsTrigger value="messages">Messages <span className="ox-n">{count}</span></TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+          </TabsList>
+        </div>
         <TabsContent value="work" className="ox-tabc">
           <MessageScrollerProvider autoScroll={following}>
             <MessageScroller className="ox-scroller">
