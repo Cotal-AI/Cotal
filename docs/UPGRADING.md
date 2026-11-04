@@ -89,7 +89,7 @@ This page does not promise a rolling upgrade. Nothing in the current release lin
 authority versions at once. Where the broker and the manager run separately, the mesh is down for a
 window during the upgrade. The sections below describe that window so you can schedule it.
 
-## Static spawns are bounded by the spawner's evidence after 0.136.6
+## Static spawns are bounded by the spawner's evidence after 0.140.8
 
 On a static mesh, an agent that could spawn could hand its helper any channel or capability, because
 nothing compared the grant with what the agent held. The manager now measures every spawn an agent
