@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 964,
+    "total": 966,
     "honest-text": 64,
     "presence-only-glyph/count": 142,
-    "command-ack": 9,
-    "non-render/control": 749
+    "command-ack": 10,
+    "non-render/control": 750
   },
   "renderers": [
     {
@@ -7024,6 +7024,20 @@
       "anchor": "cur === done ? { phase: \"idle\" } : cur)), STOP_NOTICE_",
       "class": "non-render/control",
       "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/talk.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "App outcome type: the shared outcome words' waiting tone; it is not an agent's presence."
+    },
+    {
+      "path": "implementations/tui/src/talk.ts",
+      "kind": "derived-output",
+      "anchor": "s.setStatus(command.status, command.activity)",
+      "class": "command-ack",
+      "rationale": "App /status: sets the human session's own presence as cotal chat's /status does; the outcome line acknowledges the command."
     }
   ]
 }

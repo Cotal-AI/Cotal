@@ -43,7 +43,7 @@ const readCatalog = async () => {
 const openSpace = async (space?: string) => {
   await renderer.idle()
   const { openSpace } = await import("./live.js")
-  return openSpace(space)
+  return openSpace(space, () => renderer.idle())
 }
 
 await render(
