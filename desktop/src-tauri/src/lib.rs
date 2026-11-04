@@ -5,6 +5,9 @@ use url::{Host, Url};
 #[cfg(feature = "desktop")]
 pub mod app;
 
+/// The bundled Node executable name, without the platform extension.
+pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" };
+
 /// This is a closed operation list, never a command line supplied by the webview.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", deny_unknown_fields)]
@@ -128,6 +131,19 @@ pub fn daemon_env_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_sidecar_matches_bundle_configuration() {
+        let config: serde_json::Value = serde_json::from_str(if cfg!(windows) {
+            include_str!("../tauri.windows.conf.json")
+        } else {
+            include_str!("../tauri.conf.json")
+        })
+        .unwrap();
+        assert_eq!(
+            config["bundle"]["externalBin"],
+            serde_json::json!([format!("binaries/{NODE_SIDECAR}")])
+        );
+    }
     #[test]
     fn only_closed_requests_are_admitted() {
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).is_ok());
