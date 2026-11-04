@@ -75,7 +75,7 @@ function provider(behaviour: { open?: () => Promise<{ actor: string; lifecycleUi
   return { name, calls };
 }
 
-const options = { label: "laptop", channels: ["general"], read: ["general"], post: ["general"], ttlSec: 600, reopen: (channel: string) => `cotal chat ${channel}` };
+const options = { label: "laptop", channels: ["general"], read: ["general"], post: ["general"], ttlSec: 600, words: { reopen: (channel: string) => `cotal chat ${channel}`, answerOne: "answer one message" } };
 
 async function failure(run: () => Promise<unknown>): Promise<CommandFailure | undefined> {
   try { await run(); return undefined; } catch (e) { return e instanceof CommandFailure ? e : undefined; }

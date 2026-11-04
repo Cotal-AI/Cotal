@@ -14,6 +14,7 @@ import { CommandFailure, type RefusalCode } from "../output.js";
 import { workspaceSecretStore } from "../secret-store-fs.js";
 import { NativeChatSession } from "./native-session.js";
 import type { CloseReport, SessionIdentity } from "./session.js";
+import type { ChatWords } from "./words.js";
 
 /** Native refusal codes the auth service answers before any effect. */
 const REFUSED: Readonly<Record<string, RefusalCode>> = {
@@ -75,7 +76,7 @@ export async function openUserChatSession(target: MeshTarget, options: {
   readonly read: readonly string[];
   readonly post: readonly string[];
   readonly ttlSec: number;
-  readonly reopen: (channel: string) => string;
+  readonly words: ChatWords;
 }): Promise<NativeChatSession> {
   const space = target.space;
   if (target.mode !== "user" || target.userAuth === undefined)
@@ -182,7 +183,7 @@ export async function openUserChatSession(target: MeshTarget, options: {
     allowSubscribe: [...options.read], allowPublish: [...options.post], expiresAt: expiresAtMs,
   };
   // Register the participant listeners before the endpoint starts; the session owns them until close.
-  const session = new NativeChatSession({ endpoint, identity, retire, reopen: options.reopen });
+  const session = new NativeChatSession({ endpoint, identity, retire, words: options.words });
   try {
     await endpoint.start();
   } catch (e) {

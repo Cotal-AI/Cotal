@@ -4,24 +4,12 @@
  * creates a session; every call goes through the {@link AdmittedChatSession} it was given.
  */
 import { oneLine } from "@cotal-ai/core";
-import { shownTime } from "../lib/shown-time.js";
-import type { AdmittedChatSession, ChannelInfo, ConnectionReport, HistoryPage, PublishResult, Result, RosterView, SessionMessage } from "@cotal-ai/workspace/chat";
+import { shownTime } from "@cotal-ai/workspace";
 import {
-  addNotice, applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, slashHelp, type ChatState, type Person, type Recipient, type SlashCommand,
-} from "./view.js";
-
-export async function publish(session: AdmittedChatSession, to: Recipient, text: string): Promise<PublishResult> {
-  switch (to.kind) {
-    case "channel":
-      return session.send(text, to.channel, []);
-    case "dm":
-      return session.dm(to.to, text);
-    case "peer":
-      return session.dm({ principal: to.principal }, text, to.replyTo);
-    case "role":
-      return session.anycast(to.role, text);
-  }
-}
+  describeConnection, personLabel, publish, sharedNames, slashHelp,
+  type AdmittedChatSession, type ChannelInfo, type HistoryPage, type Person, type PublishResult, type Recipient, type Result, type RosterView, type SessionMessage, type SlashCommand,
+} from "@cotal-ai/workspace/chat";
+import { addNotice, applyEnded, applyPublishResult, applySlashResult, heardFrom, replyToLatest, type ChatState } from "./view.js";
 
 /** The names more than one principal carries across `people` and the transcript's senders. */
 const sharedWith = (state: ChatState, people: readonly Person[]) => sharedNames([...people, ...heardFrom(state)]);
@@ -34,12 +22,6 @@ export const rosterLines = (state: ChatState) => (v: RosterView): string[] => {
     ...(v.rows.length === 0 && v.view === "current" ? ["no one else is present"] : []),
   ];
 };
-
-const connectionLines = (c: ConnectionReport): string[] => [
-  `${c.state} as ${oneLine(c.identity.principal)} (session …${c.identity.lifecycleUid.slice(-6)}, ${c.identity.mode})`,
-  `joined: ${c.joinedChannels.map((ch) => `#${oneLine(ch)}`).join(" ") || "none"} · attention ${c.attention} · buffered ${c.bufferedInbox}`,
-  `may read: ${c.identity.allowSubscribe.map(oneLine).join(" ") || "none"} · may post: ${c.identity.allowPublish.map(oneLine).join(" ") || "none"}`,
-];
 
 const infoLines = (i: ChannelInfo): string[] => [
   `#${oneLine(i.channel)}${i.registered ? "" : " (unregistered)"} · ${i.readable ? "readable" : "not readable"} · ${i.postable ? "postable" : "not postable"} · ${i.replay ? "replays history" : "live only"}`,
@@ -85,7 +67,7 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: ChatState,
       return fold(await session.roster(), rosterLines(state));
     case "whoami":
     case "connection":
-      return fold(await session.connection(), connectionLines);
+      return fold(await session.connection(), describeConnection);
     case "status":
       return fold(await session.setStatus(command.status, command.activity), none);
     case "attention":

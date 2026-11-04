@@ -35,15 +35,12 @@ import { JetStreamApiError } from "@nats-io/jetstream";
 import { fileURLToPath } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import type { CotalEndpoint } from "@cotal-ai/core";
-import { publish } from "../src/chat/controller.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
-import { MAX_BUFFER, NativeChatSession, type AdmittedChatSession, type CloseReport, type SessionEvent, type SessionIdentity } from "@cotal-ai/workspace/chat";
-import { parseRecipient } from "../src/chat/picker.js";
+import { ENDING_NOTICE_MS, MAX_BUFFER, NativeChatSession, closeSummary, parseRecipient, publish, type AdmittedChatSession, type CloseReport, type SessionEvent, type SessionIdentity } from "@cotal-ai/workspace/chat";
 import { runPlain } from "../src/chat/plain.js";
 import { StdioParticipant, dispatch, parseRequestLine } from "../src/chat/stdio.js";
-import { ENDING_NOTICE_MS, closeSummary } from "../src/chat/view.js";
-import { shownTime } from "../src/lib/shown-time.js";
-import { closeExitCode } from "../src/commands/chat.js";
+import { shownTime } from "@cotal-ai/workspace";
+import { cliWords, closeExitCode } from "../src/commands/chat.js";
 import { stdoutError } from "../src/lib/stdout-owner.js";
 
 const identity: SessionIdentity = { mode: "open", space: "front-end-space", principal: "local.k3j2", lifecycleUid: "01HZZZABCDEF", label: "me", allowSubscribe: [">"], allowPublish: [">"] };
@@ -173,7 +170,7 @@ if (mode === "plain" || mode === "stdio") {
     const session = (read: string[], post: string[]) => new NativeChatSession({
       endpoint, identity: { ...identity, mode: "static", allowSubscribe: read, allowPublish: post },
       retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }),
-      reopen: (channel) => `cotal chat ${channel} --stdio`,
+      words: cliWords({ raw: ["--stdio"], positionalIndices: [] }),
     });
     const none = session([], []);
     const sent = await none.send("hi", "review", []);
@@ -202,7 +199,7 @@ if (mode === "plain" || mode === "stdio") {
       presenceView: () => ({ state: "current" }),
       unicastAttributed: async (to: string) => { sent.push(to); return { msg: { id: `d${sent.length}` }, ack: { seq: sent.length, duplicate: false } }; },
     } as unknown as CotalEndpoint;
-    const session = new NativeChatSession({ endpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), reopen: (channel) => `cotal chat ${channel}` });
+    const session = new NativeChatSession({ endpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), words: cliWords({ raw: [], positionalIndices: [] }) });
     const typed = parseRecipient("@u_z.alice");
     const viaView = typed.ok ? await publish(session, typed.recipient, "for alice") : undefined;
     check("an @ target that parses as a principal is sent to that principal, absent and unheard",
@@ -220,7 +217,7 @@ if (mode === "plain" || mode === "stdio") {
     const consumerGone = new JetStreamApiError({ code: 404, err_code: 10014, description: "consumer not found" });
     const lostSession = () => {
       const endpoint = Object.assign(new EventEmitter(), { stop: async () => {} }) as unknown as CotalEndpoint;
-      const session = new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "retired" }), reopen: (channel) => `cotal chat ${channel}` });
+      const session = new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "retired" }), words: cliWords({ raw: [], positionalIndices: [] }) });
       const events: SessionEvent[] = [];
       session.subscribe((e) => events.push(e));
       return { endpoint: endpoint as unknown as EventEmitter, session, events };
@@ -329,10 +326,10 @@ if (mode === "plain" || mode === "stdio") {
       readHistory: async () => { reads.push("readHistory"); return page; },
     }) as unknown as CotalEndpoint;
     const retire = async (): Promise<CloseReport> => ({ retirement: "retired", connectionClosed: "confirmed", message: "" });
-    const open = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "open" }, retire, reopen: (channel) => `cotal chat ${channel}` }).history("general", 50);
+    const open = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "open" }, retire, words: cliWords({ raw: [], positionalIndices: [] }) }).history("general", 50);
     check("an open session's /history reads the channel's stream, which needs no delivery daemon", open.outcome === "ok" && reads.join() === "channelHistoryPage", { open, reads });
     reads.length = 0;
-    const admitted = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire, reopen: (channel) => `cotal chat ${channel}` }).history("general", 50);
+    const admitted = await new NativeChatSession({ endpoint, identity: { ...identity, mode: "static" }, retire, words: cliWords({ raw: [], positionalIndices: [] }) }).history("general", 50);
     check("a static session's /history still reads through the delivery daemon", admitted.outcome === "ok" && reads.join() === "readHistory", { admitted, reads });
   }
 
@@ -341,7 +338,7 @@ if (mode === "plain" || mode === "stdio") {
     // The endpoint's start reports presence, the session's own row included, before the front end
     // has subscribed to the session.
     const endpoint = new EventEmitter();
-    const session = new NativeChatSession({ endpoint: endpoint as unknown as CotalEndpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), reopen: (channel) => `cotal chat ${channel}` });
+    const session = new NativeChatSession({ endpoint: endpoint as unknown as CotalEndpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), words: cliWords({ raw: [], positionalIndices: [] }) });
     const presence = (name: string) => ({ card: { id: `local.${name}`, name, kind: "endpoint" }, status: "idle", ts: 0 });
     endpoint.emit("presence", { type: "join", presence: presence("me") });
     const first: SessionEvent[] = [], second: SessionEvent[] = [];
@@ -357,7 +354,7 @@ if (mode === "plain" || mode === "stdio") {
   {
     const opened = () => {
       const endpoint = Object.assign(new EventEmitter(), { stop: async () => {} });
-      const session = new NativeChatSession({ endpoint: endpoint as unknown as CotalEndpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), reopen: (channel) => `cotal chat ${channel}` });
+      const session = new NativeChatSession({ endpoint: endpoint as unknown as CotalEndpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), words: cliWords({ raw: [], positionalIndices: [] }) });
       let acks = 0;
       const deliver = (n: number, kind: "channel" | "dm") => {
         for (let i = 1; i <= n; i++)
