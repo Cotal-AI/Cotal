@@ -768,7 +768,8 @@ export function anycastServeFilter(space: string, service: string): string {
 export const TAKE_ROUTE = "take" as const;
 
 /** The take REQUEST subject for one role and caller principal. A holder's credential may publish
- *  only its own principal's form, and only for its own role. */
+ *  only its own principal's form, and only for the roles it binds: its own and each `role:<r>`
+ *  token's (SPEC §13.15). */
 export function takeSubject(space: string, role: string, owner: string, actor: string): string {
   return `${spacePrefix(space)}.${TAKE_ROUTE}.${routeToken(role)}.${ownerToken(owner)}.${ownerToken(actor)}`;
 }
