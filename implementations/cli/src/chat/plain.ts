@@ -220,7 +220,7 @@ export async function runPlain(opts: {
         }
         const n = Number(t);
         if (Number.isInteger(n) && n >= 1 && n <= mode.choices.length) return choose(mode.choices[n - 1]!.recipient);
-        const parsed = parseRecipient(t);
+        const parsed = parseRecipient(t, "pick a number");
         if (!parsed.ok) { state = addNotice(state, "failed", parsed.error); return; }
         return choose(parsed.recipient);
       }
@@ -233,7 +233,7 @@ export async function runPlain(opts: {
         if (to) {
           const target = to[1]?.trim();
           if (!target) return startPick();
-          const parsed = parseRecipient(target);
+          const parsed = parseRecipient(target, "pick a number");
           if (parsed.ok) return choose(parsed.recipient);
           state = addNotice(state, "failed", parsed.error);
           return startPick();
