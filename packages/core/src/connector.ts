@@ -1,6 +1,7 @@
 import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
 import type { StartupBlocker, StartupReply } from "./startup-confirm.js";
+import type { PersonaEndpoint } from "./persona-endpoints.js";
 
 /** User-mode launch identity shared by the manager, connector and launch-material carrier. The
  *  sentinel is a file path, and the bearer command is argv. The material reader checks its rebuilt
@@ -60,6 +61,9 @@ export interface LaunchOpts {
    *  whose materialized persona carries no `capabilities:` frontmatter — gets none, so those tools stay
    *  hidden even though its creds authorize them. */
   capabilities?: string[];
+  /** The endpoint commands the agent was handed at launch (SPEC 13.15), the list its creds were
+   *  minted from. Forwarded as `COTAL_ENDPOINTS` so the session can say what it was handed. */
+  endpoints?: PersonaEndpoint[];
   /** Path to an agent definition file (`.cotal/agents/<name>.md`). The connector
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
    *  card from it, and applies the file's persona at launch. */

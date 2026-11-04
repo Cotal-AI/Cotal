@@ -473,6 +473,16 @@ const INSPECT_INPUT_SCHEMA = {
  *  the canonical serializer refuses a shared reference as circular. */
 const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
 
+/** A persona's `endpoints` (SPEC 13.15): `[{ endpoint, commands, instanceId? }]`. The shape is closed
+ *  here; names, reserved commands and the single-label rule are checked where the persona is read. */
+const PERSONA_ENDPOINTS = {
+  type: "array",
+  items: {
+    type: "object", additionalProperties: false, required: ["endpoint", "commands"],
+    properties: { endpoint: { type: "string" }, commands: { type: "array", items: { type: "string" } }, instanceId: { type: "string" } },
+  },
+} as const;
+
 /** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the
  *  fidelity oracle) — same fields, same types, nothing extra. Deep semantics (connector-specific
  *  launchOptions keys) stay in the SHARED handler/connector validation. */
@@ -514,6 +524,7 @@ const SPAWN_INPUT_SCHEMA = {
         allowSubscribe: { type: "array", items: { type: "string" } },
         allowPublish: { type: "array", items: { type: "string" } },
         capabilities: { type: "array", items: { type: "string" } },
+        endpoints: PERSONA_ENDPOINTS,
         save: { type: "boolean" },
       },
     },
@@ -803,6 +814,7 @@ const PERSONA_INPUT_SCHEMA = {
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
     capabilities: { type: "array", items: { type: "string" } },
+    endpoints: PERSONA_ENDPOINTS,
   },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
@@ -1486,9 +1498,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  `capabilities`. Both input schemas are closed, so a revision-44 contract rejects either.
  *
  *  46 = `define-persona` refuses empty or whitespace-only model, role and agent arguments.
- *  The changed input schema advances the described surface without adding a command. */
+ *  The changed input schema advances the described surface without adding a command.
+ *
+ *  47 = the inline `persona` on `spawn` and the `define-persona` input take `endpoints`, the endpoint
+ *  commands a persona hands on. Both input schemas are closed, so a revision-46 contract rejects it. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 46, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 47, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
