@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.141.3
+
+### Patch Changes
+
+- a77ee62: Manager requests and delegated user intents now share their base-envelope validation. Accepted fields, token grammar, refusal messages and validation order are unchanged, including requests with more than one invalid field.
+
 ## 0.141.2
 
 No changes in this release.
