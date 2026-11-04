@@ -36,6 +36,11 @@ The field is optional for provider compatibility. Its absence means the caller h
 authoritative grant answer. A status surface must preserve unknown or unavailable instead of
 inferring broad access from a bearer, successful exchange or broker ping.
 
+`@cotal-ai/workspace` exports `principalFromBearer(bearer)` for client-side decoding of
+`{ owner, actor, lifecycleUid }`. It checks that the three claims are non-empty strings and keeps
+the auth-service recovery hint on decoding failures. It does not verify a signature or authorize
+access; the broker and issuer remain responsible for those checks.
+
 ## Login confirmation
 
 `AuthProvider.confirmLogin` asks the space's IdP whether this machine's cached login still holds.
