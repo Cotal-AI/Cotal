@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const base = mkdtempSync(join(tmpdir(), "cotal-seat-installed-dist-"));
@@ -34,17 +34,18 @@ const run = (command: string, args: string[], cwd: string, isolatedHome = false)
   });
 };
 const output = (result: ReturnType<typeof run>) => `${result.stdout ?? ""}${result.stderr ?? ""}`;
-const writeElf = (arch: string, machine: number): void => {
-  const path = join(seatClone, "build", "Release", `linux-${arch}`, "peercred.node");
-  mkdirSync(dirname(path), { recursive: true });
-  const buffer = Buffer.alloc(20);
-  buffer[0] = 0x7f;
-  buffer.write("ELF", 1);
-  buffer.writeUInt16LE(machine, 18);
-  writeFileSync(path, buffer);
+const requireCheck = (name: string, condition: unknown, detail?: unknown): void => {
+  check(name, condition, detail);
+  if (!condition) throw new Error(name);
 };
 
 try {
+  // CI assembles qualified native artifacts before this suite. Refuse before packing anything when
+  // either set is absent, rather than allowing npm to fetch a missing first-party tarball later.
+  for (const pkg of ["seat", "workspace"]) {
+    const guarded = run(process.execPath, [join(ROOT, "packages", pkg, "scripts", "assert-shipped-natives.mjs")], ROOT);
+    requireCheck(`${pkg} has the required assembled native artifacts`, guarded.status === 0, output(guarded));
+  }
   cpSync(join(ROOT, "packages", "seat"), seatClone, {
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules") && basename(source) !== "dist",
@@ -59,12 +60,10 @@ try {
   if (existsSync(join(ROOT, "packages", "seat", "node_modules"))) {
     symlinkSync(join(ROOT, "packages", "seat", "node_modules"), join(seatClone, "node_modules"), "dir");
   }
-  writeElf("x64", 62);
-  writeElf("arm64", 183);
   check("assembled seat source tree starts without dist", !existsSync(join(seatClone, "dist")));
 
   const seatPack = run("pnpm", ["pack", "--pack-destination", packs], seatClone);
-  check("assembled seat source tree packs successfully", seatPack.status === 0, output(seatPack));
+  requireCheck("assembled seat source tree packs successfully", seatPack.status === 0, output(seatPack));
   const seatTarball = readdirSync(packs).map((name) => join(packs, name)).find((path) => basename(path).startsWith("cotal-ai-seat-"));
   check("seat pack produced one tarball", seatTarball !== undefined, readdirSync(packs));
   if (!seatTarball) throw new Error("seat tarball missing");
@@ -72,7 +71,8 @@ try {
   const files = listing.stdout.split(/\r?\n/).filter(Boolean);
   check("seat package inventory contains dist/index.js", files.includes("package/dist/index.js"), files);
   check("seat package inventory contains dist/index.d.ts", files.includes("package/dist/index.d.ts"), files);
-  check("seat package inventory contains both native helpers", ["x64", "arm64"].every((arch) => files.includes(`package/build/Release/linux-${arch}/peercred.node`)), files);
+  check("seat package inventory contains all six native helpers", ["linux", "darwin", "win32"].every((platform) =>
+    ["x64", "arm64"].every((arch) => files.includes(`package/build/Release/${platform}-${arch}/peercred.node`))), files);
 
   const workspace = new Map<string, string>();
   for (const parent of ["packages", "extensions", "implementations"]) {
@@ -101,13 +101,33 @@ try {
   for (const name of needed) {
     if (name === "@cotal-ai/seat") continue;
     const packed = run("pnpm", ["-C", join(ROOT, workspace.get(name)!), "pack", "--pack-destination", packs], ROOT);
-    check(`packed installed closure member ${name}`, packed.status === 0, output(packed));
+    requireCheck(`packed installed closure member ${name}`, packed.status === 0, output(packed));
   }
 
   writeFileSync(join(installRoot, "package.json"), JSON.stringify({ name: "seat-installed-dist", private: true }));
   const tarballs = readdirSync(packs).filter((name) => name.endsWith(".tgz")).map((name) => join(packs, name));
+  requireCheck("every closure member produced a local tarball", tarballs.length === needed.size, { tarballs: tarballs.length, needed: needed.size });
   const installed = run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...tarballs], installRoot, true);
-  check("fresh fixture installs the complete packaged CLI closure", installed.status === 0, output(installed));
+  requireCheck("fresh fixture installs the complete packaged CLI closure", installed.status === 0, output(installed));
+  const lock = JSON.parse(readFileSync(join(installRoot, "package-lock.json"), "utf8")) as { packages: Record<string, { resolved?: string }> };
+  for (const name of needed) {
+    check(`installed ${name} came from its local tarball`, lock.packages[`node_modules/${name}`]?.resolved?.startsWith("file:"));
+  }
+
+  for (const platform of ["linux", "darwin", "win32"]) for (const arch of ["x64", "arm64"]) {
+    const path = join("build", "Release", `${platform}-${arch}`, "peercred.node");
+    check(`installed seat ${platform}-${arch} preserves the assembled binary`,
+      readFileSync(join(installRoot, "node_modules", "@cotal-ai", "seat", path)).equals(readFileSync(join(ROOT, "packages", "seat", path))));
+  }
+  for (const platform of ["win32", "darwin"]) for (const arch of ["x64", "arm64"]) {
+    for (const file of [platform === "win32" ? "creation.node" : "process.node", "build.json"]) {
+      const path = join("build", "Release", `${platform}-${arch}`, file);
+      check(`installed workspace ${platform}-${arch}/${file} preserves the qualified artifact`,
+        readFileSync(join(installRoot, "node_modules", "@cotal-ai", "workspace", path)).equals(readFileSync(join(ROOT, "packages", "workspace", path))));
+    }
+  }
+  const nativeLoad = run(process.execPath, ["-e", `require(${JSON.stringify(join(installRoot, "node_modules", "@cotal-ai", "seat", "build", "Release", `${process.platform}-${process.arch}`, "peercred.node"))})`], installRoot);
+  check("fresh installed seat host binding actually loads", nativeLoad.status === 0, output(nativeLoad));
 
   const seatImport = run(process.execPath, ["--input-type=module", "-e", "await import('@cotal-ai/seat')"], installRoot);
   check("fresh installed @cotal-ai/seat import succeeds", seatImport.status === 0, output(seatImport));
@@ -123,6 +143,10 @@ try {
     help.status === 0 && /^cotal - lateral agent coordination over NATS$/m.test(banner),
     output(help),
   );
+  check("all installed-distribution assertions ran", passed + failed === 27 + 2 * needed.size, { passed, failed, closureMembers: needed.size });
+} catch (error) {
+  if (failed === 0) check("installed-distribution fixture completed", false, error);
+  else console.error(error);
 } finally {
   rmSync(base, { recursive: true, force: true });
 }
