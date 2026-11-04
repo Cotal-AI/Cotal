@@ -9,18 +9,17 @@ import {
   oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, connectTargetOrThrow, credsFlag, isConnectRefusal, operationWarnings, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
+  CommandFailure, codeSpan, connectTargetOrThrow, credsFlag, isConnectRefusal, operationWarnings, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
   type MeshTarget,
+  concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
-import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { cliControl } from "../lib/control.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
-import { closeSummary, type Recipient } from "../chat/view.js";
-import { USER_CHAT_TTL_SEC, openChatSession, type AdmittedChatSession, type ChatAdmission, type CloseReport, type RosterView } from "@cotal-ai/workspace/chat";
+import { USER_CHAT_TTL_SEC, closeSummary, openChatSession, type AdmittedChatSession, type ChatAdmission, type ChatWords, type CloseReport, type Recipient, type RosterView } from "@cotal-ai/workspace/chat";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,
@@ -86,6 +85,16 @@ export function chatAdmission(mode: MeshTarget["mode"], label: string, channel: 
 export function reopenCommand(args: Pick<ParsedArgs, "raw" | "positionalIndices">): (channel: string) => string {
   const flags = args.raw.filter((_, index) => !args.positionalIndices?.includes(index));
   return (channel) => ["cotal", "chat", channel, ...flags].map(shellWord).join(" ");
+}
+
+/** How `cotal chat`'s session refusals end: the command that reopens on a channel with this
+ *  session's flags, and the two ways to answer one message. */
+export function cliWords(args: Pick<ParsedArgs, "raw" | "positionalIndices">): ChatWords {
+  const reopen = reopenCommand(args);
+  return {
+    reopen: (channel) => `Leave and run ${codeSpan(reopen(channel))} to open a session on it`,
+    answerOne: "answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id",
+  };
 }
 
 /** The exit code of a session that ended by leaving, end of input, expiry or loss. Only a confirmed
@@ -207,7 +216,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
       process.exitCode = before;
       return;
     }
-    session = await openChatSession(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), { reopen: reopenCommand(args), control: cliControl });
+    session = await openChatSession(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), { words: cliWords(args), control: cliControl });
   } catch (e) {
     signals.release();
     throw e;

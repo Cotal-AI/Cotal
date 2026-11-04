@@ -11,13 +11,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import type { Key as InkKey } from "ink";
-import type { AdmittedChatSession, SessionEvent } from "@cotal-ai/workspace/chat";
+import { discloseChoice, endingNotice, parseRecipient, type AdmittedChatSession, type Recipient, type SessionEvent } from "@cotal-ai/workspace/chat";
 import {
   addNotice,
   applyEvent,
   applyKey,
   composerRows,
-  endingNotice,
   headerRows,
   heardFrom,
   initialState,
@@ -25,12 +24,11 @@ import {
   transcriptRows,
   type ChatState,
   type Key,
-  type Recipient,
   type Row,
   type Tone,
 } from "./view.js";
 import { closeSession, runPublish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
+import { listChoices, refusedDm, type Choice } from "./picker.js";
 
 const TONE_COLOR: Record<Tone, string | undefined> = {
   ok: "green",
@@ -168,7 +166,7 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
       if (inkKey.return) {
         const n = Number(picker.typed);
         if (Number.isInteger(n) && n >= 1 && n <= picker.choices.length) return void choose(picker.choices[n - 1]!.recipient);
-        const parsed = parseRecipient(picker.typed);
+        const parsed = parseRecipient(picker.typed, "pick a number");
         if (!parsed.ok) return update(addNotice(latest.current, "failed", parsed.error));
         return void choose(parsed.recipient);
       }
