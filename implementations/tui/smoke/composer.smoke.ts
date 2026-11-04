@@ -3,11 +3,13 @@
  * this suite starts, and a static-auth space a real `cotal up --detach` stack serves, whose manager
  * admits the app's chat session. Peers it controls stand on both: a planner, a waiting coder-2, two
  * agents named reviewer with roles rev-a and rev-b, and ghost, which leaves before the human writes
- * to it. The human writes from the composer: a post to #general with a mention, a direct message to
- * one reviewer, an answer to the waiting agent, `/reply` to a direct message, and the refusals. Each
- * check reads its fact off the broker, never only off the screen: a channel's history, the space's
- * direct-message history (an admin reader on the static space), the roster a reader watches, and on
- * the open broker its connections. Captures are kept under the printed directory.
+ * to it. The human writes in the input box under the conversation, which has the keys from launch;
+ * tab moves them to the tree. The first enter opens the chat session and sends: a post to #general
+ * with a mention, then a direct message to one reviewer, an answer to the waiting agent, `/reply` to
+ * a direct message, and the refusals. Every send is read off the broker: a channel's history, the
+ * space's direct-message history (an admin reader on the static space), the roster a reader watches,
+ * and on the open broker its connections. Every refusal is read off the screen. Captures are kept
+ * under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, so it is not part of smoke:ci, which runs Node 22.
  * Run: pnpm --filter @cotal-ai/tui smoke
@@ -66,11 +68,20 @@ const check = (name: string, ok: boolean, detail?: string) => {
   console.log(ok ? `  ✓ ${name}` : `  ✗ FAIL: ${name}${detail ? `\n${detail}` : ""}`)
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** `read` once `ok` holds, or its last value after `ms`. A read that throws, as a reader's does while
+ *  it reconnects after a broker restart, is read again, and its error rethrown only at the end. */
 async function until<T>(read: () => T | Promise<T>, ok: (v: T) => boolean, ms = 8000): Promise<T> {
   const start = Date.now()
   for (;;) {
-    const v = await read()
-    if (ok(v) || Date.now() - start > ms) return v
+    let v: { value: T } | { error: unknown }
+    try {
+      v = { value: await read() }
+    } catch (error) {
+      v = { error }
+    }
+    const done = Date.now() - start > ms
+    if ("value" in v && (ok(v.value) || done)) return v.value
+    if ("error" in v && done) throw v.error
     await sleep(150)
   }
 }
@@ -126,12 +137,14 @@ async function see(test: (frame: string) => boolean, ms = 8000): Promise<string>
   }
 }
 const has = (text: string) => (frame: string) => frame.includes(text)
-/** The conversation column's text as one line, so a sentence the column wraps reads whole. */
-function middle(frame: string, width: number): string {
+/** The conversation column's lines, trimmed, from the title to the box, without the footer. */
+function middleLines(frame: string, width: number): string[] {
   const l = layoutFor(width)
   const end = l.kind === "three" ? width - l.inspector : width
-  return frame.split("\n").map((line) => [...line].slice(l.tree, end).join("").trim()).filter(Boolean).join(" ")
+  return frame.trimEnd().split("\n").slice(0, -1).map((line) => [...line].slice(l.tree, end).join("").trim()).filter(Boolean)
 }
+/** The conversation column's text as one line, so a sentence the column wraps reads whole. */
+const middle = (frame: string, width: number) => middleLines(frame, width).join(" ")
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
 const type = (text: string) => keys("-l", text)
 // A key sent within tmux's escape-time after Escape would read as alt+<key>.
@@ -266,24 +279,59 @@ function launch(root: string, width: number, height: number, err: string) {
 
 const SPACE_ROWS = 3
 const titleOf = (frame: string) => frame.split("\n").find((l) => l.includes("SPACES")) ?? ""
-const composing = has("enter send · ctrl+j newline")
+const footer = (frame: string) => frame.trimEnd().split("\n").at(-1)!.trim()
+// A space is live once its conversation heads the middle column and the footer has nothing to report.
+const live = (space: string) => (frame: string) => titleOf(frame).includes(`  ${space}`) && !/Connecting to/.test(frame) && footer(frame) === "? help · ctrl+p commands"
 const row = (s: Space, name: string): Presence | undefined => s.reader.getRoster().find((p) => p.card.name === name && p.status !== "offline")
 const chatRow = (s: Space) => s.reader.getRoster().find((p) => p.card.name === login && p.card.meta?.sessionKind === "chat" && p.status !== "offline")
+const times = (n: number, key: string) => Array<string>(n).fill(key)
 
-/** Opens the tree row whose conversation is titled `name`, stepping down from all traffic, so Enter
- *  never lands on a space row. `want` tells apart rows under one name. */
-async function openRow(s: Space, name: string, want: (frame: string) => boolean = () => true): Promise<string> {
-  for (let i = 0; i < 40; i++) keys("k")
-  for (let i = 0; i < SPACE_ROWS; i++) keys("j")
+// The keys go to the tree from either side: esc returns the tree to the box and does nothing in the
+// box, then tab moves them to the tree.
+async function toTree() {
+  await esc()
+  keys("Tab")
+  await sleep(150)
+}
+const toBox = esc
+
+/** Opens the tree row whose conversation is titled `name`. Each try counts down from the top past the
+ *  space rows, where enter would switch spaces; enter returns the keys to the box. `want`, read with
+ *  the tree focused so the 80x24 overview shows, tells apart rows under one name. */
+async function openRow(s: Space, name: string, want?: (frame: string) => boolean): Promise<string> {
   for (let i = 0; i < 24; i++) {
+    await toTree()
+    keys(...times(40, "k"), ...times(SPACE_ROWS + i, "j"))
     await sleep(80)
     const before = titleOf(capture())
     keys("Enter")
     const frame = await see((f) => titleOf(f) !== before, 1500)
-    if (titleOf(frame).includes(`${name}  ${s.space}`) && want(frame)) return frame
-    keys("j")
+    if (!titleOf(frame).includes(`${name}  ${s.space}`)) continue
+    if (!want) return frame
+    await toTree()
+    const ok = want(await see(want, 1500))
+    await toBox()
+    if (ok) return capture()
   }
   throw new Error(`could not open ${name}:\n${capture()}`)
+}
+/** Enter on a space row, counted from the top of the tree. */
+async function openSpaceRow(at: number) {
+  await toTree()
+  keys(...times(40, "k"), ...times(at, "j"), "Enter")
+}
+
+const strip = (line: string) => line.replace(/\x1b\[[0-9;:]*m/g, "")
+const fgBefore = (line: string, text: string) => new RegExp(`\\x1b\\[38;2;([\\d;]+)m${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).exec(line)?.[1]
+/** The human's name at the bottom of the tree, with its color and the gold the open space's marker has. */
+function nameAtBottom(width: number): { name: string; fg?: string; gold?: string } {
+  const raw = tmux("capture-pane", "-p", "-e", "-t", "t").split("\n")
+  const tree = layoutFor(width).tree
+  const lines = raw.map((l) => [...strip(l)].slice(0, tree).join("").trim())
+  const last = raw.map(strip).findLastIndex((l) => l.trim() !== "")
+  const at = lines.slice(0, last).findLastIndex(Boolean)
+  const name = lines[at] ?? ""
+  return { name, fg: fgBefore(raw[at] ?? "", name), gold: raw.map((l) => fgBefore(l, "▸")).find(Boolean) }
 }
 
 async function run(s: Space, width: number, height: number, tag: string) {
@@ -300,145 +348,145 @@ async function run(s: Space, width: number, height: number, tag: string) {
   const general = () => s.reader.channelHistory("general", { limit: 200 })
   // Spaces dropped, since the column may wrap a sentence inside a word such as `/quit`.
   const says = (frame: string, text: string) => middle(frame, width).replace(/\s+/g, "").includes(text.replace(/\s+/g, ""))
+  const lines = (frame: string) => middleLines(frame, width)
+  // A feed row's text sits after the row's border; the box holds the draft with no border.
+  const inFeed = (frame: string, text: string) => lines(frame).includes(`┃ ${text}`)
+  const inBox = (frame: string, text: string) => lines(frame).includes(text)
+  const target = (frame: string, line: string) => lines(frame).some((l) => l === line || l.startsWith(`${line} · ends `))
   const dms = () => s.reader.dmHistory({ limit: 500 })
-  const write = async () => {
-    keys("c")
-    return see(composing, 4000)
-  }
   const enter = (text: string, done: (f: string) => boolean) => {
     type(text)
     keys("Enter")
     return see(done)
   }
+  const clear = async () => {
+    keys("C-u")
+    await sleep(150)
+  }
   console.log(at)
   const ghost = await s.ghost(tag)
 
   launch(s.root, width, height, join(work, `${s.mode}-${size}.err`))
-  const watching = await see((f) => f.includes(`● live · ${s.space}`) && f.includes("coder-2") && f.includes("you appear as"), 20000)
+  const watching = await see((f) => live(s.space)(f) && f.includes("coder-2") && nameAtBottom(width).name === login, 20000)
+  const dim = nameAtBottom(width)
   save("watching")
-  check(`${at}: the line under the conversation names the human's chat name before a session opens`, watching.includes(`c write · you appear as ${login}`), watching)
+  check(`${at}: the space opens on #general with the box under it and the human's name, not gold, at the bottom of the tree`, titleOf(watching).includes(`#general  ${s.space}`) && target(watching, "#general") && dim.name === login && !!dim.fg && dim.fg !== dim.gold, JSON.stringify(dim))
   const unseen = await s.connections?.()
   check(`${at}: watching stays invisible: no live roster row named ${login}${s.connections ? `, no cotal:${login} connection` : ""}`, !chatRow(s) && (unseen ?? 0) === 0, JSON.stringify({ unseen }))
 
-  await openRow(s, "#general")
-  await write()
-  const self = await until(() => chatRow(s), (p) => p !== undefined)
-  const opened = await see(has(`to #general · as ${login}`))
-  const connected = await s.connections?.()
-  save("compose-general")
-  check(`${at}: c opens one chat session named ${login} with no suffix: a live roster row with sessionKind chat${s.connections ? " and one connection" : ""}`, !!self && self.card.kind === "endpoint" && (connected ?? 1) === 1, JSON.stringify({ self: self?.card, connected }))
-  check(`${at}: the composer says where it writes and as whom`, opened.includes(`to #general · as ${login}`), opened)
-  const principal = self?.card.id ?? "unknown"
-
   const post = `hi @planner the plan is ready (${tag})`
-  const stored = await enter(post, has("stored"))
+  type(post)
+  const drafted = await see((f) => inBox(f, post))
+  await sleep(1000)
+  const typing = await s.connections?.()
+  save("draft")
+  check(`${at}: typing a draft opens no session`, inBox(drafted, post) && !chatRow(s) && (typing ?? 0) === 0, JSON.stringify({ typing }))
+
+  keys("Enter")
   const landed = await until(general, (h) => h.some((m) => textOf(m) === post))
+  const self = await until(() => chatRow(s), (p) => p !== undefined)
+  const connected = await s.connections?.()
+  const first = await see((f) => inFeed(f, post) && !inBox(f, post) && nameAtBottom(width).fg === nameAtBottom(width).gold)
+  const gold = nameAtBottom(width)
+  save("first-send")
+  const principal = self?.card.id ?? "unknown"
   const msg = landed.find((m) => textOf(m) === post)
-  save("post-stored")
-  check(`${at}: a post to #general lands in its history from the session's principal with the mention`, stored.includes("stored") && msg?.from.id === principal && !!msg?.mentions?.includes("planner"), JSON.stringify(msg))
+  check(`${at}: the first enter opens one chat session named ${login} with no suffix: a live roster row with sessionKind chat${s.connections ? " and one connection" : ""}`, !!self && self.card.kind === "endpoint" && (connected ?? 1) === 1, JSON.stringify({ self: self?.card, connected }))
+  check(`${at}: the same enter sends: the post lands in #general's history from the session's principal with the mention, and the box empties`, msg?.from.id === principal && !!msg?.mentions?.includes("planner") && inFeed(first, post) && !inBox(first, post), JSON.stringify(msg))
+  check(`${at}: on the roster, the name at the bottom of the tree turns gold`, gold.name === login && gold.fg === gold.gold, JSON.stringify(gold))
+  if (s.mode === "static") check(`${at}: a static session's box names its end time`, lines(first).some((l) => /^#general · ends \d\d:\d\d$/.test(l)), first)
 
   if (s.mode === "static") {
-    await esc()
     await openRow(s, "#ops")
-    await write()
     const ops = `ops note (${tag})`
-    const outside = await enter(ops, has("outside this session's post grant"))
+    const outside = await enter(ops, (f) => says(f, "denied:"))
     save("grant-outside")
     const opsHistory = await s.reader.channelHistory("ops", { limit: 200 })
-    check(`${at}: a post outside the post grant refuses with the app's step and stores nothing`, says(outside, "denied: #ops is outside this session's post grant. /quit ends this session, then c on #ops opens one on it") && !opsHistory.some((m) => textOf(m) === ops), outside)
-    keys("C-u")
+    check(`${at}: a post outside the post grant refuses with the app's step, keeps the draft and stores nothing`, says(outside, "denied: #ops is outside this session's post grant. /quit ends this session, then enter in #ops opens one there") && inBox(outside, ops) && !opsHistory.some((m) => textOf(m) === ops), outside)
+    await clear()
   }
 
-  await esc()
   await openRow(s, "reviewer", (f) => /role\s+rev-b/.test(f))
-  await write()
   const dm = `please read the branch (${tag})`
-  const dmStored = await enter(dm, has("stored"))
+  type(dm)
+  keys("Enter")
   const toReviewer = await until(dms, (h) => h.some((m) => textOf(m) === dm))
+  const dmShown = await see((f) => inFeed(f, dm) && !inBox(f, dm))
   const reviewerB = s.peer("reviewer/rev-b").id
-  save("dm-stored")
+  save("dm-sent")
   check(
-    `${at}: a direct message to the open reviewer reaches its principal and not the other reviewer`,
-    dmStored.includes("stored") && toReviewer.filter((m) => textOf(m) === dm).map((m) => `${m.from.id}>${m.to}`).join() === `${principal}>${reviewerB}`,
+    `${at}: a direct message to the open reviewer reaches its principal, not the other reviewer, and shows in the conversation`,
+    inFeed(dmShown, dm) && toReviewer.filter((m) => textOf(m) === dm).map((m) => `${m.from.id}>${m.to}`).join() === `${principal}>${reviewerB}`,
     JSON.stringify(toReviewer.filter((m) => textOf(m) === dm)),
   )
 
-  await esc()
+  await toTree()
   keys("w")
   await see(has("◐ coder-2 is waiting"), 4000)
   keys("j")
-  const answering = await write()
+  await sleep(100)
+  keys("Tab")
+  const answering = await see((f) => target(f, "answering coder-2"), 4000)
   save("answering")
+  check(`${at}: w in the tree, then j off the row, then tab: the box answers the waiting agent`, target(answering, "answering coder-2") && answering.includes("◐ coder-2 is waiting"), answering)
   const answer = `approved, run it (${tag})`
-  const answered = await enter(answer, has("stored"))
+  type(answer)
+  keys("Enter")
   const toCoder = await until(dms, (h) => h.some((m) => textOf(m) === answer))
-  save("answer-stored")
-  check(`${at}: the target line names the waiting agent's question`, answering.includes("to coder-2 · answering “needs approval"), answering)
-  check(
-    `${at}: w, then j off the row, then c answers the waiting agent at its principal`,
-    answered.includes("stored") && toCoder.some((m) => textOf(m) === answer && m.from.id === principal && m.to === s.peer("coder-2/coder").id),
-    JSON.stringify(toCoder.filter((m) => textOf(m) === answer)),
-  )
+  save("answer-sent")
+  check(`${at}: the answer reaches the waiting agent's principal`, toCoder.some((m) => textOf(m) === answer && m.from.id === principal && m.to === s.peer("coder-2/coder").id), JSON.stringify(toCoder.filter((m) => textOf(m) === answer)))
 
   const planner = s.peer("planner/planner")
-  // With no session there is no principal to write to, and /reply then has nothing to quote.
-  const ask = self ? await planner.ep.unicast(principal, `can you approve 0042? (${tag})`) : undefined
+  const ask = await planner.ep.unicast(principal, `can you approve 0042? (${tag})`)
   await until(dms, (h) => h.some((m) => m.id === ask?.id))
   await sleep(500)
   type("/reply")
   keys("Enter")
   const quoted = await see(has(`↳ planner: “can you approve 0042? (${tag})”`))
   save("reply-quote")
+  check(`${at}: /reply quotes the newest direct message and the box names who it answers`, quoted.includes(`↳ planner: “can you approve 0042? (${tag})”`) && target(quoted, "replying to planner"), quoted)
   const reply = `yes, go ahead (${tag})`
-  const replied = await enter(reply, has("stored"))
+  type(reply)
+  keys("Enter")
   const toPlanner = await until(dms, (h) => h.some((m) => textOf(m) === reply))
-  save("reply-stored")
-  check(`${at}: /reply quotes the newest direct message`, quoted.includes("reply to planner"), quoted)
+  const unquoted = await see((f) => !f.includes("↳ planner:"))
+  save("reply-sent")
   check(
-    `${at}: the reply reaches planner's principal with replyTo naming its message`,
-    replied.includes("stored") && toPlanner.some((m) => textOf(m) === reply && m.to === planner.id && m.replyTo === ask?.id),
+    `${at}: the reply reaches planner's principal with replyTo naming its message, and the quote goes`,
+    toPlanner.some((m) => textOf(m) === reply && m.to === planner.id && m.replyTo === ask?.id) && !unquoted.includes("↳ planner:"),
     JSON.stringify({ ask: ask?.id, got: toPlanner.filter((m) => textOf(m) === reply) }),
   )
 
-  await esc()
   await openRow(s, login)
-  await write()
   const note = `note to self (${tag})`
-  const own = await enter(note, has("denied:"))
+  const own = await enter(note, (f) => says(f, "denied:"))
   await sleep(500)
   const toSelf = (await dms()).filter((m) => textOf(m) === note)
   save("own-dm")
-  check(`${at}: a direct message to the session itself refuses, keeps the draft and stores nothing`, says(own, "denied: a direct message needs a principal other than this session") && own.includes(`› ${note}`) && toSelf.length === 0, own)
-  keys("C-u")
+  check(`${at}: a direct message to the session itself refuses, keeps the draft and stores nothing`, says(own, "denied: a direct message needs a principal other than this session") && inBox(own, note) && toSelf.length === 0, own)
+  await clear()
 
   const before = (await general()).length
-  const unknown = await enter("/foo", has("unknown command /foo"))
+  const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
   save("unknown-slash")
-  keys("C-u")
-  const who = await enter("/who", has("is not in the app"))
+  await clear()
+  const who = await enter("/who", (f) => says(f, "is not in the app"))
   save("cli-only-slash")
-  keys("C-u")
-  check(`${at}: an unknown slash command refuses and keeps the line`, unknown.includes("unknown command /foo; try") && unknown.includes("› /foo"), unknown)
-  check(`${at}: /who is not in the app and is not sent`, who.includes("/who is not in the app; the tree lists who is here") && (await general()).length === before, who)
+  await clear()
+  check(`${at}: an unknown slash command refuses and keeps the line`, says(unknown, "unknown command /foo; try") && inBox(unknown, "/foo"), unknown)
+  check(`${at}: /who is not in the app and is not sent`, says(who, "/who is not in the app; the tree lists who is here") && (await general()).length === before, who)
 
-  await esc()
-  await openRow(s, "all traffic")
-  await write()
-  const nowhere = await enter(`hello all (${tag})`, has("choose a recipient first"))
-  const picker = await see(has("Write to"), 2000)
+  const traffic = await openRow(s, "all traffic")
+  const nowhere = await enter(`hello all (${tag})`, (f) => says(f, "choose a recipient first"))
   save("no-recipient")
-  await esc()
-  check(`${at}: Enter on all traffic asks for a recipient, opens the picker and stores nothing`, nowhere.includes("choose a recipient first (tab)") && picker.includes("#channel, a name or role:<role>") && (await general()).length === before, nowhere)
-  await sleep(300)
-  keys("C-u")
+  check(`${at}: all traffic has no recipient: the box says so, and enter refuses, keeps the draft and stores nothing`, target(traffic, "no recipient in all traffic") && says(nowhere, "choose a recipient first (open a channel or an agent)") && inBox(nowhere, `hello all (${tag})`) && (await general()).length === before, nowhere)
+  await clear()
 
   await ghost.ep.stop()
   await see(has("⨯ ghost"), 10000)
-  await esc()
   await openRow(s, "ghost")
-  await write()
   const late = `are you there (${tag})`
-  const offline = await enter(late, has("is offline"))
+  const offline = await enter(late, (f) => says(f, "is offline"))
   const toGhost = await until(dms, (h) => h.some((m) => textOf(m) === late))
   save("offline-recipient")
   check(
@@ -448,106 +496,117 @@ async function run(s: Space, width: number, height: number, tag: string) {
   )
 
   if (s.mode === "open") {
-    await esc()
     await openRow(s, "#general")
-    await write()
     await stopBroker()
-    await see(has(`◐ reconnecting · ${s.space}`), 10000)
+    await see((f) => footer(f).startsWith("◐ reconnecting"), 10000)
     // Enter before the session itself saw the outage would publish into the client's buffer, so
     // /connection, which runs offline, first shows the session disconnected.
     let state = ""
-    for (let i = 0; i < 20 && !state.includes("disconnected as"); i++) {
+    for (let i = 0; i < 20 && !says(state, "disconnected as"); i++) {
       type("/connection")
       keys("Enter")
-      state = await see(has("disconnected as"), 1000)
+      state = await see((f) => says(f, "disconnected as"), 1000)
     }
     const queued = `during the outage (${tag})`
-    const away = await enter(queued, has("not connected"))
+    const away = await enter(queued, (f) => says(f, "not connected"))
     save("not-connected")
-    check(`${at}: Enter while the broker is away refuses and keeps the draft`, away.includes("not connected: sending is off; your draft is kept") && away.includes(`› ${queued}`), away)
+    check(`${at}: enter while the broker is away refuses and keeps the draft`, says(away, "not connected: sending is off; your draft is kept") && inBox(away, queued), away)
     await startBroker()
     await settled(() => setupSpaceStreams({ servers: server, space: s.space }))
-    await see(has(`● live · ${s.space}`), 30000)
-    let back = ""
-    for (let i = 0; i < 20 && !back.includes("stored"); i++) {
+    await see(live(s.space), 30000)
+    let stored = false
+    for (let i = 0; i < 20 && !stored; i++) {
       keys("Enter")
-      back = await see(has("stored"), 1500)
+      stored = (await until(general, (h) => h.some((m) => textOf(m) === queued), 1500)).some((m) => textOf(m) === queued)
     }
     const once = await until(general, (h) => h.some((m) => textOf(m) === queued))
+    const back = await see((f) => inFeed(f, queued) && !inBox(f, queued))
     save("sent-after-reconnect")
-    check(`${at}: once the broker is back, Enter stores the kept draft once`, back.includes("stored") && once.filter((m) => textOf(m) === queued).length === 1, back)
+    check(`${at}: once the broker is back, enter sends the kept draft once`, once.filter((m) => textOf(m) === queued).length === 1 && inFeed(back, queued), back)
   }
 
   const namesake = await s.namesake(tag)
   await until(() => row(s, login.toUpperCase()), (p) => p !== undefined)
-  const quit = await enter("/quit", has("session ended"))
+  const quit = await enter("/quit", (f) => says(f, "session ended"))
   const gone = await until(() => s.reader.getRoster().find((p) => p.card.id === principal), (p) => p === undefined || p.status === "offline")
   const left = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)
   save("quit")
-  check(`${at}: /quit ends the session: its roster row goes offline${s.connections ? " and its connection closes" : ""}`, quit.includes("you ended it") && (gone === undefined || gone.status === "offline") && left === 0, quit)
+  check(`${at}: /quit ends the session: its roster row goes offline${s.connections ? " and its connection closes" : ""}, and the box says enter opens a new one`, says(quit, `you ended it · enter opens a new one as ${login}`) && (gone === undefined || gone.status === "offline") && left === 0, quit)
 
-  await esc()
+  await toTree()
   keys("w")
   await see(has("◐ coder-2 is waiting"), 4000)
-  const reopened = await write()
+  keys("Tab")
+  await sleep(150)
+  const again = `still there? (${tag})`
+  const reopened = await enter(again, (f) => says(f, "new session as"))
   const next = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal)
   const warned = await see(has("already in use"))
+  await sleep(1000)
+  const early = (await dms()).filter((m) => textOf(m) === again)
   save("reopened-name-in-use")
-  check(`${at}: the next c opens a new session under a new principal and sends nothing`, !!next && next.card.id !== principal && reopened.includes("to coder-2"), JSON.stringify({ next: next?.card.id, principal }))
+  check(`${at}: after /quit, enter opens a new session under a new principal, keeps the draft and sends nothing`, !!next && next.card.id !== principal && says(reopened, `new session as ${login}; enter sends`) && inBox(reopened, again) && early.length === 0, JSON.stringify({ next: next?.card.id, principal, early }))
   check(`${at}: a name another participant holds is warned`, warned.includes("already in use"), warned)
+  const principal2 = next?.card.id ?? "unknown"
+  keys("Enter")
+  const sentAgain = await until(dms, (h) => h.some((m) => textOf(m) === again))
+  check(`${at}: the second enter sends from the new session`, sentAgain.some((m) => textOf(m) === again && m.from.id === principal2 && m.to === s.peer("coder-2/coder").id), JSON.stringify(sentAgain.filter((m) => textOf(m) === again)))
   // The toast covers the conversation title at 80x24, which the row picker reads.
   await see((f) => !f.includes("already in use"), 15000)
   await namesake.ep.stop()
-  const principal2 = next?.card.id ?? "unknown"
 
-  await esc()
   await openRow(s, "#general")
-  await write()
   const after = `after the end (${tag})`
   if (s.mode === "static") {
-    const none = await enter(after, has("denied:"))
+    const none = await enter(after, (f) => says(f, "denied:"))
     save("grant-none")
     check(
-      `${at}: a session opened on an agent cannot post to a channel, with the app's step, and stores nothing`,
-      says(none, "denied: this session was opened on no channel, so it cannot post to #general. /quit ends this session, then c on #general opens one on it") && !(await general()).some((m) => textOf(m) === after),
+      `${at}: a session opened on an agent cannot post to a channel, with the app's step, keeps the draft and stores nothing`,
+      says(none, "denied: this session was opened on no channel, so it cannot post to #general. /quit ends this session, then enter in #general opens one there") && inBox(none, after) && !(await general()).some((m) => textOf(m) === after),
       none,
     )
   } else {
-    const sent = await enter(after, has("stored"))
+    type(after)
+    keys("Enter")
     const fromNew = await until(general, (h) => h.some((m) => textOf(m) === after))
     save("post-from-new-session")
-    check(`${at}: the new session posts from its own principal`, sent.includes("stored") && fromNew.some((m) => textOf(m) === after && m.from.id === principal2), sent)
+    check(`${at}: the new session posts from its own principal`, fromNew.some((m) => textOf(m) === after && m.from.id === principal2), JSON.stringify(fromNew.filter((m) => textOf(m) === after)))
   }
-  keys("C-u")
+  await clear()
   const kept = `saved draft (${tag})`
   type(kept)
-  await esc()
+  await see((f) => inBox(f, kept))
 
-  for (let i = 0; i < 40; i++) keys("k")
-  for (let i = 0; i < s.other.row; i++) keys("j")
-  keys("Enter")
-  await see(has(`● live · ${s.other.space}`), 20000)
+  await openSpaceRow(s.other.row)
+  await see(live(s.other.space), 20000)
   const closed = await until(() => s.reader.getRoster().find((p) => p.card.id === principal2), (p) => p === undefined || p.status === "offline", 15000)
   const none = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)
   save("switched-away")
   check(`${at}: switching spaces closes the chat session: its roster row goes offline${s.connections ? " and no cotal:" + login + " connection is left" : ""}`, (closed === undefined || closed.status === "offline") && none === 0, JSON.stringify(closed?.status))
-  for (let i = 0; i < 40; i++) keys("k")
-  for (let i = 0; i < s.row; i++) keys("j")
-  keys("Enter")
-  await see(has(`● live · ${s.space}`), 20000)
-  await openRow(s, "#general")
-  const again = await write()
+  await openSpaceRow(s.row)
+  const back = await see((f) => live(s.space)(f) && inBox(f, kept), 20000)
   save("draft-kept")
-  check(`${at}: the draft stays with its conversation across the switch`, again.includes(`› ${kept}`), again)
-  await esc()
+  check(`${at}: the draft stays with its conversation across the switch`, titleOf(back).includes(`#general  ${s.space}`) && inBox(back, kept), back)
 
-  keys("q")
+  await toTree()
+  keys("w")
+  await see(has("◐ coder-2 is waiting"), 4000)
+  keys("Tab")
+  await sleep(150)
+  const bye = `signing off (${tag})`
+  type(bye)
+  keys("Enter")
+  const third = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal && p.card.id !== principal2)
+  const byeSent = await until(dms, (h) => h.some((m) => textOf(m) === bye))
+  check(`${at}: back on the space, the first enter opens a new session and answers in one step`, !!third && byeSent.some((m) => textOf(m) === bye && m.from.id === third.card.id), JSON.stringify(byeSent.filter((m) => textOf(m) === bye)))
+
+  keys("C-c")
   const asked = await see(has("Quit with 1 unsent draft?"), 4000)
   save("quit-asks")
   keys("y")
   const exited = await see(has("EXIT=0"), 15000)
   save("exited")
-  check(`${at}: quitting with a draft asks first, then exits 0 and prints how the session closed`, asked.includes("y quit · n esc enter stay") && exited.includes(`${s.space}: `) && exited.replace(/\n/g, "").includes("messages already sent remain"), exited)
+  check(`${at}: ctrl+c in the box with a draft asks first, then exits 0 and prints how the session closed`, asked.includes("y quit · n esc enter stay") && exited.includes(`${s.space}: `) && exited.replace(/\n/g, "").includes("messages already sent remain"), exited)
 }
 
 async function rename(s: Space, tag: string) {
@@ -559,27 +618,30 @@ async function rename(s: Space, tag: string) {
     await see(has("Commands"), 4000)
     type("Change your name")
     keys("Enter")
-    await see(has("You appear as"), 4000)
+    await see(has("Your name is"), 4000)
     await sleep(300)
   }
   launch(s.root, 209, 52, join(work, `${s.mode}-rename.err`))
-  await see((f) => f.includes(`● live · ${s.space}`) && f.includes("you appear as"), 20000)
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
   await dialog()
   type("Ops Lead")
   keys("Enter")
-  const line = await see((f) => !f.includes("You appear as") && f.includes("you appear as Ops Lead"))
-  await openRow(s, "#general")
-  keys("c")
+  const renamed = await see((f) => !f.includes("Your name is") && nameAtBottom(209).name === "Ops Lead")
+  const hello = `hello as ops lead (${tag})`
+  type(hello)
+  const typed = await see((f) => middleLines(f, 209).includes(hello), 4000)
+  keys("Enter")
   const named = await until(() => s.reader.getRoster().find((p) => p.card.name === "Ops Lead" && p.status !== "offline"), (p) => p !== undefined)
+  const landed = await until(() => s.reader.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === hello))
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, `renamed-${tag}.txt`), capture())
   writeFileSync(join(dir, `renamed-${tag}.ansi`), tmux("capture-pane", "-p", "-e", "-t", "t"))
-  check(`${at}: Change your name saves the name preference, and the next session appears under it on the roster`, line.includes("you appear as Ops Lead") && named?.card.meta?.sessionKind === "chat", line)
-  await esc()
+  check(`${at}: Change your name shows the new name at the bottom of the tree, and the box still takes text once the dialog closes`, nameAtBottom(209).name === "Ops Lead" && middleLines(typed, 209).includes(hello), renamed)
+  check(`${at}: the next session appears under the new name on the roster and posts from it`, named?.card.meta?.sessionKind === "chat" && landed.some((m) => textOf(m) === hello && m.from.id === named.card.id), JSON.stringify(named?.card))
   await dialog()
   keys("Enter")
-  await see((f) => !f.includes("You appear as"), 4000)
-  keys("q")
+  await see((f) => !f.includes("Your name is"), 4000)
+  keys("C-c")
   await see(has("EXIT=0"), 15000)
 }
 
