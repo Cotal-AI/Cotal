@@ -112,10 +112,25 @@ if (process.argv[2] === "--restore") {
           existsSync(join(prefix, "node_modules", "cotal-ext-bin-first")) && existsSync(join(prefix, "node_modules", "cotal-ext-bin-second")));
       check("shared bin: the bin link still reaches the shared package", symlinked() && existsSync(link));
     }
+    // Add uses one candidate metadata snapshot too, even when the entry changes its own file.
+    for (const damage of [false, true]) {
+      const dir = join(root, damage ? "metadata-changed" : "metadata-control");
+      const { prefix, cli } = sandbox(dir);
+      const name = damage ? "cotal-ext-metadata-changed" : "cotal-ext-metadata-control";
+      const source = join(dir, name);
+      mkdirSync(source);
+      writeFileSync(join(source, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=99.0.0" } }));
+      writeFileSync(join(source, "index.js"), `import { writeFileSync } from "node:fs";\nimport { registry } from "@cotal-ai/core";\nvoid registry;\n${damage ? 'writeFileSync(new URL("./package.json", import.meta.url), "{corrupt");' : ''}\nawait import("./missing-export.mjs");\n`);
+      writeFileSync(join(source, "missing-export.mjs"), 'import { notAnExportOfCore } from "@cotal-ai/core";\nvoid notAnExportOfCore;\n');
+      const added = cli(["ext", "add", source]);
+      check(`${name}: missing-export add refuses`, added.status === 1 && added.stderr.includes("notAnExportOfCore"));
+      check(`${name}: diagnosis keeps the validated peer floor`, added.stderr.includes("The installed @cotal-ai/core is BEHIND") && added.stderr.includes(">=99.0.0") && !added.stderr.includes("is corrupt or unreadable"));
+      check(`${name}: failed add leaves no installed candidate`, !existsSync(join(prefix, "node_modules", name)));
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, 23, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, 29, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
