@@ -66,12 +66,15 @@ console.log("3. a reply addresses the sender's principal");
 
 console.log("4. parseRecipient: a typed recipient");
 {
-  const typed = (text: string) => { const parsed = parseRecipient(text); return parsed.ok ? undefined : parsed.error; };
+  const typed = (text: string) => { const parsed = parseRecipient(text, "pick a number"); return parsed.ok ? undefined : parsed.error; };
   check("a typed channel holding * or > gets the sentence cotal send -c gives",
     ["#gen*", "#team.*", "#team.>"].every((text) => typed(text) === "name one concrete channel, without wildcards"));
   check("a typed channel outside the grammar gets the rule it breaks, naming the segment",
     typed("#gen eral")?.startsWith('invalid channel "gen eral": segment "gen eral" must be a NATS-safe token') === true, typed("#gen eral"));
-  const general = parseRecipient("#general");
+  const bare = parseRecipient("alice", "press Tab");
+  check("a bare word is not guessed, and the refusal ends with the front end's own way to choose",
+    !bare.ok && bare.error === "type #channel, @name or role:<role>, or press Tab", bare);
+  const general = parseRecipient("#general", "pick a number");
   check("a typed concrete channel is chosen", general.ok && general.recipient.kind === "channel" && general.recipient.channel === "general", general);
 }
 

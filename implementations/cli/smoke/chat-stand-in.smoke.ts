@@ -200,7 +200,7 @@ if (mode === "plain" || mode === "stdio") {
       unicastAttributed: async (to: string) => { sent.push(to); return { msg: { id: `d${sent.length}` }, ack: { seq: sent.length, duplicate: false } }; },
     } as unknown as CotalEndpoint;
     const session = new NativeChatSession({ endpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }), words: cliWords({ raw: [], positionalIndices: [] }) });
-    const typed = parseRecipient("@u_z.alice");
+    const typed = parseRecipient("@u_z.alice", "pick a number");
     const viaView = typed.ok ? await publish(session, typed.recipient, "for alice") : undefined;
     check("an @ target that parses as a principal is sent to that principal, absent and unheard",
       viaView?.outcome === "stored" && viaView.recipient?.id === "u_z.alice" && sent.join() === "u_z.alice", { typed, viaView, sent });

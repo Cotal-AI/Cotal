@@ -29,9 +29,10 @@ export interface Answerable {
 
 /**
  * Parse an explicitly typed recipient: `#channel`, `@name-or-id`, `role:<role>`. A bare word is not
- * guessed. Returns the refusal text instead of throwing.
+ * guessed. Returns the refusal text instead of throwing; `pick` names the front end's other way to
+ * choose one.
  */
-export function parseRecipient(text: string): { ok: true; recipient: Recipient } | { ok: false; error: string } {
+export function parseRecipient(text: string, pick: string): { ok: true; recipient: Recipient } | { ok: false; error: string } {
   const t = text.trim();
   if (t.startsWith("#")) {
     const ch = t.slice(1);
@@ -53,7 +54,7 @@ export function parseRecipient(text: string): { ok: true; recipient: Recipient }
     }
     return { ok: true, recipient: { kind: "role", role } };
   }
-  return { ok: false, error: "type #channel, @name or role:<role>, or pick a number" };
+  return { ok: false, error: `type #channel, @name or role:<role>, or ${pick}` };
 }
 
 /** How a recipient reads. `choose` names how a front end picks one, for when there is none. */
