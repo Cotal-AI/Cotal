@@ -47,7 +47,10 @@ const run = (label, args, cwd = root, timeout = 120_000) => {
   writeFileSync(prefix + ".stdout", result.stdout ?? "");
   writeFileSync(prefix + ".stderr", result.stderr ?? "");
   writeFileSync(prefix + ".json", JSON.stringify({ status: result.status, signal: result.signal, error: result.error?.message }) + "\n");
-  assert(!result.error && !result.signal && result.status === 0, `${label} failed; see retained command logs`);
+  const failed = result.error || result.signal || result.status !== 0;
+  // CI keeps only the receipt, so a failed command's own output is the one place its cause shows.
+  if (failed) console.error(`${label}: status ${result.status} signal ${result.signal} error ${result.error?.message}\n--- stdout (tail)\n${(result.stdout ?? "").slice(-4000)}\n--- stderr (tail)\n${(result.stderr ?? "").slice(-4000)}`);
+  assert(!failed, `${label} failed; see retained command logs`);
   return result.stdout;
 };
 const port = await new Promise((done, reject) => {
