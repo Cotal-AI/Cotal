@@ -156,9 +156,6 @@
 /* ---------- right pane ---------- */
 .ui-pane { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg); }
 .ui-tabs { height: 52px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
-.ui-tab { padding: 6px 10px; border-radius: 7px; color: var(--dim); font-weight: 500; font-size: 13px; }
-.ui-tab:hover { background: var(--hover); }
-.ui-tab[aria-selected="true"] { background: var(--soft); color: var(--ink); }
 .ui-pane-body { overflow-y: auto; flex: 1; padding: 18px 18px 24px; min-height: 0; }
 .ui-big { width: 72px; height: 72px; margin-bottom: 8px; }
 .ui-big svg { width: 100%; height: 100%; overflow: visible; display: block; }
@@ -353,9 +350,6 @@
 /* The Activity header's copy of the stale marker sits in the bar, not under the space name. */
 .ui-bar .ui-stale { margin: 0; padding: 5px 8px; }
 /* ---------- right panel ---------- */
-/* A tab with nothing to show (Members off a channel, Agent before a pick) does not answer a hover. */
-.ui-tab:disabled { opacity: .45; cursor: default; }
-.ui-tab:disabled:hover { background: none; }
 /* The attach and stop rows lead with their icon, dimmed as the mock draws it. */
 .ui-cmd > .ui-ic { color: var(--dim); flex: none; }
 /* A message's avatar and name open the sender's Agent tab. */
