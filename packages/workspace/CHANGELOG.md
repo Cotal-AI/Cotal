@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.141.9
+
+### Patch Changes
+
+- f6ec096: A missing-export import failure no longer drops an extension's declared `@cotal-ai/*` peer range when its `package.json` is corrupt or unreadable at diagnosis time. Before, the unreadable file was read as declaring no range, so `cotal ext add` or a later load ranked the pair without the floor (for a third-party package, "neither side can be named as behind ... is not a @cotal-ai/* package") and never mentioned the damaged file. The error now names that `package.json` by path, keeps the original import error, claims no ranking, and ends with the reinstall remedy.
+- Updated dependencies [8d5f0d5]
+  - @cotal-ai/core@0.141.9
+
 ## 0.141.8
 
 ### Patch Changes
