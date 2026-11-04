@@ -35,6 +35,7 @@ export function TabBar({ route, places, waiting, working }: { route: Route; plac
             type={to ? undefined : "button"}
             aria-disabled={to ? undefined : true}
             aria-current={here ? "page" : undefined}
+            aria-label={why ? label : undefined}
             aria-describedby={why ? `tab-why-${view}` : undefined}
           >
             <RailIcon name={icon} size={22} />
