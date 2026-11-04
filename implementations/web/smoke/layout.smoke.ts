@@ -42,7 +42,8 @@ Object.defineProperty(window, "innerWidth", { configurable: true, get: () => (ph
   asked.push(q);
   return { get matches() { return phoneNow; }, media: q, addEventListener: (_t: string, l: () => void) => watchers.add(l), removeEventListener: (_t: string, l: () => void) => watchers.delete(l) };
 };
-/** Let the timers Radix sets as a layer opens run, so it hears a press outside. */
+/** Let the timers Radix sets run: as a layer opens, so it hears a press outside, and as it closes,
+ *  since it gives focus back from a timeout. */
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 /** The text of the Tooltip open on the page, if any. */
 const tooltip = () => textOf(document.querySelector('[role="tooltip"]'));
@@ -131,6 +132,7 @@ const openWithKeys = (el: HTMLElement) => {
   same("1.7 a new load reads the saved choice: Dark is the checked item",
     Array.from(document.querySelectorAll("[role=menuitemradio][aria-checked=true]")).map(textOf), ["Dark"]);
   await again.run(() => key(document.activeElement!, "Escape"));
+  await again.run(tick);
   ok("1.8 Escape closes the menu and puts focus back on Settings",
     document.querySelector("[role=menu]") === null && document.activeElement === settingsIn(again.container));
   await again.run(() => openWithKeys(settingsIn(again.container)));
@@ -200,6 +202,7 @@ const press = (el: HTMLElement | null) => {
     pane() !== undefined && textOf(pane()?.querySelector("[role=tab][aria-selected=true]")) === "Members", pane()?.outerHTML.slice(0, 200));
   ok("3.3 focus moves into it", pane()?.contains(document.activeElement) === true, textOf(document.activeElement));
   await m.run(() => key(document.activeElement!, "Escape"));
+  await m.run(tick);
   ok("3.4 Escape closes it, and the wide layout's saved choice is untouched", pane() === undefined && localStorage.getItem(PANEL_KEY) === "1");
   ok("3.5 and focus goes back to the member stack that opened it", stack() !== null && document.activeElement === stack(), textOf(document.activeElement));
   const panelButton = () => m.container.querySelector('main header button[aria-label="Open agent panel"]') as HTMLElement | null;
@@ -234,6 +237,7 @@ const press = (el: HTMLElement | null) => {
   await m.run(() => key(document.activeElement!, "Tab", true));
   ok("4.5 and Shift Tab from the first wraps to the last", document.activeElement === focusables().at(-1), textOf(document.activeElement));
   await m.run(() => key(document.activeElement!, "Escape"));
+  await m.run(tick);
   ok("4.6 Escape closes the sheet and puts focus back on the sidebar button", sheet() === null && document.activeElement === menuButton());
   await m.run(() => press(menuButton()));
   await m.run(tick);
