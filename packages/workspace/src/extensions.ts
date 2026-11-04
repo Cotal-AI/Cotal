@@ -284,25 +284,30 @@ export function hostPackageDir(name: string): string {
 /** Bind installed extensions' shared peers to the current host. Callers must hold the extension lock.
  *  `onAbsent` receives another owner whose package directory does not exist, which has no links to
  *  keep, instead of the bind failing on it. Without it, or for `operationPkg` itself, an absent
- *  package throws like any other unreadable one. */
+ *  package throws like any other unreadable one. `operationMetadata` reuses the operation's already
+ *  validated package read; other owners are read through {@link installedExtensionPackage}. */
 export function bindExtensionPeers(
   owners: readonly string[],
   operationPkg: string,
-  opts: { force?: boolean; onAbsent?: (owner: string) => void } = {},
+  opts: { force?: boolean; onAbsent?: (owner: string) => void; operationMetadata?: InstalledExtensionPackage } = {},
 ): readonly BoundExtensionPeer[] {
   const planned: BoundExtensionPeer[] = [];
   for (const owner of owners) {
-    let meta: { peerDependencies?: Record<string, string> };
-    try {
-      meta = JSON.parse(readFileSync(join(extensionPackageDir(owner), "package.json"), "utf8"));
-    } catch (e) {
+    const meta = owner === operationPkg && opts.operationMetadata !== undefined
+      ? opts.operationMetadata
+      : installedExtensionPackage(owner);
+    if (!meta) {
       // Only a directory that does not exist is absent. A dangling link, or a directory left without
       // its package.json, is a damaged install and still fails.
-      if (opts.onAbsent && owner !== operationPkg && (e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(extensionPackageDir(owner), { throwIfNoEntry: false })) {
-        opts.onAbsent(owner);
-        continue;
+      const dir = extensionPackageDir(owner);
+      if (!lstatSync(dir, { throwIfNoEntry: false })) {
+        if (opts.onAbsent && owner !== operationPkg) {
+          opts.onAbsent(owner);
+          continue;
+        }
+        throw new Error(`extension ${owner} is not installed at ${dir} - re-add it with \`cotal ext add\``);
       }
-      throw new Error(`${operationPkg} cannot preserve installed extension ${owner}'s shared peers: ${(e as Error).message}`);
+      throw new CorruptExtensionPackageError(owner, join(dir, "package.json"), "file is missing from the installed package");
     }
     for (const peer of Object.keys(meta.peerDependencies ?? {}).filter((name) => name.startsWith("@cotal-ai/"))) {
       let source: string;
@@ -350,11 +355,20 @@ export class CorruptExtensionPackageError extends Error {
   }
 }
 
-/** The installed package's CURRENT version and declared `main`, from one read of its package.json
- *  (undefined when not installed; `main` is undefined when the package declares none). Only a missing
- *  package.json means not installed; one that cannot be reached or read throws, and one that is not
- *  JSON or has no version throws {@link CorruptExtensionPackageError}. */
-export function installedExtensionPackage(pkg: string): { version: string; main: string | undefined } | undefined {
+/** One installed package metadata read, shared by version checks, peer binding and entry loading. */
+export interface InstalledExtensionPackage {
+  version: string;
+  main: string | undefined;
+  exports?: unknown;
+  dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+}
+
+/** The installed package's CURRENT metadata from one read of its package.json (undefined when not
+ *  installed; `main` is undefined when the package declares none). Only a missing package.json means
+ *  not installed; one that cannot be reached or read throws, and one that is not JSON or has no version
+ *  throws {@link CorruptExtensionPackageError}. Pass this snapshot through one load or add. */
+export function installedExtensionPackage(pkg: string): InstalledExtensionPackage | undefined {
   const path = join(extensionPackageDir(pkg), "package.json");
   let raw: string;
   try {
@@ -365,13 +379,21 @@ export function installedExtensionPackage(pkg: string): { version: string; main:
   }
   let version: unknown;
   let main: unknown;
+  let meta: Record<string, unknown>;
   try {
-    ({ version, main } = JSON.parse(raw) as { version?: unknown; main?: unknown });
+    meta = JSON.parse(raw) as Record<string, unknown>;
+    ({ version, main } = meta);
   } catch (e) {
     throw new CorruptExtensionPackageError(pkg, path, (e as Error).message);
   }
   if (typeof version !== "string" || !version) throw new CorruptExtensionPackageError(pkg, path, 'no "version" string');
-  return { version, main: typeof main === "string" && main ? main : undefined };
+  return {
+    version,
+    main: typeof main === "string" && main ? main : undefined,
+    ...(meta.exports === undefined ? {} : { exports: meta.exports }),
+    ...(meta.dependencies === undefined ? {} : { dependencies: meta.dependencies as Record<string, string> }),
+    ...(meta.peerDependencies === undefined ? {} : { peerDependencies: meta.peerDependencies as Record<string, string> }),
+  };
 }
 
 /** The installed package's CURRENT version, as {@link installedExtensionPackage} reads it. */
