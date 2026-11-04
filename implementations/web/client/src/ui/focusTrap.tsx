@@ -12,7 +12,7 @@ type Doc = {
 };
 
 /** The page's document. Called only from effects and handlers, which never run on the server. */
-export const pageDocument = (): Doc => (globalThis as unknown as { document: Doc }).document;
+const pageDocument = (): Doc => (globalThis as unknown as { document: Doc }).document;
 
 /** What can take focus by Tab inside a box. */
 const TABBABLE = "a[href], button, input, select, textarea, [tabindex]";

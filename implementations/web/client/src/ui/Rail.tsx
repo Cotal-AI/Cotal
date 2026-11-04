@@ -1,9 +1,7 @@
-import { Tick02Icon } from "@hugeicons/core-free-icons";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useId } from "react";
 import { mark } from "../art/index.ts";
-import { Icon } from "../icons/Icon.tsx";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "#client/ui/shadcn/dropdown-menu.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
-import { pageDocument } from "./focusTrap.tsx";
 import { RailIcon, type RailIconName } from "../icons/rail.js";
 import { formatRoute, type Route } from "../lib/route.js";
 import type { Theme } from "../lib/theme.js";
@@ -67,97 +65,47 @@ const CHOICES: { value: Theme; label: string }[] = [
   { value: "dark", label: "Dark" },
 ];
 
-/** The parts of an element the menu's keys and its outside click use. Spelled out rather than taken
- *  from the DOM lib, because the suites typecheck the components that render on the server with no
- *  DOM lib. */
-type Focusable = { focus(): void };
-type Box = { contains(other: unknown): boolean; querySelectorAll(selector: string): ArrayLike<Focusable> };
-
 /** The Settings item at the foot of the rail and the menu it opens: the theme, System, Light or Dark,
- *  as radio items with the chosen one checked by a tick as well as by state. Picking one applies it
- *  and closes the menu. Up and Down (wrapping), Home and End move between the items; Escape closes
- *  the menu and puts focus back on Settings; a click outside closes it. With no `onTheme` the item is
- *  disabled. */
+ *  as radio items with the chosen one checked. Picking one applies it and closes the menu. The menu
+ *  owns its keys, Escape and outside click, and gives focus back to Settings when it closes. With no
+ *  `onTheme` the item is disabled. */
 function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => void }) {
-  const [open, setOpen] = useState(false);
-  const button = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const items = () => Array.from((menu.current as unknown as Box | null)?.querySelectorAll("[role=menuitemradio]") ?? []);
-  // Focus moves once, when the menu opens, so the checked item is read at that moment only.
-  useEffect(() => {
-    if (!open) return;
-    const checked = CHOICES.findIndex((t) => t.value === theme);
-    items()[Math.max(checked, 0)]?.focus();
-    const doc = pageDocument();
-    const outside = (e: { target: unknown }) => {
-      const inside = [menu.current, button.current].some((el) => (el as unknown as Box | null)?.contains(e.target));
-      if (!inside) setOpen(false);
-    };
-    doc.addEventListener("pointerdown", outside);
-    return () => doc.removeEventListener("pointerdown", outside);
-  }, [open]);
-  const close = () => {
-    setOpen(false);
-    (button.current as unknown as Focusable | null)?.focus();
-  };
-  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape" || e.key === "Tab") {
-      if (e.key === "Escape") e.preventDefault();
-      close();
-      return;
-    }
-    const list = items();
-    const at = list.findIndex((el) => el === pageDocument().activeElement);
-    const step: Record<string, number> = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: list.length - 1 };
-    if (!Object.hasOwn(step, e.key) || list.length === 0) return;
-    e.preventDefault();
-    list[(step[e.key] + list.length) % list.length]?.focus();
-  };
+  const label = useId();
   return (
-    <div className="ui-rail-set">
+    <DropdownMenu>
       <Tooltip>
         {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it, which
             takes the focus while the button cannot. */}
         <TooltipTrigger asChild>
           <span className="inline-flex" tabIndex={onTheme ? undefined : 0}>
-            <button
-              ref={button}
-              type="button"
-              className="ui-rail-btn"
-              aria-label="Settings"
-              aria-haspopup="menu"
-              aria-expanded={open}
-              disabled={!onTheme}
-              onClick={() => setOpen((o) => !o)}
-            >
-              <RailIcon name="gear" size={22} />
-            </button>
+            <DropdownMenuTrigger asChild>
+              <button type="button" className="ui-rail-btn" aria-label="Settings" disabled={!onTheme}>
+                <RailIcon name="gear" size={22} />
+              </button>
+            </DropdownMenuTrigger>
           </span>
         </TooltipTrigger>
         <TooltipContent side="right">Settings</TooltipContent>
       </Tooltip>
-      {open && onTheme && (
-        <div ref={menu} className="ui-card ui-menu" role="menu" aria-label="Theme" onKeyDown={onKey}>
-          <div className="ui-menu-h" aria-hidden="true">Theme</div>
-          {CHOICES.map((t) => (
-            <button
-              key={t.value}
-              type="button"
-              role="menuitemradio"
-              aria-checked={theme === t.value}
-              tabIndex={-1}
-              onClick={() => {
-                onTheme(t.value);
-                close();
+      {onTheme && (
+        <DropdownMenuContent side="right" align="end">
+          <DropdownMenuGroup aria-labelledby={label}>
+            <DropdownMenuLabel id={label}>Theme</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={theme}
+              onValueChange={(next) => {
+                const picked = CHOICES.find((t) => t.value === next);
+                if (picked) onTheme(picked.value);
               }}
             >
-              {theme === t.value ? <Icon icon={Tick02Icon} size={16} className="ui-ic ui-ic16" /> : <span className="ui-menu-gap" />}
-              {t.label}
-            </button>
-          ))}
-        </div>
+              {CHOICES.map((t) => (
+                <DropdownMenuRadioItem key={t.value} value={t.value}>{t.label}</DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
       )}
-    </div>
+    </DropdownMenu>
   );
 }
 

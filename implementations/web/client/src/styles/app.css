@@ -364,16 +364,7 @@ input.ui-field:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-m
 .ui-bar .ui-stale span { display: none; }
 /* Focus rings: 2px in the accent, offset from the fill. A row clips what spills past its edge, so its
    ring sits just inside, as the mock's focused sidebar row does. */
-.ui-row:focus-visible, .v3-mrow:focus-visible, .ui-menu button:focus-visible { outline-offset: -2px; }
-
-/* ---------- Settings menu: the theme, from the rail ---------- */
-.ui-rail-set { position: relative; }
-.ui-menu { position: absolute; left: calc(100% + 10px); bottom: 0; z-index: 6; min-width: 168px; padding: 6px; display: grid; gap: 2px; color: var(--ink); }
-.ui-menu-h { padding: 4px 8px; font-size: 12px; font-weight: 500; color: var(--dim); }
-.ui-menu button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; font-size: 13px; text-align: left; }
-.ui-menu button:hover { background: var(--hover); }
-.ui-menu button[aria-checked="true"] { font-weight: 500; }
-.ui-menu-gap { width: 16px; flex: none; }
+.ui-row:focus-visible, .v3-mrow:focus-visible { outline-offset: -2px; }
 
 /* ---------- phone, below 768px (mock section F) ---------- */
 /* The centre over the bottom tab bar. The sizes are the mock's phone frame (.d-screen) rules. */
