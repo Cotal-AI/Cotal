@@ -1,5 +1,19 @@
 # @cotal-ai/runtime
 
+## 0.142.0
+
+### Patch Changes
+
+- 32f93ed: Make `EndpointReply` a union on `ok`. Failed replies require an error; successful replies cannot carry one. TypeScript callers must construct the matching reply arm and narrow `ok` before using a required error. Interfaces that extended `EndpointReply` must use a type intersection instead.
+  
+  Keep acceptance data on local failed goal-follow results. The wire parser still rejects failed replies carrying data or missing their error. Narrowed readers no longer need fallback text for missing errors.
+- Updated dependencies [3ad82f7]
+- Updated dependencies [e16b8d9]
+- Updated dependencies [32f93ed]
+  - @cotal-ai/workspace@0.142.0
+  - @cotal-ai/core@0.142.0
+  - @cotal-ai/lang@0.142.0
+
 ## 0.141.11
 
 ### Patch Changes
