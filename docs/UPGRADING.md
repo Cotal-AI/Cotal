@@ -7,6 +7,23 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Claude seats need the registered user-scope MCP entry
+
+Claude Code binds the wake channel of a session Cotal launches (`server:cotal`) only to a server
+its own configuration declares, the user config or the project's `.mcp.json`; the launch's
+`--mcp-config` entry alone does not count. A seat without it joins the mesh, reports idle and never
+answers a turn or a direct message. `cotal setup` and `cotal update` now register the plugin's
+server as the user-scope entry `cotal`, and a managed Claude launch without a declared `cotal`
+server is refused with a message naming `cotal setup`.
+
+### What changes for you
+
+- Run `cotal update` (or `cotal setup`) on every machine whose manager spawns Claude seats before
+  spawning one. Until then a spawn refuses rather than starting a seat that never wakes.
+- `cotal status` shows a `Claude wake channel` row with the entry's state.
+- A plain Claude Code session loads the entry and the installed plugin's server, which are the same
+  command and arguments, as one process.
+
 ## More streams take a history limit after 0.139.1
 
 `cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and

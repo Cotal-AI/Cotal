@@ -89,6 +89,60 @@ function desktopEntry(cotal: readonly string[]): DesktopEntry {
   };
 }
 
+/** The user-scope MCP entry `cotal` that Claude Code's own configuration must declare: Claude Code
+ *  binds the wake channel of a session Cotal launched (`server:cotal`) only to a server named in its
+ *  user config or the project's `.mcp.json`, never to the launch's `--mcp-config` entry alone. The
+ *  entry is the plugin's own server, command and arguments included, so a plain session runs one
+ *  process for both and a managed launch's same-named entry replaces it. */
+function userServerEntry(cotal: readonly string[]): McpServerSpec & { command: string; args: string[] } {
+  const node = cotal[0];
+  if (!node) throw new Error("the Cotal CLI record has no Node executable");
+  const mcp = JSON.parse(readFileSync(join(PACKAGE_ROOT, ".mcp.json"), "utf8")) as { mcpServers: { cotal: { args: string[] } } };
+  return { command: node, args: mcp.mcpServers.cotal.args.map((arg) => arg.replace("${CLAUDE_PLUGIN_ROOT}", join(marketplaceDir(), "cotal"))) };
+}
+
+/** What `claude mcp add` has to do for the user-scope entry, from what the user config declares now.
+ *  Exported so a suite grades the comparison the registration acts on. */
+export function userServerState(current: unknown, desired: McpServerSpec): "current" | "replace" | "add" {
+  if (current === undefined) return "add";
+  const entry = current as { command?: unknown; args?: unknown; type?: unknown };
+  const args = Array.isArray(entry.args) ? entry.args : [];
+  const same = entry.command === desired.command && (entry.type === undefined || entry.type === "stdio") &&
+    args.length === (desired.args ?? []).length && args.every((arg, i) => arg === desired.args![i]);
+  return same ? "current" : "replace";
+}
+
+/** Register the user-scope entry through `claude mcp add`, replacing one that names another server,
+ *  and read it back: a registration Claude did not keep is an error, not a seat that never wakes. */
+function registerUserServer(cotal: readonly string[]): string {
+  const desired = userServerEntry(cotal);
+  const state = userServerState(claudeUserMcpServers().cotal, desired);
+  if (state === "current") return "user MCP entry cotal current";
+  if (state === "replace") {
+    const removed = command("mcp", "remove", "--scope", "user", "cotal");
+    if (removed.status !== 0) throw new Error(`mcp remove failed (cotal):\n${removed.output}`);
+  }
+  const added = command("mcp", "add", "--scope", "user", "cotal", "--", desired.command, ...desired.args);
+  if (added.status !== 0) throw new Error(`mcp add failed (cotal):\n${added.output}`);
+  if (userServerState(claudeUserMcpServers().cotal, desired) !== "current")
+    throw new Error("the user-scope MCP entry cotal was not registered as requested");
+  return `user MCP entry cotal ${state === "replace" ? "replaced" : "registered"}`;
+}
+
+/** Whether Claude Code's user config declares the `cotal` server the wake channel of a launched
+ *  session binds to; a managed launch is refused without it. */
+function userServerRow(): ConnectorStatusRow {
+  let declared: boolean;
+  try {
+    declared = claudeUserMcpServers().cotal !== undefined;
+  } catch (e) {
+    return { label: "Claude wake channel", state: "error", text: (e as Error).message };
+  }
+  return declared
+    ? { label: "Claude wake channel", state: "ok", text: "user MCP entry cotal registered" }
+    : { label: "Claude wake channel", state: "off", text: "user MCP entry cotal not registered · run cotal setup" };
+}
+
 /** Desktop chat supplies no native session, so its local server cannot join a signed-in space. It
  *  joins one only through the hosted connector the space advertises. */
 function hostedConnector(s: SignedInSpace): string {
@@ -591,11 +645,12 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       return withPluginLock(() => {
         const version = materializeCotal(cotal);
         install("cotal", "user", version);
+        const entry = registerUserServer(cotal);
         // Desktop first: a per-project install that cannot be removed fails the step after it.
         const app = desktop(cotal, true, signedIn);
         const removed = retireProjectInstalls();
         const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
-        return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
+        return `cotal@${MARKETPLACE} (user scope${replaced}); ${entry}${app ? `; ${app}` : ""}`;
       });
     },
   },
@@ -624,6 +679,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
           if (promoted !== undefined)
             parts.push(`cotal@${MARKETPLACE} (user scope${promoted ? `, replacing ${promoted} project install${promoted === 1 ? "" : "s"}` : ""})`);
           parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`, ...warnings);
+          parts.push(registerUserServer(cotal));
         }
         if (skillInstalls.length) {
           const warnings = refreshInstalls("cotal-skills", skillInstalls, skills!.version);
@@ -681,7 +737,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   status(input) {
     const plugins = pluginList();
     const app = desktopRow(input.signedIn);
-    return [pluginRow(plugins, input), ...(app ? [app] : []), skillsRow(plugins, input)];
+    return [pluginRow(plugins, input), userServerRow(), ...(app ? [app] : []), skillsRow(plugins, input)];
   },
 };
 
