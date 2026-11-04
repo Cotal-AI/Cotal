@@ -1663,11 +1663,14 @@ export function permissionsFor(
     // NO write grant — only the `delivery` cred writes it.
     `$JS.API.STREAM.INFO.${DLVKV}`,
     `$JS.API.STREAM.MSG.GET.${DLVKV}`,
-    // Manager singleton lease (`cotal_manager_<space>`): NO grant at all — an agent must never read,
-    // write, or delete it. The manager (allow-all) is its only writer; an agent that could mutate the
-    // lease key could DoS the supervisor (evict it / pre-create the key to block a fresh one). Safety is
-    // by OMISSION (default-deny on the un-granted `KV_cotal_manager_*` stream + `$KV.cotal_manager_*.>`),
-    // so do NOT add a broad `KV_*` / `$KV.<space>.>` grant that would silently re-open it.
+    // Manager lease bucket (`cotal_manager_<space>`): NO grant at all. An agent must never read,
+    // write, or delete it. The bucket holds one `lease.<instanceId>` key per manager instance and
+    // the per-space `renewal` key. The `supervisor` credential writes `lease.*` and `renewal`; a
+    // `remote-manager` credential writes only its own `lease.<instanceId>`. An agent that could
+    // mutate a lease key could DoS that holder (evict it, or pre-create the key to block a fresh
+    // one). Safety is by OMISSION (default-deny on the un-granted `KV_cotal_manager_*` stream and
+    // `$KV.cotal_manager_*.>`), so do NOT add a broad `KV_*` or `$KV.<space>.>` grant that would
+    // silently re-open it.
   ];
   if (svcDs.length > 0) {
     // TASK consumer: BIND ONLY the pre-created durable (svc_<role>) of its own role and of each
