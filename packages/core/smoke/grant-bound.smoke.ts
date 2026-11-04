@@ -7,6 +7,7 @@ import type { IssuanceSeam } from "../src/issued-authority.js";
 import { importNativeSubjectPermissions, mintAcceptedToken, mintGeneration, type IssuedEvidence, type IssuedSubjectPermissions } from "../src/issued-authority.js";
 import { capabilityWithin, grantOverreach, grantParts, issuedSpawnerStanding, type DelegatedGrant, type GrantOverreach } from "../src/grant-bound.js";
 import type { IssuedCaller } from "../src/endpoint-subjects.js";
+import type { EpCapability } from "../src/endpoint-grants.js";
 import { spacePrefix } from "../src/subjects.js";
 
 let pass = 0;
@@ -160,6 +161,39 @@ console.log("issuer invariant");
   ok("a source-free agent reaches it too: it carries its own presence key", (await issueSourceFree("agent")) === STAGED);
   const mc = await issueSourceFree("manager-caller", { managerInstanceId: "inst0000000000000000000000a1" });
   ok("a source-free non-instrument with no presence key of its own is refused before staging", /must carry its own presence key/.test(mc), mc);
+}
+
+console.log("endpoints");
+{
+  const orders = (command: string, more: Partial<EpCapability> = {}): EpCapability => ({ endpoint: "com.example.orders", command, ...more });
+  const held = evidence({ endpointCapabilities: [orders("list"), orders("create")] });
+  ok("a command the spawner holds is within", over(held, { endpoints: [orders("list")] }).length === 0);
+  const o = names(over(held, { endpoints: [orders("list"), orders("refund")] }));
+  ok("a command the spawner does not hold is named, and only that one", same(o, ["endpoints:com.example.orders refund"]), o);
+  const other = names(over(held, { endpoints: [{ endpoint: "com.example.billing", command: "list" }] }));
+  ok("the same command on another endpoint is not held", same(other, ["endpoints:com.example.billing list"]), other);
+  const none = names(over(evidence({}), { endpoints: [orders("list")] }));
+  ok("a spawner with no endpoint rows holds none", same(none, ["endpoints:com.example.orders list"]), none);
+  ok("an endpoint-only grant from a spawner with no evidence names the command", same(names(grantParts({ endpoints: [orders("list")] })), ["endpoints:com.example.orders list"]));
+  // Class and instance rails are different subjects: a class grant never covers an instance pin, and
+  // one instance never covers another.
+  const pinA = orders("list", { instanceId: "ia000000000000000000000000a", instanceOnly: true });
+  const pinB = orders("list", { instanceId: "ib000000000000000000000000b", instanceOnly: true });
+  ok("a class grant does not cover an instance-pinned command", over(held, { endpoints: [pinA] }).length === 1);
+  const heldA = evidence({ endpointCapabilities: [pinA] });
+  ok("the same instance pin is within", over(heldA, { endpoints: [pinA] }).length === 0);
+  ok("instance A does not cover instance B", over(heldA, { endpoints: [pinB] }).length === 1);
+  ok("instance A does not cover the class rail", over(heldA, { endpoints: [orders("list")] }).length === 1);
+  // A third-party command named spawn adds the caller's own goal-progress read; it is measured too.
+  const spawnCmd = orders("spawn");
+  const progressRow = (perms: IssuedSubjectPermissions) => JSON.stringify(perms.subscribe).includes(".goal.");
+  ok("a third-party spawn command adds a goal-progress read to the mint", progressRow(evidence({ endpointCapabilities: [spawnCmd] })) && !progressRow(evidence({})));
+  ok("a spawner holding that spawn command hands it on", over(evidence({ endpointCapabilities: [spawnCmd] }), { endpoints: [spawnCmd] }).length === 0);
+  const spawnOver = names(over(held, { endpoints: [spawnCmd] }));
+  ok("a spawner without it is refused, progress read included", same(spawnOver, ["endpoints:com.example.orders spawn"]), spawnOver);
+  // A baseline command adds no row, so it cannot be shown to be held, and is refused.
+  const baseline = names(over(evidence({}), { endpoints: [{ endpoint: "delivery", command: "join" }] }));
+  ok("a command the baseline already grants adds no row and is refused", same(baseline, ["endpoints:delivery join"]), baseline);
 }
 
 console.log("token rule (ledger)");
