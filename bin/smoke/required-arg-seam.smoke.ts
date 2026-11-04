@@ -522,7 +522,11 @@ const SEAMS: Seam[] = [
   // reader and a run-admitter writing an admission as an earlier release wrote it; in
   // auth/smoke/managed-run-issuance an admission reader; in cli/smoke/foreground-issuance-live the
   // foreground seat; and in manager/smoke/spawn-grant-door the spawner, a rival and a definer.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 382, untypecheckedSites: 299 },
+  // 382/299 -> 386/303: auth/smoke/retire-member-rows, manager/smoke/supervise-crash-late-join
+  // and core/smoke/delete-space-auth each add one call. core/smoke/chat-history-limit also has
+  // a fifth call for its unstamped delivery-copy writer. All four dial their suite's plaintext
+  // loopback broker and state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 386, untypecheckedSites: 303 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
