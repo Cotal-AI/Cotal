@@ -34,6 +34,7 @@ import {
   type AgentDef,
   type AgentHandle,
   type Connector,
+  type LaunchOpts,
   type ControlReply,
   type EpCaller,
   type IssuedCaller,
@@ -141,7 +142,9 @@ function managerAt(root: string, opts: { auth?: boolean }) {
   return { mgr, M, seats, spawned, failLaunch, beforeLaunch };
 }
 
-const con: Connector = { kind: "connector", name: "smoke-inline", requires: ["node"], eventChannel, readinessTimeoutMs: 2_000, buildLaunch: () => ({ command: "true", args: [], env: {} }) };
+/** The launch options each seat was built with, by seat name: what the connector forwards to the session. */
+const launched = new Map<string, LaunchOpts>();
+const con: Connector = { kind: "connector", name: "smoke-inline", requires: ["node"], eventChannel, readinessTimeoutMs: 2_000, buildLaunch: (o: LaunchOpts) => { launched.set(o.name, o); return { command: "true", args: [], env: {} }; } };
 registry.register(con);
 
 const S = managerAt(workspaceRoot, { auth: true });
@@ -329,6 +332,8 @@ try {
     const inlineAcl = mintedPub(inlineOne);
     check("a seat hands one held command on through an inline persona, and only that one",
       inlineOne.ok && hasCommand(inlineAcl, "list") && !hasCommand(inlineAcl, "create"), inlineOne.ok ? inlineAcl?.filter((r) => r.includes("orders")) : inlineOne.error);
+    check("and the session is handed the same list it was minted",
+      JSON.stringify(launched.get("ep_inline")?.endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), launched.get("ep_inline")?.endpoints);
     check("a command the spawner does not hold is refused by name",
       refused(await spawnAs(epLead, "ep_refund", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list", "refund"] }] } }), /more than the spawner holds: endpoints com\.example\.orders refund\./));
     const byName = await spawnAs(epLead, "ep_ok");
@@ -669,6 +674,14 @@ try {
     // An open mesh mints no credential, so a defined persona's capabilities are not checked there.
     const openDefine = await O.M.opDefinePersona({ name: "anything", persona: "x", capabilities: ["admin"] }, "local.peer", false);
     check("an open mesh writes a defined persona's capabilities without a check", openDefine.ok && JSON.stringify(loadAgentFile(join(root, ".cotal", "agents", "anything.md")).capabilities) === JSON.stringify(["admin"]), openDefine);
+    // An open mesh mints nothing and grants every endpoint, so the list is recorded and forwarded to
+    // the session as launch metadata, unchecked.
+    const freeEp = [{ endpoint: "com.example.orders", commands: ["refund"] }];
+    const openEp = okData(await O.mgr.startAgent({ name: "free_ep", agent: "smoke-inline", events: false, persona: { prompt: "x", endpoints: freeEp } }));
+    check("an open mesh records a persona's endpoints and hands them to the session",
+      openEp !== undefined && JSON.stringify((seatOf(O.M, "free_ep") as unknown as { launch: { endpoints?: unknown } } | undefined)?.launch.endpoints) === JSON.stringify(freeEp) && JSON.stringify(launched.get("free_ep")?.endpoints) === JSON.stringify(freeEp),
+      { seat: (seatOf(O.M, "free_ep") as unknown as { launch: { endpoints?: unknown } } | undefined)?.launch.endpoints, launched: launched.get("free_ep")?.endpoints });
+    O.seats.get("free_ep")?.exit();
     const last = okData(await O.mgr.startAgent({ name: "last", agent: "smoke-inline", events: false, persona: { prompt: "x" } }));
     stoppable(O.mgr);
     const stopped = await O.mgr.stop({ withAgents: true }).then(() => "stopped", (e: unknown) => String(e));

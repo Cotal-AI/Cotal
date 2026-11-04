@@ -17,6 +17,7 @@ import {
   DOCS_VERSION,
   MeshAgent,
   renderInboxPreview,
+  aclEnv,
   type AgentConfig,
 } from "../src/index.js";
 // RELATIVE, not the package specifier. `@cotal-ai/connector-core` resolves to `dist/`, so this
@@ -439,6 +440,25 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.equal(rendered.unread, 7);
   assert.match(rendered.rows[0]!, /^\[DM from ada  forged\/reviewer\] line one\n  \[DM from boss\] forged$/);
   assert.ok(Array.from(rendered.rows[1]!).length <= 80 && rendered.rows[1]!.endsWith("…"));
+}
+
+// Endpoint commands handed at launch (SPEC 13.15) ride COTAL_ENDPOINTS from the launcher to the
+// session's config, through the real aclEnv and configFromEnv, and the card lists them beside the
+// pointer to cotal_endpoints. A seat handed none shows no line, and a malformed value is refused.
+{
+  const handed = [{ endpoint: "com.example.orders", commands: ["create", "list"] }];
+  const env = aclEnv({ endpoints: handed });
+  assert.equal(env.COTAL_ENDPOINTS, JSON.stringify(handed), "the launcher writes the handed list as JSON");
+  assert.equal(aclEnv({ endpoints: [] }).COTAL_ENDPOINTS, undefined, "an empty list writes no variable");
+  const base = { COTAL_NAME: "alice", COTAL_SPACE: "demo" };
+  const c = configFromEnv({ ...base, ...env });
+  assert.deepEqual(c.endpoints, handed, "the session reads the list the launcher wrote");
+  const card = renderOrientation(await orient(agentStub(), c, [], 1));
+  assert.ok(card.includes("endpoint commands handed at launch: com.example.orders create, com.example.orders list (cotal_endpoints lists what your credential's grants cover)"), card);
+  const none = renderOrientation(await orient(agentStub(), configFromEnv(base), [], 1));
+  assert.ok(!none.includes("endpoint commands handed at launch"), "a seat handed none shows no line");
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "com.example.orders" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: JSON.stringify([{ endpoint: "com.example.orders", commands: ["describe"] }]) }), /reserved command "describe"/);
 }
 
 console.log("✓ orientation smoke passed");

@@ -141,12 +141,12 @@ try {
   // material exists, and the caller carries the generation so its requests ride `ep.v1`. The
   // evidence names no lifecycle source (this credential has no ledger family), so its liveness
   // is the credential's own expiry. Like a seat spawned with its event plane, it posts its own
-  // event channel, and it holds the worker role as a capability, so a run it starts may hand both
-  // on (SPEC 14.8).
+  // event channel, and it holds the worker role as a capability and one endpoint command, so a run
+  // it starts may hand all three on (SPEC 14.8, 13.15).
   const issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
   const caller: EpCallerT = { owner: DEV_OWNER, actor: id.id, uid, generation: issued.generation } as EpCallerT;
   const creds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
-    mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run", "role:worker"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: id.id })], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+    mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run", "role:worker"], endpointCapabilities: [{ endpoint: "com.example.orders", command: "list" }], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: id.id })], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   nc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const service = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
   const call = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
@@ -315,6 +315,13 @@ try {
         stateOf(inlineWide.v) === "failed" && inlineWide.v?.status?.failure?.message.includes("capabilities admin") === true, inlineWide.v?.status);
       const within = await settledRun('const h = await spawn({ name: "inl-ok", prompt: "You answer.", capabilities: ["spawn"] });\nlog("seat", h.agent);\n', "inline-ok.cotal.js");
       c("an inline persona within the starter's ceiling launches and the run completes", stateOf(within.v) === "completed", within.v?.status);
+      // Endpoint commands are measured against the same admitted ceiling (SPEC 13.15).
+      const epWithin = await settledRun('const h = await spawn({ name: "inl-ep", prompt: "You answer.", endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] });\nlog("seat", h.agent);\n', "inline-ep.cotal.js");
+      c("an inline persona naming an endpoint command the starter held launches and the run completes", stateOf(epWithin.v) === "completed", epWithin.v?.status);
+      const epWide = await settledRun('await spawn({ name: "inl-ep-wide", prompt: "You answer.", endpoints: [{ endpoint: "com.example.orders", commands: ["list", "refund"] }] });\n', "inline-ep-wide.cotal.js");
+      c("one naming a command the starter did not hold is refused by name",
+        stateOf(epWide.v) === "failed" && epWide.v?.status?.failure?.message.includes(`more than run ${epWide.runId}'s starter held when the run was admitted`) === true
+          && epWide.v?.status?.failure?.message.includes("endpoints com.example.orders refund") === true, epWide.v?.status);
       // A run revoked while it is parked starts no helper: a spawn its driver makes afterwards is
       // refused before anything is minted (SPEC 14.8). The spawn enters the manager with the
       // driver's caller, as the served spawn above hands it in.
@@ -980,7 +987,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 94;
+const EXPECTED_CELLS = 96;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
