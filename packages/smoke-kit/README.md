@@ -49,7 +49,9 @@ interpreter, so it throws too. Off Linux there is no `/proc/<pid>/exe`, and each
 under a `nats-server` name prints
 `smoke broker: nats-server binary not recorded: <platform> has no /proc/<pid>/exe` instead.
 
-`recordSmokeSandbox` also owns every process that works inside the recorded root. The first
+`recordSmokeSandbox` creates the root's `.cotal`, Cotal home and XDG config folders with mode 0700,
+including under umask 002. Existing folders keep their permissions; suites that create them first
+must make them private themselves. The helper also owns every process that works inside the recorded root. The first
 record starts a small `sh` watchdog that outlives the suite. When the suite's process ends, however
 it ends, SIGKILL included, the watchdog kills whatever still works in a recorded root, including the
 broker, manager and delivery daemon that `cotal up --detach` starts detached. A stack the suite
