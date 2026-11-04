@@ -2,14 +2,15 @@
   "suite": [
     "bin/smoke/lang-supervise-live.smoke.ts"
   ],
-  "guard": "A cotal-lang program that spawn()s with supervise restarts the REAL seat in place after SIGKILL: the replacement pulls and yields the same turn goal, then a second kill spends the budget and the next turn fails L4002.",
+  "guard": "A cotal-lang program that spawn()s with supervise restarts the REAL seat in place after SIGKILL: the replacement pulls and yields the same turn goal, then a second kill spends the budget and the next turn fails L4002. On an open mesh the manager does not read the run id a run's spawn names, so the program's spawn reaches the real seat (SPEC 14.8).",
   "command": "pnpm smoke:lang-supervise-live",
   "completionMarker": "lang-supervise-live.smoke:",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/lang-supervise-live.json",
   "why": [
     "SPEC 14 supervise on spawn is the manager's restart-armed branch. The suite runs the manager",
     "from its built package, so a mutation on manager src is seen through that build and afterRestore",
-    "rebuilds so the restored source is the artifact again. One mutant, aimed at the restart-armed branch."
+    "rebuilds so the restored source is the artifact again. One mutant aims at the restart-armed branch.",
+    "The other makes an open mesh read a run's `runId`, which refuses the run's spawn before any seat starts."
   ],
   "mutations": [
     {
@@ -20,6 +21,15 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a supervised crash keeps the same managed row",
       "cell": "a supervised crash keeps the same managed row"
+    },
+    {
+      "name": "a manager on an open mesh reads a run's id",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (runId === undefined || this.meshMode !== \"static\") return undefined;\n    let driver: EpCaller | undefined;\n",
+      "replace": "    if (runId === undefined) return undefined;\n    let driver: EpCaller | undefined;\n",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the run parks on the first turn through the real manager",
+      "cell": "the run parks on the first turn through the real manager"
     }
   ]
 }

@@ -63,7 +63,7 @@ import {
 } from "../src/host-starvation.js";
 import * as starvation from "../src/host-starvation.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 /**
  * `POLL_ATTEMPTS` READ OFF THE NAMESPACE, NOT IMPORTED BY NAME, and this is the difference between
@@ -95,19 +95,6 @@ const CALLER = { owner: "local", actor: "wf_meshsuite", uid: "b".repeat(26) };
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops. */
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 /** Block the event loop for real: a synchronous spin, which is what a host under load does to this
  *  process from the outside. Nothing here is simulated: the timers genuinely cannot run. */

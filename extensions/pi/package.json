@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/pi",
-  "version": "0.140.0",
+  "version": "0.141.1",
   "license": "Apache-2.0",
   "keywords": [
     "cotal",
@@ -53,6 +53,8 @@
     "@earendil-works/pi-ai": "0.79.10",
     "@earendil-works/pi-coding-agent": "0.79.10",
     "@earendil-works/pi-tui": "0.79.10",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0",
     "esbuild": "^0.28.0",
     "typebox": "^1.1.0",
     "zod": "^4.4.3"

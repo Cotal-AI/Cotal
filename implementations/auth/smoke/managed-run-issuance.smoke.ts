@@ -27,17 +27,18 @@ import {
   resolveService, invokeCommand, readRunAdmission, withIssuerSession, actorLedgerSource, importNativeSubjectPermissions,
   permissionsFor, connectionAcceptedToken, mintGeneration, writeAcceptedRow, EP_UNBOUND_CALLER_AUTHORITY,
   type EpCaller, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
-  type RunStatusView, type EndpointReply,
+  type RunStatusView, type EndpointReply, type RemoteManagedAgentEnrollmentRequest,
   registry, RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost,
   identityFromCreds, credsFromJwt,
   CotalEndpoint, type Connector, type LaunchOpts, type RuntimeProvider, type AgentHandle,
-  runDriverCaller,
+  runDriverCaller, epRequestSubject,
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
   cotalAuthProvider, deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
   findManagedActor, grantManagedActor, newActorToken, revokeManagedActor, ledgerActorSourceIsLive,
   loadCalloutAuth,
+  VERIFY_ENROLLMENT_PATH,
   type AuthServiceHandle,
 } from "../src/index.js";
 import { remoteManagerRegistrationProof } from "../src/authority-client.js";
@@ -63,7 +64,22 @@ const names = [
   "U1 direct parent grant is read afresh at callout mint",
   "U1 absent malformed foreign and self parent cannot issue",
   "U1 seat-started run spawns only its owner and cross-owner launch is broker refused",
+  "U1 a served spawn's helper is parented to the caller the host saw ask for it",
+  "U1 a served spawn wider than its caller is refused by the host",
+  "U1 an enrollment naming a spawn the host did not observe is refused",
+  "U1 a run's helper is parented to the run's starter",
+  "U1 a run's admission freezes its starter's grant and a later widening reaches no helper",
+  "U1 the verify door answers the caller it observed as the parent, again for a retry, and refuses another enrollment of that spawn",
+  "U1 the verify door refuses a served spawn wider than its caller",
+  "U1 the verify door refuses a run's helper wider than the grant its admission froze",
+  "U1 the verify door refuses an observed spawn's token digest under another actor",
+  "U1 an observed spawn enrolls one helper: its token digest under another actor is refused",
+  "U1 a run's saved persona is owned by the run's starter, and the run and the starter spawn it by name",
   "U1 same nonce renews a generation issued before the listing row existed",
+  "U1 a served spawn whose subscribe set reads past its caller is refused by the host",
+  "U1 the verify door refuses a served spawn whose subscribe set reads past its caller",
+  "U1 a retried enrollment whose grant records no read set is refused before its subscribe set becomes the read",
+  "U1 a no-read enrollment retried with a subscribe set is refused before that set becomes the read",
 ];
 let pass = 0, fail = 0;
 async function cell(index: number, fn: () => Promise<void>) {
@@ -199,8 +215,8 @@ try {
       return remote.remoteManagerAdminAuthorized(await post("/manager-service-authority", { idpToken, request }), request, owner);
     },
     agentBearerExchangeUrl: service.publicUrl!,
-    enrollManagedAgent: async ({ target }) => {
-      const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
+    enrollManagedAgent: async ({ target, spawn }) => {
+      const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target, spawn);
       return remote.remoteManagedAgentEnrollmentMaterial(await post("/manager-service-authority", { idpToken, request }), request);
     },
     runHosting: remote.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: a.accountPublicKey, processEpoch: registered.processEpoch,
@@ -219,7 +235,7 @@ try {
       assert.ok(reply.ok, reply.error?.message);
       const view = reply.data as RunStatusView;
       if ((stepKey === undefined && view.status?.state === wanted) || view.journal.some((r) => r.kind === "step" && r.state === wanted && (stepKey === undefined || r.step === stepKey))) return view;
-      if (view.status?.state === "failed") throw new Error("the real run failed before reaching its requested step");
+      if (view.status?.state === "failed") throw new Error(`the real run failed before reaching its requested step: ${view.status.failure?.message ?? "no recorded cause"}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     throw new Error(`run never reached ${wanted}`);
@@ -342,6 +358,200 @@ try {
     drives.get(runId)!.release("owned spawn boundary fixture complete");
     assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:owned#0", value: true })).ok);
   });
+  await cell(15, async () => {
+    // The run's driver sent the spawn, and the host records the run's starter as the parent.
+    assert.equal(findManagedActor(a.stateDir, owner, "owned")?.parent, `${owner}.runner`);
+  });
+  await cell(12, async () => {
+    assert.ok(d && caller);
+    const reply = await call(d, caller, "spawn", { name: "asked", agent: "u1-fixture", persona: { prompt: "A helper the runner asked for." }, events: false });
+    assert.ok(reply.ok, reply.error?.message);
+    assert.equal(findManagedActor(a.stateDir, owner, "asked")?.parent, `${owner}.runner`);
+  });
+  await cell(13, async () => {
+    assert.ok(d && caller);
+    const reply = await call(d, caller, "spawn", { name: "toowide", agent: "u1-fixture", persona: { prompt: "A helper wider than the runner.", allowPublish: ["secret"] }, events: false });
+    assert.equal(reply.ok, false);
+    assert.match(reply.error?.message ?? "", /would exceed its spawner's grant/);
+    assert.match(reply.error?.message ?? "", /post \[secret\]/);
+    assert.equal(findManagedActor(a.stateDir, owner, "toowide"), undefined);
+  });
+  await cell(14, async () => {
+    assert.ok(caller);
+    const served = epRequestSubject(a.space, { route: { mode: "inst", instanceId: state.instanceId }, endpoint: "manager", command: "spawn", caller, nonce: `forged${mintLifecycleUid()}` });
+    const secret = newActorToken();
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "forged", tokenHash: secret.tokenHash, label: "forged", allowSubscribe: [] }, { served });
+    await assert.rejects(post("/manager-service-authority", { idpToken, request }), /did not observe this spawn request/);
+    assert.equal(findManagedActor(a.stateDir, owner, "forged"), undefined);
+  });
+  await cell(16, async () => {
+    assert.ok(d && caller);
+    writeFileSync(join(managerRoot, ".cotal", "agents", "late.md"), "---\nname: late\nagent: u1-fixture\ncapabilities: []\nallowPublish: [secret]\n---\n");
+    const started = await call(d, caller, "run-start", { source: 'await checkpoint("widen", "Widen the starter?"); await spawn("late", { events: false });' });
+    assert.ok(started.ok, started.error?.message);
+    const runId = (started.data as { runId: string }).runId;
+    await readyStatus(d, caller, runId, "pending", "/checkpoint:widen#0");
+    const row = findManagedActor(a.stateDir, owner, "runner")!;
+    const reader = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds: await mintCreds(a.auth, newIdentity(), "run-mediator",
+      { runMediator: { endpoint: "manager", runId, takeoverId: "a".repeat(16), instanceId: state.instanceId, epoch: 2 } }), tls: false }) });
+    try {
+      const admission = (await readRunAdmission(await jetstreamManager(reader), a.space, "manager", runId)).admission;
+      assert.deepEqual(admission.delegation, { scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish });
+    } finally { await reader.close(); }
+    // The starter gains `secret` after the run began. The walk over its current row now passes, so
+    // only the admission's frozen grant refuses the helper.
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, allowPublish: [...row.allowPublish, "secret"], tokenHash: row.tokenHash! });
+    try {
+      assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:widen#0", value: true })).ok);
+      let view: RunStatusView | undefined;
+      for (let n = 0; n < 100 && view?.status?.state !== "failed"; n++) {
+        const reply = await call(d, caller, "run-status", { runId });
+        assert.ok(reply.ok, reply.error?.message);
+        view = reply.data as RunStatusView;
+        if (view.status?.state !== "failed") await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(view?.status?.state, "failed");
+      assert.match(JSON.stringify(view), /held when the run was admitted/);
+      assert.equal(findManagedActor(a.stateDir, owner, "late"), undefined);
+    } finally {
+      grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
+    }
+  });
+  // A host platform that writes its own grants asks the loopback verify door, which decides the
+  // parent and the bound as the enrollment above does. Each observed request carries an empty body:
+  // the manager refuses it, and the host still saw who sent it.
+  const observeSpawn = async (nc: NatsConnection, from: EpCaller, nonce: string) => {
+    const served = epRequestSubject(a.space, { route: { mode: "inst", instanceId: state.instanceId }, endpoint: "manager", command: "spawn", caller: from, nonce });
+    nc.publish(served, new TextEncoder().encode("{}"));
+    await nc.flush();
+    return served;
+  };
+  const verify = (request: RemoteManagedAgentEnrollmentRequest) => post<{ parent?: string }>(VERIFY_ENROLLMENT_PATH, { owner, request });
+  await cell(17, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `verify${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "verified", tokenHash: newActorToken().tokenHash, label: "verified", allowSubscribe: [] }, { served });
+    assert.equal((await verify(request)).parent, `${owner}.runner`);
+    // The host platform retries the same request after a lost answer.
+    assert.equal((await verify(request)).parent, `${owner}.runner`);
+    const other = { ...request, requestId: `enroll${mintLifecycleUid()}`, target: { ...request.target, tokenHash: newActorToken().tokenHash } };
+    await assert.rejects(verify(other), /taken by another enrollment/);
+  });
+  await cell(18, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `verifywide${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "verifywide", tokenHash: newActorToken().tokenHash, label: "verifywide", allowSubscribe: [], allowPublish: ["secret"] }, { served });
+    await assert.rejects(verify(request), (error: Error) => /would exceed its spawner's grant/.test(error.message) && /post \[secret\]/.test(error.message));
+  });
+  await cell(19, async () => {
+    assert.ok(d && caller);
+    const started = await call(d, caller, "run-start", { source: 'await checkpoint("verifywiden", "Widen the starter?");' });
+    assert.ok(started.ok, started.error?.message);
+    const runId = (started.data as { runId: string }).runId;
+    await readyStatus(d, caller, runId, "pending", "/checkpoint:verifywiden#0");
+    // The starter gains `secret` after the run began, so only the admission's frozen grant refuses.
+    const row = findManagedActor(a.stateDir, owner, "runner")!;
+    grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, allowPublish: [...row.allowPublish, "secret"], tokenHash: row.tokenHash! });
+    try {
+      const served = await observeSpawn(mediators.get(runId)!.nc, runDriverCaller(runId, owner), `verifyrun${mintLifecycleUid()}`);
+      const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+        { actor: "verifyrun", tokenHash: newActorToken().tokenHash, label: "verifyrun", allowSubscribe: [], allowPublish: ["secret"] }, { served, runId });
+      await assert.rejects(verify(request), /held when the run was admitted/);
+    } finally {
+      grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
+    }
+    assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:verifywiden#0", value: true })).ok);
+    await readyStatus(d, caller, runId, "completed");
+  });
+  await cell(20, async () => {
+    assert.ok(d && caller);
+    // The same digest under another actor is another helper, so the observation it took refuses it.
+    const served = await observeSpawn(d.nc, caller, `oneactor${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "oneactor", tokenHash: newActorToken().tokenHash, label: "oneactor", allowSubscribe: [] }, { served });
+    assert.equal((await verify(request)).parent, `${owner}.runner`);
+    const renamed = { ...request, requestId: `enroll${mintLifecycleUid()}`, target: { ...request.target, actor: "oneactor2", label: "oneactor2" } };
+    await assert.rejects(verify(renamed), /taken by another enrollment/);
+  });
+  await cell(21, async () => {
+    assert.ok(d && caller);
+    const servedRow = await observeSpawn(d.nc, caller, `onerow${mintLifecycleUid()}`);
+    const { tokenHash } = newActorToken();
+    const enroll = (actor: string) => post("/manager-service-authority", { idpToken, request: remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof,
+      registered.processEpoch, { actor, tokenHash, label: actor, allowSubscribe: [] }, { served: servedRow }) });
+    await enroll("onerow");
+    assert.equal(findManagedActor(a.stateDir, owner, "onerow")?.parent, `${owner}.runner`);
+    await assert.rejects(enroll("onerow2"), /taken by another enrollment/);
+    assert.equal(findManagedActor(a.stateDir, owner, "onerow2"), undefined);
+  });
+  await cell(22, async () => {
+    assert.ok(d && caller);
+    // An inline persona names no harness, so the manager's default stands in for the fixture's pin.
+    process.env.COTAL_DEFAULT_AGENT = "u1-fixture";
+    try {
+      const started = await call(d, caller, "run-start", { source: 'await spawn({ name: "runsaved", prompt: "A helper a run saved.", save: true }, { events: false }); await spawn("runsaved", { events: false }); await checkpoint("saved", "Saved?");' });
+      assert.ok(started.ok, started.error?.message);
+      const runId = (started.data as { runId: string }).runId;
+      await readyStatus(d, caller, runId, "pending", "/checkpoint:saved#0");
+      assert.match(readFileSync(join(managerRoot, ".cotal", "agents", "runsaved.md"), "utf8"), new RegExp(`^owner: ${owner}\\.runner$`, "m"));
+      // While the run's helpers still hold the name, so the starter's helper is numbered beside them
+      // rather than waiting on their retirement.
+      const reply = await call(d, caller, "spawn", { name: "runsaved", agent: "u1-fixture", events: false });
+      assert.ok(reply.ok, reply.error?.message);
+      assert.ok((await call(d, caller, "run-answer", { runId, stepKey: "/checkpoint:saved#0", value: true })).ok);
+      await readyStatus(d, caller, runId, "completed");
+    } finally {
+      delete process.env.COTAL_DEFAULT_AGENT;
+    }
+  });
+  // A subscribe set with no read list reads that set, so it is measured as the helper's read.
+  await cell(24, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `subwide${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "subwide", tokenHash: newActorToken().tokenHash, label: "subwide", subscribe: ["secret"] }, { served });
+    await assert.rejects(post("/manager-service-authority", { idpToken, request }),
+      (error: Error) => /would exceed its spawner's grant/.test(error.message) && /read \[secret\]/.test(error.message));
+    assert.equal(findManagedActor(a.stateDir, owner, "subwide"), undefined);
+  });
+  await cell(25, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `verifysub${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "verifysub", tokenHash: newActorToken().tokenHash, label: "verifysub", subscribe: ["secret"], allowSubscribe: [] }, { served });
+    await assert.rejects(verify(request), (error: Error) => /would exceed its spawner's grant/.test(error.message) && /read \[secret\]/.test(error.message));
+  });
+  // A retry provisions the read it resolves to. A grant an older host wrote for a target that named
+  // only a subscribe set records no read, so a retry naming that set is refused.
+  await cell(26, async () => {
+    assert.ok(caller);
+    const secret = newActorToken(), lifecycleUid = mintLifecycleUid();
+    grantManagedActor(a.stateDir, { custody: { kind: "remote-manager", instanceId: state.instanceId }, owner, actor: "legacyread", scope: [],
+      allowSubscribe: [], allowPublish: [], parent: `${owner}.runner`, lifecycleUid, tokenHash: secret.tokenHash });
+    const served = epRequestSubject(a.space, { route: { mode: "inst", instanceId: state.instanceId }, endpoint: "manager", command: "spawn", caller, nonce: `legacyread${mintLifecycleUid()}` });
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "legacyread", tokenHash: secret.tokenHash, label: "legacyread", subscribe: ["secret"] }, { served });
+    const outcome = await post("/manager-service-authority", { idpToken, request }).then(() => "enrolled", (error: Error) => error.message);
+    assert.match(outcome, /to read \[\], and this retry reads \[secret\]/);
+    assert.match(outcome, /enroll it again/);
+    assert.deepEqual(findManagedActor(a.stateDir, owner, "legacyread")?.allowSubscribe, []);
+  });
+  // A grant this host wrote for a no-read helper records no read either.
+  await cell(27, async () => {
+    assert.ok(d && caller);
+    const served = await observeSpawn(d.nc, caller, `noread${mintLifecycleUid()}`);
+    const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch,
+      { actor: "noread", tokenHash: newActorToken().tokenHash, label: "noread", allowSubscribe: [] }, { served });
+    await post("/manager-service-authority", { idpToken, request });
+    assert.deepEqual(findManagedActor(a.stateDir, owner, "noread")?.allowSubscribe, []);
+    const retry = { ...request, target: { ...request.target, subscribe: ["secret"] } };
+    const outcome = await post("/manager-service-authority", { idpToken, request: retry }).then(() => "enrolled", (error: Error) => error.message);
+    assert.match(outcome, /to read \[\], and this retry reads \[secret\]/);
+    assert.match(outcome, /enroll it again/);
+  });
   await cell(5, async () => {
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["admin", "spawn"], allowSubscribe: [], allowPublish: [] });
     const secret = newActorToken(), lifecycleUid = mintLifecycleUid();
@@ -405,7 +615,7 @@ try {
     await assert.rejects(dial("runner", grant.actorToken, d.nonce), /Authorization Violation/);
     grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, ...row, tokenHash: row.tokenHash! });
   });
-  await cell(12, async () => {
+  await cell(23, async () => {
     // The generation and accepted row a callout without the listing row issued for this nonce.
     const nonce = mintLifecycleUid();
     const generation = mintGeneration(Math.floor(Date.now() / 1000) + 600);

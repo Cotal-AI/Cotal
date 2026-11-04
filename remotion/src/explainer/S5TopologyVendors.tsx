@@ -7,8 +7,8 @@
 // hybrid structures. Logos via AgentBadge; labels are roles so the structure
 // reads while the symbols carry the vendor identity. 1920x1080 @ 30fps.
 //
-//   Phase 1  0-40    peer-to-peer  ·  Phase 2  40-78   supervised
-//   Phase 3  78-115  hierarchical  ·  Phase 4  115-150 hybrid
+// Phases: peer-to-peer -> supervised -> hierarchical -> hybrid.
+// Timing follows the G12, G23 and G34 glide windows below.
 
 import React from "react";
 import {

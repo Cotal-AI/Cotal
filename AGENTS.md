@@ -179,18 +179,15 @@ endpoint methods; those go into `core`, generalized.
 - **Never fix an issue you could not reproduce.** Reproduce the failure (live, not just in
 reasoning or a unit simulation) before writing a fix; the repro is also the only proof the
 fix works. If you can't reproduce it, report that and stop, don't ship a guess.
-- **A test that passes with the fix reverted proves nothing — so prove it doesn't.** `pnpm
-mutation-proof` breaks the implementation on purpose and requires the suite to go red **on the
-assertion you name**. It refuses an absent or ambiguous target, refuses a dirty tree (git must be
-your recovery, not the tool), refuses an already-red suite, verifies its own restore, and reports
-`SURVIVED` rather than a pass when the suite fails to notice. A proof that is killed cannot
-restore, so it records what it broke before it breaks it: the next run puts the file back, and
-`node scripts/mutation-proof.mjs --recover` does only that. Red alone is not proof: an unrelated
-early failure is also red. And a killed mutation shows the test *depends* on that code — not that a
-real entry point *reaches* it; if the test builds its inputs by hand, prove that part separately.
-The fixture census (`pnpm smoke:mutation-fixtures`) refuses a mutation whose command builds the
-mutated package with no `afterRestore` that rebuilds it, because that run leaves a `dist/` compiled
-from the mutant.
+- **Prove fixes against unchanged pre-fix code.** Run the real reproducer or regression test against
+that implementation before editing it, then run it against the fix. If a baseline is needed later,
+use a separate checkout at the pre-fix commit and install and build its dependencies before testing.
+Name the expected failure: a setup error or unrelated early failure is not proof. If the test builds
+its inputs by hand, also show that a real entry point reaches that code.
+- **Mutation and fix-reversion proofs require an explicit request.** Do not run them otherwise,
+including in delegated work, reviews or checks that execute mutations indirectly. Mutation configs
+(`*/mutations/*.json`) and `pnpm mutation-proof` are optional tools, not a delivery gate. A change
+does not need to add, update or re-pin them.
 - **Every package's `typecheck` also runs a `tsconfig.smoke.json` over its smoke tree.** A new
 package with smoke files adds the same pair, because a smoke file that is typechecked by nothing
 runs green over real type errors.

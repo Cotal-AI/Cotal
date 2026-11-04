@@ -63,7 +63,8 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["w1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+// No role: the suite's caller holds no issued evidence, so it hands on no role (SPEC 13.15).
+for (const n of ["w1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
@@ -108,8 +109,16 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("once on spawn advances the manager cluster revision and retains native turn participation, persona removal, connector event-plane facts and existing commands", shipped.revision === 44 && service.commands.has("turn-unconfirmed") && service.commands.has("turn-participate") && service.commands.has("remove-persona") && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
+  check("persona input validation advances the manager cluster revision and retains the existing commands", shipped.revision === 46 && service.commands.has("turn-unconfirmed") && service.commands.has("turn-participate") && service.commands.has("remove-persona") && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
+  const personaInput = service.commands.get("define-persona")!.contract.input;
+  for (const field of ["model", "role", "agent"] as const) {
+    for (const value of ["", "   ", "\t\n", "  "])
+      check(`the resolved persona ${field} contract refuses ${JSON.stringify(value)}`,
+        personaInput.validate({ name: "probe", persona: "Body.", [field]: value }) === false);
+    check(`the resolved persona ${field} contract preserves nonblank input`,
+      personaInput.validate({ name: "probe", persona: "Body.", [field]: "valid-pin" }) === true);
+  }
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
     statusCmd.targeted === false && statusCmd.capability === "manager.read"
@@ -320,7 +329,7 @@ try {
   }
 }
 
-const EXPECTED = 27;
+const EXPECTED = 42;
 check("every declared manager service invoke cell ran", pass + fail === EXPECTED, { ran: pass + fail, expected: EXPECTED });
 console.log(`\n${fail === 0 ? "MANAGER SERVICE INVOKE SMOKE OK ✅" : "MANAGER SERVICE INVOKE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 emitSentinel({ passed: pass, failed: fail });

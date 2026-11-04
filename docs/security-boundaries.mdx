@@ -46,11 +46,13 @@ A compromised signer can mint fresh credentials regardless of the grants on any 
 
 ## Spawn authority [#spawn-authority]
 
-### Static channel grants
+### What a spawner hands on
 
-On a static mesh, a caller that can spawn can also select its child's channel ACL. There is no actor ledger against which to attenuate that selection. This includes ordinary channels and `events.*`.
+A caller that may spawn names its helper's channels, role and capabilities, and the manager refuses any part the caller does not hold itself. On a static mesh the measure is the caller's issued evidence, the ceiling its own credential was minted with ([SPEC 13.15](../SPEC.md#1315-issued-authority)), and `events.*` is measured like any other channel. A helper's own event plane is armed only when the spawner may post on its own. A caller whose evidence does not resolve hands on no grant. That includes an agent running on a credential from `cotal auth mint`, which is not issued. A seat started by foreground `cotal spawn` or a bare `cotal join` is issued against its own lifecycle, with no expiry unless the person sets one, and a clean exit retires it. A seat killed without a clean exit keeps live evidence until that expiry. Operator instruments and admin spawners are exempt.
 
-On a user-auth mesh, ordinary non-admin delegation must fit the spawner's current grant. NATS-pattern containment is checked when the grant is written and at every bearer exchange, up to a parentless row or admin-scoped authority root. An admin ancestor ends that containment walk. See [delegation](identity-user-auth.mdx#delegation). Static `spawn` therefore grants ACL authority in addition to the ability to launch a teammate.
+On a user-auth mesh the ledger checks the rule, and any scope token the spawner's row lists can be handed on, `machine-vitals` included. A static spawner hands on only what an agent mint carries, so `machine-vitals` does not pass there. Ordinary non-admin delegation must fit the spawner's current grant. NATS-pattern containment is checked when the grant is written and at every bearer exchange, up to a parentless row or admin-scoped authority root. An admin ancestor ends that containment walk. See [delegation](identity-user-auth.mdx#delegation). On a participant manager the issuing host makes the agent that asked for the helper its ledger parent, taking the caller from the spawn request it observed itself.
+
+A spawner hands on a role it was given as its own or as a `role:<r>` token. A workflow run's spawns are bounded by what the run's starter held when the run was admitted, so a grant the starter gains later is never handed on. A `--local` run's helpers get only the channels its operator admitted.
 
 ### Connector launch options
 

@@ -1,5 +1,63 @@
 # @cotal-ai/core
 
+## 0.141.1
+
+No changes in this release.
+
+## 0.141.0
+
+### Minor Changes
+
+- bacabd0: An agent can define its helper on the spawn itself. `cotal_spawn` takes a `persona` record (the persona prompt, role, model, variant, description, channels and capabilities) next to `name`, and the helper runs from a private snapshot of it. `persona.save: true` also writes a catalog copy under that name, owned by the spawner. A cotal-lang program does the same with `spawn({ name, prompt, ... }, opts)`, and the run journal records the definition and its digest, so a resume never submits another one. `cotal_persona` takes `capabilities` and says how a saved persona is removed.
+  
+  A helper never gets more than its spawner holds. On a static mesh every spawn is measured against the spawner's issued evidence: each channel, the role and each capability token it does not hold is refused by name, and a spawner whose evidence does not resolve hands on nothing. Operator commands and admin agents are exempt. A workflow run's spawns are bounded by what its starter held when the run was admitted, on its host and on any other static manager its spawn reaches, which reads the run's admission. A `cotal run start --local` run's helpers get only channels within the `--admit-read` and `--admit-publish` ceiling. The static agent mint now grants task-queue rows for each `role:<r>` capability, so a spawner hands on a role it was given either way. On a participant manager the issuing host makes the agent that asked for a helper its ledger parent, taking the caller from the spawn request it observed, and a run's helper is parented to the run's starter and also bounded by the grant its admission recorded. A run revoked mid-step starts no further helper, and a persona a run saves is owned by its starter. The loopback `verify-enrollment` door a host platform asks decides the same parent and bound and answers `parent`, and a retry of the same enrollment gets the same answer.
+  
+  A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
+  
+  Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
+
+## 0.140.8
+
+### Patch Changes
+
+- e477c34: `disarmMembershipWatch` no longer computes a `dyingEpochTimeout` term when a consumer delete fails. The term was a timeout on a reconnecting or closed connection, and the branch it fed already caught every timeout, so it read the connection state on each delete timeout and never changed the result. The catch now branches on a timeout or a closed connection alone. Behavior is unchanged.
+
+## 0.140.7
+
+### Patch Changes
+
+- ee13146: Reuse built-in meta-schema validation across contract compilations while keeping caller schemas and custom meta-schema resolution isolated per closure.
+
+## 0.140.6
+
+### Patch Changes
+
+- b415c78: `isContractDigest` now accepts any value and is a type guard, and it returns false for anything that is not a string. It used to test its regex against the value's string form, so a one-element array holding a digest passed, and `parseReceipt` accepted a receipt whose `argsDigest` was such an array. The cluster, service, journal and remote-manager readers now call `isContractDigest` instead of keeping their own copies of the digest regex, so every core reader applies the same `sha256:<hex>` rule.
+
+## 0.140.5
+
+### Patch Changes
+
+- bcdf7b6: `assertValidName` and `spaceKey` now use the exported `isWellFormedUnicode` instead of their own copies of the lone-surrogate scan, so the check is written once. Which strings they accept and refuse, and their error messages, are unchanged.
+
+## 0.140.4
+
+### Patch Changes
+
+- 293f937: `walkKvLatest` and `walkKvEntries` now end their walk only on the `null` the pinned `@nats-io/jetstream` client returns for the stream's "no message" answer (10037). They used to also catch a thrown 10037 and accept an `undefined` answer, neither of which the pinned client can produce. A future client that throws 10037 or answers `undefined` now fails the walk instead of ending it early with a partial result. No behavior changes with the current client.
+
+## 0.140.3
+
+No changes in this release.
+
+## 0.140.2
+
+No changes in this release.
+
+## 0.140.1
+
+No changes in this release.
+
 ## 0.140.0
 
 ### Minor Changes

@@ -61,6 +61,7 @@ import {
   taskDurable,
   dlvDurable,
   presenceBucket,
+  presenceKeySubject,
   channelBucket,
   membersBucket,
   aclBucket,
@@ -101,7 +102,7 @@ import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, isIssuedCaller, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
-import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedStoreStreamNames, prepareListing, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef, type ListingBinding, type ListingSeam, type PreparedListing } from "./issued-authority.js";
+import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedPermitsPattern, issuedStoreStreamNames, prepareListing, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef, type ListingBinding, type ListingSeam, type PreparedListing } from "./issued-authority.js";
 import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runSubmissionKey } from "./run-submission.js";
@@ -991,8 +992,26 @@ export async function provisionAgentDurables(
   if (opts.durableMembership !== false) {
     await provisioner.reissueAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
   }
-  if (opts.role) await provisioner.provisionTaskQueue(opts.role);
+  for (const role of taskRoles(opts.role, opts.capabilities)) await provisioner.provisionTaskQueue(role);
   return allowSubscribe;
+}
+
+const ROLE_CAPABILITY = /^role:([A-Za-z0-9_-]+)$/;
+
+/** The role a `role:<r>` capability token names, or `undefined` for any other token. */
+export function capabilityRole(token: string): string | undefined {
+  return ROLE_CAPABILITY.exec(token)?.[1];
+}
+
+/** The roles whose task queue an agent credential binds: its own role, and the role of each
+ *  `role:<r>` token in its capabilities, which lets it hand that role on (SPEC 13.15). */
+export function taskRoles(role: string | undefined, capabilities: readonly string[] | undefined): string[] {
+  const roles = new Set<string>(role ? [role] : []);
+  for (const token of capabilities ?? []) {
+    const r = capabilityRole(token);
+    if (r !== undefined) roles.add(r);
+  }
+  return [...roles];
 }
 
 
@@ -1134,6 +1153,11 @@ async function releaseIssuance(
     await seam.finalize?.(credentialId);
     return;
   }
+  // The spawn bound reads an issuance with no source and no presence key of its own as an operator
+  // instrument (grant-bound.ts, issuedSpawnerStanding), so only an instrument profile is issued that
+  // way. Any other profile issued without a source must carry its own presence key.
+  if (seam.sources.length === 0 && !INSTRUMENT_PROFILES.has(profile) && !issuedPermitsPattern(permissions.publish, presenceKeySubject(space, pr.owner, pr.actor)))
+    throw new Error(`mintCreds: a "${profile}" issuance with no source must carry its own presence key, or the spawn bound would read it as an operator instrument (SPEC 13.15)`);
   const prepared = await seam.store.stage({
     version: 1,
     ref,
@@ -1240,6 +1264,8 @@ export async function mintServiceCalloutJwt(
 /** The profiles whose credential carries caller rails, and can therefore be minted as an
  *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
 const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer", "manager-caller"]);
+/** The operator instruments: the only profiles issued with no source and no presence key of their own. */
+const INSTRUMENT_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["control-caller-privileged", "control-caller-admin", "deployer"]);
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
@@ -1549,7 +1575,7 @@ export function permissionsFor(
   const uid = assertLifecycleToken(pr.lifecycleUid);
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only)
-  const svcD = opts.role ? taskDurable(opts.role) : undefined;
+  const roles = taskRoles(opts.role, opts.capabilities);
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
@@ -1624,7 +1650,7 @@ export function permissionsFor(
     // cannot be pinned, and a stream-wide delete reaches every peer's watch cursor (#691). A
     // rebuild's refused predecessor delete leaves that consumer to the broker's inactive threshold.
     "$JS.FC.>",
-    `$KV.${presenceBucket(space)}.${pk.key}`, // own presence key (owner+actor) only — can't spoof peers
+    presenceKeySubject(space, pr.owner, pr.actor), // own presence key (owner+actor) only — can't spoof peers
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
     // No `$KV.${channelBucket(space)}.*` publish — privileged-write, default-deny gives that free.
     `$JS.API.STREAM.MSG.GET.${CHKV}`,
@@ -1647,21 +1673,25 @@ export function permissionsFor(
     // by OMISSION (default-deny on the un-granted `KV_cotal_manager_*` stream + `$KV.cotal_manager_*.>`),
     // so do NOT add a broad `KV_*` / `$KV.<space>.>` grant that would silently re-open it.
   ];
-  if (svcD) {
-    // TASK consumer: BIND ONLY its own role's pre-created durable (svc_<role>). Like DM, the
-    // create-time filter_subject isn't reliably ACL-constrainable, so no create path is
-    // allowed — the privileged provisioner pre-creates svc_<role> filtered to svc.<role>.>.
-    // STREAM.INFO rides the SAME role gate as the bind rows: a role-less agent holds no TASK grant
-    // at all, so it can neither read the task stream's state nor enumerate its subjects.
-    pubAllow.push(
-      `$JS.API.STREAM.INFO.${TASK}`,
-      `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
-      `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
-      `$JS.ACK.${TASK}.${svcD}.>`,
-      // The take of one delivered request (SPEC §8.1), pinned to this role and this principal, so a
-      // credential takes only for the role whose queue it reads. Its reply rides the sub row below.
-      takeSubject(space, opts.role!, pr.owner, pr.actor),
-    );
+  if (roles.length > 0) {
+    // TASK consumer: BIND ONLY the pre-created durable (svc_<role>) of its own role and of each
+    // `role:<r>` token it holds. Like DM, the create-time filter_subject isn't reliably
+    // ACL-constrainable, so no create path is allowed — the privileged provisioner pre-creates
+    // svc_<role> filtered to svc.<role>.>. STREAM.INFO rides the SAME role gate as the bind rows: a
+    // role-less agent holds no TASK grant at all, so it can neither read the task stream's state
+    // nor enumerate its subjects.
+    pubAllow.push(`$JS.API.STREAM.INFO.${TASK}`);
+    for (const role of roles) {
+      const svcD = taskDurable(role);
+      pubAllow.push(
+        `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
+        `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
+        `$JS.ACK.${TASK}.${svcD}.>`,
+        // The take of one delivered request (SPEC §8.1), pinned to this role and this principal, so a
+        // credential takes only for a role whose queue it binds. Its reply rides the sub row below.
+        takeSubject(space, role, pr.owner, pr.actor),
+      );
+    }
   }
   // Spawn / admin capability control reach rides the v0.4 ep rows below (the manager `ctl` rail is
   // deleted) — the spawn set (owner-mode manager lifecycle) and the admin instrument set
@@ -1767,7 +1797,7 @@ export function permissionsFor(
   // Manager control replies ride the v0.4 ep reply rail (in `epSub`, keyed on the caller triple) —
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail.
   // A take's reply rides the take's own request subtree, like the delivery control replies.
-  const takeReplies = opts.role ? [`${takeSubject(space, opts.role, pr.owner, pr.actor)}.>`] : [];
+  const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);
   return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...epSub] } };
 }
 
