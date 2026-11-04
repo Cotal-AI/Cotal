@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.144.0
+
+### Minor Changes
+
+- f792696: Refuse MCP environment references to reserved per-seat COTAL names before launch, preventing a spawned agent from inheriting its parent's role or model. Keep non-COTAL references and machine-wide operator variables available.
+
 ## 0.143.0
 
 No changes in this release.
