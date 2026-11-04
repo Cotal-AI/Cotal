@@ -36,8 +36,9 @@ const http = createServer((req, res) => {
 });
 const run = (args: string[]) => new Promise<{ code: number; text: string }>((resolve, reject) => {
   execFile(process.execPath, [BIN, ...args], { cwd: project, env, encoding: "utf8", timeout: 45_000 }, (error, stdout, stderr) => {
-    if (error && typeof error.code !== "number") { reject(error); return; }
-    resolve({ code: error?.code ?? 0, text: stdout + stderr });
+    const code = error ? error.code : 0;
+    if (typeof code !== "number") { reject(error); return; }
+    resolve({ code, text: stdout + stderr });
   });
 });
 try {
