@@ -7,6 +7,34 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Identity mint callbacks
+
+`createManagerInstanceIdentity` and `createAuthInstanceIdentity` in `@cotal-ai/workspace` now take a
+`mint` callback as their third argument, where they took a proposed identity value. The callback
+runs only when the record is absent. A stored record is returned unchanged, and a concurrent first
+start still adopts the winner.
+
+A running mesh needs nothing. Its records are plain files and the manager and the auth plane call
+the new signature themselves.
+
+### What stops working
+
+Code of your own that passes an identity object as the third argument no longer compiles. Plain
+JavaScript stores that object as the callback, so the next first start throws when it tries to call
+it.
+
+### Before the upgrade
+
+Pass a function that returns the identity, and build the lifecycle uid and the serve nkey inside
+that function when they exist only to fill a missing record:
+
+```ts
+createManagerInstanceIdentity(root, space, () => ({
+  instanceId: mintLifecycleUid(),
+  serveIdentity: newIdentity(),
+}));
+```
+
 ## More streams take a history limit after 0.139.1
 
 `cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and

@@ -40,7 +40,7 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
   const root = process.env.COTAL_I1263_EXCL_ROOT!;
   const barrier = process.env.COTAL_I1263_EXCL_BARRIER!;
   while (!existsSync(barrier)) {}
-  const claimed = createManagerInstanceIdentity(root, SPACE, candidate(`w${process.pid}`));
+  const claimed = createManagerInstanceIdentity(root, SPACE, () => candidate(`w${process.pid}`));
   process.stdout.write(`${claimed.instanceId}\n`);
   process.exit(0);
 } else {
@@ -55,10 +55,15 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     mkdirSync(join(root, ".cotal"), { recursive: true });
 
     const planted = candidate("planted");
-    createManagerInstanceIdentity(root, SPACE, planted);
-    const adopted = createManagerInstanceIdentity(root, SPACE, candidate("loser"));
+    createManagerInstanceIdentity(root, SPACE, () => planted);
+    let loserMints = 0;
+    const adopted = createManagerInstanceIdentity(root, SPACE, () => {
+      loserMints++;
+      return candidate("loser");
+    });
     check("ACCEPT: an existing identity is adopted, the candidate is discarded",
       adopted.instanceId === planted.instanceId && adopted.serveIdentity.id === planted.serveIdentity.id);
+    check("ACCEPT: adopting an existing identity does not call mint", loserMints === 0, { loserMints });
 
     const refuseRoot = mkdtempSync(join(tmpdir(), "cotal-iid-refuse-"));
     mkdirSync(join(refuseRoot, ".cotal", spaceSegment(SPACE)), { recursive: true });
@@ -66,7 +71,7 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     writeFileSync(refusePath, "{not-json", { flag: "wx", mode: 0o600 });
     let refuseMsg = "";
     try {
-      createManagerInstanceIdentity(refuseRoot, SPACE, candidate("refuse"));
+      createManagerInstanceIdentity(refuseRoot, SPACE, () => candidate("refuse"));
     } catch (e) {
       refuseMsg = (e as Error).message;
     }
@@ -78,7 +83,7 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     mkdirSync(join(lostRoot, ".cotal", spaceSegment(SPACE)), { recursive: true });
     const lostPath = join(lostRoot, ".cotal", spaceSegment(SPACE), "manager-instance.json");
     writeFileSync(lostPath, JSON.stringify(candidate("winner"), null, 2), { flag: "wx", mode: 0o600 });
-    const adoptedAfterExclusive = createManagerInstanceIdentity(lostRoot, SPACE, candidate("late"));
+    const adoptedAfterExclusive = createManagerInstanceIdentity(lostRoot, SPACE, () => candidate("late"));
     check("ACCEPT: exclusive-create loser adopts the winner (EEXIST then load)",
       adoptedAfterExclusive.instanceId.startsWith("winner-"));
     rmSync(lostRoot, { recursive: true, force: true });

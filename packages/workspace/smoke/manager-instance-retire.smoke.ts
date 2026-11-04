@@ -55,8 +55,8 @@ const childWrite = (action: "b" | "c" | "d" | "remove") => {
 };
 
 try {
-  const created = createManagerInstanceIdentity(root, "alpha", ident("a"));
-  const sibling = createManagerInstanceIdentity(root, "beta", ident("b"));
+  const created = createManagerInstanceIdentity(root, "alpha", () => ident("a"));
+  const sibling = createManagerInstanceIdentity(root, "beta", () => ident("b"));
 
   check("a foreign successor generation refuses", retire("alpha", ident("z")).outcome === "refused");
   check("a successor with the same instanceId but another serve nkey refuses",
