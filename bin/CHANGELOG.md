@@ -1,5 +1,20 @@
 # cotal-ai
 
+## 0.141.4
+
+### Patch Changes
+
+- Updated dependencies [d53d362]
+  - @cotal-ai/workspace@0.141.4
+  - @cotal-ai/cli@0.141.4
+  - @cotal-ai/auth@0.141.4
+  - @cotal-ai/delivery@0.141.4
+  - @cotal-ai/manager@0.141.4
+  - @cotal-ai/runtime@0.141.4
+  - @cotal-ai/connector-core@0.141.4
+  - @cotal-ai/core@0.141.4
+  - @cotal-ai/seat@0.141.4
+
 ## 0.141.3
 
 ### Patch Changes
