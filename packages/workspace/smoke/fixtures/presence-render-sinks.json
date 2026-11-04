@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 994,
+    "total": 982,
     "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 776
+    "non-render/control": 764
   },
   "renderers": [
     {
@@ -7028,44 +7028,55 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(m) => (\n            <Show when={talk()}>\n              {(t) => {\n                const Composer = m().Composer\n                return (\n                  <Composer\n                    talk={t()}\n                    space={p.mesh.status.space}\n                    open={open()}\n                    mesh={p.mesh}\n                    state={composer()}\n                    setState={setComposer}\n                    setOpen={setOpen}\n                    composing={composing()}\n                    stop={stopCompose}\n                    maxRows={dims().height >= 40 ? 6 : 3}\n                  />\n                )\n              }}\n            </Show>\n          )}",
+      "anchor": "{(b) => {\n          const Composer = b().Composer\n          return (\n            <Composer\n              talk={b().talk}\n              space={b().mesh.status.space}\n              open={open()}\n              mesh={b().mesh}\n              state={composer()}\n              setState={setComposer}\n              focused={focus() === \"box\"}\n              toTree={() => setFocus(\"tree\")}\n              maxRows={dims().height >= 40 ? 6 : 3}\n            />\n          )\n        }}",
       "class": "non-render/control",
-      "rationale": "App data shaping: hands the open space, conversation and mesh to the composer; no status word is rendered."
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(t) => {\n                const Composer = m().Composer\n                return (\n                  <Composer\n                    talk={t()}\n                    space={p.mesh.status.space}\n                    open={open()}\n                    mesh={p.mesh}\n                    state={composer()}\n                    setState={setComposer}\n                    setOpen={setOpen}\n                    composing={composing()}\n                    stop={stopCompose}\n                    maxRows={dims().height >= 40 ? 6 : 3}\n                  />\n                )\n              }}",
+      "anchor": "space={b().mesh.status.space}",
       "class": "non-render/control",
-      "rationale": "App data shaping: hands the open space, conversation and mesh to the composer; no status word is rendered."
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "space={p.mesh.status.space}",
+      "anchor": "{b().mesh.status.space}",
       "class": "non-render/control",
-      "rationale": "App data shaping: hands the open space, conversation and mesh to the composer; no status word is rendered."
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "                  space={p.mesh.status.space}\n                    ope",
+      "anchor": "mesh={b().mesh}",
       "class": "non-render/control",
-      "rationale": "App data shaping: hands the open space, conversation and mesh to the composer; no status word is rendered."
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "mesh={p.mesh}",
+      "anchor": "{b().mesh}",
       "class": "non-render/control",
-      "rationale": "App data shaping: hands the open space, conversation and mesh to the composer; no status word is rendered."
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
     },
     {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{p.mesh}",
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "status-token",
+      "anchor": "   if (peer?.status === \"waiting\") return `answering ${pe",
       "class": "non-render/control",
-      "rationale": "App data shaping: hands the open space, conversation and mesh to the composer; no status word is rendered."
+      "rationale": "App input box line: picks the answering wording only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "derived-output",
+      "anchor": "`answering ${peer.card.name}${ends()}`",
+      "class": "honest-text",
+      "rationale": "App input box line: names the waiting agent the message answers; it makes no progress claim, and the agent's status shows only in the overview.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+      }
     },
     {
       "path": "implementations/tui/src/compose.ts",
@@ -7091,13 +7102,6 @@
     {
       "path": "implementations/tui/src/composer.tsx",
       "kind": "derived-output",
-      "anchor": "conversationRecipient(to, props.mesh)",
-      "class": "non-render/control",
-      "rationale": "App composer: derives where the draft goes from the open conversation; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
       "anchor": "peerOf(props.mesh, props.open.id)",
       "class": "non-render/control",
       "rationale": "App composer: looks up the open peer to tell whether it waits; no status word is rendered."
@@ -7105,34 +7109,9 @@
     {
       "path": "implementations/tui/src/composer.tsx",
       "kind": "derived-output",
-      "anchor": "props.talk.disclose(r)",
-      "class": "non-render/control",
-      "rationale": "App recipient picker: asks whether a chosen channel is registered; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "status-token",
-      "anchor": "   if (peer?.status === \"waiting\") return `to ${where(r)}",
-      "class": "non-render/control",
-      "rationale": "App composer target line: quotes the question only for a waiting agent; routing only."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "`to ${where(r)} \u00b7 answering \u201c${peer.activity ?? \"a question it did not report\"}\u201d`",
-      "class": "honest-text",
-      "rationale": "App composer target line: a waiting agent's own reported question, quoted; it makes no progress claim, and the agent's status shows only in the overview.",
-      "proof": {
-        "path": "implementations/tui/src/screen.ts",
-        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
-      }
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
       "anchor": "{target()}",
       "class": "honest-text",
-      "rationale": "App composer target line: where the draft goes and, for a waiting agent, its own reported question quoted; it makes no progress claim, and the agent's status shows only in the overview.",
+      "rationale": "App input box line: where the message goes, and for a waiting agent `answering <name>`; it makes no progress claim, and the agent's status shows only in the overview.",
       "proof": {
         "path": "implementations/tui/src/screen.ts",
         "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
@@ -7144,69 +7123,6 @@
       "anchor": "osed?.clean === false ? \"waiting\" : \"ok\", lines: [closed ",
       "class": "non-render/control",
       "rationale": "App composer notice: the shared outcome words' waiting tone colours a notice; it is not an agent's presence."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "status-token",
-      "anchor": "ice: { key: next, tone: \"waiting\", lines: [warning] } }))",
-      "class": "non-render/control",
-      "rationale": "App composer notice: the shared outcome words' waiting tone colours a notice; it is not an agent's presence."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "status-token",
-      "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "App recipient picker: leaves offline peers out of the list; routing only."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "fallback={\n        <box flexShrink={0} flexDirection=\"column\">\n          <Lines lines={collapsed()} />\n        </box>\n      }",
-      "class": "non-render/control",
-      "rationale": "App composer line: what c writes to and the name the human appears as; no agent status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "{\n        <box flexShrink={0} flexDirection=\"column\">\n          <Lines lines={collapsed()} />\n        </box>\n      }",
-      "class": "non-render/control",
-      "rationale": "App composer line: what c writes to and the name the human appears as; no agent status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "lines={collapsed()}",
-      "class": "non-render/control",
-      "rationale": "App composer line: what c writes to and the name the human appears as; no agent status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "{collapsed()}",
-      "class": "non-render/control",
-      "rationale": "App composer line: what c writes to and the name the human appears as; no agent status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "placeholder={recipient() ? `Write to ${where(recipient()!)}` : \"Choose a recipient with tab\"}",
-      "class": "non-render/control",
-      "rationale": "App composer textarea placeholder: names the recipient; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "{recipient() ? `Write to ${where(recipient()!)}` : \"Choose a recipient with tab\"}",
-      "class": "non-render/control",
-      "rationale": "App composer textarea placeholder: names the recipient; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/composer.tsx",
-      "kind": "derived-output",
-      "anchor": "`Write to ${where(recipient()!)}`",
-      "class": "non-render/control",
-      "rationale": "App composer textarea placeholder: names the recipient; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/composer.tsx",

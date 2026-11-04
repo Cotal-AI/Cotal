@@ -11,7 +11,7 @@ import type { Catalog, Entry } from "./catalog.js"
 import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
-import { clock, conversationFeed, entryKey, meshOf, type Open, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import { clock, conversationFeed, entryKey, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
 import type { Talk } from "./talk.js"
 
 type ComposerModule = typeof import("./composer.js")
@@ -25,11 +25,17 @@ type Command = { id: string; bind?: string; keys?: string; title: string; group:
 
 type Line = { text: string; fg: RGBA }
 
+/** Where the keys go: the input box under the conversation, or the tree. The box takes them only
+ *  while it is on screen, so with no space open the tree has them. */
+type Focus = "box" | "tree"
+
 /** Stopping an agent: the confirm, the manager call while it runs, then its outcome for a while. */
 type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
 type Answer = "graceful" | "force" | "cancel"
 
 const FEED_ROWS = 200
+// The channel a space opens on, as `cotal join` defaults to it.
+const DEFAULT_CHANNEL = "general"
 const STOP_NOTICE_MS = 8000
 
 const fit = (s: string, n: number) => (n <= 0 ? "" : s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s)
@@ -45,17 +51,16 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const [load, setLoad] = createSignal<Load>({ phase: "loading" })
   const [session, setSession] = createSignal<Session>()
   const [cursor, setCursor] = createSignal<string>()
-  const [open, setOpen] = createSignal<Open>({ kind: "channel" })
+  const [open, setOpen] = createSignal<Open>({ kind: "channel", channel: DEFAULT_CHANNEL })
   const [seen, setSeen] = createSignal<Record<string, number>>({})
   const [now, setNow] = createSignal(Date.now())
   const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
   const [composer, setComposer] = createSignal<ComposerState>({ drafts: {} })
-  const [composing, setComposing] = createSignal(false)
+  const [focus, setFocus] = createSignal<Focus>("box")
   // The composer imports the chat library, a few hundred milliseconds of loading, so it loads once a
   // space is opening and never delays the first frame. Solid's lazy() is not used: with no Suspense
   // boundary it leaves the shell's effects stalled.
   const [ui, setUi] = createSignal<ComposerModule>()
-  const keymap = Keymap.use()
   const clockTimer = setInterval(() => setNow(Date.now()), 1000)
   onCleanup(() => clearInterval(clockTimer))
 
@@ -74,8 +79,9 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const waiting = () => mesh()?.signals.waiting ?? []
   const items = createMemo(() => treeItems(entries(), conn(), seen()))
   const rows = createMemo(() => items().filter((i): i is Row => i.kind !== "header"))
+  // With no row chosen in the tree, the cursor rests on the open conversation's row.
   const cursorIndex = () => {
-    const at = rows().findIndex((r) => r.key === cursor())
+    const at = rows().findIndex((r) => r.key === (cursor() ?? openRowKey(open())))
     return at >= 0 ? at : Math.max(0, rows().findIndex((r) => r.kind === "entry" && r.open))
   }
   const openPeer = () => {
@@ -98,18 +104,10 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     if (seen()[o.channel] !== arrivals) setSeen((s) => ({ ...s, [o.channel!]: arrivals }))
   })
 
-  // The compose mode is pushed before the textarea takes focus, so letters reach the text and the
-  // tree's keys stay off until esc pops it. Writing opens no session: the first message does.
-  let popMode: (() => void) | undefined
-  const startCompose = () => {
-    if (!talk() || !mesh() || open().kind === "entry") return toast.show({ variant: "info", message: "Open a space to write in it" })
-    popMode ??= keymap.mode.push("compose")
-    setComposing(true)
-  }
-  function stopCompose() {
-    popMode?.()
-    popMode = undefined
-    setComposing(false)
+  const composing = () => focus() === "box" && box() !== undefined
+  const toBox = () => {
+    setCursor(undefined)
+    setFocus("box")
   }
 
   // Each switch takes a number. One that a later switch or the app closing overtook while it waited
@@ -119,9 +117,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const mine = ++switches
     const old = session()
     const was = conn().space
-    stopCompose()
     setSession(undefined)
-    setOpen({ kind: "channel" })
+    setOpen({ kind: "channel", channel: DEFAULT_CHANNEL })
     setSeen({})
     setStop({ phase: "idle" })
     const chat = await old?.close()
@@ -157,11 +154,12 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const openRow = () => {
     const r = selection()
     if (!r) return
-    if (r.kind === "channel") return setOpen({ kind: "channel", channel: r.channel })
-    if (r.kind === "peer") return setOpen({ kind: "peer", id: r.presence.card.id })
-    if (r.entry.kind !== "space") return setOpen({ kind: "entry", key: r.key })
-    if (r.open) return setOpen({ kind: "channel" })
-    void switchTo(r.entry.space)
+    if (r.kind === "channel") setOpen({ kind: "channel", channel: r.channel })
+    else if (r.kind === "peer") setOpen({ kind: "peer", id: r.presence.card.id })
+    else if (r.entry.kind !== "space") setOpen({ kind: "entry", key: r.key })
+    else if (r.open) setOpen({ kind: "channel", channel: DEFAULT_CHANNEL })
+    else void switchTo(r.entry.space)
+    toBox()
   }
   const openWaiting = (n: number) => {
     const list = waiting()
@@ -244,7 +242,23 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     setTimeout(() => setStop((cur) => (cur === done ? { phase: "idle" } : cur)), STOP_NOTICE_MS)
   }
 
+  const sendToRole = () => {
+    const m = ui()
+    if (!m || !talk()) return toast.show({ variant: "info", message: "No space is open" })
+    dialog.replace(() => (
+      <m.RoleDialog
+        done={(role) => {
+          dialog.clear()
+          setOpen({ kind: "role", role })
+          toBox()
+        }}
+      />
+    ))
+  }
+
+  // Letter keys belong to the tree. In the box they are text; `tab` there is bound by the composer.
   const commands: Command[] = [
+    { id: "cotal.box", bind: "tab,escape", keys: "tab esc", title: "Back to the input box", group: "Move", run: toBox },
     { id: "cotal.down", bind: "j,down", keys: "j ↓", title: "Next row", group: "Move", run: () => move(1) },
     { id: "cotal.up", bind: "k,up", keys: "k ↑", title: "Previous row", group: "Move", run: () => move(-1) },
     { id: "cotal.open", bind: "return", keys: "enter", title: "Open the selected row", group: "Move", run: openRow },
@@ -257,7 +271,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: requestQuit },
     { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
     // Last, so the palette at 80x24 still opens on the commands above.
-    { id: "cotal.write", bind: "c", keys: "c", title: "Write to the open conversation", group: "Talk", palette: true, run: startCompose },
+    { id: "cotal.role", title: "Send to a role", group: "Talk", palette: true, run: sendToRole },
     { id: "cotal.name", title: "Change your name", group: "Talk", palette: true, run: rename },
     { id: "cotal.end-session", title: "End your chat session", group: "Talk", palette: true, run: () => void endSession() },
   ]
@@ -334,7 +348,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
               )
             const label = () => rowLabel(item, p.width - 2)
             return (
-              <box flexDirection="row" justifyContent="space-between" flexShrink={0} backgroundColor={item.key === selection()?.key ? theme.background.raised.high : undefined}>
+              <box flexDirection="row" justifyContent="space-between" flexShrink={0} backgroundColor={item.key !== selection()?.key ? undefined : composing() ? theme.background.raised.high : theme.background.raised.max}>
                 <text wrapMode="none" fg={label().fg}>
                   <span style={{ fg: label().markFg }}>{label().mark}</span>
                   {` ${label().name}`}
@@ -450,29 +464,6 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
             </scrollbox>
           </Show>
         </box>
-        <Show when={ui()}>
-          {(m) => (
-            <Show when={talk()}>
-              {(t) => {
-                const Composer = m().Composer
-                return (
-                  <Composer
-                    talk={t()}
-                    space={p.mesh.status.space}
-                    open={open()}
-                    mesh={p.mesh}
-                    state={composer()}
-                    setState={setComposer}
-                    setOpen={setOpen}
-                    composing={composing()}
-                    stop={stopCompose}
-                    maxRows={dims().height >= 40 ? 6 : 3}
-                  />
-                )
-              }}
-            </Show>
-          )}
-        </Show>
       </>
     )
   }
@@ -480,6 +471,14 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const summary = () => {
     const n = waiting().length
     return n === 0 ? "nothing needs you" : `${n} need${n === 1 ? "s" : ""} you · w opens the next`
+  }
+
+  /** The input box: on screen while a space's conversation is, and once the composer has loaded. */
+  const box = () => {
+    const m = mesh()
+    const t = talk()
+    const u = ui()
+    return !notice() && m && t && u ? { mesh: m, talk: t, Composer: u.Composer } : undefined
   }
 
   const Middle = () => (
@@ -509,6 +508,24 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
         <text wrapMode="none" fg={waiting().length ? theme.text.feedback.warning.base : theme.text.faint} flexShrink={0}>
           {summary()}
         </text>
+      </Show>
+      <Show when={box()}>
+        {(b) => {
+          const Composer = b().Composer
+          return (
+            <Composer
+              talk={b().talk}
+              space={b().mesh.status.space}
+              open={open()}
+              mesh={b().mesh}
+              state={composer()}
+              setState={setComposer}
+              focused={focus() === "box"}
+              toTree={() => setFocus("tree")}
+              maxRows={dims().height >= 40 ? 6 : 3}
+            />
+          )
+        }}
       </Show>
     </box>
   )
@@ -576,7 +593,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const StatusBar = () => (
     <box flexShrink={0} flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.high}>
       <text wrapMode="none" fg={theme.text.faint} flexShrink={1}>
-        {fit(composing() ? "enter send · ctrl+j newline · tab where · esc back" : "j k move · enter open · c write · w next · ? help · ctrl+p commands · q quit", dims().width - indicator().text.length - 4)}
+        {fit(composing() ? "enter send · ctrl+j newline · tab tree" : "j k move · enter open · esc box · w next · ? help · ctrl+p commands · q quit", dims().width - indicator().text.length - 4)}
       </text>
       <text wrapMode="none" fg={indicator().fg} flexShrink={0}>
         {indicator().text}

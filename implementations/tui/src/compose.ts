@@ -34,8 +34,9 @@ export type Effect =
   | { kind: "slash"; command: AppSlash }
   | { kind: "reply-latest" }
   | { kind: "end" }
-  | { kind: "pick" }
 
+/** How the Enter rule names the missing recipient: all traffic has none. */
+const NO_RECIPIENT = "open a channel or an agent"
 const postTo = (r: Recipient | undefined) => (r?.kind === "channel" ? { postTo: r.channel } : {})
 
 /** Which shared commands the app runs, and why the rest do not. A record over every shared name, so
@@ -89,12 +90,12 @@ export function submit(
     return p.phase === "ended" && at.name ? note("hint", `new session as ${at.name}; enter sends`, open) : { state: { ...state, notice: undefined }, effect: open }
   }
   const watching = p.phase === "watching"
-  const d = submitDraft(draft.text, { recipient: at.recipient, connection: watching ? "connected" : p.connection, sending: state.sending !== undefined, pick: "tab" })
+  const d = submitDraft(draft.text, { recipient: at.recipient, connection: watching ? "connected" : p.connection, sending: state.sending !== undefined, pick: NO_RECIPIENT })
   switch (d.kind) {
     case "nothing":
       return { state, effect: { kind: "none" } }
     case "hold":
-      return note(d.tone, d.text, d.pick ? { kind: "pick" } : { kind: "none" })
+      return note(d.tone, d.text)
     case "leave":
       return watching ? note("hint", "no chat session is open") : consumed({ kind: "end" })
     case "slash": {
@@ -109,7 +110,7 @@ export function submit(
     }
     case "publish":
       return {
-        state: { ...state, sending: { key, to: d.to, text: draft.text }, notice: { key, tone: "waiting", lines: [`sending to ${recipientLabel(d.to, "tab")}…`] } },
+        state: { ...state, sending: { key, to: d.to, text: draft.text }, notice: { key, tone: "waiting", lines: [`sending to ${recipientLabel(d.to, NO_RECIPIENT)}…`] } },
         effect: { kind: "publish", to: d.to, text: d.text, ...(watching ? { open: postTo(d.to) } : {}) },
       }
   }
@@ -145,12 +146,4 @@ export function replyFrom(state: ComposerState, key: DraftKey, m: (Answerable & 
   if ("refused" in to) return note(to.refused)
   const line = m.text.split("\n")[0]!
   return { ...withDraft(state, key, { text: state.drafts[key]?.text ?? "", reply: { id: m.id, to, from: m.from.name, line } }), notice: undefined }
-}
-
-/** The picker moved this draft to another conversation. Refuses when that one has a draft. */
-export function moveDraft(state: ComposerState, from: DraftKey, to: DraftKey, label: string): ComposerState {
-  const draft = state.drafts[from]
-  if (from === to || !draft) return state
-  if (state.drafts[to]?.text) return { ...state, notice: { key: from, tone: "failed", lines: [`${label} already has a draft; this one stays here`] } }
-  return withDraft(withDraft(state, from, { text: "" }), to, draft)
 }

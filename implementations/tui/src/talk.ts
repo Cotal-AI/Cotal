@@ -2,7 +2,6 @@ import { CommandFailure, isCommandFailure, isConnectRefusal, oneLine, readPrefer
 import {
   closeSummary,
   describeConnection,
-  discloseChoice,
   latestDirected,
   mentionsName,
   nameInUse,
@@ -62,8 +61,6 @@ export interface Talk {
   slash(command: AppSlash): Promise<Outcome>
   /** The newest direct message or role task the session received. */
   latest(): SessionMessage | undefined
-  /** The picker's warning for a channel it offers, such as an unregistered one. */
-  disclose(r: Recipient): Promise<string | undefined>
   /** Whether a row's mentions name the human, under the open session's name or the next one's. */
   mentionsYou(e: FeedEntry): boolean
   /** `/quit` and End your chat session. */
@@ -77,8 +74,8 @@ export interface Talk {
 
 /** The app's steps that end a session's own refusals. */
 export const APP_WORDS: ChatWords = {
-  reopen: (channel) => `/quit ends this session, then c on #${channel} opens one on it`,
-  answerOne: "open the sender in the tree and press c, or answer the newest with /reply",
+  reopen: (channel) => `/quit ends this session, then enter in #${channel} opens one there`,
+  answerOne: "open the sender in the tree, or answer the newest with /reply",
 }
 
 const NAME_REMEDY = "change it with ctrl+p, Change your name, to be reached by name"
@@ -227,7 +224,6 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       return slashOutcome(command, await s.connection(), describeConnection)
     },
     latest: () => latestDirected(messages),
-    disclose: async (r) => (session ? discloseChoice(session, r) : undefined),
     mentionsYou: (e) => {
       const n = current()
       return n !== undefined && mentionsName(e.mentions, n)

@@ -33,12 +33,18 @@ command launches the app.
 ## Layout
 
 Three columns. The left one lists the spaces, then the open space's channels, agents and endpoints.
-The middle shows the open conversation: all traffic, one channel, or one agent with its question
-pinned when it waits. The inspector on the right lists the agents waiting for an answer and the
-selected agent's status, model, harness and uptime. When the conversation would get fewer than 40
-columns, as at 80x24, the inspector shrinks to a one-line summary under the conversation and the
-agent overview moves into the conversation. `w` opens the next waiting agent and `1`-`9` a specific
-one, at every width. `?` lists the keys and `ctrl+p` opens the commands.
+The middle shows the open conversation, with the input box under it:
+all traffic, one channel, or one agent with its question pinned when it waits. A space opens on
+`#general`. The inspector on the right lists the agents waiting for an answer and the selected
+agent's status, model, harness and uptime. When the conversation would get fewer than 40 columns, as
+at 80x24, the inspector shrinks to a one-line summary above the input box, and the agent
+overview shows in the conversation while the tree has the keys.
+
+The cursor starts in the input box. `tab` moves it to the tree, where the arrows or `j` and `k`
+move, `enter` opens the row and returns to the box, and `esc` or `tab` returns without opening.
+The letter keys work only in the tree: `w` opens the next waiting agent and `1`-`9` a specific one,
+`D` stops an agent, `?` lists the keys and `q` quits. `ctrl+p` opens the commands and `ctrl+c`
+quits from anywhere.
 
 While a space is open the app asks its managers every 10 seconds which agents they run. A managed
 agent's overview adds its runtime (such as `pty`), whether its process is running, and the uptime the
@@ -61,16 +67,17 @@ last model stays on screen), closed, or not connected with the reason in the mid
 
 You watch a space without appearing in it. Your first message opens a chat session and sends in one
 step, and you appear on the roster under your name: your saved `name` preference, else your OS
-login. The line under the conversation says it, as in `c write to #general · you appear as manas`.
+login.
 
-- `c` writes to the open conversation. A channel gets a post, an agent or endpoint gets a direct
-  message, and a waiting agent gets your answer. `enter` sends, `ctrl+j` starts a new line, `tab`
-  sends the draft somewhere else (a listed channel or peer, or a typed `#channel` or `role:<role>`),
-  and `esc` goes back with the draft kept. Every conversation keeps its own draft, in every space.
+- The input box writes to the open conversation, and the line under it names where the message
+  goes, such as `#general` or `answering coder-2`. A channel gets a post, an agent or endpoint gets
+  a direct message, and a waiting agent gets your answer. `enter` sends and `ctrl+j` starts a new
+  line. Every conversation keeps its own draft, in every space. `ctrl+p`, Send to a role, opens a
+  role's conversation, whose messages go to whichever member takes them.
 - `@name` in a channel post mentions that peer, as `cotal send` does. A message that mentions you
   is marked `@you`.
 - A line that starts with `/` is a command: `/reply` quotes the newest direct message you received
-  so the next `enter` answers it, and `/whoami`, `/connection`, `/reconnect`, `/status`, `/help` and
+  above the text so the next `enter` answers it, and `/whoami`, `/connection`, `/reconnect`, `/status`, `/help` and
   `/quit` run as in `cotal chat`. `/quit` ends your session. `//` sends a line that starts with `/`.
   The other `cotal chat` commands are refused with a line that says where they run.
 - `ctrl+p`, Change your name, saves the `name` preference for every chat session on this machine.
@@ -80,12 +87,12 @@ login. The line under the conversation says it, as in `c write to #general · yo
 
 On a static-auth space the space's manager admits the session, as it admits a `cotal chat`
 session. The session may post only to the channel it opened on, or to none when it opened on an
-agent, and it ends 15 minutes after it opened; the line shows the time. Posting elsewhere means
-`/quit` and `c` on that channel.
+agent, and it ends 15 minutes after it opened; the line under the box shows the time. Posting
+elsewhere means `/quit`, then `enter` in that channel.
 
 Your session ends when you switch spaces, quit, or type `/quit`. After it ends, `enter` opens a new
-session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent drafts asks first. Quitting closes the session and prints how
-it closed.
+session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent drafts
+asks first. Quitting closes the session and prints how it closed.
 
 ## Vendored OpenCode code
 

@@ -20,6 +20,8 @@ export const meshOf = (c: Conn): Mesh | undefined => (c.phase === "live" || c.ph
 
 export const entryKey = (e: Entry) => (e.kind === "unusable" ? `unusable:${e.source}` : `${e.kind}:${e.space}`)
 export const peerKey = (id: string) => `peer:${id}`
+/** The tree row of an open conversation. A role conversation has none. */
+export const openRowKey = (o: Open) => (o.kind === "channel" ? `channel:${o.channel ?? "*"}` : o.kind === "peer" ? peerKey(o.id) : o.kind === "entry" ? o.key : undefined)
 
 export function treeItems(entries: Entry[], conn: Conn, seen: Record<string, number>): Item[] {
   const items: Item[] = [{ kind: "header", title: "SPACES", right: String(entries.filter((e) => e.kind !== "unusable").length) }]
