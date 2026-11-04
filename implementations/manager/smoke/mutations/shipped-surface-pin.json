@@ -10,11 +10,8 @@
     "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
     "defect class: correct the day it is written, wrong after the next served command.",
     "",
-    "M2 restores revision 44 after the inline spawn persona changes the shipped surface. The closed",
-    "spawn input ships with revision 45, while revision 44 retains once on spawn's turn-unconfirmed",
-    "command, 43 native turn participation, 42 the connector event-plane fact and 41 persona removal.",
-    "The named revision cell runs after the service has",
-    "actual shipped document.",
+    "M2 restores revision 45 after persona input validation changes the shipped surface to 46.",
+    "The named revision cell runs after resolving the actual shipped document over the wire.",
     "",
     "M3 re-introduces the module-scope compile (#1323): every CLI invocation paid ~1.8 CPU-seconds",
     "of Ajv work before its verb was read. The mutant reads every pair from the shared lazy table",
@@ -32,12 +29,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 44 after the inline spawn persona lands",
+      "name": "M2 keep revision 45 after persona input validation changes",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 45, ROWS);",
-      "replace": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);",
-      "expectRed": "the inline spawn persona advances the manager cluster revision past once on spawn and retains its turn-unconfirmed command, native turn participation, persona removal, connector event-plane facts and existing commands",
-      "cell": "the inline spawn persona advances the manager cluster revision past once on spawn and retains its turn-unconfirmed command, native turn participation, persona removal, connector event-plane facts and existing commands"
+      "find": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 46, ROWS);",
+      "replace": "  return buildClusterDocument(MANAGER_CLUSTER_URN, 45, ROWS);",
+      "expectRed": "persona input validation advances the manager cluster revision and retains the existing commands",
+      "cell": "persona input validation advances the manager cluster revision and retains the existing commands"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

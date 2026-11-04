@@ -109,8 +109,16 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("the inline spawn persona advances the manager cluster revision past once on spawn and retains its turn-unconfirmed command, native turn participation, persona removal, connector event-plane facts and existing commands", shipped.revision === 45 && service.commands.has("turn-unconfirmed") && service.commands.has("turn-participate") && service.commands.has("remove-persona") && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
+  check("persona input validation advances the manager cluster revision and retains the existing commands", shipped.revision === 46 && service.commands.has("turn-unconfirmed") && service.commands.has("turn-participate") && service.commands.has("remove-persona") && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
+  const personaInput = service.commands.get("define-persona")!.contract.input;
+  for (const field of ["model", "role", "agent"] as const) {
+    for (const value of ["", "   ", "\t\n", "  "])
+      check(`the resolved persona ${field} contract refuses ${JSON.stringify(value)}`,
+        personaInput.validate({ name: "probe", persona: "Body.", [field]: value }) === false);
+    check(`the resolved persona ${field} contract preserves nonblank input`,
+      personaInput.validate({ name: "probe", persona: "Body.", [field]: "valid-pin" }) === true);
+  }
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
     statusCmd.targeted === false && statusCmd.capability === "manager.read"
@@ -321,7 +329,7 @@ try {
   }
 }
 
-const EXPECTED = 27;
+const EXPECTED = 42;
 check("every declared manager service invoke cell ran", pass + fail === EXPECTED, { ran: pass + fail, expected: EXPECTED });
 console.log(`\n${fail === 0 ? "MANAGER SERVICE INVOKE SMOKE OK ✅" : "MANAGER SERVICE INVOKE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 emitSentinel({ passed: pass, failed: fail });
