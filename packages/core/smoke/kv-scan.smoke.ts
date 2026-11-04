@@ -26,7 +26,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, type ConsumerAPI, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
+import { Kvm, type KV } from "@nats-io/kv";
+import type { Bucket } from "@nats-io/kv/internal";
 import { IncompleteKvScan, isReachable, liveKvEntries, liveKvValues, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
@@ -41,6 +42,26 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Shadow only the binding seam on a derived Bucket; leave the original handle and client untouched.
+// Each cell transforms a real broker-backed consumer through the pinned client's own types.
+const withPushConsumer = (
+  bucket: KV,
+  transform: (oc: PushConsumer) => PushConsumer | Promise<PushConsumer>,
+): KV => {
+  const { js } = bucket as Bucket;
+  const realGet = js.consumers.getPushConsumer.bind(js.consumers);
+  const victim = Object.create(bucket) as KV;
+  Object.defineProperty(victim, "js", {
+    value: {
+      ...js,
+      consumers: {
+        ...js.consumers,
+        getPushConsumer: async (...args: Parameters<typeof realGet>) => transform(await realGet(...args)),
+      },
+    },
+  });
+  return victim;
+};
 
 const srv = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store], { stdio: "ignore" });
 // The `finally` below stays and still does the work on every normal exit; ownership only covers the
@@ -164,26 +185,21 @@ try {
   ] as const) {
     const src = await kvm.create(`truncated_${cut}_${filter ? "f" : "u"}`, { history: 1 });
     for (let i = 0; i < 40; i++) await src.put(`a.k${i}`, enc("v"));
-    const victim = Object.create(src) as typeof src;
-    const rjs = (src as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    Object.defineProperty(victim, "js", {
-      value: { ...rjs, consumers: { ...rjs.consumers, getPushConsumer: async (...a: unknown[]) => {
-        const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-        const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
-        // Real consumer, real bind-time num_pending; the ONLY thing altered is that the iterator
-        // stops early and cleanly, exactly as the client does when the connection drops.
-        return Object.assign(Object.create(oc as object), {
-          consume: async () => {
-            const inner = await realConsume();
-            const gen = (async function* () {
-              let n = 0;
-              for await (const m of inner) { if (n++ >= cut) return; yield m; }
-            })();
-            // The helper closes the iterator in its finally, so the stand-in must carry `close` too.
-            return Object.assign(gen, { close: () => inner.close() });
-          },
-        });
-      } } },
+    const victim = withPushConsumer(src, (oc) => {
+      const realConsume = oc.consume.bind(oc);
+      // Real consumer, real bind-time num_pending; the ONLY thing altered is that the iterator
+      // stops early and cleanly, exactly as the client does when the connection drops.
+      return Object.assign(Object.create(oc), {
+        consume: async () => {
+          const inner = await realConsume();
+          const gen = (async function* () {
+            let n = 0;
+            for await (const m of inner) { if (n++ >= cut) return; yield m; }
+          })();
+          // The helper closes the iterator in its finally, so the stand-in must carry `close` too.
+          return Object.assign(gen, { close: () => inner.close() });
+        },
+      });
     });
     let threw: unknown;
     await liveKvEntries(victim, filter).then(
@@ -292,35 +308,24 @@ try {
     // Mid-scan abort
     const acMid = new AbortController();
     let midErr: unknown;
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
-            return Object.assign(Object.create(oc as object), {
-              consume: async () => {
-                const inner = await realConsume();
-                const gen = (async function* () {
-                  for await (const m of inner) {
-                    acMid.abort(new Error("aborted mid-scan"));
-                    yield m;
-                  }
-                })();
-                // The helper calls `stop` only from the abort listener a signal registers, and this is the one stand-in cell that passes a signal.
-                return Object.assign(gen, {
-                  stop: (err?: Error) => inner.stop(err),
-                  close: () => inner.close(),
-                });
-              },
-            });
-          },
+    const victim = withPushConsumer(k, (oc) => {
+      const realConsume = oc.consume.bind(oc);
+      return Object.assign(Object.create(oc), {
+        consume: async () => {
+          const inner = await realConsume();
+          const gen = (async function* () {
+            for await (const m of inner) {
+              acMid.abort(new Error("aborted mid-scan"));
+              yield m;
+            }
+          })();
+          // The helper calls `stop` only from the abort listener a signal registers, and this is the one stand-in cell that passes a signal.
+          return Object.assign(gen, {
+            stop: (err?: Error) => inner.stop(err),
+            close: () => inner.close(),
+          });
         },
-      },
+      });
     });
     try {
       await liveKvEntries(victim, ">", { signal: acMid.signal });
@@ -342,47 +347,36 @@ try {
     const base = (await jsm.streams.info(stream)).state.consumer_count;
 
     // Controlled reset interposition over a real broker consumer, not a naturally observed rotation.
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
     let rotatedName: string | undefined;
     const rotatedMemory: boolean[] = [];
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const own = oc as unknown as { api: ConsumerAPI };
-            const nativeApi = own.api;
-            own.api = Object.assign(Object.create(nativeApi) as ConsumerAPI, {
-              add: (...args: Parameters<ConsumerAPI["add"]>) => nativeApi.add(...args).then((info) => {
-                rotatedMemory.push(info.config.mem_storage === true);
-                return info;
-              }),
-            });
-            const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
-            return Object.assign(oc, {
-              consume: async () => {
-                // The client's iterator carries `reset` and `consumer`; its public type does not.
-                const inner = await realConsume() as ConsumerMessages & { reset: () => void; consumer: { name: string } };
-                let didReset = false;
-                const gen = (async function* () {
-                  for await (const m of inner) {
-                    if (!didReset) {
-                      didReset = true;
-                      inner.reset();
-                      rotatedName = inner.consumer.name;
-                    }
-                    yield m;
-                  }
-                })();
-                return Object.assign(gen, { close: () => inner.close() });
-              },
-            });
-          },
+    const victim = withPushConsumer(k, (oc) => {
+      const own = oc as unknown as { api: ConsumerAPI };
+      const nativeApi = own.api;
+      own.api = Object.assign(Object.create(nativeApi) as ConsumerAPI, {
+        add: (...args: Parameters<ConsumerAPI["add"]>) => nativeApi.add(...args).then((info) => {
+          rotatedMemory.push(info.config.mem_storage === true);
+          return info;
+        }),
+      });
+      const realConsume = oc.consume.bind(oc);
+      return Object.assign(oc, {
+        consume: async () => {
+          // The client's iterator carries `reset` and `consumer`; its public type does not.
+          const inner = await realConsume() as ConsumerMessages & { reset: () => void; consumer: { name: string } };
+          let didReset = false;
+          const gen = (async function* () {
+            for await (const m of inner) {
+              if (!didReset) {
+                didReset = true;
+                inner.reset();
+                rotatedName = inner.consumer.name;
+              }
+              yield m;
+            }
+          })();
+          return Object.assign(gen, { close: () => inner.close() });
         },
-      },
+      });
     });
 
     const entries = await liveKvEntries(victim);
@@ -390,7 +384,7 @@ try {
     check("rotation: native recreated consumer keeps memory-backed state", rotatedMemory.length > 0 && rotatedMemory.every(Boolean), rotatedMemory);
     await wait(200);
     const afterRotation = (await jsm.streams.info(stream)).state.consumer_count;
-    check("rotation: rotated consumer is deleted in finally (no consumer leaked on broker)", afterRotation === base, { base, afterRotation, rotatedName });
+    check("rotation: rotated consumer is deleted in finally (no consumer leaked on broker)", rotatedName !== undefined && afterRotation === base, { base, afterRotation, rotatedName });
   }
 
   // ── DELETION FAILURE AND TTL BACKSTOP PRESERVATION ──
@@ -402,21 +396,10 @@ try {
 
     let deleteAttempted = false;
     let observedTtlNanos: number | undefined;
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const ci = await (oc as { info: (cached?: boolean) => Promise<{ config: { inactive_threshold?: number } }> }).info(true);
-            observedTtlNanos = ci.config.inactive_threshold;
-            return oc;
-          },
-        },
-      },
+    const victim = withPushConsumer(k, async (oc) => {
+      const ci = await oc.info(true);
+      observedTtlNanos = ci.config.inactive_threshold;
+      return oc;
     });
 
     let scanResult: unknown;
@@ -454,25 +437,14 @@ try {
     const jsm = await jetstreamManager(nc);
     const base = (await jsm.streams.info("KV_incomplete_not_empty")).state.consumer_count;
 
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            return Object.assign(Object.create(oc as object), {
-              consume: async () => {
-                const gen = (async function* () {})();
-                return Object.assign(gen, { close: async () => {} });
-              },
-            });
-          },
+    const victim = withPushConsumer(k, (oc) =>
+      Object.assign(Object.create(oc), {
+        consume: async () => {
+          const gen = (async function* () {})();
+          return Object.assign(gen, { close: async () => {} });
         },
-      },
-    });
+      }),
+    );
 
     let res: unknown;
     try {
@@ -576,8 +548,6 @@ try {
     const stream = "KV_abort_empty_cleanup";
     const jsm = await jetstreamManager(nc);
     await jsm.consumers.add(stream, { durable_name: "unrelated_sentinel", ack_policy: "none", filter_subject: "$KV.abort_empty_cleanup.>" });
-    const js = (bucket as unknown as { js: { consumers: { getPushConsumer: (...args: unknown[]) => Promise<{ info: () => Promise<unknown> }> } } }).js;
-    const getPushConsumer = js.consumers.getPushConsumer.bind(js.consumers);
     const consumers = (bucket as unknown as { jsm: { consumers: { delete: (stream: string, name: string) => Promise<boolean> } } }).jsm.consumers;
     const deleteConsumer = consumers.delete.bind(consumers);
     try {
@@ -616,14 +586,12 @@ try {
       const released = new Promise<void>((resolve) => { release = resolve; });
       let entered!: () => void;
       const deleting = new Promise<void>((resolve) => { entered = resolve; });
-      js.consumers.getPushConsumer = async (...args: unknown[]) => {
-        const oc = await getPushConsumer(...args);
-        oc.info = async () => { throw new Error("original-bind-error"); };
-        return oc;
-      };
+      const victim = withPushConsumer(bucket, (oc) =>
+        Object.assign(oc, { info: async () => { throw new Error("original-bind-error"); } }),
+      );
       consumers.delete = async (stream, name) => { entered(); await released; return deleteConsumer(stream, name); };
       const ac = new AbortController();
-      const failedScan = liveKvEntries(bucket, { signal: ac.signal }).then(
+      const failedScan = liveKvEntries(victim, { signal: ac.signal }).then(
         () => "RETURN", (e: Error) => `THROW:${e.message}`);
       try {
         await Promise.race([deleting, wait(5000).then(() => { throw new Error("failed-bind cleanup not reached"); })]);
@@ -633,7 +601,7 @@ try {
       check("empty cleanup: original scan error survives later abort", failure === "THROW:original-bind-error", failure);
       const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
       check("failed-bind cleanup preserves unrelated sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
-    } finally { js.consumers.getPushConsumer = getPushConsumer; consumers.delete = deleteConsumer; }
+    } finally { consumers.delete = deleteConsumer; }
 
     // The explicit-undefined shape must honor an already-aborted signal BEFORE creating a consumer.
     for (const shape of ["filtered", "options", "explicit-undefined"] as const) {
