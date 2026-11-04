@@ -956,7 +956,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const { root } = verifyClusterManifest(closure, await read(closure));
       const raw = await read(root);
       const document = verifyClusterRoot(root, raw);
-      if (document.urn === "ai.cotal.manager") return { digest: root, document, raw };
+      if (document.urn === "ai.cotal.manager") return { closureDigest: closure, document, raw };
     }
     throw new EpEnvelopeError("failed-precondition", "the manager service spec registers no manager cluster");
   };
