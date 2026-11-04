@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.141.1
+
+### Patch Changes
+
+- b7471d0: Reject empty or whitespace-only `model`, `role` and `agent` arguments to `define-persona` with `bad-request` naming the field, before writing a persona. Previously, empty strings were silently treated as omitted and whitespace-only role or agent values were saved for a later launch to reject. Omitted fields retain their existing inheritance behavior. The manager cluster document advances to revision 46.
+- @cotal-ai/core@0.141.1
+  - @cotal-ai/seat@0.141.1
+  - @cotal-ai/workspace@0.141.1
+
 ## 0.141.0
 
 ### Minor Changes
