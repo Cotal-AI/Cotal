@@ -54,17 +54,20 @@ export class InboxTurn {
   }
 
   /** Select the next automatic batch after already-reserved receive keys, in arrival order. When more
-   *  waits than fits, a channel post takes a seat only while every role request after it still fits,
-   *  so a request never waits behind chatter for a later turn. A role request in the batch that is
-   *  still held for its take is shown only through {@link take} (SPEC §8.1). */
+   *  waits than fits, a channel post takes a seat only while the role requests after it, and the DMs
+   *  before the last of them, still fit, so a request never waits behind chatter for a later turn. A
+   *  role request in the batch that is still held for its take is shown only through {@link take}
+   *  (SPEC §8.1). */
   select(reserved: ReadonlySet<string>, limit: number): InboxItem[] {
     const open = this.source.inboxPreview("automatic").filter((item) => !reserved.has(item.recvKey));
-    let requestsAfter = open.filter((item) => item.kind === "anycast").length;
+    // What a channel post gives way to: every entry up to the last role request that is not a post.
+    const last = open.findLastIndex((item) => item.kind === "anycast");
+    let ahead = open.filter((item, i) => i <= last && item.kind !== "channel").length;
     const selected: InboxItem[] = [];
-    for (const item of open) {
+    for (const [i, item] of open.entries()) {
       if (selected.length >= limit) break;
-      if (item.kind === "anycast") requestsAfter--;
-      else if (item.kind === "channel" && limit - selected.length <= requestsAfter) continue;
+      if (item.kind !== "channel" && i <= last) ahead--;
+      if (item.kind === "channel" && limit - selected.length <= ahead) continue;
       selected.push(item);
     }
     return selected;

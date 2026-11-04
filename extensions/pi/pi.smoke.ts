@@ -406,6 +406,21 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     "a full batch takes and carries a role request that arrived after more channel posts than fit",
   );
   ok(ids.join() === [...posts.slice(0, 31), "req"].join(), "the batch keeps arrival order and leaves out the latest channel posts");
+
+  // A DM between the posts and the request keeps its seat, so a post gives way to both.
+  const mixed = new HeldMesh();
+  mixed.attention = "dnd";
+  mixed.items = [...posts.slice(0, 31).map((id) => item(id, { kind: "channel", channel: "team" })), item("dm")];
+  mixed.gated = [item("req", { kind: "anycast", service: "worker" })];
+  const mixedHost = new FakeHost();
+  const mixedDriver = new PiDriver(mixed as unknown as MeshAgent);
+  mixedDriver.bind(mixedHost);
+  mixedDriver.onSessionStart(context());
+  await new Promise((resolve) => setImmediate(resolve));
+  ok(
+    mixedHost.sent[0]?.details.ids.join() === [...posts.slice(0, 30), "dm", "req"].join(),
+    "a full batch fits a DM and a role request that arrived after the channel posts",
+  );
 }
 
 // A take that leaves a batch with nothing that wakes, and a user turn that starts during a take.

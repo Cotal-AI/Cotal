@@ -18,6 +18,8 @@
     "",
     "PT7 fills a full batch with the first 32 messages again, so a role request that arrived after 32 channel posts waits untaken behind them for a later turn.",
     "",
+    "PT8 counts only the role requests a channel post gives way to, so a DM between the posts and the last request takes the last seat and the request waits.",
+    "",
     "NO BUILD STEP: the suite imports ./src.",
     "",
     "NO COMPLETION MARKER: the suite stops at its first failed check, so its closing line prints only on a pass."
@@ -74,10 +76,18 @@
     {
       "name": "PT7 a full batch takes the first 32 messages whatever waits after them",
       "file": "extensions/pi/src/inbox-turn.ts",
-      "find": "      else if (item.kind === \"channel\" && limit - selected.length <= requestsAfter) continue;\n",
+      "find": "      if (item.kind === \"channel\" && limit - selected.length <= ahead) continue;\n",
       "replace": "",
       "expectRed": "a full batch takes and carries a role request that arrived after more channel posts than fit",
       "cell": "a full batch takes and carries a role request that arrived after more channel posts than fit"
+    },
+    {
+      "name": "PT8 a channel post gives way to the role requests after it but not to the DMs before them",
+      "file": "extensions/pi/src/inbox-turn.ts",
+      "find": "i <= last && item.kind !== \"channel\").length;",
+      "replace": "i <= last && item.kind === \"anycast\").length;",
+      "expectRed": "a full batch fits a DM and a role request that arrived after the channel posts",
+      "cell": "a full batch fits a DM and a role request that arrived after the channel posts"
     }
   ]
 }
