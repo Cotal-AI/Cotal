@@ -17,10 +17,9 @@ const pageDocument = (): Doc => (globalThis as unknown as { document: Doc }).doc
 /** What can take focus by Tab inside a box. */
 const TABBABLE = "a[href], button, input, select, textarea, [tabindex]";
 
-/** Holds keyboard focus inside its children while it is drawn, as a modal sheet or a full-screen
- *  panel needs: focus moves to the first thing that takes it when the trap appears, Tab and Shift Tab
- *  wrap at the ends, Escape calls `onEscape`, and when the trap goes focus returns to where it was
- *  before. The wrapper draws no box of its own (`display: contents`), so the children lay out as if
+/** Holds keyboard focus inside its children while it is drawn, as the phone's places sheet needs:
+ *  focus moves to the first thing that takes it when the trap appears, Tab and Shift Tab wrap at the
+ *  ends, Escape calls `onEscape`, and when the trap goes focus returns to where it was before. The wrapper draws no box of its own (`display: contents`), so the children lay out as if
  *  it were not there. */
 export function FocusTrap({ onEscape, children }: { onEscape: () => void; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);

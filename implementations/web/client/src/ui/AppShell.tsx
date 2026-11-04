@@ -4,7 +4,9 @@ import type { Route } from "../lib/route.js";
 import type { Controller } from "../state/controller.js";
 import type { Theme } from "../lib/theme.js";
 import { FocusTrap } from "./focusTrap.tsx";
+import { Sheet, SheetContent, SheetTitle } from "#client/ui/shadcn/sheet.tsx";
 import { Rail, type Places } from "./Rail.tsx";
+import { useReturnFocus } from "./returnFocus.ts";
 import { TabBar } from "./TabBar.tsx";
 
 /** The page's grid: the rail, the sidebar, the centre and the details panel. A closed panel is not
@@ -13,8 +15,10 @@ import { TabBar } from "./TabBar.tsx";
  *
  *  Below 768px (`phone`) it is mock section F instead: the centre over a bottom tab bar, with no rail
  *  and no sidebar column. The sidebar is a sheet over the page while `sheetOpen`, and the panel, when
- *  open, covers the whole page. Both are modal: each holds focus until it closes, and Escape closes it
- *  (`onSheetClose`, `onPanelClose`). Theme settings live on the rail, so the phone follows the system.
+ *  open, is shadcn's Sheet from the right, titled Details for assistive tech. Both are modal: each
+ *  holds focus until it closes, Escape closes it (`onSheetClose`, `onPanelClose`), and so does a tap on
+ *  the scrim. Focus then goes back where it was. Theme settings live on the rail, so the phone follows
+ *  the system.
  *
  *  Whenever the route changes the shell tells the controller what the address now asks for: a
  *  channel route opens that channel and any other route closes the open one. */
@@ -45,6 +49,7 @@ export function AppShell(props: {
   useEffect(() => {
     syncOpen(controller, target);
   }, [controller, target]);
+  const returnFocus = useReturnFocus();
   if (props.phone) {
     return (
       <div className="ui-app ui-phone" data-view={route.view} data-presence={props.stale ? "stale" : undefined}>
@@ -56,11 +61,12 @@ export function AppShell(props: {
             <aside className="ui-side ui-sheet" aria-label="Space" role="dialog" aria-modal="true">{props.sidebar}</aside>
           </FocusTrap>
         )}
-        {paneOpen && (
-          <FocusTrap onEscape={props.onPanelClose}>
-            <section className="ui-pane ui-pane-full" aria-label="Details" role="dialog" aria-modal="true" data-full="true">{props.panel}</section>
-          </FocusTrap>
-        )}
+        <Sheet open={paneOpen} onOpenChange={(open) => !open && props.onPanelClose()}>
+          <SheetContent side="right" showCloseButton={false} aria-describedby={undefined} {...returnFocus}>
+            <SheetTitle className="sr-only">Details</SheetTitle>
+            {props.panel}
+          </SheetContent>
+        </Sheet>
       </div>
     );
   }

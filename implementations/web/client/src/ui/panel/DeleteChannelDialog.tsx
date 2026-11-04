@@ -63,9 +63,6 @@ export function DeleteChannelDialog({ channel, space, controller, children }: {
           e.preventDefault();
           (field.current as unknown as Focusable | null)?.focus();
         }}
-        // On a phone the details panel under the dialog holds its own focus trap, which listens on
-        // the document. The dialog keeps its keys, so that trap cannot take Escape or Tab from it.
-        onKeyDown={(e) => e.stopPropagation()}
       >
         <AlertDialogHeader>
           <AlertDialogTitle>{`Delete #${channel}?`}</AlertDialogTitle>

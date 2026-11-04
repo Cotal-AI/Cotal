@@ -66,7 +66,7 @@ const tabFor = (route: Route): PanelTab => (route.view === "agent" ? "agent" : (
  *  - A new route resets the tab: Members on a channel route, with the picked agent kept so its tab
  *    stays one click away; the Agent tab on an agent's page, with that agent picked; any other
  *    route drops the pick.
- *  - On a phone (`phone`) the panel covers the whole page, so it starts closed, opens only when the
+ *  - On a phone (`phone`) the panel is a sheet over the page, so it starts closed, opens only when the
  *    reader asks (the member stack, the panel button, picking an agent), closes again on a new route,
  *    and none of that touches the saved choice, which is the wide layout's. */
 export function usePanel(route: Route, phone = false): Panel {

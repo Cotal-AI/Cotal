@@ -174,7 +174,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const needing = waiting(everyone).find((r) => !dismissed.has(needsKey(r)));
   const count = members.length;
   const sheet = useContext(SheetMenu);
-  // On a phone the panel opens over the whole page, so the button says what it does there, as mock F does.
+  // On a phone the panel opens as a sheet over the page, so the button says what it does there, as mock F does.
   const panelLabel = sheet ? "Open agent panel" : "Toggle panel";
   const memberCount = `${count} member${count === 1 ? "" : "s"}`;
   const workingNow = `Working now: ${working.map((r) => r.name).join(", ")}`;
