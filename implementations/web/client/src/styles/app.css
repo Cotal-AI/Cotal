@@ -193,15 +193,6 @@
 .ui-mdot-unread::before, .ui-mdot-unread::after { content: ""; position: absolute; left: 4px; top: -1px; width: 1.6px; height: 11px; background: var(--red); transform: rotate(45deg); }
 .ui-mdot-unread::after { transform: rotate(-45deg); }
 
-/* ---------- dialog ---------- */
-.ui-dialog { width: 440px; max-width: 100%; height: 292px; padding: 20px 20px 16px; display: grid; grid-template-rows: auto auto auto 1fr auto; gap: 10px; }
-.ui-dialog h4 { margin: 0; font: 600 16px/1.3 var(--body); }
-.ui-dialog p { margin: 0; color: var(--dim); font-size: 13px; }
-.ui-dialog label { font-size: 12.5px; color: var(--dim); display: grid; gap: 6px; }
-.ui-field { height: 36px; border-radius: 8px; border: 1px solid var(--card-line); background: var(--bg); padding: 0 10px; display: flex; align-items: center; font: 500 13px/1 var(--mono); color: var(--ink); }
-.ui-dialog .ui-btns { justify-content: flex-end; align-self: end; }
-.ui-scrim { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 5; }
-
 /* ---------- loading and empty ---------- */
 .ui-skel { display: block; height: 10px; border-radius: 5px; background: var(--skel); position: relative; overflow: hidden; }
 .ui-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--shimmer), transparent); transform: translateX(-100%); animation: ui-shimmer 1.4s infinite; }
@@ -322,7 +313,6 @@
 .v3-tabbar button .ui-ic { width: 22px; height: 22px; }
 .v3-tabbar button[aria-current="page"] { color: var(--ink); font-weight: 500; }
 .v3-tabbar [data-slot="badge"] { position: absolute; top: 6px; left: calc(50% + 6px); }
-.ui-dialog { height: 300px; }
 
 /* ---------- app shell (the mock's frame was a fixed demo box, so the page grid is written here) ---------- */
 .ui-app { height: 100vh; display: grid; grid-template-columns: 52px 264px minmax(0, 1fr) 360px; background: var(--bg); }
@@ -352,11 +342,6 @@
 /* A message's avatar and name open the sender's Agent tab. */
 .ui-msg .ui-who { display: inline-flex; border-radius: 6px; }
 .ui-msg .ui-who:hover b { text-decoration: underline; }
-/* The delete dialog's field is a real input, focused as the mock's focused field. */
-input.ui-field { width: 100%; outline: none; }
-input.ui-field:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
-/* A refusal sits in the dialog's own row, so the dialog keeps its size. */
-.ui-dialog-err { color: var(--red-ink); font-size: 12.5px; overflow: hidden; }
 /* ---------- states (mock section B) ---------- */
 /* The marker's plain sentences sit under its label, one to a line. The Activity header has room for
    the label only. */

@@ -180,6 +180,8 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
   --font-sans: var(--body);
   --font-mono: var(--mono);
   /* Rhea's rounded-2xl buttons, badges and tabs land on our 9px. */

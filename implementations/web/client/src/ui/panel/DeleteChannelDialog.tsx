@@ -1,43 +1,46 @@
 import { Delete02Icon } from "@hugeicons/core-free-icons";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../../icons/Icon.tsx";
-import { Button } from "#client/ui/shadcn/button.tsx";
+import { Alert, AlertDescription } from "#client/ui/shadcn/alert.tsx";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "#client/ui/shadcn/alert-dialog.tsx";
+import { Field, FieldLabel } from "#client/ui/shadcn/field.tsx";
+import { Input } from "#client/ui/shadcn/input.tsx";
 import type { Controller } from "../../state/controller.js";
 
-/** The part of an element the focus trap uses. Spelled out rather than taken from the DOM lib,
+/** The part of an element the dialog focuses. Spelled out rather than taken from the DOM lib,
  *  because the suites typecheck the components that render on the server with no DOM lib. */
 type Focusable = { focus(): void };
-type Box = { querySelectorAll(selector: string): ArrayLike<Focusable> };
-
-/** What Tab moves between inside the dialog. A disabled button is skipped, as the browser skips it. */
-const TABBABLE = "input, button:not([disabled])";
 
 /** The type-the-name check before a channel is deleted (mock section B, before and after typing).
+ *  `children` is the button that opens it.
  *
  *  - The destructive button names the channel and stays disabled until the field holds the name
  *    exactly, so a wrong tab cannot delete the wrong channel.
- *  - The dialog keeps one size whatever is typed: the error has its own row, empty until a refusal.
- *  - Confirming calls `controller.deleteChannel`. A refusal keeps the dialog open and shows the
- *    server's error in it, as it came.
- *  - The field takes focus when the dialog opens, Tab stays inside it, and Escape closes it. A click
- *    on the scrim around it puts focus back on the field. The caller returns focus to what opened
- *    it, in `onClose`.
- *  - The scrim is fixed to the viewport, so it covers the whole page wherever the dialog is drawn. */
-export function DeleteChannelDialog({ channel, space, controller, onClose }: {
+ *  - Confirming calls `controller.deleteChannel` and closes the dialog once it resolves. A refusal
+ *    keeps the dialog open and shows the server's error in it, as it came.
+ *  - The field takes focus when the dialog opens, Tab stays inside it, and Escape or Keep channel
+ *    closes it. Closing puts focus back on the button that opened it. Each opening starts empty. */
+export function DeleteChannelDialog({ channel, space, controller, children }: {
   channel: string;
   space: string | null;
   controller: Controller | null;
-  onClose: () => void;
+  children: ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const box = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
-  const title = useId();
-  const body = useId();
-  useEffect(() => (field.current as unknown as Focusable | null)?.focus(), []);
+  const id = useId();
   const matches = typed === channel;
+
+  const onOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (!next) return;
+    setTyped("");
+    setError(null);
+    setBusy(false);
+  };
 
   const confirm = async () => {
     if (!matches || controller === null || busy) return;
@@ -45,68 +48,63 @@ export function DeleteChannelDialog({ channel, space, controller, onClose }: {
     setError(null);
     try {
       await controller.deleteChannel(channel);
-      onClose();
+      setOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onClose();
-      return;
-    }
-    if (e.key !== "Tab" || box.current === null) return;
-    const items = Array.from((box.current as unknown as Box).querySelectorAll(TABBABLE));
-    if (items.length === 0) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    const at = e.target as unknown;
-    if (e.shiftKey && at === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && at === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
-
   return (
-    <div
-      className="ui-scrim"
-      onMouseDown={(e) => {
-        // A click on the scrim would move focus to the page behind, where Escape no longer reaches
-        // the dialog. It keeps focus in the dialog instead, on the field.
-        if (e.target !== e.currentTarget) return;
-        e.preventDefault();
-        (field.current as unknown as Focusable | null)?.focus();
-      }}
-    >
-      <div ref={box} className="ui-card ui-dialog" role="dialog" aria-modal="true" aria-labelledby={title} aria-describedby={body} onKeyDown={onKeyDown}>
-        <h4 id={title}>{`Delete #${channel}?`}</h4>
-        <p id={body}>{`This deletes every message in #${channel} for everyone${space ? ` on ${space}` : ""}. You can't undo it. If anyone posts to #${channel} again, it comes back empty.`}</p>
-        <label>
-          <span>Type <b style={{ color: "var(--ink)" }}>{channel}</b> to confirm</span>
-          <input
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogTrigger asChild>{children}</AlertDialogTrigger>
+      <AlertDialogContent
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          (field.current as unknown as Focusable | null)?.focus();
+        }}
+        // On a phone the details panel under the dialog holds its own focus trap, which listens on
+        // the document. The dialog keeps its keys, so that trap cannot take Escape or Tab from it.
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle>{`Delete #${channel}?`}</AlertDialogTitle>
+          <AlertDialogDescription>{`This deletes every message in #${channel} for everyone${space ? ` on ${space}` : ""}. You can't undo it. If anyone posts to #${channel} again, it comes back empty.`}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <Field>
+          <FieldLabel htmlFor={id}>
+            <span>Type <b>{channel}</b> to confirm</span>
+          </FieldLabel>
+          <Input
             ref={field}
-            className="ui-field"
+            id={id}
             value={typed}
             autoComplete="off"
             spellCheck={false}
             onChange={(e) => setTyped((e.target as unknown as { value: string }).value)}
           />
-        </label>
-        <span className="ui-dialog-err" role="alert">{error}</span>
-        <div className="ui-btns">
-          <Button type="button" variant="outline" onClick={onClose}>Keep channel</Button>
-          <Button type="button" variant="destructive" disabled={!matches || busy || controller === null} onClick={() => void confirm()}>
+        </Field>
+        {error !== null && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep channel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={!matches || busy || controller === null}
+            onClick={(e) => {
+              // The dialog closes only once the delete resolves, so a refusal can show in it.
+              e.preventDefault();
+              void confirm();
+            }}
+          >
             <Icon icon={Delete02Icon} data-icon="inline-start" />
             {`Delete #${channel}`}
-          </Button>
-        </div>
-      </div>
-    </div>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
