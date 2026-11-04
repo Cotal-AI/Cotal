@@ -4,6 +4,7 @@ import { openRoutingChatSession } from "./open-session.js";
 import type { AdmittedChatSession } from "./session.js";
 import { openStaticChatSession } from "./static-session.js";
 import { openUserChatSession } from "./user-session.js";
+import type { ChatWords } from "./words.js";
 
 /** A user-mode session asks for the auth service's whole lifetime cap, 8 hours, which it never
  *  extends. Each bearer within it still lasts at most 15 minutes. */
@@ -18,16 +19,16 @@ export type ChatAdmission =
   | { readonly mode: "user"; readonly label: string; readonly channels: readonly string[]; readonly read: readonly string[]; readonly post: readonly string[]; readonly ttlSec: number };
 
 /** Admit through the one adapter the mode names. Each adapter refuses a target of another mode.
- *  `reopen` names the command that opens a session on a channel, for refusals that suggest one;
- *  `control` asks the manager that admits and retires a static session. */
+ *  `words` are the front end's clauses that end the session's refusals; `control` asks the manager
+ *  that admits and retires a static session. */
 export function openChatSession(target: MeshTarget, admission: ChatAdmission, options: {
-  readonly reopen: (channel: string) => string;
+  readonly words: ChatWords;
   readonly control: ControlClient;
 }): Promise<AdmittedChatSession> {
-  const { reopen, control } = options;
+  const { words, control } = options;
   switch (admission.mode) {
-    case "open": return openRoutingChatSession(target, { ...admission, reopen });
-    case "auth": return openStaticChatSession(target, { ...admission, reopen, control });
-    case "user": return openUserChatSession(target, { ...admission, reopen });
+    case "open": return openRoutingChatSession(target, { ...admission, words });
+    case "auth": return openStaticChatSession(target, { ...admission, words, control });
+    case "user": return openUserChatSession(target, { ...admission, words });
   }
 }

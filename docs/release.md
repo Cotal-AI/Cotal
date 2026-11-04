@@ -13,8 +13,14 @@ minor bump. Write its first sentence as a headline a user can understand on its 
 Release and Discord announcement lead with that sentence; put the mechanism after it.
 
 Every push to `main` that leaves changesets there runs the Changesets workflow. The workflow opens
-or updates the version PR, builds the native binaries, and packs the version PR head with them.
-That pack is the release. It is ready about four minutes after the push.
+or updates the version PR and packs its head with all native binaries. That pack is the release.
+
+Unchanged native inputs can reuse a complete, unexpired artifact set from a successful `main` push
+of this repository's Changesets workflow. Source files, SDK pins, build scripts, install inputs and
+build instructions must match; the packing checkout checks them again. The original builder commit
+stays in each receipt, and the existing architecture, binary-hash and source-hash checks still run.
+No receipt is rewritten to name the application release commit. Changed inputs or missing artifacts
+require fresh native builds; an API or validation failure refuses rather than using unverified bytes.
 
 Before you run the publish command, have the builds and a focused upgrade check ready. A fresh
 install that succeeds does not prove that an existing installation upgrades. CI, review rounds,

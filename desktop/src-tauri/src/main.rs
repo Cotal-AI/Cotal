@@ -17,7 +17,7 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     let directory = executable
         .parent()
         .ok_or("the application has no directory")?;
-    let node = directory.join("cotal-node.exe");
+    let node = directory.join(format!("{}.exe", cotal_desktop::NODE_SIDECAR));
     let runtime = directory.join("runtime");
     let entry = runtime.join("dist").join("cotal.js");
     if !node.is_file() || !entry.is_file() || !runtime.join("desktop-runtime.json").is_file() {

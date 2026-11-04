@@ -23,7 +23,7 @@
 import { assertValidRole, MAX_NAME_LENGTH } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import type { AdmittedChatSession, CloseReport, PublishResult, Result, SessionEvent, SessionMessage } from "@cotal-ai/workspace/chat";
-import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { concreteChannelProblem } from "@cotal-ai/workspace";
 
 export const STDIO_SCHEMA_VERSION = 1;
 /** Bound on one request line, in UTF-16 code units. Provisional; set at review. */

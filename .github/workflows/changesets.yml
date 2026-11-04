@@ -62,8 +62,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: read
     outputs:
       sha: ${{ steps.head.outputs.sha }}
+      native-run: ${{ steps.native.outputs.run }}
+      native-source: ${{ steps.native.outputs.source }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -89,10 +92,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: printf 'sha=%s\n' "$(gh api "repos/$GITHUB_REPOSITORY/commits/changeset-release/main" --jq .sha)" >> "$GITHUB_OUTPUT"
 
-  # Built from the pushed commit while the version PR is written. Versioning changes no native source.
+      - run: node --test scripts/native-artifact-source.test.mjs
+      - name: Select native build artifacts with identical inputs
+        id: native
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/native-artifact-source.mjs select "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  # Rebuild when native inputs change or no complete, unexpired artifact set is available.
   native:
-    needs: select
-    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
+    needs: [select, version-pr]
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version' && needs.version-pr.outputs.native-run == ''
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -121,8 +132,8 @@ jobs:
           if-no-files-found: error
 
   workspace-native:
-    needs: select
-    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
+    needs: [select, version-pr]
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version' && needs.version-pr.outputs.native-run == ''
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
@@ -130,12 +141,16 @@ jobs:
   # Packs the version PR head. The publish job of the version PR's merge consumes this pack.
   pack:
     needs: [select, version-pr, native, workspace-native]
+    if: always() && !cancelled() && needs.select.outputs.mode == 'version' && needs.version-pr.result == 'success' && (needs.version-pr.outputs.native-run != '' || (needs.native.result == 'success' && needs.workspace-native.result == 'success'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.version-pr.outputs.sha }}
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
       - name: Require the version PR head made from this commit
         run: test "$(git rev-parse HEAD^)" = "$GITHUB_SHA"
@@ -169,9 +184,15 @@ jobs:
           name: staged-publish-plan
           path: ${{ runner.temp }}/publish-plan.json
           if-no-files-found: error
+      - name: Verify native input identity against the packing tree
+        env:
+          NATIVE_SOURCE: ${{ needs.version-pr.outputs.native-source }}
+        run: node scripts/native-artifact-source.mjs verify "$NATIVE_SOURCE" HEAD
       - run: pnpm --filter '!./examples/**' -r build
       - uses: actions/download-artifact@v4
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.version-pr.outputs.native-run || github.run_id }}
           pattern: '*-native-*'
           path: ${{ runner.temp }}/native
       - name: Assemble Cotal's native binaries
@@ -179,7 +200,7 @@ jobs:
           node scripts/seat-assemble-natives.mjs
           node scripts/workspace-assemble-natives.mjs
         env:
-          NATIVE_SOURCE: ${{ github.sha }}
+          NATIVE_SOURCE: ${{ needs.version-pr.outputs.native-source }}
           SEAT_NATIVE_X64: ${{ runner.temp }}/native/seat-native-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/native/seat-native-arm64/peercred.node
           SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/seat-native-darwin-x64/peercred.node
