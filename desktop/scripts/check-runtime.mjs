@@ -22,11 +22,25 @@ try {
   const version = run(['--version']); assert.equal(version.status, 0); assert.equal(version.stdout.trim(), `cotal-ai ${manifest.version}`);
   console.log('PASS relocated stock CLI reports its pinned version');
   const about = run(['daemon', 'desktop'], '{"op":"about"}\n');
-  if (about.status !== 0) console.error(JSON.stringify({
-    check: 'desktop-about', status: about.status, signal: about.signal,
-    error: about.error?.message,
-    stdout: (about.stdout ?? '').slice(-4000), stderr: (about.stderr ?? '').slice(-4000),
-  }));
+  if (about.status !== 0) {
+    const report = (check, result) => console.error(JSON.stringify({
+      check, status: result.status, signal: result.signal, error: result.error?.message,
+      stdout: (result.stdout ?? '').slice(-4000), stderr: (result.stderr ?? '').slice(-4000),
+    }));
+    const probe = (check, executable, args, input) => report(check, spawnSync(executable, args, {
+      cwd: scratch, env, input, encoding: 'utf8', timeout: 30000,
+    }));
+    report('desktop-about', about);
+    const input = '{"op":"about"}\n';
+    probe('copied-node-stdin-os', node, ['--input-type=module', '-e',
+      "import { hostname, platform, arch, release, totalmem } from 'node:os'; let text = ''; for await (const chunk of process.stdin) { text += chunk; if (text.includes('\\n')) break; } JSON.parse(text); hostname(); platform(); arch(); release(); totalmem(); console.log('stdin-os-ok');"], input);
+    probe('stock-node-about', process.execPath, [cli, 'daemon', 'desktop'], input);
+    const branded = join(scratch, 'cotal-node.exe'), canonical = join(scratch, 'node.exe');
+    cpSync(node, branded); cpSync(node, canonical);
+    assert.equal(createHash('sha256').update(readFileSync(branded)).digest('hex'), createHash('sha256').update(readFileSync(canonical)).digest('hex'));
+    probe('same-directory-branded-about', branded, [cli, 'daemon', 'desktop'], input);
+    probe('same-directory-canonical-about', canonical, [cli, 'daemon', 'desktop'], input);
+  }
   assert.equal(about.status, 0); assert.equal(JSON.parse(about.stdout).result.version, manifest.version);
   console.log('PASS relocated desktop bridge runs with bundled Node');
   const status = run(['daemon', 'desktop'], '{"op":"status"}\n'); assert.equal(status.status, 0); assert.equal(JSON.parse(status.stdout).ok, false);
