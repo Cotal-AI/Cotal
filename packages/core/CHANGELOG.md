@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.141.8
+
+### Patch Changes
+
+- 29b229c: Export one UserAuthLaunch type for the user-mode identity carried through launch options, material and manager provisioning/resume data. Check the material reader's reconstruction against the complete declared type without changing runtime validation or serialization.
+
 ## 0.141.7
 
 No changes in this release.
