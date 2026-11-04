@@ -186,7 +186,7 @@ export function RoleDialog(props: { done: (role: string) => void }) {
   const [error, setError] = createSignal<string>()
   let input: InputRenderable | undefined
   const save = () => {
-    const r = parseRecipient(`role:${input?.value.trim() ?? ""}`)
+    const r = parseRecipient(`role:${input?.value.trim() ?? ""}`, "type a role")
     if (!r.ok) return setError(r.error)
     if (r.recipient.kind === "role") props.done(r.recipient.role)
   }

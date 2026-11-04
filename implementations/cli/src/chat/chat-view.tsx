@@ -166,7 +166,7 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
       if (inkKey.return) {
         const n = Number(picker.typed);
         if (Number.isInteger(n) && n >= 1 && n <= picker.choices.length) return void choose(picker.choices[n - 1]!.recipient);
-        const parsed = parseRecipient(picker.typed);
+        const parsed = parseRecipient(picker.typed, "pick a number");
         if (!parsed.ok) return update(addNotice(latest.current, "failed", parsed.error));
         return void choose(parsed.recipient);
       }
