@@ -5,7 +5,7 @@ import { Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
 import { useDialog } from "../vendor/opencode/packages/tui/src/ui/dialog"
 import { DialogSelect, type DialogSelectOption } from "../vendor/opencode/packages/tui/src/ui/dialog-select"
-import { draftKey, edited, moveDraft, replyFrom, settled, submit, type ComposerState, type Effect, type Tone } from "./compose.js"
+import { draftKey, edited, moveDraft, replyFrom, settled, submit, unsent, type ComposerState, type Effect, type Tone } from "./compose.js"
 import type { Mesh } from "./live.js"
 import { clock, conversationRecipient, peerOf, type Open } from "./screen.js"
 import type { Talk } from "./talk.js"
@@ -109,6 +109,10 @@ export function Composer(props: {
       case "open":
         return props.talk.open(effect.postTo)
       case "publish": {
+        if (effect.open) {
+          await props.talk.open(effect.open.postTo)
+          if (props.talk.phase().phase !== "open") return props.setState(unsent)
+        }
         const result = await props.talk.publish(effect.to, effect.text)
         props.setState((s) => settled(s, result))
         return show(k)

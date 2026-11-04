@@ -24,16 +24,19 @@ export type ComposerState = {
   notice?: { key: DraftKey; tone: Tone; lines: readonly string[] }
 }
 
-/** What Enter asks the app to do. Opening a session and sending are separate effects, so no path
- *  opens and sends in one step. */
+/** What Enter asks the app to do. A publish with `open` is the first message while watching: the
+ *  session opens, then the message goes, and nothing goes when the session does not open. A plain
+ *  `open` reopens after a session ended or was refused and never sends. */
 export type Effect =
   | { kind: "none" }
   | { kind: "open"; postTo?: string }
-  | { kind: "publish"; to: Recipient; text: string }
+  | { kind: "publish"; to: Recipient; text: string; open?: { postTo?: string } }
   | { kind: "slash"; command: AppSlash }
   | { kind: "reply-latest" }
   | { kind: "end" }
   | { kind: "pick" }
+
+const postTo = (r: Recipient | undefined) => (r?.kind === "channel" ? { postTo: r.channel } : {})
 
 /** Which shared commands the app runs, and why the rest do not. A record over every shared name, so
  *  a new shared command fails the build until it is classified here. */
@@ -69,7 +72,8 @@ const withDraft = (state: ComposerState, key: DraftKey, draft: Draft): ComposerS
 /** The textarea changed. */
 export const edited = (state: ComposerState, key: DraftKey, text: string): ComposerState => withDraft(state, key, { ...state.drafts[key], text })
 
-/** Enter. The session's phase first, then the shared rule. */
+/** Enter. The session's phase first, then the shared rule. While watching, only a message opens the
+ *  session; a blank line or a command leaves the human unseen. */
 export function submit(
   state: ComposerState,
   key: DraftKey,
@@ -80,31 +84,33 @@ export function submit(
   const consumed = (effect: Effect, notice?: ComposerState["notice"]) => ({ state: { ...withDraft(state, key, { ...draft, text: "" }), notice }, effect })
   const p = at.phase
   if (p.phase === "opening") return note("waiting", `still joining ${at.space} as ${p.name}; your draft is kept`)
-  if (p.phase !== "open") {
-    const open: Effect = { kind: "open", ...(at.recipient?.kind === "channel" ? { postTo: at.recipient.channel } : {}) }
+  if (p.phase === "ended" || p.phase === "refused") {
+    const open: Effect = { kind: "open", ...postTo(at.recipient) }
     return p.phase === "ended" && at.name ? note("hint", `new session as ${at.name}; enter sends`, open) : { state: { ...state, notice: undefined }, effect: open }
   }
-  const d = submitDraft(draft.text, { recipient: at.recipient, connection: p.connection, sending: state.sending !== undefined, pick: "tab" })
+  const watching = p.phase === "watching"
+  const d = submitDraft(draft.text, { recipient: at.recipient, connection: watching ? "connected" : p.connection, sending: state.sending !== undefined, pick: "tab" })
   switch (d.kind) {
     case "nothing":
       return { state, effect: { kind: "none" } }
     case "hold":
       return note(d.tone, d.text, d.pick ? { kind: "pick" } : { kind: "none" })
     case "leave":
-      return consumed({ kind: "end" })
+      return watching ? note("hint", "no chat session is open") : consumed({ kind: "end" })
     case "slash": {
       const c = d.command
       const head = draft.text.trim().split(/\s+/)[0]
       if (APP_SLASH[c.name] === "tree") return note("failed", `${head} is not in the app; the tree lists who is here`)
       if (APP_SLASH[c.name] === "cli") return note("failed", `${head} is not in the app; run it in \`cotal chat\``)
-      if (c.name === "reply") return consumed({ kind: "reply-latest" })
       if (c.name === "help") return consumed({ kind: "none" }, { key, tone: "hint", lines: [appSlashHelp()] })
+      if (watching) return note("hint", `${head} needs a chat session, which your first message opens`)
+      if (c.name === "reply") return consumed({ kind: "reply-latest" })
       return consumed({ kind: "slash", command: c as AppSlash })
     }
     case "publish":
       return {
         state: { ...state, sending: { key, to: d.to, text: draft.text }, notice: { key, tone: "waiting", lines: [`sending to ${recipientLabel(d.to, "tab")}…`] } },
-        effect: { kind: "publish", to: d.to, text: d.text },
+        effect: { kind: "publish", to: d.to, text: d.text, ...(watching ? { open: postTo(d.to) } : {}) },
       }
   }
 }
@@ -122,6 +128,13 @@ export function settled(state: ComposerState, result: PublishResult): ComposerSt
   const lines = result.outcome === "unknown" ? [out.notice!.text] : [said.text, ...(out.notice ? [out.notice.text] : [])]
   const { sending: _, ...rest } = withDraft(state, s.key, { text: out.draft, ...(reply ? { reply } : {}) })
   return { ...rest, notice: { key: s.key, tone: out.notice?.tone ?? said.tone, lines } }
+}
+
+/** The session a first message needed did not open: nothing was sent, the draft stays, and the
+ *  session's own line says why. */
+export function unsent(state: ComposerState): ComposerState {
+  const { sending: _, ...rest } = state
+  return { ...rest, notice: undefined }
 }
 
 /** `/reply`: quote the newest direct message the session received in the draft for `key`. */

@@ -59,8 +59,8 @@ last model stays on screen), closed, or not connected with the reason in the mid
 
 ## Talking
 
-You watch a space without appearing in it. The first time you write, the app opens a chat session
-for you and you appear on the roster under your name: your saved `name` preference, else your OS
+You watch a space without appearing in it. Your first message opens a chat session and sends in one
+step, and you appear on the roster under your name: your saved `name` preference, else your OS
 login. The line under the conversation says it, as in `c write to #general · you appear as manas`.
 
 - `c` writes to the open conversation. A channel gets a post, an agent or endpoint gets a direct
@@ -83,9 +83,8 @@ session. The session may post only to the channel it opened on, or to none when 
 agent, and it ends 15 minutes after it opened; the line shows the time. Posting elsewhere means
 `/quit` and `c` on that channel.
 
-Your session ends when you switch spaces, quit, or type `/quit`. The next `c`, or `enter` once the
-line says the session ended, opens a new session under a new identity, and opening a session never
-sends anything. Quitting with unsent drafts asks first. Quitting closes the session and prints how
+Your session ends when you switch spaces, quit, or type `/quit`. After it ends, `enter` opens a new
+session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent drafts asks first. Quitting closes the session and prints how
 it closed.
 
 ## Vendored OpenCode code

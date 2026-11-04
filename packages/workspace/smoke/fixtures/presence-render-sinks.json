@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 995,
+    "total": 994,
     "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 777
+    "non-render/control": 776
   },
   "renderers": [
     {
@@ -7024,13 +7024,6 @@
       "anchor": "cur === done ? { phase: \"idle\" } : cur)), STOP_NOTICE_",
       "class": "non-render/control",
       "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "conversationRecipient(o, m)",
-      "class": "non-render/control",
-      "rationale": "App composer: derives the channel a new session may post to from the open conversation; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/app.tsx",

@@ -11,7 +11,7 @@ import type { Catalog, Entry } from "./catalog.js"
 import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
-import { clock, conversationFeed, conversationRecipient, entryKey, meshOf, type Open, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import { clock, conversationFeed, entryKey, meshOf, type Open, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
 import type { Talk } from "./talk.js"
 
 type ComposerModule = typeof import("./composer.js")
@@ -99,18 +99,10 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   })
 
   // The compose mode is pushed before the textarea takes focus, so letters reach the text and the
-  // tree's keys stay off until esc pops it. Writing opens the session when none is open.
+  // tree's keys stay off until esc pops it. Writing opens no session: the first message does.
   let popMode: (() => void) | undefined
   const startCompose = () => {
-    const t = talk()
-    const m = mesh()
-    const o = open()
-    if (!t || !m || o.kind === "entry") return toast.show({ variant: "info", message: "Open a space to write in it" })
-    const p = t.phase().phase
-    if (p === "watching" || p === "ended" || p === "refused") {
-      const r = conversationRecipient(o, m)
-      void t.open(r?.kind === "channel" ? r.channel : undefined)
-    }
+    if (!talk() || !mesh() || open().kind === "entry") return toast.show({ variant: "info", message: "Open a space to write in it" })
     popMode ??= keymap.mode.push("compose")
     setComposing(true)
   }
