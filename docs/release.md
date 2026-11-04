@@ -9,7 +9,8 @@ together. Examples are private and never publish.
 ## Prepare the version
 
 Add a changeset with each package change. These packages are 0.x, so a breaking change takes a
-minor bump.
+minor bump. Write its first sentence as a headline a user can understand on its own. The GitHub
+Release and Discord announcement lead with that sentence; put the mechanism after it.
 
 Every push to `main` that leaves changesets there runs the Changesets workflow. The workflow opens
 or updates the version PR, builds the native binaries, and packs the version PR head with them.
@@ -88,11 +89,22 @@ fail the job and skip the Release. The install check uses a fresh cache and `--p
 ask npm to revalidate metadata. That does not force npm's upstream caches to converge.
 
 The next job cuts one GitHub Release for the version, tagged `v<version>`. Its notes open with the
-install command, continue with the changeset summaries, and end with the pull requests merged
-since the previous release. If a version has no changelog section or no summaries, the detail
-script fails with a diagnostic. The job keeps that stderr, emits a warning, and creates the release
-without the optional summaries. Any other failure of the detail script takes the same
-non-blocking path. The Discord announcement follows the release.
+install command and a restart reminder, then `## What changed`: one sentence per change, major and
+minor changes before patches. Full summaries follow in a collapsed block, then the merged pull
+requests. The summaries cover versions since the previous Release, including versions that never
+received a Release, and are deduplicated across packages. Both layers keep whole changes within
+the remaining release-body byte budget and name any omissions.
+
+The job installs the Markdown parser from the workspace lockfile. If that installation fails, a
+version has no changelog section or summaries, or the detail script fails otherwise, the job keeps
+the diagnostic, emits a warning, and creates the release without the optional summaries. These
+steps do not add a publication gate.
+
+The Discord announcement carries only the `## What changed` bullets and an upgrade command, links
+to the Release, and drops whole bullets to stay within the embed limit. It refuses a body without
+that section. The request reads the webhook credential in-process, never from a command argument,
+and prints no request error that could contain the credential. Redirects are refused and failed
+requests are not retried automatically; check Discord before retrying an unknown delivery.
 
 Before you report a fix as delivered, check the upgrade from an existing installation that the fix
 affects.

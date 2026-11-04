@@ -338,6 +338,14 @@ jobs:
           version=$(node --print "require('./bin/package.json').version")
           node scripts/verify-publish-closure.mjs "$version" --deadline-ms=1500000
           node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
+      # Notes use the workspace's Markdown parser. Installation failure must not block publication.
+      - uses: pnpm/action-setup@v6.0.8
+        continue-on-error: true
+        with:
+          cache: true
+      - name: Install release-note dependencies
+        continue-on-error: true
+        run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
       # The notes lead with the changeset summaries (what changed, as written in the package
       # changelogs) and end with GitHub's generated list of merged PRs since the previous version
       # release, which .github/release.yml keeps the version PR out of. GH_PAT rather than the job
@@ -358,13 +366,17 @@ jobs:
           # GitHub refuses a release body over 125000 characters (0.101.0 hit it with 266 merged
           # PRs); the changeset detail gets what the generated PR list leaves, minus a margin.
           budget=$((120000 - $(printf '%s' "$notes" | wc -c)))
+          # Include versions not carried by a prior Release, retaining the existing byte budget.
+          detail_args=("$version" "--max-bytes=$budget")
+          if [ -n "$previous" ]; then detail_args+=(--since "${previous#v}"); fi
           # Summary failures stay visible but do not block the generated release notes.
-          if ! detail=$(node scripts/release-notes-detail.mjs "$version" "--max-bytes=$budget"); then
+          if ! detail=$(node scripts/release-notes-detail.mjs "${detail_args[@]}"); then
             echo "::warning::Changeset summaries could not be generated for $version; publishing generated release notes only."
             detail=""
           fi
           {
             printf 'Install or update: `npm i -g cotal-ai@%s`\n\n' "$version"
+            printf 'Restart running Cotal processes and agent sessions to use the new code.\n\n'
             if [ -n "$detail" ]; then printf '%s\n' "$detail"; fi
             printf '\n%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
