@@ -22,6 +22,7 @@ import { Navigate } from "../navigate.js";
 import { PlaneNote } from "../session/PlaneNote.tsx";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
 import { Button } from "../shadcn/button.tsx";
+import { Marker, MarkerContent } from "../shadcn/marker.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
 import { Skeleton } from "../shadcn/skeleton.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
@@ -29,6 +30,7 @@ import { Toggle } from "../shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
 import { StatusWord } from "../Status.tsx";
 import { WorkList } from "../work/WorkList.tsx";
+import { reducedMotion } from "../../viewport.ts";
 
 /** A reader within this many pixels of the bottom is following the work again. */
 const PINNED_PX = 24;
@@ -97,10 +99,6 @@ function NewSteps({ steps, away }: { steps: readonly StepKey[]; away: boolean })
     </Button>
   );
 }
-
-/** Whether the reader asked for reduced motion. Read on a click only, so a server render never asks. */
-const reducedMotion = (): boolean =>
-  (globalThis as { matchMedia?: (q: string) => { matches: boolean } }).matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 
 /** One agent as a place (overhaul mock B1, C, D and E): `#/agent/<id>` with Work, Messages and
  *  Profile tabs.
@@ -259,12 +257,20 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
           </PlaneNote>
         )}
         {more && !atCap && (
-          <div className="ui-cutoff">
+          <Marker variant="separator" className="mb-3">
             <Button type="button" variant="outline" size="sm" disabled={load === "loading"} onClick={() => void controller?.loadEarlier(id)}>Load earlier</Button>
-          </div>
+          </Marker>
         )}
-        {more && atCap && <div className="ui-cutoff">Showing the newest 2,000 events</div>}
-        {load === "loading" && <div className="ui-cutoff" role="status">Loading</div>}
+        {more && atCap && (
+          <Marker className="mb-3">
+            <MarkerContent>Showing the newest 2,000 events</MarkerContent>
+          </Marker>
+        )}
+        {load === "loading" && (
+          <Marker className="mb-3" role="status">
+            <MarkerContent>Loading</MarkerContent>
+          </Marker>
+        )}
         {list}
       </div>
     );
@@ -344,7 +350,7 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
         <TabsContent value="work" className="ox-tabc">
           <MessageScrollerProvider autoScroll={following}>
             <MessageScroller className="ox-scroller">
-              <MessageScrollerViewport ref={viewport} aria-label="Work" className="ox-viewport" onScroll={onScroll}>
+              <MessageScrollerViewport ref={viewport} aria-label="Work" onScroll={onScroll}>
                 <MessageScrollerContent className="ox-scrollc">{body}</MessageScrollerContent>
               </MessageScrollerViewport>
               <NewSteps steps={steps} away={!following} />

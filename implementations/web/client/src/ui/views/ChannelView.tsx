@@ -1,13 +1,15 @@
 import { Loading03Icon, Menu01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons";
-import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { useContext, useMemo, type ReactNode } from "react";
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Marker, MarkerContent } from "#client/ui/shadcn/marker.tsx";
+import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
 import { Toggle } from "#client/ui/shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
-import { composeKey, type ComposeTarget } from "../../lib/compose.js";
+import type { ComposeTarget } from "../../lib/compose.js";
 import { channelMembers } from "../../lib/members.js";
 import { nameIndex, type NameIndex } from "../../lib/names.js";
 import { rosterRows, waiting, type RosterRow } from "../../lib/roster.js";
@@ -21,11 +23,10 @@ import { MessageRow } from "../MessageRow.tsx";
 import { NeedsCard, needsKey, useDismissed } from "../NeedsCard.tsx";
 import { SheetMenu } from "../sheet.js";
 import { WorkingLine } from "../WorkingLine.tsx";
+import { reducedMotion } from "../../viewport.ts";
 
 /** How many members the header stack draws before the count alone carries the rest. */
 const STACK = 4;
-/** A reader within this many pixels of the bottom is following the conversation. */
-const PINNED_PX = 24;
 /** Stable empty list, so the store selector returns the same reference while nothing is open. */
 const NONE: StoredMessage[] = [];
 
@@ -85,7 +86,13 @@ export function MessageList({ messages, idx, peers }: { messages: StoredMessage[
     const newDay = day !== undefined && day !== lastDay;
     // Keyed by the row it opens, not by its label: a sender whose clock is skewed can make one label
     // come round twice, and two "Today" keys would collide.
-    if (newDay) out.push(<div key={`day\u0001${msg.id}\u0001${senderId ?? ""}`} className="ui-day">{day}</div>);
+    if (newDay) {
+      out.push(
+        <Marker key={`day\u0001${msg.id}\u0001${senderId ?? ""}`} variant="separator" className="my-2">
+          <MarkerContent>{day}</MarkerContent>
+        </Marker>,
+      );
+    }
     if (day !== undefined) lastDay = day;
     const prev = messages[i - 1];
     const compact = !newDay && prev !== undefined && senderId !== undefined && prev.senderId === senderId;
@@ -107,41 +114,19 @@ export function MessageList({ messages, idx, peers }: { messages: StoredMessage[
   return <>{out}</>;
 }
 
-/** The part of the scrolling element the pin reads. Spelled out rather than taken from the DOM lib,
- *  because the suites typecheck the components that render on the server with no DOM lib. */
-type Scroller = { scrollTop: number; scrollHeight: number; clientHeight: number };
-
-/** Keep a list's scroll at the newest message while the reader is at the bottom, and leave it where
- *  the reader put it otherwise. It acts only when `list` changes (a new conversation, which starts at
- *  the bottom) or `last` does (a new newest message), so a reload of the same rows moves nothing.
- *  Hand the returned ref and `onScroll` to the scrolling element. */
-export function usePinnedScroll(list: string, last: string | undefined) {
-  const ref = useRef<HTMLDivElement>(null);
-  const pinned = useRef(true);
-  const shown = useRef<string | null>(null);
-  const scroller = () => ref.current as unknown as Scroller | null;
-  useLayoutEffect(() => {
-    const el = scroller();
-    if (!el) return;
-    if (shown.current !== list) {
-      shown.current = list;
-      pinned.current = true;
-    }
-    if (pinned.current) el.scrollTop = el.scrollHeight;
-  }, [list, last]);
-  const onScroll = () => {
-    const el = scroller();
-    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= PINNED_PX;
-  };
-  return { ref, onScroll };
+/** The scroller's jump to the newest message. It shows once the reader has scrolled up from the
+ *  bottom, and scrolls at once rather than smoothly under reduced motion. */
+export function JumpToLatest() {
+  return <MessageScrollerButton behavior={reducedMotion() ? "auto" : "smooth"} />;
 }
 
 /** One channel (mock section D, the centre): the header with the topic, the policy chips and the
  *  member stack; the messages; the working line; and the dock with the Needs card.
  *
  *  - The messages are the open channel's, shown only while the open channel is this one. A reopen
- *    keeps them on screen while its history loads (the controller holds them), and the scroll stays
- *    where the reader left it.
+ *    keeps them on screen while its history loads (the controller holds them). They sit in shadcn's
+ *    Message Scroller, which opens a channel at the newest message, follows new ones while the reader
+ *    is at the bottom, leaves the scroll where the reader put it otherwise, and offers a jump back.
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
  *    The member stack draws each one's status dot, so a working member's dot breathes. The stack is
  *    hidden from assistive tech, and the button's name is the count in words ("3 members"), which its
@@ -187,10 +172,6 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const working = members.map((m) => peers.get(m.id)).filter((r): r is RosterRow => r?.status === "working");
   const [dismissed, dismiss] = useDismissed();
   const needing = waiting(everyone).find((r) => !dismissed.has(needsKey(r)));
-  const tail = messages[messages.length - 1];
-  // A post the operator sends moves the bottom too, so a reader following the channel sees it.
-  const sent = useStore(store, (s) => s.drafts[composeKey(target)]?.outgoing.length ?? 0);
-  const scroll = usePinnedScroll(channel, `${tail ? `${tail.msg.id}\u0001${tail.senderId ?? ""}` : ""}\u0002${sent}`);
   const count = members.length;
   const sheet = useContext(SheetMenu);
   // On a phone the panel opens over the whole page, so the button says what it does there, as mock F does.
@@ -262,13 +243,18 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
           </Tooltip>
         )}
       </header>
-      <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
-        <div className="ui-col">
-          <MessageList messages={messages} idx={idx} peers={peers} />
-          <OutgoingRows store={store} target={target} shown={shown} />
-          <WorkingLine rows={working} />
-        </div>
-      </div>
+      <MessageScrollerProvider key={channel} autoScroll>
+        <MessageScroller className="flex-1">
+          <MessageScrollerViewport>
+            <MessageScrollerContent className="ui-col gap-0">
+              <MessageList messages={messages} idx={idx} peers={peers} />
+              <OutgoingRows store={store} target={target} shown={shown} />
+              <WorkingLine rows={working} />
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <JumpToLatest />
+        </MessageScroller>
+      </MessageScrollerProvider>
       {(needing || post) && (
         <div className="ui-dock">
           <div className="ui-dock-in">

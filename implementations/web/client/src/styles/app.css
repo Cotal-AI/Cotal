@@ -96,8 +96,6 @@
 .ui-sp { flex: 1; }
 .ui-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .ui-col { max-width: 820px; margin: 0 auto; padding: 14px 28px 10px; }
-.ui-day { display: flex; align-items: center; gap: 12px; color: var(--dim); font: 500 12px/1 var(--body); margin: 10px 0 8px; }
-.ui-day::before, .ui-day::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .ui-msg { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 12px; padding: 6px 10px; margin: 0 -10px; border-radius: 10px; }
 .ui-msg:hover { background: var(--hover); }
 .ui-msg-cont { padding-top: 1px; }
@@ -282,8 +280,6 @@
 .ui-space-static:hover { background: none; }
 /* The sidebar's "Show all" toggle under the conversations: a row, quieter than the rows it lists. */
 .ui-row-more .ui-row-lbl { color: var(--side-dim); }
-/* The DM view's first line when the conversation may start before the messages the page holds. */
-.ui-cutoff { color: var(--dim); font-size: 12.5px; text-align: center; margin: 0 0 12px; }
 /* A feed that is down: a hollow dashed dot in place of the filled green one, so the state is its shape and its word. */
 .ui-live-down i { background: transparent; border: 1.5px dashed var(--faint); box-shadow: none; }
 /* A view fills the centre with the mock's bar, scroll and dock. The phase 1 roster list that still
@@ -481,8 +477,10 @@
 .ox-col { max-width: 760px; width: 100%; margin: 0 auto; padding: 18px 28px 10px; }
 /* Work: the scroller fills the tab, and its button counts the steps that arrived below */
 .ox-scroller { flex: 1; min-height: 0; }
-.ox-viewport { outline: none; }
-.ox-viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
+/* Every message scroller's viewport is a focusable region inside a frame that clips, so its focus
+   ring is drawn inside it. */
+[data-slot="message-scroller-viewport"] { outline: none; }
+[data-slot="message-scroller-viewport"]:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .ox-scrollc { gap: 0; }
 .ox-newsteps { position: absolute; left: 50%; bottom: 14px; z-index: 3; transform: translateX(-50%); }
 /* Messages: a marker per place, then its rows */

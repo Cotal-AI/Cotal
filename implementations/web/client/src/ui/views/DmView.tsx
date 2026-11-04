@@ -10,9 +10,11 @@ import { Avatar } from "../Avatar.tsx";
 import { useBadgeOf } from "../identity.js";
 import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
 import { Empty, EmptyHeader, EmptyTitle } from "#client/ui/shadcn/empty.tsx";
+import { Marker, MarkerContent } from "#client/ui/shadcn/marker.tsx";
+import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
 import { harnessName, Unverified } from "../MessageRow.tsx";
 import { WorkingLine } from "../WorkingLine.tsx";
-import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
+import { JumpToLatest, MessageList } from "./ChannelView.tsx";
 
 /** One direct message conversation, from `dmPairs`. The header is the peer the route names: its
  *  character, name, role and harness from the roster by id, and who it talks with. A route that names
@@ -27,7 +29,8 @@ import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
  *  in the dock's place, with Message for the operator's own conversation with the peer. The
  *  operator's own id reads "operator (you)" until the roster names it.
  *
- *  The conversation is found among the DMs alone, so a roster change does not regroup them.
+ *  The conversation is found among the DMs alone, so a roster change does not regroup them. It sits in
+ *  shadcn's Message Scroller, as a channel's messages do.
  *
  *  Under the messages the working line (`WorkingLine`) names each party the roster holds whose
  *  status presence says is working.
@@ -62,8 +65,6 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
   const target = useMemo(() => composeTarget({ view: "dm", peer, with: other }, self), [peer, other, self]);
   const shown = useMemo(() => new Set(dms.map((m) => m.msg.id)), [dms]);
   const sent = useStore(store, (s) => (target ? s.drafts[composeKey(target)]?.outgoing.length ?? 0 : 0));
-  const tail = conv?.messages[conv.messages.length - 1];
-  const scroll = usePinnedScroll(conv?.key ?? peer, `${tail ? `${tail.msg.id}\u0001${tail.senderId ?? ""}` : ""}\u0002${sent}`);
   const toName = target?.kind === "dm" ? displayNameOf(target.to, idx, self) : "";
   const working = [...new Set([peer, withWhom])].map((id) => (id === undefined ? undefined : peers.get(id))).filter((r): r is RosterRow => r?.status === "working");
   return (
@@ -75,22 +76,33 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
         {conv && withWhom !== undefined && <span className="ui-topic">{`with ${displayNameOf(withWhom, idx, self)}`}</span>}
         {conv && !conv.verified && <Unverified />}
       </header>
-      <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
-        {conv || sent > 0 ? (
-          <div className="ui-col">
-            {conv && cut && <div className="ui-cutoff">Earlier messages aren't loaded</div>}
-            {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} />}
-            {target && <OutgoingRows store={store} target={target} shown={shown} />}
-            <WorkingLine rows={working} />
-          </div>
-        ) : (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>{`No direct messages with ${name} yet.`}</EmptyTitle>
-            </EmptyHeader>
-          </Empty>
-        )}
-      </div>
+      <MessageScrollerProvider key={`${peer}\u0001${withWhom ?? ""}`} autoScroll>
+        <MessageScroller className="flex-1">
+          <MessageScrollerViewport>
+            <MessageScrollerContent className="ui-col gap-0">
+              {conv || sent > 0 ? (
+                <>
+                  {conv && cut && (
+                    <Marker className="mb-3">
+                      <MarkerContent>Earlier messages aren't loaded</MarkerContent>
+                    </Marker>
+                  )}
+                  {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} />}
+                  {target && <OutgoingRows store={store} target={target} shown={shown} />}
+                  <WorkingLine rows={working} />
+                </>
+              ) : (
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyTitle>{`No direct messages with ${name} yet.`}</EmptyTitle>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <JumpToLatest />
+        </MessageScroller>
+      </MessageScrollerProvider>
       {post && (target || other !== undefined) && (
         <div className="ui-dock">
           <div className="ui-dock-in">
