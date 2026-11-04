@@ -8,6 +8,9 @@ import { authorizeRemoteManagerRenewal } from "@cotal-ai/auth";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
 import { authorizeRetirementOperation } from "../src/auth-admin.js";
+import { authorizeServeGrant, contractDigest, recordSpecKey, RECORD_KINDS, singleDocumentClosure, type EpGateState } from "@cotal-ai/core";
+import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster } from "../src/manager-contract.js";
+import { managerClusterArtifacts } from "../../manager/src/manager-service-contract.js";
 
 let pass = 0;
 let fail = 0;
@@ -54,6 +57,38 @@ const request = {
   requestId: `req${mintLifecycleUid()}`,
   identities,
 };
+// Compare the actual stock manager document through both shipped grant builders. The record
+// reader supplies registration data only; core still parses and verifies both stored artifacts.
+const cluster = managerClusterArtifacts();
+const digestOwner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const digestGate: EpGateState = { state: "open", space: request.space, endpoint: "manager", lifecycleUid: instanceId,
+  principal: remoteManagerServePrincipal(digestOwner, instanceId), generation: 1, revision: 1,
+  processEpoch: 1, registrationRevision: 2, nameAuthorityRevision: 3 };
+const spec = { endpoint: "manager", owner: digestOwner, clusterDigests: [cluster.closureDigest], protocol: { v: 1 } };
+const specKey = recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]);
+const coreGrant = await authorizeServeGrant({ get: async key => key === specKey
+  ? { operation: "PUT", value: new TextEncoder().encode(JSON.stringify(spec)), revision: 2 } : null }, {
+  space: request.space, endpoint: "manager", instanceId, epoch: digestGate.processEpoch, holder: { owner: digestOwner },
+  authority: { authorize: () => ({ authorized: true, revision: 3 }) }, readProcessEpoch: () => digestGate.processEpoch,
+  readClusterArtifact: digest => digest === cluster.closureDigest ? cluster.manifest : digest === cluster.rootDigest ? cluster.document : undefined,
+});
+await cell("manager contract root and closure are distinct and the registered grant names the closure", () => {
+  assert.notEqual(cluster.rootDigest, cluster.closureDigest);
+  assert.equal(contractDigest(cluster.document), cluster.rootDigest);
+  assert.equal(coreGrant.descriptor.clusters[0]!.digest, singleDocumentClosure(cluster.document).closureDigest);
+  assert.ok(coreGrant.commands.length > 0);
+});
+await cell("activation pins the same closure and command authority as the registered core grant", () => {
+  const grant = reconstructRemoteManagerServeGrant({ ...request, operation: "activate", contractArtifacts: [cluster.manifest, cluster.document] }, digestOwner, digestGate);
+  assert.equal(grant.descriptor.clusters[0]!.digest, cluster.closureDigest);
+  assert.deepEqual({ ...grant.surface }, { ...coreGrant.surface });
+});
+await cell("renewal grant preserves the registered closure and command authority", () => {
+  const grant = remoteManagerServeGrantFromCluster(request, digestOwner,
+    { closureDigest: cluster.closureDigest, document: cluster.document, raw: cluster.document }, digestGate);
+  assert.equal(grant.descriptor.clusters[0]!.digest, cluster.closureDigest);
+  assert.deepEqual({ ...grant.surface }, { ...coreGrant.surface });
+});
 const credentials = {
   supervisor: { jwt: "a.b.c", exp: 200 },
   executor: { jwt: "a.b.c", exp: 150 },
