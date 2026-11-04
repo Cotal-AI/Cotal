@@ -11,9 +11,8 @@
   --side-hover: #EEEEEC; --side-sel: #E8E8E6; --side-line: #ECECEA;
   --ink: #1F2430; --dim: #6B6F80; --faint: #A3A6B1; --line: #ECECEA; --hover: #F5F5F4; --soft: #F4F4F3;
   --card: #FFFFFF; --card-line: #E6E6E4; --card-shadow: 0 1px 2px rgba(20, 24, 33, .04), 0 4px 16px rgba(20, 24, 33, .06);
-  --primary: #1F2430; --primary-ink: #FFFFFF; --code: #F4F4F3; --mention: #FBF4DF; --focus: #4D69E6;
+  --primary: #1F2430; --primary-ink: #FFFFFF; --code: #F4F4F3; --focus: #4D69E6;
   --multi-ink: #3651C9; --uni-ink: #B85A3A; --any-ink: #35703E; --gold-ink: #85620A; --red-ink: #B23A32;
-  --me-bg: #6B6F80; --me-ink: #FFFFFF;
   --mark: #202B43;
   /* The initial badge's fills, one per slot, and its letter. They are the same in Night; only the
      offline fill changes. */
@@ -48,7 +47,7 @@
   --side-hover: #23272F; --side-sel: #2A2F39; --side-line: #262A32;
   --ink: #E6E8EE; --dim: #9097A6; --faint: #6E7484; --line: #262A32; --hover: #1C1F25; --soft: #20242B;
   --card: #1E2128; --card-line: #2E333C; --card-shadow: 0 6px 24px rgba(0, 0, 0, .35);
-  --primary: #E6E8EE; --primary-ink: #16181D; --code: #20242B; --mention: #2C2818; --focus: #8EA2F2;
+  --primary: #E6E8EE; --primary-ink: #16181D; --code: #20242B; --focus: #8EA2F2;
   --multi-ink: #8EA2F2; --uni-ink: #EBA48B; --any-ink: #8CC892; --gold-ink: #E5C776; --red-ink: #F08A82;
   --mark: #FFFCEE;
   --id-off: #8E939C;
@@ -60,7 +59,7 @@
     --side-hover: #23272F; --side-sel: #2A2F39; --side-line: #262A32;
     --ink: #E6E8EE; --dim: #9097A6; --faint: #6E7484; --line: #262A32; --hover: #1C1F25; --soft: #20242B;
     --card: #1E2128; --card-line: #2E333C; --card-shadow: 0 6px 24px rgba(0, 0, 0, .35);
-    --primary: #E6E8EE; --primary-ink: #16181D; --code: #20242B; --mention: #2C2818; --focus: #8EA2F2;
+    --primary: #E6E8EE; --primary-ink: #16181D; --code: #20242B; --focus: #8EA2F2;
     --multi-ink: #8EA2F2; --uni-ink: #EBA48B; --any-ink: #8CC892; --gold-ink: #E5C776; --red-ink: #F08A82;
     --mark: #FFFCEE;
     --id-off: #8E939C;

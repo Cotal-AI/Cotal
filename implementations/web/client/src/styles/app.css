@@ -56,7 +56,6 @@
 .ui-sline .ui-idb { --ring-bg: var(--soft); }
 .v3-arow[aria-current="true"] .ui-idb { --ring-bg: var(--soft); }
 .ui-msg:hover .ui-idb { --ring-bg: var(--hover); }
-.ui-msg-mention .ui-idb, .ui-msg-mention:hover .ui-idb { --ring-bg: var(--mention); }
 /* The same badge on a Topology node, outside the greyscale of an offline node. */
 .ui-tidb circle { stroke: var(--bg); stroke-width: 2; }
 .ui-tidb text { fill: var(--id-ink); font-family: var(--body); font-weight: 700; }
@@ -69,10 +68,6 @@
 .ui-col { max-width: 820px; margin: 0 auto; padding: 14px 28px 10px; }
 .ui-msg { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 12px; padding: 6px 10px; margin: 0 -10px; border-radius: 10px; }
 .ui-msg:hover { background: var(--hover); }
-.ui-msg-cont { padding-top: 1px; }
-.ui-msg-cont .ui-gut { visibility: hidden; height: 0; }
-.ui-msg-mention { background: var(--mention); }
-.ui-msg-mention:hover { background: var(--mention); }
 .ui-gut { padding-top: 2px; }
 .ui-mh { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
 .ui-mh b { font-weight: 600; }
@@ -80,12 +75,13 @@
 .ui-tx { margin-top: 1px; overflow-wrap: anywhere; }
 .ui-tx p { margin: 0 0 4px; }
 .ui-tx ul { margin: 2px 0 6px; padding-left: 20px; }
-.ui-route { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font: 500 11.5px/1 var(--mono); padding: 5px 8px; border-radius: 6px; background: var(--soft); color: var(--dim); }
-.ui-route i { width: 7px; height: 7px; border-radius: 50%; }
-.ui-route-any { color: var(--any-ink); }
-.ui-route-any i { background: var(--any); }
-.ui-route-sep { opacity: .6; }
 .ui-clamp { max-height: 6.2em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+/* Markdown in a message bubble. Code takes a tint of the bubble's own text colour and a link that
+   colour underlined, so both read on the operator's dark bubble as on the light ones, and the last
+   block leaves no gap above the bubble's edge. */
+[data-slot="bubble-content"] :not(pre) > code, [data-slot="bubble-content"] pre { background: color-mix(in srgb, currentColor 10%, transparent); }
+[data-slot="bubble-content"] a { color: inherit; text-decoration: underline; }
+[data-slot="bubble-content"] .ui-tx > :last-child { margin-bottom: 0; }
 
 /* ---------- dock: notice card + composer ---------- */
 .ui-dock { flex: none; padding: 0 28px 16px; }
@@ -93,10 +89,6 @@
 .ui-caret { display: inline-block; width: 1.5px; height: 1.1em; background: var(--ink); vertical-align: -2px; margin-left: 1px; animation: ui-caret 1s steps(1) infinite; }
 @keyframes ui-caret { 50% { opacity: 0; } }
 .ui-mode-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
-.ui-pending { opacity: .6; }
-.ui-pending time::after { content: " sending"; }
-/* The operator's mark on a post the view does not show yet. */
-.ui-me { width: 26px; height: 26px; border-radius: 50%; background: var(--me-bg); color: var(--me-ink); display: grid; place-items: center; font: 600 11px/1 var(--body); flex: none; }
 
 /* copyable CLI command */
 .ui-cmd { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--soft); border: 1px solid var(--card-line); border-radius: 7px; padding: 4px 4px 4px 9px; white-space: nowrap; }
@@ -182,11 +174,10 @@
 .ui-col-wide { max-width: 1040px; }
 
 /* ---------- type rules, on top of the shared parts ---------- */
-.ui-mh time, .ui-sline small, .ui-chrow span:last-child, .ui-route {
+.ui-mh time, .ui-sline small, .ui-chrow span:last-child {
   font-family: var(--body); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .ui-mh time { font-size: 12px; font-weight: 400; }
 .ui-sline small { font-size: 12px; font-weight: 400; }
-.ui-route { font-size: 12px; }
 .ui-sline small { padding-left: 24px; }
 .ui-num { font-variant-numeric: tabular-nums; }
 /* Hugeicons sizes: 18 in a header (the .ui-ic rule above), 16 inline status */
@@ -244,9 +235,6 @@
 /* ---------- right panel ---------- */
 /* The attach and stop rows lead with their icon, dimmed as the mock draws it. */
 .ui-cmd > .ui-ic { color: var(--dim); flex: none; }
-/* A message's avatar and name open the sender's Agent tab. */
-.ui-msg .ui-who { display: inline-flex; border-radius: 6px; }
-.ui-msg .ui-who:hover b { text-decoration: underline; }
 /* ---------- states (mock section B) ---------- */
 /* Focus rings: 2px in the accent, offset from the fill. A member row clips what spills past its edge,
    so its ring sits just inside. */
@@ -305,12 +293,14 @@
 /* ---------- message actions (agents round 1: sections S, C, D and E) ----------
    The Session action on a verified roster agent's message. It is in the tab order, so it shows on
    hover and while it holds focus rather than being display: none. A phone has no hover; a long press
-   opens the sheet instead. */
-.ui-msg { position: relative; }
-.ui-msg-acts { position: absolute; top: -12px; right: 8px; display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--card); border: 1px solid var(--card-line); box-shadow: var(--card-shadow); opacity: 0; pointer-events: none; }
+   opens the sheet instead. It sits inside the message's own box, at its top end, because the
+   scroller item around the message clips what spills past it. On the operator's own messages, at the
+   end side, it moves to the start. */
+.ui-msg-acts { position: absolute; top: 0; right: 0; display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--card); border: 1px solid var(--card-line); box-shadow: var(--card-shadow); opacity: 0; pointer-events: none; }
+[data-slot="message"][data-align="end"] > .ui-msg-acts { right: auto; left: 0; }
 .ui-msg-acts:focus-within { opacity: 1; pointer-events: auto; }
 @media (hover: hover) {
-  .ui-msg:hover .ui-msg-acts { opacity: 1; pointer-events: auto; }
+  [data-slot="message"]:hover > .ui-msg-acts { opacity: 1; pointer-events: auto; }
 }
 .ui-msg-acts a { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 7px; font-size: 12.5px; color: var(--dim); text-decoration: none; }
 .ui-msg-acts a:hover { background: var(--hover); color: var(--ink); }
@@ -318,7 +308,7 @@
 /* A long press on a phone opens the sheet, so the row starts no text selection or callout of its own;
    the sheet's Copy text copies the message. */
 @media (hover: none) {
-  .ui-msg:has(> .ui-msg-acts) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  [data-slot="message"]:has(> .ui-msg-acts) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 }
 
 /* ---------- work (overhaul mock B1, C, E and G) ----------

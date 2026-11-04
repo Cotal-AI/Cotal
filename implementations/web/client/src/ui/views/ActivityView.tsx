@@ -46,7 +46,7 @@ function PartialBanner({ banner }: { banner: NonNullable<ReturnType<typeof parti
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Alert role="status" className="mb-2">
+        <Alert role="status">
           <Icon icon={Alert02Icon} />
           <AlertTitle>{banner.label}</AlertTitle>
           {(banner.count || banner.body) && (
@@ -73,6 +73,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
   const activity = useStore(store, (s) => s.activity);
   const roster = useStore(store, (s) => s.roster);
   const space = useStore(store, (s) => s.space);
+  const self = useStore(store, (s) => s.operatorId);
   const stale = useStore(store, (s) => s.stale);
   const partial = partialBanner(stale);
   const [filter, setFilter] = useState<Filter>("all");
@@ -106,7 +107,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
       </header>
       <div className="ui-scroll">
         {!hasAgents(roster) && <EmptySpace space={space} />}
-        <div className="ui-col">
+        <div className="ui-col flex flex-col gap-8">
           {partial && <PartialBanner banner={partial} />}
           {shown.map(({ e, claim }) => {
             const senderId = (e as FeedMessage).senderId;
@@ -118,6 +119,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
                 mode={e.mode}
                 idx={idx}
                 peers={peers}
+                own={senderId !== undefined && senderId === self}
                 mention="operator"
                 claim={claim}
                 place={placeOf(e, idx)}

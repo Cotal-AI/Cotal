@@ -5,7 +5,8 @@ import { Icon } from "../../icons/Icon.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
 import { Marker, MarkerContent } from "#client/ui/shadcn/marker.tsx";
-import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
+import { MessageGroup } from "#client/ui/shadcn/message.tsx";
+import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
 import { useSidebar } from "#client/ui/shadcn/sidebar.tsx";
 import { Toggle } from "#client/ui/shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
@@ -74,44 +75,68 @@ function dayLabel(ts: number, now: number): string {
   return d.toLocaleDateString("en-GB", thisYear ? { day: "numeric", month: "long" } : { day: "numeric", month: "long", year: "numeric" });
 }
 
-/** A list of messages as the channel and DM views draw it: a divider at each new day, and a run of
- *  rows from one verified sender collapsed under its first header. A divider breaks a run, and a row
- *  with no verified sender always draws its header (MessageRow enforces that too). Rows are keyed by
- *  id and sender together, so one id from two senders draws both. */
-export function MessageList({ messages, idx, peers }: { messages: StoredMessage[]; idx: NameIndex; peers: ReadonlyMap<string, RosterRow> }) {
+/** A row's key and its scroller id: its id and its sender together, so one id from two senders
+ *  draws both. */
+const rowKey = ({ msg, senderId }: StoredMessage): string => `${msg.id}\u0001${senderId ?? ""}`;
+
+/** A list of messages as the channel and DM views draw it, each piece in its own
+ *  MessageScrollerItem: a divider at each new day, and each run of rows from one verified sender as
+ *  one MessageGroup, whose first row draws the header and whose last draws the avatar. A divider
+ *  breaks a run, and a row with no verified sender is a run of its own (MessageRow enforces that
+ *  too). The operator's own rows (`self`) sit at the end side. */
+export function MessageList({ messages, idx, peers, self }: { messages: StoredMessage[]; idx: NameIndex; peers: ReadonlyMap<string, RosterRow>; self: string | null }) {
   const now = Date.now();
   const out: ReactNode[] = [];
+  let run: number[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    const rows = run;
+    run = [];
+    out.push(
+      <MessageScrollerItem key={rowKey(messages[rows[0]])} messageId={rowKey(messages[rows[0]])}>
+        <MessageGroup>
+          {rows.map((i, j) => {
+            const { msg, senderId } = messages[i];
+            const mode = modeOf(msg);
+            return (
+              <MessageRow
+                key={rowKey(messages[i])}
+                msg={msg}
+                senderId={senderId}
+                mode={mode}
+                idx={idx}
+                peers={peers}
+                run={rows.length === 1 ? "alone" : j === 0 ? "first" : j === rows.length - 1 ? "last" : "middle"}
+                own={senderId !== undefined && senderId === self}
+                mention="operator"
+                claim={mode === "anycast" ? claimedBy(msg.id, messages.slice(i + 1)) : undefined}
+              />
+            );
+          })}
+        </MessageGroup>
+      </MessageScrollerItem>,
+    );
+  };
   let lastDay: string | undefined;
   messages.forEach(({ msg, senderId }, i) => {
     const day = Number.isFinite(msg.ts) ? dayLabel(msg.ts, now) : undefined;
     const newDay = day !== undefined && day !== lastDay;
+    if (newDay || senderId === undefined || messages[i - 1]?.senderId !== senderId) flush();
     // Keyed by the row it opens, not by its label: a sender whose clock is skewed can make one label
     // come round twice, and two "Today" keys would collide.
     if (newDay) {
       out.push(
-        <Marker key={`day\u0001${msg.id}\u0001${senderId ?? ""}`} variant="separator" className="my-2">
-          <MarkerContent>{day}</MarkerContent>
-        </Marker>,
+        <MessageScrollerItem key={`day\u0001${rowKey(messages[i])}`}>
+          <Marker variant="separator">
+            <MarkerContent>{day}</MarkerContent>
+          </Marker>
+        </MessageScrollerItem>,
       );
     }
     if (day !== undefined) lastDay = day;
-    const prev = messages[i - 1];
-    const compact = !newDay && prev !== undefined && senderId !== undefined && prev.senderId === senderId;
-    const mode = modeOf(msg);
-    out.push(
-      <MessageRow
-        key={`${msg.id}\u0001${senderId ?? ""}`}
-        msg={msg}
-        senderId={senderId}
-        mode={mode}
-        idx={idx}
-        peers={peers}
-        compact={compact}
-        mention="operator"
-        claim={mode === "anycast" ? claimedBy(msg.id, messages.slice(i + 1)) : undefined}
-      />,
-    );
+    run.push(i);
   });
+  flush();
   return <>{out}</>;
 }
 
@@ -239,10 +264,14 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
       <MessageScrollerProvider key={channel} autoScroll>
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="ui-col gap-0">
-              <MessageList messages={messages} idx={idx} peers={peers} />
+            <MessageScrollerContent className="ui-col">
+              <MessageList messages={messages} idx={idx} peers={peers} self={self} />
               <OutgoingRows store={store} target={target} shown={shown} />
-              <WorkingLine rows={working} />
+              {working.length > 0 && (
+                <MessageScrollerItem>
+                  <WorkingLine rows={working} />
+                </MessageScrollerItem>
+              )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <JumpToLatest />

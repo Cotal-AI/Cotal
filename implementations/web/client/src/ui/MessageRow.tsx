@@ -1,5 +1,7 @@
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { useContext, useState } from "react";
 import type { CotalMessage, FeedMessage } from "../api/types.js";
+import { Icon } from "../icons/Icon.tsx";
 import { HARNESS } from "../lib/harness.js";
 import { renderMarkdown } from "../lib/md.js";
 import { displayNameOf, type NameIndex } from "../lib/names.js";
@@ -7,7 +9,10 @@ import { partsToText } from "../lib/parts.js";
 import { clock } from "../lib/time.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
+import { Bubble, BubbleContent } from "#client/ui/shadcn/bubble.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#client/ui/shadcn/collapsible.tsx";
+import { Message, MessageAvatar, MessageContent, MessageFooter, MessageHeader } from "#client/ui/shadcn/message.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
@@ -44,35 +49,42 @@ export function harnessName(connector: string): string {
   return Object.hasOwn(HARNESS, key) ? HARNESS[key as keyof typeof HARNESS].label : connector;
 }
 
-/** One message, as mock section D draws it: the sender's character in the gutter, the header
- *  (name, role, harness, time), the body, and for an anycast the route chip.
+/** Where a row sits in a run of messages from one verified sender, which the caller draws as one
+ *  `MessageGroup`: the first draws the header, the last the avatar, and a row alone draws both. */
+export type RunPlace = "alone" | "first" | "middle" | "last";
+
+/** One message, on shadcn's chat parts: `Message` with the sender's character in `MessageAvatar`,
+ *  the header (name, role, harness, time) in `MessageHeader`, the body in a `Bubble`, and for an
+ *  anycast the route chip in `MessageFooter`.
  *
  *  - The sender is `senderId`, the publisher the server verified, and only for a history row (which
  *    has none) the payload's `from.id`. Its name, role and harness come from the roster by that id;
  *    the payload's `from.name` is never read. A history row says its sender is unverified.
- *  - The body is the parts' text rendered as sanitized Markdown, clamped past 280 characters.
+ *  - `own` is a post by the operator, the reader: it sits at the end side in the default, strong
+ *    bubble. Every other row sits at the start side in a secondary bubble, and one whose mentions
+ *    include `mention` (the reader's own name) in the tinted bubble, which is its highlight.
+ *  - The body is the parts' text rendered as sanitized Markdown. Past 280 characters it clamps, and
+ *    Show more and Show less toggle the rest through shadcn's Collapsible.
  *  - An anycast names its claimer only when `claim` (from `claimedBy`) is given: the wire has no claim
  *    event, so with no reply there is nothing to say. A claim from a history reply is not verified
  *    and carries the same unverified mark and tooltip as an unverified author.
- *  - A row whose mentions include `mention` (the reader's own name) is highlighted.
  *  - `place`, when given (even as null), takes the role's place in the header and drops the harness.
  *  - Inside the shell (`AgentPicker`), a verified sender's avatar and name pick it: its Agent tab
  *    peek, or on a phone its page. A history row's sender is not verified, so it opens nothing.
  *  - A verified sender on the roster carries its initial badge (`BadgeOf`); a history row's does not.
  *  - A verified sender on the roster also gets the View work action (`MessageActions`): on hover, and
  *    on a phone a long press, to open its page's Work at this message. A history row gets none.
- *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
- *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
- *    a history row ignores `compact` and always draws its header, so its unverified mark is never
- *    hidden behind the row above. */
-export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, mention, claim, place }: {
+ *  - `run` places the row in a run from one sender (`RunPlace`). A history row ignores it and draws
+ *    its header and avatar, so its unverified mark is never hidden behind the row above. */
+export function MessageRow({ msg, senderId, mode, idx, peers, run = "alone", own = false, mention, claim, place }: {
   msg: CotalMessage;
   senderId?: string;
   mode: FeedMessage["mode"];
   idx: NameIndex;
   /** Roster rows by id, offline included, for the sender's character, role and harness. */
   peers: ReadonlyMap<string, RosterRow>;
-  compact?: boolean;
+  run?: RunPlace;
+  own?: boolean;
   mention?: string;
   claim?: { id: string; verified: boolean };
   /** Where the message went (`#review`, `to reviewer_2`), drawn where the role goes, with no harness
@@ -86,61 +98,84 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   const who = senderId ?? msg.from?.id;
   const peer = who === undefined ? undefined : peers.get(who);
   const text = partsToText(msg.parts);
-  const clamped = !opened && text.length > CLAMP;
+  const long = text.length > CLAMP;
   const mentioned = mention !== undefined && (msg.mentions ?? []).includes(mention.toLowerCase());
   const role = typeof msg.toService === "string" ? msg.toService : undefined;
   const at = Number.isFinite(msg.ts) ? new Date(msg.ts) : undefined;
-  const cont = compact && senderId !== undefined;
+  // A history row never joins a run, so it draws its own header and avatar.
+  const where = senderId === undefined ? "alone" : run;
+  const html = { __html: renderMarkdown(text) };
   const name = displayNameOf(senderId ?? msg.from, idx);
   // Only a verified sender on the roster gets a badge: a history row's sender is unverified.
   const badge = senderId !== undefined && peers.has(senderId) ? badgeOf(senderId) : undefined;
-  const avatar = <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={34} dot={false} badge={badge} />;
-  const className = ["ui-msg", cont && "ui-msg-cont", mentioned && "ui-msg-mention"].filter(Boolean).join(" ");
+  const avatar = <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={32} dot={false} badge={badge} />;
   return (
-    <div className={className}>
-      <div className="ui-gut">
-        {!cont && (pick && senderId !== undefined ? (
-          // The name beside it is the keyboard's way in, so the avatar is not a second tab stop.
-          <button type="button" className="ui-who" tabIndex={-1} aria-label={name} onClick={() => pick(senderId)}>{avatar}</button>
+    <Message align={own ? "end" : "start"}>
+      {/* The initial badge sits on the avatar's corner, so the round slot lets it overflow. */}
+      <MessageAvatar className="overflow-visible">
+        {(where === "alone" || where === "last") && (pick && senderId !== undefined ? (
+          // The name above is the keyboard's way in, so the avatar is not a second tab stop.
+          <button type="button" tabIndex={-1} aria-label={name} onClick={() => pick(senderId)}>{avatar}</button>
         ) : avatar)}
-      </div>
-      <div>
-        {!cont && (
-          <div className="ui-mh">
-            {pick && senderId !== undefined ? <button type="button" className="ui-who" onClick={() => pick(senderId)}><b>{name}</b></button> : <b>{name}</b>}
+      </MessageAvatar>
+      <MessageContent>
+        {(where === "alone" || where === "first") && (
+          <MessageHeader className="flex-wrap gap-2">
+            {pick && senderId !== undefined ? (
+              <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={() => pick(senderId)}>{name}</Button>
+            ) : (
+              <span>{name}</span>
+            )}
             {senderId === undefined && <Unverified />}
             {place && <Badge variant="secondary">{place}</Badge>}
             {place === undefined && peer?.role && <Badge variant="secondary">{peer.role}</Badge>}
             {place === undefined && peer?.harness && <Badge variant="outline">{harnessName(peer.harness)}</Badge>}
             {at && <time dateTime={at.toISOString()}>{clock(at)}</time>}
-          </div>
+          </MessageHeader>
         )}
-        <div className={clamped ? "ui-tx ui-clamp" : "ui-tx"} dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
-        {clamped && <Button type="button" variant="link" size="sm" className="px-0" onClick={() => setOpened(true)}>Show more</Button>}
+        <Bubble variant={own ? "default" : mentioned ? "tinted" : "secondary"}>
+          <BubbleContent>
+            {long ? (
+              <Collapsible open={opened} onOpenChange={setOpened}>
+                {/* Always drawn, clamped while closed, so the trigger's aria-controls names it. */}
+                <CollapsibleContent forceMount className={opened ? "ui-tx" : "ui-tx ui-clamp"} dangerouslySetInnerHTML={html} />
+                <CollapsibleTrigger asChild>
+                  <Button type="button" variant="ghost" size="xs">
+                    {opened ? "Show less" : "Show more"}
+                    <Icon icon={ArrowDown01Icon} data-icon="inline-end" className="group-data-open/button:rotate-180" />
+                  </Button>
+                </CollapsibleTrigger>
+              </Collapsible>
+            ) : (
+              <div className="ui-tx" dangerouslySetInnerHTML={html} />
+            )}
+          </BubbleContent>
+        </Bubble>
         {mode === "anycast" && role !== undefined && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="ui-route ui-route-any">
-                <i />
-                {`To any ${role}`}
-                <span className="ui-sr">{` ${ANYCAST}`}</span>
-                {claim !== undefined && (
-                  <>
-                    {" "}<span className="ui-route-sep">·</span>{" "}
-                    {`claimed by ${displayNameOf(claim.id, idx)}`}
-                    {!claim.verified && <>{" "}<Unverified /></>}
-                  </>
-                )}
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>{ANYCAST}</TooltipContent>
-          </Tooltip>
+          <MessageFooter className="flex-wrap gap-1.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="outline">
+                  <i className="ui-mode-dot" style={{ background: "var(--any)" }} />
+                  {`To any ${role}`}
+                  <span className="ui-sr">{` ${ANYCAST}`}</span>
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>{ANYCAST}</TooltipContent>
+            </Tooltip>
+            {claim !== undefined && (
+              <>
+                <span>{` · claimed by ${displayNameOf(claim.id, idx)}`}</span>
+                {!claim.verified && <Unverified />}
+              </>
+            )}
+          </MessageFooter>
         )}
-      </div>
+      </MessageContent>
       {senderId !== undefined && peer !== undefined && peers.has(senderId) && (
         <MessageActions msg={msg} senderId={senderId} name={name} peer={peer} onViewAgent={pick ?? ignore} />
       )}
-    </div>
+    </Message>
   );
 }
 

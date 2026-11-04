@@ -108,8 +108,9 @@ function useLongPress(child: { current: unknown }, onPress: () => void): void {
  *
  *  - The action row (`ui-msg-acts`) holds one link, View work, to the sender's page at this message
  *    (`#/agent/<id>/work/<message id>`), with "View <name>'s work at <hh:mm>" as its Tooltip and its
- *    accessible description. It shows on hover and
- *    while it holds focus, and stays in the tab order.
+ *    accessible description. It shows on hover and while it holds focus, and stays in the tab order.
+ *    It sits at the top end of the message's own box, where the scroller item around the message
+ *    does not clip it.
  *  - A touch held on the row opens shadcn's Sheet from the bottom: the sender as its title, "Message
  *    at <hh:mm>" as its description, then the same link, View agent (`onViewAgent`) and Copy text. It
  *    holds focus while open and closes on the scrim, on Escape, on its Close button or on any choice,

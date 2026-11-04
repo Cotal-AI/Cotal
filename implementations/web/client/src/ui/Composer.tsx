@@ -1,9 +1,13 @@
 import { ArrowUp02Icon, AtIcon, SquareLock02Icon } from "@hugeicons/core-free-icons";
 import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
+import { Avatar, AvatarFallback } from "#client/ui/shadcn/avatar.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
+import { Bubble, BubbleContent } from "#client/ui/shadcn/bubble.tsx";
 import { Field, FieldDescription, FieldError } from "#client/ui/shadcn/field.tsx";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupText, InputGroupTextarea } from "#client/ui/shadcn/input-group.tsx";
+import { Message, MessageAvatar, MessageContent, MessageHeader } from "#client/ui/shadcn/message.tsx";
+import { MessageScrollerItem } from "#client/ui/shadcn/message-scroller.tsx";
 import { useSidebar } from "#client/ui/shadcn/sidebar.tsx";
 import { Spinner } from "#client/ui/shadcn/spinner.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
@@ -193,22 +197,38 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
 }
 
 /** The operator's posts to `target` that the view does not show yet (mock section B, sending then
- *  sent): faded while the server has not answered, then plain until the message itself arrives.
- *  `shown` is the ids the view already draws. The text is drawn as typed, not as Markdown. */
+ *  sent), each in its own MessageScrollerItem as the operator's Message at the end side: in the muted
+ *  bubble with "sending" after the time while the server has not answered, then in the operator's
+ *  default bubble until the message itself arrives. `shown` is the ids the view already draws. The
+ *  text is drawn as typed, not as Markdown. */
 export function OutgoingRows({ store, target, shown }: { store: Store<DashboardState>; target: ComposeTarget; shown: ReadonlySet<string> }) {
   const draft = useStore(store, (s) => s.drafts[composeKey(target)]) ?? BLANK;
   return (
     <>
       {draft.outgoing.filter((o) => o.id === undefined || !shown.has(o.id)).map((o) => {
         const at = new Date(o.ts);
+        const sending = o.id === undefined;
         return (
-          <div key={o.seq} className={o.id === undefined ? "ui-msg ui-pending" : "ui-msg"}>
-            <div className="ui-gut"><span className="ui-me" style={{ width: 34, height: 34 }}>OP</span></div>
-            <div>
-              <div className="ui-mh"><b>operator</b><Badge variant="secondary">operator</Badge><time dateTime={at.toISOString()}>{clock(at)}</time></div>
-              <div className="ui-tx"><p style={{ whiteSpace: "pre-wrap" }}>{o.text}</p></div>
-            </div>
-          </div>
+          <MessageScrollerItem key={o.seq}>
+            <Message align="end">
+              <MessageAvatar>
+                <Avatar>
+                  <AvatarFallback>OP</AvatarFallback>
+                </Avatar>
+              </MessageAvatar>
+              <MessageContent>
+                <MessageHeader className="gap-2">
+                  <span>operator</span>
+                  <Badge variant="secondary">operator</Badge>
+                  <time dateTime={at.toISOString()}>{clock(at)}</time>
+                  {sending && <span>sending</span>}
+                </MessageHeader>
+                <Bubble variant={sending ? "muted" : "default"}>
+                  <BubbleContent className="whitespace-pre-wrap">{o.text}</BubbleContent>
+                </Bubble>
+              </MessageContent>
+            </Message>
+          </MessageScrollerItem>
         );
       })}
     </>

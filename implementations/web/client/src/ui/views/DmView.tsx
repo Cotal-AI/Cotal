@@ -11,7 +11,7 @@ import { useBadgeOf } from "../identity.js";
 import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
 import { Empty, EmptyHeader, EmptyTitle } from "#client/ui/shadcn/empty.tsx";
 import { Marker, MarkerContent } from "#client/ui/shadcn/marker.tsx";
-import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
+import { MessageScroller, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport } from "#client/ui/shadcn/message-scroller.tsx";
 import { harnessName, Unverified } from "../MessageRow.tsx";
 import { SidebarToggle } from "../SidebarToggle.tsx";
 import { WorkingLine } from "../WorkingLine.tsx";
@@ -81,24 +81,32 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
       <MessageScrollerProvider key={`${peer}\u0001${withWhom ?? ""}`} autoScroll>
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="ui-col gap-0">
+            <MessageScrollerContent className="ui-col">
               {conv || sent > 0 ? (
                 <>
                   {conv && cut && (
-                    <Marker className="mb-3">
-                      <MarkerContent>Earlier messages aren't loaded</MarkerContent>
-                    </Marker>
+                    <MessageScrollerItem>
+                      <Marker>
+                        <MarkerContent>Earlier messages aren't loaded</MarkerContent>
+                      </Marker>
+                    </MessageScrollerItem>
                   )}
-                  {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} />}
+                  {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} self={self} />}
                   {target && <OutgoingRows store={store} target={target} shown={shown} />}
-                  <WorkingLine rows={working} />
+                  {working.length > 0 && (
+                    <MessageScrollerItem>
+                      <WorkingLine rows={working} />
+                    </MessageScrollerItem>
+                  )}
                 </>
               ) : (
-                <Empty>
-                  <EmptyHeader>
-                    <EmptyTitle>{`No direct messages with ${name} yet.`}</EmptyTitle>
-                  </EmptyHeader>
-                </Empty>
+                <MessageScrollerItem>
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyTitle>{`No direct messages with ${name} yet.`}</EmptyTitle>
+                    </EmptyHeader>
+                  </Empty>
+                </MessageScrollerItem>
               )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
