@@ -41,11 +41,19 @@ const config = (spec: LaunchSpec) => {
 };
 try {
   Object.assign(process.env, values);
-  const native = { mcpServers: { personal: { command: "node", args: ["fixture.mjs"], env: { TOKEN: "${USER_MCP_SECRET}" } } } };
+  const personal = { command: "node", args: ["fixture.mjs"], env: { TOKEN: "${USER_MCP_SECRET}" } };
   const profileFile = join(profile, ".claude.json");
+  writeFileSync(profileFile, JSON.stringify({ mcpServers: { personal } }));
+  writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { repository: { command: "node", env: { TOKEN: "${UNRELATED_PRIVATE_SECRET}" } } } }));
+  // Claude Code binds the server:cotal wake channel only to a server its own configuration declares.
+  assert.throws(() => build(), /cotal setup/);
+  check("a managed launch with no declared cotal server is refused, not started as a seat that never wakes", true);
+  const declaring = join(root, "declaring"); mkdirSync(declaring);
+  writeFileSync(join(declaring, ".mcp.json"), JSON.stringify({ mcpServers: { cotal: { command: "node", args: ["elsewhere.cjs"] } } }));
+  check("a project .mcp.json declaring cotal satisfies the launch", Object.keys(config(build({ cwd: declaring })).mcpServers).join() === "cotal");
+  const native = { mcpServers: { personal, cotal: { command: "node", args: ["registered-elsewhere.cjs"] } } };
   const original = JSON.stringify(native);
   writeFileSync(profileFile, original);
-  writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { repository: { command: "node", env: { TOKEN: "${UNRELATED_PRIVATE_SECRET}" } } } }));
   const ordinary = build();
   check("default launch retains native MCP discovery", !ordinary.args.includes("--strict-mcp-config"));
   check("default launch retains the selected Claude config directory", ordinary.env?.CLAUDE_CONFIG_DIR === profile);
@@ -69,7 +77,7 @@ try {
   check("a declared server cannot replace Cotal's own bridge", config(shadowed).mcpServers.cotal.command === "node");
 
   const other = join(root, "other-profile"); mkdirSync(other);
-  writeFileSync(join(other, ".claude.json"), JSON.stringify({ mcpServers: {} }));
+  writeFileSync(join(other, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "node" } } }));
   process.env.CLAUDE_CONFIG_DIR = other;
   check("changing the selected profile does not reuse the previous profile's secret references", build().env?.USER_MCP_SECRET === undefined);
   process.env.CLAUDE_CONFIG_DIR = profile;
@@ -77,7 +85,9 @@ try {
   // Node is only a --version command double here; this does not launch a Claude session.
   const carried = build({ resolvedBinaries: { claude: process.execPath }, carried: { home: carriedHome, transcript: join(root, "unused.jsonl"), cwd } });
   check("carried private homes remain isolated from native MCP sources", carried.args.includes("--strict-mcp-config") && carried.env?.USER_MCP_SECRET === undefined);
-  check("carried private homes do not copy the operator's MCP configuration", carried.env?.CLAUDE_CONFIG_DIR === carriedHome && !("mcpServers" in JSON.parse(readFileSync(join(carriedHome, ".claude.json"), "utf8"))));
+  const carriedConfig = JSON.parse(readFileSync(join(carriedHome, ".claude.json"), "utf8")) as { mcpServers?: Record<string, { args?: string[] }> };
+  check("carried private homes do not copy the operator's MCP configuration", carried.env?.CLAUDE_CONFIG_DIR === carriedHome && Object.keys(carriedConfig.mcpServers ?? {}).join() === "cotal");
+  check("a carried home declares the launch's own mesh server so its wake channel binds", carriedConfig.mcpServers?.cotal.args?.some((arg) => arg.endsWith("seat.cjs")) === true);
   console.log(`CLAUDE MCP DEFAULT OK (${passed} passed)`);
 } finally {
   for (const spec of specs) {

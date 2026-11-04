@@ -30,6 +30,16 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 # env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_CHANNEL=1, plus claude's documented auth vars
 ```
 
+- **Wake channel.** Claude Code binds the `server:cotal` channel only to a server its own
+  configuration declares, the user config or the project's `.mcp.json`; the `--mcp-config` entry
+  alone does not count. `cotal setup` and `cotal update` register the plugin's server as the
+  user-scope entry `cotal`, the same command and arguments as the plugin's own server, so a plain
+  session runs one process and a managed launch's same-named entry replaces it. A carried seat's
+  private home declares it itself. A managed launch whose user config and project `.mcp.json`
+  declare no `cotal` server is refused with a message naming `cotal setup`, because a seat whose
+  channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
+  `cotal status` reports the entry under `Claude wake channel`.
+
 - **Tool permissions.** A managed seat has no human at its terminal, so it launches with
   `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
   tool call until someone answered it, and nobody can. To get prompts back, pass
