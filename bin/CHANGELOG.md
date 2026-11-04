@@ -1,5 +1,22 @@
 # cotal-ai
 
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+  - @cotal-ai/workspace@0.141.11
+  - @cotal-ai/seat@0.141.11
+  - @cotal-ai/runtime@0.141.11
+  - @cotal-ai/cli@0.141.11
+  - @cotal-ai/manager@0.141.11
+  - @cotal-ai/delivery@0.141.11
+  - @cotal-ai/connector-core@0.141.11
+  - @cotal-ai/auth@0.141.11
+
 ## 0.141.10
 
 ### Patch Changes
