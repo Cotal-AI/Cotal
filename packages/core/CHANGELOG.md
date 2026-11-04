@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.140.7
+
+### Patch Changes
+
+- ee13146: Reuse built-in meta-schema validation across contract compilations while keeping caller schemas and custom meta-schema resolution isolated per closure.
+
 ## 0.140.6
 
 ### Patch Changes

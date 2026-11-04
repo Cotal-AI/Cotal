@@ -1,5 +1,9 @@
 # @cotal-ai/connector-codex
 
+## 0.140.7
+
+No changes in this release.
+
 ## 0.140.6
 
 No changes in this release.
