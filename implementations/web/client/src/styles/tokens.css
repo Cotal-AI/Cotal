@@ -15,7 +15,6 @@
   --multi-ink: #3651C9; --uni-ink: #B85A3A; --any-ink: #35703E; --gold-ink: #85620A; --red-ink: #B23A32;
   --warn-bg: #FBF4DF; --err-bg: #FCEDEB; --scrim: rgba(20, 24, 33, .32); --skel: #EFEFED;
   --shimmer: rgba(255, 255, 255, .55);
-  --toggle-shadow: 0 1px 2px rgba(20, 24, 33, .08);
   --me-bg: #6B6F80; --me-ink: #FFFFFF;
   --mark: #202B43;
   --sheet-shadow: 8px 0 30px rgba(20, 24, 33, .18);

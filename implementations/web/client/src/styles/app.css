@@ -275,9 +275,6 @@
 .v3-spill { display: inline-flex; align-items: center; gap: 6px; font: 500 13px/1 var(--body); white-space: nowrap; }
 
 /* Agents view */
-.v3-toggle { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--soft); }
-.v3-toggle button { padding: 5px 10px; border-radius: 6px; font-size: 12.5px; color: var(--dim); }
-.v3-toggle button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: var(--toggle-shadow), 0 0 0 1px var(--card-line); }
 .v3-ghead { display: flex; align-items: center; gap: 8px; padding: 18px 12px 6px; font: 600 13.5px/1 var(--body); color: var(--ink); }
 .v3-ghead:first-child { padding-top: 6px; }
 .v3-ghead .ui-ic { width: 16px; height: 16px; }

@@ -4,6 +4,7 @@ import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Toggle } from "#client/ui/shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { composeKey, type ComposeTarget } from "../../lib/compose.js";
@@ -253,9 +254,9 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
         {onTogglePanel && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button type="button" variant="ghost" size="icon" aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
+              <Toggle aria-label={panelLabel} pressed={panelOpen} onPressedChange={onTogglePanel}>
                 <Icon icon={SidebarRightIcon} />
-              </Button>
+              </Toggle>
             </TooltipTrigger>
             <TooltipContent>{panelLabel}</TooltipContent>
           </Tooltip>

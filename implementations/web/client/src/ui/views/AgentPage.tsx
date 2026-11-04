@@ -24,6 +24,7 @@ import { SessionEmpty } from "../session/SessionEmpty.tsx";
 import { Button } from "../shadcn/button.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
+import { Toggle } from "../shadcn/toggle.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
 import { StatusWord } from "../Status.tsx";
 import { WorkList } from "../work/WorkList.tsx";
@@ -330,9 +331,9 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
             {onTogglePanel && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button type="button" variant="ghost" size="icon" aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
+                  <Toggle aria-label={panelLabel} pressed={panelOpen} onPressedChange={onTogglePanel}>
                     <Icon icon={SidebarRightIcon} />
-                  </Button>
+                  </Toggle>
                 </TooltipTrigger>
                 <TooltipContent>{panelLabel}</TooltipContent>
               </Tooltip>

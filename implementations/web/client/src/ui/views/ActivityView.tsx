@@ -2,6 +2,7 @@ import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { useMemo, useState } from "react";
 import type { ActivityEntry, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
+import { ToggleGroup, ToggleGroupItem } from "#client/ui/shadcn/toggle-group.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { displayNameOf, nameIndex, type NameIndex } from "../../lib/names.js";
@@ -16,12 +17,15 @@ import { EmptySpace, hasAgents } from "./EmptySpace.tsx";
 
 type Entry = ActivityEntry | FeedMessage;
 
+/** What the Show filter keeps: everything, or one delivery mode. */
+type Filter = "all" | Entry["mode"];
+
 /** The filter chips: everything, or one delivery mode (channel posts, direct messages, role requests). */
-const FILTERS: { label: string; mode?: Entry["mode"] }[] = [
-  { label: "All" },
-  { label: "Channels", mode: "chat" },
-  { label: "Direct", mode: "unicast" },
-  { label: "Roles", mode: "anycast" },
+const FILTERS: { label: string; value: Filter }[] = [
+  { label: "All", value: "all" },
+  { label: "Channels", value: "chat" },
+  { label: "Direct", value: "unicast" },
+  { label: "Roles", value: "anycast" },
 ];
 
 /** Where a message went, from the field the wire sets for its mode. A channel is the one the server
@@ -67,7 +71,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
   const space = useStore(store, (s) => s.space);
   const stale = useStore(store, (s) => s.stale);
   const partial = partialBanner(stale);
-  const [filter, setFilter] = useState<Entry["mode"] | undefined>(undefined);
+  const [filter, setFilter] = useState<Filter>("all");
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peers = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
@@ -79,18 +83,21 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
       .map((e, i) => ({ e, claim: e.mode === "anycast" ? claimedBy(e.msg.id, later.slice(i + 1)) : undefined }))
       .reverse();
   }, [activity]);
-  const shown = filter === undefined ? listed : listed.filter(({ e }) => e.mode === filter);
+  const shown = filter === "all" ? listed : listed.filter(({ e }) => e.mode === filter);
   return (
     <>
       <header className="ui-bar">
         <h1>Activity</h1>
         {!partial && <StaleMarker store={store} id={null} />}
         <span className="ui-sp" />
-        <span className="v3-toggle" role="group" aria-label="Show">
+        <ToggleGroup type="single" size="sm" aria-label="Show" value={filter} onValueChange={(next) => {
+          const picked = FILTERS.find((f) => f.value === next);
+          if (picked) setFilter(picked.value);
+        }}>
           {FILTERS.map((f) => (
-            <button key={f.label} type="button" aria-pressed={filter === f.mode} onClick={() => setFilter(f.mode)}>{f.label}</button>
+            <ToggleGroupItem key={f.value} value={f.value}>{f.label}</ToggleGroupItem>
           ))}
-        </span>
+        </ToggleGroup>
       </header>
       <div className="ui-scroll">
         {!hasAgents(roster) && <EmptySpace space={space} />}
