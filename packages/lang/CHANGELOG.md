@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+
 ## 0.141.10
 
 No changes in this release.
