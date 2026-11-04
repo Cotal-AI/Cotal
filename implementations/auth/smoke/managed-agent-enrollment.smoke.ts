@@ -219,9 +219,16 @@ try {
 
   console.log("B. enrollment authorization, against the real gate and the real proof secret");
   {
+    // The manager's own row: an enrollment naming no spawn is parented to it, so the door bounds the
+    // helper by it.
+    grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "run", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"] });
     const ok = await outcome(() => enroll(enrollment()));
     check("POSITIVE CONTROL: a current registration with supervise authorizes the enrollment",
-      ok.value?.target.actor === "worker" && ok.value.instanceId === INSTANCE, ok);
+      ok.value?.request.target.actor === "worker" && ok.value.request.instanceId === INSTANCE, ok);
+    check("the door answers the manager as the parent of an enrollment that names no spawn", ok.value?.parent === `${OWNER}.cli`, ok);
+    const wider = await outcome(() => enroll(enrollment({ target: { ...enrollment().target, allowPublish: ["general", "secret"] } })));
+    check("the door refuses a helper wider than its parent's grant, naming what the parent lacks",
+      wider.value === undefined && /would exceed its spawner's grant/.test(wider.message ?? "") && /secret/.test(wider.message ?? ""), wider);
 
     await refuses("enrollment: a request naming another host space is refused",
       () => enroll(enrollment({ space: "other" })), "permission-denied", /not host space/);
@@ -328,6 +335,6 @@ try {
   releaseBroker();
 }
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 35;
+const EXPECTED = 37;
 console.log(`\nMANAGED-AGENT-ENROLLMENT SMOKE ${fail === 0 && pass + fail === EXPECTED ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, expected ${EXPECTED})`);
 process.exit(fail === 0 && pass + fail === EXPECTED ? 0 : 1);

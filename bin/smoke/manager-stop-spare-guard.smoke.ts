@@ -53,7 +53,6 @@ const SPARE_COVERAGE = new Set([
  */
 const FROZEN_DROPPED = [
   "bin/smoke/readiness-window-live.smoke.ts",
-  "bin/smoke/run-host-live.smoke.ts",
   "bin/smoke/spawn-detach-live.smoke.ts",
   "implementations/cli/smoke/scatter-pinned-probe.smoke.ts",
   "implementations/manager/smoke/boot-self-heal-gate.smoke.ts",

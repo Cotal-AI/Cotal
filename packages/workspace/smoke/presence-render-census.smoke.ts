@@ -40,6 +40,7 @@ const renderRoots = [
   join(root, "packages/workspace/src/chat"),
   join(root, "packages/workspace/src/attach"),
   join(root, "implementations/web/src"),
+  join(root, "implementations/web/client/src"),
   join(root, "implementations/tui/src"),
 ];
 const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_modules"]);
@@ -335,8 +336,6 @@ const connectorHonestStatusAnchor = 'status === "working" ? "working · progress
 const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;';
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';
 const inkRosterProgressAnchor = 'return "progress unknown";';
-const webMonitorProgressAnchor = 'const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
-const webGraphProgressAnchor = '<div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>';
 const tuiOverviewStatusAnchor = '{ label: "status", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === "working" ? " · progress unknown" : ""}` },';
 const proofAnchors = new Map<string, string>([
   ["extensions/connector-core/src/orientation.ts", connectorHonestStatusAnchor],
@@ -344,8 +343,6 @@ const proofAnchors = new Map<string, string>([
   ["implementations/cli/src/ui.ts", sharedStatusBadgeAnchor],
   ["implementations/cli/src/console/ui/Detail.tsx", inkDetailStatusAnchor],
   ["implementations/cli/src/console/ui/Roster.tsx", inkRosterProgressAnchor],
-  ["implementations/web/src/web/app.js", webMonitorProgressAnchor],
-  ["implementations/web/src/web/graph.js", webGraphProgressAnchor],
   ["implementations/tui/src/screen.ts", tuiOverviewStatusAnchor],
 ]);
 

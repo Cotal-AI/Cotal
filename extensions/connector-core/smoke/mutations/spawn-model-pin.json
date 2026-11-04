@@ -21,15 +21,15 @@
     {
       "name": "A1 skip inspect after a requested model, so a dropped pin looks like success",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (!requested) return reply;",
+      "find": "    if (!pinned) return reply;",
       "replace": "    if (true) return reply;",
       "expectRed": "a requested model the manager did not record is refused"
     },
     {
       "name": "A2 treat any recorded model as the requested pin",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (recorded.ok && recorded.model !== requested) {",
-      "replace": "    if (false && recorded.ok && recorded.model !== requested) {",
+      "find": "    if (recorded.ok && recorded.model !== pinned) {",
+      "replace": "    if (false && recorded.ok && recorded.model !== pinned) {",
       "expectRed": "a requested model that inspect records as a different pin is refused"
     },
     {

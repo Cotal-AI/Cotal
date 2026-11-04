@@ -10,6 +10,7 @@ import { openAuthorityClient } from "./authority-client.js";
 import { openLifecycleRegistry, registryMaxPayload, registryServerId, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { readPlaneClaim, genuinePlaneHold, type PlaneClaimHold } from "./plane-claim.js";
 import { parseServiceCallerPayloadRecord, SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_CALLER_PAYLOAD_KEY, type ServiceCallerPayloadRecord } from "./service-caller-payload.js";
+import type { ServiceKeys } from "./store.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder("utf-8", { fatal: true });
 /** Broker-owner provisioning only. Needs the registered SYS signing seed, not operator/root seed.
@@ -108,7 +109,7 @@ async function observe(registry: LifecycleRegistry, servers: string, source: Ser
  */
 export async function bootstrapServiceCallerPayload(opts: {
   registry: LifecycleRegistry; hold: PlaneClaimHold; servers: string; accountPublicKey: string;
-  dataAccount: { pub: string; signingSeed: string }; source: ServiceCallerPayloadBootstrap;
+  dataAccount: ServiceKeys["dataAccount"]; source: ServiceCallerPayloadBootstrap;
   onConnection?: (nc: NatsConnection, label: string) => void;
 }): Promise<() => Promise<void>> {
   const { registry, hold, source, servers, accountPublicKey, dataAccount } = opts, space = registryStores(registry).space;

@@ -133,7 +133,7 @@ const ANNOTATIONS = {
     effect: "writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`",
     availability: "capability-gated like cotal_spawn",
     notes:
-      "Capabilities and ownership have no slot here; only an operator grants them. A definition that would not load back is refused before anything is written, with `Couldn't define <name>: it would not load: <reason>`. " +
+      "Writes content (`prompt`, `model`, role, agent and channel lists) and `capabilities`, which the manager checks against what you hold before it writes; ownership has no slot. A definition that would not load back is refused before anything is written, with `Couldn't define <name>: it would not load: <reason>`. " +
       "Defining is silent by default. `announce` is the only way it emits, and then only to the channel you name.",
   },
   cotal_personas: {

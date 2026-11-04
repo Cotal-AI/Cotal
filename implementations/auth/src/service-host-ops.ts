@@ -57,6 +57,7 @@ import {
   HOSTS, Held, S1_REQUEST_TIMEOUT_MS, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, readyAfter, readyBefore, scopeCovers, write,
   type Ctx, type EndpointClass, type EndpointRow, type HostInternals, type ServiceCustodyHost, type ServiceWriteScope,
 } from "./service-write.js";
+import type { ServiceKeys } from "./store.js";
 
 /** Original authority limit of one approve, refuse or register, from its admission. */
 export const S2A_OPERATION_TTL_MS = 600_000;
@@ -698,7 +699,7 @@ export interface ServiceHostEffect { registry: LifecycleRegistry; gone: Promise<
  *  `scope.keys`, never reconnects or renews, and expires at `scope.deadlineMs` rounded up to the
  *  whole second. The registry over it is the effect registry. */
 export async function openServiceHostEffect(
-  opts: { server: string; space: string; dataAccount: { pub: string; signingSeed: string }; log: (line: string) => void; onConnection?: (nc: NatsConnection, label: string) => void },
+  opts: { server: string; space: string; dataAccount: ServiceKeys["dataAccount"]; log: (line: string) => void; onConnection?: (nc: NatsConnection, label: string) => void },
   scope: Pick<ServiceHostEffectScope, "keys" | "deadlineMs"> & { reads?: ServiceHostEffectReads },
 ): Promise<ServiceHostEffect> {
   const client = await openAuthorityClient({

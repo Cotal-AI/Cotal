@@ -15,7 +15,7 @@ import {
   CreamStage,
   ScaleToFit,
   Series,
-  Wordmark,
+  Logo,
   loopEnvelope,
   useCurrentFrame,
 } from "./shared";
@@ -30,7 +30,7 @@ export const REEL_DURATION =
 const Outro: React.FC = () => {
   const f = useCurrentFrame();
   return (
-    <Wordmark
+    <Logo
       frame={f}
       appear={6}
       tagline="the open standard for agent coordination"

@@ -93,6 +93,9 @@ export const CATALOG = Object.freeze({
   // diagnosis. It is refused HERE, at the call, for the same reason L3046 is: the computed bag is
   // the case the validator cannot see, and the author needs the shape named rather than a stack.
   L3048: "`spawn` placement is not an endpoint and instanceId pair",
+  // An inline persona is the helper's identity and is hashed whole, so a malformed one is refused
+  // at the call, before a key is minted, and never journalled.
+  L3049: "`spawn` inline persona is malformed",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",

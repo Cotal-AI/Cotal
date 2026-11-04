@@ -274,9 +274,6 @@ export const Logo: React.FC<{
   );
 };
 
-// Default brand wordmark = the real Logo (existing variants pick this up).
-export const Wordmark = Logo;
-
 // --- snippet building blocks ---------------------------------------------------
 
 // On-screen caption (silent explainer). Bottom-centered by default; `accent`

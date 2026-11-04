@@ -84,6 +84,12 @@ const dispatch = (file, excluded) => {
         const prefix = value(expression.arguments[0]);
         if (prefix === '/session/') paths.add(prefix + '{name}');
         else if (prefix === '/api/channels/' && node.expression.getText().includes('path.endsWith("/history")')) paths.add('/api/channels/{channel}/history');
+        else if (prefix === '/api/agents/') {
+          // One prefix, three operations whose methods the inner branches decide: watch and unwatch
+          // are POSTs with no body, events is a GET.
+          for (const [path, method] of [['/api/agents/{agent}/watch', 'post'], ['/api/agents/{agent}/unwatch', 'post'], ['/api/agents/{agent}/events', 'get']])
+            result.set(`${method} ${path}`, { path, method });
+        }
         else assert.fail(`Unclassified HTTP route prefix ${prefix} in ${file}`);
       }
     });
@@ -105,7 +111,8 @@ const dispatch = (file, excluded) => {
 const audiences = [
   { id: 'auth', spec: 'implementations/auth/openapi.json', operations: tables.routes.flatMap(route => route.methods.map(method => ({ path: route.path, method }))) },
   { id: 'auth-host', spec: 'implementations/auth/host.openapi.json', operations: tables.ROUTES.filter(route => !publicPaths.has(route.path)).flatMap(route => route.methods.map(method => ({ path: route.path, method }))) },
-  { id: 'dashboard', spec: 'implementations/web/openapi.json', operations: dispatch('implementations/web/src/web.ts', ['/']) },
+  // `/` and `/graph` both serve the client's page, not an API operation.
+  { id: 'dashboard', spec: 'implementations/web/openapi.json', operations: dispatch('implementations/web/src/web.ts', ['/', '/graph']) },
   { id: 'manager-console', spec: 'implementations/manager/openapi.json', operations: dispatch('implementations/manager/src/attach-endpoint.ts', ['/favicon.ico']) },
   { id: 'feedback-intake', spec: 'implementations/delivery/openapi.json', operations: dispatch('implementations/delivery/src/feedback-intake.ts', []) },
 ];

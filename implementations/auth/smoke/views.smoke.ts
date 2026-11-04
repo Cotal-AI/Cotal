@@ -211,6 +211,14 @@ type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
   check("no view → agent profile (channel ACL resolver consulted)", aclConsulted === 1 && (agent.sub?.allow ?? []).length > 0);
 }
 {
+  // On a user mesh the token is delegation authority only; the bearer binds its row's own role.
+  rowScope = ["spawn", "role:worker"];
+  const agent = forView(tok(undefined, ["spawn", "role:worker"]), CONN, READER) as Perms;
+  check("a role:<r> scope token mints no task-queue row for that role on a user mesh",
+    (agent.pub?.allow ?? []).length > 0 && !(agent.pub?.allow ?? []).some((s) => s.includes("svc_worker")), agent.pub);
+  rowScope = ["spawn", "admin", "role:default"];
+}
+{
   const before = aclConsulted;
   const admin = forView(tok("admin", ["spawn", "admin"]), CONN, READER) as Perms;
   // The god-view is the enumerated MESSAGING plane (SPEC 13.9/13.11): chat/inst/svc, never the

@@ -17,6 +17,7 @@ import {
   channelBucket,
   AmbiguousPeerError,
   CotalEndpoint,
+  mentionsIn,
   type FlagSpec,
   type FlagValues,
   type PeerCandidate,
@@ -24,7 +25,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, mentionsIn, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";

@@ -55,6 +55,7 @@ import {
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "./authority-client.js";
 import type { ApplyCommit, CancelEffectsRoute, EffectsCancelRepair, PoolRouteRepair, ReconcilePoolRoute } from "./admission-mediator.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The infra owner for repair principals: CONNZ-attributable, reserved (the cleaner precedent). */
 const INFRA_OWNER = "local";
@@ -217,7 +218,7 @@ export function drainCancellerGrants(space: string, completionSubject: string, c
 export function makeDrainRepairers(opts: {
   server: string;
   space: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }) {

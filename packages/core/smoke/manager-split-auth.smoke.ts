@@ -46,6 +46,7 @@ import {
   chatStream,
   dmStream,
   dlvStream,
+  inboxStream,
   taskStream,
   dmDurable,
   dlvDurable,
@@ -270,9 +271,14 @@ try {
   // against the broker's `max_file_store`) and UPDATES a store left at the legacy stock 4 GiB to -1, so
   // an existing mesh releases that reservation. `Objm.create` cannot change an existing bucket's cap,
   // so the reconcile needs this grant or the first `cotal up` after the upgrade dies on a permissions
-  // violation. It is the ONLY non-TTL, non-authority stream the provisioner may update.
+  // violation. Apart from the four history streams below, it is the only non-TTL, non-authority stream
+  // the provisioner may update.
   check("STREAM.UPDATE the artifact object store ALLOWED (legacy cap reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${objectStoreStream(artifactBucket(space))}`, prov.id) === "allowed");
-  check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets + the artifact store)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
+  // CHAT, INBOX, DLV and DM: `cotal history limit` sets their history limits (SPEC §8). TASK, the
+  // work queue, takes no limit and stays create-only.
+  for (const [label, stream] of [["CHAT", CHAT], ["INBOX", inboxStream(space)], ["DLV", DLV], ["DM", DM]] as const)
+    check(`STREAM.UPDATE the ${label} stream ALLOWED (history limit)`, await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${stream}`, prov.id) === "allowed");
+  check("STREAM.UPDATE the TASK stream DENIED (the reconcile covers the TTL'd buckets, the artifact store and the four history streams)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${TASK}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, prov.id) === "denied");
 

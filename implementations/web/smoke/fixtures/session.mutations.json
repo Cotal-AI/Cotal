@@ -1,0 +1,145 @@
+{
+  "command": "pnpm smoke:web-session",
+  "suite": [
+    "implementations/web/smoke/session.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "S1 a text item no longer ends a tool group, so a call after a paragraph joins the calls before it and the paragraph reads as if it came after both",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "    tools = undefined;\n    (turn?.steps ?? items).push(step);",
+      "replace": "    if (step.kind !== \"said\") tools = undefined;\n    (turn?.steps ?? items).push(step);",
+      "expectRed": "grouping: a turn by a prompt, a prompt, a said paragraph, two calls, text, one call and a turn end give turn(prompt) prompt said tools(2) said tools(1) turnEnd",
+      "cell": "grouping: a turn by a prompt, a prompt, a said paragraph, two calls, text, one call and a turn end give turn(prompt) prompt said tools(2) said tools(1) turnEnd"
+    },
+    {
+      "name": "S3 the tool name falls back on falsiness, so an empty toolCallName reads ? and the fold disagrees with both renderers on absent versus empty",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "const full = str(e.toolCallName) ?? \"?\";",
+      "replace": "const full = str(e.toolCallName) || \"?\";",
+      "expectRed": "tool name: an empty toolCallName is \"\", kept apart from an absent one",
+      "cell": "tool name: an empty toolCallName is \"\", kept apart from an absent one"
+    },
+    {
+      "name": "S4 posts are appended at the end instead of merged by time, so a post the agent made mid-turn shows after everything it did later",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "    while (next < ordered.length && before(ordered[next].at, s.at)) merged.push(ordered[next++]);\n",
+      "replace": "",
+      "expectRed": "post placement: a post at 10:58 between cotal_send at 10:58 and text at 10:59 lands between them and splits nothing it should not",
+      "cell": "post placement: a post at 10:58 between cotal_send at 10:58 and text at 10:59 lands between them and splits nothing it should not"
+    },
+    {
+      "name": "S5 a turn started by a message from the mesh is attributed to a prompt, which the wire never said",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  [\"channel\", \"mesh\"],",
+      "replace": "  [\"channel\", \"prompt\"],",
+      "expectRed": "turn source: a channel turn has source mesh",
+      "cell": "turn source: a channel turn has source mesh"
+    },
+    {
+      "name": "S6 an open stream is no longer cut at a run boundary, so a paragraph cut off mid-turn is drawn after every later turn instead of inside its own",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "      if (type === \"RUN_STARTED\" || type === \"RUN_FINISHED\" || type === \"RUN_ERROR\") cutOpen();\n",
+      "replace": "",
+      "expectRed": "a stream open when its turn ends is drawn cut inside the turn",
+      "cell": "a stream open when its turn ends is drawn cut inside the turn"
+    },
+    {
+      "name": "S7 a message whose id is not a string is keyed by it anyway, so 7 and \"7\", or two messages with no id, share one key and the store drops one as a copy of the other",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  if (typeof (msg as { id?: unknown }).id !== \"string\") return [];\n",
+      "replace": "",
+      "expectRed": "a message whose id is not a string gives no frames, so it can never share a key with another message",
+      "cell": "a message whose id is not a string gives no frames, so it can never share a key with another message"
+    },
+    {
+      "name": "S8 the result marker is ignored, so a call that finished or failed never says so and every row reads as if the connector reported nothing",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "            const latest = calls.get(marker.toolCallId);",
+      "replace": "            const latest = undefined as ToolCall | undefined;",
+      "expectRed": "work: a marker sets end and failed on its call",
+      "cell": "work: a marker sets end and failed on its call"
+    },
+    {
+      "name": "S9 tool status is always reported, so an older connector's calls claim running, done or failed states the wire never carried",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  return { items, toolStatus: marked || !closedWithCall };",
+      "replace": "  return { items, toolStatus: true };",
+      "expectRed": "legacy: a closed turn of Write, Bash, Bash with no marker reads \"Called Write, Bash and Bash\"",
+      "cell": "legacy: a closed turn of Write, Bash, Bash with no marker reads \"Called Write, Bash and Bash\""
+    },
+    {
+      "name": "S10 the group counts distinct tool names instead of calls, so two edits read as one",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  for (const c of calls) counts.set(c.kind, (counts.get(c.kind) ?? 0) + 1);",
+      "replace": "  for (const c of new Map(calls.map((x) => [x.name, x])).values()) counts.set(c.kind, (counts.get(c.kind) ?? 0) + 1);",
+      "expectRed": "group title: two Edit calls read \"Made 2 edits\", counting calls, never files",
+      "cell": "group title: two Edit calls read \"Made 2 edits\", counting calls, never files"
+    },
+    {
+      "name": "S11 a call with no marker that something followed is left running, so a step the wire never said finished spins forever",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  if (!at.toolStatus || !at.trailing) return \"called\";",
+      "replace": "  if (!at.toolStatus) return \"called\";",
+      "expectRed": "call state: a call with no marker that something followed is called, never running",
+      "cell": "call state: a call with no marker that something followed is called, never running"
+    },
+    {
+      "name": "S12 the work fold appends posts at the end instead of merging them by time, so a post made inside a finished turn lands in the open one",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  for (const s of mergeByTime<WorkFlat>(flat, ordered)) {",
+      "replace": "  for (const s of [...flat, ...ordered] as WorkFlat[]) {",
+      "expectRed": "work post placement: a channel post and a DM land inside the turn whose events surround them, the DM with to",
+      "cell": "work post placement: a channel post and a DM land inside the turn whose events surround them, the DM with to"
+    },
+    {
+      "name": "S13 precise is ignored, so a call that took 0.4s reads 0s",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  if (s < 60) return precise ? ",
+      "replace": "  if (s < 60) return false ? ",
+      "expectRed": "formatDuration: 0.4s and 20.0s precise, 12s whole, 3m 2s, 1h 4m, and none for -1 or NaN",
+      "cell": "formatDuration: 0.4s and 20.0s precise, 12s whole, 3m 2s, 1h 4m, and none for -1 or NaN"
+    },
+    {
+      "name": "S14 a same-minute turn prints both ends, so its description reads 10:44 to 10:44",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "parts.push(from === to ? from : `${from} to ${to}`)",
+      "replace": "parts.push(`${from} to ${to}`)",
+      "expectRed": "turn description: a turn that starts and ends in the same minute shows one time",
+      "cell": "turn description: a turn that starts and ends in the same minute shows one time"
+    },
+    {
+      "name": "S15 the no-duration title for an open turn while waiting goes back to the bare Open, which reads like the page's Open links",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": ", \"Turn open\");",
+      "replace": ", \"Open\");",
+      "expectRed": "turn title: with no duration the titles read Worked, Turn failed, Working and Turn open",
+      "cell": "turn title: with no duration the titles read Worked, Turn failed, Working and Turn open"
+    },
+    {
+      "name": "S16 tool names are shown uncapped, so a harness can push any length of text into a title or description",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  return chars.length > cap ? ",
+      "replace": "  return false ? ",
+      "expectRed": "tool names: a 200-character name shows as its first 64 characters and …, and the call keeps it whole",
+      "cell": "tool names: a 200-character name shows as its first 64 characters and …, and the call keeps it whole"
+    },
+    {
+      "name": "S17 a call with no id is indexed for markers, so a marker for \"\" sets the result of whichever id-less call came last",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "          if (call.id !== \"\") calls.set(call.id, call);",
+      "replace": "          calls.set(call.id, call);",
+      "expectRed": "work: a call with no id is never matched by a marker, not even one for \"\"",
+      "cell": "work: a call with no id is never matched by a marker, not even one for \"\""
+    },
+    {
+      "name": "S18 a post right after a cotal_send call is folded into the call, so the agent's verified message disappears behind a tool row",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "      place(s.post);\n",
+      "replace": "      if (tools?.calls.at(-1)?.kind !== \"send\") place(s.post);\n",
+      "expectRed": "work: a cotal_send call and its post stay separate steps, never joined",
+      "cell": "work: a cotal_send call and its post stay separate steps, never joined"
+    }
+  ]
+}
