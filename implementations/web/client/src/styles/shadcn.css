@@ -1,11 +1,12 @@
-/* Tailwind for the copied shadcn/ui parts in ui/shadcn, and nothing else. Imported after tokens.css
-   and before app.css. Only Tailwind's theme and utilities come in; its preflight reset does not, so
-   app.css keeps its own base. Utilities are generated only from the files under ui/shadcn, and
-   app.css stays unlayered, so on any clash our rule wins over a Tailwind utility. */
+/* Tailwind for the client: the shadcn/ui parts in ui/shadcn, which the shadcn CLI writes, and the
+   layout classes their callers pass. Imported after tokens.css and before app.css. Only Tailwind's
+   theme and utilities come in; its preflight reset does not, so app.css keeps its own base.
+   Utilities are generated from every source file under client/src, and app.css stays unlayered, so
+   on any clash our rule wins over a Tailwind utility. */
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
-@source "../ui/shadcn";
+@source "..";
 
 /* From shadcn@4.22.1 dist/tailwind.css (MIT licence, copyright (c) 2023 shadcn): the shimmer
    utilities and the data-* state variants the copied parts use. Radix marks state with data-state
