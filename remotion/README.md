@@ -24,3 +24,8 @@ separate logo lockup and should stay unchanged.
 pairs. Build each pair where its geometry and frame timing are known; use an
 explicit `glow: 0` for a resting wire. The typecheck includes negative contract
 checks that reject missing fields and the old parallel-array props.
+
+`ModeUnicast` computes its inbox and both wire segments through `unicastRoute`
+from the sender and named addressee. Wire ends leave the node and inbox squares
+with a three-pixel gap on the route's dominant axis. Coincident positions are
+refused. The default inbox is unchanged; the wire ends move by at most 2.3 pixels.
