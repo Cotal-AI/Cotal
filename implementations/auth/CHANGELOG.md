@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.141.2
+
+### Patch Changes
+
+- 2eee225: Remote manager activation and renewal now identify their service contract by its closure digest. Command authority and serving descriptors agree with the registered core grant instead of naming only the root document. Permission rows and the manager command set are unchanged.
+- @cotal-ai/core@0.141.2
+  - @cotal-ai/lang@0.141.2
+  - @cotal-ai/workspace@0.141.2
+
 ## 0.141.1
 
 ### Patch Changes
