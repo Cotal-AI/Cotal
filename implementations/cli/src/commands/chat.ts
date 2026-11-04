@@ -202,6 +202,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
   let target: MeshTarget;
   let notice: string | undefined;
   let session: AdmittedChatSession;
+  const words = cliWords(args);
   try {
     ({ target, notice } = await prepareChat(args.values as Values, input.channel));
     // A session has no `Mesh:` heading, so in a folder whose space is not running it names the
@@ -216,7 +217,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
       process.exitCode = before;
       return;
     }
-    session = await openChatSession(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), { words: cliWords(args), control: cliControl });
+    session = await openChatSession(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), { words, control: cliControl });
   } catch (e) {
     signals.release();
     throw e;
@@ -237,7 +238,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
   let close: CloseReport | undefined;
   try {
     // The front end installs its signal handling before it first yields, so releasing here leaves no gap.
-    const running = start({ session, initialRecipient, notice: [notice, shared].filter(Boolean).join("; ") || undefined });
+    const running = start({ session, initialRecipient, notice: [notice, shared].filter(Boolean).join("; ") || undefined, words });
     signals.release();
     close = await running;
   } catch (e) {

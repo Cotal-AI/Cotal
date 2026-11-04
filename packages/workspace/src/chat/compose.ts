@@ -7,6 +7,7 @@ import { assertValidRole, mentionsIn, oneLine } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import { concreteChannelProblem, offlineRecipientNotice, shownTime } from "../messaging.js";
 import type { AdmittedChatSession, CloseReport, ConnectionReport, ConnectionState, PublishResult, Result, SessionIdentity } from "./session.js";
+import type { ChatWords } from "./words.js";
 
 /** Bounded draft length, in UTF-16 code units. Provisional. */
 export const MAX_DRAFT = 65_536;
@@ -292,9 +293,10 @@ export function describeConnection(c: ConnectionReport): string[] {
 /**
  * Disclose what a chosen channel is before it is used: unregistered channels get a visible warning
  * (the native policy, not this UI, decides whether a send is allowed). A refused or failed read is
- * reported as such, never as "registered". Non-channel recipients need no read.
+ * reported as such, never as "registered". One outside the post grant ends with the front end's way
+ * to open a session on it, as a send's refusal does. Non-channel recipients need no read.
  */
-export async function discloseChoice(session: AdmittedChatSession, r: Recipient): Promise<string | undefined> {
+export async function discloseChoice(session: AdmittedChatSession, r: Recipient, words: ChatWords): Promise<string | undefined> {
   if (r.kind !== "channel") return undefined;
   let info;
   try {
@@ -305,7 +307,7 @@ export async function discloseChoice(session: AdmittedChatSession, r: Recipient)
   if (info.outcome !== "ok") return `could not read #${oneLine(r.channel)} registry metadata (${info.outcome}): ${oneLine(info.message)}`;
   const parts: string[] = [];
   if (!info.value.registered) parts.push(`Unregistered channel #${oneLine(r.channel)}: sends follow the space's native policy`);
-  if (!info.value.postable) parts.push(`your grant does not allow posting to #${oneLine(r.channel)}`);
+  if (!info.value.postable) parts.push(`your grant does not allow posting to #${oneLine(r.channel)}. ${words.reopen(r.channel)}`);
   return parts.length ? parts.join("; ") : undefined;
 }
 
