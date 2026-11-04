@@ -108,11 +108,13 @@ const schemes = [schemeOf(":root"), schemeOf(":root[data-theme=light]"), schemeO
 ok("the built stylesheet's color-scheme follows the theme: light dark for system, and each forced value under its data-theme",
   JSON.stringify(schemes) === JSON.stringify(["light dark", "light", "dark"]), schemes);
 
-// Tailwind comes in without its reset, so the existing screens keep app.css's own base.
+// Tailwind comes in without its reset, so the existing screens keep app.css's own base. Input's
+// `file:` utilities style ::file-selector-button under their own class; preflight styles it bare.
 const rules = cssRules(css);
 const resets = rules.filter((r) => r.selectors.some((s) => s.includes("::backdrop")) && /box-sizing|margin:0|border:0 solid/.test(r.body));
-ok("the stylesheet carries no Tailwind preflight: no ::file-selector-button and no reset rule on *, ::after, ::before, ::backdrop",
-  !css.includes("::file-selector-button") && resets.length === 0, resets.map((r) => r.selectors));
+const bareFileButton = rules.filter((r) => r.selectors.includes("::file-selector-button"));
+ok("the stylesheet carries no Tailwind preflight: no bare ::file-selector-button rule and no reset rule on *, ::after, ::before, ::backdrop",
+  bareFileButton.length === 0 && resets.length === 0, { bareFileButton: bareFileButton.map((r) => r.selectors), resets: resets.map((r) => r.selectors) });
 // Without preflight, shadcn's borders need a border style and colour. The scoped reset gives them both,
 // and sits in the base layer so Tailwind's own border utilities still override it.
 const SLOT = ":where([data-slot],[data-slot] *)";
@@ -172,18 +174,13 @@ const holdsShiki = (file: string) => readFileSync(join(out, "assets", file), "ut
 ok("no first-load chunk holds Shiki, and a lazy chunk does",
   firstLoad.length > 0 && firstLoad.every((f) => !holdsShiki(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsShiki(a)),
   { firstLoad, shiki: assets.filter((a) => a.endsWith(".js") && holdsShiki(a)) });
-// The failed-call tooltip is Radix's, with its popper and floating-ui, and only a failed call draws
-// it, so it loads then. "TooltipContent" is a display name Radix sets as a string.
-const holdsTooltip = (file: string) => readFileSync(join(out, "assets", file), "utf8").includes("TooltipContent");
-ok("no first-load chunk holds the tooltip, and a lazy chunk does",
-  firstLoad.every((f) => !holdsTooltip(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsTooltip(a)),
-  { firstLoad, tooltip: assets.filter((a) => a.endsWith(".js") && holdsTooltip(a)) });
-// The agent page is a secondary route, so its Tabs and message scroller load when it opens. Radix
-// names its tab panel "TabsContent" as a string, which only the page's chunk holds.
-const holdsTabs = (file: string) => readFileSync(join(out, "assets", file), "utf8").includes("TabsContent");
-ok("no first-load chunk holds the agent page's tabs, and a lazy chunk does",
-  firstLoad.every((f) => !holdsTabs(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsTabs(a)),
-  { firstLoad, tabs: assets.filter((a) => a.endsWith(".js") && holdsTabs(a)) });
+// The agent page is a secondary route, so its module loads when it opens. Its Tabs and message
+// scroller are in the first load, since the details panel and the channel view draw them too, so the
+// page is found by a sentence only its Work tab says.
+const holdsAgentPage = (file: string) => readFileSync(join(out, "assets", file), "utf8").includes("hasn't started a turn yet");
+ok("no first-load chunk holds the agent page, and a lazy chunk does",
+  firstLoad.every((f) => !holdsAgentPage(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsAgentPage(a)),
+  { firstLoad, agentPage: assets.filter((a) => a.endsWith(".js") && holdsAgentPage(a)) });
 ok("the font ships as a local woff2 file", assets.some((a) => a.endsWith(".woff2")), assets);
 // The avatars draw through the art seam, which loads the brand's characters file at run time. A
 // bundle that left it out would build and then fail on the first avatar, so the built scripts must

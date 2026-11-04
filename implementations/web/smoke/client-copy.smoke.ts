@@ -1,7 +1,7 @@
 /** The dashboard's copy and style rules hold across the client source: no em or en dashes (one pinned
  *  fallback string excepted), no uppercase text, no positive letter-spacing, no Geist or Work Sans, no
- *  network call outside api/, and a token file that defines both palettes. Tailwind classes live only
- *  in the copied shadcn parts, shadcn's colour names are bridged from ours, and every running
+ *  network call outside api/, and a token file that defines both palettes. shadcn.css scans the whole
+ *  client source for Tailwind classes, shadcn's colour names are bridged from ours, and every running
  *  animation in app.css stops under reduced motion, the working dot keeping a still halo. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -101,24 +101,24 @@ ok("app.css holds no colour literal, only tokens", literals.length === 0, litera
 const scoped = app.split("\n").filter((l) => /(^|[\s,>+~])\.v3(?![\w-])/.test(l));
 ok("app.css has no .v3 scope: no element has to carry a root class", scoped.length === 0, scoped);
 
-// The copied shadcn parts keep the type rules too: Tailwind classes, not CSS, so the checks above miss them.
-const shadcnLines = lines.filter((l) => l.rel.startsWith("ui/shadcn/"));
+// The type rules hold in the classes the app writes too: Tailwind classes, not CSS, so the checks
+// above miss them. ui/shadcn is the shadcn CLI's output, never edited by hand, and its default look is
+// the one the dashboard takes, so it is the one place they do not hold.
+const appTsx = (rel: string) => rel.endsWith(".tsx") && !rel.startsWith("ui/shadcn/");
 const loud = /(?<![\w-])(?:uppercase|tracking-(?:wide|wider|widest))(?![\w-])/;
-ok("no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest in ui/shadcn",
-  shadcnLines.length > 0 && hits(loud, (rel) => rel.startsWith("ui/shadcn/")).length === 0,
-  hits(loud, (rel) => rel.startsWith("ui/shadcn/")));
+ok("no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest outside the shadcn CLI's parts",
+  lines.some((l) => appTsx(l.rel) && l.text.includes("className")) && hits(loud, appTsx).length === 0,
+  hits(loud, appTsx));
 
-// Tailwind utilities come only from the copied shadcn files: shadcn.css scans ui/shadcn alone, so a
-// utility written anywhere else would silently do nothing, or match a class Tailwind happens to emit.
-// Product parts style with app.css classes. The ui-*, v3-* and ox-* names never match this list.
-const REFUSED = /^(?:flex|grid|hidden|border|rounded|truncate|text-sm|(?:p|px|py|gap|bg)-.+)$/;
-const tailwindOutside = lines
-  .filter((l) => l.rel.endsWith(".tsx") && !l.rel.startsWith("ui/shadcn/") && l.text.includes("className"))
-  .flatMap((l) => [...l.text.slice(l.text.indexOf("className")).matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)]
-    .flatMap((m) => (m[1] ?? m[2] ?? m[3]!).split(/\s+/))
-    .filter((token) => REFUSED.test(token.split(":").pop()!.replace(/^!/, "")))
-    .map((token) => `${l.rel}:${l.line}: ${token}`));
-ok("no Tailwind utility class outside ui/shadcn", tailwindOutside.length === 0, tailwindOutside);
+// The app passes Tailwind layout classes in className, as shadcn's convention has it, so shadcn.css
+// has to scan the whole client source. Its utilities import is source(none), which turns off
+// Tailwind's own detection, so a utility in a file no @source covers would silently do nothing.
+const shadcnCss = read(join(src, "styles", "shadcn.css"));
+const scanned = [...shadcnCss.matchAll(/@source\s+(?:not\s+)?["']([^"']+)["']/g)].map((m) => join(src, "styles", m[1]!));
+ok("shadcn.css scans all of client/src for Tailwind classes, and only through its own @source",
+  /@import\s+["']tailwindcss\/utilities\.css["'][^;]*\bsource\(none\)/.test(shadcnCss)
+    && scanned.includes(src) && !/@source\s+not\b/.test(shadcnCss),
+  scanned);
 
 /** shadcn's names, each set on :root from one of our tokens, so Night follows from our Night blocks. */
 const BRIDGE: Record<string, string> = {
@@ -157,10 +157,14 @@ const ruleBody = (selector: string) => appRules.filter((r) => !reduced(r) && r.s
 ok("only a working Agents row keeps room for View work, and on a phone a row hides its host",
   /padding-right\s*:/.test(ruleBody(".ox-arow-w > .v3-arow")) && !/padding-right\s*:/.test(ruleBody(".ox-arow > .v3-arow")) && /display\s*:\s*none/.test(ruleBody(".ui-phone .ox-host")),
   [ruleBody(".ox-arow-w > .v3-arow"), ruleBody(".ox-arow > .v3-arow"), ruleBody(".ui-phone .ox-host")]);
-ok("the composer's pickers and a phone header's title shrink rather than push the page sideways",
-  /min-width\s*:\s*0/.test(ruleBody(".ui-crow > span.ui-pick")) && /overflow\s*:\s*hidden/.test(ruleBody(".ui-crow > span.ui-pick"))
+// The composer's mode line names the target, which can be a long channel or agent name. Its text
+// sits in the InputGroupText as Tailwind layout classes: the text may shrink and its name truncates.
+const composer = read(join(src, "ui", "Composer.tsx"));
+const modeLine = /<InputGroupText className="[^"]*(?<![\w-])min-w-0(?![\w-])[^"]*">\s*(?:<i\b[^>]*\/>\s*)?<span className="[^"]*(?<![\w-])truncate(?![\w-])[^"]*">\{to\}<\/span>/;
+ok("the composer's mode line and a phone header's title shrink rather than push the page sideways",
+  modeLine.test(composer)
     && /min-width\s*:\s*0/.test(ruleBody(".ui-phone .ui-bar h1")) && /overflow\s*:\s*hidden/.test(ruleBody(".ui-phone .ui-bar h1")),
-  [ruleBody(".ui-crow > span.ui-pick"), ruleBody(".ui-phone .ui-bar h1")]);
+  [modeLine.test(composer), ruleBody(".ui-phone .ui-bar h1")]);
 const animated = appRules.filter((r) => !reduced(r) && sets(r.body) && sets(r.body) !== "none")
   .flatMap((r) => r.selectors).filter((s) => s.includes("."));
 const stopped = new Set(appRules.filter((r) => reduced(r) && sets(r.body) === "none")
