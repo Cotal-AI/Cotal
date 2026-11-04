@@ -2022,6 +2022,8 @@ export class Manager {
         if (local.instanceId === instanceId) {
           this.claimExecutionRecord(instanceId);
           this.admittedLocalIdentity = local;
+        } else {
+          throw new Error(`manager execution record ${instanceId} does not match manager identity ${local.instanceId}`);
         }
       }
     }
