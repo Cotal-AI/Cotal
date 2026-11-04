@@ -413,6 +413,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth` + CA_COST + SEEDLESS;
     case "stale-auth":
       return `✗ the credentials for "${space}" under ${authDir(root)} have EXPIRED - re-mint them where the mesh runs (the broker itself is up)`;
+    case "tls-unsupported":
+      return `✗ the listener at ${server} does not offer the required TLS - check the address and configure TLS on the broker`;
     case "tls-trust":
       return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
     case "slow-link":
