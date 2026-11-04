@@ -216,7 +216,7 @@ async function askManagerEp(
     const invokeOpts = { ...(target ? { target } : {}), deadlineMs: timeoutMs ?? 10_000, id, ...(pin?.signal ? { signal: pin.signal } : {}) };
     const submit = async (signal?: AbortSignal) => {
       const answer = await invokeRepairingSplit(nc, space, service, mapped.command, sendArgs, { ...invokeOpts, ...(signal ? { signal } : {}) });
-      const data = answer.reply.data as { goalId?: unknown; fingerprint?: unknown; name?: unknown; owner?: unknown; actor?: unknown; uid?: unknown } | undefined;
+      const data = answer.reply.ok === true ? answer.reply.data as { goalId?: unknown; fingerprint?: unknown; name?: unknown; owner?: unknown; actor?: unknown; uid?: unknown } | undefined : undefined;
       request = { requestId: answer.reply.id, managerInstanceId: answer.responder.instanceId, managerEpoch: answer.responder.epoch,
         ...(answer.reply.ok && typeof data?.goalId === "string" ? { goalId: data.goalId } : {}),
         ...(answer.reply.ok && typeof data?.fingerprint === "string" ? { fingerprint: data.fingerprint } : {}),

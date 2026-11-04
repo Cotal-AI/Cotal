@@ -2546,7 +2546,7 @@ export class MeshAgent extends EventEmitter {
     return {
       ...controlReplyFrom(r.reply),
       instanceId: r.responder?.instanceId,
-      ...(r.reply.error?.outcome ? { outcome: r.reply.error.outcome } : {}),
+      ...(r.reply.ok === false && r.reply.error.outcome ? { outcome: r.reply.error.outcome } : {}),
     };
   }
 

@@ -20,7 +20,7 @@ export async function followEndpointAction(nc: NatsConnection, space: string, se
   const response = await submitAndFollowGoal(nc, space, service.endpoint, service.caller, options.deadlineMs, async (signal) => {
     options.beforeSubmit();
     const reply = await invoke(nc, space, service, command, input, { id: options.requestId, deadlineMs: options.deadlineMs, ...(options.target ? { target: options.target } : {}), ...(signal ? { signal } : {}) });
-    const data = reply.reply.data as { goalId?: unknown; fingerprint?: unknown } | undefined;
+    const data = reply.reply.ok === true ? reply.reply.data as { goalId?: unknown; fingerprint?: unknown } | undefined : undefined;
     if (reply.reply.ok && typeof data?.goalId === "string") {
       accepted = { requestId: reply.reply.id, goalId: data.goalId, responder: reply.responder, ...(typeof data.fingerprint === "string" ? { fingerprint: data.fingerprint } : {}) };
       options.accepted(accepted);

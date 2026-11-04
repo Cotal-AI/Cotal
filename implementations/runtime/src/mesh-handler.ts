@@ -839,11 +839,12 @@ export class MeshHandler {
       // Tolerated refusals are the two "already gone" shapes: `not-found` (no such agent), and
       // `expired` (the target's lifecycle mapping is gone or rotated — this despawn pins one
       // incarnation, and an incarnation the mapping no longer names is not running).
-      const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
+      const failed = reply.reply.ok === false ? reply.reply : undefined;
+      const code = failed?.error.code;
       if (code === undefined) return;
-      const unrun = replyRefusedBeforeEffect(reply.reply.error);
+      const unrun = failed !== undefined && replyRefusedBeforeEffect(failed.error);
       if (!unrun && code !== "not-found" && code !== "expired")
-        throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
+        throw new Error(`the spawn's agent could not be despawned: ${failed?.error.message ?? "refused"}`);
       if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
@@ -1525,7 +1526,7 @@ export class MeshHandler {
             `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`,
             err?.code !== undefined ? { code: err.code } : undefined);
         }
-        const floor = reply === undefined ? undefined : (reply.reply.data as Record<string, unknown> | undefined);
+        const floor = reply !== undefined && reply.reply.ok === true ? reply.reply.data as Record<string, unknown> | undefined : undefined;
         if (floor !== undefined && floor.goalId !== goalId)
           throw new Error(`the spawn acceptance names goal "${String(floor.goalId)}" but this submission pinned "${goalId}"; a mismatched acceptance never authorizes (SPEC 13.6)`);
         // BIND BEFORE AWAITING: the goalId is re-derivable, but the bind is what tells a resume the
@@ -1725,7 +1726,7 @@ export class MeshHandler {
       // submit and the re-read is the same dead seat, and the resubmit path classing it as an
       // ordinary refusal made an L4002 the program can catch arrive as an uncatchable L4000.
       const refusal = (r: EpAttributedReply, resubmitted: boolean): Error => {
-        const err = r.reply.error;
+        const err = r.reply.ok === false ? r.reply.error : undefined;
         // `expired` is the serve boundary's "target is not a live managed agent". From the placed
         // host that is the seat's own manager answering about it. From the class rail it is only
         // the members this call reached, so the message does not claim more than that.
@@ -1742,9 +1743,9 @@ export class MeshHandler {
         reply = await submit();
         if (reply.reply.ok === false) throw refusal(reply, true);
       }
-      const floor = reply.reply.data as { deadlineAt?: unknown } | undefined;
+      const floor = reply.reply.ok === true ? reply.reply.data as { deadlineAt?: unknown } | undefined : undefined;
       if (typeof floor?.deadlineAt !== "number")
-        throw new Error(`turn(${name}#${uid}) was accepted with no readable deadline (${JSON.stringify(reply.reply.data)}); a garbled acceptance never authorizes (SPEC 13.6)`);
+        throw new Error(`turn(${name}#${uid}) was accepted with no readable deadline (${JSON.stringify(reply.reply.ok === true ? reply.reply.data : undefined)}); a garbled acceptance never authorizes (SPEC 13.6)`);
       // ONE deadline for the turn: the acceptance's `deadlineAt` is the instant the manager's own
       // hold denies at, and the client's pause is armed on that same instant. A second clock read
       // before the accept round-trip would fire first by the round-trip plus skew and throw away a
@@ -2485,10 +2486,11 @@ export class MeshHandler {
       const { reply, responder } = answer;
       const row = reply.ok ? reply.data as { lifecycleUid?: unknown; status?: unknown } : undefined;
       if (row?.lifecycleUid === uid && row.status === "running") return false;
-      if (responder.instanceId === allocator && !replyRefusedBeforeEffect(reply.error)) {
-        if (reply.ok || reply.error?.code === "not-found") break;
+      if (responder.instanceId === allocator && !(reply.ok === false && replyRefusedBeforeEffect(reply.error))) {
+        if (reply.ok || (reply.ok === false && reply.error.code === "not-found")) break;
         if (await decided()) return false;
-        throw new Error(`inspect(${name}) was refused by manager instance ${allocator}, which allocated ${name}#${uid}: ${reply.error?.message ?? "refused with no message"}`);
+        const message = reply.ok === false ? reply.error.message : "refused with no message";
+        throw new Error(`inspect(${name}) was refused by manager instance ${allocator}, which allocated ${name}#${uid}: ${message}`);
       }
       this.managerServices.delete("inspect");
     }

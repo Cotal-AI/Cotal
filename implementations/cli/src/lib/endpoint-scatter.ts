@@ -18,8 +18,8 @@ export async function invokeEndpointScatter(nc: NatsConnection, space: string, s
     coverageComplete: gathered.complete,
     replies: [...gathered.replies].sort(([a], [b]) => a.localeCompare(b)).map(([instanceId, response]) => ({
       instanceId, responder: response.responder, requestId: response.reply.id, ok: response.reply.ok,
-      dataPresent: response.reply.data !== undefined, data: response.reply.data ?? null,
-      error: response.reply.error ? { code: response.reply.error.code, outcome: response.reply.error.outcome ?? null } : null,
+      dataPresent: response.reply.ok === true && response.reply.data !== undefined, data: response.reply.ok === true ? response.reply.data ?? null : null,
+      error: response.reply.ok === false ? { code: response.reply.error.code, outcome: response.reply.error.outcome ?? null } : null,
     })),
     missing: gathered.missing, churn: gathered.churn, unexpected: gathered.unexpected,
     duplicate: gathered.duplicate, late: gathered.late,

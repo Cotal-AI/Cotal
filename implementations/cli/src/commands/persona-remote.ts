@@ -102,6 +102,7 @@ function definitionInput(values: PersonaValues, name: string): string {
 /** The failure a persona reply carries. `notFoundRemedy` is the refusal's remedy when the manager
  *  answers not-found, as it does for a card this caller may not read. */
 function failedReply(response: EpAttributedReply, target: unknown, mutation: boolean, notFoundRemedy?: string): CommandFailure {
+  if (response.reply.ok !== false) return new CommandFailure("failed", "OPERATION_FAILED", "the native persona operation did not return a refusal; it was not retried", { target });
   const error = response.reply.error;
   const code = nativeEndpointRefusal(error?.code);
   const native = { code: error?.code, outcome: error?.outcome, detail: { requestId: response.reply.id, responder: response.responder } };

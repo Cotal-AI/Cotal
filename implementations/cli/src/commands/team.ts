@@ -374,7 +374,7 @@ async function nativeRemovalImpact(root: string, ledger: MeshLedger) {
   try {
     await ep.start();
     const response = await ep.invokeService("manager", "ps", undefined, { deadlineMs: 8_000 });
-    const live = response.reply.data;
+    const live = response.reply.ok === true ? response.reply.data : undefined;
     if (response.reply.ok !== true || !Array.isArray(live) || live.length > 10_000 || live.some((row) => !row || typeof row !== "object" || typeof row.name !== "string" || !row.name || typeof row.id !== "string" || !row.id || typeof row.lifecycleUid !== "string" || !row.lifecycleUid) || new Set(live.map((row: { id: string }) => row.id)).size !== live.length)
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the serving manager did not return a bounded, usable native agent inventory; no disappearance or stop eligibility was inferred", { target: { space: ledger.space, deploymentId: ledger.runId } });
     const byId = new Map<string, { name: string; id: string; lifecycleUid: string }>(live.map((row: { name: string; id: string; lifecycleUid: string }) => [row.id, row]));
