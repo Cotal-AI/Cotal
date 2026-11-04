@@ -185,6 +185,9 @@ function writeSpec(name: string, body: unknown): string {
   throws("injection-y connector token rejected", () => loadLaunchSpec(writeSpec("a1.json", agent1({ agent: "claude;rm -rf" }))));
   throws("unsafe role token rejected", () => loadLaunchSpec(writeSpec("a2.json", agent1({ role: "a/b" }))));
   throws("unsafe capability token rejected", () => loadLaunchSpec(writeSpec("a3.json", agent1({ capabilities: ["spawn x"] }))));
+  // A launch agent has no `endpoints` slot (SPEC 13.15), so the strict schema refuses it rather than
+  // starting the agent without the commands it names.
+  throws("an agent naming endpoints is rejected (strict)", () => loadLaunchSpec(writeSpec("a3e.json", agent1({ endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] }))));
   throws("non-alphanumeric hash rejected", () => loadLaunchSpec(writeSpec("a4.json", agent1({ hash: "../../etc" }))));
   throws("empty variant rejected", () => loadLaunchSpec(writeSpec("a5.json", agent1({ variant: "" }))));
   throws("empty prompt rejected", () => loadLaunchSpec(writeSpec("a6.json", agent1({ prompt: "" }))));

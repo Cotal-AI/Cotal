@@ -94,6 +94,11 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
     capabilitySource = "persona";
   }
 
+  // A persona's endpoint commands (SPEC 13.15) have no slot in a manifest launch, so a persona that
+  // lists them is refused by name rather than started without them, whatever personaPermissions says.
+  if (persona?.endpoints !== undefined)
+    issues.push({ message: `persona "${agent.persona}" lists \`endpoints\`, which a manifest launch does not hand on; start this agent with \`cotal spawn --detach\` instead`, path: at });
+
   // Access. Start from the manifest-inverted policy (all its channels are declared by construction).
   const policy: AgentPolicy = {
     subscribe: [...agent.policy.subscribe],
