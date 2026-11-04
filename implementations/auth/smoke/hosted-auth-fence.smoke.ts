@@ -101,7 +101,7 @@ try {
   const stored = JSON.parse(identityBytes) as AuthInstanceIdentity;
   const identity = { instanceId: stored.instanceId, serveIdentity: stored.serveIdentity };
   const identityFile = join(a.stateDir, ".cotal", spaceSegment(a.space), "auth-instance.json");
-  createAuthInstanceIdentity(a.stateDir, a.space, identity);
+  createAuthInstanceIdentity(a.stateDir, a.space, () => identity);
   const agreeing = await startAuthService(inputs[0]);
   handles.push(agreeing);
   ok((await agreeing.readiness()).state === "ready" && (await health(agreeing)) !== undefined, "agreeing file and store identities start ready");
@@ -112,7 +112,7 @@ try {
     ["instance id", { ...identity, instanceId: mintLifecycleUid() }],
     ["public serve key", { ...identity, serveIdentity: { ...identity.serveIdentity, id: newIdentity().id } }],
   ] as const) {
-    createAuthInstanceIdentity(a.stateDir, a.space, candidate);
+    createAuthInstanceIdentity(a.stateDir, a.space, () => candidate);
     const before = readFileSync(identityFile);
     await assert.rejects(startAuthService(inputs[0]).then((handle) => {
       handles.push(handle);

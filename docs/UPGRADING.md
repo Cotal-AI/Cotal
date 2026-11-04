@@ -7,6 +7,28 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Identity mint helpers take a mint
+
+`createManagerInstanceIdentity` and `createAuthInstanceIdentity` from `@cotal-ai/workspace` now
+take `mint`, a function that returns the identity. They call it only when the root has no record.
+They used to take the identity itself, so a caller minted a lifecycle uid and a serve nkey on every
+call and threw them away when a record was already there.
+
+A restart still returns the stored identity. A fresh root still creates one record, and a second
+start that arrives while the first is creating it still adopts that record.
+
+### What stops working
+
+A call that passes an identity object no longer typechecks. Plain JavaScript that still passes one
+fails when the helper tries to call it. `loadManagerInstanceIdentity` and
+`loadAuthInstanceIdentity` are unchanged.
+
+### Before the upgrade
+
+Pass a function that returns the identity. A caller that already holds one passes
+`() => identity`. A caller that used to read the record and mint only when it was missing now makes
+the one call, and the helper does that read.
+
 ## More streams take a history limit after 0.139.1
 
 `cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and

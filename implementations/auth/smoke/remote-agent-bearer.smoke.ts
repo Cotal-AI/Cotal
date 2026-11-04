@@ -181,7 +181,7 @@ try {
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   const managerInstanceId = mintLifecycleUid();
   const managerServe = newIdentity();
-  createManagerInstanceIdentity(serverRoot, SPACE, { instanceId: managerInstanceId, serveIdentity: managerServe });
+  createManagerInstanceIdentity(serverRoot, SPACE, () => ({ instanceId: managerInstanceId, serveIdentity: managerServe }));
   {
     const execId = newIdentity();
     const execNc = await connect({ servers: SERVER, ...standaloneConnectOpts({ creds: await mintCreds(auth, execId, "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: managerInstanceId } }), tls: false }) });
