@@ -25,6 +25,7 @@ export {
 } from "./sandbox-guard.js";
 export { checkSelection, defaultJobs, runFiles, type FileResult, type RunFilesOptions } from "./run-files.js";
 export { PortInUseError, freePort, listenOn, onFreePort } from "./free-port.js";
+export { withDeadline } from "./deadline.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
 export { brokerHeap, heapSnapshotTop, procMem, type BrokerHeap, type BrokerPart, type HeapRow, type ProcMem } from "./memory-profile.js";
 export { SEAT_MAX_SOCKET_PATH, SEAT_SOCKET_OVERHEAD, makeSeatRoot, rootFits } from "./seat-root.js";

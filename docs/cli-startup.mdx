@@ -720,9 +720,10 @@ again. A trust record under `.cotal/auth` that this account cannot read, such as
 refused the same way, and its next step makes it readable again.
 
 `cotal up` creates a new space's chat stream with no age limit and 1000 posts per sender on each
-channel, and never changes an existing space's limit, which only
-[`history limit`](cli-messaging.mdx#history) sets. A chat stream that differs from the canonical settings in
-anything but that limit refuses the start.
+channel, its delivery inbox and stored copies with no age limit and 1000 per agent, and its DM
+stream with no age limit and no count limit. It never changes an existing space's limits, which only
+[`history limit`](cli-messaging.mdx#history) sets. One of these streams that differs from the
+canonical settings in anything but its limit refuses the start.
 
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the

@@ -38,8 +38,8 @@
     {
       "name": "D1 exempt the event prefix from the READ containment walk",
       "file": "implementations/auth/src/ledger.ts",
-      "find": "    const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));",
-      "replace": "    const overSub = child.allowSubscribe.filter((ch) => !ch.startsWith(\"events.\") && !patternInAllow(parent.allowSubscribe, ch));",
+      "find": "  const overSub = child.allowSubscribe.filter((ch) => !patternInAllow([...parent.allowSubscribe], ch));",
+      "replace": "  const overSub = child.allowSubscribe.filter((ch) => !ch.startsWith(\"events.\") && !patternInAllow([...parent.allowSubscribe], ch));",
       "afterRestore": "pnpm --filter @cotal-ai/auth build",
       "expectRed": "a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
       "cell": "a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
@@ -48,8 +48,8 @@
     {
       "name": "D2 exempt the event prefix from the WRITE containment walk",
       "file": "implementations/auth/src/ledger.ts",
-      "find": "    const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow(parent.allowPublish, ch));",
-      "replace": "    const overPub = child.allowPublish.filter((ch) => !ch.startsWith(\"events.\") && ch !== ownEvents && !patternInAllow(parent.allowPublish, ch));",
+      "find": "  const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow([...parent.allowPublish], ch));",
+      "replace": "  const overPub = child.allowPublish.filter((ch) => !ch.startsWith(\"events.\") && ch !== ownEvents && !patternInAllow([...parent.allowPublish], ch));",
       "afterRestore": "pnpm --filter @cotal-ai/auth build",
       "expectRed": "and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",
       "cell": "and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",

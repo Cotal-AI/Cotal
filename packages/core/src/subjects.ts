@@ -52,6 +52,12 @@ export function normalizeMentions(mentions?: string[]): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** The `@name` mentions inside a message body, as bare names, for a multicast's `mentions` (a
+ *  priority/wake hint). Every surface that posts typed text derives them the same way. */
+export function mentionsIn(text: string): string[] {
+  return [...text.matchAll(/@([A-Za-z0-9_.-]+)/g)].map((m) => m[1]);
+}
+
 /**
  * Build the channel portion of a chat subject, preserving NATS hierarchy: split on
  * `.`, sanitize each segment to a safe token, but keep whole-segment wildcards
@@ -914,6 +920,12 @@ export function deliveryOf(subject: string): DeliveryMode | null {
 /** Name of the KV bucket holding presence for a space. */
 export function presenceBucket(space: string): string {
   return `cotal_presence_${token(space)}`;
+}
+
+/** The publish subject of one principal's own presence key. Every agent mint carries it; an
+ *  operator instrument's never does. */
+export function presenceKeySubject(space: string, owner: string, actor: string): string {
+  return `$KV.${presenceBucket(space)}.${principalKey(owner, actor).key}`;
 }
 
 const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };

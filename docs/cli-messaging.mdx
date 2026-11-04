@@ -496,7 +496,7 @@ no Direct Get row on the registry, and neither has an agent credential passed wi
 ```bash
 cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
 cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
-cotal history limit [--max-age <age>] [--per-sender <n>] [--yes] [--json | --plain] [--space <s>]
+cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-age <age|none>] [--inbox-per-agent <n|none>] [--dm-max-age <age|none>] [--dm-per-sender <n|none>] [--yes] [--json | --plain] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
@@ -512,8 +512,12 @@ cotal history limit [--max-age <age>] [--per-sender <n>] [--yes] [--json | --pla
 | `--plain` | off | The same report without color or marks |
 | `--yes` / `-y` | off | `clear` and `limit`: confirm without prompting. Scripts and `--json` require it |
 | `--dry-run` | off | `clear`: show the selected target and streams without connecting, and purge nothing |
-| `--max-age <age>` | none | `limit`: delete a channel post once it is older than this, from `2m` to `3650d` |
-| `--per-sender <n>` | none | `limit`: keep this many of each sender's newest posts on each channel, at least 1 |
+| `--max-age <age\|none>` | none | `limit`: delete a channel post once it is older than this, from `2m` to `3650d`, or `none` |
+| `--per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest posts on each channel, at least 1, or `none` |
+| `--inbox-max-age <age\|none>` | none | `limit`: delete a delivery inbox entry or stored copy once it is older than this, from `2h` to `3650d`, or `none` |
+| `--inbox-per-agent <n\|none>` | none | `limit`: keep this many of each agent's newest inbox entries and stored copies, at least 1, or `none` |
+| `--dm-max-age <age\|none>` | none | `limit`: delete a DM once it is older than this, from `2m` to `3650d`, or `none` |
+| `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
 Reads the newest retained messages in the selected space, newest last: one channel, or every
 channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
@@ -556,26 +560,59 @@ still holds), and each sender at the count on the channels read. The report prin
 their older posts may be gone. It describes the stream, not a partial read. `result.replay` gives each channel's replay policy for new members, read from the
 channel registry. DM gaps are not reported.
 
-`history limit` sets how long the space keeps channel posts. `--max-age` deletes a post once it is
-older than the age, and `--per-sender` keeps that many of each sender's newest posts on each channel.
-One limit holds for every channel in the space. Give either flag or both, and the other part keeps
-its current value. An age is a whole number of `s`, `m`, `h` or `d` from `2m`, the chat stream's
-duplicate window, to `3650d`. A space has no age limit until one is set, and `history limit` does
-not set no age, so on such a space `--per-sender` needs `--max-age` as well. A bad value is a `USAGE_INVALID` refusal before connecting.
+`history limit` shows and sets how long the space keeps messages. Each kind of message has an age
+flag and a count flag:
+
+| Flags | Streams | Count per | New space |
+|---|---|---|---|
+| `--max-age`, `--per-sender` | `CHAT_<space>` | sender on each channel | no age limit, 1000 |
+| `--inbox-max-age`, `--inbox-per-agent` | `INBOX_<space>` and `DLV_<space>` | agent lifecycle | no age limit, 1000 |
+| `--dm-max-age`, `--dm-per-sender` | `DM_<space>` | sender to each recipient | no age limit, no count limit |
+
+An age deletes an entry once it is older than the age. A count keeps that many of the newest
+entries per sender, agent or DM pair and deletes the older ones. `none` removes that part of the
+limit. An age is a whole number of `s`, `m`, `h` or `d` up to `3650d`, from `2m` for posts and DMs and
+from `2h` for the inbox, the streams' duplicate windows. A count is a whole number of at least 1. A
+bad value is a `USAGE_INVALID` refusal before connecting. One call may give any of the flags, and a
+part it leaves out keeps its current value. The inbox pair sets both of the
+[delivery daemon](delivery-daemon.mdx)'s streams: the daemon writes each member's copy to the inbox,
+then passes it on to the member's stored copies, its backstop. With no age and no count limit, only the
+server's storage limit bounds a stream, and a full store refuses new messages.
+
+With no limit flag, `history limit` only reads. It prints the limit each of the four streams holds,
+writes nothing, and asks for no `--yes`. `result.kind` is `history-limits`, and each
+`result.streams[]` entry names its stream and the `holds` limit, with `null` for no age or no count.
+
 Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
 root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
-space with no chat stream is refused with `TARGET_NOT_FOUND`; `cotal up` creates the stream.
+space missing one of the streams is refused with `TARGET_NOT_FOUND`; `cotal up` creates them. A
+stream whose other settings differ from the ones `cotal up` creates is refused with `CONFLICT`. Every
+requested stream is read and checked before the first one changes.
 
-A lower limit deletes the posts it no longer keeps as soon as the broker applies it. In a terminal,
-lowering either part asks first, and the question comes with what the stream held when it was read:
-each sender on each channel with more posts than the new count and how many of them go, and every
-post older than the new age, with the time of the oldest retained post. Raising asks nothing, and
-posts deleted under an earlier limit do not come back. Scripts and `--json` need `--yes`, checked
-before any credential is minted. The update carries the limit that was read, and a stream that holds
-another one by then is refused with `CONFLICT` and left as it is. The read and the update are two
-steps, so two operators changing the limit at the same moment can still overwrite each other. An
-update sent without a confirmed outcome is `OPERATION_UNKNOWN` and is not retried. The receipt names
-the old and new limit, and running it again with the same values changes nothing and asks nothing.
+A lower limit deletes the entries it no longer keeps as soon as the broker applies it, whether or
+not they were delivered or read. A count from `none` to a number, and an age from `none` to an age,
+are lower. In a terminal, lowering any part asks once, and the question comes with what each stream
+held when it was read: each sender on a channel, agent lifecycle, or DM pair with more entries than
+the new count and how many go, and the stream's oldest entry when an age drops. For stored copies it
+gives how many of those copies the agent's consumer has not delivered yet, and says that copies
+delivered and not acknowledged yet may be among them too. For the
+inbox and DMs it says that copies not passed on yet and DMs not read yet may be among them. The
+preview lists every agent and DM pair, because the operator reads the streams under the space root's
+trust. Raising asks nothing, and entries deleted under an earlier limit do not come back. Scripts and
+`--json` need `--yes`, checked before any credential is minted. `result.lowered` carries the same
+preview, and each `result.streams[]` entry gives its `from` and `to` limits and its `outcome`.
+
+The streams change one at a time: channel posts, the inbox, stored copies, then DMs. Each update
+carries the limit that was read, and a stream that holds another one by then is refused with
+`CONFLICT` and left as it is. The read and the update are two steps, so two operators changing a
+limit at the same moment can still overwrite each other. A refusal on the first stream changes
+nothing. A refusal after an earlier stream changed is `OPERATION_PARTIAL` (exit 4), and its message
+gives each stream's outcome: `changed`, `refused` or `not-attempted`. The inbox and stored copies
+are two streams, so a partial change can leave them on different limits. An update sent without a
+confirmed outcome is `OPERATION_UNKNOWN`, is not retried, and leaves the streams after it not
+attempted. After an unknown outcome or an interrupt, run `history limit` with no limit flags to read
+what the streams hold. The receipt names each changed stream's old and new limit, and running it
+again with the same values changes nothing and asks nothing.
 
 
 ### Read failures

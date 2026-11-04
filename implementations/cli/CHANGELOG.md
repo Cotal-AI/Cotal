@@ -1,5 +1,133 @@
 # @cotal-ai/cli
 
+## 0.141.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.1
+  - @cotal-ai/workspace@0.141.1
+
+## 0.141.0
+
+### Minor Changes
+
+- bacabd0: An agent can define its helper on the spawn itself. `cotal_spawn` takes a `persona` record (the persona prompt, role, model, variant, description, channels and capabilities) next to `name`, and the helper runs from a private snapshot of it. `persona.save: true` also writes a catalog copy under that name, owned by the spawner. A cotal-lang program does the same with `spawn({ name, prompt, ... }, opts)`, and the run journal records the definition and its digest, so a resume never submits another one. `cotal_persona` takes `capabilities` and says how a saved persona is removed.
+  
+  A helper never gets more than its spawner holds. On a static mesh every spawn is measured against the spawner's issued evidence: each channel, the role and each capability token it does not hold is refused by name, and a spawner whose evidence does not resolve hands on nothing. Operator commands and admin agents are exempt. A workflow run's spawns are bounded by what its starter held when the run was admitted, on its host and on any other static manager its spawn reaches, which reads the run's admission. A `cotal run start --local` run's helpers get only channels within the `--admit-read` and `--admit-publish` ceiling. The static agent mint now grants task-queue rows for each `role:<r>` capability, so a spawner hands on a role it was given either way. On a participant manager the issuing host makes the agent that asked for a helper its ledger parent, taking the caller from the spawn request it observed, and a run's helper is parented to the run's starter and also bounded by the grant its admission recorded. A run revoked mid-step starts no further helper, and a persona a run saves is owned by its starter. The loopback `verify-enrollment` door a host platform asks decides the same parent and bound and answers `parent`, and a retry of the same enrollment gets the same answer.
+  
+  A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
+  
+  Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
+
+### Patch Changes
+
+- Updated dependencies [bacabd0]
+  - @cotal-ai/core@0.141.0
+  - @cotal-ai/workspace@0.141.0
+
+## 0.140.8
+
+### Patch Changes
+
+- Updated dependencies [e477c34]
+  - @cotal-ai/core@0.140.8
+  - @cotal-ai/workspace@0.140.8
+
+## 0.140.7
+
+### Patch Changes
+
+- Updated dependencies [ee13146]
+  - @cotal-ai/core@0.140.7
+  - @cotal-ai/workspace@0.140.7
+
+## 0.140.6
+
+### Patch Changes
+
+- Updated dependencies [b415c78]
+  - @cotal-ai/core@0.140.6
+  - @cotal-ai/workspace@0.140.6
+
+## 0.140.5
+
+### Patch Changes
+
+- Updated dependencies [bcdf7b6]
+  - @cotal-ai/core@0.140.5
+  - @cotal-ai/workspace@0.140.5
+
+## 0.140.4
+
+### Patch Changes
+
+- Updated dependencies [293f937]
+  - @cotal-ai/core@0.140.4
+  - @cotal-ai/workspace@0.140.4
+
+## 0.140.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.3
+  - @cotal-ai/workspace@0.140.3
+
+## 0.140.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.2
+  - @cotal-ai/workspace@0.140.2
+
+## 0.140.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.1
+  - @cotal-ai/workspace@0.140.1
+
+## 0.140.0
+
+### Minor Changes
+
+- 485bbfe: `cotal history limit` now sets the limits of DMs and of the delivery daemon's inbox and stored copies as well as channel posts, and takes `none` for any age or count. `--inbox-max-age` and `--inbox-per-agent` set the inbox and stored copies together, and `--dm-max-age` and `--dm-per-sender` set DMs. A new space keeps 1000 stored copies per agent and every DM, as before, and `cotal up` and connecting never change a limit. A lower limit shows what it deletes for each agent or DM pair and asks first. With no limit flags the command prints the four streams' limits and changes nothing. Its `--json` result now lists one entry per stream under `result.streams`. Restore brings back the recorded limits of all four streams.
+  
+  The delivery daemon stamps each stored copy with the count it was stored under in a `Cotal-Delivery-Limit` header, and the stored-copies notice compares against that count. A copy without the header counts as 1000.
+  
+  In `@cotal-ai/core`, the chat-only limit API is replaced by one that takes the stream. `ChatHistoryLimit` becomes `HistoryLimit`, whose `perSender` is now `perSubject`; `setChatHistoryLimit`, `describeChatHistory`, `chatHistoryLimitProblem`, `chatHistoryLimitOf` and `chatHistoryRestoreStaging` become `setHistoryLimit`, `describeHistoryLimit`, `historyLimitProblem`, `historyLimitOf` and `historyLimitRestoreStaging`; and `ChatHistoryChange`, `ChatHistoryUpdateUnknown` and `ChatHistoryChanged` become `HistoryLimitChange`, `HistoryLimitUpdateUnknown` and `HistoryLimitChanged`. `isAcceptedChatHistory`, `CHAT_HISTORY_MIN_AGE_MS` and `CHAT_HISTORY_MAX_AGE_MS` are removed; `historyLimitMinAgeMs` and `HISTORY_MAX_AGE_MS` give the bounds, and `historyAgeProblem` checks an age on its own, where 0 is an age below the floor. The `stored-copies-full` event now carries the stamped `limit`.
+
+### Patch Changes
+
+- Updated dependencies [485bbfe]
+- Updated dependencies [4da6cf5]
+  - @cotal-ai/core@0.140.0
+  - @cotal-ai/workspace@0.140.0
+
+## 0.139.1
+
+### Patch Changes
+
+- bf1ce04: Drop the unused `MeshViewOptions` type re-export from `src/console/mesh.ts` so `mesh.ts` re-exports only the `MeshView` model types that the console UI components import.
+- Updated dependencies [644f6eb]
+  - @cotal-ai/core@0.139.1
+  - @cotal-ai/workspace@0.139.1
+
+## 0.139.0
+
+### Patch Changes
+
+- Updated dependencies [c3d4af4]
+  - @cotal-ai/core@0.139.0
+  - @cotal-ai/workspace@0.139.0
+
+## 0.138.2
+
+### Patch Changes
+
+- Updated dependencies [a2fba68]
+  - @cotal-ai/workspace@0.138.2
+  - @cotal-ai/core@0.138.2
+
 ## 0.138.1
 
 ### Patch Changes

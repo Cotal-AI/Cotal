@@ -120,6 +120,40 @@ try {
   check("far gap: an unused channel in a busy stream returns [] without a search",
     (await ep.channelHistory("never-used", { limit: 10 })).length === 0);
 
+  // ── ONE PUBLISHER. Two principals publish on one channel, interleaved. A read with `publisher`
+  //    filters on that principal's own subject, so it returns only what that principal published,
+  //    newest first in the same paging, and a read without it still returns the channel whole. ────
+  {
+    const other = new CotalEndpoint({
+      space: SPACE, servers: SERVER, channels: ["shared"], consume: false,
+      registerPresence: false, card: { id: newIdentity().id, name: "other", kind: "endpoint" },
+    });
+    other.on("error", () => {});
+    await other.start();
+    try {
+      for (let i = 0; i < 6; i++) {
+        await ep.multicast(`mine-${i}`, { channel: "shared" });
+        await other.multicast(`theirs-${i}`, { channel: "shared" });
+      }
+      await wait(300);
+      const whole = await ep.channelHistory("shared", { limit: 50 });
+      check("CONTROL: without a publisher the channel reads whole, both principals interleaved",
+        whole.length === 12 && whole.some((m) => text(m) === "theirs-0"), whole.map(text));
+      const mine = await ep.channelHistory("shared", { limit: 50, publisher: ep.principal });
+      check("publisher: a read names one principal and returns only what that principal published",
+        JSON.stringify(mine.map(text)) === JSON.stringify(Array.from({ length: 6 }, (_, i) => `mine-${i}`)), mine.map(text));
+      const theirs = await ep.channelHistory("shared", { limit: 2, publisher: other.principal });
+      check("publisher: a page of that principal's newest, oldest first",
+        JSON.stringify(theirs.map(text)) === JSON.stringify(["theirs-4", "theirs-5"]), theirs.map(text));
+      const wild = await ep.channelHistory("shared", { limit: 50, publisher: { owner: "*", actor: "*" } })
+        .then(() => "returned", (e: unknown) => (e instanceof Error ? e.message : String(e)));
+      check("publisher: a wildcard in either slot is refused rather than read as any sender",
+        wild.includes("invalid owner/actor token"), wild);
+    } finally {
+      await other.stop();
+    }
+  }
+
 
   // ── TRUNCATION GATES. These force the two clean-iterator-end shapes directly on the private
   //    helpers. There is no PUBLIC seam into the endpoint's JetStream client, but a smoke can reach

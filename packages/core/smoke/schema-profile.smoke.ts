@@ -394,3 +394,4 @@ refuses("member $id collision is contract-invalid", () =>
 }
 
 console.log(`schema-profile.smoke: ${pass} checks passed`);
+await import("./schema-meta-cache.smoke.js");

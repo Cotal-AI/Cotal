@@ -59,11 +59,15 @@ import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
 import {
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
+  HISTORY_NO_COUNT,
   canonicalBackupStreamConfig,
-  chatHistoryLimitOf,
-  chatHistoryLimitProblem,
+  historyLimitOf,
+  historyLimitProblem,
+  historyLimitStreamName,
+  historyLimitStreamOf,
   validateCanonicalBackupStreamConfig,
-  type ChatHistoryLimit,
+  type HistoryLimit,
+  type HistoryLimitStream,
 } from "./backup-config.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
@@ -302,10 +306,10 @@ export async function createSpaceStreams(
   space: string,
 ): Promise<void> {
   for (const definition of spaceMessageStreamConfigs(space)) {
-    // The chat stream's history limit is the operator's (`cotal history limit`), so an existing
-    // stream is left as it is: an add over a different limit would refuse, and this also runs on
-    // every open-mode connect. `setupSpaceStreams` checks the stream's other settings.
-    if (definition.name === chatStream(space)) {
+    // The history limit of CHAT, INBOX, DLV and DM is the operator's (`cotal history limit`), so an
+    // existing one of them is left as it is: an add over a different limit would refuse, and this
+    // also runs on every open-mode connect. `setupSpaceStreams` checks their other settings.
+    if (historyLimitStreamOf(space, definition.name)) {
       try {
         await jsm.streams.info(definition.name);
         continue;
@@ -317,31 +321,34 @@ export async function createSpaceStreams(
   }
 }
 
-/** A chat history limit change the broker acknowledged and reported back. */
-export interface ChatHistoryChange {
+/** A history limit change the broker acknowledged and reported back. */
+export interface HistoryLimitChange {
   stream: string;
-  from: ChatHistoryLimit;
-  to: ChatHistoryLimit;
+  from: HistoryLimit;
+  to: HistoryLimit;
 }
 
 /** The STREAM.UPDATE was submitted and neither its reply nor the read back confirmed the requested
  *  limit, so it may or may not have changed. Not retried. */
-export class ChatHistoryUpdateUnknown extends Error {
-  constructor(readonly stream: string, readonly requested: ChatHistoryLimit, cause: unknown) {
+export class HistoryLimitUpdateUnknown extends Error {
+  constructor(readonly stream: string, readonly requested: HistoryLimit, cause: unknown) {
     super(`the history limit update of ${stream} was submitted without a confirmed outcome, so it may or may not have taken effect`, { cause });
   }
 }
 
-/** The chat stream's limit moved between the caller's read and this write. */
-export class ChatHistoryChanged extends Error {
-  constructor(readonly stream: string, readonly expected: ChatHistoryLimit, readonly found: ChatHistoryLimit) {
-    super(`the history limit of ${stream} changed since it was read: expected ${describeChatHistory(expected)}, found ${describeChatHistory(found)}`);
+/** The stream's limit moved between the caller's read and this write. */
+export class HistoryLimitChanged extends Error {
+  constructor(readonly stream: string, readonly kind: HistoryLimitStream, readonly expected: HistoryLimit, readonly found: HistoryLimit) {
+    super(`the history limit of ${stream} changed since it was read: expected ${describeHistoryLimit(kind, expected)}, found ${describeHistoryLimit(kind, found)}`);
   }
 }
 
-/** `30d, 1000 per sender`, or `no age limit, 1000 per sender`. */
-export function describeChatHistory(limit: ChatHistoryLimit): string {
-  return `${limit.maxAgeMs === 0 ? "no age limit" : formatChatAge(limit.maxAgeMs)}, ${limit.perSender} per sender`;
+/** `30d, 1000 per sender` on CHAT, `no age limit, 1000 per agent` on INBOX and DLV, `no age limit,
+ *  no count limit` on DM. A DM count holds per sender to each recipient. */
+export function describeHistoryLimit(stream: HistoryLimitStream, limit: HistoryLimit): string {
+  const age = limit.maxAgeMs === 0 ? "no age limit" : formatChatAge(limit.maxAgeMs);
+  const count = limit.perSubject === HISTORY_NO_COUNT ? "no count limit" : `${limit.perSubject} per ${stream === "inbox" || stream === "dlv" ? "agent" : "sender"}`;
+  return `${age}, ${count}`;
 }
 
 /** An age in the largest whole unit of `d`, `h`, `m` or `s`, the form `--max-age` takes. */
@@ -351,54 +358,57 @@ export function formatChatAge(ms: number): string {
   return `${Math.round(ms / 1000)}s`;
 }
 
-/** The chat stream's config, refused unless every field but the history limit is canonical and the
- *  limit is one a stream may hold. */
-async function readChatStreamConfig(jsm: JetStreamManager, space: string): Promise<StreamConfig> {
-  const { config } = await jsm.streams.info(chatStream(space));
-  validateCanonicalBackupStreamConfig(space, chatStream(space), config as unknown as Record<string, unknown>);
+/** The config of `space`'s `stream`, refused unless every field but the history limit is canonical
+ *  and the limit is one the stream may hold. */
+async function readHistoryStreamConfig(jsm: JetStreamManager, space: string, stream: HistoryLimitStream): Promise<StreamConfig> {
+  const name = historyLimitStreamName(space, stream);
+  const { config } = await jsm.streams.info(name);
+  validateCanonicalBackupStreamConfig(space, name, config as unknown as Record<string, unknown>);
   return config;
 }
 
 /**
- * Set the chat stream's history limit to `limit`. Only `max_age` and `max_msgs_per_subject` change,
- * over the config read for this write, after the whole of that config was checked. Both are read
- * back. `expected` is the limit the caller showed the operator: a stream found holding another one
- * is refused with {@link ChatHistoryChanged}. That read and the update are not one atomic step, so
- * two writers racing past the read can still overwrite each other.
+ * Set the history limit of `space`'s `stream` to `limit`. Only `max_age` and `max_msgs_per_subject`
+ * change, over the config read for this write, after the whole of that config was checked, and the
+ * config read back must still be canonical apart from them. `expected` is the limit the caller showed
+ * the operator: a stream found holding another one is refused with {@link HistoryLimitChanged}. That
+ * read and the update are not one atomic step, so two writers racing past the read can still
+ * overwrite each other.
  *
- * A lower limit takes effect at once: the broker expires every post older than the age and each
- * sender's posts past the count. Returns undefined when the stream already holds `limit`.
+ * A lower limit takes effect at once: the broker removes every entry older than the age and each
+ * subject's entries past the count. Returns undefined when the stream already holds `limit`.
  */
-export async function setChatHistoryLimit(
+export async function setHistoryLimit(
   jsm: JetStreamManager,
   space: string,
-  limit: ChatHistoryLimit,
-  expected?: ChatHistoryLimit,
-): Promise<ChatHistoryChange | undefined> {
-  const problem = chatHistoryLimitProblem(limit);
-  if (problem) throw new Error(`invalid chat history limit: ${problem}`);
-  const stream = chatStream(space);
-  const config = await readChatStreamConfig(jsm, space);
-  const from = chatHistoryLimitOf(config as unknown as Record<string, unknown>);
-  if (expected && (from.maxAgeMs !== expected.maxAgeMs || from.perSender !== expected.perSender))
-    throw new ChatHistoryChanged(stream, expected, from);
-  if (from.maxAgeMs === limit.maxAgeMs && from.perSender === limit.perSender) return undefined;
+  stream: HistoryLimitStream,
+  limit: HistoryLimit,
+  expected?: HistoryLimit,
+): Promise<HistoryLimitChange | undefined> {
+  const problem = historyLimitProblem(stream, limit);
+  if (problem) throw new Error(`invalid ${stream} history limit: ${problem}`);
+  const name = historyLimitStreamName(space, stream);
+  const config = await readHistoryStreamConfig(jsm, space, stream);
+  const from = historyLimitOf(config as unknown as Record<string, unknown>);
+  if (expected && (from.maxAgeMs !== expected.maxAgeMs || from.perSubject !== expected.perSubject))
+    throw new HistoryLimitChanged(name, stream, expected, from);
+  if (from.maxAgeMs === limit.maxAgeMs && from.perSubject === limit.perSubject) return undefined;
   try {
-    await jsm.streams.update(stream, { ...config, max_age: nanos(limit.maxAgeMs), max_msgs_per_subject: limit.perSender });
+    await jsm.streams.update(name, { ...config, max_age: nanos(limit.maxAgeMs), max_msgs_per_subject: limit.perSubject });
   } catch (e) {
     // A refusal the broker answered, or a publish it denied, changed nothing; anything else may have.
     if (e instanceof JetStreamApiError || isPublishPermissionDenied(e)) throw e;
-    throw new ChatHistoryUpdateUnknown(stream, limit, e);
+    throw new HistoryLimitUpdateUnknown(name, limit, e);
   }
-  let after: ChatHistoryLimit;
+  let after: HistoryLimit;
   try {
-    after = chatHistoryLimitOf((await readChatStreamConfig(jsm, space)) as unknown as Record<string, unknown>);
+    after = historyLimitOf((await readHistoryStreamConfig(jsm, space, stream)) as unknown as Record<string, unknown>);
   } catch (e) {
-    throw new ChatHistoryUpdateUnknown(stream, limit, e);
+    throw new HistoryLimitUpdateUnknown(name, limit, e);
   }
-  if (after.maxAgeMs !== limit.maxAgeMs || after.perSender !== limit.perSender)
-    throw new ChatHistoryUpdateUnknown(stream, limit, new Error(`${stream} read back ${describeChatHistory(after)}`));
-  return { stream, from, to: limit };
+  if (after.maxAgeMs !== limit.maxAgeMs || after.perSubject !== limit.perSubject)
+    throw new HistoryLimitUpdateUnknown(name, limit, new Error(`${name} read back ${describeHistoryLimit(stream, after)}`));
+  return { stream: name, from, to: limit };
 }
 
 /**
@@ -843,9 +853,9 @@ export async function setupSpaceStreams(opts: {
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
-    // An existing chat stream keeps the history limit it holds, so the create above skips it. Every
-    // other setting of it must still be canonical (SPEC §8), or setup refuses.
-    await readChatStreamConfig(jsm, opts.space);
+    // An existing CHAT, INBOX, DLV or DM stream keeps the history limit it holds, so the create above
+    // skips it. Every other setting of it must still be canonical (SPEC §8), or setup refuses.
+    for (const stream of ["chat", "inbox", "dlv", "dm"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);
     // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open
     // them. Idempotent. The TTL'd ones come from `ttlBuckets` and ONLY from there, so a new one
     // cannot be created on this path without also being reconciled on the upgrade path; the

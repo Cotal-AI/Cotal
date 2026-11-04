@@ -484,7 +484,7 @@ try {
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {
-    const cap = CHAT_HISTORY_DEFAULT.perSender;
+    const cap = CHAT_HISTORY_DEFAULT.perSubject;
     const talker = new CotalEndpoint({ space: openSpace, servers: openServers, card: { name: "carol", kind: "agent" }, channels: ["general"], heartbeatMs: 500 });
     const quiet = new CotalEndpoint({ space: openSpace, servers: openServers, card: { name: "dave", kind: "agent" }, channels: ["general"], heartbeatMs: 500 });
     for (const ep of [talker, quiet]) {

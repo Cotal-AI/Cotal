@@ -2,60 +2,111 @@
   "suite": [
     "packages/core/smoke/chat-history-limit.smoke.ts"
   ],
-  "guard": "The chat stream's history limit: a new space starts with no age limit and 1000 per sender, `cotal up` leaves every existing stream's limit as it is and still refuses a chat stream that is not canonical apart from its limit, the provisioner may update the chat stream and no other message stream, a broker refusal of the update is not reported as an unknown outcome, recall reads the stream's own limits and its head, and durable catch-up copies what the stream holds without judging retention.",
+  "guard": "The history limits of CHAT, INBOX, DLV and DM: a new space starts with no age limit and 1000 per sender, 1000 per agent lifecycle and no count, `cotal up` and an open-mode connect leave every existing stream's limit as it is and setup still refuses one of them that is not canonical apart from its limit, the provisioner may update those four streams and no other message stream, a broker refusal of the update is not reported as an unknown outcome, the setter keeps each stream's own bounds, the stored-copies notice follows the count stamped on each copy with an unstamped copy counting as 1000, recall reads the stream's own limits and its head, and durable catch-up copies what the stream holds without judging retention.",
   "command": "pnpm smoke:chat-history-limit",
   "completionMarker": "chat-history-limit:",
   "progressPattern": "^  [✓✗] ",
-  "minTicks": 43,
+  "minTicks": 79,
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/chat-history-limit.json",
   "why": [
     "The suite imports core from `src`, so no build is needed and each mutant is what the suite runs. Every cell",
     "runs against a live broker, so a mutation is graded by the broker's own permission checks, expiry and stored",
-    "config. Each mutation reddens a different named cell."
+    "config, and the stamp cells by real copies the delivery daemon's writer stored. Each mutation reddens a different named cell."
   ],
   "mutations": [
     {
       "name": "the provisioner loses its chat stream update grant",
       "file": "packages/core/src/provision.ts",
-      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
-      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ]\n",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, INBOX, DLV, DM]\n",
       "expectRed": "the provisioner may set the chat stream's limit",
       "cell": "the provisioner may set the chat stream's limit",
       "note": "Without the grant `cotal history limit` is refused on every authed space."
     },
     {
-      "name": "the grant is widened to the DM stream",
+      "name": "the provisioner loses its INBOX update grant",
       "file": "packages/core/src/provision.ts",
-      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT]\n",
-      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DM]\n",
-      "expectRed": "the provisioner may not update DM_",
-      "cell": "the provisioner may not update DM_<space>"
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DLV, DM]\n",
+      "expectRed": "the provisioner may set the inbox stream's limit",
+      "cell": "the provisioner may set the inbox stream's limit"
     },
     {
-      "name": "the default goes back to 30 days",
+      "name": "the provisioner loses its DM update grant",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV]\n",
+      "expectRed": "the provisioner may set the dm stream's limit",
+      "cell": "the provisioner may set the dm stream's limit"
+    },
+    {
+      "name": "the grant is widened to the TASK stream",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
+      "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM, TASK]\n",
+      "expectRed": "the provisioner may not update TASK_",
+      "cell": "the provisioner may not update TASK_",
+      "note": "TASK stays create-only."
+    },
+    {
+      "name": "the chat default goes back to 30 days",
       "file": "packages/core/src/backup-config.ts",
-      "find": "Object.freeze({ maxAgeMs: 0, perSender: 1000 })",
-      "replace": "Object.freeze({ maxAgeMs: 30 * 86_400_000, perSender: 1000 })",
+      "find": "Object.freeze({ maxAgeMs: 0, perSubject: 1000 })",
+      "replace": "Object.freeze({ maxAgeMs: 30 * 86_400_000, perSubject: 1000 })",
       "expectRed": "a new space's chat stream starts with no age limit and 1000 per sender",
       "cell": "a new space's chat stream starts with no age limit and 1000 per sender"
     },
     {
+      "name": "the DM default gets a count",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "Object.freeze({ maxAgeMs: 0, perSubject: HISTORY_NO_COUNT })",
+      "replace": "Object.freeze({ maxAgeMs: 0, perSubject: 1000 })",
+      "expectRed": "its DM stream starts with no age limit and no count limit",
+      "cell": "its DM stream starts with no age limit and no count limit"
+    },
+    {
       "name": "cotal up moves a stream on the old settings to 30 days, as 0.134.0 did",
       "file": "packages/core/src/streams.ts",
-      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
-      "replace": "    await readChatStreamConfig(jsm, opts.space);\n    { const { config } = await jsm.streams.info(chatStream(opts.space)); if (config.max_age === 0 && config.max_msgs_per_subject === 1000) await setChatHistoryLimit(jsm, opts.space, { maxAgeMs: 30 * 86_400_000, perSender: 1000 }); }\n",
-      "expectRed": "cotal up leaves a chat stream with no age and 1000 per sender (every stream's limit before 0.134.0) as it is",
-      "cell": "cotal up leaves a chat stream with no age and 1000 per sender (every stream's limit before 0.134.0) as it is",
+      "find": "    for (const stream of [\"chat\", \"inbox\", \"dlv\", \"dm\"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);\n",
+      "replace": "    for (const stream of [\"chat\", \"inbox\", \"dlv\", \"dm\"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);\n    { const { config } = await jsm.streams.info(chatStream(opts.space)); if (config.max_age === 0 && config.max_msgs_per_subject === 1000) await setHistoryLimit(jsm, opts.space, \"chat\", { maxAgeMs: 30 * 86_400_000, perSubject: 1000 }); }\n",
+      "expectRed": "cotal up leaves a chat stream with no age and 1000 per sender (every chat stream's limit before 0.134.0) as it is",
+      "cell": "cotal up leaves a chat stream with no age and 1000 per sender (every chat stream's limit before 0.134.0) as it is",
       "note": "The move deleted every post older than 30 days at an ordinary upgrade (#5643)."
     },
     {
-      "name": "setup stops checking an existing chat stream",
+      "name": "setup checks only the chat stream",
       "file": "packages/core/src/streams.ts",
-      "find": "    await readChatStreamConfig(jsm, opts.space);\n",
-      "replace": "",
-      "expectRed": "a chat stream with any setting other than its limit off canonical is refused",
-      "cell": "a chat stream with any setting other than its limit off canonical is refused",
-      "note": "`createSpaceStreams` skips an existing chat stream, so this read is the only check of one at `cotal up`."
+      "find": "    for (const stream of [\"chat\", \"inbox\", \"dlv\", \"dm\"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);\n",
+      "replace": "    for (const stream of [\"chat\"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);\n",
+      "expectRed": "an INBOX stream with any setting other than its limit off canonical is refused, and left as it was",
+      "cell": "an INBOX stream with any setting other than its limit off canonical is refused, and left as it was",
+      "note": "`createSpaceStreams` skips an existing INBOX, DLV or DM stream, so this read is the only check of one at `cotal up`."
+    },
+    {
+      "name": "stream creation stops skipping an existing INBOX, DLV or DM stream",
+      "file": "packages/core/src/streams.ts",
+      "find": "    if (historyLimitStreamOf(space, definition.name)) {\n",
+      "replace": "    if (definition.name === chatStream(space)) {\n",
+      "expectRed": "an open-mode connect leaves a set limit on each of the four streams as it is",
+      "cell": "an open-mode connect leaves a set limit on each of the four streams as it is",
+      "note": "An add over a different limit refuses, so every open-mode connect to a space whose limit an operator set would fail."
+    },
+    {
+      "name": "the inbox takes the chat stream's two-minute floor",
+      "file": "packages/core/src/backup-config.ts",
+      "find": "  if (maxAgeMs < historyLimitMinAgeMs(stream))\n",
+      "replace": "  if (maxAgeMs < DEFAULT_DUPLICATE_WINDOW_MS)\n",
+      "expectRed": "setHistoryLimit refuses an age below the two-hour duplicate window on inbox",
+      "cell": "setHistoryLimit refuses an age below the two-hour duplicate window on inbox",
+      "note": "The broker refuses a `max_age` below the stream's two-hour duplicate window."
+    },
+    {
+      "name": "the setter refuses no count",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (problem) throw new Error(`invalid ${stream} history limit: ${problem}`);\n",
+      "replace": "  if (problem || limit.perSubject === HISTORY_NO_COUNT) throw new Error(`invalid ${stream} history limit: ${problem}`);\n",
+      "expectRed": "setHistoryLimit accepts no age and no count on chat",
+      "cell": "setHistoryLimit accepts no age and no count on chat"
     },
     {
       "name": "a permission refusal of the update is reported as an unknown outcome",
@@ -64,6 +115,57 @@
       "replace": "    if (e instanceof JetStreamApiError) throw e;",
       "expectRed": "a credential without the update grant is refused, not reported as an unknown outcome",
       "cell": "a credential without the update grant is refused, not reported as an unknown outcome"
+    },
+    {
+      "name": "the client compares against the compiled 1000, as before the stamp",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (limit !== null && m.info.pending >= limit - 1) this.emit(\"stored-copies-full\", { limit });",
+      "replace": "        if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit(\"stored-copies-full\", { limit: PLANE3_MAX_MSGS_PER_SUBJECT });",
+      "expectRed": "copies stored under 5 still warn, at 5, after the count is raised to 50",
+      "cell": "copies stored under 5 still warn, at 5, after the count is raised to 50"
+    },
+    {
+      "name": "the notice fires one copy late",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (limit !== null && m.info.pending >= limit - 1) this.emit(\"stored-copies-full\", { limit });",
+      "replace": "        if (limit !== null && m.info.pending >= limit) this.emit(\"stored-copies-full\", { limit });",
+      "expectRed": "...and the same agent's next copies, stored under 5, warn at 5",
+      "cell": "...and the same agent's next copies, stored under 5, warn at 5"
+    },
+    {
+      "name": "the writer stops stamping its count",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n",
+      "replace": "",
+      "expectRed": "copies stored under 5 still warn, at 5, after the count is raised to 50",
+      "cell": "copies stored under 5 still warn, at 5, after the count is raised to 50",
+      "note": "An unstamped copy counts as 1000, so a store full at 5 says nothing."
+    },
+    {
+      "name": "the writer never reads the count again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "const DELIVERY_LIMIT_READ_MS = 5_000;",
+      "replace": "const DELIVERY_LIMIT_READ_MS = 3_600_000;",
+      "expectRed": "copies stored under no count give no notice after the count drops to 5",
+      "cell": "copies stored under no count give no notice after the count drops to 5",
+      "note": "The writer's first stored copy in the suite is under 5, so a writer that keeps that read stamps 5 on copies stored under no count."
+    },
+    {
+      "name": "an unstamped copy counts as no count",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT;",
+      "replace": "  if (value === undefined || value === \"\") return null;",
+      "expectRed": "1000 copies without the stamp warn, at 1000, as the old daemon's count was",
+      "cell": "1000 copies without the stamp warn, at 1000, as the old daemon's count was",
+      "note": "A copy without the stamp comes from a daemon whose count was always 1000 (SPEC §8)."
+    },
+    {
+      "name": "an unstamped copy counts as 999",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT;",
+      "replace": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT - 1;",
+      "expectRed": "999 copies without the stamp give no notice",
+      "cell": "999 copies without the stamp give no notice"
     },
     {
       "name": "catch-up judges the per-sender count again",
@@ -89,6 +191,15 @@
       "replace": "    const cap = 1000;\n    let maxPerSubject = 0;",
       "expectRed": "recall reports a channel where a sender passed the stream's per-sender count",
       "cell": "recall reports a channel where a sender passed the stream's per-sender count"
+    },
+    {
+      "name": "the writer acts on its stamp read without asking the fence again",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n      if (!this.plane3MayAct()) return;\n",
+      "replace": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n",
+      "expectRed": "a daemon that stands down during its count read writes no stored copy",
+      "cell": "a daemon that stands down during its count read writes no stored copy",
+      "note": "A daemon that lost the shard while it read the count would still write the copy, which is the write the fence exists to stop."
     }
   ]
 }

@@ -1,5 +1,78 @@
 # @cotal-ai/connector-core
 
+## 0.141.1
+
+No changes in this release.
+
+## 0.141.0
+
+### Minor Changes
+
+- bacabd0: An agent can define its helper on the spawn itself. `cotal_spawn` takes a `persona` record (the persona prompt, role, model, variant, description, channels and capabilities) next to `name`, and the helper runs from a private snapshot of it. `persona.save: true` also writes a catalog copy under that name, owned by the spawner. A cotal-lang program does the same with `spawn({ name, prompt, ... }, opts)`, and the run journal records the definition and its digest, so a resume never submits another one. `cotal_persona` takes `capabilities` and says how a saved persona is removed.
+  
+  A helper never gets more than its spawner holds. On a static mesh every spawn is measured against the spawner's issued evidence: each channel, the role and each capability token it does not hold is refused by name, and a spawner whose evidence does not resolve hands on nothing. Operator commands and admin agents are exempt. A workflow run's spawns are bounded by what its starter held when the run was admitted, on its host and on any other static manager its spawn reaches, which reads the run's admission. A `cotal run start --local` run's helpers get only channels within the `--admit-read` and `--admit-publish` ceiling. The static agent mint now grants task-queue rows for each `role:<r>` capability, so a spawner hands on a role it was given either way. On a participant manager the issuing host makes the agent that asked for a helper its ledger parent, taking the caller from the spawn request it observed, and a run's helper is parented to the run's starter and also bounded by the grant its admission recorded. A run revoked mid-step starts no further helper, and a persona a run saves is owned by its starter. The loopback `verify-enrollment` door a host platform asks decides the same parent and bound and answers `parent`, and a retry of the same enrollment gets the same answer.
+  
+  A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
+  
+  Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
+
+## 0.140.8
+
+No changes in this release.
+
+## 0.140.7
+
+No changes in this release.
+
+## 0.140.6
+
+No changes in this release.
+
+## 0.140.5
+
+No changes in this release.
+
+## 0.140.4
+
+No changes in this release.
+
+## 0.140.3
+
+No changes in this release.
+
+## 0.140.2
+
+No changes in this release.
+
+## 0.140.1
+
+No changes in this release.
+
+## 0.140.0
+
+### Minor Changes
+
+- 485bbfe: `cotal history limit` now sets the limits of DMs and of the delivery daemon's inbox and stored copies as well as channel posts, and takes `none` for any age or count. `--inbox-max-age` and `--inbox-per-agent` set the inbox and stored copies together, and `--dm-max-age` and `--dm-per-sender` set DMs. A new space keeps 1000 stored copies per agent and every DM, as before, and `cotal up` and connecting never change a limit. A lower limit shows what it deletes for each agent or DM pair and asks first. With no limit flags the command prints the four streams' limits and changes nothing. Its `--json` result now lists one entry per stream under `result.streams`. Restore brings back the recorded limits of all four streams.
+  
+  The delivery daemon stamps each stored copy with the count it was stored under in a `Cotal-Delivery-Limit` header, and the stored-copies notice compares against that count. A copy without the header counts as 1000.
+  
+  In `@cotal-ai/core`, the chat-only limit API is replaced by one that takes the stream. `ChatHistoryLimit` becomes `HistoryLimit`, whose `perSender` is now `perSubject`; `setChatHistoryLimit`, `describeChatHistory`, `chatHistoryLimitProblem`, `chatHistoryLimitOf` and `chatHistoryRestoreStaging` become `setHistoryLimit`, `describeHistoryLimit`, `historyLimitProblem`, `historyLimitOf` and `historyLimitRestoreStaging`; and `ChatHistoryChange`, `ChatHistoryUpdateUnknown` and `ChatHistoryChanged` become `HistoryLimitChange`, `HistoryLimitUpdateUnknown` and `HistoryLimitChanged`. `isAcceptedChatHistory`, `CHAT_HISTORY_MIN_AGE_MS` and `CHAT_HISTORY_MAX_AGE_MS` are removed; `historyLimitMinAgeMs` and `HISTORY_MAX_AGE_MS` give the bounds, and `historyAgeProblem` checks an age on its own, where 0 is an age below the floor. The `stored-copies-full` event now carries the stamped `limit`.
+
+## 0.139.1
+
+No changes in this release.
+
+## 0.139.0
+
+### Minor Changes
+
+- 6454ee0: The Claude Code connector publishes a `CUSTOM` event named `cotal.toolResult` on the event plane at each tool result, with the value `{ toolCallId, isError }` and the result's timestamp. It carries no tool input or output: tool arguments and results stay off the channel, and the marker only says which call finished and whether it returned an error. The closed schema admits only that shape, and the vocabulary gate checks it before the frame is written: a marker whose value is malformed, or that carries `rawEvent`, is refused as a vocabulary error rather than frozen in the write-ahead log, where it would halt recovery on every restart. The write path strips `rawEvent` from a marker, and a frozen frame from an older version that still carries one halts. The gate also refuses a marker for a call that is still open. `cotal console` draws the marker as `done` or `failed` under its call, and the dashboard uses it to show whether each call is running, done or failed and how long it took. A connector downgraded across a write-ahead log that holds a marker refuses the event name and halts.
+- c3d4af4: The `cotal web` dashboard tells agents apart and shows what each one is doing. Every avatar carries a badge with the first letter of the agent's name, plus its number (`reviewer_2` reads R2), on a colour chosen from the name, so two agents on one harness differ even in greyscale. Each agent has a page at `#/agent/<id>`, reached from the Agent tab's peek and its Open <name>'s page button, or the View work action on any live message from that agent. The page's Work tab shows the agent's text, its tool names and times, where each turn starts and ends, and its own posts. It shows no tool inputs, results or reasoning, because the event plane does not carry them. The server reads one agent's events only while a browser has its page or its peek open: the newest 200 first, then 200 more per Load earlier up to 2,000, and it forwards live frames only to the browsers watching that agent. Live and history frames are both checked by their subject's sender: history is read from the agent's own subject, and a live frame whose subject names another sender is dropped. The check is only as strong as the mesh's publish permissions. On a mesh with auth only the agent holds the grant to publish on its own subject; on an open mesh any raw NATS client can publish there, so Work can show frames the agent did not publish. A feed that falls more than 1 MiB behind on live events is closed so the browser reconnects. The state a feed opens with is sent whatever its size, and while it is still unsent on a slow link it does not count toward that limit. In `@cotal-ai/core`, `channelHistory` takes a `publisher` option that reads a channel's history from one principal's subject only. The agent card gains `meta["ai.cotal.events"]`, `on` when the agent arms its event plane and `off` when it does not, so the page can tell an agent that publishes no events from one that has not started a turn. The dashboard also keeps the newest 500 direct messages, lists the ten most recent conversations in the sidebar, refuses a history `limit` above 2,000, and shows a working agent as `Working` with no "progress unknown" suffix.
+
+## 0.138.2
+
+No changes in this release.
+
 ## 0.138.1
 
 No changes in this release.

@@ -25,6 +25,7 @@ import type { NativeServiceCalloutAuthority } from "./native-service-callout.js"
 import { calloutPermissions, type EndpointCallerResolver, type ListingIssuer, type UserCallerIssuer } from "./permissions.js";
 import { effectiveEndpointCaller } from "./service-caller-effective.js";
 import { verifySessionRedemption } from "./session-redemption.js";
+import type { ServiceKeys } from "./store.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 
 export type ManagerGateVerdict = "candidate" | "unknown" | "not open" | "not this owner's" | "not registered";
@@ -109,7 +110,7 @@ export interface CalloutAuthorityDeps {
   issuer: HeldIssuerSession;
   /** The provider state dir holding the actor ledger. */
   dir: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   /** The registry the issuance rows are written on and endpoint caller rights are read from. */
   registry: LifecycleRegistry;
   /** The proved connect-credential reader. Throws while it is not bound. */
@@ -252,7 +253,7 @@ export function serveCallout(nc: CalloutConnection, args: {
   /** The provider state dir holding the actor ledger. */
   dir: string;
   callout: Pick<CalloutAuth, "xkey" | "account">;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   issuer: UserTokenIssuer;
   hooks: CalloutAuthority;
   serviceAuthority?: NativeServiceCalloutAuthority;

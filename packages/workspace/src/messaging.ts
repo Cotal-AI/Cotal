@@ -30,8 +30,3 @@ export function offlineRecipientNotice(name: string): string {
   return `${name} is offline. The message is stored and delivered when ${name} reconnects; a new agent spawned as ${name} does not receive it.`;
 }
 
-/** The `@names` inside a human's message text, as bare names: the wake hints the console and
- *  `cotal send` carry on a multicast. Agents do not use it; for them only the `mentions` field counts. */
-export function mentionsIn(text: string): string[] {
-  return [...text.matchAll(/@([A-Za-z0-9_.-]+)/g)].map((m) => m[1]);
-}

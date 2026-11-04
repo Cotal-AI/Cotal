@@ -127,7 +127,8 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 mkdirSync(sinkDir, { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat", "menuseat"])
-  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+  // No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);

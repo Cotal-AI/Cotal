@@ -1,7 +1,7 @@
 import { writeSync } from "node:fs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
-import type { CotalEndpoint, Presence } from "@cotal-ai/core";
+import { mentionsIn, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "@cotal-ai/workspace/attach";
@@ -22,7 +22,7 @@ import { Confirm, type ConfirmTarget } from "./ui/Confirm.js";
 import { Prompt } from "./ui/Prompt.js";
 import { Detail, type DetailTarget } from "./ui/Detail.js";
 import { runCommand, type CommandCtx } from "./commands.js";
-import { mentionsIn, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { offlineRecipientNotice } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
 import { spawnPersona } from "../lib/spawn-defaults.js";
 import { launchAgent } from "./launch.js";
