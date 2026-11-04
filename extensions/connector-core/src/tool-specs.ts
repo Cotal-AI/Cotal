@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -1599,11 +1599,12 @@ export function cotalToolSpecs(
             allowSubscribe: z.array(z.string()).optional().describe("Channels the helper may read. Each must be one you may read."),
             allowPublish: z.array(z.string()).optional().describe("Channels the helper may post to. Each must be one you may post to."),
             capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn or run. Each must be one you hold."),
+            endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Endpoint commands to hand on, as { endpoint, commands } entries such as { endpoint: \"com.example.orders\", commands: [\"list\"] }. Each must be one you hold."),
             save: z.boolean().optional().describe("Also save this persona to the catalog under `name`, for a broad persona worth reusing. A name already in the catalog is refused before anything starts."),
           })
           .strict()
           .optional()
-          .describe("Define the helper on this spawn instead of from a catalog file: `prompt` (who it is), with optional `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`. Not saved unless `save` is true."),
+          .describe("Define the helper on this spawn instead of from a catalog file: `prompt` (who it is), with optional `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities`, `endpoints` and `save`. Not saved unless `save` is true."),
         join: z
           .array(z.string())
           .optional()
@@ -1961,6 +1962,7 @@ export function cotalToolSpecs(
         allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
         allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
         capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
+        endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Optional endpoint commands written into the persona file, as { endpoint, commands } entries. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Endpoints in the prompt's frontmatter are dropped."),
         announce: z
           .string()
           .optional()
@@ -1971,7 +1973,7 @@ export function cotalToolSpecs(
       async run(
         agent,
         _config,
-        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce }: {
+        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, endpoints, announce }: {
           name: string;
           prompt: string;
           instance?: string;
@@ -1982,11 +1984,12 @@ export function cotalToolSpecs(
           allowSubscribe?: string[];
           allowPublish?: string[];
           capabilities?: string[];
+          endpoints?: PersonaEndpoint[];
           announce?: string;
         },
       ) {
         try {
-          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce });
+          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, endpoints, announce });
           if (reply.definitionOutcome === "unknown") {
             const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
             const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +
