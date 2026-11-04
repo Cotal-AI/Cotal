@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.143.0
+
+### Minor Changes
+
+- 3651b42: Refuse plaintext ws:// targets when TLS is required, both during mesh registration and when dialing existing records. Use wss:// for TLS-protected WebSocket connections. Keep ordinary plaintext loopback connections and WSS certificate and hostname verification unchanged.
+
 ## 0.142.0
 
 ### Minor Changes
