@@ -209,14 +209,9 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   } else if (load === "refused") {
     body = (
       <div className="ox-col">
-        <SessionEmpty icon={SquareLock02Icon} title={`This dashboard can't read ${name}'s work`}>
+        <SessionEmpty icon={SquareLock02Icon} title={`This dashboard can't read ${name}'s work`} action={session?.grant && <CopyCommand command={session.grant} />}>
           <p>{`The broker refused it: ${session?.reason ?? ""}.`}</p>
-          {session?.grant && (
-            <>
-              <p>The mesh owner can grant a read on that channel:</p>
-              <CopyCommand command={session.grant} />
-            </>
-          )}
+          {session?.grant && <p>The mesh owner can grant a read on that channel:</p>}
         </SessionEmpty>
         {steps.length > 0 && list}
       </div>
@@ -224,9 +219,8 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   } else if (load === "failed" && steps.length === 0) {
     body = (
       <div className="ox-col">
-        <SessionEmpty icon={InformationCircleIcon} title={`${name}'s work didn't load`}>
+        <SessionEmpty icon={InformationCircleIcon} title={`${name}'s work didn't load`} action={<Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>}>
           <p>{session?.reason ?? ""}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>
         </SessionEmpty>
       </div>
     );
@@ -260,9 +254,8 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
     body = (
       <div className="ox-col">
         {load === "failed" && (
-          <PlaneNote>
-            {`${name}'s work didn't load. ${session?.reason ?? ""} `}
-            <Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>
+          <PlaneNote action={<Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>}>
+            {`${name}'s work didn't load. ${session?.reason ?? ""}`}
           </PlaneNote>
         )}
         {more && !atCap && (

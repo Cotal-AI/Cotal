@@ -2,6 +2,7 @@ import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { useLayoutEffect, useState } from "react";
 import { Icon } from "../icons/Icon.tsx";
 import { Button } from "#client/ui/shadcn/button.tsx";
+import { Card, CardAction, CardDescription, CardFooter, CardHeader, CardTitle } from "#client/ui/shadcn/card.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import type { PostCapability } from "../api/types.js";
 import { messageRoute, sendCommand } from "../lib/compose.js";
@@ -96,15 +97,28 @@ export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = n
   selfId?: string | null;
 }) {
   const badgeOf = useBadgeOf();
+  const condition = needsCondition(row);
   return (
-    <div className="ui-card ui-needs">
-      <Avatar vendor={row.harness} status={row.status} size={34} badge={badgeOf(row.id)} />
-      <div style={{ minWidth: 0 }}>
-        <b>{`${row.name} is waiting`}</b>
-        <span className="ui-nd">{needsDetail(row)}</span>
-        {needsCondition(row) && <span className="ui-nd ui-facts">{needsCondition(row)}</span>}
-      </div>
-      <div className="ui-btns">
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Avatar vendor={row.harness} status={row.status} size={22} badge={badgeOf(row.id)} />
+          {`${row.name} is waiting`}
+        </CardTitle>
+        <CardDescription className="line-clamp-2">{needsDetail(row)}</CardDescription>
+        {condition && <CardDescription>{condition}</CardDescription>}
+        <CardAction>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" variant="ghost" size="icon-sm" aria-label={DISMISS} onClick={onDismiss}>
+                <Icon icon={Cancel01Icon} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{DISMISS}</TooltipContent>
+          </Tooltip>
+        </CardAction>
+      </CardHeader>
+      <CardFooter className="flex-wrap gap-2">
         <Button type="button" variant="outline" disabled={!onViewAgent} onClick={() => onViewAgent?.(row.id)}>View agent</Button>
         {post?.mode === "off" ? (
           <Button type="button" variant="outline" onClick={() => copy(sendCommand({ kind: "dm", to: row.id }))}>
@@ -116,15 +130,7 @@ export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = n
             <a href={formatRoute(messageRoute(row.id, selfId))} onClick={() => focusComposer({ kind: "dm", to: row.id })}>{`Message ${row.name}`}</a>
           </Button>
         )}
-      </div>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button type="button" variant="ghost" size="icon-sm" aria-label={DISMISS} onClick={onDismiss}>
-            <Icon icon={Cancel01Icon} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{DISMISS}</TooltipContent>
-      </Tooltip>
-    </div>
+      </CardFooter>
+    </Card>
   );
 }

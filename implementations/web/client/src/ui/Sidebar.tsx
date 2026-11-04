@@ -13,6 +13,7 @@ import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { Connection, DashboardState } from "../state/types.js";
 import { Badge } from "#client/ui/shadcn/badge.tsx";
+import { Empty, EmptyDescription, EmptyHeader } from "#client/ui/shadcn/empty.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
@@ -151,7 +152,13 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
           <span className="ui-row-n">{rateText(msgPerSecond())}</span>
         </Row>
         <div className="ui-sec">Channels</div>
-        {channels.length === 0 && <div className="ui-beat ui-beat-empty">No channels yet. One appears with its first message.</div>}
+        {channels.length === 0 && (
+          <Empty className="p-4">
+            <EmptyHeader>
+              <EmptyDescription>No channels yet. One appears with its first message.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
         {channels.map((c) => {
           const count = unread[c.channel] ?? 0;
           const event = isEventChannel(c.channel);

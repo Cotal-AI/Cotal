@@ -2,6 +2,7 @@ import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { useMemo, useState } from "react";
 import type { ActivityEntry, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
+import { Alert, AlertDescription, AlertTitle } from "#client/ui/shadcn/alert.tsx";
 import { ToggleGroup, ToggleGroupItem } from "#client/ui/shadcn/toggle-group.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
@@ -44,15 +45,17 @@ function PartialBanner({ banner }: { banner: NonNullable<ReturnType<typeof parti
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="s-banner" role="status">
-          <Icon icon={Alert02Icon} size={18} className="ui-ic" />
-          <div>
-            <b>{banner.label}</b>
-            {banner.count && <> <span>{banner.count}</span></>}
-            {banner.body && <><br /><span>{banner.body}</span></>}
-          </div>
+        <Alert role="status" className="mb-2">
+          <Icon icon={Alert02Icon} />
+          <AlertTitle>{banner.label}</AlertTitle>
+          {(banner.count || banner.body) && (
+            <AlertDescription>
+              {banner.count && <div>{banner.count}</div>}
+              {banner.body && <div>{banner.body}</div>}
+            </AlertDescription>
+          )}
           <div className="ui-sr">{banner.title}</div>
-        </div>
+        </Alert>
       </TooltipTrigger>
       <TooltipContent>{banner.title}</TooltipContent>
     </Tooltip>
@@ -88,7 +91,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
     <>
       <header className="ui-bar">
         <h1>Activity</h1>
-        {!partial && <StaleMarker store={store} id={null} />}
+        {!partial && <StaleMarker store={store} inHeader />}
         <span className="ui-sp" />
         <ToggleGroup type="single" size="sm" aria-label="Show" value={filter} onValueChange={(next) => {
           const picked = FILTERS.find((f) => f.value === next);

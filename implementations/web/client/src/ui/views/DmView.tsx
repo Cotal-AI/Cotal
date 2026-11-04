@@ -9,6 +9,7 @@ import type { DashboardState } from "../../state/types.js";
 import { Avatar } from "../Avatar.tsx";
 import { useBadgeOf } from "../identity.js";
 import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
+import { Empty, EmptyHeader, EmptyTitle } from "#client/ui/shadcn/empty.tsx";
 import { harnessName, Unverified } from "../MessageRow.tsx";
 import { WorkingLine } from "../WorkingLine.tsx";
 import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
@@ -83,7 +84,11 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
             <WorkingLine rows={working} />
           </div>
         ) : (
-          <div className="ui-empty"><span>{`No direct messages with ${name} yet.`}</span></div>
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>{`No direct messages with ${name} yet.`}</EmptyTitle>
+            </EmptyHeader>
+          </Empty>
         )}
       </div>
       {post && (target || other !== undefined) && (
