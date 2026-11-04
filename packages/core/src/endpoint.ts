@@ -15,6 +15,7 @@ import {
   RequestError,
   TimeoutError,
   ClosedConnectionError,
+  ConnectionError,
   type NatsConnection,
   type Msg,
   type Subscription,
@@ -8838,6 +8839,7 @@ export type ProbeResult =
   | { ok: false; reason: "auth-required"; inferred?: true }
   | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" }
+  | { ok: false; reason: "tls-unsupported" }
   | { ok: false; reason: "timeout" };
 
 /** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
@@ -8913,6 +8915,10 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false, 
   // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
   // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
   if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
+  // The native client read a greeting without TLS support and refused the TLS requirement.
+  // That is a transport mismatch, not an unreachable listener or proof of mesh identity.
+  if (e instanceof ConnectionError && e.message === "server does not support 'tls'")
+    return { ok: false, reason: "tls-unsupported" };
   // A broker that greeted us asking for auth and then reset the handshake most likely refused it.
   // Windows can discard its `-ERR 'Authorization Violation'` when the reset lands, so the client
   // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so

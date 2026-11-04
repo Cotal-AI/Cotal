@@ -425,6 +425,7 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
     case "creds-rejected":
       return "PERMISSION_DENIED";
     case "tls-trust":
+    case "tls-unsupported":
       return "DEPENDENCY_UNAVAILABLE";
     case "address-held":
       return "CONFLICT";
@@ -948,7 +949,7 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
-    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
+    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "tls-unsupported" ? "DEPENDENCY_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
   throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code });
 }
 

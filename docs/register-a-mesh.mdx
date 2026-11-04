@@ -113,6 +113,9 @@ Choose one of these connection policies:
 
 If the overlay tunnel is down, its address can be ordinary carrier-grade NAT and whoever answers may receive your credentials.
 The guided form asks you to accept that dependency too.
+When a TCP listener answers but does not offer the required TLS, Cotal reports that mismatch and keeps an existing registration.
+Check the broker address and configure TLS on the broker before retrying.
+
 Required TLS removes the need for that consent flag.
 For example, `cotal meshes add <space> --server nats://100.64.0.1 --tls` records required TLS without an overlay-consent prompt.
 
