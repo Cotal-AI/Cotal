@@ -26,15 +26,16 @@ const home = mkdtempSync(join(tmpdir(), "cotal-runhost-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 
-const { connect } = await import("@nats-io/transport-node");
+const { connect, headers } = await import("@nats-io/transport-node");
 const {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
-  openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
+  openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, runDriverCaller, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
-} = await import("@cotal-ai/core");
-const { jetstreamManager } = await import("@nats-io/jetstream");
+  instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
+} = await import("../../packages/core/dist/index.js");
+const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
 type EpServeContextT = import("@cotal-ai/core").EpServeContext;
 type ReplyT = import("@cotal-ai/core").EndpointReply;
@@ -46,9 +47,9 @@ type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
 type LaunchSpecT = import("@cotal-ai/core").LaunchSpec;
 const { authDir, saveSpaceAuth, recordMesh, removeMesh, userAuthStateDir } = await import("@cotal-ai/workspace");
 const { agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
-const { Manager, RunHosting } = await import("@cotal-ai/manager");
+const { Manager, RunHosting } = await import("../../implementations/manager/dist/index.js");
 // Importing the runtime is what registers the `cotal-lang` run host the manager resolves.
-const { runWorkflow } = await import("@cotal-ai/runtime");
+const { runWorkflow } = await import("../../implementations/runtime/dist/index.js");
 const { MeshAgent } = await import("@cotal-ai/connector-core");
 const { bootBroker } = await import("../../implementations/manager/smoke/_boot-broker.js");
 // The delivery daemon: the liveness oracle a manager restart on an auth mesh verify-evicts through
@@ -139,11 +140,13 @@ try {
   // An issued caller: the mint stages and releases its evidence over an issuer session before the
   // material exists, and the caller carries the generation so its requests ride `ep.v1`. The
   // evidence names no lifecycle source (this credential has no ledger family), so its liveness
-  // is the credential's own expiry.
+  // is the credential's own expiry. Like a seat spawned with its event plane, it posts its own
+  // event channel, and it holds the worker role as a capability, so a run it starts may hand both
+  // on (SPEC 14.8).
   const issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
   const caller: EpCallerT = { owner: DEV_OWNER, actor: id.id, uid, generation: issued.generation } as EpCallerT;
   const creds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
-    mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run"], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+    mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run", "role:worker"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: id.id })], expiresInSeconds: 3600, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   nc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const service = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
   const call = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
@@ -286,6 +289,154 @@ try {
     const listed = ((await call("run-ps", undefined)).data as RunListRowT[] | undefined)?.find((row) => row.runId === waitId);
     c("the failed run's status and its ps row record the cause",
       failed?.status?.failure?.code === "L4000" && failed.status.failure.message.includes('is not admitted to read channel "build"') && listed?.failure?.code === "L4000", { status: failed?.status, listed });
+  }
+
+  console.log("A2c. a run's spawns are bounded by what its starter held when the run was admitted");
+  {
+    // The caller holds `run`, the worker role and its own event plane, and no other channel. Its
+    // run hands on only that: `spawn`, which `run` carries, and no other channel or capability
+    // (SPEC 14.8).
+    writeFileSync(join(wsA, ".cotal", "agents", "wide.md"), `---\nname: wide\nrole: worker\nagent: run-answer-stub\nallowPublish: [secret]\ncapabilities: []\n---\n`);
+    const settledRun = async (source: string, file: string): Promise<{ runId: string; v: RunStatusViewT | undefined }> => {
+      const r = await call("run-start", { source, file });
+      const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+      const v = await until(async () => { const s = await status(runId); return stateOf(s) === "failed" || stateOf(s) === "completed" ? s : undefined; }, 30_000);
+      return { runId, v };
+    };
+    const wide = await settledRun('await spawn("wide");\n', "wide.cotal.js");
+    c("a run's spawn of a catalog persona wider than its starter is refused, naming the run and the channel",
+      stateOf(wide.v) === "failed" && wide.v?.status?.failure?.message.includes(`more than run ${wide.runId}'s starter held when the run was admitted`) === true
+        && wide.v?.status?.failure?.message.includes("allowPublish secret") === true, wide.v?.status);
+    // An inline persona names no harness, so the manager's default stands in for the stub's pin.
+    process.env.COTAL_DEFAULT_AGENT = "run-answer-stub";
+    try {
+      const inlineWide = await settledRun('await spawn({ name: "inl-wide", prompt: "You answer.", capabilities: ["admin"] });\n', "inline-wide.cotal.js");
+      c("so is an inline persona asking for a capability the starter does not hold",
+        stateOf(inlineWide.v) === "failed" && inlineWide.v?.status?.failure?.message.includes("capabilities admin") === true, inlineWide.v?.status);
+      const within = await settledRun('const h = await spawn({ name: "inl-ok", prompt: "You answer.", capabilities: ["spawn"] });\nlog("seat", h.agent);\n', "inline-ok.cotal.js");
+      c("an inline persona within the starter's ceiling launches and the run completes", stateOf(within.v) === "completed", within.v?.status);
+      // A run revoked while it is parked starts no helper: a spawn its driver makes afterwards is
+      // refused before anything is minted (SPEC 14.8). The spawn enters the manager with the
+      // driver's caller, as the served spawn above hands it in.
+      const parked = await call("run-start", { source: CHECKPOINT, file: "revoked-spawn.cotal.js" });
+      const parkedId = (parked.data as { runId?: string } | undefined)?.runId ?? "";
+      await until(async () => pending(await status(parkedId), "Ship it?") ? true : undefined, 15_000);
+      await (mgr as unknown as { runHosting: { revoke(runId: string, by: string, reason: string): Promise<unknown> } }).runHosting.revoke(parkedId, "operator", "withdrawn mid-run");
+      const driver = runDriverCaller(parkedId);
+      const revokedSpawn = await mgr!.startAgent({ name: "inl-revoked", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false },
+        principalKey(driver.owner, driver.actor).key, undefined, driver);
+      const seats = (mgr as unknown as { agents: Map<string, unknown> }).agents;
+      c("a spawn after its run was revoked is refused naming the revocation, and no helper starts",
+        revokedSpawn.ok === false && String(revokedSpawn.error).includes("was revoked by operator (withdrawn mid-run)") && !seats.has("inl-revoked"), revokedSpawn);
+      // A spawn the run places on another manager carries the run's id there, and that manager bounds
+      // the helper by the run's admission, as the hosting manager does (SPEC 14.8). The placed manager
+      // has its own workspace, so its own instance id.
+      const wsP = mkdtempSync(join(tmpdir(), "cotal-runhost-wsP-"));
+      scratch.push(wsP);
+      mkdirSync(join(wsP, ".cotal", "agents"), { recursive: true });
+      saveSpaceAuth(authDir(wsP), auth);
+      const mgrP = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsP });
+      await mgrP.start();
+      try {
+        const placedOn = (mgrP as unknown as { managerInstanceId: string }).managerInstanceId;
+        const placement = `{ placement: { endpoint: "manager", instanceId: "${placedOn}" } }`;
+        const seatsP = (mgrP as unknown as { agents: Map<string, unknown> }).agents;
+        // Both managers now serve the class queue, and a run the placed manager took itself would make
+        // its spawn a hosted one. So these runs start on the run's host by instance, from a caller that
+        // holds what the main caller holds plus those commands on that one instance.
+        const hostOn = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+        const pinId = newIdentity(), pinUid = mintLifecycleUid();
+        const pinIssued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
+        const pinCaller: EpCallerT = { owner: DEV_OWNER, actor: pinId.id, uid: pinUid, generation: pinIssued.generation } as EpCallerT;
+        const pinCreds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
+          mintCreds(auth, pinId, "agent", { lifecycleUid: pinUid, capabilities: ["run", "role:worker"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: pinId.id })],
+            endpointCapabilities: instanceOnlyManagerCapabilities([{ endpoint: "manager", command: "describe" }, ...runCallerCapabilities(DEV_OWNER)], hostOn),
+            expiresInSeconds: 3600, issued: pinIssued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+        const pinNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: pinCreds, tls: false }), maxReconnectAttempts: 0 });
+        const hostService = await resolveService(pinNc, spaceA, "manager", pinCaller, { deadlineMs: 10_000, instanceId: hostOn });
+        const callHost = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
+          (await invokeCommand(pinNc, spaceA, hostService, command, args, {
+            deadlineMs: 30_000, currentEpoch: async () => 0,
+            ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+          })).reply;
+        const statusHost = async (runId: string): Promise<RunStatusViewT | undefined> => {
+          const r = await callHost("run-status", { runId });
+          return r.ok ? r.data as RunStatusViewT : undefined;
+        };
+        // The run parks after the spawn, so the seat can be seen on the manager it was placed on.
+        const placedRun = await callHost("run-start", {
+          source: `const h = await spawn({ name: "pl-ok", prompt: "You answer.", capabilities: ["spawn"] }, ${placement});\nawait checkpoint("placed", "Placed?");\nlog("seat", h.agent);\n`,
+          file: "placed-ok.cotal.js",
+        });
+        const placedId = (placedRun.data as { runId?: string } | undefined)?.runId ?? "";
+        const parkedPlaced = await until(async () => { const s = await statusHost(placedId); return pending(s, "Placed?") ?? (stateOf(s) === "failed" ? s : undefined); }, 30_000);
+        c("a spawn the run places on another manager, within the starter's ceiling, runs on that manager and not on the run's host",
+          seatsP.has("pl-ok") && !seats.has("pl-ok"), { placed: [...seatsP.keys()], host: [...seats.keys()], parked: parkedPlaced });
+        await callHost("run-answer", { runId: placedId, stepKey: "/checkpoint:placed#0", value: "yes" });
+        const placedDone = await until(async () => { const s = await statusHost(placedId); return stateOf(s) === "completed" || stateOf(s) === "failed" ? s : undefined; }, 30_000);
+        c("and the run completes", stateOf(placedDone) === "completed", placedDone?.status);
+        const wideRun = await callHost("run-start", { source: `await spawn({ name: "pl-wide", prompt: "You answer.", capabilities: ["admin"] }, ${placement});\n`, file: "placed-wide.cotal.js" });
+        const wideId = (wideRun.data as { runId?: string } | undefined)?.runId ?? "";
+        const placedWide = { runId: wideId, v: await until(async () => { const s = await statusHost(wideId); return stateOf(s) === "failed" || stateOf(s) === "completed" ? s : undefined; }, 30_000) };
+        c("the placed manager refuses a grant the starter did not hold when the run was admitted, naming the run",
+          stateOf(placedWide.v) === "failed" && placedWide.v?.status?.failure?.message.includes(`more than run ${placedWide.runId}'s starter held when the run was admitted`) === true
+            && placedWide.v?.status?.failure?.message.includes("capabilities admin") === true, placedWide.v?.status);
+        await pinNc.drain().catch(() => pinNc.close());
+        const placedRevoked = await mgrP.startAgent({ name: "pl-revoked", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: parkedId },
+          principalKey(driver.owner, driver.actor).key, undefined, driver);
+        c("the placed manager reads the run's revocation marker and refuses a revoked run's spawn, and no helper starts",
+          placedRevoked.ok === false && String(placedRevoked.error).includes("was revoked by operator (withdrawn mid-run)") && !seatsP.has("pl-revoked"), placedRevoked);
+        const forged = await mgrP.startAgent({ name: "pl-forged", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: placedId },
+          principalKey(caller.owner, caller.actor).key, undefined, caller);
+        c("a spawn naming a run its caller does not drive is refused, and no helper starts",
+          forged.ok === false && String(forged.error).includes(`names run ${placedId}, but its caller is not that run's driver`) && !seatsP.has("pl-forged"), forged);
+        const ghostId = "run-0123456789abcdef0123456789abcdef";
+        const ghost = runDriverCaller(ghostId);
+        const unknown = await mgrP.startAgent({ name: "pl-ghost", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: ghostId },
+          principalKey(ghost.owner, ghost.actor).key, undefined, ghost);
+        c("a spawn naming a run with no admission is refused, and no helper starts",
+          unknown.ok === false && String(unknown.error).includes(`run ${ghostId}'s admission and revocation marker could not be read`) && !seatsP.has("pl-ghost"), unknown);
+        const mismatched = await mgr!.startAgent({ name: "inl-mismatch", agent: "run-answer-stub", persona: { prompt: "You answer." }, events: false, runId: placedId },
+          principalKey(driver.owner, driver.actor).key, undefined, driver);
+        c("the run's host refuses a spawn whose driver names another run, and no helper starts",
+          mismatched.ok === false && String(mismatched.error).includes(`names run ${placedId}, but its caller drives run ${parkedId}`) && !seats.has("inl-mismatch"), mismatched);
+      } finally {
+        await mgrP.stop({ withAgents: true });
+      }
+    } finally {
+      delete process.env.COTAL_DEFAULT_AGENT;
+    }
+    // A starter holding the admin set is exempt, as its own spawns are, and the admission says so.
+    const adminId = newIdentity();
+    const adminUid = mintLifecycleUid();
+    const adminIssued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
+    const adminCaller = { owner: DEV_OWNER, actor: adminId.id, uid: adminUid, generation: adminIssued.generation } as EpCallerT;
+    const adminCreds = await withIssuerSession({ servers: brokerA.servers, space: spaceA, auth, tls: false }, (s) =>
+      mintCreds(auth, adminId, "agent", { lifecycleUid: adminUid, capabilities: ["run", "admin"], expiresInSeconds: 3600, issued: adminIssued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+    const adminNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: adminCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const adminService = await resolveService(adminNc, spaceA, "manager", adminCaller, { deadlineMs: 10_000 });
+      const adminCall = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
+        (await invokeCommand(adminNc, spaceA, adminService, command, args, { deadlineMs: 30_000, currentEpoch: async () => 0 })).reply;
+      const started = await adminCall("run-start", { source: 'const h = await spawn("wide");\nlog("seat", h.agent);\n', file: "admin-wide.cotal.js" });
+      const adminRun = (started.data as { runId?: string } | undefined)?.runId ?? "";
+      const done = await until(async () => {
+        const r = await adminCall("run-status", { runId: adminRun });
+        const v = r.ok ? r.data as RunStatusViewT : undefined;
+        return stateOf(v) === "failed" || stateOf(v) === "completed" ? v : undefined;
+      }, 30_000);
+      c("a run started by a caller holding admin spawns the wider persona", stateOf(done) === "completed", done?.status);
+      const readAdmission = async (runId: string) => {
+        const admNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: { endpoint: "manager", runId, takeoverId: newTakeoverId(), instanceId: mintLifecycleUid(), epoch: 1 } }), tls: false }), maxReconnectAttempts: 0 });
+        try { return (await readRunAdmission(await jetstreamManager(admNc), spaceA, "manager", runId)).admission; } finally { await admNc.close(); }
+      };
+      const exemptAdmission = await readAdmission(adminRun);
+      const boundedAdmission = await readAdmission(wide.runId);
+      c("its admission records the exemption, and the bounded starter's does not",
+        exemptAdmission.spawnExempt === true && boundedAdmission.spawnExempt === undefined, { exempt: exemptAdmission.spawnExempt, bounded: boundedAdmission.spawnExempt });
+    } finally {
+      await adminNc.close();
+    }
   }
 
   console.log("A3. a checkpoint parks the hosted run; run-answer resolves it from the outside");
@@ -503,7 +654,7 @@ try {
     const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
     const parked = await until(async () => { const v = await statusB(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     c("a third checkpoint program parks under the successor", parked !== undefined && stateOf(parked) === "running", parked?.status);
-    await mgrB.stop();
+    await mgrB.stop({ withAgents: true });
     mgrB = undefined;
     // The host on its own, as the manager composes it, so the window between "serving" and
     // "reconciled" is held open by hand rather than raced. Its log is kept: a program's log lines go
@@ -585,7 +736,7 @@ try {
       const refused = (await invokeCommand(nc, spaceA, serviceU, "run-start", { source: PURE, file: "pure.cotal.js" }, { deadlineMs: 10_000, currentEpoch: async () => serviceU.responder.epoch })).reply;
       c("a user-auth mesh refuses run-start as unimplemented, naming the space: no host stands there, and no `--local` is offered", refused.ok === false && refused.error?.code === "unimplemented" && String(refused.error?.message).includes("user-auth space") && !String(refused.error?.message).includes("--local"), refused.error);
     } finally {
-      await mgrU.stop();
+      await mgrU.stop({ withAgents: true });
       removeMesh(spaceA);
     }
     delivery = await bootDeliveryDaemon({
@@ -617,10 +768,13 @@ try {
       // A local start names its own ceiling (SPEC 14.8): the operator's evidence, on the command line.
       const driven = cli(["start"], { file, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
       for (let i = 0; i < 100 && localId === ""; i++) { await wait(100); localId = /starting run (run-[0-9a-f]+) on endpoint/.exec(LOGS.join("\n"))?.[1] ?? ""; }
-      for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
-      answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
+      // A start that never names its run is graded below by name, not read further.
+      if (localId !== "") {
+        for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
+        answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
+      }
       finished = await driven;
-      answered = await cli(["journal", localId]);
+      if (localId !== "") answered = await cli(["journal", localId]);
     } finally {
       console.log = realLog;
       process.exitCode = undefined;
@@ -656,6 +810,54 @@ try {
     c("`cotal run revoke --local` writes the revocation marker and says what it means", revoked.includes(`run ${localId} on manager: revoked by dana (the review was withdrawn)`), revoked);
     c("a second revoke is idempotent and keeps the first marker's reason", again.includes("revoked by dana (the review was withdrawn)"), again);
     c("a local resume of the revoked run is refused by name, before any drive", resumed.includes("threw:") && resumed.includes("revoked by dana"), resumed);
+    // A local run's helper is bounded by the ceiling the operator named on the command line (SPEC 14.8).
+    const reader = join(wsA, "reader-local.cotal.js");
+    writeFileSync(reader, 'const h = await spawn({ name: "loc-reader", prompt: "You read review.", allowSubscribe: ["review"] }, { events: false });\nlog("seat", h.agent);\n');
+    const wider = join(wsA, "wider-local.cotal.js");
+    writeFileSync(wider, 'await spawn({ name: "loc-wide", prompt: "You read secret.", allowSubscribe: ["secret"] }, { events: false });\n');
+    let readerOut = "", readerShow = "", widerOut = "";
+    process.env.COTAL_DEFAULT_AGENT = "run-answer-stub";
+    console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
+    try {
+      readerOut = await cli(["start"], { file: reader, "admit-read": "review", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      const readerId = /starting run (run-[0-9a-f]+) on endpoint/.exec(LOGS.join("\n"))?.[1] ?? "";
+      if (!readerOut.includes(": completed")) readerShow = await cli(["show", readerId]).then((out) => out, (e: Error) => `threw: ${e.message}`);
+      widerOut = await cli(["start"], { file: wider, "admit-read": "review", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
+    } finally {
+      console.log = realLog;
+      delete process.env.COTAL_DEFAULT_AGENT;
+      process.exitCode = undefined;
+    }
+    c("a local run's helper reading a channel the operator admitted launches, and the run completes", readerOut.includes(": completed"), { readerOut, readerShow });
+    c("a local run's helper reading past the admitted channels is refused, naming the channel and the --local ceiling",
+      widerOut.includes("threw:") && widerOut.includes("allowSubscribe secret") && widerOut.includes("`--admit-read`"), widerOut);
+    // A local run admitted before this release recorded the CLI's own holder id as its caller's uid
+    // and its channels as chat subjects alone, so its helpers cannot be measured. The admission is
+    // written as that release wrote it: create-only, under a one-shot run-admitter credential.
+    const oldId = "run-00112233445566778899aabbccddeeff", oldActor = "cli_run_0a1b2c3d";
+    const admitNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId: oldId } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const js = jetstream(admitNc);
+      const createOnly = { create: async (key: string, data: Uint8Array) => {
+        const h = headers();
+        h.set("Nats-Expected-Last-Subject-Sequence", "0");
+        return (await js.publish(`$KV.${admissionBucket(spaceA)}.${key}`, data, { headers: h })).seq;
+      } } as unknown as Parameters<typeof createRunAdmission>[0];
+      await createRunAdmission(createOnly, {
+        version: 1, space: spaceA, endpoint: "manager", runId: oldId, instanceId: "0a1b2c3d4e5f60718293a4b5c6",
+        caller: { owner: DEV_OWNER, actor: oldActor, uid: "u_0a1b2c3d4e5f60718293" },
+        ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "patterns", patterns: [chatSubject(spaceA, "*", "*", "review")] }, deny: [] } },
+        provenance: { kind: "operator", by: oldActor, reason: "cotal run start --local --admit-read review --admit-publish none" },
+        admittedAt: Date.now(),
+      });
+    } finally {
+      await admitNc.drain().catch(() => admitNc.close());
+    }
+    const oldDriver = runDriverCaller(oldId);
+    const oldSpawn = await mgrB!.startAgent({ name: "old-reader", agent: "run-answer-stub", persona: { prompt: "You read review." }, events: false, runId: oldId },
+      principalKey(oldDriver.owner, oldDriver.actor).key, undefined, oldDriver);
+    c("a local run admitted before this release is refused its helpers by name, and told to start again",
+      oldSpawn.ok === false && String(oldSpawn.error).includes(`run ${oldId}'s admission records caller uid`) && String(oldSpawn.error).includes("Start the run again"), oldSpawn);
   }
 
   console.log("A8. the launch deadline a client uses outlives the manager's activation wait");
@@ -664,7 +866,7 @@ try {
 
   await nc.drain().catch(() => undefined);
   nc = undefined;
-  await mgrB.stop();
+  await mgrB.stop({ withAgents: true });
   mgrB = undefined;
 } catch (e) {
   fail++;
@@ -751,7 +953,7 @@ try {
       && String(unknownPin.message).startsWith(`--on ${madeUp} names no manager running for space ${spaceB}; the one running is `) && !/ep\.v1|rail|SPEC/.test(String(unknownPin.message))
       && /^run it again with --on [a-z0-9]+, or without --on$/.test(String(unknownPin.remedy)), { unknownPin, pinMs });
   c("B6. and the manager it names is the running one: `run ps --on` that id reads", pinnedPs.includes("ok"), pinnedPs);
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   mgr = undefined;
 } catch (e) {
   fail++;
@@ -778,7 +980,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 78;
+const EXPECTED_CELLS = 94;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

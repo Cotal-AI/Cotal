@@ -1,5 +1,5 @@
 // HeaderMorph — "Up, then sideways": a topology morph that tells Cotal's core
-// story (one protocol, any topology). 1280x400 @ 30fps, 240-frame seamless loop.
+// story (one protocol, any topology). 1280x400 @ 30fps, seamless loop.
 //
 //   Beat A  ~0-90   supervised:   three agents wire UP to a manager pill; gold
 //                                 beams travel up, staggered.
@@ -25,11 +25,11 @@ import {
   Ripple,
   useCurrentFrame,
   WireLines,
-  Wordmark,
+  Logo,
   type Pt,
 } from "./shared";
 
-const DURATION = 240;
+export const HEADER_MORPH_DURATION = 240;
 
 // --- layout ---------------------------------------------------------------------
 
@@ -190,7 +190,7 @@ export const HeaderMorph: React.FC = () => {
   ];
 
   // root loop envelope (fade in/out so the loop is seamless over the cream bg)
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, HEADER_MORPH_DURATION);
 
   return (
     <CreamStage>
@@ -276,7 +276,7 @@ export const HeaderMorph: React.FC = () => {
         <Caption text="peer-to-peer" opacity={capPeer} top={28} />
 
         {/* resolve: wordmark + tagline */}
-        <Wordmark
+        <Logo
           frame={frame}
           appear={180}
           tagline="one protocol, any topology"

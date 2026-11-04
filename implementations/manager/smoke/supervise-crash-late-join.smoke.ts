@@ -27,10 +27,9 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
   CotalEndpoint, DEV_OWNER, createSpaceAuth, epCall, isReachable, mintConnectionEvictorCreds, mintCreds,
-  mintLifecycleUid, mintMembershipObserverCreds, newIdentity, principalKey, serverConfig, setupSpaceStreams,
-  standaloneConnectOpts, type EpCaller,
+  mintMembershipObserverCreds, newIdentity, principalKey, serverConfig, setupSpaceStreams, standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { authDir, mintControlInstrument, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { readSeatRecord } from "../src/resume.js";
@@ -126,9 +125,10 @@ async function runCase(tag: "control" | "late" | "early exit"): Promise<void> {
     daemon = await bootDeliveryDaemon({ space, servers, auth, reloadStoreIdentity: workspaceSecretStore(root).identity });
 
     const first = await startHost();
-    const runnerId = newIdentity();
-    const runner: EpCaller = { owner: DEV_OWNER, actor: runnerId.id, uid: mintLifecycleUid() };
-    runnerNc = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, runnerId, "control-caller-admin", { lifecycleUid: runner.uid }), tls: false }), maxReconnectAttempts: 0 });
+    // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
+    // bound reads its evidence and it hands on the worker's role (SPEC 13.15).
+    const { creds: runnerCreds, epCaller: runner } = await mintControlInstrument({ server: servers, space, tlsRequired: false, auth }, "admin");
+    runnerNc = await connect({ servers, ...standaloneConnectOpts({ creds: runnerCreds, tls: false }), maxReconnectAttempts: 0 });
     const spawned = await epCall(runnerNc, space, { mode: "one" }, {
       endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller: runner, id: "spawn-worker".padEnd(43, "s"),
       args: { name: "worker", agent: "supervise-crash-stub", cwd: repo, events: false, supervise: { restarts: 2, windowMs: 600_000 } },

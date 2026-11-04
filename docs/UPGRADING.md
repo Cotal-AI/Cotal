@@ -7,6 +7,22 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## More streams take a history limit after 0.139.1
+
+`cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and
+takes `none` for any age or count ([CLI messaging](cli-messaging.mdx#history)). An upgrade changes no
+stream's limit. A space keeps 1000 stored copies per agent and every DM, as before.
+
+### What changes for you
+
+- A script that reads the `--json` result of `cotal history limit` reads `result.streams[]`, one
+  entry per stream with its `from`, `to` and `outcome`, where it read `result.from` and
+  `result.to`. A limit part that is `null` means no age or no count.
+- `--per-sender` alone on a space with no age limit is accepted and keeps no age.
+- `cotal history limit` with no limit flags reads the four streams' limits and changes nothing.
+- A client older than this release still warns at 999 pending stored copies, whatever the count.
+  Upgrade agents' connectors before lowering `--inbox-per-agent`.
+
 ## Jcode reports an unreadable Cursor database as `cursor_state_unreadable`
 
 A Jcode launch that cannot read Cursor's `User/globalStorage/state.vscdb` used to stop with
@@ -73,6 +89,68 @@ This page does not promise a rolling upgrade. Nothing in the current release lin
 authority versions at once. Where the broker and the manager run separately, the mesh is down for a
 window during the upgrade. The sections below describe that window so you can schedule it.
 
+## Static spawns are bounded by the spawner's evidence after 0.140.8
+
+On a static mesh, an agent that could spawn could hand its helper any channel or capability, because
+nothing compared the grant with what the agent held. The manager now measures every spawn an agent
+makes against the agent's own issued evidence, which is the ceiling its credential was minted with,
+and refuses each channel and capability token the evidence does not cover:
+
+```
+spawn: this spawn hands its helper more than the spawner holds: <parts>. A spawner hands on only what its own issued credential carries (SPEC 13.15). Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.
+```
+
+The persona file, the channel overrides on the spawn request, and the default a channel-less persona
+takes from its spawner are all measured. The operator's own commands, such as `cotal spawn
+--detach`, call the manager with a one-shot instrument and are exempt. So are agents holding
+`capabilities: [admin]`, and anything the manager starts on its own behalf.
+
+### What changes for you
+
+- A manager persona that spawns helpers on channels it does not read or post itself is refused.
+  Add those channels to the manager persona's `allowSubscribe` and `allowPublish`, or narrow the
+  helper.
+- A spawner that cannot post on its own event channel, such as one started with `--no-events`, can
+  no longer arm a helper's event plane. Spawn the helper with `events: false`, or start the spawner
+  with its event plane.
+- A spawner holding `capabilities: [run]` may hand on `spawn` as well as `run`. A token no agent mint
+  uses, such as `machine-vitals`, is refused on a static mesh.
+- An agent started by foreground `cotal spawn`, or a bare `cotal join` session, is now issued: it
+  holds evidence and hands on what its persona grants. Its credential has no expiry unless you pass
+  `--expires-in <seconds>` or `--expires-at <unix-seconds>`, is never renewed, and is retired when the
+  seat leaves cleanly. A seat started before the upgrade holds no evidence until it is started again.
+- A credential from `cotal auth mint` is still not issued, so an agent running on one hands on no
+  grant: its helpers start with no channels, no capabilities and no event plane. Start such a
+  spawner with `cotal spawn` instead.
+- A helper's role is measured too. A spawner hands on its own role, or a role named by a
+  `role:<r>` token in its persona's `capabilities`, which now also binds that role's task queue. A
+  manager persona that spawns workers of another role needs `role:<worker-role>` in its
+  capabilities. The refusal names the token.
+- A workflow run's spawns are bounded by what the agent that started the run held when the run was
+  admitted. A run started by an operator instrument or by an admin agent stays exempt. A
+  `cotal run start --local` run's helpers get only channels within `--admit-read` and
+  `--admit-publish`, and no capabilities or role. A helper's own event plane counts as a channel,
+  so spawn with `events: false` unless the ceiling covers it. A program whose helpers need a
+  capability or role runs hosted. A local run admitted before the upgrade recorded the CLI's own
+  holder id as its caller's uid, so its helpers cannot be measured and each spawn is refused,
+  naming the run. Listing, `show`, `answer`, `resume --local` and `revoke --local` still work on it;
+  start it again to spawn.
+- A run's spawn now names its run in `runId`, so every manager a run's spawns can reach must run
+  this release: an older one refuses the field. On a static mesh a manager that does not host the
+  run bounds the helper by the run's admission.
+- A user-auth mesh keeps its ledger rule, except that a spawner whose scope holds `run` may now hand
+  on `spawn`. On a participant manager the issuing host now makes the agent that asked for a helper
+  its parent, so the helper is bounded by that agent's grant instead of the manager's. A run's
+  helper is parented to the run's starter and also stays within what the starter held when the run
+  was admitted. Upgrade the issuing host before its participant managers: an older host refuses the
+  new field on an enrollment. A grant enrolled before the upgrade for a helper that named a
+  subscribe set and no read list records no read, so a retry of that enrollment is refused. Retire
+  that lifecycle and enroll the helper again.
+- A host platform that writes its own managed-agent grants after asking the `verify-enrollment`
+  door now gets `parent` in the answer, and the door refuses a helper wider than that parent. Record
+  `parent` on the grant you write, and fill a list the request leaves out from the parent's grant at
+  most, never from the owner's wider row.
+
 ## Channel posts keep no age limit after 0.134.0
 
 0.134.0 gave each space a 30-day age limit on channel posts. The first `cotal up` that started an
@@ -90,7 +168,8 @@ no space's limit, so an upgrade deletes no post.
 - `cotal history limit` still sets an age, a per-sender count, or both. A lower limit deletes the
   posts it no longer keeps. In a terminal, it asks first.
 - `cotal up`, `team boot`, and `setup --start` no longer report `CHAT_HISTORY_MIGRATED`.
-- INBOX and DLV, the durable delivery streams, keep their own limit of 1000 entries per subject.
+- INBOX and DLV, the durable delivery streams, keep their own limit of 1000 entries per subject. After
+  0.139.1, `cotal history limit --inbox-per-agent` changes it.
 
 ## Multi-space host acknowledgments after 0.116.1
 

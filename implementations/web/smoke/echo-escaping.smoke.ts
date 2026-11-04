@@ -54,6 +54,11 @@
  * 431 and a non-JSON body, before any route runs. Measured at 4000 repetitions of U+2028.
  * That is the same bound any long URL meets and it predates this file.
  *
+ * Section 4 covers `POST /api/send`, whose refusals name a channel and a DM recipient read from a
+ * JSON body.
+ *
+ * Section 5 covers its 502, which carries the broker's own message.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-echo-escaping
  */
 import { spawn } from "node:child_process";
@@ -338,6 +343,10 @@ const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
 const release = teardownOnSignal(broker, store);
 let webChild: ReturnType<typeof spawn> | undefined;
+/** A post text the dashboard's broker refuses (through `run-web.mts`), carrying a terminal escape
+ *  sequence, a bidi override and a line separator, so the refusal that names it has three kinds of
+ *  codepoint to render. */
+const REFUSED_MARKER = "refuse-" + cp(0x1b) + "[2J" + cp(0x202e) + cp(0x2028) + "-end";
 try {
   let up = false;
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -349,7 +358,7 @@ try {
   // FORCE_COLOR, which outranks NO_COLOR and a saved preference.
   const web = await bootWeb({
     server: SERVER, space: SPACE,
-    env: { ...process.env, FORCE_COLOR: "1" },
+    env: { ...process.env, FORCE_COLOR: "1", COTAL_WEB_SMOKE_REFUSE_TEXT: REFUSED_MARKER },
     onSpawn: (child) => { webChild = child; }, onOutput: (text) => { log += text; },
   });
   const WEB_PORT = web.port;
@@ -393,7 +402,7 @@ try {
       const r = await refuse(pct(n));
       if (r.status !== 400) { rawInBody.push(name + " (status " + r.status + ")"); continue; }
       if (r.body.includes(Buffer.from(cp(n), "utf8"))) rawInBody.push(name);
-      if (Buffer.from(segment(r.line), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawInLine.push(name);
+      if (Buffer.from(segment(r.line), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawInLine.push(name + " in " + JSON.stringify(segment(r.line)));
       if (!r.body.toString("utf8").includes(escaped(n).replaceAll("\\", "\\\\"))) notEscaped.push(name);
     }
     ok("1.2 the 400 BODY the caller receives carries no raw codepoint from the class",
@@ -518,6 +527,68 @@ try {
       raw.length === 0, raw);
     ok("3.4 ...and that refusal says WHICH codepoint, as a JSON unicode escape, so the third quoting site has a real input rather than being consistency alone",
       unnamed.length === 0, unnamed);
+  }
+
+  console.log("4. the send route quotes the values it refuses the same way");
+  // `POST /api/send` names two caller values in a refusal: a channel the wire would rewrite, through
+  // the same validator as 3.3, and a DM recipient that is not on the roster, at a fourth quoting
+  // site. Both are read from a JSON body, so a class member arrives as itself with no percent step.
+  {
+    const post = async (body: unknown): Promise<{ status: number; body: Buffer; line: string }> => {
+      log = "";
+      const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/send`, {
+        method: "POST", headers: { ...authed, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      const out = Buffer.from(await res.arrayBuffer());
+      await wait(150);
+      return { status: res.status, body: out, line: log };
+    };
+    /** The operator line's echoed value: what follows the route's own words, up to the colour reset. */
+    const after = (line: string, words: string): string =>
+      line.includes(words) ? line.slice(line.lastIndexOf(words) + words.length).split(cp(0x1b) + "[0m")[0] : "";
+    const rawChannel: string[] = [];
+    const rawTo: string[] = [];
+    const unnamed: string[] = [];
+    for (const [name, n] of [["RLO U+202E", 0x202e], ["ALM U+061C", 0x61c], ["DEL", 0x7f], ["LS U+2028", 0x2028], ["TAG U+E0001", 0xe0001]] as [string, number][]) {
+      const ch = await post({ kind: "msg", channel: "abc" + cp(n), text: "hello" });
+      if (ch.status !== 400 || !ch.line.includes("channel name ") || ch.body.includes(Buffer.from(cp(n), "utf8"))
+        || Buffer.from(after(ch.line, "channel name "), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawChannel.push(name + " (status " + ch.status + ")");
+      const dm = await post({ kind: "dm", to: "ghost" + cp(n), text: "hello" });
+      if (dm.status !== 400 || !dm.line.includes("no agent with id ") || dm.body.includes(Buffer.from(cp(n), "utf8"))
+        || Buffer.from(after(dm.line, "no agent with id "), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawTo.push(name + " (status " + dm.status + ")");
+      if (!dm.body.toString("utf8").includes(escaped(n).replaceAll("\\", "\\\\"))) unnamed.push(name);
+    }
+    ok("4.1 a send to a channel the wire would rewrite is refused 400 with the codepoint escaped in the body and the operator's line, never raw",
+      rawChannel.length === 0, rawChannel);
+    ok("4.2 a DM to an id that is not on the roster is refused 400 with the codepoint escaped in the body and the operator's line, never raw",
+      rawTo.length === 0, rawTo);
+    ok("4.3 ...and that refusal says WHICH codepoint, as a JSON unicode escape",
+      unnamed.length === 0, unnamed);
+  }
+
+  console.log("5. a broker refusal is someone else's text, and it is escaped the same way");
+  // A 502 carries the broker's own message, and a NATS permission error names the subject it
+  // refused, which for a DM carries a recipient id from another agent's presence card. The seam in
+  // `run-web.mts` refuses this post with a message that contains the marker, so the message has a
+  // terminal escape, a bidi override and a line separator in it.
+  {
+    log = "";
+    const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/send`, {
+      method: "POST", headers: { ...authed, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "msg", channel: "review", text: REFUSED_MARKER }),
+    });
+    const body = Buffer.from(await res.arrayBuffer());
+    await wait(150);
+    const line = log;
+    const from = line.indexOf("Publish (refuse-");
+    const echoed = from < 0 ? "" : line.slice(from, line.indexOf("-end)", from) + "-end)".length);
+    const raw = [0x1b, 0x202e, 0x2028].filter((n) => body.includes(Buffer.from(cp(n), "utf8")) || echoed.includes(cp(n)));
+    let error = "(not JSON)";
+    try { error = (JSON.parse(body.toString("utf8")) as { error?: string }).error ?? "(no error key)"; } catch { /* keep */ }
+    ok("5.1 a 502 names the broker's refusal with every codepoint from the class escaped, in the body and the operator's line, and keeps the broker's wording",
+      res.status === 502 && echoed !== "" && raw.length === 0
+      && error === "Permissions Violation for Publish (refuse-" + escaped(0x1b) + "[2J" + escaped(0x202e) + escaped(0x2028) + "-end)",
+      { status: res.status, error, echoed: JSON.stringify(echoed), raw: raw.map((n) => n.toString(16)) });
   }
 
 } finally {

@@ -359,6 +359,12 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "cotal.d32m.ep.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.one.manager.run-answer.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-cancel.>",
+    // Read-only witness of the spawn requests a participant manager forwards with a hosted
+    // enrollment (SPEC 13.6), on both rails, so the issuer bounds the helper by the caller that asked.
+    "cotal.d32m.ep.v1.inst.manager.*.spawn.>",
+    "cotal.d32m.ep.v1.one.manager.spawn.>",
+    "cotal.d32m.ep.inst.manager.*.spawn.>",
+    "cotal.d32m.ep.one.manager.spawn.>",
   ] },
   "auth-barrier": { publish: [
     "$JS.API.INFO",

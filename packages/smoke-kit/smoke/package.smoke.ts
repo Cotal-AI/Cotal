@@ -1,9 +1,10 @@
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSmokeSandboxDown, awaitBrokerReady, brokerHeap, emitSentinel, highwayHash64, recordSmokeSandbox } from "../src/index.js";
+import { assertSmokeSandboxDown, awaitBrokerReady, brokerHeap, emitSentinel, highwayHash64, recordSmokeSandbox, withDeadline } from "../src/index.js";
 
 let checks = 0;
 const check = (name: string, run: () => void): void => {
@@ -123,6 +124,58 @@ await (async () => {
     });
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}
+
+{
+  const messages: string[] = [];
+  const log = console.log;
+  const equal = (actual: unknown, expected: unknown, name: string): void => {
+    assert.equal(actual, expected, name);
+    checks++;
+  };
+  console.log = (...parts: unknown[]) => { messages.push(parts.join(" ")); };
+  try {
+    const value = { arrived: true };
+    equal(await withDeadline(Promise.resolve(value), 1_000, "the value"), value, "fulfilled object identity is preserved");
+    for (const value of [false, 0, null, undefined])
+      equal(await withDeadline(Promise.resolve(value), 1_000, "the falsy value"), value, "falsy fulfillment is preserved");
+    equal(messages.length, 0, "undefined fulfillment does not log a timeout");
+    equal(await withDeadline(Promise.resolve().then(() => true), 1_000, "the void drain"), true, "a fulfilled void drain has a completion marker");
+    let resolvePending!: () => void;
+    const pending = new Promise<void>((resolve) => { resolvePending = resolve; });
+    equal(await withDeadline(pending.then(() => true), 1, "the pending drain"), undefined, "a pending drain misses its deadline");
+    equal(messages.length, 1, "a timeout logs once");
+    equal(messages[0], "  ! the pending drain did not end within 1ms", "the diagnostic identifies the timed-out wait");
+    resolvePending();
+    await pending;
+    equal(messages.length, 1, "late fulfillment creates no second diagnostic");
+    const error = new Error("deadline rejection control");
+    await assert.rejects(withDeadline(Promise.reject(error), 1_000, "the rejected wait"), (got: unknown) => got === error);
+    checks++;
+    equal(messages.length, 1, "rejection is not reported as a timeout");
+    let rejectLate!: (error: Error) => void;
+    const late = new Promise<never>((_resolve, reject) => { rejectLate = reject; });
+    equal(await withDeadline(late, 1, "the late rejection"), undefined, "the deadline can win before rejection");
+    rejectLate(error);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    equal(messages.length, 2, "late rejection is handled without another timeout diagnostic");
+  } finally {
+    console.log = log;
+  }
+  console.log("  ✓ deadline values, completion markers, diagnostics and rejections");
+
+  // A retained 60-second timer would keep either child alive past the process deadline.
+  const helper = new URL("../src/deadline.ts", import.meta.url).href;
+  for (const promise of ["Promise.resolve('done')", "Promise.reject(new Error('expected'))"]) {
+    const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e",
+      `import { withDeadline } from ${JSON.stringify(helper)}; await withDeadline(${promise}, 60_000, 'timer cleanup').catch(() => undefined); process.stdout.write('finished');`,
+    ], { encoding: "utf8", timeout: 10_000 });
+    check(`deadline timer is cleared after ${promise.startsWith("Promise.resolve") ? "fulfillment" : "rejection"}`, () => {
+      assert.ifError(child.error);
+      assert.equal(child.status, 0, child.stderr);
+      assert.equal(child.stdout, "finished");
+    });
   }
 }
 

@@ -69,9 +69,10 @@ const broker = await bootBroker(auth);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-supervise-restart-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\n---\n");
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "user.md"), "---\nname: user\nrole: worker\n---\n");
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "ext.md"), "---\nname: ext\nrole: worker\n---\n");
+// No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\n---\n");
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "user.md"), "---\nname: user\n---\n");
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "ext.md"), "---\nname: ext\n---\n");
 
 const spawnedOpts: LaunchOpts[] = [];
 const envFor = (o: LaunchOpts): Record<string, string> => ({
@@ -217,7 +218,7 @@ try {
   c("spending the restart budget starts no further replacement", spawnedOpts.length === launchesBeforeSpend, spawnedOpts.length);
   c("a spent supervise budget retires the seat", !M.agents.has("seat"));
 
-  writeFileSync(join(workspaceRoot, ".cotal", "agents", "fail.md"), "---\nname: fail\nrole: worker\n---\n");
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", "fail.md"), "---\nname: fail\n---\n");
   const failGoal = "spawn-fail".padEnd(43, "f");
   const failSpawned = await call("spawn", {
     name: "fail", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 2, windowMs: 60_000 },
@@ -264,7 +265,7 @@ try {
   ];
   for (const [i, [label, policy, field]] of badPolicies.entries()) {
     const name = `bad${i}`;
-    writeFileSync(join(workspaceRoot, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\n---\n`);
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\n---\n`);
     const launches = spawnedOpts.length;
     const r = await manager.startAgent({ name, agent: "supervise-stub", cwd: repoRoot, events: false, supervise: policy });
     c(`in-process startAgent refuses ${label} before launching`,

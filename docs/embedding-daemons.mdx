@@ -153,9 +153,11 @@ moves into the store on the first start. If the store and file disagree on the i
 public serve key or serve seed, startup refuses and leaves both identity records intact.
 The context never resolves a workspace root from the working directory and has no local manager, so
 only remote manager gates can be selected. It returns after
-the authority plane, the callout subscription and the loopback listener are bound. A start that
-fails closes the connections it opened and releases its plane claim, so a retry on the same space
-can claim it. A fenced plane or
+the authority plane, the callout subscription and the loopback listener are bound. A failed start
+attempts to close its connections and release its plane claim. If closing the plane fails, it logs
+that failure through the context's diagnostic sink (stderr by default) and throws the original
+start error. A claim left held requires liveness adjudication before a later start can reclaim it.
+A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it.
 

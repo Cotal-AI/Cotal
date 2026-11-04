@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, PLANE3_MAX_MSGS_PER_SUBJECT, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -583,7 +583,7 @@ function droppedNote(channels: readonly string[]): string {
 
 /** Said once after this session's stored copies reached their limit (#5404). NATS reports no discard,
  *  so it says "may". */
-const STORED_COPIES_NOTE = `⚠ Your stored copies reached their limit of ${PLANE3_MAX_MSGS_PER_SUBJECT}, so earlier channel posts may have been dropped before they reached you. Channel history may still hold them: \`cotal history <channel>\` reads it, within the space's history limit.`;
+const storedCopiesNote = (limit: number): string => `⚠ Your stored copies reached their limit of ${limit}, so earlier channel posts may have been dropped before they reached you. Channel history may still hold them: \`cotal history <channel>\` reads it, within the space's history limit.`;
 
 /** How many channels the recall warning names before it starts counting them instead. */
 const NAMED_DROPPED = 5;
@@ -1036,7 +1036,7 @@ export function cotalToolSpecs(
       description:
         "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
         "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed. " +
-        "If your stored copies reached their limit of 1000, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
+        "If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
@@ -1061,7 +1061,7 @@ export function cotalToolSpecs(
         // Every reply below carries the stored-copy notice, and it clears as the messages do: once the
         // reply exists and its caller is still there. A recall that throws or a caller that goes keeps it.
         const storedSeen = agent.storedCopiesFull;
-        const storedNote = storedSeen ? STORED_COPIES_NOTE : "";
+        const storedNote = storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : "";
         const reply = (text: string): ToolResult => {
           if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);
           return ok(text);
@@ -1579,14 +1579,31 @@ export function cotalToolSpecs(
       description:
         "Start another agent on the mesh to do a job. It runs as its own process: it shows up on the roster, the user can watch it work, and any agent can message it. " +
         "A subagent that your own harness starts, such as Claude Code's Task tool, runs inside your session, where nobody else can see or reach it. Prefer cotal_spawn. Use a subagent only for a self-contained job nobody else needs to follow, where it keeps the work contained and can be more efficient, depending on the harness. " +
-        "name picks a saved persona, which sets the new agent's role and what it may do. cotal_personas lists them, and cotal_persona saves a new one. Give it a prompt that says what to do. If others could use its work, put it on the task's channel with join and say in the prompt where the brief is. " +
-        'Example: `{name: "reviewer", join: ["review.login-page"], prompt: "Read the brief on #review.login-page, post your findings there, then despawn yourself."}` ' +
-        "The new agent can read and post wherever its persona allows. An operator's persona that names no channels gets your permissions and no more; one you save with cotal_persona gets only the channels it lists. Give a helper only what its job needs. To limit its channels, write a persona with cotal_persona that lists just the ones it needs, then spawn that persona. " +
-        "Only an operator can let a helper spawn agents or run workflows, and endpoint access also comes from the operator, so ask the user if the job needs them. cotal_orientation shows what you hold. " +
+        "Usually you write the new agent's persona here: pass persona, whose prompt says who it is, and a name. The top-level prompt is the first message it works on, so say there what to do. If others could use its work, put it on the task's channel with join and say in the prompt where the brief is. " +
+        "To start a saved persona instead, pass its name and no persona; cotal_personas lists them. Pass persona.save: true, or use cotal_persona, only for a persona worth reusing. " +
+        'Example: `{name: "reviewer", join: ["review.login-page"], persona: {prompt: "You review the login page change and report each finding with its file and line.", allowSubscribe: ["review.login-page"], allowPublish: ["review.login-page"]}, prompt: "Read the brief on #review.login-page, post your findings there, then despawn yourself."}` ' +
+        "The new agent can read and post wherever its persona allows. A persona you pass here, or an operator's persona, that names no channels gets your read and post grants and no more; one you save with cotal_persona gets only the channels it lists. Give a helper only what its job needs, so list just the channels it needs. " +
+        "You can give it only channels and capabilities you hold. On a mesh that checks grants, a spawn that asks for more is refused, and the refusal names each part you do not hold. It can spawn agents or run workflows only if its persona lists spawn or run. Endpoint access comes from the operator, so ask the user if the job needs it. cotal_orientation shows what you hold. " +
         "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true with the prompt, and the helper is stopped when it ends that turn; or tell it in the prompt to despawn itself when done, as in the example. A standing teammate keeps running until it despawns itself or you call cotal_despawn. " +
         "For work with several steps, a wait on a person, or a need to survive restarts, use cotal_run.",
       schema: {
-        name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
+        name: z.string().describe("With `persona`, the new helper's name (auto-numbered with an underscore, e.g. reviewer_2, if that's taken). Without it, which catalog persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md; the peer joins under the persona's own `name:`, and an unknown name fails."),
+        persona: z
+          .object({
+            prompt: z.string().min(1).describe("Who the helper is: its persona body, as a persona file's body would be. Its first message is the top-level `prompt`."),
+            role: z.string().min(1).optional().describe("The helper's role (e.g. reviewer). The top-level `role` wins."),
+            model: z.string().min(1).optional().describe("The helper's model. The top-level `model` wins. The spawn fails if the manager does not record this pin."),
+            variant: z.string().min(1).optional().describe("The helper's model variant. The top-level `variant` wins."),
+            description: z.string().min(1).optional().describe("A one-line description, shown in the catalog when the persona is saved."),
+            subscribe: z.array(z.string()).optional().describe("Channels the helper reads at start. Omit every channel field to take your own read and post grants; pass [] for none."),
+            allowSubscribe: z.array(z.string()).optional().describe("Channels the helper may read. Each must be one you may read."),
+            allowPublish: z.array(z.string()).optional().describe("Channels the helper may post to. Each must be one you may post to."),
+            capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn or run. Each must be one you hold."),
+            save: z.boolean().optional().describe("Also save this persona to the catalog under `name`, for a broad persona worth reusing. A name already in the catalog is refused before anything starts."),
+          })
+          .strict()
+          .optional()
+          .describe("Define the helper on this spawn instead of from a catalog file: `prompt` (who it is), with optional `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`. Not saved unless `save` is true."),
         join: z
           .array(z.string())
           .optional()
@@ -1603,7 +1620,7 @@ export function cotalToolSpecs(
           .string()
           .optional()
           .describe(
-            "Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. A role of `manager` requires the persona to carry capabilities: [spawn]: a seat that presents as a manager but cannot spawn is refused at spawn time. Ask an operator to add the grant to the persona file (a persona you defined with cotal_persona cannot declare it itself).",
+            "Optional role for the new peer (e.g. worker, reviewer); overrides the persona's role. A role of `manager` requires the helper to hold `spawn`, from `persona.capabilities` or its catalog file: a seat that presents as a manager but cannot spawn is refused at spawn time. You can hand on `spawn` only if you hold it.",
           ),
         agent: z
           .string()
@@ -1659,7 +1676,7 @@ export function cotalToolSpecs(
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, once, deadline, runtime, join }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; once?: boolean; deadline?: string; runtime?: string; join?: string[] }) {
+      async run(agent, _config, { name, persona, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events, once, deadline, runtime, join }: { name: string; persona?: InlinePersona; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; once?: boolean; deadline?: string; runtime?: string; join?: string[] }) {
         let onceArg: { deadlineMs?: number } | undefined;
         if (deadline !== undefined && once !== true) return err("`deadline` applies only to a once spawn; pass once: true with it.");
         if (once === true) {
@@ -1674,7 +1691,7 @@ export function cotalToolSpecs(
           }
         }
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, ...(onceArg !== undefined ? { once: onceArg } : {}) });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, persona, ...(onceArg !== undefined ? { once: onceArg } : {}) });
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
@@ -1915,10 +1932,10 @@ export function cotalToolSpecs(
       name: "cotal_persona",
       title: "Cotal: define a persona",
       description:
-        "Save a persona that cotal_spawn can start. Most jobs need a persona written for them. Reuse one from cotal_personas only when it really fits, such as a general reviewer. Every persona you save stays in the user's workspace after the helper stops. " +
+        "Save a persona that cotal_spawn can start by name. Most jobs need a persona written for them. For one job, pass persona to cotal_spawn instead, and save one here only when it is worth reusing. Reuse one from cotal_personas only when it really fits, such as a general reviewer. Every persona you save stays in the user's workspace after the helper stops. No cotal_* tool removes one: remove one you own with cotal_invoke, endpoint `manager`, command `remove-persona`, args `{ name }`; the operator removes any with `cotal persona remove <name>`. " +
         "Name it after what it does, such as review-login-page. Write the prompt about the job: what to do, where the brief is, how to report, and when to stop. Point to sources for facts rather than stating them. Set role when others should reach it through a role. " +
-        "List its channels and give it only what the job needs: subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. If you list subscribe alone, it may read just those channels and can't post anywhere. Leave all three out and it can read and post nowhere, so list the channels it needs. " +
-        "A persona you save can't let its agent spawn others or run workflows; only an operator can grant that. Only you or an operator can change a persona you saved.\n\n" +
+        "List its channels and give it only what the job needs: subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. If you list subscribe alone, it may read just those channels and can't post anywhere. Leave all three out and it can read and post nowhere, so list the channels it needs. A persona you pass to cotal_spawn differs here: with no channel field it takes your own read and post grants. " +
+        "To let its agent spawn others or run workflows, list spawn or run in capabilities. You can give only capabilities you hold, and each later spawn of the persona is checked again against its spawner. Only you or an operator can change a persona you saved.\n\n" +
         "Before you write one, check what you can give. cotal_orientation shows your own channels and capabilities, and cotal_channels lists the channels in the space. cotal_endpoints lists the endpoints you can call, and cotal_describe shows what one lets a caller do. The agent-files page in cotal_docs lists every persona field.\n\n" +
         "Example:\n\n" +
         "```\n" +
@@ -1943,6 +1960,7 @@ export function cotalToolSpecs(
         subscribe: z.array(z.string()).optional().describe("Optional active read set written into the persona file. Wins over subscribe: in the prompt's frontmatter."),
         allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
         allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
+        capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
         announce: z
           .string()
           .optional()
@@ -1953,7 +1971,7 @@ export function cotalToolSpecs(
       async run(
         agent,
         _config,
-        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce }: {
+        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce }: {
           name: string;
           prompt: string;
           instance?: string;
@@ -1963,11 +1981,12 @@ export function cotalToolSpecs(
           subscribe?: string[];
           allowSubscribe?: string[];
           allowPublish?: string[];
+          capabilities?: string[];
           announce?: string;
         },
       ) {
         try {
-          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce });
+          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce });
           if (reply.definitionOutcome === "unknown") {
             const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
             const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +

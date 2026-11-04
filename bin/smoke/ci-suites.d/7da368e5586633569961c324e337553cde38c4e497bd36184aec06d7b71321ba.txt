@@ -1,0 +1,2 @@
+# The dashboard client build: dist/web holds the page, every file it references, and a license manifest.
+smoke:web-client-build

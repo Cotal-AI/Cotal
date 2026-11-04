@@ -2,7 +2,7 @@
  * The stored-copy notice (#5404).
  *
  * When the endpoint says this session's stored copies reached their limit, the next cotal_inbox reply
- * carries one line in either attention mode. A peek keeps the notice for the next read, and the read
+ * carries one line in either attention mode, naming the count the endpoint reported. A peek keeps the notice for the next read, and the read
  * that carries it clears it. A read that throws, or whose caller goes before the reply, keeps it, and a
  * limit seen while a reply is being built is said by the next read.
  *
@@ -42,13 +42,15 @@ const agent = new MeshAgent(cfg);
 agent.on("error", () => {});
 const inbox = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_inbox")!;
 const read = async (args: { peek?: boolean } = {}) => (await inbox.run(agent, cfg, args)).text;
-const NOTE = "Your stored copies reached their limit of 1000, so earlier channel posts may have been dropped before they reached you.";
+const noteAt = (limit: number) => `Your stored copies reached their limit of ${limit}, so earlier channel posts may have been dropped before they reached you.`;
+const NOTE = noteAt(1000);
 const count = (text: string) => text.split(NOTE).length - 1;
+const full = (limit = 1000) => agent.ep.emit("stored-copies-full", { limit });
 
 const quiet = await read();
 check("before the endpoint says anything, cotal_inbox has no stored-copy notice", count(quiet) === 0, quiet);
 
-agent.ep.emit("stored-copies-full");
+full();
 check("the endpoint's stored-copies-full event marks the session", agent.storedCopiesFull > 0);
 const peeked = await read({ peek: true });
 check("a peek carries the notice once and keeps it", count(peeked) === 1 && agent.storedCopiesFull > 0, peeked);
@@ -62,6 +64,11 @@ check(
 const second = await read();
 check("the read after it does not repeat it", count(second) === 0 && agent.storedCopiesFull === 0, second);
 
+// The count is the one stamped on the copy, which an operator may have set.
+full(250);
+const at250 = await read();
+check("the notice names the count the endpoint reported", at250.split(noteAt(250)).length - 1 === 1 && count(at250) === 0, at250);
+
 // Focus mode reads recall instead of the live buffer; the notice rides there too.
 Object.defineProperty(agent, "attention", { get: () => "focus" });
 const nothing = { items: [], droppedChannels: [] };
@@ -69,7 +76,7 @@ const recallWith = (recall: MeshAgent["recallAmbient"]) => {
   (agent as unknown as { recallAmbient: MeshAgent["recallAmbient"] }).recallAmbient = recall;
 };
 recallWith(async () => nothing);
-agent.ep.emit("stored-copies-full");
+full();
 const focused = await read();
 check("in focus mode the next read carries the notice once", count(focused) === 1, focused);
 const focusedAgain = await read();
@@ -77,19 +84,19 @@ check("in focus mode the read after it does not repeat it", count(focusedAgain) 
 // Recall never reads a family whole, so a family follower's focus read always has recall to report.
 // That reply carries the notice too.
 recallWith(async () => ({ items: [], droppedChannels: ["flood.>"] }));
-agent.ep.emit("stored-copies-full");
+full();
 const withRecall = await read();
 check("in focus mode a read with recall to report carries the notice once", count(withRecall) === 1, withRecall);
 
 // The notice clears only once a reply carrying it reaches a caller that is still there.
-agent.ep.emit("stored-copies-full");
+full();
 recallWith(async () => { throw new Error("recall failed"); });
 const threw = await read().then(() => false, () => true);
 recallWith(async () => nothing);
 const afterThrow = await read();
 check("in focus mode a read whose recall throws keeps the notice for the next read", threw && count(afterThrow) === 1, { threw, afterThrow });
 
-agent.ep.emit("stored-copies-full");
+full();
 const gone = new AbortController();
 recallWith(async () => { gone.abort(); return nothing; });
 await inbox.run(agent, cfg, {}, { signal: gone.signal });
@@ -97,8 +104,8 @@ recallWith(async () => nothing);
 const afterGone = await read();
 check("in focus mode a caller that goes during recall leaves the notice for the next read", count(afterGone) === 1, afterGone);
 
-agent.ep.emit("stored-copies-full");
-recallWith(async () => { agent.ep.emit("stored-copies-full"); return nothing; });
+full();
+recallWith(async () => { full(); return nothing; });
 const during = await read();
 recallWith(async () => nothing);
 const next = await read();
@@ -111,7 +118,7 @@ check(
 
 check(
   "the cotal_inbox description says a reply can carry the notice",
-  inbox.description.includes("If your stored copies reached their limit of 1000, the reply says earlier channel posts may have been dropped"),
+  inbox.description.includes("If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped"),
   inbox.description,
 );
 

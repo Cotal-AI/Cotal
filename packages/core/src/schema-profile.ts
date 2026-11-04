@@ -8,7 +8,7 @@
  * `contract-invalid` (distinct from invocation-time `bad-request`), and all bounds are enforced
  * BEFORE compilation so a hostile descriptor cannot turn registration into a DoS.
  */
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { Ajv2020, type AnySchema, type ValidateFunction } from "ajv/dist/2020.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
 // CommonJS under NodeNext: the default import is `module.exports`, whose `default` is the function.
 import ajvStandalone from "ajv/dist/standalone/index.js";
@@ -93,6 +93,29 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
   // worth more than inlining's marginal speed.
   inlineRefs: false,
 } as const);
+
+/** Built-in meta-validation is shared lazily. Caller documents are only data to this instance;
+ *  it never registers or compiles them, so their IDs and references remain closure-local. */
+let sharedMeta: { ajv: Ajv2020; keys: ReadonlySet<string> } | undefined;
+
+/** A fresh compiler per closure, reusing only the meta-schemas every native instance starts with.
+ *  A custom `$schema` stays on the closure's instance, where its members are registered. */
+class ProfileAjv extends Ajv2020 {
+  override validateSchema(schema: AnySchema, throwOrLogError?: boolean): boolean | Promise<unknown> {
+    if (schema === null || typeof schema !== "object") return super.validateSchema(schema, throwOrLogError);
+    if (!sharedMeta) {
+      const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
+      sharedMeta = { ajv, keys: new Set([...Object.keys(ajv.schemas), ...Object.keys(ajv.refs)]) };
+    }
+    if (schema.$schema !== undefined && !sharedMeta.keys.has(schema.$schema))
+      return super.validateSchema(schema, throwOrLogError);
+    try {
+      return sharedMeta.ajv.validateSchema(schema, throwOrLogError);
+    } finally {
+      this.errors = sharedMeta.ajv.errors;
+    }
+  }
+}
 
 /** The §13.7 closure of one self-contained document: the manifest naming it with no members, and
  *  that manifest's digest, the closure digest a registration or an `op` digest carries. It needs no
@@ -479,7 +502,7 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   // the operator could act on, and every caller of this library received it unasked.
   // Compile with deterministic local resolution only. Members register under their cotal: URI
   // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
-  const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
+  const ajv = new ProfileAjv(AJV_PROFILE_OPTIONS);
   let validate: ValidateFunction;
   try {
     // Every member is reachable and digest-verified (assertClosureProfile refuses extras), so

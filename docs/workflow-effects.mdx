@@ -260,7 +260,10 @@ about itself and is never re-issued. When the spawn also names `cwd`, that manag
 existing absolute directory to its canonical host path before accepting the spawn. A missing,
 relative or non-directory path refuses with no seat and never falls back to the manager workspace.
 One hosted run may name one placement instance; a program naming several is refused instead of
-widening one run credential across hosts. Placement is accepted only from an object-literal spawn
+widening one run credential across hosts. The run's spawn names its run, so on a static mesh the
+placed manager reads the run's admission and revocation marker and bounds the helper as the hosting
+manager does. A user-auth run cannot place a spawn on another instance: its signerless host refuses
+the program when the run starts. Placement is accepted only from an object-literal spawn
 option bag whose `endpoint` and `instanceId` are string literals. A computed option bag, a computed
 placement field, or a spread in either object refuses at `run-start`. The option argument may be
 absent, and an object-literal bag without placement is accepted when it names no `cwd`.

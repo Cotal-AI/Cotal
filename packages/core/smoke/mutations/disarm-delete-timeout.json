@@ -16,15 +16,15 @@
     {
       "name": "A1 live delete timeout still throws, the measured crash",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }",
-      "replace": "          if (!closedEpoch && !dyingEpochTimeout) throw err;",
+      "find": "          if (timeout || closedEpoch) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }",
+      "replace": "          if (!closedEpoch) throw err;",
       "expectRed": "a live delete timeout does not reject disarmMembershipWatch"
     },
     {
       "name": "A2 swallow timeout without surfacing an endpoint error",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }",
-      "replace": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            /* swallowed */\n          } else {\n            throw err;\n          }",
+      "find": "          if (timeout || closedEpoch) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }",
+      "replace": "          if (timeout || closedEpoch) {\n            /* swallowed */\n          } else {\n            throw err;\n          }",
       "expectRed": "the timeout is surfaced as an endpoint error event"
     }
   ]
