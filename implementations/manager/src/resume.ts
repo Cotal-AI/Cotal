@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
+import { lowerPersonaEndpoints, parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -96,7 +96,8 @@ const agent = z.strictObject({
     // what every inventory written before the field describes.
     endpoints: z.array(z.strictObject({ endpoint: z.string(), commands: z.array(z.string()), instanceId: z.string().optional() })).optional()
       .superRefine((v, ctx) => {
-        try { parsePersonaEndpoints(v, "launch"); } catch (e) { ctx.addIssue({ code: "custom", message: (e as Error).message }); }
+        // Lowered as a fresh spawn's are, so a list this release would not mint is refused here.
+        try { lowerPersonaEndpoints(parsePersonaEndpoints(v, "launch")); } catch (e) { ctx.addIssue({ code: "custom", message: (e as Error).message }); }
       }),
     // Absent means OFF, and that is the field's meaning rather than a fallback: an inventory
     // written before the event plane existed describes a session that was not publishing one. A

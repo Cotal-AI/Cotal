@@ -8357,6 +8357,13 @@ export class Manager {
     try {
       if (entry.space !== this.space)
         return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.space}"` };
+      // The retained endpoint commands lower under the rule a fresh spawn's do, so a list this release
+      // would not mint is refused here instead of relaunched until a renewal refuses it.
+      try {
+        lowerPersonaEndpoints(entry.launch.endpoints);
+      } catch (e) {
+        return { ok: false, error: `retained agent ${entry.name}: ${rejectionText(e)}` };
+      }
       try {
         await this.loadSeatRuntime(entry.launch.runtime);
       } catch (e) {
