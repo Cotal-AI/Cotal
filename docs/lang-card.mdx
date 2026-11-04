@@ -59,7 +59,7 @@ A literal with a bare number or another form refuses before start with L2034. Th
 
 `spawn` accepts a persona name, `{ persona, model?, variant? }`, or an inline persona:
 `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?, allowPublish?,
-capabilities?, save? }`. An inline persona defines the helper in the program, so there is no file
+capabilities?, endpoints?, save? }`. An inline persona defines the helper in the program, so there is no file
 to write first. The whole definition is hashed and journalled, so editing any field of it on a
 resumed run diverges. `save: true` also writes it to the catalog for later spawns by name. Two live
 agents cannot share a worktree, as reported by L3022 or L4008.

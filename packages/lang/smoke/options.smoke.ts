@@ -584,13 +584,14 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
         return (inner as unknown as { spawn: (r: unknown, c: EffectContext) => Promise<unknown> }).spawn(req, ctx);
       },
     }) as unknown as EffectHandler;
-  const BASE = 'name: "helper", prompt: "You review diffs.", role: "reviewer", model: "m1", variant: "high", description: "d", subscribe: ["t"], allowSubscribe: ["t"], allowPublish: ["t"], capabilities: ["spawn"], save: false';
+  const BASE = 'name: "helper", prompt: "You review diffs.", role: "reviewer", model: "m1", variant: "high", description: "d", subscribe: ["t"], allowSubscribe: ["t"], allowPublish: ["t"], capabilities: ["spawn"], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }], save: false';
   const src = (fields: string) => `await spawn({ ${fields} }, { name: "helper" });\n`;
   const live = await run(src(BASE), { runId: "o-inline", handler: spy(new SimHandler({})) });
   const req = capture[0] as { persona?: string; inline?: Record<string, unknown>; model?: string };
   ok("an inline spawn forwards its definition whole", JSON.stringify(req?.inline) === JSON.stringify({
     name: "helper", prompt: "You review diffs.", role: "reviewer", model: "m1", variant: "high", description: "d",
-    subscribe: ["t"], allowSubscribe: ["t"], allowPublish: ["t"], capabilities: ["spawn"], save: false,
+    subscribe: ["t"], allowSubscribe: ["t"], allowPublish: ["t"], capabilities: ["spawn"],
+    endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }], save: false,
   }), req);
   ok("and names the helper as its persona, with no catalog model override", req?.persona === "helper" && req?.model === undefined, req);
   const entry = live.journal.entries().find((e) => e.kind === "spawn");
@@ -619,6 +620,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
     ["allowPublish", BASE.replace('allowPublish: ["t"]', "allowPublish: []")],
     ["capabilities", BASE.replace('capabilities: ["spawn"]', "capabilities: []")],
     ["save", BASE.replace("save: false", "save: true")],
+    ["endpoints", BASE.replace('commands: ["list"]', 'commands: ["list", "create"]')],
     ["an omitted list", BASE.replace(', capabilities: ["spawn"]', "")],
   ];
   const stayed: string[] = [];
@@ -632,6 +634,9 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
     ["a blank prompt", 'name: "helper", prompt: "  "', "has no prompt"],
     ["a list that is not of strings", 'name: "helper", prompt: "x", allowPublish: [1]', "`allowPublish` must be a list of strings"],
     ["a save that is not a boolean", 'name: "helper", prompt: "x", save: "yes"', "`save` must be true or false"],
+    ["endpoints that are not a list", 'name: "helper", prompt: "x", endpoints: "com.example.orders"', "`endpoints` must be a list"],
+    ["an endpoints entry with a key it has no field for", 'name: "helper", prompt: "x", endpoints: [{ endpoint: "com.example.orders", commands: ["list"], target: "self" }]', "entry carries `target`"],
+    ["an endpoints entry with no commands", 'name: "helper", prompt: "x", endpoints: [{ endpoint: "com.example.orders", commands: [] }]', "needs a non-empty `commands` list"],
   ];
   const wrong: string[] = [];
   for (const [label, fields, says] of bad) {
