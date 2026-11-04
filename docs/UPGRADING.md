@@ -7,6 +7,28 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Terminal layout contract removed after 0.141.8
+
+`@cotal-ai/core` no longer exports the `terminal` extension kind, so `TerminalLayout`, `Tab` and
+`Pane` are gone. `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register
+`tmuxTerminalProvider` and `cmuxTerminalProvider`. `cotal setup` was the only code that resolved a
+terminal provider, and it stopped opening tabs when it became configure-only, so nothing in Cotal
+reads the kind. A running mesh needs nothing. Spawned agents are unaffected, because the tmux and
+cmux runtimes never used these providers.
+
+### What stops working
+
+Importing `TerminalLayout`, `Tab` or `Pane` from `@cotal-ai/core`, or either provider from its
+package, fails to compile with TS2305. Plain JavaScript that imports either provider by name fails to
+load. `registry.resolve("terminal", "tmux")` and `registry.resolve("terminal", "cmux")` throw,
+because nothing registers that kind.
+
+### Before the upgrade
+
+Remove those imports. A host that opened tmux windows or cmux tabs through a provider can call the
+driver each package still exports, `tmux.openWindow` and `tmux.splitWindow`, or
+`cmux.openWorkspace` with its own layout JSON.
+
 ## More streams take a history limit after 0.139.1
 
 `cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and
