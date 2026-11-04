@@ -46,6 +46,12 @@ import {
   presenceBucket,
   compileContract,
   TURN_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
+  CANCEL_INPUT_SCHEMA,
+  TURN_YIELD_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -110,56 +116,17 @@ const kv = await openRecordsBucket(nc, SPACE);
 // The liveness registry a spawn's readiness reads; a row lives until deleted.
 const presenceKv = await new Kvm(nc).create(presenceBucket(SPACE));
 
-// ── the suite-served manager-shaped goal endpoint (spawn + turn) ───────────────────────────────
-// An ask is TOLD to its agent over the turn relay, so the suite serves the manager's shape for
-// spawn (the roster registration, the seat's address) and turn (the relay's accept), records every
-// relay it is handed, and can refuse one at accept the way the real manager refuses a gone seat.
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-    runtime: { type: "string" },
-    // The run id a run's spawn names, as the manager's contract declares it.
-    runId: { type: "string", pattern: "^\\s*\\S" },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
-// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
-// A cancelled step withdraws its relay through the manager's reserved cancel (SPEC 13.6 item 4).
-const CANCEL_INPUT = {
-  type: "object", additionalProperties: false, required: ["goalId"],
-  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
-} as const;
-const CANCEL_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["goalId", "state"],
-  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
-  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
+  cancel: { input: cc(CANCEL_INPUT_SCHEMA), output: cc(TURN_YIELD_OUTPUT_SCHEMA) },
 };
+for (const field of ["agent", "role", "model", "variant"]) {
+  c(`served spawn refuses blank ${field}`, !COMPILED.spawn.input.validate({ name: "worker", [field]: " \t" }));
+}
+c("served spawn accepts omitted optional fields", COMPILED.spawn.input.validate({ name: "worker" }));
 const DOCUMENT = {
   urn: "ai.cotal.test.askmgr", revision: 1, attributes: [], events: [],
   commands: [
@@ -178,7 +145,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA, CANCEL_INPUT_SCHEMA, TURN_YIELD_OUTPUT_SCHEMA]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -873,7 +840,7 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
 
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
-const EXPECTED_CELLS = 48;
+const EXPECTED_CELLS = 53;
 const ran = ok + fail;
 console.log(`mesh-ask.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
