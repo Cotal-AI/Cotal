@@ -105,6 +105,19 @@ const save = (dir: string, name: string) => {
   writeFileSync(join(dir, `${name}.ansi`), tmux("capture-pane", "-p", "-e", "-t", "t"))
 }
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
+const times = (n: number, key: string) => Array<string>(n).fill(key)
+// The keys go to the tree from either side: esc returns the tree to the box and does nothing in the
+// box, then tab moves them to the tree. A key sent within tmux's escape-time after Escape would read
+// as alt+<key>.
+async function toTree() {
+  keys("Escape")
+  await sleep(150)
+  keys("Tab")
+  await sleep(150)
+}
+const footer = (frame: string) => frame.trimEnd().split("\n").at(-1)!.trim()
+// A space is live once its conversation heads the middle column and the footer has nothing to report.
+const liveOn = (at: string) => (frame: string) => (frame.split("\n").find((l) => l.includes("SPACES")) ?? "").includes(`#general  ${at}`) && footer(frame) === "? help · ctrl+p commands"
 
 function launch(width: number, height: number, err: string) {
   try {
@@ -169,22 +182,34 @@ try {
   check("fixture: the manager hosts w1 and w2, and both joined presence", s1.ok && s2.ok && joined, JSON.stringify({ s1, s2, roster: watcher.getRoster().map((p) => p.card.name) }))
   console.log(`node ${process.versions.node}, tmux ${tmux("-V").trim()}, broker ${server}, captures in ${captures}`)
 
-  // Enter on a row opens it, and the open row's name heads the middle column at every width. From the
-  // top of the tree the first move passes the space rows, where Enter would switch spaces. Enter on
-  // the row already open leaves the title as it was. `want` tells apart rows under one name.
+  // Enter on a row opens it, and the open row's name heads the middle column at every width. Each try
+  // counts down from the top past the two space rows, where Enter would switch spaces. Enter on the
+  // row already open leaves the title as it was. Enter returns the keys to the box, so the pick ends
+  // with them back in the tree, on the opened row, where D acts and where the 80x24 overview shows.
+  // `want` tells apart rows under one name.
   const title = (frame: string) => frame.split("\n").find((l) => l.includes("SPACES")) ?? ""
   async function pick(name: string, at: string, want: (frame: string) => boolean = () => true) {
-    for (let i = 0; i < 20; i++) keys("k")
-    keys("j")
     for (let i = 0; i < 14; i++) {
-      keys("j")
+      await toTree()
+      keys(...times(20, "k"), ...times(2 + i, "j"))
       await sleep(80)
       const before = title(capture())
       keys("Enter")
       const opened = await waitFor((f) => title(f) !== before, "a row to open", 2000).catch(() => capture())
-      if (title(opened).includes(`${name}  ${at}`) && (await waitFor(want, `the overview of ${name}`, 2000).then(() => true, () => false))) return
+      if (!title(opened).includes(`${name}  ${at}`)) continue
+      await toTree()
+      if (await waitFor(want, `the overview of ${name}`, 2000).then(() => true, () => false)) return
     }
     throw new Error(`could not open ${name}:\n${capture()}`)
+  }
+  /** Enter on the space row that opens `at`, from the top of the tree. */
+  async function pickSpace(at: string) {
+    for (let i = 0; i < 2; i++) {
+      await toTree()
+      keys(...times(20, "k"), ...times(i, "j"), "Enter")
+      if (await waitFor(liveOn(at), `the space ${at}`, 8000).then(() => true, () => false)) return
+    }
+    throw new Error(`could not open ${at}:\n${capture()}`)
   }
   const uptime = (frame: string) => {
     const m = /uptime\s+(\d+)s\b/.exec(frame)
@@ -210,7 +235,7 @@ try {
     const dir = join(captures, size)
     console.log(size)
     launch(width, height, join(work, `${size}.err`))
-    await waitFor((f) => f.includes(`● live · ${space}`) && f.includes("w1") && f.includes("w2") && f.includes("planner"), "the live roster with both seats")
+    await waitFor((f) => liveOn(space)(f) && f.includes("w1") && f.includes("w2") && f.includes("planner"), "the live roster with both seats")
 
     await pick("w1", space)
     const managed = await waitFor((f) => /process\s+running/.test(f), "the manager's row for w1").catch(() => capture())
@@ -242,10 +267,7 @@ try {
     save(dir, "03-unmanaged-agent")
     check(`${size}: an unmanaged agent says no manager runs it`, field(unmanaged, "managed") === "not by a manager on this space" && !/runtime\s+pty/.test(unmanaged), unmanaged)
 
-    for (let i = 0; i < 8; i++) keys("k")
-    await sleep(80)
-    keys("Enter")
-    await waitFor(has(`● live · ${bare}`), "the space with no manager")
+    await pickSpace(bare)
     await pick("solo", bare)
     const unavailable = await waitFor((f) => !!field(f, "managed")?.startsWith("cannot ask the manager:"), "the reason no manager answers", 30000).catch(() => capture())
     save(dir, "04-no-manager")
@@ -257,6 +279,7 @@ try {
       check(`${size}: a space whose managers cannot be asked is not asked again`, after === before, `broker connections ${before} -> ${after}`)
     }
 
+    await toTree()
     keys("q")
     await waitFor(has("EXIT=0"), "q to quit with status 0")
   }
@@ -264,7 +287,7 @@ try {
   console.log("stop")
   const dir = join(captures, "stop")
   launch(209, 52, join(work, "stop.err"))
-  await waitFor((f) => f.includes(`● live · ${space}`) && f.includes("w1") && f.includes("w2"), "the live roster with both seats")
+  await waitFor((f) => liveOn(space)(f) && f.includes("w1") && f.includes("w2"), "the live roster with both seats")
   await pick("w1", space)
   await waitFor((f) => /process\s+running/.test(f), "the manager's row for w1")
   keys("D")
@@ -330,11 +353,13 @@ try {
   await sleep(25000)
   save(dir, "06-broker-wants-auth")
   check("the manager reads leave the space's registry entry when its broker turns auth on", !!w.findMesh(space), capture())
+  await toTree()
   keys("?")
   const help = await waitFor(has("Stop the selected agent"), "? to list the keys").catch(() => capture())
   check("? lists D as the stop key", /D\s+Stop the selected agent/.test(help), help)
   keys("Escape")
   await waitFor((f) => !f.includes("Stop the selected agent"), "Esc to close the keys")
+  await toTree()
   keys("q")
   await waitFor(has("EXIT=0"), "q to quit with status 0")
 } finally {

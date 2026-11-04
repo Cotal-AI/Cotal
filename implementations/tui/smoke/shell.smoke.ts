@@ -69,6 +69,7 @@ async function waitFor(test: (frame: string) => boolean, what: string, timeout =
 const has = (text: string) => (frame: string) => frame.includes(text)
 // The middle column's title shares the row with the tree's SPACES header at every width.
 const title = (frame: string) => frame.split("\n").find((line) => line.includes("SPACES")) ?? ""
+const footer = (frame: string) => frame.trimEnd().split("\n").at(-1)!.trim()
 const save = (dir: string, name: string) => {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, `${name}.txt`), capture())
@@ -115,9 +116,11 @@ try {
     const first = await waitFor((f) => f.includes("✗ not connected") && f.includes("broken.json"), "the catalog rows and the refused resolution")
     save(dir, "01-catalog")
     for (const row of ["team-alpha", "research-lab", "staging", "prepared", "broken.json", "space.68616c66", "broken-prep.json"]) check(`${size}: the tree lists ${row}`, first.includes(row), first)
-    check(`${size}: with no space resolvable the middle says why and how to open one`, title(first).includes("No space open") && first.includes("does not parse as a") && first.includes("Pick a space on the left"), first)
-    if (width >= 97) check(`${size}: the inspector has nothing that needs you before a space is open`, first.includes("NEEDS YOU · 0") && first.includes("Waiting agents show here"), first)
-    else check(`${size}: the inspector shrinks to a one-line summary`, !first.includes("NEEDS YOU") && first.includes("nothing needs you"), first)
+    check(`${size}: with no space resolvable the middle says why`, title(first).includes("No space open") && first.includes("does not parse as a"), first)
+    if (width >= 97) check(`${size}: the inspector has nothing that needs you before a space is open`, first.includes("NEEDS YOU · 0") && first.includes("Nothing needs you."), first)
+    else check(`${size}: with no inspector and nobody waiting, nothing names a waiting count`, !first.includes("NEEDS YOU") && !/needs? you/.test(first), first)
+    check(`${size}: the footer says not connected on the left and the help keys on the right`, footer(first).startsWith("✗ not connected") && footer(first).endsWith("? help · ctrl+p commands"), footer(first))
+    check(`${size}: with no space open there is no input box`, !first.includes("#general"), first)
     check(`${size}: the renderer started no process`, rendererChildren().length === 0, rendererChildren().join(", "))
 
     keys("j", "Enter")
@@ -134,8 +137,9 @@ try {
     save(dir, "03-open-refused")
     check(`${size}: opening a space it cannot reach shows the refusal, with no fake data`, !refused.includes("CHANNELS") && !refused.includes("AGENTS"), refused)
 
+    // The inspector reads "Nothing needs you." too, so the toast is known by its border.
     keys("w")
-    await waitFor(has("Nothing needs you"), "w with nothing waiting")
+    await waitFor((f) => f.split("\n").some((l) => l.includes("┃") && l.includes("Nothing needs you")), "w with nothing waiting")
     check(`${size}: w says when nothing needs you`, true)
 
     keys("?")
@@ -165,7 +169,7 @@ try {
   launch(empty, 80, 24, join(work, "empty.err"))
   const none = await waitFor(has("cotal space create <name>"), "the empty catalog state")
   save(join(captures, "80x24"), "06-empty-home")
-  check("empty home: the shell explains how to get a space", none.includes("cotal space create <name>") && none.includes("nothing needs you") && none.includes("✗ not connected"), none)
+  check("empty home: the shell explains how to get a space", none.includes("cotal space create <name>") && footer(none).startsWith("✗ not connected") && !/needs? you/.test(none), none)
   keys("C-c")
   await waitFor(has("EXIT=0"), "ctrl+c to quit")
   check("empty home: ctrl+c quits with status 0", true)
