@@ -76,6 +76,11 @@ login. The name at the bottom of the left column is dim until then and gold afte
   a direct message, and a waiting agent gets your answer. `enter` sends and `ctrl+j` starts a new
   line. Every conversation keeps its own draft, in every space. `ctrl+p`, Send to a role, opens a
   role's conversation, whose messages go to whichever member takes them.
+- To answer one message, quote it. On an empty box `↑` quotes the newest message, `↑` and `↓` move
+  the quote to older and newer ones, and `↓` past the newest drops it. A click quotes a message
+  too, and keeps what you typed. The quoted message is highlighted and shown above the box, and
+  `enter` sends your reply: in a channel it stays there, and a direct message's reply goes back to
+  its sender. `esc` drops the quote and keeps the text. A reply shows `↩` and the name it answers.
 - `@name` in a channel post mentions that peer, as `cotal send` does. A message that mentions you
   is marked `@you`.
 - A line that starts with `/` is a command: `/reply` quotes the newest direct message you received
