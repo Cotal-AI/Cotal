@@ -92,7 +92,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const k = draftHere()
     return k ? composer().drafts[k]?.reply?.id : undefined
   }
-  const items = createMemo(() => treeItems(entries(), conn(), seen()))
+  const items = createMemo(() => treeItems(entries(), conn(), seen(), self()))
   const rows = createMemo(() => items().filter((i): i is Row => i.kind !== "header"))
   // With no row chosen in the tree, the cursor rests on the open conversation's row.
   const cursorIndex = () => {
@@ -367,8 +367,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     if (r.kind === "peer") {
       const p = r.presence
       const mark = p.card.kind === "agent" ? STATUS[p.status].mark : "⚙"
-      const tag = p.card.id === self() ? "you" : (p.card.role ?? "")
-      const fg = p.status === "offline" ? theme.text.faint : p.card.kind === "agent" || p.card.id === self() ? nameFg(p.card) : theme.text.base
+      const tag = p.card.role ?? ""
+      const fg = p.status === "offline" ? theme.text.faint : p.card.kind === "agent" ? nameFg(p.card) : theme.text.base
       return { mark, markFg: statusFg(p), name: fit(p.card.name, width - tag.length - 5), tag: fit(tag, Math.max(0, width - 12)), fg }
     }
     const e = r.entry

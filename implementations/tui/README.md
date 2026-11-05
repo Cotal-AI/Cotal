@@ -33,7 +33,8 @@ command launches the app.
 ## Layout
 
 Three columns. The left one lists the spaces, then the open space's channels, agents and endpoints,
-with your name at the bottom. The middle shows the open conversation, with the input box under it:
+with your name at the bottom. A chat session is listed while it is open, and yours only as that
+name. The middle shows the open conversation, with the input box under it:
 all traffic, one channel, or one agent with its question pinned when it waits. A space opens on
 `#general`. The inspector on the right lists the agents waiting for an answer and the selected
 agent's status, model, harness and uptime. When the conversation would get fewer than 40 columns, as

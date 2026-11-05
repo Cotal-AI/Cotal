@@ -143,6 +143,7 @@ function middleLines(frame: string, width: number): string[] {
   const end = l.kind === "three" ? width - l.inspector : width
   return frame.trimEnd().split("\n").slice(0, -1).map((line) => [...line].slice(l.tree, end).join("").trim()).filter(Boolean)
 }
+const treeLines = (frame: string, width: number) => frame.split("\n").map((line) => [...line].slice(0, layoutFor(width).tree).join("").trim())
 /** The conversation column's text as one line, so a sentence the column wraps reads whole. */
 const middle = (frame: string, width: number) => middleLines(frame, width).join(" ")
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
@@ -540,15 +541,6 @@ async function run(s: Space, width: number, height: number, tag: string) {
     JSON.stringify({ want: shipMsg?.id, got: toPlanner2.filter((m) => textOf(m) === shipReply) }),
   )
 
-  await openRow(s, login)
-  const note = `note to self (${tag})`
-  const own = await enter(note, (f) => says(f, "denied:"))
-  await sleep(500)
-  const toSelf = (await dms()).filter((m) => textOf(m) === note)
-  save("own-dm")
-  check(`${at}: a direct message to the session itself refuses, keeps the draft and stores nothing`, says(own, "denied: a direct message needs a principal other than this session") && inBox(own, note) && toSelf.length === 0, own)
-  await clear()
-
   const before = (await general()).length
   const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
   save("unknown-slash")
@@ -634,6 +626,22 @@ async function run(s: Space, width: number, height: number, tag: string) {
   keys("Enter")
   const sentAgain = await until(dms, (h) => h.some((m) => textOf(m) === again))
   check(`${at}: the second enter sends from the new session`, sentAgain.some((m) => textOf(m) === again && m.from.id === principal2 && m.to === s.peer("coder-2/coder").id), JSON.stringify(sentAgain.filter((m) => textOf(m) === again)))
+  await sleep(1500)
+  const ownRows = treeLines(capture(), width).filter((l) => new RegExp(`^⚙ ${login}( |$)`).test(l))
+  save("own-sessions-in-tree")
+  check(`${at}: the tree lists none of the human's chat sessions, the ended one or the open one`, ownRows.length === 0, ownRows.join("\n"))
+  if (s.mode === "open") {
+    const colleague = new CotalEndpoint({ space: s.space, servers: server, card: { name: "dana", kind: "endpoint", meta: { sessionKind: "chat" } }, channels: [], heartbeatMs: 500, ttlMs: 3000 })
+    colleague.on("error", () => {})
+    started.push(colleague)
+    await colleague.start()
+    const danaRow = (f: string) => treeLines(f, width).some((l) => /^⚙ dana( |$)/.test(l))
+    const listed = await see(danaRow, 8000).catch(() => capture())
+    check(`${at}: another human's live chat session has a row in the tree`, danaRow(listed), treeLines(listed, width).join("\n"))
+    await colleague.stop()
+    const dropped = await see((f) => !danaRow(f), 8000).catch(() => capture())
+    check(`${at}: once that session ends, its row goes`, !danaRow(dropped), treeLines(dropped, width).join("\n"))
+  }
   // The toast covers the conversation title at 80x24, which the row picker reads.
   await see((f) => !f.includes("already in use"), 15000)
   await namesake.ep.stop()
