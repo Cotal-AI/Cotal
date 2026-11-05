@@ -143,6 +143,7 @@ function middleLines(frame: string, width: number): string[] {
   const end = l.kind === "three" ? width - l.inspector : width
   return frame.trimEnd().split("\n").slice(0, -1).map((line) => [...line].slice(l.tree, end).join("").trim()).filter(Boolean)
 }
+const treeLines = (frame: string, width: number) => frame.split("\n").map((line) => [...line].slice(0, layoutFor(width).tree).join("").trim())
 /** The conversation column's text as one line, so a sentence the column wraps reads whole. */
 const middle = (frame: string, width: number) => middleLines(frame, width).join(" ")
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
@@ -551,6 +552,10 @@ async function run(s: Space, width: number, height: number, tag: string) {
   keys("Enter")
   const sentAgain = await until(dms, (h) => h.some((m) => textOf(m) === again))
   check(`${at}: the second enter sends from the new session`, sentAgain.some((m) => textOf(m) === again && m.from.id === principal2 && m.to === s.peer("coder-2/coder").id), JSON.stringify(sentAgain.filter((m) => textOf(m) === again)))
+  await sleep(1500)
+  const ownRows = treeLines(capture(), width).filter((l) => new RegExp(`^⚙ ${login}( |$)`).test(l))
+  save("own-sessions-in-tree")
+  check(`${at}: the tree lists none of the human's chat sessions, the ended one or the open one`, ownRows.length === 0, ownRows.join("\n"))
   // The toast covers the conversation title at 80x24, which the row picker reads.
   await see((f) => !f.includes("already in use"), 15000)
   await namesake.ep.stop()
