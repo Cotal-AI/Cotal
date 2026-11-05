@@ -415,7 +415,14 @@ async function provisionFreshForeground<T>(
 ): Promise<{ name: string; provisioned: T }> {
   const occupied = new Set<string>();
   for (;;) {
-    const name = firstFreeName(requested, (candidate) => occupied.has(candidate));
+    let name: string;
+    try {
+      name = firstFreeName(requested, (candidate) => occupied.has(candidate));
+    } catch (e) {
+      // The series stops at the actor bound, so a base whose every fitting candidate is taken is a
+      // refusal, not a crash: nothing has been launched, issued or redeemed yet.
+      throw new CommandFailure("refused", "CONFLICT", e instanceof Error ? e.message : String(e));
+    }
     try {
       return { name, provisioned: await provision(name) };
     } catch (e) {
@@ -1404,7 +1411,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
 
   // User mode allocates during guarded provisioning below, without a static operator credential.
   // Static/open mode keeps its advisory roster check. Every launch field uses the allocated name.
-  let name = target.mode === "user" ? requested : await uniqueMeshName(requested, { space, server, auth });
+  // The numbering stops at the actor bound, so a base whose every fitting candidate is taken refuses
+  // here, before any launch field is built from the name.
+  let name: string;
+  try {
+    name = target.mode === "user" ? requested : await uniqueMeshName(requested, { space, server, auth });
+  } catch (e) {
+    stderrLine("✗ ", `${(e as Error).message}`, c.red);
+    process.exit(1);
+  }
 
   const agentType = resolveAgentType({ flag: values.agent, pin: def.agent, callerDefault: callerHarness(space) });
   // Materialize the connector HERE, after the authoritative persona load (#869): the harness choice

@@ -7367,7 +7367,14 @@ export class Manager {
         return { ok: false, code: "already-exists", error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
       name = identityName;
     } else {
-      name = this.uniqueName(identityName);
+      // Numbering appends `_<n>` and stops at the actor bound, so a base whose every fitting
+      // candidate is taken throws rather than naming an actor the exchange refuses. That refusal
+      // lands here, before the reservation below, so the spawn starts nothing.
+      try {
+        name = this.uniqueName(identityName);
+      } catch (e) {
+        return { ok: false, error: rejectionText(e) };
+      }
     }
     // The `chat_` prefix belongs to static chat sessions, whose aliases only `chat-session-open`
     // draws. Checked once the name is fixed by either branch above, so a persona name, a numbered

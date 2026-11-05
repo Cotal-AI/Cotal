@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import ts from "typescript";
 import { firstFreeName, spawnNameError } from "../src/agent-file.js";
+import { assertBoundedOwner } from "../src/endpoint-subjects.js";
 import { assertValidOwnerToken } from "../src/subjects.js";
 
 let passed = 0;
@@ -37,6 +38,15 @@ function check(what: string, ok: boolean, detail?: unknown) {
 const mintable = (n: string) => {
   try {
     assertValidOwnerToken(n);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/** What the exchange actually serves: the grammar plus the 64-character rail bound. */
+const servable = (n: string) => {
+  try {
+    assertBoundedOwner(n, "actor");
     return true;
   } catch {
     return false;
@@ -77,6 +87,12 @@ check(
   produced.length >= 10 && produced.length === SERIES && unmintable.length === 0,
   { produced, unmintable },
 );
+const unservable = produced.filter((n) => !servable(n));
+check(
+  `every name the numbering produces is an actor the exchange serves (checked ${produced.length})`,
+  produced.length >= 10 && unservable.length === 0,
+  { unservable },
+);
 check("…and they are all distinct, so the series still resolves collisions",
   produced.length >= 10 && new Set(produced).size === SERIES);
 check("…and the second instance is the one that used to be unmintable", produced[0] === "reviewer_2", {
@@ -94,10 +110,40 @@ check(
 // USER MODE narrows, and says why.
 check("user mode REFUSES a hyphenated name", spawnNameError("my-agent", { userMode: true }) !== undefined);
 check(
-  "…and the refusal names the actor token, not just 'unsafe'",
-  /actor token/.test(spawnNameError("my-agent", { userMode: true }) ?? ""),
+  "…and the refusal names the exchange, not just 'unsafe'",
+  /exchange refuses it/.test(spawnNameError("my-agent", { userMode: true }) ?? ""),
   { msg: spawnNameError("my-agent", { userMode: true }) },
 );
+
+// THE LENGTH BOUND (#4981). The grammar alone admits a name the exchange can never serve: its
+// permission rows are built through assertBoundedOwner, which refuses an actor past 64 characters.
+// The door must refuse that name itself, in user mode, before a spawn enrolls it.
+const OVER = `cloud_${"a".repeat(64)}`;
+check("instrument control: the over-long name is 70 characters and fits the token grammar",
+  OVER.length === 70 && mintable(OVER) && !servable(OVER));
+const OVER_REFUSAL = spawnNameError(OVER, { userMode: true });
+check("user mode REFUSES a name the exchange cannot serve (over 64 characters)",
+  OVER_REFUSAL !== undefined && /exceeds 64 characters/.test(OVER_REFUSAL),
+  { msg: OVER_REFUSAL });
+check("static/open mode still ACCEPTS that name (the actor there is the nkey, not the name)",
+  spawnNameError(OVER, { userMode: false }) === undefined);
+const AT_BOUND = "b".repeat(64);
+check("a name of exactly 64 characters is accepted in user mode (the bound is inclusive)",
+  AT_BOUND.length === 64 && servable(AT_BOUND) && spawnNameError(AT_BOUND, { userMode: true }) === undefined);
+
+// THE NUMBERED FORM. firstFreeName appends `_<n>`, so a base the door accepts becomes unservable at
+// its second live instance once the base is 63 or 64 characters. The numbering must stop at the
+// bound rather than hand that name out.
+const WIDE = "c".repeat(63);
+check("instrument control: a 63-character base is servable and its numbered form is not",
+  WIDE.length === 63 && servable(WIDE) && !servable(`${WIDE}_2`));
+let numberedRefusal = "";
+try { firstFreeName(WIDE, (n) => n === WIDE); }
+catch (e) { numberedRefusal = e instanceof Error ? e.message : String(e); }
+check("numbering a taken 63-character base REFUSES instead of naming an unservable actor",
+  /64-character actor bound/.test(numberedRefusal), { msg: numberedRefusal });
+check("a free 63-character base is returned unchanged (the door judges the base, not the numbering)",
+  firstFreeName(WIDE, () => false) === WIDE);
 
 // UPGRADE SAFETY. Static/open mode keys the actor on the nkey, so the narrow rule must NOT apply
 // there — an existing `my-agent` persona has to keep spawning across an upgrade.
@@ -110,12 +156,10 @@ for (const bad of ["../escape", "a/b", "a\\b", "with space", "dot.name", ""]) {
 }
 
 // THE DELEGATION, asserted structurally because it cannot be asserted behaviourally. The narrow
-// half must CALL the shipped validator rather than restate its alphabet. A restatement that is
-// correct today is behaviourally identical today — that is precisely what makes the drift silent,
-// and why every cell above stays green when the call is replaced by an equivalent regex. The only
-// moment the two disagree is after someone changes the token grammar, which is exactly the moment
-// nobody is looking at this door. So the cell parses the shipped source: the docstring above
-// `spawnNameError` names `assertValidOwnerToken` twice, and a string can spell the call too.
+// half must CALL the validator the exchange's permission rows are built through, rather than restate
+// its alphabet or its 64-character bound. A restatement that is correct today is behaviourally
+// identical today, and the only moment the two disagree is after someone changes that validator,
+// which is exactly the moment nobody is looking at this door. So the cell parses the shipped source.
 const DOOR_AST = ts.createSourceFile(
   "agent-file.ts",
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "agent-file.ts"), "utf8"),
@@ -128,7 +172,7 @@ const TRAVERSAL_GUARD = "/^[A-Za-z0-9_-]+$/";
 let validatorCalls = 0;
 const doorRegexes: string[] = [];
 const walkDoor = (node: ts.Node): void => {
-  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "assertValidOwnerToken")
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "assertBoundedOwner")
     validatorCalls++;
   if (ts.isRegularExpressionLiteral(node)) doorRegexes.push(node.text);
   ts.forEachChild(node, walkDoor);
@@ -160,8 +204,8 @@ const CLI_REFUSAL_USER = spawnNameError("default_agent-3", { userMode: true });
 check("a hyphenated --name on a USER-mode target is refused by the same predicate the manager uses",
   CLI_REFUSAL_USER !== undefined && /actor token/.test(CLI_REFUSAL_USER),
   { msg: CLI_REFUSAL_USER });
-check("…the CLI's message is core's own, not a copy (names the separator reservation)",
-  typeof CLI_REFUSAL_USER === "string" && CLI_REFUSAL_USER.includes("reserved as the principal name-form separator"),
+check("…the CLI's message is core's own, not a copy (names the exchange's refusal)",
+  typeof CLI_REFUSAL_USER === "string" && CLI_REFUSAL_USER.includes("the exchange refuses it"),
   { msg: CLI_REFUSAL_USER });
 check("the same hyphenated --name on a STATIC-mode target is accepted",
   spawnNameError("default_agent-3", { userMode: false }) === undefined);

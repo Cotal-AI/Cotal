@@ -32,7 +32,8 @@ import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
-import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { assertValidChannel, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { assertBoundedOwner } from "./endpoint-subjects.js";
 
 export interface AgentDef {
   name: string;
@@ -575,14 +576,29 @@ export function personaCatalogReadable(owner: string | undefined, caller: string
  *  cannot drift: whatever this scheme can PRODUCE, that rule must ACCEPT. */
 const NUMBER_SEPARATOR = "_";
 
+/** The rail bound an actor token must fit, the same bound {@link assertBoundedOwner} enforces. The
+ *  auto-numbering below appends `_<n>` to a base that has already passed the name door, so a base of
+ *  63 or 64 characters would otherwise be numbered into a name the exchange can never serve. */
+const ACTOR_TOKEN_MAX = 64;
+
 /** First free name in the series `base`, `base_2`, `base_3`, … — the first candidate for which
  *  `taken` returns false. The single source of the spawn auto-numbering scheme, shared by the
  *  manager's funnel (checked against its live + reserved slots) and `cotal spawn` (checked against
- *  the live mesh roster), so a colliding name numbers up identically whichever path spawns it. */
+ *  the live mesh roster), so a colliding name numbers up identically whichever path spawns it.
+ *
+ *  A numbered candidate is capped at {@link ACTOR_TOKEN_MAX}: past it the name is not an actor the
+ *  exchange can serve, so the series ends there rather than handing one out. The requested base is
+ *  returned even when it is longer, because the name door judges a base on its own and this function
+ *  only resolves collisions. Throws when every candidate that fits is taken. */
 export function firstFreeName(base: string, taken: (name: string) => boolean): string {
   if (!taken(base)) return base;
   for (let n = 2; ; n++) {
     const candidate = `${base}${NUMBER_SEPARATOR}${n}`;
+    if (candidate.length > ACTOR_TOKEN_MAX)
+      throw new Error(
+        `no free name for ${JSON.stringify(base)} fits the ${ACTOR_TOKEN_MAX}-character actor bound: ` +
+        `numbering it would name an actor the exchange refuses`,
+      );
     if (!taken(candidate)) return candidate;
   }
 }
@@ -593,25 +609,28 @@ export function firstFreeName(base: string, taken: (name: string) => boolean): s
  *  Two constraints, and they are not the same constraint:
  *   - ALWAYS: the name becomes a `.cotal/agents/<name>.md` path, so it must be a bare token and
  *     never a path — this is the traversal guard, and it holds in every mode.
- *   - USER MODE ONLY: the name is additionally the mesh ACTOR, so it must satisfy the principal
- *     grammar, which is strictly narrower — no `-`. Static/open mode keys the actor on the freshly
- *     minted nkey instead of the name, so the narrow rule does not apply there and an existing
- *     `my-agent` persona keeps spawning across an upgrade.
+ *   - USER MODE ONLY: the name is additionally the mesh ACTOR, so it must be one the exchange can
+ *     serve: the principal grammar (no `-`) AND the 64-character rail bound. Static/open mode keys
+ *     the actor on the freshly minted nkey instead of the name, so the narrow rule does not apply
+ *     there and an existing `my-agent` persona keeps spawning across an upgrade.
  *
- *  The narrow half DELEGATES to {@link assertValidOwnerToken} rather than restating it as a second
- *  regex. A copy of an authority's alphabet drifts silently, and the copy that drifts is the one on
- *  the door nobody is reading — the same reason the persona doors share one ownership predicate.
+ *  The narrow half DELEGATES to {@link assertBoundedOwner}, the validator the exchange's permission
+ *  rows are built through, rather than restating its alphabet or its bound. A copy of an authority's
+ *  rule drifts silently, and the copy that drifts is the one on the door nobody is reading. The door
+ *  and the exchange then refuse the same names, and a name the exchange can never serve is refused
+ *  here, before a spawn enrolls it.
  *  Returns undefined when the name is acceptable, else the refusal to show the caller. */
 export function spawnNameError(name: string, opts: { userMode: boolean }): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name))
     return `unsafe name ${JSON.stringify(name)} (allowed: letters, digits, _ -)`;
   if (!opts.userMode) return undefined;
   try {
-    assertValidOwnerToken(name);
-  } catch {
+    assertBoundedOwner(name, "actor");
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
     return (
       `name ${JSON.stringify(name)} cannot be a mesh identity in user mode: the name becomes this ` +
-      `agent's actor token, and '-' is reserved as the principal name-form separator - use '_'`
+      `agent's actor token, and the exchange refuses it (${why})`
     );
   }
   return undefined;
