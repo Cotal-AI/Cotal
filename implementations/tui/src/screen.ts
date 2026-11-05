@@ -64,6 +64,10 @@ export function conversationKey(open: Open): string {
   return `entry:${open.key}`
 }
 
+/** One conversation in one space: drafts survive conversation and space switches. */
+export type DraftKey = string & { readonly __draftKey: unique symbol }
+export const draftKey = (space: string, open: Open) => `${space}\0${conversationKey(open)}` as DraftKey
+
 /** Where writing in a conversation goes: its channel, the peer's exact principal or its role. All
  *  traffic and catalog rows have none. Derived on every read, so a draft never follows the human to
  *  another conversation. */

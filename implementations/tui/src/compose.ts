@@ -1,10 +1,6 @@
 import { publishOutcome, recipientLabel, replyRecipient, settlePublish, SLASH_COMMANDS, submitDraft, type Answerable, type PublishResult, type Recipient, type SlashCommand } from "@cotal-ai/workspace/chat"
-import { conversationKey, type Open } from "./screen.js"
+import type { DraftKey } from "./screen.js"
 import type { AppSlash, Outcome, TalkPhase } from "./talk.js"
-
-/** One conversation in one space: drafts survive conversation and space switches. */
-export type DraftKey = string & { readonly __draftKey: unique symbol }
-export const draftKey = (space: string, open: Open) => `${space}\0${conversationKey(open)}` as DraftKey
 
 /** The message a draft answers. Its recipient came from the reply rule, not from the open
  *  conversation, and `line` shows the human what is being answered. */

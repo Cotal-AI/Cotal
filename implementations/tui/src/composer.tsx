@@ -4,9 +4,9 @@ import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
 import { DialogHeader, DialogLayout } from "../vendor/opencode/packages/tui/src/ui/dialog"
-import { draftKey, edited, replyFrom, settled, submit, unsent, type ComposerState, type Effect, type Tone } from "./compose.js"
+import { edited, replyFrom, settled, submit, unsent, type ComposerState, type Effect, type Tone } from "./compose.js"
 import type { Mesh } from "./live.js"
-import { clock, conversationRecipient, peerOf, type Open } from "./screen.js"
+import { clock, conversationRecipient, draftKey, peerOf, type Open } from "./screen.js"
 import type { Talk } from "./talk.js"
 
 type Line = { text: string; fg: RGBA }
