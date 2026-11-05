@@ -1,4 +1,4 @@
-import { TextAttributes, type InputRenderable, type KeyEvent, type RGBA } from "@opentui/core"
+import { TextAttributes, type InputRenderable, type KeyEvent, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js"
 import { COMMAND_PALETTE_COMMAND, Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
@@ -11,7 +11,7 @@ import type { Catalog, Entry } from "./catalog.js"
 import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
-import { clock, conversationFeed, entryKey, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import { clock, conversationFeed, draftKey, entryKey, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
 import type { Talk } from "./talk.js"
 
 type ComposerModule = typeof import("./composer.js")
@@ -20,8 +20,9 @@ type ComposerModule = typeof import("./composer.js")
 type Load = { phase: "loading" } | { phase: "ready"; catalog: Catalog } | { phase: "failed"; message: string }
 
 /** One table drives the key bindings, the help dialog (rows with `keys`) and the palette (rows with
- *  `palette`). A `global` command also runs while a dialog is open. */
-type Command = { id: string; bind?: string; keys?: string; title: string; group: string; palette?: true; global?: true; run: (event?: KeyEvent) => void }
+ *  `palette`). A `global` command also runs while a dialog is open. A row with no `run` lists keys
+ *  the input box binds. */
+type Command = { id: string; bind?: string; keys?: string; title: string; group: string; palette?: true; global?: true; run?: (event?: KeyEvent) => void }
 
 type Line = { text: string; fg: RGBA }
 
@@ -77,6 +78,20 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return p?.phase === "open" ? p.identity.principal : undefined
   }
   const waiting = () => mesh()?.signals.waiting ?? []
+  const feed = createMemo(() => {
+    const m = mesh()
+    return m ? conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS) : []
+  })
+  const senders = createMemo(() => new Map(feed().map((e) => [e.id, e.from.name])))
+  // The open conversation's reply quote, which the conversation highlights.
+  const draftHere = () => {
+    const m = mesh()
+    return m ? draftKey(m.status.space, open()) : undefined
+  }
+  const quoted = () => {
+    const k = draftHere()
+    return k ? composer().drafts[k]?.reply?.id : undefined
+  }
   const items = createMemo(() => treeItems(entries(), conn(), seen()))
   const rows = createMemo(() => items().filter((i): i is Row => i.kind !== "header"))
   // With no row chosen in the tree, the cursor rests on the open conversation's row.
@@ -109,6 +124,26 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     setCursor(undefined)
     setFocus("box")
   }
+  const quoteRow = (e: FeedEntry) => {
+    const u = ui()
+    const k = draftHere()
+    if (!u || !k) return
+    setComposer((s) => u.quoteRow(s, k, e, self() ?? ""))
+    toBox()
+  }
+  // A quote moved off screen scrolls into view; with none the conversation follows its newest row again.
+  let scroller: ScrollBoxRenderable | undefined
+  createEffect(
+    on(
+      quoted,
+      (id) => {
+        if (!scroller || scroller.isDestroyed) return
+        if (id) scroller.scrollChildIntoView(`msg-${id}`, { align: "nearest", inset: 1 })
+        else scroller.scrollTo(Infinity)
+      },
+      { defer: true },
+    ),
+  )
 
   // Each switch takes a number. One that a later switch or the app closing overtook while it waited
   // closes the session it opened instead of showing it.
@@ -270,12 +305,14 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     { id: "cotal.quit", bind: "q", keys: "q ctrl+c", title: "Quit", group: "System", palette: true, run: requestQuit },
     { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: requestQuit },
     { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
+    { id: "cotal.reply.quote", keys: "↑ ↓ click", title: "Quote a message to reply to; ↑ ↓ on an empty box", group: "Reply" },
+    { id: "cotal.reply.drop", keys: "esc", title: "Drop the quote and keep the text", group: "Reply" },
     // Last, so the palette at 80x24 still opens on the commands above.
     { id: "cotal.role", title: "Send to a role", group: "Talk", palette: true, run: sendToRole },
     { id: "cotal.name", title: "Change your name", group: "Talk", palette: true, run: rename },
     { id: "cotal.end-session", title: "End your chat session", group: "Talk", palette: true, run: () => void endSession() },
   ]
-  const toLayer = (c: Command) => ({ ...c, run: (_input?: string, event?: KeyEvent) => c.run(event) })
+  const toLayer = (c: Command) => ({ ...c, run: (_input?: string, event?: KeyEvent) => c.run?.(event) })
   Keymap.createLayer(() => ({ commands: commands.filter((c) => !c.global && c.bind).map(toLayer) }))
   Keymap.createLayer(() => ({ mode: "global", commands: commands.filter((c) => c.global).map(toLayer) }))
 
@@ -437,21 +474,42 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return undefined
   }
 
-  const FeedRow = (p: { entry: FeedEntry; withChannel: boolean }) => (
-    <box flexShrink={0} marginBottom={1} border={["left"]} customBorderChars={SplitBorder.customBorderChars} borderColor={p.entry.events ? theme.text.faint : nameFg(p.entry.from)} paddingLeft={1}>
-      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
-        <text wrapMode="none" fg={nameFg(p.entry.from)} attributes={TextAttributes.BOLD}>
-          {p.entry.from.name}
-          <span style={{ fg: theme.text.faint }}>{` ${route(p.entry, p.withChannel)}`}</span>
-          <span style={{ fg: gold() }}>{talk()?.mentionsYou(p.entry) ? "  @you" : ""}</span>
-        </text>
-        <text wrapMode="none" fg={theme.text.faint}>
-          {clock(p.entry.ts)}
-        </text>
+  // The quoted row sits on a gold wash and keeps its colored bar. On the wash an agent's color, the muted
+  // gray and the usual gold all fall under 4.5:1 in one theme, so its name turns base, its route a
+  // stronger gray, and its gold the accent's strongest step.
+  const FeedRow = (p: { entry: FeedEntry; withChannel: boolean }) => {
+    const lit = () => quoted() === p.entry.id
+    const to = () => route(p.entry, p.withChannel)
+    const answers = () => (p.entry.replyTo === undefined ? "" : `  ↩ ${senders().get(p.entry.replyTo) ?? ""}`.trimEnd())
+    const mark = () => (lit() ? theme.hue.accent[100] : gold())
+    return (
+      <box
+        id={`msg-${p.entry.id}`}
+        flexShrink={0}
+        marginBottom={1}
+        border={["left"]}
+        customBorderChars={SplitBorder.customBorderChars}
+        borderColor={p.entry.events ? theme.text.faint : nameFg(p.entry.from)}
+        paddingLeft={1}
+        paddingRight={lit() ? 1 : 0}
+        backgroundColor={lit() ? theme.hue.accent[800] : undefined}
+        onMouseDown={p.entry.events ? undefined : () => quoteRow(p.entry)}
+      >
+        <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
+          <text wrapMode="none" fg={lit() ? theme.text.base : nameFg(p.entry.from)} attributes={TextAttributes.BOLD}>
+            {p.entry.from.name}
+            <span style={{ fg: lit() ? theme.hue.neutral[300] : theme.text.faint }}>{to() ? ` ${to()}` : ""}</span>
+            <span style={{ fg: lit() ? theme.hue.neutral[300] : theme.text.muted }}>{answers()}</span>
+            <span style={{ fg: mark() }}>{talk()?.mentionsYou(p.entry) ? "  @you" : ""}</span>
+          </text>
+          <text wrapMode="none" fg={lit() ? mark() : theme.text.faint}>
+            {clock(p.entry.ts)}
+          </text>
+        </box>
+        <text fg={p.entry.events ? theme.text.muted : theme.text.base}>{p.entry.text}</text>
       </box>
-      <text fg={p.entry.events ? theme.text.muted : theme.text.base}>{p.entry.text}</text>
-    </box>
-  )
+    )
+  }
 
   const Conversation = (p: { mesh: Mesh }) => {
     const peer = () => {
@@ -462,7 +520,6 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       const o = open()
       return o.kind === "channel" ? o : undefined
     }
-    const feed = () => conversationFeed(p.mesh, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS)
     const title = () => {
       const c = channel()
       if (c) return c.channel === undefined ? "all traffic" : `#${c.channel}`
@@ -494,7 +551,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
         </Show>
         <box flexGrow={1} minHeight={0} overflow="hidden">
           <Show when={feed().length} fallback={<text fg={theme.text.muted}>No messages yet.</text>}>
-            <scrollbox flexGrow={1} stickyScroll stickyStart="bottom" scrollbarOptions={{ visible: false }}>
+            <scrollbox ref={(r: ScrollBoxRenderable) => (scroller = r)} flexGrow={1} stickyScroll stickyStart="bottom" scrollbarOptions={{ visible: false }}>
               <For each={feed()}>{(e) => <FeedRow entry={e} withChannel={channel()?.channel === undefined} />}</For>
             </scrollbox>
           </Show>
@@ -550,6 +607,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
               space={b().mesh.status.space}
               open={open()}
               mesh={b().mesh}
+              feed={feed()}
               state={composer()}
               setState={setComposer}
               // A dialog hands focus back to whatever held it when it opened, which is not the box
@@ -715,7 +773,7 @@ function Palette(props: { commands: Command[] }) {
           value: c.id,
           onSelect: (d) => {
             d.clear()
-            c.run()
+            c.run?.()
           },
         }))}
     />

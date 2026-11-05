@@ -1,4 +1,5 @@
 import { publishOutcome, recipientLabel, replyRecipient, settlePublish, SLASH_COMMANDS, submitDraft, type Answerable, type PublishResult, type Recipient, type SlashCommand } from "@cotal-ai/workspace/chat"
+import type { FeedEntry } from "./live.js"
 import type { DraftKey } from "./screen.js"
 import type { AppSlash, Outcome, TalkPhase } from "./talk.js"
 
@@ -136,12 +137,50 @@ export function unsent(state: ComposerState): ComposerState {
   return { ...rest, notice: undefined }
 }
 
-/** `/reply`: quote the newest direct message the session received in the draft for `key`. */
-export function replyFrom(state: ComposerState, key: DraftKey, m: (Answerable & { text: string }) | undefined, self: string): ComposerState {
-  const note = (line: string): ComposerState => ({ ...state, notice: { key, tone: "failed", lines: [line] } })
-  if (!m) return note("no direct message to this session to reply to yet")
+type Quotable = Answerable & { text: string }
+
+/** A conversation row as the reply rule reads it. */
+const answerable = (e: FeedEntry): Quotable => ({
+  id: e.id,
+  kind: e.delivery === "multicast" ? "channel" : e.delivery === "unicast" ? "dm" : "anycast",
+  from: e.from,
+  ...(e.channel === undefined ? {} : { channel: e.channel }),
+  text: e.text,
+})
+
+/** Quotes `m` in the draft for `key`, keeping its text. The reply rule picks the recipient. */
+function quote(state: ComposerState, key: DraftKey, m: Quotable, self: string): ComposerState {
   const to = replyRecipient(m, self)
-  if ("refused" in to) return note(to.refused)
+  if ("refused" in to) return { ...state, notice: { key, tone: "failed", lines: [to.refused] } }
   const line = m.text.split("\n")[0]!
   return { ...withDraft(state, key, { text: state.drafts[key]?.text ?? "", reply: { id: m.id, to, from: m.from.name, line } }), notice: undefined }
+}
+
+/** `/reply`: quote the newest direct message the session received in the draft for `key`. */
+export function replyFrom(state: ComposerState, key: DraftKey, m: Quotable | undefined, self: string): ComposerState {
+  if (!m) return { ...state, notice: { key, tone: "failed", lines: ["no direct message to this session to reply to yet"] } }
+  return quote(state, key, m, self)
+}
+
+/** Quotes a conversation row, as a click or `↑` `↓` picks it. */
+export const quoteRow = (state: ComposerState, key: DraftKey, e: FeedEntry, self: string) => quote(state, key, answerable(e), self)
+
+/** `esc`: the draft drops its quote and keeps its text. */
+export function unquote(state: ComposerState, key: DraftKey): ComposerState {
+  const d = state.drafts[key]
+  return d?.reply ? withDraft(state, key, { text: d.text }) : state
+}
+
+/** The conversation rows a quote moves through, oldest first: event traffic and the session's own
+ *  direct messages answer nothing, so they are passed over. */
+export const quotable = (feed: readonly FeedEntry[], self: string) => feed.filter((e) => !e.events && !("refused" in replyRecipient(answerable(e), self)))
+
+/** `↑` (-1) or `↓` (1) on an empty box moves the quote through `rows`. With no quote, or one not
+ *  among them, it starts below the newest. `↑` stops at the oldest; `↓` past the newest drops it. */
+export function walk(state: ComposerState, key: DraftKey, rows: readonly FeedEntry[], self: string, by: -1 | 1): ComposerState {
+  const at = rows.findIndex((e) => e.id === state.drafts[key]?.reply?.id)
+  const next = (at < 0 ? rows.length : at) + by
+  if (next >= rows.length) return unquote(state, key)
+  const e = rows[Math.max(0, next)]
+  return e ? quoteRow(state, key, e, self) : state
 }

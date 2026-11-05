@@ -6,7 +6,7 @@
  * to it. The human writes in the input box under the conversation, which has the keys from launch;
  * tab moves them to the tree. The first enter opens the chat session and sends: a post to #general
  * with a mention, then a direct message to one reviewer, an answer to the waiting agent, `/reply` to
- * a direct message, and the refusals. Every send is read off the broker: a channel's history, the
+ * a direct message, replies to a message picked with `↑` or a click, and the refusals. Every send is read off the broker: a channel's history, the
  * space's direct-message history (an admin reader on the static space), the roster a reader watches,
  * and on the open broker its connections. Every refusal is read off the screen. Captures are kept
  * under the printed directory.
@@ -151,6 +151,14 @@ const type = (text: string) => keys("-l", text)
 const esc = async () => {
   keys("Escape")
   await sleep(150)
+}
+/** A click where `text` starts on screen, as a terminal reports it in SGR mouse mode. */
+function click(text: string) {
+  const rows = capture().split("\n")
+  const y = rows.findIndex((l) => l.includes(text))
+  if (y < 0) throw new Error(`nothing to click: ${text} is not on screen`)
+  const x = [...rows[y]!.slice(0, rows[y]!.indexOf(text))].length + 1
+  type(`\x1b[<0;${x};${y + 1}M\x1b[<0;${x};${y + 1}m`)
 }
 const textOf = (m: CotalMessage) => (m.parts ?? []).map((p) => ("text" in p ? p.text : "")).join("")
 
@@ -396,6 +404,60 @@ async function run(s: Space, width: number, height: number, tag: string) {
   check(`${at}: on the roster, the name at the bottom of the tree turns gold`, gold.name === login && gold.fg === gold.gold, JSON.stringify(gold))
   if (s.mode === "static") check(`${at}: a static session's box names its end time`, lines(first).some((l) => /^#general · ends \d\d:\d\d$/.test(l)), first)
 
+  // The quoted row's text sits on the gold wash, accent 800 on a dark or a light terminal.
+  const lit = (text: string) => tmux("capture-pane", "-p", "-e", "-t", "t").split("\n").some((l) => strip(l).includes(`┃ ${text}`) && /48;2;(63;58;23|238;208;159)[m;]/.test(l))
+  const quoting = (who: string, start: string) => has(`↳ ${who}: “${start}`)
+  const planner = s.peer("planner/planner")
+  const pair = `who can pair on ingest? (${tag})`
+  const pairMsg = await planner.ep.multicast(pair, { channel: "general" })
+  await see((f) => inFeed(f, pair))
+  keys("Up")
+  const picked = await see((f) => quoting("planner", "who can pair")(f) && lit(pair))
+  save("quote-selected")
+  check(
+    `${at}: ↑ on an empty box quotes the newest message and highlights it; the line under the box names #general, no "replying to" line, and the footer is unchanged`,
+    quoting("planner", "who can pair")(picked) && lit(pair) && target(picked, "#general") && !picked.includes("replying to") && footer(picked) === "? help · ctrl+p commands",
+    picked,
+  )
+  keys("Up")
+  const older = await see(quoting(login, "hi @planner"))
+  keys("Down")
+  await see(quoting("planner", "who can pair"))
+  keys("Down")
+  const dropped = await see((f) => !f.includes("↳ "))
+  check(`${at}: ↑ moves the quote to an older message, and ↓ past the newest drops it`, quoting(login, "hi @planner")(older) && !dropped.includes("↳ "), `${older}\n${dropped}`)
+  keys("Up")
+  await see(quoting("planner", "who can pair"))
+  const pairReply = `I can pair (${tag})`
+  type(pairReply)
+  await see((f) => inBox(f, pairReply))
+  keys("Up")
+  await sleep(300)
+  const typed = capture()
+  save("quote-drafted")
+  check(`${at}: typing goes into the box under the quote, and with text in the box ↑ moves no quote`, inBox(typed, pairReply) && quoting("planner", "who can pair")(typed) && !typed.includes(`↳ ${login}:`), typed)
+  await esc()
+  const bare = await see((f) => !f.includes("↳ "))
+  keys("Up")
+  await sleep(300)
+  const still = capture()
+  check(`${at}: esc drops the quote and keeps the draft, and with text in the box ↑ quotes nothing`, !bare.includes("↳ ") && inBox(bare, pairReply) && !still.includes("↳ ") && inBox(still, pairReply), still)
+  click(pair)
+  const clicked = await see((f) => quoting("planner", "who can pair")(f) && lit(pair))
+  check(`${at}: a click quotes a message mid-draft and keeps the draft`, quoting("planner", "who can pair")(clicked) && lit(pair) && inBox(clicked, pairReply), clicked)
+  keys("Enter")
+  const replied = await until(general, (h) => h.some((m) => textOf(m) === pairReply))
+  const threaded = await see((f) => inFeed(f, pairReply) && !f.includes("↳ "))
+  await sleep(500)
+  const strays = (await dms()).filter((m) => textOf(m) === pairReply)
+  save("quote-sent")
+  const pairSent = replied.find((m) => textOf(m) === pairReply)
+  check(
+    `${at}: enter sends the reply to #general with replyTo naming the quoted message, sends no direct message, and its row shows ↩ planner`,
+    pairSent?.replyTo === pairMsg.id && pairSent.from.id === principal && strays.length === 0 && lines(threaded).some((l) => l.startsWith(`┃ ${login}  ↩ planner`)),
+    JSON.stringify({ want: pairMsg.id, got: pairSent, strays }),
+  )
+
   if (s.mode === "static") {
     await openRow(s, "#ops")
     const ops = `ops note (${tag})`
@@ -436,7 +498,6 @@ async function run(s: Space, width: number, height: number, tag: string) {
   save("answer-sent")
   check(`${at}: the answer reaches the waiting agent's principal`, toCoder.some((m) => textOf(m) === answer && m.from.id === principal && m.to === s.peer("coder-2/coder").id), JSON.stringify(toCoder.filter((m) => textOf(m) === answer)))
 
-  const planner = s.peer("planner/planner")
   const ask = await planner.ep.unicast(principal, `can you approve 0042? (${tag})`)
   await until(dms, (h) => h.some((m) => m.id === ask?.id))
   await sleep(500)
@@ -444,7 +505,7 @@ async function run(s: Space, width: number, height: number, tag: string) {
   keys("Enter")
   const quoted = await see(has(`↳ planner: “can you approve 0042? (${tag})”`))
   save("reply-quote")
-  check(`${at}: /reply quotes the newest direct message and the box names who it answers`, quoted.includes(`↳ planner: “can you approve 0042? (${tag})”`) && target(quoted, "replying to planner"), quoted)
+  check(`${at}: /reply quotes the newest direct message and the line under the box names where it goes`, quoted.includes(`↳ planner: “can you approve 0042? (${tag})”`) && target(quoted, "@planner") && !quoted.includes("replying to"), quoted)
   const reply = `yes, go ahead (${tag})`
   type(reply)
   keys("Enter")
@@ -455,6 +516,28 @@ async function run(s: Space, width: number, height: number, tag: string) {
     `${at}: the reply reaches planner's principal with replyTo naming its message, and the quote goes`,
     toPlanner.some((m) => textOf(m) === reply && m.to === planner.id && m.replyTo === ask?.id) && !unquoted.includes("↳ planner:"),
     JSON.stringify({ ask: ask?.id, got: toPlanner.filter((m) => textOf(m) === reply) }),
+  )
+
+  await openRow(s, "planner")
+  const ship = `ship it today? (${tag})`
+  const shipMsg = await planner.ep.unicast(principal, ship)
+  await see((f) => inFeed(f, ship))
+  keys("Up")
+  const dmPicked = await see((f) => quoting("planner", "ship it today?")(f) && lit(ship))
+  save("dm-quote-selected")
+  check(`${at}: in planner's conversation, ↑ quotes its newest direct message and the line under the box names @planner`, lit(ship) && target(dmPicked, "@planner"), dmPicked)
+  const shipReply = `shipping now (${tag})`
+  type(shipReply)
+  await see((f) => inBox(f, shipReply))
+  save("dm-quote-drafted")
+  keys("Enter")
+  const toPlanner2 = await until(dms, (h) => h.some((m) => textOf(m) === shipReply))
+  const dmThreaded = await see((f) => inFeed(f, shipReply) && !f.includes("↳ "))
+  save("dm-quote-sent")
+  check(
+    `${at}: the picked direct message's reply reaches planner's principal with replyTo naming it, and its row shows ↩ planner`,
+    toPlanner2.some((m) => textOf(m) === shipReply && m.from.id === principal && m.to === planner.id && m.replyTo === shipMsg?.id) && lines(dmThreaded).some((l) => l.startsWith(`┃ ${login}`) && l.includes("↩ planner")),
+    JSON.stringify({ want: shipMsg?.id, got: toPlanner2.filter((m) => textOf(m) === shipReply) }),
   )
 
   await openRow(s, login)
