@@ -23,7 +23,8 @@ export const peerKey = (id: string) => `peer:${id}`
 /** The tree row of an open conversation. A role conversation has none. */
 export const openRowKey = (o: Open) => (o.kind === "channel" ? `channel:${o.channel ?? "*"}` : o.kind === "peer" ? peerKey(o.id) : o.kind === "entry" ? o.key : undefined)
 
-export function treeItems(entries: Entry[], conn: Conn, seen: Record<string, number>): Item[] {
+/** The tree's rows. `self` is the principal of the human's open chat session, if one is open. */
+export function treeItems(entries: Entry[], conn: Conn, seen: Record<string, number>, self?: string): Item[] {
   const items: Item[] = [{ kind: "header", title: "SPACES", right: String(entries.filter((e) => e.kind !== "unusable").length) }]
   for (const e of entries) items.push({ key: entryKey(e), kind: "entry", entry: e, open: e.kind === "space" && e.space === conn.space && conn.phase !== "closed" && conn.phase !== "failed" })
   const mesh = meshOf(conn)
@@ -33,8 +34,11 @@ export function treeItems(entries: Entry[], conn: Conn, seen: Record<string, num
   const live = mesh.agents.filter((a) => a.status !== "offline").length
   items.push({ kind: "header", title: "AGENTS", right: `${live}/${mesh.agents.length}` })
   for (const p of mesh.agents) items.push({ key: peerKey(p.card.id), kind: "peer", presence: p })
-  if (mesh.endpoints.length) items.push({ kind: "header", title: "ENDPOINTS", right: String(mesh.endpoints.length) })
-  for (const p of mesh.endpoints) items.push({ key: peerKey(p.card.id), kind: "peer", presence: p })
+  // Each chat session has its own principal, so one that ended is never reached again, and the
+  // human's own is the name at the bottom of the tree.
+  const endpoints = mesh.endpoints.filter((p) => p.card.meta?.sessionKind !== "chat" || (p.status !== "offline" && p.card.id !== self))
+  if (endpoints.length) items.push({ kind: "header", title: "ENDPOINTS", right: String(endpoints.length) })
+  for (const p of endpoints) items.push({ key: peerKey(p.card.id), kind: "peer", presence: p })
   return items
 }
 

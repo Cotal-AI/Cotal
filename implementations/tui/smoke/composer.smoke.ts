@@ -458,15 +458,6 @@ async function run(s: Space, width: number, height: number, tag: string) {
     JSON.stringify({ ask: ask?.id, got: toPlanner.filter((m) => textOf(m) === reply) }),
   )
 
-  await openRow(s, login)
-  const note = `note to self (${tag})`
-  const own = await enter(note, (f) => says(f, "denied:"))
-  await sleep(500)
-  const toSelf = (await dms()).filter((m) => textOf(m) === note)
-  save("own-dm")
-  check(`${at}: a direct message to the session itself refuses, keeps the draft and stores nothing`, says(own, "denied: a direct message needs a principal other than this session") && inBox(own, note) && toSelf.length === 0, own)
-  await clear()
-
   const before = (await general()).length
   const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
   save("unknown-slash")
