@@ -36,7 +36,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
 import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { CommandFailure, acquireLock, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
+import { CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -47,8 +47,9 @@ export interface IdpSession {
   /** The IdP subject this session proved at login (display + local owner derivation). Absent only
    *  in caches written by older builds — consumers that need it fail loud naming `cotal login`. */
   sub?: string;
-  /** The account name the IdP gave at login (email, else name, else preferred_username), display
-   *  only. Absent when the IdP gave none and in caches written by older builds. */
+  /** The handle a chat session appears as by default: the IdP's preferred_username, else its
+   *  email's local part, else its name, the first that is a chat name. Display only. Absent when
+   *  none is, and in caches written by older builds. */
   name?: string;
 }
 
@@ -459,7 +460,12 @@ export async function establishIdpSession(
   const label = [claims.email, claims.name, claims.preferred_username].find(
     (c): c is string => typeof c === "string" && c.length > 0,
   );
-  if (label) session.name = label;
+  const at = typeof claims.email === "string" ? claims.email.lastIndexOf("@") : -1;
+  const local = at > 0 ? (claims.email as string).slice(0, at) : undefined;
+  const handle = [claims.preferred_username, local, claims.name].find(
+    (c): c is string => typeof c === "string" && chatNameProblem(c) === undefined,
+  );
+  if (handle) session.name = handle;
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
   throwIfCancelled(opts.signal);
