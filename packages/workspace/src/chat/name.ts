@@ -52,7 +52,7 @@ async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth
   if (!status.login)
     throw new CommandFailure("refused", "AUTH_REQUIRED", `not signed in to ${idp}; run \`cotal login --idp ${idp}\``, { target: { space }, remedy: `run \`cotal login --idp ${idp}\`` });
   if (!status.login.name)
-    throw new CommandFailure("refused", "USAGE_INVALID", `your sign-in at ${idp} has no account name on record, because it was made by an older cotal or the provider gave none`, {
+    throw new CommandFailure("refused", "AUTH_REQUIRED", `your sign-in at ${idp} has no account name on record, because it was made by an older cotal or the provider gave none`, {
       target: { space },
       remedy: `sign in again with \`cotal login --idp ${idp}\`, or ${SAVE_NAME}`,
     });

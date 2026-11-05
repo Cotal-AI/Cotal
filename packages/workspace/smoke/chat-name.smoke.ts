@@ -95,8 +95,8 @@ try {
 
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0 } };
     const nameless = await refusal(resolveChatName(user, { preferences: NONE, login: () => "manas" }));
-    check("a login with no recorded name refuses as USAGE_INVALID with both remedies",
-      nameless?.code === "USAGE_INVALID" && nameless.message === `your sign-in at ${IDP} has no account name on record, because it was made by an older cotal or the provider gave none`
+    check("a login with no recorded name refuses as AUTH_REQUIRED, since signing in again fixes it, with both remedies",
+      nameless?.code === "AUTH_REQUIRED" && nameless.message === `your sign-in at ${IDP} has no account name on record, because it was made by an older cotal or the provider gave none`
         && nameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, or save a name with \`cotal config set name <name>\``, nameless);
 
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "x".repeat(129) } };

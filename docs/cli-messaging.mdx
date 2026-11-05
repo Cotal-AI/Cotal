@@ -148,7 +148,7 @@ characters; any other name is refused as `USAGE_INVALID`. Without `--name`, the 
 you saved with `cotal config set name <name>` ([preferences](config.mdx#preferences)). With none saved,
 it takes your account name on a user-auth space, which `cotal login` records from the IdP, and your OS
 login on an open or static space. The name has no suffix, so an agent can mention you by it in every
-session. It carries no authority. A sign-in with no account name on record refuses as `USAGE_INVALID`
+session. It carries no authority. A sign-in with no account name on record refuses as `AUTH_REQUIRED`
 until you sign in again or save a name. When another live participant already carries the name, the
 session still opens and warns on stderr, naming that participant, because a direct message by the name
 refuses as ambiguous while both are present.
