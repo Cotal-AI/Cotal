@@ -448,6 +448,42 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   await refuse.close();
 }
 
+// A real listener without TLS must be distinguished from one that never answered (#4181).
+{
+  const { spawn } = await import("node:child_process");
+  const { probeConnect } = await import("@cotal-ai/core");
+  const { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady } = await import("@cotal-ai/smoke-kit");
+  const store = mkdtempSync(join(home, SMOKE_BROKER_TOKEN));
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const child = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
+  const release = teardownOnSignal(child, store);
+  try {
+    await awaitBrokerReady(async () => (await probeConnect(server)).ok, { servers: server, attempts: 20, delayMs: 100 });
+    check("TLS diagnostic control: the real broker answers without a TLS requirement", (await probeConnect(server)).ok);
+    const probe = await probeConnect(server, { tls: true });
+    check("TLS diagnostic: public probe names the unsupported TLS requirement", !probe.ok && probe.reason === "tls-unsupported", probe);
+    for (const source of [...REGISTRY, ...NON_REGISTRY]) {
+      const classified = classifyPreflightFailure(source, "tls-unsupported", false);
+      check(`TLS diagnostic: ${source} keeps its record`, classified.kind === "tls-unsupported" && !classified.prune, classified);
+    }
+    recordMesh({ space: "tls-refusal", server, root: home, mode: "open", origin: "up", tlsRequired: true, ts: new Date(0).toISOString() });
+    const target: MeshTarget = { ...T, space: "tls-refusal", server, root: home, origin: "up", tlsRequired: true };
+    const before = readFileSync(meshFile("tls-refusal"));
+    const refused = await preflightOrThrow(target).then(() => undefined, (e: unknown) => e);
+    check("TLS diagnostic: registered refusal names TLS rather than an outage or credentials", refused instanceof ConnectRefusal && refused.code === "DEPENDENCY_UNAVAILABLE" && refused.rendered.includes("does not offer the required TLS") && !refused.rendered.includes("no broker answered"), String(refused));
+    check("TLS diagnostic: registered refusal preserves the exact record", before.equals(readFileSync(meshFile("tls-refusal"))));
+    const raw = await reachableOrThrow(server, { tls: true }).then(() => undefined, (e: unknown) => e);
+    check("TLS diagnostic: raw refusal names TLS without registry wording", raw instanceof ConnectRefusal && raw.code === "DEPENDENCY_UNAVAILABLE" && raw.rendered.includes("does not offer the required TLS") && !raw.rendered.includes("registry"), String(raw));
+    check("TLS diagnostic control: the same broker still answers", (await probeConnect(server)).ok);
+    removeMesh("tls-refusal");
+  } finally {
+    await killAndAwaitExit(child);
+    release();
+    rmSync(store, { recursive: true, force: true });
+  }
+}
+
 // ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
 // A TCP peer that greets with INFO {tls_required:true} only after 1.5s and then answers the TLS
 // client hello with a non-TLS byte string, so the handshake fails CONCLUSIVELY (a protocol error,

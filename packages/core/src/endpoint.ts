@@ -15,6 +15,7 @@ import {
   RequestError,
   TimeoutError,
   ClosedConnectionError,
+  ConnectionError,
   type NatsConnection,
   type Msg,
   type Subscription,
@@ -2959,7 +2960,7 @@ export class CotalEndpoint extends EventEmitter {
         const q = await this.invokeService(endpoint, "goal-result", { goalId }, {
           deadlineMs: Math.min(deadlineMs, context.deadlineMs), signal: context.signal,
         });
-        if (q.reply.ok !== true) throw new Error(q.reply.error?.message ?? "goal-result query refused");
+        if (q.reply.ok !== true) throw new Error(q.reply.error.message);
         return q.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
       });
       return await submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit, {
@@ -3157,7 +3158,7 @@ export class CotalEndpoint extends EventEmitter {
           // class that is churning.
           this.emit("split-recovered", {
             endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
-            boundTo: (r.reply.error?.details ?? []).find(
+            boundTo: (r.reply.error.details ?? []).find(
               (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
             )?.boundTo,
           });
@@ -3172,11 +3173,11 @@ export class CotalEndpoint extends EventEmitter {
           // `expired` for the same instance at ANY other epoch — the fence does not compare
           // direction, so a superseded incarnation still answering produces it too); the marker on
           // any other code is incoherent, so it is rejected rather than trusted (§13.3).
-          const raw = r.reply.error?.code;
+          const raw = r.reply.error.code;
           const refusalCode = raw === "expired" ? ("expired" as const)
             : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;
           if (refusalCode === undefined)
-            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error?.details);
+            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error.details);
           // ONLY THE RESOLVE IS WRAPPED — do not widen this `try` to cover the re-issue. A re-issue
           // that PUBLISHED AND RAN can still throw (an unfenced responder answers and the post-reply
           // currency check raises `respondedButUnbound`); wrapping that as the first hop's refusal
@@ -3188,12 +3189,12 @@ export class CotalEndpoint extends EventEmitter {
           try {
             reissueTarget = await resolve(signal);
             const unfollowable = opts.follow ? goalFollowRefusal(reissueTarget) : undefined;
-            if (unfollowable) throw new Error(unfollowable.reply.error!.message);
+            if (unfollowable) throw new Error(unfollowable.reply.error.message);
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,
               `${endpoint}.${command} WAS NOT RUN - the incarnation that received it refused it before any effect, and the re-issue could not be resolved: ${reissue instanceof Error ? reissue.message : String(reissue)}. Re-resolve and re-issue when the endpoint is reachable (SPEC 13.2)`,
-              r.reply.error?.details,
+              r.reply.error.details,
               // §13.3: the message asserts the command did not run, so the FIELD a caller keys on
               // must assert it too. Omitted, it MUST be read as `unknown`, which is the opposite of
               // what this path knows: the responder fenced the call before any effect and the
@@ -8619,15 +8620,18 @@ export function defaultProbeTimeoutMs(servers: string): number {
 /** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
  *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
- *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
- *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
- *  that knows which transport is dialing — rather than at every caller composing auth options.
+ *  transport options: a required TLS connection refuses any `ws://` target before dialing.
+ *  `wss://` performs TLS itself, and the w3c transport refuses a `tls` block outright
+ *  ("'tls' is not configurable"), so the block is removed after that check.
  *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
  *  must cover (see {@link withDialedTlsHost}). */
 export function dialerFor(servers: string): typeof connect {
   if (!wsServers(servers)) return ((opts?: Parameters<typeof connect>[0]) => connect(withDialedTlsHost(servers, opts))) as typeof connect;
   return ((opts: Parameters<typeof connect>[0]) => {
-    const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    const { tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    const targets = Array.isArray(rest.servers) ? rest.servers : String(rest.servers ?? servers).split(",");
+    if (tls && targets.some((target) => !/^wss:\/\//i.test(String(target).trim())))
+      return Promise.reject(new Error("TLS-required WebSocket connections must use wss:// for every server"));
     return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
   }) as typeof connect;
 }
@@ -8835,6 +8839,7 @@ export type ProbeResult =
   | { ok: false; reason: "auth-required"; inferred?: true }
   | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" }
+  | { ok: false; reason: "tls-unsupported" }
   | { ok: false; reason: "timeout" };
 
 /** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
@@ -8910,6 +8915,10 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false, 
   // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
   // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
   if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
+  // The native client read a greeting without TLS support and refused the TLS requirement.
+  // That is a transport mismatch, not an unreachable listener or proof of mesh identity.
+  if (e instanceof ConnectionError && e.message === "server does not support 'tls'")
+    return { ok: false, reason: "tls-unsupported" };
   // A broker that greeted us asking for auth and then reset the handshake most likely refused it.
   // Windows can discard its `-ERR 'Authorization Violation'` when the reset lands, so the client
   // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so

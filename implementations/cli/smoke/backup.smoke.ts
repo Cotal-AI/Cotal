@@ -116,7 +116,7 @@ try {
     assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) =>
       isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.outcome === "refused" && (error.target as { missing?: unknown }).missing === missing
         && error.message.endsWith("; nothing was checked") && error.message.includes(missing === "folder" ? `there is no folder ${join(root, "no-such-folder")}` : "holds no backup artifact no-such-artifact"), `${mode} names the missing ${missing}`);
-  writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
+  writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]), { mode: 0o600 });
   // A path through a linked folder names the artifact create published there, and verify reads it at
   // its real path, as restore stages it.
   const linkParent = mkdtempSync(join(tmpdir(), "cotal-backup-cli-link-"));
@@ -173,7 +173,7 @@ try {
     execFileSync("mkfifo", [join(destination, "stream-a.snap")]);
     assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /stream-a\.snap is not a regular file/), "verify names a FIFO snapshot");
     rmSync(join(destination, "stream-a.snap"));
-    writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
+    writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]), { mode: 0o600 });
 
     const redirectedRoot = join(root, "redirected-root");
     const redirected = join(root, "redirected-maintenance");

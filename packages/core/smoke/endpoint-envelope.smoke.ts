@@ -159,6 +159,18 @@ rejects("an ok reply with an error is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: true, error: { code: "internal", message: "x" } }));
 rejects("a failed reply with data is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: false, data: 1, error: { code: "internal", message: "x" } }));
+rejects("a failed reply without an error is bad-request", "bad-request",
+  () => parseEndpointReply({ v: 1, id: "r", ok: false }));
+const acceptance = { name: "allocated", goalId: "goal-1" };
+const followed = controlReplyFrom({ v: 1, id: "followed", ok: false, data: acceptance,
+  error: { code: "uncertain", message: "inspect the allocated agent" }, receipt: "receipt" });
+c("a failed local follow keeps its acceptance in ControlReply",
+  followed.ok === false && followed.data === acceptance && followed.code === "uncertain"
+    && followed.error === "inspect the allocated agent", followed);
+const receiptReply = parseEndpointReply({ v: 1, id: "receipt", ok: false,
+  error: { code: "internal", message: "failed" }, receipt: "receipt" });
+c("a parsed failed reply keeps its receipt and omits data",
+  receiptReply.ok === false && receiptReply.receipt === "receipt" && !("data" in receiptReply), receiptReply);
 rejects("an off-catalog non-reverse-DNS error code is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "Nope", message: "x" } }));
 rejects("a non-reverse-DNS detail kind is bad-request", "bad-request",

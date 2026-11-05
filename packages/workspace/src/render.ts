@@ -23,7 +23,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
   | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number; heldBy?: string }
-  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout"; server: string; hasAuth: boolean };
+  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported"; server: string; hasAuth: boolean };
 
 /** A workspace failure in two parts: what happened, and what to run next when there is something. */
 export interface WorkspaceErrorParts {
@@ -175,6 +175,8 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");
     case "stale-auth":
       return parts(`credentials for "${t.space}" have EXPIRED; this mesh enforces bounded credential lifetimes`, `run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`);
+    case "tls-unsupported":
+      return parts(`the listener at ${server} does not offer the required TLS`, "check the address and configure TLS on the broker");
     case "tls-trust":
       // INFO advertised tls_required (shape evidence only — unauthenticated). Never claims removal
       // or peer identity; conservatively keep the record and point at the trust-store repair.
@@ -211,7 +213,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
 /** Plain reachability for a RAW (off-registry) probe — the `--creds` / `--server`+unregistered-`--space`
  *  escape hatch, which never touches the registry (no prune, no stale-entry wording). */
 function reachableParts(
-  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
+  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported",
   rawServer: string,
   hasAuth: boolean,
 ): WorkspaceErrorParts {
@@ -219,6 +221,7 @@ function reachableParts(
   if (reason === "stale-auth")
     return parts(`credential EXPIRED at ${server}; bounded lifetime reached (credential death)`, "run `cotal doctor auth` where the mesh runs, or re-mint the credential");
   if (reason === "unreachable") return parts(`can't reach a broker at ${server}`, "is it running? (`cotal up`)");
+  if (reason === "tls-unsupported") return parts(`the listener at ${server} does not offer the required TLS`, "check the address and configure TLS on the broker");
   if (reason === "timeout")
     return parts(`the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s`, NOT_ANSWERING_REMEDY);
   // `auth-required` is two different user situations with two different repairs, and this path used

@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import { nativeDir, nativeFile, sha256, sourceFiles, verifyNative } from "../packages/workspace/scripts/native-contract.mjs";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
-// The commit the native builders checked out. The release pack assembles natives built from the pushed
-// commit into the version PR head, whose only change is versioning, so it names that commit here.
+// The commit the native builders actually checked out, including when matching inputs are reused.
+// Receipts keep that provenance; verifyNative also compares every native input with this checkout.
 const source = process.env.NATIVE_SOURCE ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 const inputs = [
   ["win32", "x64", "WORKSPACE_NATIVE_X64"], ["win32", "arm64", "WORKSPACE_NATIVE_ARM64"],

@@ -275,7 +275,7 @@ type BearerClaims = { sub?: unknown; act?: { actor?: unknown; lifecycleUid?: unk
  *  requires the principal pinned at construction, and the caller triple (1c.2c: the v0.4 ep-rail
  *  subjects the callout-minted rows pin) needs the ledger lifecycle claim too — the bearer is the
  *  one authoritative place all three live. */
-function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
+export function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
   try {
     const mid = bearer.split(".")[1];
     if (!mid) throw new Error("not a compact JWS");
@@ -425,6 +425,7 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
     case "creds-rejected":
       return "PERMISSION_DENIED";
     case "tls-trust":
+    case "tls-unsupported":
       return "DEPENDENCY_UNAVAILABLE";
     case "address-held":
       return "CONFLICT";
@@ -948,7 +949,7 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
-    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
+    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "tls-unsupported" ? "DEPENDENCY_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
   throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code });
 }
 

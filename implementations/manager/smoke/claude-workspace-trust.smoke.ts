@@ -33,7 +33,8 @@ const config = join(home, ".claude");
 const cwd = join(root, "workspace");
 mkdirSync(config, { recursive: true }); mkdirSync(cwd);
 const state = join(config, ".claude.json");
-const initial = JSON.stringify({ hasCompletedOnboarding: true, theme: "dark", projects: {} });
+// The declared `cotal` server is what the launch's wake channel binds to; without it the launch refuses.
+const initial = JSON.stringify({ hasCompletedOnboarding: true, theme: "dark", projects: {}, mcpServers: { cotal: { command: "node" } } });
 writeFileSync(state, initial);
 for (const key of Object.keys(process.env)) {
   if (/^(?:COTAL_|CLAUDE_|ANTHROPIC_|AWS_|VERTEX_|GOOGLE_|GCLOUD_|CLOUD_ML_)/.test(key)) delete process.env[key];

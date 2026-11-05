@@ -330,7 +330,10 @@ writing a launch command. Shell syntax in environment values remains literal.
 
 This also permits host-session markers such as `CLAUDE_CODE_CHILD_SESSION`. A `COTAL_` name outside
 the machine-wide operator settings is refused before launch. Those names carry the launcher's
-per-seat identity, role, model, and read set.
+per-seat identity, role, model, and read set. This case-insensitive restriction also applies to
+`${VAR}` and `${VAR:-default}` references in shared MCP servers and the selected Claude user MCP
+configuration. Use a non-`COTAL_` name for a server's own input. Machine-wide names such as
+`COTAL_HOME` remain allowed.
 
 A space-local `spawn` object replaces the whole operator-level object. An absent `spawn`,
 `"spawn": { "env": [] }`, and `"spawn": {}` add no names. A non-object `spawn` or an `env` that is not
