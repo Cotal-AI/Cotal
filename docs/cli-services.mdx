@@ -53,9 +53,10 @@ dependency for you: starting the manager does not start its broker.
 
 A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
 from the preset's defaults and starts it; stderr says what it saved. A preset that needs something
-only you can give, such as the `web` dashboard's credential file or the intake's keys, refuses with
-those flags named, and takes them on the start line: `cotal service start web --creds <file>`. A
-start refused before anything launched forgets the definition it saved. A preset name acts on the
+only you can give, such as the intake's keys, refuses with those flags named, and takes them on the
+start line. A default the space cannot fill yet, such as the `web` dashboard's `web.creds` on a space
+`cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
+replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands. `--json` writes one envelope for every form,
 and `logs --follow --json` writes one record per line. Without `--json`, a follow's last line says

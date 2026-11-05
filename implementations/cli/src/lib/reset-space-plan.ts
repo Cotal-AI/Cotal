@@ -2,7 +2,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realDirNoSymlink, registry, resolveAuthProvider, type AuthProvider } from "@cotal-ai/core";
 import {
-  BROKER_AUTH_KEY, SPACE_AUTH_KEY, CommandFailure, DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, agentSecretKeysUnder,
+  BROKER_AUTH_KEY, SPACE_AUTH_KEY, CommandFailure, DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, WEB_CREDS_KIND, agentSecretKeysUnder,
   getSpaceAuth, meshesForRoot, resolveSpace, segmentedKey, spaceAccountKey, spaceFromSegment, spaceSegment,
   workspaceSecretStore,
 } from "@cotal-ai/workspace";
@@ -91,7 +91,7 @@ function scope(root: string, space: string, provider: AuthProvider | null) {
     if (![join(targets.auth, spaceSegment(space)), targets.material].some((allowed) => within(allowed, path) && path !== allowed)) throw new Error("provider cleanup key is not confined to this space's secret segment");
   }
   const agentKeys = agentSecretKeysUnder(root).sort();
-  const keys = [...new Set([...[DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND].flatMap((kind) => [segmentedKey(kind, space), kind]), ...agentKeys, ...(providerKeys ?? []), spaceAccountKey(space), BROKER_AUTH_KEY, SPACE_AUTH_KEY])].sort();
+  const keys = [...new Set([...[DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND].flatMap((kind) => [segmentedKey(kind, space), kind]), segmentedKey(WEB_CREDS_KIND, space), ...agentKeys, ...(providerKeys ?? []), spaceAccountKey(space), BROKER_AUTH_KEY, SPACE_AUTH_KEY])].sort();
   for (const key of keys) {
     if (!key || isAbsolute(key) || /[\u0000-\u001f\u007f]/u.test(key)) throw new Error("invalid identity cleanup store key");
     const path = resolve(control, key);

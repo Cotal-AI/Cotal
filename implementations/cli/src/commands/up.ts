@@ -133,6 +133,8 @@ import {
   membershipRwCredsKey,
   MEMBERSHIP_CONFIG_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  WEB_CREDS_KIND,
+  webCredsKey,
   parsePositiveIntegerFlag,
   recordMesh,
   retainedLegacyBroker,
@@ -1996,8 +1998,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // Open meshes hold no creds and need none (a bare connection has the rights) — but they DO
         // carry the same three TTL'd buckets, so they drift identically and are reconciled too.
         let reconcileCreds: string | undefined;
+        let spaceAuth: SpaceAuth | undefined;
         if (held.mode !== "open") {
-          const spaceAuth = await getSpaceAuth(workspaceSecretStore(root), held.space);
+          spaceAuth = await getSpaceAuth(workspaceSecretStore(root), held.space);
           if (!spaceAuth) {
             stderrLine("✗ ", `mesh "${held.space}" has no trust material under ${authDir(root)} - cannot reconcile its presence/lease TTLs; restore or re-provision \`.cotal/auth\``, c.red);
             process.exit(1);
@@ -2018,6 +2021,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is memory-backed and was lost when the broker restarted`
             : `  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
+        // The dashboard cred is minted on a refresh too: a space that predates it may never boot again.
+        if (held.mode === "auth" && spaceAuth) await provisionWebCreds(spaceAuth, root, held.space);
       } catch (e) {
         stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
@@ -5547,6 +5552,7 @@ async function authSetup(
   }
   // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
   await healMembershipDataCreds(auth, cotalRoot(), space, quietBoot);
+  await provisionWebCreds(auth, cotalRoot(), space, quietBoot);
   // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
   // A rotation that committed the trust record and then died leaves them stale, unexpired, and
   // broker-dead and, crash-before-either-write, stale in a way that no comparison between the two
@@ -5728,6 +5734,24 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
     // Best-effort, exactly like the fresh-space provisioner: a failure here leaves the graph on
     // traffic-only and leaves delivery untouched. It must never keep the mesh from starting.
     console.error(c.dim(`• broker-sourced membership not repaired: ${(e as Error).message}`));
+  }
+}
+
+/** The web dashboard's read-only cred, on EVERY `up` of a static space: `cotal service start web`
+ *  defaults its `--creds` to this file. Idempotent and absent-means-mint, through the resolver as
+ *  {@link healMembershipDataCreds} is. It is the `observer` profile, minted without an expiry, as the
+ *  `cotal auth mint --profile observer` recipe this replaces was: the dashboard reads the file once at
+ *  start and holds its connection, and no renewal owner reloads it. Best-effort for the same reason as
+ *  the membership heal: a failure here must never keep the mesh from starting. */
+async function provisionWebCreds(auth: SpaceAuth, root: string, space: string, quietBoot = false): Promise<void> {
+  try {
+    const store = workspaceSecretStore(root);
+    const key = webCredsKey(space, { injected: false, root });
+    if ((await store.get(key)) !== undefined) return;
+    await store.put(key, await mintCreds(auth, newIdentity(), "observer"));
+    if (!quietBoot) console.log(c.dim(`• web: provisioned ${WEB_CREDS_KIND} - the dashboard's read-only credential, the \`service start web\` default`));
+  } catch (e) {
+    console.error(c.dim(`• web dashboard credential not provisioned: ${(e as Error).message}`));
   }
 }
 
