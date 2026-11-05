@@ -87,7 +87,7 @@ import {
   type ProcessOwner,
   type RestoreActiveRecord,
   type RestoreDegradedRecord,
-  type RestoreListenerProof,
+  type ListenerProof,
   type RestoreManagerCommittedRecord,
   type RestoreReadyRecord,
   readStoreIdentity,
@@ -150,7 +150,7 @@ export interface PreparedRestore {
   reentry: boolean;
   journalState: "commit-intent" | "manager-committed" | "active" | "degraded";
   managerCommit?: ManagerCommitEvidence;
-  listenerProof?: RestoreListenerProof;
+  listenerProof?: ListenerProof;
   cleanupStage(): void;
 }
 
@@ -234,13 +234,13 @@ export function bindPreparedRestoreListener(
   prepared: PreparedRestore,
   processOwner: ProcessOwner,
   heldLock?: MaintenanceLock,
-): RestoreListenerProof {
+): ListenerProof {
   const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
   try {
     const journal = readMaintenanceJournal(prepared.root);
     if (!journal || journal.state !== "commit-intent" || journal.restore.attemptId !== prepared.attemptId)
       throw new Error(`restore listener bind does not match commit attempt ${prepared.attemptId}`);
-    const proof: RestoreListenerProof = {
+    const proof: ListenerProof = {
       attemptId: prepared.attemptId,
       serverName: prepared.serverName,
       serverNonce: prepared.serverNonce,
