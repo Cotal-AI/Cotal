@@ -1,5 +1,120 @@
 # @cotal-ai/workspace
 
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+
+## 0.145.0
+
+### Minor Changes
+
+- d7b0be0: Report a TCP listener that does not offer required TLS as `tls-unsupported`, rather than unreachable. Preserve the registration and show the transport mismatch in raw connection, registration and status diagnostics. Consumers of `ProbeResult` must handle the new failure reason.
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+
+## 0.143.0
+
+### Minor Changes
+
+- 3651b42: Refuse plaintext ws:// targets when TLS is required, both during mesh registration and when dialing existing records. Use wss:// for TLS-protected WebSocket connections. Keep ordinary plaintext loopback connections and WSS certificate and hostname verification unchanged.
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+
+## 0.142.0
+
+### Minor Changes
+
+- 3ad82f7: `@cotal-ai/workspace/chat` now holds the rules `cotal chat` applies to a draft, so another terminal front end can follow them: typed recipients and their labels, the reply recipient, the Enter rule, how a publish outcome settles, slash commands and their outcome words, shared names, the ending notice and the close summary. `shownTime`, `concreteChannelProblem` and `offlineRecipientNotice` move to the `@cotal-ai/workspace` root. Breaking: `openChatSession` takes the front end's `words` (`ChatWords`) in place of `reopen`, so a session's refusals end with that front end's own steps; `grantRefusal` and `resolveDmTarget` take them too, and `parseRecipient` takes the front end's other way to choose a recipient. `cotal chat`, `--plain` and `--stdio` print the same output as before, except that a reply to a name only gone senders carry now calls them one-shot senders rather than `cotal send` commands.
+- e16b8d9: A `cotal chat` post on a channel, in the terminal view and in `--plain`, now carries the `@names` its text holds as mentions, as `cotal send -c` and the console do, so it wakes the agents it names. The shared chat reply rule, `replyRecipient`, takes the session's principal and answers a channel message on its channel with `replyTo`; replying to your own DM or role task refuses. `AdmittedChatSession.send` takes an optional `replyTo`. A send, join or channel mode outside a session's grant now always names the step that opens a session on that channel, and so does the warning when you choose such a channel as the recipient.
+
+### Patch Changes
+
+- Updated dependencies [32f93ed]
+  - @cotal-ai/core@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- 392b738: Read installed extension metadata through one parser and pass the operation's parsed result through version checks, peer binding, entry selection and import diagnosis. Missing packages remain distinct from damaged metadata and unreadable files. A package that changes its own metadata during import no longer changes the declared peer floor used to diagnose that import.
+- @cotal-ai/core@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- f6ec096: A missing-export import failure no longer drops an extension's declared `@cotal-ai/*` peer range when its `package.json` is corrupt or unreadable at diagnosis time. Before, the unreadable file was read as declaring no range, so `cotal ext add` or a later load ranked the pair without the floor (for a third-party package, "neither side can be named as behind ... is not a @cotal-ai/* package") and never mentioned the damaged file. The error now names that `package.json` by path, keeps the original import error, claims no ranking, and ends with the reinstall remedy.
+- Updated dependencies [8d5f0d5]
+  - @cotal-ai/core@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- d53d362: Component status now keeps the auth-service recovery hint when an exchanged bearer has an unreadable principal. It uses the workspace principal decoder instead of a separate copy, preserving the caller's owner, actor and lifecycle binding. The decoder is available from the workspace package for client-side inspection, not signature verification or authorization.
+- @cotal-ai/core@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.2
+
 ## 0.141.1
 
 ### Patch Changes

@@ -26,7 +26,7 @@ import { oneLine } from "@cotal-ai/core";
 import { plainPunctuation } from "@cotal-ai/workspace";
 import {
   MAX_DRAFT, discloseChoice, endingNotice, parseRecipient, parseSlash, publish, recipientLabel, runsOffline, sharedNames,
-  type AdmittedChatSession, type Recipient, type SessionEvent,
+  type AdmittedChatSession, type ChatWords, type Recipient, type SessionEvent,
 } from "@cotal-ai/workspace/chat";
 import {
   addNotice,
@@ -59,6 +59,7 @@ export async function runPlain(opts: {
   output: Writable;
   width: number;
   initialRecipient?: Recipient;
+  words: ChatWords;
 }): Promise<ChatState> {
   const { session, input, output } = opts;
   const width = Number.isFinite(opts.width) ? Math.max(20, opts.width) : Number.POSITIVE_INFINITY;
@@ -138,7 +139,7 @@ export async function runPlain(opts: {
       state = addNotice(state, "failed", refused);
       return startPick();
     }
-    const warning = await discloseChoice(session, r);
+    const warning = await discloseChoice(session, r, opts.words);
     state = setRecipient(state, r);
     if (warning) state = addNotice(state, "waiting", warning);
     mode = { kind: "compose" };

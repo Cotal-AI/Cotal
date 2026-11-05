@@ -43,6 +43,7 @@ import { shownTime } from "@cotal-ai/workspace";
 import { cliWords, closeExitCode } from "../src/commands/chat.js";
 import { stdoutError } from "../src/lib/stdout-owner.js";
 
+const words = cliWords({ raw: [], positionalIndices: [] });
 const identity: SessionIdentity = { mode: "open", space: "front-end-space", principal: "local.k3j2", lifecycleUid: "01HZZZABCDEF", label: "me", allowSubscribe: [">"], allowPublish: [">"] };
 
 /** A stand-in that records its closes. With `chatter`, it reports a channel message every 10 ms
@@ -72,7 +73,7 @@ if (mode === "plain" || mode === "stdio") {
   process.stdout.on("error", stdoutError);
   const { session, closes } = standIn({ retirement: "requested", connectionClosed: "confirmed", message: "" }, true);
   const start = await loadChatFrontEnd(mode);
-  const close = await start({ session });
+  const close = await start({ session, words });
   process.stderr.write(`closes ${closes()}\n`);
   // What `cotal chat` does with the report a front end returns.
   process.exitCode ??= closeExitCode(close);
@@ -89,7 +90,7 @@ if (mode === "plain" || mode === "stdio") {
       const output = new PassThrough();
       let printed = "";
       output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
-      const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+      const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, words });
       for (const line of lines) input.write(`${line}\n`);
       input.end();
       const state = await run;
@@ -105,7 +106,7 @@ if (mode === "plain" || mode === "stdio") {
     const output = new PassThrough();
     let printed = "";
     output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
-    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, words });
     await new Promise((r) => setTimeout(r, 50));
     input.end();
     await run;
@@ -120,7 +121,7 @@ if (mode === "plain" || mode === "stdio") {
       const output = new PassThrough();
       let printed = "";
       output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
-      const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, ...(initialRecipient ? { initialRecipient } : {}) });
+      const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, words, ...(initialRecipient ? { initialRecipient } : {}) });
       for (const line of lines) input.write(`${line}\n`);
       input.end();
       await run;
@@ -250,7 +251,7 @@ if (mode === "plain" || mode === "stdio") {
     const output = new PassThrough();
     let printed = "";
     output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
-    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, words });
     const at = shownTime(expiresAt);
     check("the banner says when the session ends", printed.includes(`static session (ends at ${at}; credential valid until then)`), printed);
     await new Promise((resolve) => setTimeout(resolve, 600));
@@ -276,7 +277,7 @@ if (mode === "plain" || mode === "stdio") {
     const output = new PassThrough();
     let printed = "";
     output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
-    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, words });
     // A target without `@` is refused, and the numbered list opens.
     input.write(":to manager\n");
     input.write("/quit\n");
@@ -304,7 +305,7 @@ if (mode === "plain" || mode === "stdio") {
     const output = new PassThrough();
     let printed = "";
     output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
-    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY, words });
     input.write(":to @niemand\n");
     input.write("\n");
     input.write(":to @bob\n");

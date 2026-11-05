@@ -139,19 +139,19 @@ try {
       check("binder: an absent owner is reported and the others still bound",
         skipped.join() === "@fixture/gone" && bound.some((link) => link.owner === "@fixture/present" && link.peer === "@cotal-ai/core"), { skipped, bound });
       check("binder: without onAbsent an absent owner still fails",
-        /cannot preserve installed extension @fixture\/gone's shared peers: ENOENT/.test(failure(["@fixture/gone"], "@fixture/op")));
+        /extension @fixture\/gone is not installed at /.test(failure(["@fixture/gone"], "@fixture/op")));
       check("binder: the operation's own absent package is never skipped",
-        /cannot preserve installed extension @fixture\/gone's shared peers: ENOENT/.test(failure(["@fixture/gone"], "@fixture/gone", () => {})));
+        /extension @fixture\/gone is not installed at /.test(failure(["@fixture/gone"], "@fixture/gone", () => {})));
       mkdirSync(join(modules, "hollow"), { recursive: true });
       check("binder: a directory without package.json still fails",
-        /cannot preserve installed extension @fixture\/hollow's shared peers: ENOENT/.test(failure(["@fixture/hollow"], "@fixture/op", () => {})));
+        /extension @fixture\/hollow has a corrupt package.json .*file is missing/.test(failure(["@fixture/hollow"], "@fixture/op", () => {})));
       symlinkSync(join(cfg, "nowhere"), join(modules, "dangling"));
       check("binder: a dangling package link still fails",
-        /cannot preserve installed extension @fixture\/dangling's shared peers: ENOENT/.test(failure(["@fixture/dangling"], "@fixture/op", () => {})));
+        /extension @fixture\/dangling has a corrupt package.json .*file is missing/.test(failure(["@fixture/dangling"], "@fixture/op", () => {})));
       mkdirSync(join(modules, "corrupt"), { recursive: true });
       writeFileSync(join(modules, "corrupt", "package.json"), "{ not json");
       check("binder: a corrupt package.json still fails",
-        /cannot preserve installed extension @fixture\/corrupt's shared peers: .*JSON/.test(failure(["@fixture/corrupt"], "@fixture/op", () => {})));
+        /extension @fixture\/corrupt has a corrupt package.json /.test(failure(["@fixture/corrupt"], "@fixture/op", () => {})));
     } finally {
       if (prior === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = prior;

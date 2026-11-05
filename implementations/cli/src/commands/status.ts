@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -71,10 +71,12 @@ import {
   plainFlag,
   preflightTarget,
   presentationOf,
+  principalFromBearer,
   probeLiveness,
   probeWebReadiness,
   readCurrent,
   readMeshRegistry,
+  readPidfile,
   preparedRecordSkipped,
   readPreparedSpaces,
   readRenewalRecord,
@@ -1767,6 +1769,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
     "slow-link": "connection timed out",
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
+    "tls-unsupported": "listener does not offer required TLS",
     "stale-auth": "credentials need renewal",
     "auth-required": "authentication required",
     "open-wants-auth": "authentication required",
@@ -2179,14 +2182,11 @@ function componentExit(components: readonly ComponentHealth[]): number {
 }
 
 function processRecord(template: string, context: LocalProcessContext): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
-  let raw: string;
+  let raw: string | undefined;
   try {
-    raw = readFileSync(localProcessPath(template, context), "utf8").trim();
+    raw = readPidfile(localProcessPath(template, context));
   } catch (e) {
-    // A component removes its own record on exit, so the file can be gone by the time it is read:
-    // that is absence. An ambiguous record or any other failed read refuses this component's row,
-    // never the whole pass.
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
+    // An ambiguous record or any failed read refuses this component's row, never the whole pass.
     return { kind: "unreadable", error: (e as Error).message };
   }
   if (!raw) return { kind: "absent" };
@@ -2227,25 +2227,6 @@ type ComponentCredential =
   | { kind: "user"; bearer: string; sentinelCreds: string; caller: { owner: string; actor: string; uid: string } }
   | { kind: "unavailable"; reason: string };
 
-/** The `(owner, actor, lifecycleUid)` a user bearer is bound to, read client side the same way the
- *  workspace connect layer reads it (the JWT payload without verification; the broker verifies).
- *  The service caller triple is part of the manager's authenticated control surface, so the probe's
- *  triple must be the bearer's own — a random actor would turn an authorized manager into a false
- *  no-answer, the same trap the static arm's mint comment below names. */
-function principalFromBearer(bearer: string): { owner: string; actor: string; uid: string } {
-  const mid = bearer.split(".")[1];
-  if (!mid) throw new Error("not a compact JWS");
-  const payload = JSON.parse(Buffer.from(mid, "base64url").toString("utf8")) as {
-    sub?: string;
-    act?: { actor?: string; lifecycleUid?: string };
-  };
-  if (typeof payload.sub !== "string" || !payload.sub || typeof payload.act?.actor !== "string" || !payload.act.actor)
-    throw new Error("missing sub/act.actor");
-  if (typeof payload.act.lifecycleUid !== "string" || !payload.act.lifecycleUid)
-    throw new Error("missing act.lifecycleUid (lifecycle-bound bearers are the v0.4 hard cut)");
-  return { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
-}
-
 /** The probe credential for the components pass, per target mode. Static/open meshes keep the exact
  *  mint they had; a user-mode target gets the signed-in login's bearer, or the one-sentence reason
  *  it cannot be had. */
@@ -2258,7 +2239,8 @@ async function componentCredential(target: MeshTarget): Promise<ComponentCredent
       space: target.space,
       actor: CLI_USER_ACTOR,
     });
-    return { kind: "user", bearer, sentinelCreds, caller: principalFromBearer(bearer) };
+    const { owner, actor, lifecycleUid: uid } = principalFromBearer(bearer);
+    return { kind: "user", bearer, sentinelCreds, caller: { owner, actor, uid } };
   } catch (e) {
     return { kind: "unavailable", reason: e instanceof Error ? e.message : String(e) };
   }
@@ -2387,7 +2369,7 @@ async function managerServiceHealth(
     const service = await resolveService(nc, target.space, "manager", auth.caller, { deadlineMs: 3_000, commands: ["status"] });
     const response = await invokeRepairingSplit(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
-      throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
+      throw new EpEnvelopeError(response.reply.error.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error.message);
     return response.reply.data as ManagerServiceStatus;
   } finally {
     await nc.drain().catch(() => nc.close());

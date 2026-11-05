@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import ts from "typescript";
@@ -40,6 +40,19 @@ function permits(name: string, run: () => void): void {
 }
 
 try {
+  if (process.platform !== "win32") {
+    const privateRoot = join(base, "private-root");
+    const privateHome = join(base, "private-home");
+    const privateConfig = join(base, "private-config");
+    const previous = process.umask(0o002);
+    try {
+      recordSmokeSandbox({ root: privateRoot, cotalHome: privateHome, xdgConfigHome: privateConfig });
+    } finally {
+      process.umask(previous);
+    }
+    for (const [label, path] of [["root .cotal", join(privateRoot, ".cotal")], ["Cotal home", privateHome], ["XDG config", privateConfig]])
+      permits(`${label} is created private under umask 002`, () => assert.equal(statSync(path).mode & 0o777, 0o700));
+  }
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }));
   permits(
     "explicit destructive down retains the same exact sandbox identity guard",

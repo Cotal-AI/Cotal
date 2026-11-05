@@ -510,6 +510,12 @@ importers:
       '@earendil-works/pi-tui':
         specifier: 0.79.10
         version: 0.79.10
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       esbuild:
         specifier: ^0.28.0
         version: 0.28.1

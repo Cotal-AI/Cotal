@@ -5,10 +5,13 @@
  *  1. `chat general --plain` opens a session on #general.
  *  2. `/leave general` leaves it and `/join general` returns to it: the named channel is the
  *     session's read list, and leaving does not change what the session may read.
- *  3. `/leave` of a channel the session never joined says it was not on it.
+ *  3. `/leave` of a channel the session never joined says it was not on it, and picking one outside
+ *     its post grant names the step that opens a session on it.
  *  4. `/reconnect` reconnects and reports the one outage it causes once.
- *  5. `/quit` retires the session and exits 0.
- *  6. A `chat --stdio` session's `status` request with an activity reaches a second stdio session as
+ *  5. A line `hi @peer` posted on #general reaches a `chat general --stdio` session named `peer` as a
+ *     message that mentions it.
+ *  6. `/quit` retires the session and exits 0.
+ *  7. A `chat --stdio` session's `status` request with an activity reaches a second stdio session as
  *     one presence `updated` record carrying both, and its `attention` and `channelMode` requests,
  *     which change no row field, reach it as none.
  *  7. A session opened without --name is on the roster as the OS login, with no suffix, and a
@@ -76,8 +79,34 @@ try {
     check("/join returns to the channel it left", back.includes("joined #general") && !back.includes("denied"), back);
     const ops = await say("/leave ops");
     check("/leave of a channel it never joined says it was not on it", ops.includes("not on #ops"), ops);
+    const pickOps = await say(":to #ops");
+    check("picking a channel outside the post grant names the step that opens a session on it",
+      pickOps.includes("your grant does not allow posting to #ops. Leave and run `cotal chat ops --plain --name static-chat` to open a session on it"), pickOps);
+    await say(":to #general");
     const again = await say("/reconnect");
     check("/reconnect reconnects and reports its one outage once", again.includes("reconnected as the same session") && (again.match(/^gap: /gm) ?? []).length === 1, again);
+    const peer = spawn(TSX, [CLI, "chat", "general", "--stdio", "--name", "peer"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+    let peerRecords = "";
+    peer.stdout.on("data", (b: Buffer) => { peerRecords += b.toString(); });
+    const mention = () => peerRecords.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; message?: { text: string; channel?: string; mentionsMe: boolean } })
+      .find((r) => r.type === "message" && r.message?.text === "hi @peer")?.message;
+    try {
+      peer.stdin.write(`${JSON.stringify({ schemaVersion: 1, type: "connection", id: "c0" })}\n`);
+      for (let i = 0; i < 150 && !peerRecords.includes('"id":"c0"'); i++) await sleep(200);
+      chat.stdin.write("hi @peer\n");
+      const sent = await say("y");
+      for (let i = 0; i < 150 && !mention(); i++) await sleep(200);
+      check("a --plain line `hi @peer` reaches a --stdio session named peer as a message that mentions it",
+        sent.includes("[stored]") && mention()?.channel === "general" && mention()?.mentionsMe === true, { sent, message: mention() });
+    } finally {
+      peer.stdin.end();
+      const code = await new Promise<number | null>((r) => {
+        const t = setTimeout(() => r(null), 30_000);
+        peer.once("exit", (c) => { clearTimeout(t); r(c); });
+        if (peer.exitCode !== null) { clearTimeout(t); r(peer.exitCode); }
+      });
+      if (code === null) peer.kill("SIGTERM");
+    }
     chat.stdin.write("/quit\n");
     const code = await new Promise<number | null>((r) => {
       const t = setTimeout(() => r(null), 30_000);

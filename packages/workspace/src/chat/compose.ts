@@ -3,18 +3,20 @@
  * send or a slash command's result says, and how people and a session's end are named. Nothing here
  * holds state. A front end keeps its own state and folds these decisions into it.
  */
-import { assertValidRole, oneLine } from "@cotal-ai/core";
+import { assertValidRole, mentionsIn, oneLine } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import { concreteChannelProblem, offlineRecipientNotice, shownTime } from "../messaging.js";
 import type { AdmittedChatSession, CloseReport, ConnectionReport, ConnectionState, PublishResult, Result, SessionIdentity } from "./session.js";
+import type { ChatWords } from "./words.js";
 
 /** Bounded draft length, in UTF-16 code units. Provisional. */
 export const MAX_DRAFT = 65_536;
 
 /** `dm` is a typed name or principal the session resolves. `peer` is an exact principal taken from a
- *  received message, sent as is with no name lookup; its `name` is display only. */
+ *  received message, sent as is with no name lookup; its `name` is display only. A `replyTo` names
+ *  the message a channel post or a peer DM answers. */
 export type Recipient =
-  | { readonly kind: "channel"; readonly channel: string }
+  | { readonly kind: "channel"; readonly channel: string; readonly replyTo?: string }
   | { readonly kind: "dm"; readonly to: string }
   | { readonly kind: "peer"; readonly principal: string; readonly name: string; readonly replyTo?: string }
   | { readonly kind: "role"; readonly role: string };
@@ -60,16 +62,21 @@ export function parseRecipient(text: string, pick: string): { ok: true; recipien
 /** How a recipient reads. `choose` names how a front end picks one, for when there is none. */
 export function recipientLabel(r: Recipient | undefined, choose: string): string {
   if (!r) return `no recipient (${choose})`;
-  if (r.kind === "channel") return `#${oneLine(r.channel)}`;
+  if (r.kind === "channel") return `#${oneLine(r.channel)}${r.replyTo ? " (reply)" : ""}`;
   if (r.kind === "role") return `role ${oneLine(r.role)}`;
   if (r.kind === "peer") return `DM ${oneLine(r.name)} (${oneLine(r.principal)})${r.replyTo ? " (reply)" : ""}`;
   return `DM ${oneLine(r.to)}`;
 }
 
-/** Who answers a received DM or role task: its sender's principal, with no name lookup, keeping the
- *  message id as `replyTo`. A channel message has no reply recipient, so the current one stays. */
-export function replyRecipient(m: Answerable): Recipient | undefined {
-  if (m.kind === "channel") return undefined;
+/** Where a reply to `m` goes, keeping its id as `replyTo`. A channel message is answered on its
+ *  channel, your own included. A DM or role task is answered by a DM to its sender's principal, with
+ *  no name lookup; one that `self` sent refuses, because the answer would reach no one else. */
+export function replyRecipient(m: Answerable, self: string): Recipient | { readonly refused: string } {
+  if (m.kind === "channel") {
+    if (m.channel === undefined) throw new Error(`channel message ${m.id} names no channel`);
+    return { kind: "channel", channel: m.channel, replyTo: m.id };
+  }
+  if (m.from.id === self) return { refused: "that is your own message" };
   return { kind: "peer", principal: m.from.id, name: m.from.name, replyTo: m.id };
 }
 
@@ -112,12 +119,12 @@ export function submitDraft(
   return { kind: "publish", to: at.recipient, text: draft.startsWith("//") ? draft.slice(1) : draft };
 }
 
-/** Send `text` to `to` through the session: a channel post, a DM by name or by principal, or a role
- *  task. */
+/** Send `text` to `to` through the session: a channel post carrying the `@names` its text holds as
+ *  mentions, a DM by name or by principal, or a role task. */
 export async function publish(session: AdmittedChatSession, to: Recipient, text: string): Promise<PublishResult> {
   switch (to.kind) {
     case "channel":
-      return session.send(text, to.channel, []);
+      return session.send(text, to.channel, mentionsIn(text), to.replyTo);
     case "dm":
       return session.dm(to.to, text);
     case "peer":
@@ -141,11 +148,15 @@ export function settlePublish(
   if (result.outcome === "unknown") return { ...now, notice: { tone: "waiting", text: "outcome unknown: not resent; check before sending again" } };
   if (result.outcome !== "stored") return now;
   const to = sent.to;
-  const recipient: Recipient | undefined = now.recipient === to && to.kind === "peer" && to.replyTo ? { kind: "peer", principal: to.principal, name: to.name } : now.recipient;
+  const recipient: Recipient | undefined = now.recipient === to && (to.kind === "channel" || to.kind === "peer") && to.replyTo ? withoutReply(to) : now.recipient;
   const draft = now.draft === sent.draft ? "" : now.draft;
   return result.recipientStatusAtSend === "offline" && result.recipient
     ? { recipient, draft, notice: { tone: "waiting", text: offlineRecipientNotice(result.recipient.name) } }
     : { recipient, draft };
+}
+
+function withoutReply(to: Extract<Recipient, { replyTo?: string }>): Recipient {
+  return to.kind === "channel" ? { kind: "channel", channel: to.channel } : { kind: "peer", principal: to.principal, name: to.name };
 }
 
 /** The status words of a sent message. */
@@ -282,9 +293,10 @@ export function describeConnection(c: ConnectionReport): string[] {
 /**
  * Disclose what a chosen channel is before it is used: unregistered channels get a visible warning
  * (the native policy, not this UI, decides whether a send is allowed). A refused or failed read is
- * reported as such, never as "registered". Non-channel recipients need no read.
+ * reported as such, never as "registered". One outside the post grant ends with the front end's way
+ * to open a session on it, as a send's refusal does. Non-channel recipients need no read.
  */
-export async function discloseChoice(session: AdmittedChatSession, r: Recipient): Promise<string | undefined> {
+export async function discloseChoice(session: AdmittedChatSession, r: Recipient, words: ChatWords): Promise<string | undefined> {
   if (r.kind !== "channel") return undefined;
   let info;
   try {
@@ -295,7 +307,7 @@ export async function discloseChoice(session: AdmittedChatSession, r: Recipient)
   if (info.outcome !== "ok") return `could not read #${oneLine(r.channel)} registry metadata (${info.outcome}): ${oneLine(info.message)}`;
   const parts: string[] = [];
   if (!info.value.registered) parts.push(`Unregistered channel #${oneLine(r.channel)}: sends follow the space's native policy`);
-  if (!info.value.postable) parts.push(`your grant does not allow posting to #${oneLine(r.channel)}`);
+  if (!info.value.postable) parts.push(`your grant does not allow posting to #${oneLine(r.channel)}. ${words.reopen(r.channel)}`);
   return parts.length ? parts.join("; ") : undefined;
 }
 

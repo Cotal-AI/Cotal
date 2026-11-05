@@ -85,15 +85,15 @@ const GAP_COALESCE_MS = 1_000;
 
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
- * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
- * and the refusal ends with the front end's way to open one that does. The broker remains the
- * enforcement point.
+ * refusal and its subject never reach the caller. A session opened on no channel holds no grant.
+ * Either refusal ends with the front end's way to open a session that holds the channel. The broker
+ * remains the enforcement point.
  */
 export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", words: ChatWords): Refused | undefined {
   if (channelInAllow([...grant], channel)) return undefined;
   const message = grant.length === 0
     ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. ${words.reopen(channel)}`
-    : `#${channel} is outside this session's ${use} grant`;
+    : `#${channel} is outside this session's ${use} grant. ${words.reopen(channel)}`;
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
 
@@ -271,14 +271,14 @@ export class NativeChatSession implements AdmittedChatSession {
 
   // ---- publish ---------------------------------------------------------------------------------
 
-  async send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult> {
+  async send(text: string, channel: string, mentions: readonly string[], replyTo?: string): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
     const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words);
     if (outside) return outside;
     let registered: boolean;
     try {
       registered = this.inputs.endpoint.getChannelConfig(channel) !== undefined;
-      const msg = await this.inputs.endpoint.multicast(text, { channel, ...(mentions.length ? { mentions: [...mentions] } : {}) });
+      const msg = await this.inputs.endpoint.multicast(text, { channel, ...(mentions.length ? { mentions: [...mentions] } : {}), ...(replyTo !== undefined ? { replyTo } : {}) });
       // Native multicast awaits the stream ack but does not return it (endpoint.ts:4231-4236): no seq.
       return { outcome: "stored", messageId: msg.id, channel, registered };
     } catch (e) {

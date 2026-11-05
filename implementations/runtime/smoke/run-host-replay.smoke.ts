@@ -48,6 +48,10 @@ import {
   presenceBucket,
   compileContract,
   TURN_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -132,46 +136,16 @@ const driver = await planesOn();
 const mediator = await planesOn();
 const rival = await planesOn();
 
-// ── the suite-served manager-shaped endpoint (spawn + turn) ────────────────────────────────────
-// An ask addresses a seat this run spawned and is told to it over the turn relay, so the suite
-// serves the manager's shape for both: spawn registers the seat and commits its terminal, and turn
-// accepts the relay.
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-    runtime: { type: "string" },
-    // The run id a run's spawn names, as the manager's contract declares it.
-    runId: { type: "string", pattern: "^\\s*\\S" },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
-// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
 };
+for (const field of ["agent", "role", "model", "variant"]) {
+  c(`served spawn refuses blank ${field}`, !COMPILED.spawn.input.validate({ name: "worker", [field]: " \t" }));
+}
+c("served spawn accepts omitted optional fields", COMPILED.spawn.input.validate({ name: "worker" }));
 const DOCUMENT = {
   urn: "ai.cotal.test.hostreplay", revision: 1, attributes: [], events: [],
   commands: [
@@ -187,7 +161,7 @@ const store = await contractStoreContext(nc, SPACE);
 const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT])
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA])
     values.push(source, { v: 1, root: contractDigest(source), members: [] });
   values.push(DOCUMENT, MANIFEST);
   for (const v of values) {
@@ -561,7 +535,7 @@ try {
   await nc.close();
 }
 
-const EXPECTED_CELLS = 15;
+const EXPECTED_CELLS = 20;
 const ran = ok + fail;
 console.log(`run-host-replay.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

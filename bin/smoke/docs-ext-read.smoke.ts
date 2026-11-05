@@ -80,7 +80,9 @@ let specBody = "";
   check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(asciiLine ?? "\u0000"), shown(plain));
   // A page is drawn only on a terminal (the pty suite reads that); to a pipe it is its Markdown.
   const piped = run(["docs", "cli"]);
-  check("a page read to a pipe without --plain is its Markdown", piped.status === 0 && piped.stdout.includes("\n# `cotal` CLI reference\n") && /^\|---\|---\|$/m.test(piped.stdout), shown(piped));
+  check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
+  const usage = run(["docs", "cli-usage"]);
+  check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));

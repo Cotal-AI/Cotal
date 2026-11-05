@@ -153,7 +153,7 @@ try {
 
   const long = MANAGER_LEASE_TTL_MS + 3 * MANAGER_LEASE_ATTEMPT_MS;
   console.log(`a stop 50 ms into a ${long} ms outage (longer than the ${MANAGER_LEASE_TTL_MS} ms lease TTL)`);
-  const down = await scenario("down", long);
+  const down = await scenario("long-outage", long);
   const grace = 15_000;
   check("the release gives up and says so before the stop resolves", down.gaveUpMs !== undefined && down.gaveUpMs <= down.stopMs, down);
   check(`the stop resolves within the CLI's ${grace} ms stop grace`, down.stopError === undefined && down.stopMs < grace, down);

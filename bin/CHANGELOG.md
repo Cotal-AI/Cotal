@@ -1,5 +1,239 @@
 # cotal-ai
 
+## 0.145.1
+
+### Patch Changes
+
+- Updated dependencies [4887f2e]
+  - @cotal-ai/auth@0.145.1
+  - @cotal-ai/connector-core@0.145.1
+  - @cotal-ai/cli@0.145.1
+  - @cotal-ai/manager@0.145.1
+  - @cotal-ai/delivery@0.145.1
+  - @cotal-ai/runtime@0.145.1
+  - @cotal-ai/core@0.145.1
+  - @cotal-ai/seat@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Minor Changes
+
+- 20f8ff2: A managed Claude Code seat wakes on peer messages again. Claude Code binds the `server:cotal` wake channel only to a server its own configuration declares, the user config or the project's `.mcp.json`, and never to the launch's `--mcp-config` entry alone; a seat launched without one joined the mesh, reported idle and let every turn and direct message expire. `cotal setup` and `cotal update` now register the plugin's server as the user-scope MCP entry `cotal` (`claude mcp add --scope user`, the same command and arguments as the plugin's own server, so a plain session runs one process), a carried seat's private home declares it, `cotal status` reports it under `Claude wake channel`, and a managed launch whose user config and project `.mcp.json` declare no `cotal` server is refused with a message naming `cotal setup`. Run `cotal update` on each machine that spawns Claude seats; `docs/UPGRADING.md` has the details.
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+  - @cotal-ai/cli@0.145.0
+  - @cotal-ai/manager@0.145.0
+  - @cotal-ai/connector-core@0.145.0
+  - @cotal-ai/auth@0.145.0
+  - @cotal-ai/delivery@0.145.0
+  - @cotal-ai/runtime@0.145.0
+  - @cotal-ai/seat@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- Updated dependencies [f792696]
+  - @cotal-ai/connector-core@0.144.0
+  - @cotal-ai/manager@0.144.0
+  - @cotal-ai/auth@0.144.0
+  - @cotal-ai/cli@0.144.0
+  - @cotal-ai/delivery@0.144.0
+  - @cotal-ai/runtime@0.144.0
+  - @cotal-ai/core@0.144.0
+  - @cotal-ai/seat@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
+## 0.143.0
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+  - @cotal-ai/workspace@0.143.0
+  - @cotal-ai/cli@0.143.0
+  - @cotal-ai/connector-core@0.143.0
+  - @cotal-ai/auth@0.143.0
+  - @cotal-ai/delivery@0.143.0
+  - @cotal-ai/manager@0.143.0
+  - @cotal-ai/runtime@0.143.0
+  - @cotal-ai/seat@0.143.0
+
+## 0.142.0
+
+### Patch Changes
+
+- Updated dependencies [3ad82f7]
+- Updated dependencies [e16b8d9]
+- Updated dependencies [32f93ed]
+  - @cotal-ai/workspace@0.142.0
+  - @cotal-ai/cli@0.142.0
+  - @cotal-ai/core@0.142.0
+  - @cotal-ai/runtime@0.142.0
+  - @cotal-ai/connector-core@0.142.0
+  - @cotal-ai/auth@0.142.0
+  - @cotal-ai/delivery@0.142.0
+  - @cotal-ai/manager@0.142.0
+  - @cotal-ai/seat@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+  - @cotal-ai/workspace@0.141.11
+  - @cotal-ai/seat@0.141.11
+  - @cotal-ai/runtime@0.141.11
+  - @cotal-ai/cli@0.141.11
+  - @cotal-ai/manager@0.141.11
+  - @cotal-ai/delivery@0.141.11
+  - @cotal-ai/connector-core@0.141.11
+  - @cotal-ai/auth@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- Updated dependencies [392b738]
+  - @cotal-ai/workspace@0.141.10
+  - @cotal-ai/cli@0.141.10
+  - @cotal-ai/auth@0.141.10
+  - @cotal-ai/delivery@0.141.10
+  - @cotal-ai/manager@0.141.10
+  - @cotal-ai/runtime@0.141.10
+  - @cotal-ai/connector-core@0.141.10
+  - @cotal-ai/core@0.141.10
+  - @cotal-ai/seat@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- Updated dependencies [8d5f0d5]
+- Updated dependencies [f6ec096]
+  - @cotal-ai/core@0.141.9
+  - @cotal-ai/workspace@0.141.9
+  - @cotal-ai/connector-core@0.141.9
+  - @cotal-ai/auth@0.141.9
+  - @cotal-ai/cli@0.141.9
+  - @cotal-ai/delivery@0.141.9
+  - @cotal-ai/manager@0.141.9
+  - @cotal-ai/runtime@0.141.9
+  - @cotal-ai/seat@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+  - @cotal-ai/connector-core@0.141.8
+  - @cotal-ai/manager@0.141.8
+  - @cotal-ai/auth@0.141.8
+  - @cotal-ai/cli@0.141.8
+  - @cotal-ai/delivery@0.141.8
+  - @cotal-ai/runtime@0.141.8
+  - @cotal-ai/workspace@0.141.8
+  - @cotal-ai/seat@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- Updated dependencies [03044bd]
+  - @cotal-ai/cli@0.141.7
+  - @cotal-ai/connector-core@0.141.7
+  - @cotal-ai/auth@0.141.7
+  - @cotal-ai/delivery@0.141.7
+  - @cotal-ai/manager@0.141.7
+  - @cotal-ai/runtime@0.141.7
+  - @cotal-ai/core@0.141.7
+  - @cotal-ai/seat@0.141.7
+  - @cotal-ai/workspace@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- Updated dependencies [75d9182]
+  - @cotal-ai/cli@0.141.6
+  - @cotal-ai/connector-core@0.141.6
+  - @cotal-ai/auth@0.141.6
+  - @cotal-ai/delivery@0.141.6
+  - @cotal-ai/manager@0.141.6
+  - @cotal-ai/runtime@0.141.6
+  - @cotal-ai/core@0.141.6
+  - @cotal-ai/seat@0.141.6
+  - @cotal-ai/workspace@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- Updated dependencies [e527ea8]
+  - @cotal-ai/delivery@0.141.5
+  - @cotal-ai/manager@0.141.5
+  - @cotal-ai/connector-core@0.141.5
+  - @cotal-ai/auth@0.141.5
+  - @cotal-ai/cli@0.141.5
+  - @cotal-ai/runtime@0.141.5
+  - @cotal-ai/core@0.141.5
+  - @cotal-ai/seat@0.141.5
+  - @cotal-ai/workspace@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- Updated dependencies [d53d362]
+  - @cotal-ai/workspace@0.141.4
+  - @cotal-ai/cli@0.141.4
+  - @cotal-ai/auth@0.141.4
+  - @cotal-ai/delivery@0.141.4
+  - @cotal-ai/manager@0.141.4
+  - @cotal-ai/runtime@0.141.4
+  - @cotal-ai/connector-core@0.141.4
+  - @cotal-ai/core@0.141.4
+  - @cotal-ai/seat@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+  - @cotal-ai/connector-core@0.141.3
+  - @cotal-ai/auth@0.141.3
+  - @cotal-ai/cli@0.141.3
+  - @cotal-ai/delivery@0.141.3
+  - @cotal-ai/manager@0.141.3
+  - @cotal-ai/runtime@0.141.3
+  - @cotal-ai/workspace@0.141.3
+  - @cotal-ai/seat@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- Updated dependencies [2eee225]
+  - @cotal-ai/auth@0.141.2
+  - @cotal-ai/connector-core@0.141.2
+  - @cotal-ai/cli@0.141.2
+  - @cotal-ai/manager@0.141.2
+  - @cotal-ai/delivery@0.141.2
+  - @cotal-ai/runtime@0.141.2
+  - @cotal-ai/core@0.141.2
+  - @cotal-ai/seat@0.141.2
+  - @cotal-ai/workspace@0.141.2
+
 ## 0.141.1
 
 ### Patch Changes

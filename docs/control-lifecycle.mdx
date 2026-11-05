@@ -184,6 +184,10 @@ agent to watch the roster. A committer that supplies no diagnosis falls back to
 "the success signal did not arrive within the readiness deadline". The agent's own eventual
 state is then observable on its presence record.
 
+The TypeScript `EndpointReply` type narrows on `ok`: a failure requires `error`, and a success
+cannot carry one. Its failure arm permits local acceptance data from the follower. The wire
+parser still rejects failed replies that carry data or omit their error.
+
 The acceptance carries that exact `readinessDeadlineMs`. A synchronous follower treats its own
 request deadline as a floor and waits through the accepted readiness budget plus delivery margin,
 so a connector-specific slow boot cannot be reported as a caller timeout while the manager is

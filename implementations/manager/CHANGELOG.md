@@ -1,5 +1,143 @@
 # @cotal-ai/manager
 
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+  - @cotal-ai/seat@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+  - @cotal-ai/seat@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+  - @cotal-ai/seat@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
+## 0.143.0
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+  - @cotal-ai/workspace@0.143.0
+  - @cotal-ai/seat@0.143.0
+
+## 0.142.0
+
+### Patch Changes
+
+- Updated dependencies [3ad82f7]
+- Updated dependencies [e16b8d9]
+- Updated dependencies [32f93ed]
+  - @cotal-ai/workspace@0.142.0
+  - @cotal-ai/core@0.142.0
+  - @cotal-ai/seat@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- 28b2628: Runtime integration tests now use the manager's actual command schemas.
+  
+  Share the spawn, stop, inspect and cancel schemas from core beside the turn contracts, preserving the manager's served contract digests. Runtime stand-ins no longer accept blank spawn fields that the manager refuses. The shared schema objects are deeply frozen so importing a schema cannot change the manager's validation.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+  - @cotal-ai/workspace@0.141.11
+  - @cotal-ai/seat@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- Updated dependencies [392b738]
+  - @cotal-ai/workspace@0.141.10
+  - @cotal-ai/core@0.141.10
+  - @cotal-ai/seat@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- Updated dependencies [8d5f0d5]
+- Updated dependencies [f6ec096]
+  - @cotal-ai/core@0.141.9
+  - @cotal-ai/workspace@0.141.9
+  - @cotal-ai/seat@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- 29b229c: Export one UserAuthLaunch type for the user-mode identity carried through launch options, material and manager provisioning/resume data. Check the material reader's reconstruction against the complete declared type without changing runtime validation or serialization.
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+  - @cotal-ai/workspace@0.141.8
+  - @cotal-ai/seat@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.7
+  - @cotal-ai/seat@0.141.7
+  - @cotal-ai/workspace@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.6
+  - @cotal-ai/seat@0.141.6
+  - @cotal-ai/workspace@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.5
+  - @cotal-ai/seat@0.141.5
+  - @cotal-ai/workspace@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- Updated dependencies [d53d362]
+  - @cotal-ai/workspace@0.141.4
+  - @cotal-ai/core@0.141.4
+  - @cotal-ai/seat@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+  - @cotal-ai/workspace@0.141.3
+  - @cotal-ai/seat@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.2
+  - @cotal-ai/seat@0.141.2
+  - @cotal-ai/workspace@0.141.2
+
 ## 0.141.1
 
 ### Patch Changes

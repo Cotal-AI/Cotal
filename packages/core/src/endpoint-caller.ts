@@ -326,7 +326,7 @@ export async function invokeCommand(
 /** The refusal a goal-following call meets on a handle whose endpoint serves no `goal-result`: an
  *  accepted goal could never be read back to its terminal (SPEC 13.6), so nothing is submitted.
  *  `undefined` when the handle can follow. */
-export function goalFollowRefusal(service: ResolvedService): EpAttributedReply | undefined {
+export function goalFollowRefusal(service: ResolvedService): (EpAttributedReply & { reply: { ok: false } }) | undefined {
   if (service.commands.has("goal-result")) return undefined;
   return {
     reply: { v: 1, id: globalThis.crypto.randomUUID(), ok: false, error: {

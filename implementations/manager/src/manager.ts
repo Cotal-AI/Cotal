@@ -96,7 +96,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -1084,7 +1084,7 @@ interface PreparedResume {
   launchOpts: LaunchOpts;
   id?: string;
   creds?: string;
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  userAuth?: UserAuthLaunch;
 }
 
 /** What the host returned for one managed-agent enrollment (#1972). */
@@ -1190,7 +1190,7 @@ interface ProvisionedUserAgent {
   owner: string;
   lifecycleUid: string;
   files: { actorToken: string; sentinelCreds: string; health: string };
-  launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  launch: UserAuthLaunch;
   enrolled?: { material: ManagedEnrollment; actorToken: string };
 }
 
@@ -7501,9 +7501,9 @@ export class Manager {
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
       let credsPath: string | undefined;
       let issued: ManagedAgent["issued"];
-      let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
+      let userLaunch: UserAuthLaunch | undefined;
       let userOwner: string | undefined;
-      let enrolled: { material: ManagedEnrollment; actorToken: string } | undefined;
+      let enrolled: ProvisionedUserAgent["enrolled"];
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
           spawner,

@@ -726,8 +726,10 @@ started or a catalog lists, is refused with `CONFLICT` (exit 2), with or without
 ### Registration trust
 
 A hostname or public address is registrable only when the connection will **require TLS**. Pass
-`--tls`, or use a `tls://` URL. Without either, the refusal's next step is the `tls://` form of the
-same address, or `wss://` for a `ws://` one. The scheme is recorded as enforced intent, so every later dial
+`--tls` for TCP, or use a `tls://` or `wss://` URL. A `ws://` address cannot satisfy a TLS requirement,
+even on loopback or with `--force`; use `wss://` instead. Existing TLS-required `ws://` records also
+refuse when dialed. Without required TLS, the refusal's next step is the secure URL form.
+The scheme is recorded as enforced intent, so every later dial
 through the record demands the handshake (and `meshes add tls://…` against a plaintext broker is
 refused at registration). Without required TLS the fence admits loopback literals, and
 private-overlay literals only with `--allow-unencrypted-overlay`, which records your acceptance that
@@ -1019,6 +1021,12 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
+An unreadable component PID file is `refused`, and its row names the file path and read error.
+A missing or empty PID file still means no local process record.
+
+If a user-auth exchange returns a bearer whose principal cannot be decoded, the component probe
+reports the shared auth-service build and restart guidance instead of a bare JSON or missing-claim error.
+
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
 means the component record is live but its service/readiness surface did not answer or is not ready.
 Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
@@ -1026,6 +1034,9 @@ absent component or a clean zero. A broker that takes the connection and does no
 stopped one does, refuses the manager and delivery probes, and the pass still exits. A PID record that exists but cannot be read, or exists under both
 its current and a pre-upgrade name, refuses only its own row. A record that its component removes
 while the pass runs reads as `absent`.
+
+The auth-service start, status and stop paths share the same PID-file resolution rules.
+An unreadable record directory refuses the start; it is not treated as an absent pre-upgrade record.
 
 Each component prints on one line. A control character inside a reported reason, such as a newline
 in a stored row's field name, prints as its `\uXXXX` escape.
