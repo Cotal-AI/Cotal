@@ -39,7 +39,7 @@ Invocation validates arguments against the discovered schema before publishing.
 See [service discovery](control-surface.mdx#service-discovery) for that trust chain
 and [endpoint control](cli.mdx#endpoint-control) for the CLI forms.
 
-Use the target's discovered contract when building a caller. A command's presence
+Use the target's discovered contract when building a caller. The [mesh command catalog](mesh-commands.mdx) lists every built-in manager and auth command with its capability class, targeting and input and output schemas, generated from the shipped cluster documents. A command's presence
 does not grant permission to invoke it: [identity and auth](identity-and-auth.mdx)
 governs the caller's credentials, and [grants](control-surface.mdx#grants) govern
 endpoint control. [Instance routing](control-surface.mdx#instance-routing) explains

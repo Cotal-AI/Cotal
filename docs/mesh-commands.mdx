@@ -1,0 +1,4152 @@
+---
+title: "Mesh commands"
+description: "Built-in manager and auth endpoint commands, with capability class, targeting, and input and output schemas."
+kind: "Reference"
+audience: "endpoint client authors"
+---
+Built-in endpoint commands served by the manager and auth cluster documents. Each entry is generated from the built cluster document and the schema artifact that document names.
+
+Discovery on a running mesh is the authority for the commands an endpoint serves. This catalog covers the built-in endpoints whose contracts ship in the repository. An extension endpoint publishes its own contract through discovery, and a static build cannot list it.
+
+A caller learns the live contract with `cotal describe` and calls it with `cotal invoke`. The pages [Service discovery](control-discovery.mdx) and [Endpoint control](cli-endpoints.mdx) cover those commands. Holding a capability name in this catalog does not grant it.
+
+## Endpoints
+
+| Endpoint  | Cluster            | Revision | Commands |
+| --------- | ------------------ | -------- | -------- |
+| `manager` | `ai.cotal.manager` | 46       | 43       |
+| `auth`    | `ai.cotal.auth`    | 1        | 1        |
+
+## Sources
+
+* Manager: [implementations/manager/src/manager-service-contract.ts](../implementations/manager/src/manager-service-contract.ts).
+* Auth: [implementations/auth/src/auth-service-contract.ts](../implementations/auth/src/auth-service-contract.ts).
+
+## manager vitals
+
+The `vitals` command is in the `manager.vitals` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "null"
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sampledAt",
+    "cpu",
+    "memory",
+    "filesystems"
+  ],
+  "properties": {
+    "sampledAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logicalCount",
+        "load1",
+        "load5",
+        "load15"
+      ],
+      "properties": {
+        "logicalCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "load1": {
+          "type": "number",
+          "minimum": 0
+        },
+        "load5": {
+          "type": "number",
+          "minimum": 0
+        },
+        "load15": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalBytes",
+        "availableBytes"
+      ],
+      "properties": {
+        "totalBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "availableBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "filesystems": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mount",
+          "totalBytes",
+          "freeBytes"
+        ],
+        "properties": {
+          "mount": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "freeBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## manager status
+
+The `status` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "null"
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "instanceId",
+    "execution",
+    "runtime",
+    "custody",
+    "runHosting",
+    "terminalSessions",
+    "agentCount",
+    "uptimeMs",
+    "connectors",
+    "classSpawn",
+    "staticReconciliation"
+  ],
+  "properties": {
+    "instanceId": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "lifecycleUid": {
+      "type": "string"
+    },
+    "execution": {
+      "enum": [
+        "runtime",
+        "none"
+      ]
+    },
+    "runtime": {
+      "type": "string"
+    },
+    "custody": {
+      "enum": [
+        "legacy",
+        "custodied",
+        "none"
+      ]
+    },
+    "runHosting": {
+      "type": "boolean"
+    },
+    "terminalSessions": {
+      "type": "boolean"
+    },
+    "agentCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uptimeMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "classSpawn": {
+      "type": "boolean"
+    },
+    "connectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent",
+          "state",
+          "binaries",
+          "eventPlane"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "unavailable"
+            ]
+          },
+          "binaries": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "eventPlane": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "stopImpact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentScope",
+        "observedAt",
+        "maintenance",
+        "resumeRequired",
+        "stopping",
+        "lifecycleInFlight",
+        "reservedLaunches",
+        "retirementsPending",
+        "deprovisioningInFlight",
+        "staticReconciliationInFlight",
+        "agents"
+      ],
+      "properties": {
+        "agentScope": {
+          "enum": [
+            "manager",
+            "owner-filtered"
+          ]
+        },
+        "observedAt": {
+          "type": "string"
+        },
+        "maintenance": {
+          "enum": [
+            "active",
+            "preserving",
+            "preserved"
+          ]
+        },
+        "resumeRequired": {
+          "type": "boolean"
+        },
+        "stopping": {
+          "type": "boolean"
+        },
+        "lifecycleInFlight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reservedLaunches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retirementsPending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deprovisioningInFlight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "staticReconciliationInFlight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "id",
+              "lifecycleUid",
+              "mode",
+              "defaultAction",
+              "withAgentsAction"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "lifecycleUid": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "defaultAction": {
+                "enum": [
+                  "release-custody",
+                  "stop",
+                  "stop-retaining-state"
+                ]
+              },
+              "withAgentsAction": {
+                "enum": [
+                  "stop",
+                  "stop-retaining-state"
+                ]
+              }
+            }
+          }
+        },
+        "preservation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attemptId",
+            "inventorySha256"
+          ],
+          "properties": {
+            "attemptId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+            },
+            "inventorySha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "staticReconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "failures"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "idle",
+            "running",
+            "retry-wait",
+            "retrying",
+            "recovered",
+            "failed"
+          ]
+        },
+        "lastSweep": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "startedAt",
+            "attempted",
+            "succeeded",
+            "failed"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "startup",
+                "post-adoption"
+              ]
+            },
+            "startedAt": {
+              "type": "string"
+            },
+            "completedAt": {
+              "type": "string"
+            },
+            "attempted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "succeeded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "alias",
+              "actor",
+              "lifecycleUid",
+              "phase",
+              "attempts",
+              "maxAttempts",
+              "disposition"
+            ],
+            "properties": {
+              "alias": {
+                "type": "string"
+              },
+              "actor": {
+                "type": "string"
+              },
+              "lifecycleUid": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "provisioning",
+                  "active",
+                  "terminalizing",
+                  "retired"
+                ]
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "maxAttempts": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "disposition": {
+                "enum": [
+                  "retry-scheduled",
+                  "retrying",
+                  "recovered",
+                  "refused",
+                  "refused-foreign",
+                  "retry-exhausted"
+                ]
+              },
+              "lastError": {
+                "type": "string"
+              },
+              "nextRetryAt": {
+                "type": "string"
+              },
+              "recoveredAt": {
+                "type": "string"
+              },
+              "remedy": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## manager ps
+
+The `ps` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "null"
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "id",
+      "agent",
+      "space",
+      "mode",
+      "status",
+      "uptimeMs",
+      "mesh",
+      "lifecycleUid"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "role": {
+        "type": "string"
+      },
+      "agent": {
+        "type": "string"
+      },
+      "space": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "uptimeMs": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "mesh": {
+        "type": "string"
+      },
+      "joinHealth": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "reason"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "const": "degraded"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "condition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "since": {
+            "type": "number"
+          }
+        }
+      },
+      "activeAt": {
+        "type": "number"
+      },
+      "meshView": {
+        "type": "string",
+        "enum": [
+          "current",
+          "stale",
+          "unpopulated"
+        ]
+      },
+      "presenceIdentityVerified": {
+        "type": "boolean"
+      },
+      "presenceObservedAt": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "offlineSince": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "lifecycleUid": {
+        "type": "string"
+      },
+      "authHealth": {
+        "type": "string"
+      },
+      "authReason": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "variant": {
+        "type": "string"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "pid": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "spawner": {
+        "type": "string"
+      },
+      "instanceId": {
+        "type": "string"
+      },
+      "host": {
+        "type": "string"
+      },
+      "resume": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "transcriptSha256": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "transferredAt": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## manager inspect
+
+The `inspect` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "id",
+    "agent",
+    "space",
+    "mode",
+    "status",
+    "uptimeMs",
+    "mesh",
+    "lifecycleUid"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "space": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "uptimeMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mesh": {
+      "type": "string"
+    },
+    "joinHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reason"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "const": "degraded"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "since": {
+          "type": "number"
+        }
+      }
+    },
+    "activeAt": {
+      "type": "number"
+    },
+    "meshView": {
+      "type": "string",
+      "enum": [
+        "current",
+        "stale",
+        "unpopulated"
+      ]
+    },
+    "presenceIdentityVerified": {
+      "type": "boolean"
+    },
+    "presenceObservedAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "offlineSince": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lifecycleUid": {
+      "type": "string"
+    },
+    "authHealth": {
+      "type": "string"
+    },
+    "authReason": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "variant": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "spawner": {
+      "type": "string"
+    },
+    "instanceId": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    },
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "transcriptSha256": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "transferredAt": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
+```
+
+## manager slots
+
+The `slots` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "null"
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "names": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 200
+          }
+        },
+        "includeRetired": {
+          "type": "boolean"
+        }
+      }
+    }
+  ]
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "owner",
+      "actor",
+      "slotLifecycleUid",
+      "slotPhase",
+      "slotRevision",
+      "readOrder",
+      "consistency",
+      "live",
+      "managerInstanceId"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "owner": {
+        "type": "string"
+      },
+      "actor": {
+        "type": "string"
+      },
+      "slotLifecycleUid": {
+        "type": "string"
+      },
+      "slotPhase": {
+        "type": "string",
+        "enum": [
+          "provisioning",
+          "active",
+          "terminalizing",
+          "retired"
+        ]
+      },
+      "cleanupComplete": {
+        "type": "boolean"
+      },
+      "slotRevision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "headState": {
+        "type": "string",
+        "enum": [
+          "active",
+          "retiring",
+          "retired"
+        ]
+      },
+      "headOp": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "opId",
+          "kind"
+        ],
+        "properties": {
+          "opId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "retirement"
+            ]
+          }
+        }
+      },
+      "headLifecycleUid": {
+        "type": "string"
+      },
+      "headRevision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "readOrder": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "slot",
+            "head"
+          ]
+        },
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "consistency": {
+        "type": "string",
+        "enum": [
+          "ordered-not-atomic"
+        ]
+      },
+      "live": {
+        "type": "boolean"
+      },
+      "managerInstanceId": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
+## manager models
+
+The `models` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "type": "string"
+    },
+    "refresh": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalogs"
+  ],
+  "properties": {
+    "catalogs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "agent",
+          "supported",
+          "models"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "supported": {
+            "type": "boolean"
+          },
+          "models": {
+            "type": "array"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## manager resolve-cwd
+
+The `resolve-cwd` command is in the `manager.spawn` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cwd"
+  ],
+  "properties": {
+    "cwd": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cwd",
+    "host"
+  ],
+  "properties": {
+    "cwd": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager resolve-agent
+
+The `resolve-agent` command is in the `manager.spawn` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "agent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "defaultAgent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agent"
+  ],
+  "properties": {
+    "agent": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager spawn
+
+The `spawn` command is in the `manager.spawn` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "defaultAgent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "role": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "config": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "identity": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "variant": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "launchOptions": {
+      "type": "object"
+    },
+    "resume": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "resumeClaim": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "resumeAgent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "events": {
+      "type": "boolean"
+    },
+    "cwd": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "prompt": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "role": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "model": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "variant": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "description": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "subscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowSubscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowPublish": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "save": {
+          "type": "boolean"
+        }
+      }
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "subscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "join": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "callerAcl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowSubscribe",
+        "allowPublish"
+      ],
+      "properties": {
+        "allowSubscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowPublish": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "shareTools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "runtime": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "supervise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "restarts",
+        "windowMs"
+      ],
+      "properties": {
+        "restarts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "windowMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "once": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deadlineMs": {
+          "anyOf": [
+            {
+              "const": -1
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "owner",
+    "actor",
+    "uid",
+    "goalId",
+    "fingerprint",
+    "executor"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "uid": {
+      "type": "string"
+    },
+    "goalId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "readinessDeadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycleUid",
+        "epoch"
+      ],
+      "properties": {
+        "lifecycleUid": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+## manager despawn
+
+The `despawn` command is in the `manager.lifecycle` capability class and is targeted, modes owner, any.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "stopped",
+    "graceful"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "stopped": {
+      "type": "boolean"
+    },
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+## manager attach
+
+The `attach` command is in the `manager.lifecycle` capability class and is targeted, modes owner, any.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "null"
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "grant"
+  ],
+  "properties": {
+    "grant": {
+      "type": "object"
+    },
+    "resumedFrom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "source"
+      ],
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
+```
+
+## manager input
+
+The `input` command is in the `manager.lifecycle` capability class and is targeted, modes owner, any.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "text"
+  ],
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "enter": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "bytes"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+## manager turn
+
+The `turn` command is in the `manager.lifecycle` capability class and is targeted, modes owner, any.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "payload"
+  ],
+  "oneOf": [
+    {
+      "required": [
+        "deadlineMs"
+      ]
+    },
+    {
+      "required": [
+        "deadlineAt"
+      ]
+    }
+  ],
+  "properties": {
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "deadlineAt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "handoffFrom": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "owner",
+    "actor",
+    "uid",
+    "goalId",
+    "fingerprint",
+    "deadlineAt",
+    "executor"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "uid": {
+      "type": "string"
+    },
+    "goalId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "deadlineAt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycleUid",
+        "epoch"
+      ],
+      "properties": {
+        "lifecycleUid": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+## manager turn-participate
+
+The `turn-participate` command is in the `manager.self` capability class and is targeted, modes self.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "null"
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "owner",
+    "actor",
+    "lifecycleUid",
+    "name",
+    "managerInstanceId",
+    "expiresAt"
+  ],
+  "properties": {
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lifecycleUid": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "managerInstanceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+```
+
+## manager turn-pending
+
+The `turn-pending` command is in the `manager.self` capability class and is targeted, modes self.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "null"
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "turns"
+  ],
+  "properties": {
+    "notices": {
+      "const": true
+    },
+    "stop": {
+      "const": true
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "goalId",
+          "payload",
+          "acceptedAt"
+        ],
+        "properties": {
+          "goalId": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "acceptedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "deadlineAt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "once": {
+            "const": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## manager turn-yield
+
+The `turn-yield` command is in the `manager.self` capability class and is targeted, modes self.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "status"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "done",
+        "blocked",
+        "handoff"
+      ]
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "state"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "uncertain"
+      ]
+    }
+  }
+}
+```
+
+## manager turn-unconfirmed
+
+The `turn-unconfirmed` command is in the `manager.self` capability class and is targeted, modes self.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "state"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "uncertain"
+      ]
+    }
+  }
+}
+```
+
+## manager cancel
+
+The `cancel` command is in the `manager.lifecycle` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "graceful",
+        "terminate"
+      ]
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "state"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "uncertain"
+      ]
+    }
+  }
+}
+```
+
+## manager stop
+
+The `stop` command is in the `manager.self` capability class and is targeted, modes self.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "stopped",
+    "graceful"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "stopped": {
+      "type": "boolean"
+    },
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+## manager run-start
+
+The `run-start` command is in the `manager.run` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source"
+  ],
+  "properties": {
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager run-start-keyed
+
+The `run-start-keyed` command is in the `manager.run` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source"
+  ],
+  "properties": {
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submissionId",
+    "state",
+    "instanceId",
+    "processEpoch"
+  ],
+  "properties": {
+    "submissionId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "unbound",
+        "binding-only",
+        "admitted",
+        "activated",
+        "indeterminate"
+      ]
+    },
+    "instanceId": {
+      "type": "string"
+    },
+    "processEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "runId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "callbackDeadline": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager run-submission-status
+
+The `run-submission-status` command is in the `manager.run` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submissionId"
+  ],
+  "properties": {
+    "submissionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submissionId",
+    "state",
+    "instanceId",
+    "processEpoch"
+  ],
+  "properties": {
+    "submissionId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "unbound",
+        "binding-only",
+        "admitted",
+        "activated",
+        "indeterminate"
+      ]
+    },
+    "instanceId": {
+      "type": "string"
+    },
+    "processEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "runId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "callbackDeadline": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager run-resume
+
+The `run-resume` command is in the `manager.run` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager run-cancel
+
+The `run-cancel` command is in the `manager.run` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "reason"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "duplicate",
+    "authority",
+    "observed"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "duplicate": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "authority": {
+      "enum": [
+        "original",
+        "owner-interactive",
+        "admin"
+      ]
+    },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "reason",
+        "revokedAt"
+      ],
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "revokedAt": {
+          "type": "integer"
+        }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "processEpoch",
+        "phase"
+      ],
+      "properties": {
+        "processEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phase": {
+          "enum": [
+            "terminal",
+            "launch-abandoned",
+            "stop-requested",
+            "stopped",
+            "not-driven-here"
+          ]
+        },
+        "recordedState": {
+          "enum": [
+            "running",
+            "released",
+            "completed",
+            "failed"
+          ]
+        },
+        "runEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fencingToken": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "holder": {
+          "type": "string"
+        },
+        "driveOutcome": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "steps"
+              ],
+              "properties": {
+                "status": {
+                  "const": "completed"
+                },
+                "steps": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "value": {}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "reason"
+              ],
+              "properties": {
+                "status": {
+                  "const": "released"
+                },
+                "reason": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "message"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "error"
+              ],
+              "properties": {
+                "status": {
+                  "const": "failed"
+                },
+                "error": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "message"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+## manager run-answer
+
+The `run-answer` command is in the `manager.run` capability class and is targeted, modes self.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "stepKey"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stepKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "value": {},
+    "artifact": {
+      "type": "string",
+      "minLength": 1
+    },
+    "amend": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "token",
+    "answerId"
+  ],
+  "properties": {
+    "token": {
+      "type": "string"
+    },
+    "answerId": {
+      "type": "string"
+    },
+    "settle": {
+      "type": "object"
+    },
+    "supersedes": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager run-status
+
+The `run-status` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offset"
+      ],
+      "properties": {
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "endpoint",
+    "spec",
+    "journal"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "endpoint": {
+      "type": "string"
+    },
+    "revoked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "reason"
+      ],
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "revocationUnreadable": {
+      "type": "string"
+    },
+    "programHash": {
+      "type": "string"
+    },
+    "programUnreadable": {
+      "type": "string"
+    },
+    "spec": {
+      "type": "object"
+    },
+    "status": {
+      "type": "object"
+    },
+    "journal": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "n",
+          "kind"
+        ],
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "activation",
+              "step"
+            ]
+          },
+          "holder": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "replayedTo": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "settled"
+            ]
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "errorMessage": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "endedAt": {
+            "type": "number"
+          },
+          "winner": {
+            "type": "string"
+          },
+          "lostRace": {
+            "type": "string"
+          },
+          "asks": {
+            "type": "string"
+          },
+          "addressee": {
+            "type": "string"
+          },
+          "deadlineAt": {
+            "type": "number"
+          },
+          "onExpiry": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "answerId"
+            ],
+            "properties": {
+              "answerId": {
+                "type": "string"
+              },
+              "value": {},
+              "by": {
+                "type": "string"
+              },
+              "artifact": {
+                "type": "string"
+              },
+              "at": {
+                "type": "number"
+              }
+            }
+          },
+          "amendments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "answerId",
+                "supersedes",
+                "by",
+                "at"
+              ],
+              "properties": {
+                "answerId": {
+                  "type": "string"
+                },
+                "supersedes": {
+                  "type": "string"
+                },
+                "value": {},
+                "by": {
+                  "type": "string"
+                },
+                "artifact": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "journalTotal": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+## manager run-ps
+
+The `run-ps` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3072,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId",
+          "endpoint"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "released",
+              "completed",
+              "failed"
+            ]
+          },
+          "holder": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "journalHigh": {
+            "type": "integer",
+            "minimum": -1
+          },
+          "failure": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "pattern": "^L[0-9]{4}$"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "programHash": {
+            "type": "string"
+          },
+          "forkedFrom": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run",
+              "step"
+            ],
+            "properties": {
+              "run": {
+                "type": "string"
+              },
+              "step": {
+                "type": "string"
+              }
+            }
+          },
+          "revoked": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "by",
+              "reason"
+            ],
+            "properties": {
+              "by": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "revocationUnreadable": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "semantics",
+        "space",
+        "endpointFilter",
+        "responder",
+        "cutSeq",
+        "nextSeq",
+        "items",
+        "endObserved",
+        "stopReason",
+        "storageReads"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "semantics": {
+          "const": "diagnostic"
+        },
+        "space": {
+          "type": "string"
+        },
+        "endpointFilter": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          ]
+        },
+        "responder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "instanceId",
+            "epoch"
+          ],
+          "properties": {
+            "instanceId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "cutSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740990
+        },
+        "nextSeq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "endpoint",
+              "runId",
+              "specRevision",
+              "startedAt",
+              "observedAt",
+              "status",
+              "revocation"
+            ],
+            "properties": {
+              "endpoint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "runId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "specRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "startedAt": {
+                "type": "number",
+                "minimum": 0
+              },
+              "observedAt": {
+                "type": "number",
+                "minimum": 0
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "v",
+                      "observedSpecRevision",
+                      "state",
+                      "holder",
+                      "epoch",
+                      "fencingToken",
+                      "journalHigh",
+                      "at",
+                      "statusRevision",
+                      "staleProjection"
+                    ],
+                    "properties": {
+                      "v": {
+                        "const": 1
+                      },
+                      "observedSpecRevision": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "running",
+                          "released",
+                          "completed",
+                          "failed"
+                        ]
+                      },
+                      "holder": {
+                        "type": "string"
+                      },
+                      "epoch": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "fencingToken": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "journalHigh": {
+                        "type": "integer",
+                        "minimum": -1
+                      },
+                      "at": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "statusRevision": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "staleProjection": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                ]
+              },
+              "revocation": {
+                "enum": [
+                  "present",
+                  "not-observed"
+                ]
+              }
+            }
+          }
+        },
+        "nextCursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3072,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "endObserved": {
+          "type": "boolean"
+        },
+        "stopReason": {
+          "enum": [
+            "end",
+            "rows",
+            "bytes",
+            "read-budget"
+          ]
+        },
+        "storageReads": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        }
+      }
+    }
+  ]
+}
+```
+
+## manager goal-result
+
+The `goal-result` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result": {
+      "type": "object"
+    }
+  }
+}
+```
+
+## manager define-persona
+
+The `define-persona` command is in the `manager.persona` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "persona"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "persona": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "role": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "agent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "subscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "path"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager remove-persona
+
+The `remove-persona` command is in the `manager.persona` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager chat-session-open
+
+The `chat-session-open` command is in the `manager.chat` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "label",
+    "ttl",
+    "sealTo"
+  ],
+  "properties": {
+    "subscribe": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "ttl": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 900
+    },
+    "sealTo": {
+      "type": "string",
+      "pattern": "^X[A-Z2-7]{55}$"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alias",
+    "actor",
+    "lifecycleUid",
+    "expiresAt",
+    "sealer",
+    "sealed"
+  ],
+  "properties": {
+    "alias": {
+      "type": "string",
+      "pattern": "^chat_[a-z2-7]{26}$"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lifecycleUid": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sealer": {
+      "type": "string",
+      "pattern": "^X[A-Z2-7]{55}$"
+    },
+    "sealed": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+## manager chat-session-retire
+
+The `chat-session-retire` command is in the `manager.chat` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alias",
+    "actor",
+    "lifecycleUid"
+  ],
+  "properties": {
+    "alias": {
+      "type": "string",
+      "pattern": "^chat_[a-z2-7]{26}$"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lifecycleUid": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome"
+  ],
+  "properties": {
+    "outcome": {
+      "enum": [
+        "retired",
+        "alreadyRetired",
+        "failed"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager list-personas
+
+The `list-personas` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "null"
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "personas"
+  ],
+  "properties": {
+    "personas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## manager show-persona
+
+The `show-persona` command is in the `manager.read` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "persona": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager purge
+
+The `purge` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "includeDms": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "chat"
+  ],
+  "properties": {
+    "chat": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dm": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+## manager launch
+
+The `launch` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "name"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "spec": {
+      "type": "object"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "owner",
+    "actor",
+    "uid",
+    "goalId",
+    "fingerprint",
+    "executor"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "uid": {
+      "type": "string"
+    },
+    "goalId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "readinessDeadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycleUid",
+        "epoch"
+      ],
+      "properties": {
+        "lifecycleUid": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+## manager resume-preserved
+
+The `resume-preserved` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "inventory"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inventory": {
+      "type": "object"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object"
+}
+```
+
+## manager commit-resume
+
+The `commit-resume` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "state",
+    "durableCommitToken"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "durableCommitToken": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager finalize-resume
+
+The `finalize-resume` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "durableCommitToken"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "durableCommitToken": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "state"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager prepare-preservation
+
+The `prepare-preservation` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object"
+}
+```
+
+## manager commit-preservation
+
+The `commit-preservation` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object"
+}
+```
+
+## manager abort-preservation
+
+The `abort-preservation` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "state"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  }
+}
+```
+
+## manager transcript-receive
+
+The `transcript-receive` command is in the `manager.admin` capability class and is untargeted.
+
+It is served by endpoint `manager` on cluster `ai.cotal.manager` revision 46, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sha256",
+    "size",
+    "source",
+    "sourceHost"
+  ],
+  "properties": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceHost": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state"
+  ],
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "upload",
+        "staged"
+      ]
+    },
+    "claim": {
+      "type": "string"
+    },
+    "fetched": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+## auth retire-lifecycle
+
+The `retire-lifecycle` command is in the `auth.admin` capability class and is targeted, modes exact.
+
+It is served by endpoint `auth` on cluster `ai.cotal.auth` revision 1, contract class `ephemeral`.
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "opId",
+    "serveEndpoint",
+    "serveInstanceId",
+    "serveEpoch"
+  ],
+  "properties": {
+    "opId": {
+      "type": "string"
+    },
+    "serveEndpoint": {
+      "type": "string"
+    },
+    "serveInstanceId": {
+      "type": "string"
+    },
+    "serveEpoch": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "retired",
+    "lifecycleUid",
+    "opId",
+    "evictedPrincipals"
+  ],
+  "properties": {
+    "retired": {
+      "type": "boolean"
+    },
+    "lifecycleUid": {
+      "type": "string"
+    },
+    "opId": {
+      "type": "string"
+    },
+    "evictedPrincipals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+```

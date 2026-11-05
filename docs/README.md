@@ -202,6 +202,7 @@ Task dispatch:
 |---|---|
 | [API reference](overview.mdx) | Find Cotal CLI commands, agent tools, configuration fields, and data models. |
 | [Integration interfaces](api-reference.mdx) | Choose Cotal's CLI, endpoint commands, libraries, agent tools, wire protocol, or HTTP interfaces. |
+| [Mesh commands](mesh-commands.mdx) | Built-in manager and auth endpoint commands, with capability class, targeting, and input and output schemas. |
 
 ### CLI
 
