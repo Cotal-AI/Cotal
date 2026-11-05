@@ -59,7 +59,7 @@ import {
   type ManagerFinalizeEvidence,
   type OrdinaryResumeIntentRecord,
   type ProcessOwner,
-  type RestoreListenerProof,
+  type ListenerProof,
   type RestoreReadyRecord,
   restoreLeftOut,
   restoreLeftOutReason,
@@ -134,7 +134,7 @@ function ordinaryActivation(attemptId: string) {
   };
 }
 
-function finalizeRestore(lock: MaintenanceLock, proof: RestoreListenerProof): ReturnType<typeof markRestoreActive> {
+function finalizeRestore(lock: MaintenanceLock, proof: ListenerProof): ReturnType<typeof markRestoreActive> {
   recordRestoreManagerCommit(lock, proof, managerCommit(proof.attemptId));
   return markRestoreActive(lock, proof, managerFinalize(proof.attemptId));
 }
@@ -164,7 +164,7 @@ function ready(name: string, mode: MaintenanceAuthMode = "auth"): {
 
 function committedAlternate(name: string, attemptId: string): ReturnType<typeof ready> & {
   targetPath: string;
-  proof: RestoreListenerProof;
+  proof: ListenerProof;
 } {
   const p = ready(name);
   const targetPath = join(p.root, "target");
@@ -186,7 +186,7 @@ function committedAlternate(name: string, attemptId: string): ReturnType<typeof 
   };
 }
 
-function replacementProof(proof: RestoreListenerProof, suffix: string): RestoreListenerProof {
+function replacementProof(proof: ListenerProof, suffix: string): ListenerProof {
   return {
     ...proof,
     serverName: `${proof.serverName}-${suffix}`,
@@ -452,7 +452,7 @@ if (process.platform !== "win32") {
   check("bound restore preserves resume", bound.resume.sha256 === p.resume.sha256);
   const intent = writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", runtime: "pty" });
   check("commit intent preserves resume", intent.resume.sha256 === p.resume.sha256);
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "resume-transition-restore", serverName: "resume-transition-listener",
     serverNonce: "resume-transition-nonce", processOwner: owner("resume-transition-owner", process.pid),
     serverEndpoint: normalEndpoint, target: bound.restore.target!,
@@ -911,7 +911,7 @@ if (process.platform !== "win32") {
   const target = bindRestoreTarget(p.lock).restore.target!;
   const launch = { server: "nats://127.0.0.1:4222", runtime: "pty", restoreOnly: "full" } as const;
   writeRestoreCommitIntent(p.lock, launch);
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "listener-dead-replacement-attempt",
     serverName: "listener-dead-replacement",
     serverNonce: "listener-dead-replacement-nonce",
@@ -1161,7 +1161,7 @@ if (process.platform !== "win32") {
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
   writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup")] });
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "restore-clean", serverName: "restore-clean-listener", serverNonce: "restore-clean-nonce",
     processOwner: owner("restore-clean-owner", process.pid), serverEndpoint: normalEndpoint, target,
   };
@@ -1186,7 +1186,7 @@ if (process.platform !== "win32") {
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
   writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-foreign")] });
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "restore-foreign", serverName: "restore-foreign-listener", serverNonce: "restore-foreign-nonce",
     processOwner: owner("restore-foreign-owner", process.pid), serverEndpoint: normalEndpoint, target,
   };
@@ -1226,7 +1226,7 @@ if (process.platform !== "win32") {
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
   writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "restore-registry", serverName: "restore-registry-listener", serverNonce: "restore-registry-nonce",
     processOwner: owner("restore-registry-owner", process.pid), serverEndpoint: normalEndpoint, target,
   };
@@ -1250,7 +1250,7 @@ if (process.platform !== "win32") {
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
   writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: ["KV_cotal_channels_space-cleanup-runs"] });
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "restore-runs", serverName: "restore-runs-listener", serverNonce: "restore-runs-nonce",
     processOwner: owner("restore-runs-owner", process.pid), serverEndpoint: normalEndpoint, target,
   };
@@ -1286,7 +1286,7 @@ if (process.platform !== "win32") {
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
   writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-accounts")], otherAccounts: ["$G"] });
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "restore-accounts", serverName: "restore-accounts-listener", serverNonce: "restore-accounts-nonce",
     processOwner: owner("restore-accounts-owner", process.pid), serverEndpoint: normalEndpoint, target,
   };
@@ -1320,7 +1320,7 @@ if (process.platform !== "win32") {
     bindRestoreTarget(p.lock);
     const target = readStoreIdentity(p.store);
     writeRestoreCommitIntent(p.lock, { server: normalEndpoint, restoredStreams: [wfjStreamName(`space-${name}`)] });
-    const proof: RestoreListenerProof = {
+    const proof: ListenerProof = {
       attemptId: `restore-${name}`, serverName: `${name}-listener`, serverNonce: `${name}-nonce`,
       processOwner: owner(`${name}-owner`, process.pid), serverEndpoint: normalEndpoint, target,
     };
@@ -1360,7 +1360,7 @@ if (process.platform !== "win32") {
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(p.store);
   writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222" });
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "restore-disaster", serverName: "restore-disaster-listener", serverNonce: "restore-disaster-nonce",
     processOwner: owner("restore-disaster-owner", process.pid), serverEndpoint: normalEndpoint, target,
   };
@@ -1382,7 +1382,7 @@ if (process.platform !== "win32") {
   bindRestoreTarget(p.lock);
   const target = readStoreIdentity(targetPath);
   writeRestoreCommitIntent(p.lock, { server: "nats://127.0.0.1:4222", restoredStreams: [wfjStreamName("space-cleanup-mismatch")] });
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     attemptId: "restore-mismatch", serverName: "restore-mismatch-listener", serverNonce: "restore-mismatch-nonce",
     processOwner: owner("restore-mismatch-owner", process.pid), serverEndpoint: normalEndpoint, target,
   };

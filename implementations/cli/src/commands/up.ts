@@ -181,7 +181,7 @@ import {
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
   type ProcessOwner,
-  type RestoreListenerProof,
+  type ListenerProof,
   type StoreIdentity,
   readBrokerPolicy,
   writeBrokerPolicy,
@@ -354,7 +354,7 @@ interface PendingOrdinaryResume {
   serverName: string;
   serverNonce: string;
   /** Present when a live bound listener from a prior coordinator should be adopted, not respawned. */
-  adoptProof?: RestoreListenerProof;
+  adoptProof?: ListenerProof;
 }
 const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
 
@@ -1265,7 +1265,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // The bound listener decides re-entry: a live exact listener is ADOPTED, a provably dead
         // one is durably retired before a fresh spawn, ambiguity refuses, and a manager-committed
         // resume never replaces the listener its durable token is bound to.
-        let adoptProof: RestoreListenerProof | undefined;
+        let adoptProof: ListenerProof | undefined;
         let recoveredProof = journal.listenerProof;
         let recoveredState: PendingOrdinaryResume["journalState"] = journal.state;
         if (recoveredProof) {
@@ -2667,7 +2667,7 @@ function sameProcessOwner(a: ProcessOwner, b: ProcessOwner): boolean {
   return a.pid === b.pid && a.host === b.host && a.startedAt === b.startedAt && a.id === b.id;
 }
 
-function sameRestoreListenerProof(a: RestoreListenerProof, b: RestoreListenerProof): boolean {
+function sameListenerProof(a: ListenerProof, b: ListenerProof): boolean {
   return a.attemptId === b.attemptId && a.serverName === b.serverName &&
     a.serverNonce === b.serverNonce && sameProcessOwner(a.processOwner, b.processOwner) &&
     a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target);
@@ -2725,10 +2725,10 @@ function readNatsInfo(label: string, endpoint: string, timeoutMs = 2_000): Promi
 async function proveBoundListener(
   kind: "restore" | "resume",
   attempt: Pick<PendingOrdinaryResume, "attemptId" | "serverName" | "serverNonce" | "server" | "root" | "space" | "mode">,
-  proof: RestoreListenerProof | undefined,
-  journalStore: (proof: RestoreListenerProof) => StoreIdentity | undefined,
+  proof: ListenerProof | undefined,
+  journalStore: (proof: ListenerProof) => StoreIdentity | undefined,
   store: { path: string; changed: string },
-): Promise<RestoreListenerProof> {
+): Promise<ListenerProof> {
   const label = `${kind} attempt ${attempt.attemptId}`;
   if (!proof) throw new Error(`${label} has no bound listener proof`);
   if (proof.attemptId !== attempt.attemptId || proof.serverName !== attempt.serverName ||
@@ -2781,12 +2781,12 @@ async function proveBoundListener(
   return proof;
 }
 
-function provePreparedRestoreListener(prepared: PreparedRestore): Promise<RestoreListenerProof> {
+function provePreparedRestoreListener(prepared: PreparedRestore): Promise<ListenerProof> {
   return proveBoundListener("restore", prepared, prepared.listenerProof, (proof) => {
     const journal = readMaintenanceJournal(prepared.root);
     if (!journal || (journal.state !== "commit-intent" && journal.state !== "manager-committed" && journal.state !== "degraded" && journal.state !== "active") ||
         journal.restore.attemptId !== prepared.attemptId || !journal.listenerProof ||
-        !sameRestoreListenerProof(journal.listenerProof, proof) || journal.launch.server !== proof.serverEndpoint)
+        !sameListenerProof(journal.listenerProof, proof) || journal.launch.server !== proof.serverEndpoint)
       return undefined;
     return journal.restore.target;
   }, { path: prepared.targetPath, changed: "target identity changed" });
@@ -2958,11 +2958,11 @@ function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: 
   }
 }
 
-function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<RestoreListenerProof> {
+function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<ListenerProof> {
   return proveBoundListener("resume", pending, pending.adoptProof, (proof) => {
     const journal = readMaintenanceJournal(pending.root);
     if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId ||
-        !journal.listenerProof || !sameRestoreListenerProof(journal.listenerProof, proof) ||
+        !journal.listenerProof || !sameListenerProof(journal.listenerProof, proof) ||
         journal.ordinaryResume.launch.server !== proof.serverEndpoint)
       return undefined;
     return journal.source;
