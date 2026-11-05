@@ -1,8 +1,9 @@
 /**
- * `cotal login` records the account name, against a REAL Better Auth instance: the device login
- * caches the name the IdP's JWT carries (email, else name, else preferred_username) beside the
- * session, and the provider's offline `userStatus` returns it with the login. A cache an older build
- * wrote, with no name, reads back as a login with no name. Chat sessions take this name by default.
+ * `cotal login` records a chat handle, against a REAL Better Auth instance: the device login caches
+ * the first of the JWT's preferred_username, email local part and name that is a chat name beside the
+ * session, and the provider's offline `userStatus` returns it with the login. When none is, or in a
+ * cache an older build wrote, the login reads back with no name. Chat sessions take this name by
+ * default. Better Auth mints no preferred_username, so its precedence is not exercised here.
  *
  * Loopback HTTP only; broker-free. Run: pnpm smoke:auth-login-name
  */
@@ -56,15 +57,22 @@ try {
   const status = () => cotalAuthProvider.userStatus({ store: { get: async () => undefined } as unknown as SecretStore, dir: spaceDir, space: "demo", actor: "cli" });
 
   const est = await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => approveDevice(idp, p.userCode) });
-  check("login records the account name the IdP gave (its email) beside the session",
-    est.label === EMAIL && loadIdpSession(home, base)?.name === EMAIL, loadIdpSession(home, base));
+  check("login records the email's local part as the handle, since the name \"Human 42\" is not a chat name, and still shows the email",
+    est.label === EMAIL && loadIdpSession(home, base)?.name === "human", { label: est.label, session: loadIdpSession(home, base) });
   const signedIn = await status();
-  check("userStatus returns the recorded account name with the login", signedIn.login?.sub === userId && signedIn.login?.name === EMAIL, signedIn);
+  check("userStatus returns the recorded handle with the login", signedIn.login?.sub === userId && signedIn.login?.name === "human", signedIn);
 
   const cached = loadIdpSession(home, base)!;
   saveIdpSession(home, base, { token: cached.token, expiresAt: cached.expiresAt, sub: userId });
   const older = await status();
   check("a login an older build cached has no name, and userStatus reports none", older.login?.sub === userId && older.login.name === undefined, older);
+
+  const other = await auth.api.signUpEmail({ body: { email: "a+b@example.test", password: "correct-horse-battery", name: "Human 42" }, returnHeaders: true });
+  const otherIdp = { base, origin, cookie: other.headers.get("set-cookie")!.split(";")[0]! };
+  const none = await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => approveDevice(otherIdp, p.userCode) });
+  const unnamed = await status();
+  check("a login whose local part and name are both not chat names records no handle",
+    none.label === "a+b@example.test" && loadIdpSession(home, base)?.name === undefined && unnamed.login?.sub === other.response.user.id && unnamed.login.name === undefined, { label: none.label, unnamed });
 } finally {
   server.close();
   rmSync(home, { recursive: true, force: true });

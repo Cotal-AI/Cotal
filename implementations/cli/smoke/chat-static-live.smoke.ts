@@ -188,14 +188,17 @@ try {
     check("a second session under the same name is warned at join, naming both ways to change it",
       new RegExp(`cotal chat: the name "${login}" is already in use here by \\S+ \\(chat session\\); a direct message to "${login}" refuses as ambiguous while both are present, so pass another --name, or save one with \`cotal config set name <name>\`, to be reached by name`).test(plain(second.err)), plain(second.err));
 
-    const saved = cli("config", "set", "name", "Ops Lead");
+    const spaced = cli("config", "set", "name", "Ops Lead");
+    check("a name an @mention cannot reach is refused as USAGE_INVALID with the rule",
+      spaced.status === 1 && plain(spaced.stdout + spaced.stderr).includes('a name is 1 to 128 letters, digits, "_", "." or "-", starting and ending with a letter, digit or "_", so an @mention can reach it'), plain(spaced.stdout + spaced.stderr));
+    const saved = cli("config", "set", "name", "ops-lead");
     const lead = session();
     opened.push(lead);
     lead.child.stdin.write(request({ type: "connection", id: "c0" }));
     await reply(lead, "c0");
     peer.child.stdin.write(request({ type: "roster", id: "r2" }));
     const after = await named(peer, "r2");
-    check("a name saved with cotal config set name replaces the OS login", saved.status === 0 && after.includes("Ops Lead"), { after, saved: plain(saved.stdout + saved.stderr) });
+    check("a name saved with cotal config set name replaces the OS login", saved.status === 0 && after.includes("ops-lead"), { after, saved: plain(saved.stdout + saved.stderr) });
   } finally {
     for (const s of opened) s.child.stdin.end();
     for (const s of opened) {

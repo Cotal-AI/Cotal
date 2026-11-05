@@ -3,7 +3,7 @@
  *
  * SCOPE, stated honestly: this checks the one decision of the name a chat session appears as
  * (`resolveChatName`), the rule every chat name is held to (`chatNameProblem`, also the `name`
- * preference's check), and the shared-name check a new session runs (`nameInUse`). The account name
+ * preference's check, which an @mention reaches whole), and the shared-name check a new session runs (`nameInUse`). The account name
  * comes from a recording auth provider registered under its own name; `@cotal-ai/auth`'s
  * `login-name.smoke` proves a real login records it, and `chat-static-live` proves `cotal chat` uses
  * the OS login.
@@ -13,7 +13,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registry, type AuthProvider, type UserAuthStatus } from "@cotal-ai/core";
+import { mentionsIn, registry, type AuthProvider, type UserAuthStatus } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { chatNameProblem } from "../src/chat-name.js";
 import { isCommandFailure, type CommandFailure } from "../src/output.js";
@@ -46,12 +46,16 @@ const refusal = async (p: Promise<unknown>): Promise<CommandFailure | undefined>
 
 try {
   console.log("1. chatNameProblem: the one rule for every chat name");
-  const RULE = "a name is 1 to 128 characters, not blank and without control characters";
-  check("an empty, blank, 129-character or control-character name is refused with the rule",
-    ["", "   ", "x".repeat(129), "bell\u0007", "del\u007f", "line\nbreak"].every((v) => chatNameProblem(v) === RULE));
-  check("a 128-character name, an email, spaces and slashes are accepted",
-    ["x".repeat(128), "human@example.test", "Ops Lead", "a/b\\c"].every((v) => chatNameProblem(v) === undefined));
-  check("the name preference is held to the same rule", preferenceValueProblem("name", " ")?.endsWith(RULE) === true && preferenceValueProblem("name", "Ops Lead") === undefined);
+  const RULE = 'a name is 1 to 128 letters, digits, "_", "." or "-", starting and ending with a letter, digit or "_", so an @mention can reach it';
+  const refused = ["", "   ", "x".repeat(129), "bell\u0007", "line\nbreak", "human@example.test", "Ops Lead", "a/b\\c", "wakebot.", "peer-", "-peer", ".peer", "a+b"];
+  check("an empty, blank, 129-character, control-character, email, spaced, slashed or edge-punctuated name is refused with the rule",
+    refused.every((v) => chatNameProblem(v) === RULE), refused.filter((v) => chatNameProblem(v) !== RULE));
+  const accepted = ["x".repeat(128), "x", "_", "human", "Ops.Lead", "ops_lead", "manas-k", "a.b-c_d9"];
+  check("a 128-character name and handles of letters, digits, _, . and - are accepted",
+    accepted.every((v) => chatNameProblem(v) === undefined), accepted.filter((v) => chatNameProblem(v) !== undefined));
+  check("an @mention of every accepted name gives the name back whole",
+    accepted.every((v) => JSON.stringify(mentionsIn(`@${v}`)) === JSON.stringify([v])), accepted.map((v) => mentionsIn(`@${v}`)));
+  check("the name preference is held to the same rule", preferenceValueProblem("name", "Ops Lead")?.endsWith(RULE) === true && preferenceValueProblem("name", "ops_lead") === undefined);
 
   console.log("2. open and static: the OS login, with no suffix");
   {
@@ -66,25 +70,25 @@ try {
 
   console.log("3. the flag, then the saved name, win over the mode's name");
   {
-    const flag = await resolveChatName(open, { flag: "alice", preferences: prefs("Ops Lead"), login: () => "manas" });
+    const flag = await resolveChatName(open, { flag: "alice", preferences: prefs("ops_lead"), login: () => "manas" });
     check("--name wins over a saved name and the OS login", flag.name === "alice" && flag.source === "flag" && flag.from === "--name", flag);
-    const saved = await resolveChatName(open, { preferences: prefs("Ops Lead"), login: () => "manas" });
-    check("a saved name wins over the OS login", saved.name === "Ops Lead" && saved.source === "preference" && saved.from === "your saved name", saved);
+    const saved = await resolveChatName(open, { preferences: prefs("ops_lead"), login: () => "manas" });
+    check("a saved name wins over the OS login", saved.name === "ops_lead" && saved.source === "preference" && saved.from === "your saved name", saved);
     statusCalls.length = 0;
-    const savedUser = await resolveChatName(user, { preferences: prefs("Ops Lead") });
-    check("a saved name wins in user mode without reading the sign-in", savedUser.name === "Ops Lead" && statusCalls.length === 0, { savedUser, statusCalls });
+    const savedUser = await resolveChatName(user, { preferences: prefs("ops_lead") });
+    check("a saved name wins in user mode without reading the sign-in", savedUser.name === "ops_lead" && statusCalls.length === 0, { savedUser, statusCalls });
     const badFlag = await refusal(resolveChatName(open, { flag: "", preferences: NONE }));
     check("a flag that fails the rule refuses with the --name remedy", badFlag?.code === "USAGE_INVALID" && badFlag.remedy === "pass another --name", badFlag);
   }
 
-  console.log("4. user: the account name recorded at cotal login");
+  console.log("4. user: the handle recorded at cotal login");
   {
-    status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "human@example.test" } };
+    status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "human" } };
     statusCalls.length = 0;
     let osRead = false;
     const a = await resolveChatName(user, { preferences: NONE, login: () => { osRead = true; return "manas"; } });
     check("a user space names the session the account name, read as the cli actor of that space",
-      a.name === "human@example.test" && a.source === "account" && a.from === `your sign-in at ${IDP}` && JSON.stringify(statusCalls) === JSON.stringify([{ space: "demo", actor: "cli" }]), { a, statusCalls });
+      a.name === "human" && a.source === "account" && a.from === `your sign-in at ${IDP}` && JSON.stringify(statusCalls) === JSON.stringify([{ space: "demo", actor: "cli" }]), { a, statusCalls });
     check("user mode never reads the OS login", !osRead);
 
     status = { idpUrl: IDP };
@@ -95,13 +99,13 @@ try {
 
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0 } };
     const nameless = await refusal(resolveChatName(user, { preferences: NONE, login: () => "manas" }));
-    check("a login with no recorded name refuses as USAGE_INVALID with both remedies",
-      nameless?.code === "USAGE_INVALID" && nameless.message === `your sign-in at ${IDP} has no account name on record, because it was made by an older cotal or the provider gave none`
+    check("a login with no recorded name refuses as AUTH_REQUIRED, since signing in again fixes it, with both remedies",
+      nameless?.code === "AUTH_REQUIRED" && nameless.message === `your sign-in at ${IDP} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`
         && nameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, or save a name with \`cotal config set name <name>\``, nameless);
 
-    status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "x".repeat(129) } };
+    status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "human@example.test" } };
     const long = await refusal(resolveChatName(user, { preferences: NONE }));
-    check("an account name that fails the rule refuses with the config remedy", long?.code === "USAGE_INVALID" && long.remedy === "save a name with `cotal config set name <name>`", long);
+    check("an account name an earlier build recorded that fails the rule refuses with the config remedy", long?.code === "USAGE_INVALID" && long.remedy === "save a name with `cotal config set name <name>`", long);
 
     const unknown = await refusal(resolveChatName({ ...user, userAuth: { ...user.userAuth!, provider: "absent-provider" } }, { preferences: NONE }));
     check("an unregistered auth provider refuses as UNSUPPORTED", unknown?.code === "UNSUPPORTED" && unknown.message.includes("absent-provider"), unknown);

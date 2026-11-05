@@ -2,29 +2,29 @@
   "suite": [
     "implementations/auth/smoke/login-name.smoke.ts"
   ],
-  "guard": "cotal login caches the account name the IdP gave beside the session, and the provider's userStatus returns it with the login, so a chat session can appear under it",
+  "guard": "cotal login caches a chat handle from the IdP's claims beside the session, and the provider's userStatus returns it with the login, so a chat session can appear under it",
   "command": "pnpm smoke:auth-login-name",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/login-name.json",
   "why": [
-    "A chat session in user mode appears under the name the IdP gave at login. Each mutation drops that name at one of the two places it travels: the login that caches it, and the offline status read that returns it. The suite imports @cotal-ai/auth from src, so no build is needed."
+    "A chat session in user mode appears under the handle recorded at login. Each mutation drops that name at one of the two places it travels: the login that caches it, and the offline status read that returns it. The suite imports @cotal-ai/auth from src, so no build is needed."
   ],
   "mutations": [
     {
       "name": "establishIdpSession does not save the name",
       "file": "implementations/auth/src/login.ts",
-      "find": "  if (label) session.name = label;\n",
+      "find": "  if (handle) session.name = handle;\n",
       "replace": "",
-      "expectRed": "login records the account name the IdP gave (its email) beside the session",
-      "cell": "login records the account name the IdP gave (its email) beside the session"
+      "expectRed": "login records the email's local part as the handle, since the name \"Human 42\" is not a chat name, and still shows the email",
+      "cell": "login records the email's local part as the handle, since the name \"Human 42\" is not a chat name, and still shows the email"
     },
     {
       "name": "userStatus drops the recorded name",
       "file": "implementations/auth/src/provider.ts",
       "find": "    const login = { sub: session.sub, expiresAt: session.expiresAt, ...(session.name ? { name: session.name } : {}) };",
       "replace": "    const login = { sub: session.sub, expiresAt: session.expiresAt };",
-      "expectRed": "userStatus returns the recorded account name with the login",
-      "cell": "userStatus returns the recorded account name with the login"
+      "expectRed": "userStatus returns the recorded handle with the login",
+      "cell": "userStatus returns the recorded handle with the login"
     }
   ]
 }

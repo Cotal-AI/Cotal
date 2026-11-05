@@ -6368,7 +6368,7 @@
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`your sign-in at ${idp} has no account name on record, because it was made by an older cotal or the provider gave none`",
+      "anchor": "`your sign-in at ${idp} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

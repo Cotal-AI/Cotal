@@ -143,12 +143,13 @@ cotal chat [<channel>] [--name <n>] [--plain | --stdio]   [--space <s>] [--serve
 
 `chat` opens one live session in the selected space, under an identity of its own. Each opening is
 a new principal with its own inbox and presence, so two windows are two sessions, and leaving ends
-the session. `--name` sets the name it appears as, 1 to 128 characters, not blank and without control
-characters; any other name is refused as `USAGE_INVALID`. Without `--name`, the session takes the `name`
+the session. `--name` sets the name it appears as. A name is 1 to 128 letters, digits, `_`, `.` or `-`, starting
+and ending with a letter, digit or `_`, so an `@name` in a message reaches it; any other name is
+refused as `USAGE_INVALID`. Without `--name`, the session takes the `name`
 you saved with `cotal config set name <name>` ([preferences](config.mdx#preferences)). With none saved,
-it takes your account name on a user-auth space, which `cotal login` records from the IdP, and your OS
-login on an open or static space. The name has no suffix, so an agent can mention you by it in every
-session. It carries no authority. A sign-in with no account name on record refuses as `USAGE_INVALID`
+it takes the handle `cotal login` records from the IdP on a user-auth space, and your OS login on an
+open or static space. The name has no suffix, so an agent can mention you by it in every
+session. It carries no authority. A sign-in with no handle on record refuses as `AUTH_REQUIRED`
 until you sign in again or save a name. When another live participant already carries the name, the
 session still opens and warns on stderr, naming that participant, because a direct message by the name
 refuses as ambiguous while both are present.

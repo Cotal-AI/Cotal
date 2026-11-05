@@ -2,12 +2,12 @@
   "suite": [
     "packages/workspace/smoke/chat-name.smoke.ts"
   ],
-  "guard": "a chat session's name is --name, else the saved name preference, else the account name in user mode or the OS login in open and static mode, with no suffix and no fallback across modes; every name is held to one rule; a name in use is found ignoring case",
+  "guard": "a chat session's name is --name, else the saved name preference, else the account name in user mode or the OS login in open and static mode, with no suffix and no fallback across modes; every name is held to one rule an @mention reaches; a name in use is found ignoring case",
   "command": "pnpm smoke:chat-name",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/chat-name.json",
   "why": [
-    "An agent reaches the human by name only when the name is stable and the human's to choose. Each mutation restores one way it was not: the random host suffix, a saved name that is ignored, a user-mode login problem hidden behind the OS login, a name with control characters, and a shared name missed because its letter case differs. The suite imports the workspace source, so no build is needed."
+    "An agent reaches the human by name only when the name is stable and the human's to choose. Each mutation restores one way it was not: the random host suffix, a saved name that is ignored, a user-mode login problem hidden behind the OS login, a name an @mention cannot reach, and a shared name missed because its letter case differs. The suite imports the workspace source, so no build is needed."
   ],
   "mutations": [
     {
@@ -35,12 +35,12 @@
       "cell": "no cached login refuses as AUTH_REQUIRED naming the login command, with no OS-login fallback"
     },
     {
-      "name": "the name rule admits control characters",
+      "name": "the name rule admits a name an @mention cannot reach",
       "file": "packages/workspace/src/chat-name.ts",
-      "find": " || /[\\u0000-\\u001f\\u007f]/u.test(value)",
-      "replace": "",
-      "expectRed": "an empty, blank, 129-character or control-character name is refused with the rule",
-      "cell": "an empty, blank, 129-character or control-character name is refused with the rule"
+      "find": "const MENTIONABLE = /^[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?$/;",
+      "replace": "const MENTIONABLE = /^\\S/u;",
+      "expectRed": "an empty, blank, 129-character, control-character, email, spaced, slashed or edge-punctuated name is refused with the rule",
+      "cell": "an empty, blank, 129-character, control-character, email, spaced, slashed or edge-punctuated name is refused with the rule"
     },
     {
       "name": "nameInUse compares case-sensitively",
