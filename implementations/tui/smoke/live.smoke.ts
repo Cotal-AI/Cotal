@@ -294,8 +294,9 @@ try {
   launch(209, 52, join(work, "switch.err"))
   await waitFor(live(space), "the launch folder's space live")
   await toTree()
-  // While a space opens there is no box, so the keys after the first enter still reach the tree.
-  keys(...times(40, "k"), "j", "Enter", ...times(40, "k"), "Enter")
+  // The enter that opens a space hands the keys to the box, as a space still opening does, so tab
+  // takes them back to the tree for the quick switch home.
+  keys(...times(40, "k"), "j", "Enter", "Tab", ...times(40, "k"), "Enter")
   await waitFor((f) => live(space)(f) || live(other)(f), "a space live after two quick switches")
   // A switch that finishes late lands after the first live frame, so give it time to.
   await new Promise((r) => setTimeout(r, 3000))
