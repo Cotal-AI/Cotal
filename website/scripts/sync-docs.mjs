@@ -85,6 +85,7 @@ const navigation = [
   { section: 'api-reference', title: 'API Reference', children: [
     page('docs/overview.mdx'),
     page('docs/api-reference.mdx'),
+    page('docs/mesh-commands.mdx'),
     group('CLI', [
       page('docs/cli.mdx'),
       group('Workstation', ['cli-usage', 'cli-installation', 'cli-selection'].map(name => page(`docs/${name}.mdx`))),
