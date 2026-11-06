@@ -39,10 +39,28 @@ A name, activation environment or inode after every reference was released is in
 These primitives do not install a descriptor store, authenticate a service invocation or
 complete the namespace adapter's cold recovery. Signalling an exited imported handle refuses.
 
+`handle.requestStorage(name)` sends its own duplicated descriptor through installed libsystemd
+with `FDPOLL=0`. `requestProcessStorageRemoval(name)` requests removal by name. Both use the
+calling process's systemd notification context and a bounded notification barrier off the JS
+thread. Completion proves processing, not acceptance or removal: full or disabled stores can
+silently refuse storage. The host must authenticate its service invocation and verify exact
+object metadata before admitting work, and verify removal separately. Missing library or
+notification context refuses. An unconfirmed result must be inspected before retrying.
+Names must be unique within the owned store and must not contain secrets. These calls neither
+configure a service nor select a different service when the current context is unavailable.
+
 The optional Linux development probe is `pnpm --filter @cotal-ai/seat probe:process-import
 <new-absolute-case-directory>` after building the package. It requires an existing systemd
 user manager, Python, unshare and Node; these are probe prerequisites, not new package
 dependencies. It preserves its case files and removes only its generated transient service.
+The optional `probe:service-storage` script takes the same new-directory argument and tests
+the real notification/store boundary. Its separate worker fixture requires an owned, deliberately
+non-reading notification socket; worker termination waits for the bounded native call.
+This transport uses the libuv worker pool for notification acknowledgment, not for process-exit
+observation. The five-second limit bounds the active barrier call, not worker-pool queueing
+or total request latency. There is no request cancellation API. Concurrent startup cost and
+pool contention remain unmeasured; a host must not treat its own timeout as cancellation of
+a submitted storage request.
 
 A process handle alone does not establish ownership or closure of its descendants, cancel
 remote effects, or promise at-most-once execution. These APIs do not enable the built-in

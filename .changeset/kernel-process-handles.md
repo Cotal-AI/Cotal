@@ -10,3 +10,5 @@ Capture connected Unix peers without a numeric-PID lookup, recover only matching
 Add an unregistered namespace adapter and packaged Node bootstrap for integration qualification. It does not make a new runtime selectable or enable automatic restart support.
 
 Expose retained kernel-object metadata and independently closeable copies. Import borrowed live or exited pidfds only against trusted same-boot receipts and matching pidfs identity; non-pidfds and thread-only handles refuse. Import does not install a descriptor store, authenticate service custody or complete cold Manager recovery.
+
+Request systemd descriptor storage and removal through installed libsystemd without exposing an owned descriptor. Bounded notification acknowledgments run off the JS thread and do not prove store acceptance; hosts must independently verify service custody and exact object metadata.

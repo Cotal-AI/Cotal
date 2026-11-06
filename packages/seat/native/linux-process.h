@@ -3,6 +3,7 @@
  * are borrowed and duplicated; the owned descriptor number never escapes to JS. */
 #ifdef __linux__
 #include <fcntl.h>
+#include <dlfcn.h>
 #include <uv.h>
 #include <limits.h>
 #include <inttypes.h>
@@ -467,7 +468,113 @@ static napi_value CancelProcessWait(napi_env env, napi_callback_info info) {
   return out;
 }
 
+/* libsystemd owns notification/barrier semantics. The bounded blocking acknowledgment
+ * runs off the JS thread. A processed request is not proof that the fdstore accepted it. */
+typedef struct {
+  int fd;
+  char name[129];
+  char error[256];
+  napi_deferred deferred;
+  napi_async_work work;
+} ProcessStorage;
+
+static void ExecuteProcessStorage(napi_env env, void *data) {
+  (void)env;
+  ProcessStorage *request = data;
+  void *library = dlopen("libsystemd.so.0", RTLD_NOW | RTLD_LOCAL);
+  if (!library) { snprintf(request->error, sizeof(request->error), "libsystemd.so.0 is required for process storage"); return; }
+  typedef int (*NotifyFds)(pid_t, int, const char *, const int *, unsigned);
+  typedef int (*Notify)(int, const char *);
+  typedef int (*Barrier)(int, uint64_t);
+  NotifyFds notify_fds = (NotifyFds)dlsym(library, "sd_pid_notify_with_fds");
+  Notify notify = (Notify)dlsym(library, "sd_notify");
+  Barrier barrier = (Barrier)dlsym(library, "sd_notify_barrier");
+  if (!notify_fds || !notify || !barrier) {
+    snprintf(request->error, sizeof(request->error), "required systemd notification APIs are unavailable");
+    dlclose(library);
+    return;
+  }
+  char message[192];
+  snprintf(message, sizeof(message), "%s\nFDNAME=%s", request->fd >= 0 ? "FDSTORE=1\nFDPOLL=0" : "FDSTOREREMOVE=1", request->name);
+  int result = request->fd >= 0 ? notify_fds(0, 0, message, &request->fd, 1) : notify(0, message);
+  if (result <= 0) snprintf(request->error, sizeof(request->error), "process storage notification unavailable or failed (%d)", result);
+  else {
+    result = barrier(0, 5000000);
+    if (result <= 0) snprintf(request->error, sizeof(request->error), "process storage acknowledgment unconfirmed (%d); inspect before retry", result);
+  }
+  dlclose(library);
+}
+
+static void CompleteProcessStorage(napi_env env, napi_status status, void *data) {
+  ProcessStorage *request = data;
+  if (request->fd >= 0) close(request->fd);
+  napi_value value;
+  if (status != napi_ok || request->error[0]) {
+    napi_value code, message;
+    napi_create_string_utf8(env, "ERR_PROCESS_STORAGE_UNCONFIRMED", NAPI_AUTO_LENGTH, &code);
+    napi_create_string_utf8(env, request->error[0] ? request->error : "process storage operation cancelled; outcome unconfirmed", NAPI_AUTO_LENGTH, &message);
+    napi_create_error(env, code, message, &value);
+    napi_reject_deferred(env, request->deferred, value);
+  } else {
+    napi_get_undefined(env, &value);
+    napi_resolve_deferred(env, request->deferred, value);
+  }
+  napi_delete_async_work(env, request->work);
+  free(request);
+}
+
+/* Owns fd immediately; removal uses -1 and never obtains a process descriptor. */
+static napi_value QueueProcessStorage(napi_env env, int fd, napi_value name) {
+  char text[129];
+  size_t length = 0;
+  if (napi_get_value_string_utf8(env, name, NULL, 0, &length) != napi_ok || length == 0 || length > 128 ||
+      napi_get_value_string_utf8(env, name, text, sizeof(text), &length) != napi_ok) {
+    if (fd >= 0) close(fd);
+    return ProcessError(env, NULL, "process storage name must be 1-128 ASCII letters, digits, underscores or hyphens");
+  }
+  for (size_t i = 0; i < length; i++) {
+    char c = text[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+      if (fd >= 0) close(fd);
+      return ProcessError(env, NULL, "invalid process storage name");
+    }
+  }
+  ProcessStorage *request = calloc(1, sizeof(*request));
+  if (!request) { if (fd >= 0) close(fd); return ProcessError(env, "ENOMEM", "cannot allocate process storage request"); }
+  request->fd = fd;
+  memcpy(request->name, text, length + 1);
+  napi_value promise, resource;
+  if (napi_create_promise(env, &request->deferred, &promise) != napi_ok ||
+      napi_create_string_utf8(env, "CotalProcessStorage", NAPI_AUTO_LENGTH, &resource) != napi_ok ||
+      napi_create_async_work(env, NULL, resource, ExecuteProcessStorage, CompleteProcessStorage, request, &request->work) != napi_ok ||
+      napi_queue_async_work(env, request->work) != napi_ok) {
+    if (request->work) napi_delete_async_work(env, request->work);
+    if (fd >= 0) close(fd);
+    free(request);
+    return ProcessError(env, NULL, "cannot queue process storage request");
+  }
+  return promise;
+}
+
+static napi_value RequestProcessStorage(napi_env env, napi_callback_info info) {
+  napi_value argv[2];
+  if (!ProcessArgs(env, info, 2, argv)) return NULL;
+  ProcessHandle *handle = ReadProcess(env, argv[0], 0);
+  if (!handle) return NULL;
+  int fd = fcntl(handle->fd, F_DUPFD_CLOEXEC, 0);
+  if (fd < 0) return ProcessError(env, NULL, strerror(errno));
+  return QueueProcessStorage(env, fd, argv[1]);
+}
+
+static napi_value RequestProcessStorageRemoval(napi_env env, napi_callback_info info) {
+  napi_value argv[1];
+  if (!ProcessArgs(env, info, 1, argv)) return NULL;
+  return QueueProcessStorage(env, -1, argv[0]);
+}
+
 static void ExportProcesses(napi_env env, napi_value exports) {
+  Export(env, exports, "requestProcessStorage", RequestProcessStorage);
+  Export(env, exports, "requestProcessStorageRemoval", RequestProcessStorageRemoval);
   Export(env, exports, "capturePeerProcess", CapturePeerProcess);
   Export(env, exports, "openProcessCandidate", OpenProcessCandidate);
   Export(env, exports, "importProcess", ImportProcess);

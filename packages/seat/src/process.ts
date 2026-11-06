@@ -34,6 +34,7 @@ export interface LinuxProcessHandle {
   readonly identity: Readonly<LinuxProcessIdentity>;
   readonly kernel: Readonly<LinuxProcessKernelIdentity>;
   retain(): LinuxProcessHandle;
+  requestStorage(name: string): Promise<void>;
   hasExited(): boolean;
   waitForExit(options?: { signal?: AbortSignal }): Promise<void>;
   signal(signal: NodeJS.Signals): void;
@@ -46,6 +47,8 @@ type ProcessNative = {
   openProcessCandidate(pid: number): NativeHandle;
   importProcess(fd: number): NativeHandle;
   duplicateProcess(handle: NativeHandle): NativeHandle;
+  requestProcessStorage(handle: NativeHandle, name: string): Promise<void>;
+  requestProcessStorageRemoval(name: string): Promise<void>;
   processKernelIdentity(handle: NativeHandle): LinuxProcessKernelIdentity;
   processPid(handle: NativeHandle): number;
   hasProcessExited(handle: NativeHandle): boolean;
@@ -101,6 +104,10 @@ class KernelProcess implements LinuxProcessHandle {
     const handle = this.#native.duplicateProcess(this.#handle);
     try { return new KernelProcess(this.#native, handle, this.identity); }
     catch (error) { this.#native.closeProcess(handle); throw error; }
+  }
+
+  requestStorage(name: string): Promise<void> {
+    return this.#native.requestProcessStorage(this.#handle, name);
   }
 
   hasExited(): boolean { return this.#native.hasProcessExited(this.#handle); }
@@ -199,4 +206,12 @@ export function importProcess(fd: number, receipt: LinuxProcessReceipt): LinuxPr
     if (!native.hasProcessExited(handle)) assertIdentity(identity, snapshot(native, handle));
     return new KernelProcess(native, handle, identity);
   } catch (error) { native.closeProcess(handle); throw error; }
+}
+
+/** Request removal from this process's systemd service fdstore by an authenticated owned name.
+ * Completion means the notification barrier was processed, not that the named descriptor was
+ * present or removed. The host must verify its exact objects before and after this request.
+ * Names are visible in service metadata and must never contain secrets. */
+export function requestProcessStorageRemoval(name: string): Promise<void> {
+  return nativeProcesses().requestProcessStorageRemoval(name);
 }
