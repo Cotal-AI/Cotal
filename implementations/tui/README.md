@@ -134,8 +134,8 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   each refusal off the screen: no recipient, unknown commands, the post grant and an unreachable
   broker. It also covers watching unseen while you type, the first `enter` opening
   the session and sending, your name turning gold, the shared-name warning, `/quit` and the
-  two-step reopen, a space switch that closes the session and keeps the draft, `ctrl+c` with a
-  draft, and Change your name.
+  two-step reopen, a space switch that closes the session and keeps the draft, a space switch while
+  the first message opens its session, `ctrl+c` with a draft, and Change your name.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
