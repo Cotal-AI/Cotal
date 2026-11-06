@@ -45,8 +45,9 @@ the tree, the feed and the waiting list, and yours is gold.
 The cursor starts in the input box. `tab` moves it to the tree, where the arrows or `j` and `k`
 move, `enter` opens the row and returns to the box, and `esc` or `tab` returns without opening.
 The letter keys work only in the tree: `w` opens the next waiting agent and `1`-`9` a specific one,
-`D` stops an agent, `?` lists the keys and `q` quits. `ctrl+p` opens the commands and `ctrl+c`
-quits from anywhere.
+`D` stops an agent, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
+before it is on screen, so a letter typed for it runs no tree key; `tab` moves them to the tree.
+`ctrl+p` opens the commands and `ctrl+c` quits from anywhere.
 
 While a space is open the app asks its managers every 10 seconds which agents they run. A managed
 agent's overview adds its runtime (such as `pty`), whether its process is running, and the uptime the

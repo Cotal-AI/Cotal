@@ -46,6 +46,7 @@ const reason = (e: Extract<Entry, { kind: "unusable" }>) => (e.message.startsWit
 export function Shell(props: { quit: (farewell?: string) => void; readCatalog: () => Promise<Catalog>; openSpace: (space?: string) => Promise<Session> }) {
   const theme = useTheme()
   const dialog = useDialog()
+  const keymap = Keymap.use()
   const toast = useToast()
   const dims = useTerminalDimensions()
   const [load, setLoad] = createSignal<Load>({ phase: "loading" })
@@ -104,7 +105,9 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     if (seen()[o.channel] !== arrivals) setSeen((s) => ({ ...s, [o.channel!]: arrivals }))
   })
 
-  const composing = () => focus() === "box" && box() !== undefined
+  // The box has the keys while it is on screen or on its way, as a space opens or the composer
+  // loads. A catalog entry's page and a space that failed or closed have no box, so the tree has them.
+  const composing = () => focus() === "box" && open().kind !== "entry" && conn().phase !== "failed" && conn().phase !== "closed"
   const toBox = () => {
     setCursor(undefined)
     setFocus("box")
@@ -510,6 +513,11 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const u = ui()
     return !notice() && m && t && u ? { mesh: m, talk: t, Composer: u.Composer } : undefined
   }
+  // Until the box is on screen, a letter typed for it runs no tree command; tab hands the keys to the tree.
+  createEffect(() => {
+    if (composing() && !box() && dialog.stack.length === 0) onCleanup(keymap.mode.push("hold"))
+  })
+  Keymap.createLayer(() => ({ mode: "hold", commands: [{ id: "cotal.hold.tree", bind: "tab", title: "Move to the tree", group: "Move", run: () => void setFocus("tree") }] }))
 
   const Middle = () => (
     <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} minWidth={0} minHeight={0}>
