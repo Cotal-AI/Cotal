@@ -89,10 +89,11 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const m = mesh()
     return m ? draftKey(m.status.space, open()) : undefined
   }
-  const quoted = () => {
+  // A memo, so the scroll effect below runs when the quote moves, not on every snapshot or keystroke.
+  const quoted = createMemo(() => {
     const k = draftHere()
     return k ? composer().drafts[k]?.reply?.id : undefined
-  }
+  })
   const items = createMemo(() => treeItems(entries(), conn(), seen(), self()))
   const rows = createMemo(() => items().filter((i): i is Row => i.kind !== "header"))
   // With no row chosen in the tree, the cursor rests on the open conversation's row.
@@ -130,8 +131,9 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const quoteRow = (e: FeedEntry) => {
     const u = ui()
     const k = draftHere()
-    if (!u || !k) return
-    setComposer((s) => u.quoteRow(s, k, e, self() ?? ""))
+    const t = talk()
+    if (!u || !k || !t) return
+    setComposer((s) => u.quoteRow(s, k, e, t.isYou))
     toBox()
   }
   // A quote moved off screen scrolls into view; with none the conversation follows its newest row again.

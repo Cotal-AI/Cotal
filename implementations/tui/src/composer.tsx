@@ -42,10 +42,6 @@ export function Composer(props: {
   const key = () => draftKey(props.space, props.open)
   const draft = () => props.state.drafts[key()]
   const recipient = () => draft()?.reply?.to ?? conversationRecipient(props.open, props.mesh)
-  const self = () => {
-    const p = props.talk.phase()
-    return p.phase === "open" ? p.identity.principal : undefined
-  }
   const nextName = () => {
     const n = props.talk.name()
     return n.state === "ok" ? n.name.name : undefined
@@ -123,7 +119,7 @@ export function Composer(props: {
         return props.setState((s) => ({ ...s, notice: { key: k, ...out } }))
       }
       case "reply-latest":
-        return props.setState((s) => replyFrom(s, k, props.talk.latest(), self() ?? ""))
+        return props.setState((s) => replyFrom(s, k, props.talk.latest(), props.talk.isYou))
       case "end": {
         const closed = await props.talk.end()
         return props.setState((s) => ({ ...s, notice: { key: k, tone: closed?.clean === false ? "waiting" : "ok", lines: [closed ? closed.summary : "no session was open"] } }))
@@ -148,7 +144,7 @@ export function Composer(props: {
     commands: [{ id: "cotal.compose.tree", bind: "tab", title: "Move to the tree", group: "Move", run: () => props.toTree() }],
   }))
   // With text in the box, the arrows move its cursor.
-  const step = (by: -1 | 1) => props.setState((s) => walk(s, key(), quotable(props.feed, self() ?? ""), self() ?? "", by))
+  const step = (by: -1 | 1) => props.setState((s) => walk(s, key(), quotable(props.feed, props.talk.isYou), props.talk.isYou, by))
   Keymap.createLayer(() => ({
     mode: "compose",
     enabled: (draft()?.text ?? "") === "",

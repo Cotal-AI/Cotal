@@ -139,6 +139,20 @@ export function unsent(state: ComposerState): ComposerState {
 
 type Quotable = Answerable & { text: string }
 
+/** Whether a sender is the human, under the open session or an earlier one. */
+export type You = (who: FeedEntry["from"]) => boolean
+
+/** Where a reply to `m` goes. The reply rule refuses a direct message from `self`, and each of the
+ *  human's sessions has its own principal, so a message from an earlier one counts as `self` too. */
+const answer = (m: Answerable, you: You) => replyRecipient(m, you(m.from) ? m.from.id : "")
+
+/** A burst coalesced into one row keeps its first copy's id, so the row answers only when that copy
+ *  came to the human. */
+function rowAnswer(e: FeedEntry, you: You): Recipient | { readonly refused: string } {
+  if ((e.count ?? 1) > 1 && !you({ id: e.toIds?.[0] ?? "", name: e.toNames?.[0] ?? "" })) return { refused: "that message went to several recipients; open its sender in the tree to answer" }
+  return answer(answerable(e), you)
+}
+
 /** A conversation row as the reply rule reads it. */
 const answerable = (e: FeedEntry): Quotable => ({
   id: e.id,
@@ -148,22 +162,21 @@ const answerable = (e: FeedEntry): Quotable => ({
   text: e.text,
 })
 
-/** Quotes `m` in the draft for `key`, keeping its text. The reply rule picks the recipient. */
-function quote(state: ComposerState, key: DraftKey, m: Quotable, self: string): ComposerState {
-  const to = replyRecipient(m, self)
+/** Quotes `m` in the draft for `key`, keeping its text. `to` is where the reply rule sends it. */
+function quote(state: ComposerState, key: DraftKey, m: Quotable, to: Recipient | { readonly refused: string }): ComposerState {
   if ("refused" in to) return { ...state, notice: { key, tone: "failed", lines: [to.refused] } }
   const line = m.text.split("\n")[0]!
   return { ...withDraft(state, key, { text: state.drafts[key]?.text ?? "", reply: { id: m.id, to, from: m.from.name, line } }), notice: undefined }
 }
 
 /** `/reply`: quote the newest direct message the session received in the draft for `key`. */
-export function replyFrom(state: ComposerState, key: DraftKey, m: Quotable | undefined, self: string): ComposerState {
+export function replyFrom(state: ComposerState, key: DraftKey, m: Quotable | undefined, you: You): ComposerState {
   if (!m) return { ...state, notice: { key, tone: "failed", lines: ["no direct message to this session to reply to yet"] } }
-  return quote(state, key, m, self)
+  return quote(state, key, m, answer(m, you))
 }
 
 /** Quotes a conversation row, as a click or `↑` `↓` picks it. */
-export const quoteRow = (state: ComposerState, key: DraftKey, e: FeedEntry, self: string) => quote(state, key, answerable(e), self)
+export const quoteRow = (state: ComposerState, key: DraftKey, e: FeedEntry, you: You) => quote(state, key, answerable(e), rowAnswer(e, you))
 
 /** `esc`: the draft drops its quote and keeps its text. */
 export function unquote(state: ComposerState, key: DraftKey): ComposerState {
@@ -171,16 +184,16 @@ export function unquote(state: ComposerState, key: DraftKey): ComposerState {
   return d?.reply ? withDraft(state, key, { text: d.text }) : state
 }
 
-/** The conversation rows a quote moves through, oldest first: event traffic and the session's own
- *  direct messages answer nothing, so they are passed over. */
-export const quotable = (feed: readonly FeedEntry[], self: string) => feed.filter((e) => !e.events && !("refused" in replyRecipient(answerable(e), self)))
+/** The conversation rows a quote moves through, oldest first: event traffic and the rows the reply
+ *  rule refuses, such as the human's own direct messages, are passed over. */
+export const quotable = (feed: readonly FeedEntry[], you: You) => feed.filter((e) => !e.events && !("refused" in rowAnswer(e, you)))
 
 /** `↑` (-1) or `↓` (1) on an empty box moves the quote through `rows`. With no quote, or one not
  *  among them, it starts below the newest. `↑` stops at the oldest; `↓` past the newest drops it. */
-export function walk(state: ComposerState, key: DraftKey, rows: readonly FeedEntry[], self: string, by: -1 | 1): ComposerState {
+export function walk(state: ComposerState, key: DraftKey, rows: readonly FeedEntry[], you: You, by: -1 | 1): ComposerState {
   const at = rows.findIndex((e) => e.id === state.drafts[key]?.reply?.id)
   const next = (at < 0 ? rows.length : at) + by
   if (next >= rows.length) return unquote(state, key)
   const e = rows[Math.max(0, next)]
-  return e ? quoteRow(state, key, e, self) : state
+  return e ? quoteRow(state, key, e, you) : state
 }
