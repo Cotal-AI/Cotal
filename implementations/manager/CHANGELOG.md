@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.147.0
+
+### Patch Changes
+
+- f3cc268: Keep a stopped seat's runtime custody reference during manager shutdown.
+  
+  Shutdown now passes the same owned handle reference into retirement as per-agent teardown, so the runtime reaper can address recorded work before footprint cleanup. Runtime exit and ownership checks are unchanged.
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+  - @cotal-ai/workspace@0.147.0
+  - @cotal-ai/seat@0.147.0
+
 ## 0.146.0
 
 ### Minor Changes
