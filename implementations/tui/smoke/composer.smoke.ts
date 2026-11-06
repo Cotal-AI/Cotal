@@ -161,6 +161,8 @@ function click(text: string) {
   const x = [...rows[y]!.slice(0, rows[y]!.indexOf(text))].length + 1
   type(`\x1b[<0;${x};${y + 1}M\x1b[<0;${x};${y + 1}m`)
 }
+/** Mouse-wheel turns up over the conversation column, as a terminal reports them in SGR mouse mode. */
+const wheelUp = (width: number, n: number) => type(`\x1b[<64;${layoutFor(width).tree + 4};6M`.repeat(n))
 const textOf = (m: CotalMessage) => (m.parts ?? []).map((p) => ("text" in p ? p.text : "")).join("")
 
 type Peer = { name: string; id: string; ep: CotalEndpoint; got: CotalMessage[] }
@@ -541,6 +543,18 @@ async function run(s: Space, width: number, height: number, tag: string) {
     JSON.stringify({ want: shipMsg?.id, got: toPlanner2.filter((m) => textOf(m) === shipReply) }),
   )
 
+  if (s.mode === "open") {
+    const burst = `standup in 5 (${tag})`
+    await planner.ep.unicast(s.peer("coder-2/coder").id, burst)
+    await planner.ep.unicast(principal, burst)
+    await see((f) => inFeed(f, burst))
+    keys("Up")
+    const burstPick = await see(has("↳ "), 3000).catch(() => capture())
+    save("burst-quote")
+    check(`${at}: ↑ passes over a direct-message burst whose first copy went to another agent, so no reply names that copy`, !burstPick.includes("↳ planner: “standup in 5") && quoting("planner", "ship it today?")(burstPick), burstPick)
+    await esc()
+  }
+
   const before = (await general()).length
   const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
   save("unknown-slash")
@@ -607,6 +621,17 @@ async function run(s: Space, width: number, height: number, tag: string) {
   const left = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)
   save("quit")
   check(`${at}: /quit ends the session: its roster row goes offline${s.connections ? " and its connection closes" : ""}, and the box says enter opens a new one`, says(quit, `you ended it · enter opens a new one as ${login}`) && (gone === undefined || gone.status === "offline") && left === 0, quit)
+
+  await openRow(s, "planner")
+  const walked: string[] = []
+  for (let i = 0; i < 8; i++) {
+    keys("Up")
+    await sleep(250)
+    walked.push(capture())
+  }
+  save("quote-after-quit")
+  check(`${at}: after /quit, ↑ in planner's conversation quotes none of the human's own direct messages from the ended session`, walked.every((f) => !f.includes(`↳ ${login}:`)), walked.find((f) => f.includes(`↳ ${login}:`)) ?? walked.at(-1)!)
+  await esc()
 
   await toTree()
   keys("w")
@@ -690,6 +715,23 @@ async function run(s: Space, width: number, height: number, tag: string) {
   const third = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal && p.card.id !== principal2)
   const byeSent = await until(dms, (h) => h.some((m) => textOf(m) === bye))
   check(`${at}: back on the space, the first enter opens a new session and answers in one step`, !!third && byeSent.some((m) => textOf(m) === bye && m.from.id === third.card.id), JSON.stringify(byeSent.filter((m) => textOf(m) === bye)))
+
+  const backlog = Array.from({ length: 50 }, (_, i) => `ops line ${i} (${tag})`)
+  for (const t of backlog) await planner.ep.multicast(t, { channel: "ops" })
+  await openRow(s, "#ops")
+  const newest = backlog.at(-1)!
+  await see((f) => inFeed(f, newest))
+  wheelUp(width, 20)
+  const scrolled = await see((f) => !inFeed(f, newest), 3000).catch(() => capture())
+  await planner.ep.multicast(`meanwhile in general (${tag})`, { channel: "general" })
+  await sleep(1500)
+  const held = capture()
+  save("scrolled-back")
+  check(`${at}: the conversation scrolled back with the wheel stays there while the space updates`, !inFeed(scrolled, newest) && !inFeed(held, newest), held)
+  keys("Up")
+  await see(has("↳ "))
+  await esc()
+  await see((f) => inFeed(f, newest))
 
   keys("C-c")
   const asked = await see(has("Quit with 1 unsent draft?"), 4000)
