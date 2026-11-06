@@ -741,6 +741,44 @@ async function rename(s: Space, tag: string) {
   await see(has("EXIT=0"), 15000)
 }
 
+/** Enter on the first message, then a switch to the other space before the session that enter opens
+ *  is up. The message still goes where it was typed, and the box sends again in the new space. */
+async function switchWhileOpening(s: Space, tag: string) {
+  const at = `${s.mode} 209x52`
+  const err = join(work, `${s.mode}-switch.err`)
+  launch(s.root, 209, 52, err)
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
+  const first = `sent as the space switched (${tag})`
+  type(first)
+  await see((f) => middleLines(f, 209).includes(first), 4000)
+  // One write, so the switch lands while the session the enter opens is still coming up.
+  keys("Enter", "Tab", ...times(40, "k"), ...times(s.other.row, "j"), "Enter")
+  const switched = await see(live(s.other.space), 20000)
+  const landed = await until(() => s.reader.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === first))
+  check(
+    `${at}: enter, then a switch to ${s.other.space} while the session opens: the message lands once in #general on ${s.space}`,
+    landed.filter((m) => textOf(m) === first).length === 1,
+    `stderr: ${readFileSync(err, "utf8")}\n${switched}`,
+  )
+  const other = new CotalEndpoint({ space: s.other.space, servers: server, card: { name: "reader", kind: "endpoint" }, consume: false, registerPresence: false })
+  other.on("error", () => {})
+  started.push(other)
+  await other.start()
+  const next = `first on ${s.other.space} (${tag})`
+  type(next)
+  keys("Enter")
+  const there = await until(() => other.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === next))
+  const after = capture()
+  writeFileSync(join(captures, `${s.mode}-switch-while-opening.txt`), after)
+  check(
+    `${at}: after that switch, enter on ${s.other.space} opens a session there and sends`,
+    there.some((m) => textOf(m) === next) && !middle(after, 209).includes("still being sent"),
+    `stderr: ${readFileSync(err, "utf8")}\n${after}`,
+  )
+  keys("C-c")
+  await see(has("EXIT=0"), 15000)
+}
+
 let stackUp = false
 try {
   const open = await openSpace()
@@ -763,6 +801,7 @@ try {
       }
     }
   for (const s of [open, stat]) await rename(s, s.mode)
+  await switchWhileOpening(open, "sw")
 } finally {
   try {
     tmux("kill-server")

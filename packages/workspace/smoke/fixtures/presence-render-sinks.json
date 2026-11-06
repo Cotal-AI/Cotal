@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 979,
+    "total": 981,
     "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 761
+    "non-render/control": 763
   },
   "renderers": [
     {
@@ -6882,6 +6882,13 @@
     },
     {
       "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "\"chat\" || (p.status !== \"offline\" && p.card.id !== self))",
+      "class": "non-render/control",
+      "rationale": "App tree endpoints: the offline filter that leaves an ended chat session out of the tree; it picks rows and renders no status word."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
       "kind": "derived-output",
       "anchor": "`${live}/${mesh.agents.length}`",
       "class": "presence-only-glyph/count",
@@ -7137,6 +7144,13 @@
       "anchor": "s.setStatus(command.status, command.activity)",
       "class": "command-ack",
       "rationale": "App /status: sets the human session's own presence as cotal chat's /status does; the outcome line acknowledges the command."
+    },
+    {
+      "path": "implementations/tui/src/talk.ts",
+      "kind": "derived-output",
+      "anchor": "return talk",
+      "class": "non-render/control",
+      "rationale": "App chat session: returns the session object, whose /status method sets presence; the return renders nothing."
     }
   ]
 }

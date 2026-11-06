@@ -57,7 +57,9 @@ export interface Talk {
   /** Opens a session when none is open. Never sends. A static or user session may post to
    *  `postTo` only. */
   open(postTo?: string): Promise<void>
-  publish(to: Recipient, text: string): Promise<PublishResult>
+  /** Sends `text`. With `first`, the session opens first, and nothing is sent, which resolves
+   *  undefined, when it does not open. A space that closes waits for the send, its open included. */
+  publish(to: Recipient, text: string, first?: { postTo?: string }): Promise<PublishResult | undefined>
   slash(command: AppSlash): Promise<Outcome>
   /** The newest direct message or role task the session received. */
   latest(): SessionMessage | undefined
@@ -125,6 +127,9 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
   let messages: SessionMessage[] = []
   let sending: Promise<unknown> | undefined
   let ending = false
+  // `closing` refuses a new session once the space closes; `shut` follows once the close stops
+  // waiting for a send in flight, and closes a session still opening as soon as it opens.
+  let closing = false
   let shut = false
 
   const resolveName = async (): Promise<ChatName | undefined> => {
@@ -157,13 +162,13 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
     return n.state === "ok" ? n.name.name : undefined
   }
 
-  return {
+  const talk: Talk = {
     phase,
     name,
     own,
     open: async (postTo) => {
       const p = phase().phase
-      if (shut || p === "opening" || p === "open") return
+      if (closing || p === "opening" || p === "open") return
       setPhase({ phase: "opening", name: current() ?? "" })
       const found = await resolveName()
       if (shut) return
@@ -196,25 +201,28 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       const inUse = await nameInUse(s)
       if (inUse && session === s) setPhase((cur) => (cur.phase === "open" ? { ...cur, shared: nameInUseText(inUse, NAME_REMEDY) } : cur))
     },
-    publish: async (to, text) => {
-      const s = session
-      if (!s) return { outcome: "refused", code: "USAGE_INVALID", message: "no chat session is open" }
-      const p = publishTo(s, to, text)
-      sending = p
-      const r = await p.finally(() => (sending = undefined))
-      if (r.outcome === "stored" && to.kind !== "channel") {
-        const id = s.identity()
-        const row: FeedEntry = {
-          id: r.messageId,
-          ts: Date.now(),
-          from: { id: id.principal, name: id.label },
-          ...(to.kind === "role" ? { delivery: "anycast" as const, toService: to.role } : { delivery: "unicast" as const, toIds: r.recipient ? [r.recipient.id] : [], toNames: r.recipient ? [r.recipient.name] : [] }),
-          ...(to.kind === "peer" && to.replyTo ? { replyTo: to.replyTo } : {}),
-          text,
+    publish: (to, text, first) => {
+      const p = (async () => {
+        if (first) await talk.open(first.postTo)
+        const s = session
+        if (!s) return first ? undefined : ({ outcome: "refused", code: "USAGE_INVALID", message: "no chat session is open" } as const)
+        const r = await publishTo(s, to, text)
+        if (r.outcome === "stored" && to.kind !== "channel") {
+          const id = s.identity()
+          const row: FeedEntry = {
+            id: r.messageId,
+            ts: Date.now(),
+            from: { id: id.principal, name: id.label },
+            ...(to.kind === "role" ? { delivery: "anycast" as const, toService: to.role } : { delivery: "unicast" as const, toIds: r.recipient ? [r.recipient.id] : [], toNames: r.recipient ? [r.recipient.name] : [] }),
+            ...(to.kind === "peer" && to.replyTo ? { replyTo: to.replyTo } : {}),
+            text,
+          }
+          setOwn((o) => ({ ...o, sent: [...o.sent, safe(row)].slice(-OWN_ROWS) }))
         }
-        setOwn((o) => ({ ...o, sent: [...o.sent, safe(row)].slice(-OWN_ROWS) }))
-      }
-      return r
+        return r
+      })()
+      sending = p
+      return p.finally(() => (sending = undefined))
     },
     slash: async (command) => {
       const s = session
@@ -244,8 +252,9 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       return undefined
     },
     close: async (graceMs = QUIT_MS) => {
-      shut = true
+      closing = true
       if (sending) await Promise.race([sending, new Promise((r) => setTimeout(r, graceMs))])
+      shut = true
       unsubscribe?.()
       const s = session
       session = undefined
@@ -254,4 +263,5 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       return report ? closed(s.identity(), report) : { clean: false, summary: `the session did not finish closing within ${graceMs / 1000} seconds; messages already sent remain under the space's retention policy` }
     },
   }
+  return talk
 }

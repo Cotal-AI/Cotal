@@ -1,5 +1,5 @@
 import type { InputRenderable, RGBA, TextareaRenderable } from "@opentui/core"
-import { parseRecipient, type Recipient } from "@cotal-ai/workspace/chat"
+import { parseRecipient, type PublishResult, type Recipient } from "@cotal-ai/workspace/chat"
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
@@ -107,12 +107,15 @@ export function Composer(props: {
       case "open":
         return props.talk.open(effect.postTo)
       case "publish": {
-        if (effect.open) {
-          await props.talk.open(effect.open.postTo)
-          if (props.talk.phase().phase !== "open") return props.setState(unsent)
+        // Read before the wait, since a space switch or a catalog entry can unmount the box while
+        // the send is out, and the send settles either way.
+        const talk = props.talk
+        let result: PublishResult | undefined
+        try {
+          result = await talk.publish(effect.to, effect.text, effect.open)
+        } finally {
+          props.setState((s) => (result ? settled(s, result) : unsent(s)))
         }
-        const result = await props.talk.publish(effect.to, effect.text)
-        props.setState((s) => settled(s, result))
         return show(k)
       }
       case "slash": {

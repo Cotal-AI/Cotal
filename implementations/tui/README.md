@@ -45,8 +45,9 @@ the tree, the feed and the waiting list, and yours is gold.
 The cursor starts in the input box. `tab` moves it to the tree, where the arrows or `j` and `k`
 move, `enter` opens the row and returns to the box, and `esc` or `tab` returns without opening.
 The letter keys work only in the tree: `w` opens the next waiting agent and `1`-`9` a specific one,
-`D` stops an agent, `?` lists the keys and `q` quits. `ctrl+p` opens the commands and `ctrl+c`
-quits from anywhere.
+`D` stops an agent, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
+before it is on screen, so a letter typed for it runs no tree key; `tab` moves them to the tree.
+`ctrl+p` opens the commands and `ctrl+c` quits from anywhere.
 
 While a space is open the app asks its managers every 10 seconds which agents they run. A managed
 agent's overview adds its runtime (such as `pty`), whether its process is running, and the uptime the
@@ -98,7 +99,8 @@ session. The session may post only to the channel it opened on, or to none when 
 agent, and it ends 15 minutes after it opened; the line under the box shows the time. Posting
 elsewhere means `/quit`, then `enter` in that channel.
 
-Your session ends when you switch spaces, quit, or type `/quit`. After it ends, `enter` opens a new
+Your session ends when you switch spaces, quit, or type `/quit`. A message you sent with `enter`
+just before still goes, the first one included while its session opens. After it ends, `enter` opens a new
 session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent drafts
 asks first. Quitting closes the session and prints how it closed.
 
@@ -126,8 +128,9 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
 
 - `pnpm --filter @cotal-ai/tui smoke` drives the launcher in tmux at 209x52, 97x49 and 80x24
   against an isolated HOME and asserts the frame text. `smoke/shell.smoke.ts` covers the catalog
-  and a space that cannot be opened. `smoke/live.smoke.ts` starts its own broker and peers and
-  covers the live screens, the letter keys typing into the box until `tab`, and a broker restart.
+  and a space that cannot be opened, and that letters typed while a space opens run no tree key.
+  `smoke/live.smoke.ts` starts its own broker and peers and covers the live screens, the letter keys
+  typing into the box until `tab`, and a broker restart.
   `smoke/control.smoke.ts` runs a real manager with two seats and covers the overview, the confirm
   and both kinds of stop, a stop refused for an unmanaged agent and for a name two managers hold, a
   space with no manager, and a broker that turns auth on while the app reads its managers, after
@@ -136,11 +139,11 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   static-auth space that a real `cotal up --detach` stack serves. It reads each send off the broker:
   a post with its mention, a direct message to one of two agents that share a name, an answer to a
   waiting agent, `/reply` with the message it answers, and a message to an offline agent. It reads
-  each refusal off the screen: no recipient, your own session, unknown commands, the post grant and
-  an unreachable broker. It also covers watching unseen while you type, the first `enter` opening
+  each refusal off the screen: no recipient, unknown commands, the post grant and an unreachable
+  broker. It also covers watching unseen while you type, the first `enter` opening
   the session and sending, your name turning gold, the shared-name warning, `/quit` and the
-  two-step reopen, a space switch that closes the session and keeps the draft, `ctrl+c` with a
-  draft, and Change your name.
+  two-step reopen, a space switch that closes the session and keeps the draft, a space switch while
+  the first message opens its session, `ctrl+c` with a draft, and Change your name.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
