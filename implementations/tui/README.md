@@ -122,8 +122,9 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
 
 - `pnpm --filter @cotal-ai/tui smoke` drives the launcher in tmux at 209x52, 97x49 and 80x24
   against an isolated HOME and asserts the frame text. `smoke/shell.smoke.ts` covers the catalog
-  and a space that cannot be opened. `smoke/live.smoke.ts` starts its own broker and peers and
-  covers the live screens, the letter keys typing into the box until `tab`, and a broker restart.
+  and a space that cannot be opened, and that letters typed while a space opens run no tree key.
+  `smoke/live.smoke.ts` starts its own broker and peers and covers the live screens, the letter keys
+  typing into the box until `tab`, and a broker restart.
   `smoke/control.smoke.ts` runs a real manager with two seats and covers the overview, the confirm
   and both kinds of stop, a stop refused for an unmanaged agent and for a name two managers hold, a
   space with no manager, and a broker that turns auth on while the app reads its managers, after

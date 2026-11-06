@@ -41,6 +41,9 @@ const broker = createServer((socket) => {
 })
 await new Promise<void>((resolve) => broker.listen(0, "127.0.0.1", resolve))
 const brokerPort = (broker.address() as { port: number }).port
+const silent = createServer(() => {})
+await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve))
+const silentPort = (silent.address() as { port: number }).port
 
 async function seed(home: string) {
   process.env.HOME = home
@@ -77,11 +80,11 @@ const save = (dir: string, name: string) => {
 }
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
 
-function launch(home: string, width: number, height: number, err: string) {
+function launch(home: string, width: number, height: number, err: string, cwd = pkg) {
   try {
     tmux("kill-session", "-t", "t")
   } catch {}
-  const line = `cd ${pkg} && env -u COTAL_HOME -u NODE_COMPILE_CACHE -u NODE_DISABLE_COMPILE_CACHE HOME=${home} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
+  const line = `cd ${cwd} && env -u COTAL_HOME -u NODE_COMPILE_CACHE -u NODE_DISABLE_COMPILE_CACHE HOME=${home} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
   tmux("new-session", "-d", "-s", "t", "-x", String(width), "-y", String(height), line)
   tmux("set-option", "-s", "escape-time", "10")
 }
@@ -181,12 +184,36 @@ try {
   const mode = (statSync(cache).mode & 0o777).toString(8)
   check("empty home: the compile cache is compile-cache under the user's Cotal directory, mode 0700", readdirSync(cache).length > 0 && mode === "700", `${cache} mode ${mode}`)
 
+  // A broker that takes the connection and never answers holds the space opening for 8 seconds,
+  // before the box is on screen. The human types for the box all the same.
+  const slow = join(work, "slow-home")
+  const slowRoot = join(work, "slow-project")
+  mkdirSync(slow, { mode: 0o700 })
+  mkdirSync(slowRoot)
+  process.env.HOME = slow
+  const w = await import("@cotal-ai/workspace")
+  w.recordMesh({ space: "slow", server: `nats://127.0.0.1:${silentPort}`, root: slowRoot, mode: "open", origin: "manual", ts: new Date(0).toISOString() })
+  w.setCurrent("slow")
+  launch(slow, 80, 24, join(work, "slow.err"), slowRoot)
+  const opening = (f: string) => /Finding the space for this folder|Connecting to slow/.test(f)
+  await waitFor(opening, "the space to start opening")
+  tmux("send-keys", "-t", "t", "-l", "quick note")
+  await new Promise((r) => setTimeout(r, 1500))
+  const held = capture()
+  save(join(captures, "80x24"), "07-typed-while-connecting")
+  check("a space still opening: letters typed for the box run no tree key, so the q of quick note does not quit", !held.includes("EXIT=") && opening(held), held)
+  keys("C-c")
+  await waitFor(has("EXIT=0"), "ctrl+c to quit while the space opens")
+  check("a space still opening: ctrl+c still quits with status 0", true)
+
   check("no run dialed the registered broker address", connections === 0, `${connections} connection(s)`)
 } finally {
   try {
     tmux("kill-server")
   } catch {}
   broker.close()
+  silent.close()
+  rmSync(join(work, "slow-home"), { recursive: true, force: true })
   rmSync(join(work, "home"), { recursive: true, force: true })
   rmSync(join(work, "empty-home"), { recursive: true, force: true })
 }
