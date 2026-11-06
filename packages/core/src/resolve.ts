@@ -94,6 +94,31 @@ export function resolvePeer(
   throw new AmbiguousPeerError(target, pool.map(candidate));
 }
 
+/**
+ * The instance ids whose display name is not an address, by the comparison
+ * {@link resolvePeer} uses: trimmed and case-insensitive, the caller's own id left out when
+ * `opts.selfId` is given, and a lone offline ghost beside a live peer not counted. An id is in the
+ * set when two or more of the peers that comparison would consider share its name, so a row that
+ * carries one of these ids cannot be reached by name. A renderer appends its own spelling of the id.
+ */
+export function sharedNameIds(roster: Presence[], opts: { selfId?: string } = {}): ReadonlySet<string> {
+  const peers = opts.selfId ? roster.filter((p) => p.card.id !== opts.selfId) : roster;
+  const groups = new Map<string, Presence[]>();
+  for (const p of peers) {
+    const key = p.card.name.trim().toLowerCase();
+    const group = groups.get(key);
+    if (group) group.push(p);
+    else groups.set(key, [p]);
+  }
+  const ids = new Set<string>();
+  for (const group of groups.values()) {
+    const live = group.filter((p) => p.status !== "offline");
+    const pool = live.length > 0 ? live : group;
+    if (pool.length > 1) for (const p of pool) ids.add(p.card.id);
+  }
+  return ids;
+}
+
 /** Maximum length of a display name, in UTF-16 code units.
  *
  *  Derived from the transport budget, not picked. The client's CONNECT line carries the user JWT
