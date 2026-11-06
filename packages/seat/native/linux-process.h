@@ -1,9 +1,19 @@
 /* Linux process capabilities. A descriptor stays bound to one kernel process across PID reuse.
- * No descriptor number escapes to JS: a type-tagged object owns it until explicit close or GC. */
+ * A type-tagged object owns its descriptor until explicit close or GC. Imported descriptors
+ * are borrowed and duplicated; the owned descriptor number never escapes to JS. */
 #ifdef __linux__
 #include <fcntl.h>
 #include <uv.h>
 #include <limits.h>
+#include <inttypes.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <sys/vfs.h>
+#include <linux/magic.h>
+
+#ifndef PID_FS_MAGIC
+#define PID_FS_MAGIC 0x50494446
+#endif
 #include <math.h>
 #include <poll.h>
 #include <signal.h>
@@ -145,6 +155,77 @@ static napi_value OpenProcessCandidate(napi_env env, napi_callback_info info) {
   int fd = syscall(SYS_pidfd_open, pid, 0);
   if (fd < 0) return ProcessError(env, NULL, strerror(errno));
   return WrapProcess(env, fd, pid);
+}
+
+/* Import duplicates first, so validation never races reuse of the caller's descriptor. */
+static napi_value ImportProcess(napi_env env, napi_callback_info info) {
+  napi_value argv[1];
+  int source;
+  if (!ProcessArgs(env, info, 1, argv) || !ProcessInteger(env, argv[0], 0, &source)) return NULL;
+  int fd = fcntl(source, F_DUPFD_CLOEXEC, 0);
+  if (fd < 0) return ProcessError(env, NULL, strerror(errno));
+  /* Signal zero checks the kernel descriptor type/permission without delivering a signal.
+   * ESRCH is expected for retained exited pidfds, not permission to reopen a numeric PID. */
+  if (syscall(SYS_pidfd_send_signal, fd, 0, NULL, 0) != 0 && errno != ESRCH) {
+    int saved = errno;
+    close(fd);
+    return ProcessError(env, NULL, strerror(saved));
+  }
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0 || (flags & O_EXCL)) {
+    close(fd);
+    return ProcessError(env, NULL, "thread-only pidfds are not process handles");
+  }
+  char path[64], line[256];
+  snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
+  FILE *file = fopen(path, "re");
+  if (!file) { int saved = errno; close(fd); return ProcessError(env, NULL, strerror(saved)); }
+  long pid = 0;
+  while (fgets(line, sizeof(line), file)) {
+    if (strncmp(line, "Pid:", 4) != 0) continue;
+    char *end;
+    errno = 0;
+    pid = strtol(line + 4, &end, 10);
+    if (errno || end == line + 4 || (*end != '\n' && *end != '\0')) pid = 0;
+    break;
+  }
+  fclose(file);
+  if ((pid <= 0 && pid != -1) || pid > INT_MAX) {
+    close(fd);
+    return ProcessError(env, NULL, "imported pidfd has no visible process identity");
+  }
+  return WrapProcess(env, fd, (pid_t)pid);
+}
+
+static napi_value DuplicateProcess(napi_env env, napi_callback_info info) {
+  napi_value argv[1];
+  if (!ProcessArgs(env, info, 1, argv)) return NULL;
+  ProcessHandle *handle = ReadProcess(env, argv[0], 0);
+  if (!handle) return NULL;
+  int fd = fcntl(handle->fd, F_DUPFD_CLOEXEC, 0);
+  if (fd < 0) return ProcessError(env, NULL, strerror(errno));
+  return WrapProcess(env, fd, handle->pid);
+}
+
+static napi_value ProcessKernelIdentity(napi_env env, napi_callback_info info) {
+  napi_value argv[1], out, value;
+  if (!ProcessArgs(env, info, 1, argv)) return NULL;
+  ProcessHandle *handle = ReadProcess(env, argv[0], 0);
+  if (!handle) return NULL;
+  struct statfs fs;
+  if (fstatfs(handle->fd, &fs) != 0) return ProcessError(env, NULL, strerror(errno));
+  if ((unsigned long)fs.f_type != PID_FS_MAGIC)
+    return ProcessError(env, NULL, "kernel process identity requires pidfs (Linux 6.9 or newer)");
+  struct stat st;
+  if (fstat(handle->fd, &st) != 0) return ProcessError(env, NULL, strerror(errno));
+  char inode[32];
+  snprintf(inode, sizeof(inode), "%" PRIuMAX, (uintmax_t)st.st_ino);
+  napi_create_object(env, &out);
+  napi_create_uint32(env, major(st.st_dev), &value); napi_set_named_property(env, out, "deviceMajor", value);
+  napi_create_uint32(env, minor(st.st_dev), &value); napi_set_named_property(env, out, "deviceMinor", value);
+  napi_create_uint32(env, st.st_mode, &value); napi_set_named_property(env, out, "mode", value);
+  napi_create_string_utf8(env, inode, NAPI_AUTO_LENGTH, &value); napi_set_named_property(env, out, "inode", value);
+  return out;
 }
 
 static napi_value ProcessPid(napi_env env, napi_callback_info info) {
@@ -389,6 +470,9 @@ static napi_value CancelProcessWait(napi_env env, napi_callback_info info) {
 static void ExportProcesses(napi_env env, napi_value exports) {
   Export(env, exports, "capturePeerProcess", CapturePeerProcess);
   Export(env, exports, "openProcessCandidate", OpenProcessCandidate);
+  Export(env, exports, "importProcess", ImportProcess);
+  Export(env, exports, "duplicateProcess", DuplicateProcess);
+  Export(env, exports, "processKernelIdentity", ProcessKernelIdentity);
   Export(env, exports, "processPid", ProcessPid);
   Export(env, exports, "hasProcessExited", HasProcessExited);
   Export(env, exports, "signalProcess", SignalProcess);

@@ -13,10 +13,27 @@ export interface LinuxProcessIdentity {
   readonly namespace: string;
 }
 
+/** Kernel object identity while a pidfd remains retained. Not durable across reboot or
+ * release of every reference, and never an authentication credential for a supplied record. */
+export interface LinuxProcessKernelIdentity {
+  readonly deviceMajor: number;
+  readonly deviceMinor: number;
+  readonly mode: number;
+  readonly inode: string;
+}
+
+/** Trusted host receipt captured before handing a process descriptor to an external owner. */
+export interface LinuxProcessReceipt {
+  readonly identity: LinuxProcessIdentity;
+  readonly kernel: LinuxProcessKernelIdentity;
+}
+
 /** A kernel-bound process, not proof that its descendants or remote work have ended.
  * Close explicitly when finished. Closing releases observation, and never means process exit. */
 export interface LinuxProcessHandle {
   readonly identity: Readonly<LinuxProcessIdentity>;
+  readonly kernel: Readonly<LinuxProcessKernelIdentity>;
+  retain(): LinuxProcessHandle;
   hasExited(): boolean;
   waitForExit(options?: { signal?: AbortSignal }): Promise<void>;
   signal(signal: NodeJS.Signals): void;
@@ -27,6 +44,9 @@ type NativeHandle = object;
 type ProcessNative = {
   capturePeerProcess(fd: number): NativeHandle;
   openProcessCandidate(pid: number): NativeHandle;
+  importProcess(fd: number): NativeHandle;
+  duplicateProcess(handle: NativeHandle): NativeHandle;
+  processKernelIdentity(handle: NativeHandle): LinuxProcessKernelIdentity;
   processPid(handle: NativeHandle): number;
   hasProcessExited(handle: NativeHandle): boolean;
   signalProcess(handle: NativeHandle, signal: number): void;
@@ -71,6 +91,16 @@ class KernelProcess implements LinuxProcessHandle {
     this.#native = native;
     this.#handle = handle;
     this.identity = identity;
+  }
+
+  get kernel(): Readonly<LinuxProcessKernelIdentity> {
+    return Object.freeze(this.#native.processKernelIdentity(this.#handle));
+  }
+
+  retain(): LinuxProcessHandle {
+    const handle = this.#native.duplicateProcess(this.#handle);
+    try { return new KernelProcess(this.#native, handle, this.identity); }
+    catch (error) { this.#native.closeProcess(handle); throw error; }
   }
 
   hasExited(): boolean { return this.#native.hasProcessExited(this.#handle); }
@@ -127,17 +157,46 @@ export function capturePeerProcess(socket: Socket): LinuxProcessHandle {
  * supplied record nor establishes descendant ownership; the caller must own the record. */
 export function recoverProcess(identity: LinuxProcessIdentity): LinuxProcessHandle {
   const native = nativeProcesses();
+  const expected = recordedIdentity(identity);
+  const handle = native.openProcessCandidate(expected.pid);
+  try {
+    const actual = snapshot(native, handle);
+    assertIdentity(expected, actual);
+    return new KernelProcess(native, handle, actual);
+  } catch (error) { native.closeProcess(handle); throw error; }
+}
+
+function recordedIdentity(identity: LinuxProcessIdentity): Readonly<LinuxProcessIdentity> {
   if (!identity || !Number.isSafeInteger(identity.pid) || identity.pid <= 0 || identity.pid > 0x7fffffff ||
       identity.uid !== process.getuid!() || typeof identity.birth !== "string" || !/^\d+$/.test(identity.birth) ||
       typeof identity.boot !== "string" || identity.boot !== bootToken() ||
       typeof identity.namespace !== "string" || !/^pid:\[\d+\]$/.test(identity.namespace)) {
     throw new Error("invalid recorded process identity");
   }
-  const expected = Object.freeze({ ...identity });
-  const handle = native.openProcessCandidate(expected.pid);
+  return Object.freeze({ pid: identity.pid, uid: identity.uid, birth: identity.birth, boot: identity.boot, namespace: identity.namespace });
+}
+
+/** Duplicate a borrowed pidfd supplied by a trusted host, including an exited process.
+ * The caller must authenticate descriptor custody and its same-boot receipt, retaining the
+ * kernel object continuously since capture. Names, environment variables and numeric PIDs
+ * alone cannot establish that continuity. The original descriptor remains caller-owned. */
+export function importProcess(fd: number, receipt: LinuxProcessReceipt): LinuxProcessHandle {
+  const native = nativeProcesses();
+  const identity = recordedIdentity(receipt?.identity);
+  const kernel = receipt?.kernel;
+  if (!kernel || ![kernel.deviceMajor, kernel.deviceMinor, kernel.mode].every((n) =>
+    Number.isSafeInteger(n) && n >= 0 && n <= 0xffffffff) ||
+    typeof kernel.inode !== "string" || !/^[1-9]\d{0,19}$/.test(kernel.inode) ||
+    BigInt(kernel.inode) > 0xffffffffffffffffn) throw new Error("invalid recorded kernel identity");
+  const expected = Object.freeze({ deviceMajor: kernel.deviceMajor, deviceMinor: kernel.deviceMinor,
+    mode: kernel.mode, inode: kernel.inode });
+  const handle = native.importProcess(fd);
   try {
-    const actual = snapshot(native, handle);
-    assertIdentity(expected, actual);
-    return new KernelProcess(native, handle, actual);
+    const actual = native.processKernelIdentity(handle);
+    for (const key of ["deviceMajor", "deviceMinor", "mode", "inode"] as const) {
+      if (expected[key] !== actual[key]) throw new Error(`kernel process identity mismatch: ${key}`);
+    }
+    if (!native.hasProcessExited(handle)) assertIdentity(identity, snapshot(native, handle));
+    return new KernelProcess(native, handle, identity);
   } catch (error) { native.closeProcess(handle); throw error; }
 }
