@@ -71,7 +71,9 @@ canonicalizes the directory. `worktree` is a separate logical identity.
 The host meters `permits: { turns?, wallClock? }`. Violations raise L4001.
 `supervise: { restarts, window? }` restarts the process under the same handle until its budget
 is spent, with default window `"10m"`. Counts are positive integers and time spans are durations.
-Unsupported budget or policy keys are refused.
+Unsupported budget or policy keys are refused. Automatic restart requires runtime proof that prior
+local work ended, including detached tools. Built-in PTY cannot provide it and refuses `supervise`
+before launch. Ordinary launches without a restart policy remain available.
 
 `events: false` starts a seat without an event plane, for a connector that publishes none,
 such as Hermes. If omitted, the host's default applies.

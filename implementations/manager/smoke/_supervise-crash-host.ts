@@ -6,6 +6,8 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Manager } from "../src/manager.js";
+import { childlessRuntime } from "./_childless-runtime.js";
+import type { Runtime } from "@cotal-ai/core";
 import { evictDeniedPrincipalWithCreds, registry, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 
 const root = process.env.REPRO_ROOT!;
@@ -26,6 +28,10 @@ registry.register({
   buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [...delay.args, stub, space], env: { ...envFor(o), ...delay.env } }),
 } as Connector);
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
+// Only this fixed stub runs here. Its durable birth record is enough because it spawns no tools;
+// stock PTY and arbitrary connectors do not have this fixture's closure guarantee.
+childlessRuntime((manager as unknown as { runtime: Runtime }).runtime, join(root, "childless-runtime"),
+  (spec) => spec.command === process.execPath && JSON.stringify(spec.args) === JSON.stringify([...delay.args, stub, space]));
 (manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   (principal) => evictDeniedPrincipalWithCreds({
     servers,
