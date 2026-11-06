@@ -9311,10 +9311,9 @@ export class Manager {
   private async dialServeConnection(
     state: { nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string },
   ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> {
-    const enc = new TextEncoder();
     const nc = await this.dial({
       // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
-      ...(state.creds !== undefined ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds!))(nonce) } : {}),
+      ...(state.creds !== undefined ? standaloneConnectOpts({ creds: () => state.creds!, tls: false }) : {}),
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
     });
@@ -9667,9 +9666,8 @@ export class Manager {
   private async dialGoalWriter(
     gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate },
   ): Promise<void> {
-    const enc = new TextEncoder();
     const nc = await this.dial({
-      ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(gw.creds!))(nonce) } : {}),
+      ...((this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: () => gw.creds!, tls: false }) : {}),
       inboxPrefix: `_INBOX_${gw.identity.id}`,
       maxReconnectAttempts: -1,
     });
@@ -9804,9 +9802,8 @@ export class Manager {
   private async dialSessionLedgerConnection(
     sw: { nc: NatsConnection; creds?: string }, identity: Identity,
   ): Promise<void> {
-    const enc = new TextEncoder();
     const nc = await this.dial({
-      ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
+      ...((this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: () => sw.creds!, tls: false }) : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
     });
