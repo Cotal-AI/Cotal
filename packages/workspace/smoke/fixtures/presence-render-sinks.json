@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 981,
+    "total": 978,
     "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 763
+    "non-render/control": 760
   },
   "renderers": [
     {
@@ -6732,7 +6732,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "conversationFeed(p.mesh, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS)",
+      "anchor": "conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS)",
       "class": "non-render/control",
       "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
     },
@@ -6802,34 +6802,6 @@
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "when={feed().length}",
-      "class": "non-render/control",
-      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{feed().length}",
-      "class": "non-render/control",
-      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "each={feed()}",
-      "class": "non-render/control",
-      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{feed()}",
-      "class": "non-render/control",
-      "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/app.tsx",
@@ -7014,9 +6986,16 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(b) => {\n          const Composer = b().Composer\n          return (\n            <Composer\n              talk={b().talk}\n              space={b().mesh.status.space}\n              open={open()}\n              mesh={b().mesh}\n              state={composer()}\n              setState={setComposer}\n              // A dialog hands focus back to whatever held it when it opened, which is not the box\n              // when a palette command opens a second dialog, so the box takes it back itself.\n              focused={focus() === \"box\" && dialog.stack.length === 0}\n              toTree={() => setFocus(\"tree\")}\n              maxRows={dims().height >= 40 ? 6 : 3}\n            />\n          )\n        }}",
+      "anchor": "{(b) => {\n          const Composer = b().Composer\n          return (\n            <Composer\n              talk={b().talk}\n              space={b().mesh.status.space}\n              open={open()}\n              mesh={b().mesh}\n              feed={feed()}\n              state={composer()}\n              setState={setComposer}\n              // A dialog hands focus back to whatever held it when it opened, which is not the box\n              // when a palette command opens a second dialog, so the box takes it back itself.\n              focused={focus() === \"box\" && dialog.stack.length === 0}\n              toTree={() => setFocus(\"tree\")}\n              maxRows={dims().height >= 40 ? 6 : 3}\n            />\n          )\n        }}",
       "class": "non-render/control",
       "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "on(\n      quoted,\n      (id) => {\n        if (!scroller || scroller.isDestroyed) return\n        if (id) scroller.scrollChildIntoView(`msg-${id}`, { align: \"nearest\", inset: 1 })\n        else scroller.scrollTo(Infinity)\n      },\n      { defer: true },\n    )",
+      "class": "non-render/control",
+      "rationale": "App reply pick: scrolls the quoted message into view, or back to the newest; no status word is rendered."
     },
     {
       "path": "implementations/tui/src/app.tsx",
@@ -7049,9 +7028,9 @@
     {
       "path": "implementations/tui/src/composer.tsx",
       "kind": "status-token",
-      "anchor": "   if (peer?.status === \"waiting\") return `answering ${pe",
+      "anchor": "   if (peer?.status === \"waiting\" && r.kind === \"peer\" &&",
       "class": "non-render/control",
-      "rationale": "App input box line: picks the answering wording only for a waiting agent; routing only."
+      "rationale": "App input box line: picks the answering wording only when the message goes to the open waiting agent; routing only."
     },
     {
       "path": "implementations/tui/src/composer.tsx",

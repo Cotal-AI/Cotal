@@ -65,6 +65,9 @@ export interface Talk {
   latest(): SessionMessage | undefined
   /** Whether a row's mentions name the human, under the open session's name or the next one's. */
   mentionsYou(e: FeedEntry): boolean
+  /** Whether a sender is the human: the open session, or any session under the human's name, as
+   *  each session joins under its own principal and earlier ones stay in the conversation. */
+  isYou(who: FeedEntry["from"]): boolean
   /** `/quit` and End your chat session. */
   end(): Promise<Closed | undefined>
   /** Saves the `name` preference, or unsets it, and resolves the name again. An open session keeps
@@ -235,6 +238,10 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
     mentionsYou: (e) => {
       const n = current()
       return n !== undefined && mentionsName(e.mentions, n)
+    },
+    isYou: (who) => {
+      const p = phase()
+      return (p.phase === "open" && who.id === p.identity.principal) || who.name === current()
     },
     end: async () => {
       const s = session
