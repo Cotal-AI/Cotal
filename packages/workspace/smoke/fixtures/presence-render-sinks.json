@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 979,
+    "total": 980,
     "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 761
+    "non-render/control": 762
   },
   "renderers": [
     {
@@ -6879,6 +6879,13 @@
       "anchor": "ter((a) => a.status !== \"offline\").length\n  items.push({ ",
       "class": "non-render/control",
       "rationale": "App agents header: the offline filter feeding the live-agent count; routing only."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "\"chat\" || (p.status !== \"offline\" && p.card.id !== self))",
+      "class": "non-render/control",
+      "rationale": "App tree endpoints: the offline filter that leaves an ended chat session out of the tree; it picks rows and renders no status word."
     },
     {
       "path": "implementations/tui/src/screen.ts",
