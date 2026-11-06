@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 960,
+    "total": 964,
     "honest-text": 64,
     "presence-only-glyph/count": 142,
-    "command-ack": 10,
-    "non-render/control": 744
+    "command-ack": 9,
+    "non-render/control": 749
   },
   "renderers": [
     {
@@ -6345,18 +6345,46 @@
       "rationale": "Cleanup preview line: \"waiting\" is the color tone for files no Cotal store writes in the previous store, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/chat.ts",
+      "path": "packages/workspace/src/chat/name.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Chat name check: finds present participants that share the chosen name; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/commands/chat.ts",
+      "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`the name \"${self.label}\" is already in use here by ${who}; a direct message to \"${self.label}\" refuses as ambiguous while both are present, so pass another --name to be reached by name`",
-      "class": "command-ack",
-      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+      "anchor": "`not signed in to ${idp}; run \\`cotal login --idp ${idp}\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`run \\`cotal login --idp ${idp}\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`your sign-in at ${idp} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`sign in again with \\`cotal login --idp ${idp}\\`, or ${SAVE_NAME}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`your sign-in at ${idp}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/config.ts",

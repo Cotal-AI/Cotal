@@ -773,8 +773,10 @@ export interface ChatSessionRetireResult {
 export interface UserAuthStatus {
   /** The space's pinned IdP base URL (always known — it is part of the user-auth material). */
   idpUrl: string;
-  /** This machine's cached login for that IdP; absent = not signed in. */
-  login?: { sub: string; expiresAt: number };
+  /** This machine's cached login for that IdP; absent = not signed in. `name` is the account name
+   *  the IdP gave at `cotal login`, display only, and absent when the IdP gave none or an older
+   *  build wrote the login. */
+  login?: { sub: string; expiresAt: number; name?: string };
   /** The login's derived owner token (`u_…`) for this space. */
   owner?: string;
   /** The (owner, actor) interactive ledger row: its lists when granted, `"not-granted"` when the

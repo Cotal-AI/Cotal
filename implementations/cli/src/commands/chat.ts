@@ -3,14 +3,13 @@
  * `--plain` lines, or the `--stdio` NDJSON protocol. The mesh is resolved once, and the session is
  * admitted by that target's recorded auth mode only. Leaving ends the session; nothing outlives it.
  */
-import { randomBytes } from "node:crypto";
-import { hostname, userInfo } from "node:os";
 import {
   oneLine, readChannelRegistry, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
   CommandFailure, codeSpan, connectTargetOrThrow, credsFlag, isConnectRefusal, operationWarnings, plainFlag, preflightOrThrow, resolveTargetOrThrow, serverFlag, spaceFlag,
   type MeshTarget,
+  chatNameProblem,
   concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -19,12 +18,12 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { cliControl } from "../lib/control.js";
 import { declaredFrom } from "./send.js";
 import { loadChatFrontEnd, selectFrontEnd, type FrontEnd } from "../chat/frontend.js";
-import { USER_CHAT_TTL_SEC, closeSummary, openChatSession, type AdmittedChatSession, type ChatAdmission, type ChatWords, type CloseReport, type Recipient, type RosterView } from "@cotal-ai/workspace/chat";
+import { USER_CHAT_TTL_SEC, closeSummary, nameInUse, nameInUseText, openChatSession, resolveChatName, type AdmittedChatSession, type ChatAdmission, type ChatWords, type CloseReport, type Recipient } from "@cotal-ai/workspace/chat";
 
 export const chatFlags = [
   spaceFlag, serverFlag, { ...credsFlag, description: "an explicit credential file (not available for chat yet)" }, plainFlag,
   { name: "stdio", type: "boolean", description: "exchange the NDJSON participant protocol on stdin and stdout instead of the terminal view" },
-  { name: "name", type: "string", value: "<n>", description: "the session's display label (default: <login>@<host> and a short suffix)" },
+  { name: "name", type: "string", value: "<n>", description: "the name the session appears as (default: your saved name, else your sign-in name on a user-auth space or your OS login)" },
   { name: "role", type: "string", value: "<r>", description: "a presence role (not available for chat yet)" },
   { name: "kind", type: "string", value: "<k>", description: "the session's presence kind; only endpoint, the default, is accepted" },
   { name: "link", type: "string", value: "<url>", description: "the space and auth from a join link (not available for chat yet)" },
@@ -58,8 +57,8 @@ export function chatArguments(args: ParsedArgs): ChatInput {
   // A name the channel rules refuse gets their reason, which names the segment at fault.
   const problem = channel === undefined ? undefined : concreteChannelProblem(channel);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
-  if (values.name !== undefined && (!values.name.trim() || values.name.length > 128 || /[\u0000-\u001f\u007f]/u.test(values.name)))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--name takes a label of 1 to 128 characters without control characters");
+  const nameProblem = values.name === undefined ? undefined : chatNameProblem(values.name);
+  if (nameProblem) throw new CommandFailure("refused", "USAGE_INVALID", `--name: ${nameProblem}`);
   // Every admission presents the session as an endpoint, so `--kind endpoint` changes nothing.
   if (values.kind !== undefined && values.kind !== "endpoint")
     throw new CommandFailure("refused", "USAGE_INVALID",
@@ -107,21 +106,6 @@ export function closeExitCode(close: CloseReport | undefined): number {
   return close.retirement === "requested" ? 4 : 0;
 }
 
-/** `<login>@<host>-<4 hex>`: readable, and distinct between two windows on one machine. A label is
- *  display only; the admitted principal is the session's authority. */
-function defaultLabel(): string {
-  let login = "";
-  let host = "";
-  try {
-    login = userInfo().username.trim();
-    host = hostname().trim();
-  } catch { /* refused below */ }
-  const label = `${login}@${host}-${randomBytes(2).toString("hex")}`;
-  if (!login || !host || label.length > 128 || /[/\\\u0000-\u001f\u007f]/u.test(label))
-    throw new CommandFailure("refused", "USAGE_INVALID", "chat cannot derive a label from the OS login and host", { remedy: "pass --name <n>" });
-  return label;
-}
-
 /** The exit status each terminating signal sets. */
 const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 
@@ -158,28 +142,8 @@ async function discloseChannel(target: MeshTarget, channel: string): Promise<str
   }
 }
 
-/** How long a new session waits for its roster before it checks whether its name is already in use. */
-const ROSTER_MS = 2_000;
-
-/** A warning when another live participant already carries this session's label, which a direct
- *  message by that name could then not single out. Read once the roster is current, or after
- *  {@link ROSTER_MS}. */
-export async function sharedNameWarning(session: AdmittedChatSession): Promise<string | undefined> {
-  const self = session.identity();
-  const deadline = Date.now() + ROSTER_MS;
-  let roster: RosterView | undefined;
-  for (;;) {
-    const read = await session.roster();
-    if (read.outcome !== "ok") return undefined;
-    roster = read.value;
-    if (roster.view === "current" || Date.now() >= deadline) break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const others = roster.rows.filter((row) => row.id !== self.principal && row.status !== "offline" && row.name.toLowerCase() === self.label.toLowerCase());
-  if (!others.length) return undefined;
-  const who = others.map((row) => `${row.id} (${row.sessionKind === "chat" ? "chat session" : row.kind})`).join(", ");
-  return `the name "${self.label}" is already in use here by ${who}; a direct message to "${self.label}" refuses as ambiguous while both are present, so pass another --name to be reached by name`;
-}
+/** How `cotal chat` ends the warning for a name in use: the two ways to change it. */
+const NAME_REMEDY = "pass another --name, or save one with `cotal config set name <name>`, to be reached by name";
 
 /** Resolve the recorded mesh `--space`/`--server` select, once. Disclose the named channel, or
  *  check the target reachable when none is named. */
@@ -210,6 +174,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
     const held = operationWarnings().find((w) => w.code === "FOLDER_SPACE_NOT_RUNNING");
     if (held) notice = [`this session joins the selected space "${target.space}"; ${held.message}`, notice].filter(Boolean).join("; ");
     if (notice) process.stderr.write(`cotal chat: ${notice}\n`);
+    const name = await resolveChatName(target, { flag: input.label });
     const before = signals.caught();
     if (before !== undefined) {
       signals.release();
@@ -217,13 +182,14 @@ export async function chat(args: ParsedArgs): Promise<void> {
       process.exitCode = before;
       return;
     }
-    session = await openChatSession(target, chatAdmission(target.mode, input.label ?? defaultLabel(), input.channel), { words, control: cliControl });
+    session = await openChatSession(target, chatAdmission(target.mode, name.name, input.channel), { words, control: cliControl });
   } catch (e) {
     signals.release();
     throw e;
   }
   // Signals are still held, so one that arrives during this read is handled below.
-  const shared = await sharedNameWarning(session);
+  const found = await nameInUse(session);
+  const shared = found && nameInUseText(found, NAME_REMEDY);
   if (shared) process.stderr.write(`cotal chat: ${shared}\n`);
   const during = signals.caught();
   if (during !== undefined) {
