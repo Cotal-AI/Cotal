@@ -1,5 +1,7 @@
+import type { Recipient } from "@cotal-ai/workspace/chat"
 import type { Entry } from "./catalog.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence } from "./live.js"
+import type { OwnTraffic } from "./talk.js"
 
 /** One selectable tree row. The key is stable across snapshots, so the cursor stays on the same row
  *  while the roster re-sorts under it. */
@@ -11,15 +13,18 @@ export type Row =
 export type Item = { kind: "header"; title: string; right?: string } | Row
 
 /** What the middle column shows: a channel feed (all traffic without a channel), one agent or
- *  endpoint, or a catalog row that cannot be opened as a space. */
-export type Open = { kind: "channel"; channel?: string } | { kind: "peer"; id: string } | { kind: "entry"; key: string }
+ *  endpoint, the tasks sent to one role, or a catalog row that cannot be opened as a space. */
+export type Open = { kind: "channel"; channel?: string } | { kind: "peer"; id: string } | { kind: "role"; role: string } | { kind: "entry"; key: string }
 
 export const meshOf = (c: Conn): Mesh | undefined => (c.phase === "live" || c.phase === "reconnecting" ? c.mesh : undefined)
 
 export const entryKey = (e: Entry) => (e.kind === "unusable" ? `unusable:${e.source}` : `${e.kind}:${e.space}`)
 export const peerKey = (id: string) => `peer:${id}`
+/** The tree row of an open conversation. A role conversation has none. */
+export const openRowKey = (o: Open) => (o.kind === "channel" ? `channel:${o.channel ?? "*"}` : o.kind === "peer" ? peerKey(o.id) : o.kind === "entry" ? o.key : undefined)
 
-export function treeItems(entries: Entry[], conn: Conn, seen: Record<string, number>): Item[] {
+/** The tree's rows. `self` is the principal of the human's open chat session, if one is open. */
+export function treeItems(entries: Entry[], conn: Conn, seen: Record<string, number>, self?: string): Item[] {
   const items: Item[] = [{ kind: "header", title: "SPACES", right: String(entries.filter((e) => e.kind !== "unusable").length) }]
   for (const e of entries) items.push({ key: entryKey(e), kind: "entry", entry: e, open: e.kind === "space" && e.space === conn.space && conn.phase !== "closed" && conn.phase !== "failed" })
   const mesh = meshOf(conn)
@@ -29,15 +34,48 @@ export function treeItems(entries: Entry[], conn: Conn, seen: Record<string, num
   const live = mesh.agents.filter((a) => a.status !== "offline").length
   items.push({ kind: "header", title: "AGENTS", right: `${live}/${mesh.agents.length}` })
   for (const p of mesh.agents) items.push({ key: peerKey(p.card.id), kind: "peer", presence: p })
-  if (mesh.endpoints.length) items.push({ kind: "header", title: "ENDPOINTS", right: String(mesh.endpoints.length) })
-  for (const p of mesh.endpoints) items.push({ key: peerKey(p.card.id), kind: "peer", presence: p })
+  // Each chat session has its own principal, so one that ended is never reached again, and the
+  // human's own is the name at the bottom of the tree.
+  const endpoints = mesh.endpoints.filter((p) => p.card.meta?.sessionKind !== "chat" || (p.status !== "offline" && p.card.id !== self))
+  if (endpoints.length) items.push({ kind: "header", title: "ENDPOINTS", right: String(endpoints.length) })
+  for (const p of endpoints) items.push({ key: peerKey(p.card.id), kind: "peer", presence: p })
   return items
 }
 
-export function feedFor(mesh: Mesh, open: Open): FeedEntry[] {
-  if (open.kind === "channel") return open.channel === undefined ? mesh.feed : mesh.feed.filter((e) => e.channel === open.channel)
-  if (open.kind === "peer") return mesh.feed.filter((e) => e.from.id === open.id || e.toIds?.includes(open.id))
-  return []
+const inConversation = (e: FeedEntry, open: Open) => {
+  if (open.kind === "channel") return open.channel === undefined || e.channel === open.channel
+  if (open.kind === "peer") return e.from.id === open.id || !!e.toIds?.includes(open.id)
+  if (open.kind === "role") return e.delivery === "anycast" && e.toService === open.role
+  return false
+}
+
+/** The open conversation's newest `limit` rows. Where the observer cannot see direct messages, as
+ *  on an auth space, the session's own directed traffic joins the observer's feed, deduplicated by
+ *  id and ordered by time. */
+export function conversationFeed(mesh: Mesh, open: Open, own: OwnTraffic, limit: number): FeedEntry[] {
+  const seen = mesh.feed.filter((e) => inConversation(e, open))
+  if (mesh.status.dmVisible) return seen.slice(-limit)
+  const ids = new Set(seen.map((e) => e.id))
+  const mine = [...own.received, ...own.sent].filter((e) => !ids.has(e.id) && inConversation(e, open))
+  return [...seen, ...mine].sort((a, b) => a.ts - b.ts).slice(-limit)
+}
+
+/** A key per conversation: `#general`, `#*` for all traffic, `@<principal>`, `role:<role>`, `entry:<key>`. */
+export function conversationKey(open: Open): string {
+  if (open.kind === "channel") return `#${open.channel ?? "*"}`
+  if (open.kind === "peer") return `@${open.id}`
+  if (open.kind === "role") return `role:${open.role}`
+  return `entry:${open.key}`
+}
+
+/** Where writing in a conversation goes: its channel, the peer's exact principal or its role. All
+ *  traffic and catalog rows have none. Derived on every read, so a draft never follows the human to
+ *  another conversation. */
+export function conversationRecipient(open: Open, mesh: Mesh): Recipient | undefined {
+  if (open.kind === "channel") return open.channel === undefined ? undefined : { kind: "channel", channel: open.channel }
+  if (open.kind === "peer") return { kind: "peer", principal: open.id, name: peerOf(mesh, open.id)?.card.name ?? open.id }
+  if (open.kind === "role") return { kind: "role", role: open.role }
+  return undefined
 }
 
 export const peerOf = (mesh: Mesh, id: string) => [...mesh.agents, ...mesh.endpoints].find((p) => p.card.id === id)

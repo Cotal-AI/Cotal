@@ -1,0 +1,734 @@
+/**
+ * Drives the real launcher in tmux at 209x52 and 80x24 against two spaces: an open space on a broker
+ * this suite starts, and a static-auth space a real `cotal up --detach` stack serves, whose manager
+ * admits the app's chat session. Peers it controls stand on both: a planner, a waiting coder-2, two
+ * agents named reviewer with roles rev-a and rev-b, and ghost, which leaves before the human writes
+ * to it. The human writes in the input box under the conversation, which has the keys from launch;
+ * tab moves them to the tree. The first enter opens the chat session and sends: a post to #general
+ * with a mention, then a direct message to one reviewer, an answer to the waiting agent, `/reply` to
+ * a direct message, and the refusals. Every send is read off the broker: a channel's history, the
+ * space's direct-message history (an admin reader on the static space), the roster a reader watches,
+ * and on the open broker its connections. Every refusal is read off the screen. Captures are kept
+ * under the printed directory.
+ *
+ * Needs Node >= 26.4, tmux and nats-server, so it is not part of smoke:ci, which runs Node 22.
+ * Run: pnpm --filter @cotal-ai/tui smoke
+ */
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir, userInfo } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { layoutFor } from "../src/layout.js"
+import { CotalEndpoint, isReachable, setupSpaceStreams, type CotalMessage, type Presence } from "@cotal-ai/core"
+import {
+  SMOKE_BROKER_TOKEN,
+  assertSmokeSandboxDown,
+  awaitBrokerReady,
+  freePort,
+  killAndAwaitExit,
+  recordSmokeSandbox,
+  teardownOnSignal,
+} from "@cotal-ai/smoke-kit"
+
+const [major, minor] = process.versions.node.split(".").map(Number)
+if (major! < 26 || (major === 26 && minor! < 4)) throw new Error(`the tui composer smoke needs Node >= 26.4.0, this is ${process.versions.node}`)
+execFileSync("tmux", ["-V"])
+
+// The app's observer connects as `cotal:tui`, and an open-mode chat session as `cotal:<its name>`.
+const login = userInfo().username.trim()
+if (login === "tui") throw new Error("this smoke counts the chat session's connections by the name cotal:<OS login>, and the login tui is the app observer's own; run it under another login")
+
+const pkg = fileURLToPath(new URL("..", import.meta.url))
+const repo = join(pkg, "..", "..")
+const launcher = join(pkg, "bin", "cotal-tui.mjs")
+const CLI = join(repo, "bin", "cotal.ts")
+const TSX = join(repo, "node_modules", ".bin", "tsx")
+const work = mkdtempSync(join(tmpdir(), "cotal-tui-composer-"))
+const captures = join(work, "captures")
+const home = join(work, "home")
+const cotalHome = join(home, ".cotal")
+const xdg = join(home, ".config")
+const roots = { alpha: join(work, "alpha"), beta: join(work, "beta"), static: join(work, "static") }
+const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))
+const socket = `cotal-tui-composer-${process.pid}`
+const tmux = (...args: string[]) => execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8", stdio: "pipe" })
+// Each project folder holds a `.cotal`, so a launch there opens its own space, not the selected one.
+for (const dir of Object.values(roots)) mkdirSync(join(dir, ".cotal"), { recursive: true })
+mkdirSync(home, { recursive: true, mode: 0o700 })
+const anchor = recordSmokeSandbox({ root: roots.static, cotalHome, xdgConfigHome: xdg })
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_"))), HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" }
+Object.assign(process.env, { HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg })
+
+let pass = 0
+let fail = 0
+const check = (name: string, ok: boolean, detail?: string) => {
+  if (ok) pass++
+  else fail++
+  console.log(ok ? `  ✓ ${name}` : `  ✗ FAIL: ${name}${detail ? `\n${detail}` : ""}`)
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** `read` once `ok` holds, or its last value after `ms`. A read that throws, as a reader's does while
+ *  it reconnects after a broker restart, is read again, and its error rethrown only at the end. */
+async function until<T>(read: () => T | Promise<T>, ok: (v: T) => boolean, ms = 8000): Promise<T> {
+  const start = Date.now()
+  for (;;) {
+    let v: { value: T } | { error: unknown }
+    try {
+      v = { value: await read() }
+    } catch (error) {
+      v = { error }
+    }
+    const done = Date.now() - start > ms
+    if ("value" in v && (ok(v.value) || done)) return v.value
+    if ("error" in v && done) throw v.error
+    await sleep(150)
+  }
+}
+
+const cli = (...args: string[]) => {
+  const options = { cwd: roots.static, env, encoding: "utf8" as const, timeout: 120_000 }
+  assertSmokeSandboxDown(anchor, args, options)
+  return spawnSync(TSX, [CLI, ...args], options)
+}
+
+const port = await freePort()
+const monitor = await freePort()
+const server = `nats://127.0.0.1:${port}`
+let broker: ChildProcess | undefined
+let release = () => {}
+async function startBroker() {
+  let output = ""
+  broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-m", String(monitor), "-sd", store], { stdio: ["ignore", "pipe", "pipe"] })
+  broker.stdout!.on("data", (d) => (output += d))
+  broker.stderr!.on("data", (d) => (output += d))
+  release = teardownOnSignal(broker, store)
+  await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100, output: () => output })
+}
+async function stopBroker() {
+  if (broker) await killAndAwaitExit(broker)
+  release()
+  broker = undefined
+}
+// Right after a restart a JetStream call can refuse while the server is still reconnecting.
+async function settled(write: () => Promise<unknown>) {
+  for (let i = 0; ; i++) {
+    try {
+      return await write()
+    } catch (e) {
+      if (i === 40) throw e
+      await sleep(250)
+    }
+  }
+}
+async function chatConnections(): Promise<number> {
+  const connz = (await (await fetch(`http://127.0.0.1:${monitor}/connz?limit=1024`)).json()) as { connections?: { name?: string }[] }
+  return (connz.connections ?? []).filter((c) => c.name === `cotal:${login}`).length
+}
+
+const capture = () => tmux("capture-pane", "-p", "-t", "t")
+/** The frame once `test` holds, or the last frame after `ms`. */
+async function see(test: (frame: string) => boolean, ms = 8000): Promise<string> {
+  const start = Date.now()
+  for (;;) {
+    const frame = capture()
+    if (test(frame) || Date.now() - start > ms) return frame
+    await sleep(50)
+  }
+}
+const has = (text: string) => (frame: string) => frame.includes(text)
+/** The conversation column's lines, trimmed, from the title to the box, without the footer. */
+function middleLines(frame: string, width: number): string[] {
+  const l = layoutFor(width)
+  const end = l.kind === "three" ? width - l.inspector : width
+  return frame.trimEnd().split("\n").slice(0, -1).map((line) => [...line].slice(l.tree, end).join("").trim()).filter(Boolean)
+}
+const treeLines = (frame: string, width: number) => frame.split("\n").map((line) => [...line].slice(0, layoutFor(width).tree).join("").trim())
+/** The conversation column's text as one line, so a sentence the column wraps reads whole. */
+const middle = (frame: string, width: number) => middleLines(frame, width).join(" ")
+const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
+const type = (text: string) => keys("-l", text)
+// A key sent within tmux's escape-time after Escape would read as alt+<key>.
+const esc = async () => {
+  keys("Escape")
+  await sleep(150)
+}
+const textOf = (m: CotalMessage) => (m.parts ?? []).map((p) => ("text" in p ? p.text : "")).join("")
+
+type Peer = { name: string; id: string; ep: CotalEndpoint; got: CotalMessage[] }
+type Space = {
+  mode: "open" | "static"
+  space: string
+  root: string
+  other: { space: string; row: number }
+  row: number
+  reader: CotalEndpoint
+  peer: (name: string) => Peer
+  namesake: (tag: string) => Promise<Peer>
+  /** A fresh agent named ghost, which leaves while the app watches. */
+  ghost: (tag: string) => Promise<Peer>
+  connections?: () => Promise<number>
+}
+
+// A credential label takes letters and digits only.
+const minted = (label: string, ...flags: string[]) => {
+  const name = label.replace(/[^a-z0-9]/gi, "")
+  const out = cli("auth", "mint", name, "--out", join(roots.static, `${name}.creds`), "--json", ...flags)
+  if (out.status !== 0) throw new Error(`cotal auth mint ${name} failed:\n${out.stdout}${out.stderr}`)
+  const r = (JSON.parse(out.stdout) as { result: { principal: string; lifecycleUid: string } }).result
+  const [owner, ...actor] = r.principal.split(".")
+  return { creds: readFileSync(join(roots.static, `${name}.creds`), "utf8"), lifecycleUid: r.lifecycleUid, owner: owner!, actor: actor.join(".") }
+}
+
+const started: CotalEndpoint[] = []
+async function join_(ep: CotalEndpoint, name: string): Promise<Peer> {
+  const got: CotalMessage[] = []
+  ep.on("error", () => {})
+  ep.on("message", (m: CotalMessage) => got.push(m))
+  started.push(ep)
+  await ep.start()
+  return { name, id: ep.card.id, ep, got }
+}
+
+const AGENTS = [
+  ["planner", "planner"],
+  ["coder-2", "coder"],
+  ["reviewer", "rev-a"],
+  ["reviewer", "rev-b"],
+] as const
+
+async function openSpace(): Promise<Space> {
+  await startBroker()
+  const w = await import("@cotal-ai/workspace")
+  for (const [space, root] of [["team-alpha", roots.alpha], ["team-beta", roots.beta]] as const) {
+    await setupSpaceStreams({ servers: server, space })
+    w.recordMesh({ space, server, root, mode: "open", origin: "manual", ts: new Date().toISOString() })
+  }
+  const space = "team-alpha"
+  const peers = new Map<string, Peer>()
+  for (const [name, role] of AGENTS)
+    peers.set(`${name}/${role}`, await join_(new CotalEndpoint({ space, servers: server, card: { name, kind: "agent", role }, channels: ["general", "ops"], heartbeatMs: 500, ttlMs: 3000 }), name))
+  const reader = new CotalEndpoint({ space, servers: server, card: { name: "reader", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: true })
+  reader.on("error", () => {})
+  started.push(reader)
+  await reader.start()
+  return {
+    mode: "open",
+    space,
+    root: roots.alpha,
+    row: 0,
+    other: { space: "team-beta", row: 1 },
+    reader,
+    peer: (key) => peers.get(key)!,
+    namesake: () => join_(new CotalEndpoint({ space, servers: server, card: { name: login.toUpperCase(), kind: "endpoint" }, channels: [], heartbeatMs: 500, ttlMs: 3000 }), login.toUpperCase()),
+    ghost: () => join_(new CotalEndpoint({ space, servers: server, card: { name: "ghost", kind: "agent", role: "ghost" }, channels: [], heartbeatMs: 500, ttlMs: 3000 }), "ghost"),
+    connections: chatConnections,
+  }
+}
+
+async function staticSpace(): Promise<Space> {
+  const sport = await freePort()
+  stackUp = true
+  const up = cli("up", "--detach", "--space", "team-static", "--server", `nats://127.0.0.1:${sport}`)
+  if (up.status !== 0) throw new Error(`cotal up failed:\n${up.stdout}${up.stderr}`)
+  let answered = false
+  for (let i = 0; i < 15 && !answered; i++) {
+    answered = cli("ps").status === 0
+    if (!answered) await sleep(2000)
+  }
+  if (!answered) throw new Error("the static stack's manager did not answer `cotal ps`")
+  const space = "team-static"
+  const servers = `nats://127.0.0.1:${sport}`
+  const peers = new Map<string, Peer>()
+  for (const [name, role] of AGENTS) {
+    const m = minted(`${name}-${role}`, "--allow-subscribe", "general,ops", "--allow-publish", "general,ops", "--role", role, "--provision")
+    const ep = new CotalEndpoint({ space, servers, creds: m.creds, lifecycleUid: m.lifecycleUid, card: { owner: m.owner, actor: m.actor, name, kind: "agent", role }, channels: ["general", "ops"] })
+    peers.set(`${name}/${role}`, await join_(ep, name))
+  }
+  const r = minted("reader", "--profile", "admin")
+  const reader = new CotalEndpoint({ space, servers, creds: r.creds, card: { owner: r.owner, actor: r.actor, name: "reader", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: true })
+  reader.on("error", () => {})
+  started.push(reader)
+  await reader.start()
+  return {
+    mode: "static",
+    space,
+    root: roots.static,
+    row: 2,
+    other: { space: "team-alpha", row: 0 },
+    reader,
+    peer: (key) => peers.get(key)!,
+    namesake: async (tag) => {
+      const m = minted(`namesake-${tag}`, "--allow-subscribe", "", "--allow-publish", "", "--provision")
+      return join_(new CotalEndpoint({ space, servers, creds: m.creds, lifecycleUid: m.lifecycleUid, card: { owner: m.owner, actor: m.actor, name: login.toUpperCase(), kind: "endpoint" }, channels: [] }), login.toUpperCase())
+    },
+    ghost: async (tag) => {
+      const m = minted(`ghost-${tag}`, "--allow-subscribe", "", "--allow-publish", "", "--role", "ghost", "--provision")
+      return join_(new CotalEndpoint({ space, servers, creds: m.creds, lifecycleUid: m.lifecycleUid, card: { owner: m.owner, actor: m.actor, name: "ghost", kind: "agent", role: "ghost" }, channels: [] }), "ghost")
+    },
+  }
+}
+
+function launch(root: string, width: number, height: number, err: string) {
+  try {
+    tmux("kill-session", "-t", "t")
+  } catch {}
+  const line = `cd ${root} && env -u XDG_CONFIG_HOME HOME=${home} COTAL_HOME=${cotalHome} XDG_CONFIG_HOME=${xdg} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
+  tmux("new-session", "-d", "-s", "t", "-x", String(width), "-y", String(height), line)
+  tmux("set-option", "-s", "escape-time", "10")
+}
+
+const SPACE_ROWS = 3
+const titleOf = (frame: string) => frame.split("\n").find((l) => l.includes("SPACES")) ?? ""
+const footer = (frame: string) => frame.trimEnd().split("\n").at(-1)!.trim()
+// A space is live once its conversation heads the middle column and the footer has nothing to report.
+const live = (space: string) => (frame: string) => titleOf(frame).includes(`  ${space}`) && !/Connecting to/.test(frame) && footer(frame) === "? help · ctrl+p commands"
+const row = (s: Space, name: string): Presence | undefined => s.reader.getRoster().find((p) => p.card.name === name && p.status !== "offline")
+const chatRow = (s: Space) => s.reader.getRoster().find((p) => p.card.name === login && p.card.meta?.sessionKind === "chat" && p.status !== "offline")
+const times = (n: number, key: string) => Array<string>(n).fill(key)
+
+// The keys go to the tree from either side: esc returns the tree to the box and does nothing in the
+// box, then tab moves them to the tree.
+async function toTree() {
+  await esc()
+  keys("Tab")
+  await sleep(150)
+}
+const toBox = esc
+
+/** Opens the tree row whose conversation is titled `name`. Each try counts down from the top past the
+ *  space rows, where enter would switch spaces; enter returns the keys to the box. `want`, read with
+ *  the tree focused so the 80x24 overview shows, tells apart rows under one name. */
+async function openRow(s: Space, name: string, want?: (frame: string) => boolean): Promise<string> {
+  for (let i = 0; i < 24; i++) {
+    await toTree()
+    keys(...times(40, "k"), ...times(SPACE_ROWS + i, "j"))
+    await sleep(80)
+    const before = titleOf(capture())
+    keys("Enter")
+    const frame = await see((f) => titleOf(f) !== before, 1500)
+    if (!titleOf(frame).includes(`${name}  ${s.space}`)) continue
+    if (!want) return frame
+    await toTree()
+    const ok = want(await see(want, 1500))
+    await toBox()
+    if (ok) return capture()
+  }
+  throw new Error(`could not open ${name}:\n${capture()}`)
+}
+/** Enter on a space row, counted from the top of the tree. */
+async function openSpaceRow(at: number) {
+  await toTree()
+  keys(...times(40, "k"), ...times(at, "j"), "Enter")
+}
+
+const strip = (line: string) => line.replace(/\x1b\[[0-9;:]*m/g, "")
+const fgBefore = (line: string, text: string) => new RegExp(`\\x1b\\[38;2;([\\d;]+)m${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).exec(line)?.[1]
+/** The human's name at the bottom of the tree, with its color and the gold the open space's marker has. */
+function nameAtBottom(width: number): { name: string; fg?: string; gold?: string } {
+  const raw = tmux("capture-pane", "-p", "-e", "-t", "t").split("\n")
+  const tree = layoutFor(width).tree
+  const lines = raw.map((l) => [...strip(l)].slice(0, tree).join("").trim())
+  const last = raw.map(strip).findLastIndex((l) => l.trim() !== "")
+  const at = lines.slice(0, last).findLastIndex(Boolean)
+  const name = lines[at] ?? ""
+  return { name, fg: fgBefore(raw[at] ?? "", name), gold: raw.map((l) => fgBefore(l, "▸")).find(Boolean) }
+}
+
+async function run(s: Space, width: number, height: number, tag: string) {
+  const size = `${width}x${height}`
+  const at = `${s.mode} ${size}`
+  const dir = join(captures, s.mode, size)
+  let n = 0
+  const save = (name: string) => {
+    mkdirSync(dir, { recursive: true })
+    const file = `${String(++n).padStart(2, "0")}-${name}`
+    writeFileSync(join(dir, `${file}.txt`), capture())
+    writeFileSync(join(dir, `${file}.ansi`), tmux("capture-pane", "-p", "-e", "-t", "t"))
+  }
+  const general = () => s.reader.channelHistory("general", { limit: 200 })
+  // Spaces dropped, since the column may wrap a sentence inside a word such as `/quit`.
+  const says = (frame: string, text: string) => middle(frame, width).replace(/\s+/g, "").includes(text.replace(/\s+/g, ""))
+  const lines = (frame: string) => middleLines(frame, width)
+  // A feed row's text sits after the row's border; the box holds the draft with no border.
+  const inFeed = (frame: string, text: string) => lines(frame).includes(`┃ ${text}`)
+  const inBox = (frame: string, text: string) => lines(frame).includes(text)
+  const target = (frame: string, line: string) => lines(frame).some((l) => l === line || l.startsWith(`${line} · ends `))
+  const dms = () => s.reader.dmHistory({ limit: 500 })
+  const enter = (text: string, done: (f: string) => boolean) => {
+    type(text)
+    keys("Enter")
+    return see(done)
+  }
+  const clear = async () => {
+    keys("C-u")
+    await sleep(150)
+  }
+  console.log(at)
+  const ghost = await s.ghost(tag)
+
+  launch(s.root, width, height, join(work, `${s.mode}-${size}.err`))
+  const watching = await see((f) => live(s.space)(f) && f.includes("coder-2") && nameAtBottom(width).name === login, 20000)
+  const dim = nameAtBottom(width)
+  save("watching")
+  check(`${at}: the space opens on #general with the box under it and the human's name, not gold, at the bottom of the tree`, titleOf(watching).includes(`#general  ${s.space}`) && target(watching, "#general") && dim.name === login && !!dim.fg && dim.fg !== dim.gold, JSON.stringify(dim))
+  const unseen = await s.connections?.()
+  check(`${at}: watching stays invisible: no live roster row named ${login}${s.connections ? `, no cotal:${login} connection` : ""}`, !chatRow(s) && (unseen ?? 0) === 0, JSON.stringify({ unseen }))
+
+  const post = `hi @planner the plan is ready (${tag})`
+  type(post)
+  const drafted = await see((f) => inBox(f, post))
+  await sleep(1000)
+  const typing = await s.connections?.()
+  save("draft")
+  check(`${at}: typing a draft opens no session`, inBox(drafted, post) && !chatRow(s) && (typing ?? 0) === 0, JSON.stringify({ typing }))
+
+  keys("Enter")
+  const landed = await until(general, (h) => h.some((m) => textOf(m) === post))
+  const self = await until(() => chatRow(s), (p) => p !== undefined)
+  const connected = await s.connections?.()
+  const first = await see((f) => inFeed(f, post) && !inBox(f, post) && nameAtBottom(width).fg === nameAtBottom(width).gold)
+  const gold = nameAtBottom(width)
+  save("first-send")
+  const principal = self?.card.id ?? "unknown"
+  const msg = landed.find((m) => textOf(m) === post)
+  check(`${at}: the first enter opens one chat session named ${login} with no suffix: a live roster row with sessionKind chat${s.connections ? " and one connection" : ""}`, !!self && self.card.kind === "endpoint" && (connected ?? 1) === 1, JSON.stringify({ self: self?.card, connected }))
+  check(`${at}: the same enter sends: the post lands in #general's history from the session's principal with the mention, and the box empties`, msg?.from.id === principal && !!msg?.mentions?.includes("planner") && inFeed(first, post) && !inBox(first, post), JSON.stringify(msg))
+  check(`${at}: on the roster, the name at the bottom of the tree turns gold`, gold.name === login && gold.fg === gold.gold, JSON.stringify(gold))
+  if (s.mode === "static") check(`${at}: a static session's box names its end time`, lines(first).some((l) => /^#general · ends \d\d:\d\d$/.test(l)), first)
+
+  if (s.mode === "static") {
+    await openRow(s, "#ops")
+    const ops = `ops note (${tag})`
+    const outside = await enter(ops, (f) => says(f, "denied:"))
+    save("grant-outside")
+    const opsHistory = await s.reader.channelHistory("ops", { limit: 200 })
+    check(`${at}: a post outside the post grant refuses with the app's step, keeps the draft and stores nothing`, says(outside, "denied: #ops is outside this session's post grant. /quit ends this session, then enter in #ops opens one there") && inBox(outside, ops) && !opsHistory.some((m) => textOf(m) === ops), outside)
+    await clear()
+  }
+
+  await openRow(s, "reviewer", (f) => /role\s+rev-b/.test(f))
+  const dm = `please read the branch (${tag})`
+  type(dm)
+  keys("Enter")
+  const toReviewer = await until(dms, (h) => h.some((m) => textOf(m) === dm))
+  const dmShown = await see((f) => inFeed(f, dm) && !inBox(f, dm))
+  const reviewerB = s.peer("reviewer/rev-b").id
+  save("dm-sent")
+  check(
+    `${at}: a direct message to the open reviewer reaches its principal, not the other reviewer, and shows in the conversation`,
+    inFeed(dmShown, dm) && toReviewer.filter((m) => textOf(m) === dm).map((m) => `${m.from.id}>${m.to}`).join() === `${principal}>${reviewerB}`,
+    JSON.stringify(toReviewer.filter((m) => textOf(m) === dm)),
+  )
+
+  await toTree()
+  keys("w")
+  await see(has("◐ coder-2 is waiting"), 4000)
+  keys("j")
+  await sleep(100)
+  keys("Tab")
+  const answering = await see((f) => target(f, "answering coder-2"), 4000)
+  save("answering")
+  check(`${at}: w in the tree, then j off the row, then tab: the box answers the waiting agent`, target(answering, "answering coder-2") && answering.includes("◐ coder-2 is waiting"), answering)
+  const answer = `approved, run it (${tag})`
+  type(answer)
+  keys("Enter")
+  const toCoder = await until(dms, (h) => h.some((m) => textOf(m) === answer))
+  save("answer-sent")
+  check(`${at}: the answer reaches the waiting agent's principal`, toCoder.some((m) => textOf(m) === answer && m.from.id === principal && m.to === s.peer("coder-2/coder").id), JSON.stringify(toCoder.filter((m) => textOf(m) === answer)))
+
+  const planner = s.peer("planner/planner")
+  const ask = await planner.ep.unicast(principal, `can you approve 0042? (${tag})`)
+  await until(dms, (h) => h.some((m) => m.id === ask?.id))
+  await sleep(500)
+  type("/reply")
+  keys("Enter")
+  const quoted = await see(has(`↳ planner: “can you approve 0042? (${tag})”`))
+  save("reply-quote")
+  check(`${at}: /reply quotes the newest direct message and the box names who it answers`, quoted.includes(`↳ planner: “can you approve 0042? (${tag})”`) && target(quoted, "replying to planner"), quoted)
+  const reply = `yes, go ahead (${tag})`
+  type(reply)
+  keys("Enter")
+  const toPlanner = await until(dms, (h) => h.some((m) => textOf(m) === reply))
+  const unquoted = await see((f) => !f.includes("↳ planner:"))
+  save("reply-sent")
+  check(
+    `${at}: the reply reaches planner's principal with replyTo naming its message, and the quote goes`,
+    toPlanner.some((m) => textOf(m) === reply && m.to === planner.id && m.replyTo === ask?.id) && !unquoted.includes("↳ planner:"),
+    JSON.stringify({ ask: ask?.id, got: toPlanner.filter((m) => textOf(m) === reply) }),
+  )
+
+  const before = (await general()).length
+  const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
+  save("unknown-slash")
+  await clear()
+  const who = await enter("/who", (f) => says(f, "is not in the app"))
+  save("cli-only-slash")
+  await clear()
+  check(`${at}: an unknown slash command refuses and keeps the line`, says(unknown, "unknown command /foo; try") && inBox(unknown, "/foo"), unknown)
+  check(`${at}: /who is not in the app and is not sent`, says(who, "/who is not in the app; the tree lists who is here") && (await general()).length === before, who)
+
+  const traffic = await openRow(s, "all traffic")
+  const nowhere = await enter(`hello all (${tag})`, (f) => says(f, "choose a recipient first"))
+  save("no-recipient")
+  check(`${at}: all traffic has no recipient: the box says so, and enter refuses, keeps the draft and stores nothing`, target(traffic, "no recipient in all traffic") && says(nowhere, "choose a recipient first (open a channel or an agent)") && inBox(nowhere, `hello all (${tag})`) && (await general()).length === before, nowhere)
+  await clear()
+
+  await ghost.ep.stop()
+  await see(has("⨯ ghost"), 10000)
+  await openRow(s, "ghost")
+  const late = `are you there (${tag})`
+  const offline = await enter(late, (f) => says(f, "is offline"))
+  const toGhost = await until(dms, (h) => h.some((m) => textOf(m) === late))
+  save("offline-recipient")
+  check(
+    `${at}: a direct message to an offline agent is stored at its principal and says so`,
+    says(offline, "ghost is offline. The message is stored and delivered when ghost reconnects") && toGhost.some((m) => textOf(m) === late && m.to === ghost.id),
+    offline,
+  )
+
+  if (s.mode === "open") {
+    await openRow(s, "#general")
+    await stopBroker()
+    await see((f) => footer(f).startsWith("◐ reconnecting"), 10000)
+    // Enter before the session itself saw the outage would publish into the client's buffer, so
+    // /connection, which runs offline, first shows the session disconnected.
+    let state = ""
+    for (let i = 0; i < 20 && !says(state, "disconnected as"); i++) {
+      type("/connection")
+      keys("Enter")
+      state = await see((f) => says(f, "disconnected as"), 1000)
+    }
+    const queued = `during the outage (${tag})`
+    const away = await enter(queued, (f) => says(f, "not connected"))
+    save("not-connected")
+    check(`${at}: enter while the broker is away refuses and keeps the draft`, says(away, "not connected: sending is off; your draft is kept") && inBox(away, queued), away)
+    await startBroker()
+    await settled(() => setupSpaceStreams({ servers: server, space: s.space }))
+    await see(live(s.space), 30000)
+    let stored = false
+    for (let i = 0; i < 20 && !stored; i++) {
+      keys("Enter")
+      stored = (await until(general, (h) => h.some((m) => textOf(m) === queued), 1500)).some((m) => textOf(m) === queued)
+    }
+    const once = await until(general, (h) => h.some((m) => textOf(m) === queued))
+    const back = await see((f) => inFeed(f, queued) && !inBox(f, queued))
+    save("sent-after-reconnect")
+    check(`${at}: once the broker is back, enter sends the kept draft once`, once.filter((m) => textOf(m) === queued).length === 1 && inFeed(back, queued), back)
+  }
+
+  const namesake = await s.namesake(tag)
+  await until(() => row(s, login.toUpperCase()), (p) => p !== undefined)
+  const quit = await enter("/quit", (f) => says(f, "session ended"))
+  const gone = await until(() => s.reader.getRoster().find((p) => p.card.id === principal), (p) => p === undefined || p.status === "offline")
+  const left = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)
+  save("quit")
+  check(`${at}: /quit ends the session: its roster row goes offline${s.connections ? " and its connection closes" : ""}, and the box says enter opens a new one`, says(quit, `you ended it · enter opens a new one as ${login}`) && (gone === undefined || gone.status === "offline") && left === 0, quit)
+
+  await toTree()
+  keys("w")
+  await see(has("◐ coder-2 is waiting"), 4000)
+  keys("Tab")
+  await sleep(150)
+  const again = `still there? (${tag})`
+  const reopened = await enter(again, (f) => says(f, "new session as"))
+  const next = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal)
+  const warned = await see(has("already in use"))
+  await sleep(1000)
+  const early = (await dms()).filter((m) => textOf(m) === again)
+  save("reopened-name-in-use")
+  check(`${at}: after /quit, enter opens a new session under a new principal, keeps the draft and sends nothing`, !!next && next.card.id !== principal && says(reopened, `new session as ${login}; enter sends`) && inBox(reopened, again) && early.length === 0, JSON.stringify({ next: next?.card.id, principal, early }))
+  check(`${at}: a name another participant holds is warned`, warned.includes("already in use"), warned)
+  const principal2 = next?.card.id ?? "unknown"
+  keys("Enter")
+  const sentAgain = await until(dms, (h) => h.some((m) => textOf(m) === again))
+  check(`${at}: the second enter sends from the new session`, sentAgain.some((m) => textOf(m) === again && m.from.id === principal2 && m.to === s.peer("coder-2/coder").id), JSON.stringify(sentAgain.filter((m) => textOf(m) === again)))
+  await sleep(1500)
+  const ownRows = treeLines(capture(), width).filter((l) => new RegExp(`^⚙ ${login}( |$)`).test(l))
+  save("own-sessions-in-tree")
+  check(`${at}: the tree lists none of the human's chat sessions, the ended one or the open one`, ownRows.length === 0, ownRows.join("\n"))
+  if (s.mode === "open") {
+    const colleague = new CotalEndpoint({ space: s.space, servers: server, card: { name: "dana", kind: "endpoint", meta: { sessionKind: "chat" } }, channels: [], heartbeatMs: 500, ttlMs: 3000 })
+    colleague.on("error", () => {})
+    started.push(colleague)
+    await colleague.start()
+    const danaRow = (f: string) => treeLines(f, width).some((l) => /^⚙ dana( |$)/.test(l))
+    const listed = await see(danaRow, 8000).catch(() => capture())
+    check(`${at}: another human's live chat session has a row in the tree`, danaRow(listed), treeLines(listed, width).join("\n"))
+    await colleague.stop()
+    const dropped = await see((f) => !danaRow(f), 8000).catch(() => capture())
+    check(`${at}: once that session ends, its row goes`, !danaRow(dropped), treeLines(dropped, width).join("\n"))
+  }
+  // The toast covers the conversation title at 80x24, which the row picker reads.
+  await see((f) => !f.includes("already in use"), 15000)
+  await namesake.ep.stop()
+
+  await openRow(s, "#general")
+  const after = `after the end (${tag})`
+  if (s.mode === "static") {
+    const none = await enter(after, (f) => says(f, "denied:"))
+    save("grant-none")
+    check(
+      `${at}: a session opened on an agent cannot post to a channel, with the app's step, keeps the draft and stores nothing`,
+      says(none, "denied: this session was opened on no channel, so it cannot post to #general. /quit ends this session, then enter in #general opens one there") && inBox(none, after) && !(await general()).some((m) => textOf(m) === after),
+      none,
+    )
+  } else {
+    type(after)
+    keys("Enter")
+    const fromNew = await until(general, (h) => h.some((m) => textOf(m) === after))
+    save("post-from-new-session")
+    check(`${at}: the new session posts from its own principal`, fromNew.some((m) => textOf(m) === after && m.from.id === principal2), JSON.stringify(fromNew.filter((m) => textOf(m) === after)))
+  }
+  await clear()
+  const kept = `saved draft (${tag})`
+  type(kept)
+  await see((f) => inBox(f, kept))
+
+  await openSpaceRow(s.other.row)
+  await see(live(s.other.space), 20000)
+  const closed = await until(() => s.reader.getRoster().find((p) => p.card.id === principal2), (p) => p === undefined || p.status === "offline", 15000)
+  const none = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)
+  save("switched-away")
+  check(`${at}: switching spaces closes the chat session: its roster row goes offline${s.connections ? " and no cotal:" + login + " connection is left" : ""}`, (closed === undefined || closed.status === "offline") && none === 0, JSON.stringify(closed?.status))
+  await openSpaceRow(s.row)
+  const back = await see((f) => live(s.space)(f) && inBox(f, kept), 20000)
+  save("draft-kept")
+  check(`${at}: the draft stays with its conversation across the switch`, titleOf(back).includes(`#general  ${s.space}`) && inBox(back, kept), back)
+
+  await toTree()
+  keys("w")
+  await see(has("◐ coder-2 is waiting"), 4000)
+  keys("Tab")
+  await sleep(150)
+  const bye = `signing off (${tag})`
+  type(bye)
+  keys("Enter")
+  const third = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal && p.card.id !== principal2)
+  const byeSent = await until(dms, (h) => h.some((m) => textOf(m) === bye))
+  check(`${at}: back on the space, the first enter opens a new session and answers in one step`, !!third && byeSent.some((m) => textOf(m) === bye && m.from.id === third.card.id), JSON.stringify(byeSent.filter((m) => textOf(m) === bye)))
+
+  keys("C-c")
+  const asked = await see(has("Quit with 1 unsent draft?"), 4000)
+  save("quit-asks")
+  keys("y")
+  const exited = await see(has("EXIT=0"), 15000)
+  save("exited")
+  check(`${at}: ctrl+c in the box with a draft asks first, then exits 0 and prints how the session closed`, asked.includes("y quit · n esc enter stay") && exited.includes(`${s.space}: `) && exited.replace(/\n/g, "").includes("messages already sent remain"), exited)
+}
+
+async function rename(s: Space, tag: string) {
+  const at = `${s.mode} 209x52`
+  const dir = join(captures, s.mode, "209x52")
+  // The palette lists Change your name too, so the dialog is known by its own line.
+  const dialog = async () => {
+    keys("C-p")
+    await see(has("Commands"), 4000)
+    type("Change your name")
+    keys("Enter")
+    await see(has("Your name is"), 4000)
+    await sleep(300)
+  }
+  launch(s.root, 209, 52, join(work, `${s.mode}-rename.err`))
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
+  await dialog()
+  type("Ops Lead")
+  keys("Enter")
+  const refused = await see(has('invalid name "Ops Lead"'), 4000)
+  check(`${at}: Change your name refuses a name an @mention cannot reach and keeps the dialog open`, refused.includes("Your name is") && nameAtBottom(209).name === login, refused)
+  keys("C-u")
+  type("ops-lead")
+  keys("Enter")
+  const renamed = await see((f) => !f.includes("Your name is") && nameAtBottom(209).name === "ops-lead")
+  const hello = `hello as ops-lead (${tag})`
+  type(hello)
+  const typed = await see((f) => middleLines(f, 209).includes(hello), 4000)
+  keys("Enter")
+  const named = await until(() => s.reader.getRoster().find((p) => p.card.name === "ops-lead" && p.status !== "offline"), (p) => p !== undefined)
+  const landed = await until(() => s.reader.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === hello))
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `renamed-${tag}.txt`), capture())
+  writeFileSync(join(dir, `renamed-${tag}.ansi`), tmux("capture-pane", "-p", "-e", "-t", "t"))
+  check(`${at}: Change your name shows the new name at the bottom of the tree, and the box still takes text once the dialog closes`, nameAtBottom(209).name === "ops-lead" && middleLines(typed, 209).includes(hello), renamed)
+  check(`${at}: the next session appears under the new name on the roster and posts from it`, named?.card.meta?.sessionKind === "chat" && landed.some((m) => textOf(m) === hello && m.from.id === named.card.id), JSON.stringify(named?.card))
+  await dialog()
+  keys("Enter")
+  await see((f) => !f.includes("Your name is"), 4000)
+  keys("C-c")
+  await see(has("EXIT=0"), 15000)
+}
+
+/** Enter on the first message, then a switch to the other space before the session that enter opens
+ *  is up. The message still goes where it was typed, and the box sends again in the new space. */
+async function switchWhileOpening(s: Space, tag: string) {
+  const at = `${s.mode} 209x52`
+  const err = join(work, `${s.mode}-switch.err`)
+  launch(s.root, 209, 52, err)
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
+  const first = `sent as the space switched (${tag})`
+  type(first)
+  await see((f) => middleLines(f, 209).includes(first), 4000)
+  // One write, so the switch lands while the session the enter opens is still coming up.
+  keys("Enter", "Tab", ...times(40, "k"), ...times(s.other.row, "j"), "Enter")
+  const switched = await see(live(s.other.space), 20000)
+  const landed = await until(() => s.reader.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === first))
+  check(
+    `${at}: enter, then a switch to ${s.other.space} while the session opens: the message lands once in #general on ${s.space}`,
+    landed.filter((m) => textOf(m) === first).length === 1,
+    `stderr: ${readFileSync(err, "utf8")}\n${switched}`,
+  )
+  const other = new CotalEndpoint({ space: s.other.space, servers: server, card: { name: "reader", kind: "endpoint" }, consume: false, registerPresence: false })
+  other.on("error", () => {})
+  started.push(other)
+  await other.start()
+  const next = `first on ${s.other.space} (${tag})`
+  type(next)
+  keys("Enter")
+  const there = await until(() => other.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === next))
+  const after = capture()
+  writeFileSync(join(captures, `${s.mode}-switch-while-opening.txt`), after)
+  check(
+    `${at}: after that switch, enter on ${s.other.space} opens a session there and sends`,
+    there.some((m) => textOf(m) === next) && !middle(after, 209).includes("still being sent"),
+    `stderr: ${readFileSync(err, "utf8")}\n${after}`,
+  )
+  keys("C-c")
+  await see(has("EXIT=0"), 15000)
+}
+
+let stackUp = false
+try {
+  const open = await openSpace()
+  await open.peer("planner/planner").ep.multicast("Sprint plan is up", { channel: "general" })
+  await open.peer("planner/planner").ep.multicast("ops are green", { channel: "ops" })
+  await open.peer("coder-2/coder").ep.setStatus("waiting", "needs approval: run migration 0042 on staging?")
+  const stat = await staticSpace()
+  await stat.peer("planner/planner").ep.multicast("Sprint plan is up", { channel: "general" })
+  await stat.peer("planner/planner").ep.multicast("ops are green", { channel: "ops" })
+  await stat.peer("coder-2/coder").ep.setStatus("waiting", "needs approval: run migration 0042 on staging?")
+  console.log(`node ${process.versions.node}, tmux ${tmux("-V").trim()}, login ${login}, open broker ${server}, captures in ${captures}`)
+
+  const tags = ["ra", "rb", "rc", "rd"]
+  for (const s of [open, stat])
+    for (const [width, height] of [[209, 52], [80, 24]] as const) {
+      try {
+        await run(s, width, height, tags.shift()!)
+      } catch (e) {
+        check(`${s.mode} ${width}x${height}: the flow ran to its end`, false, `${(e as Error).message}\n${capture()}`)
+      }
+    }
+  for (const s of [open, stat]) await rename(s, s.mode)
+  await switchWhileOpening(open, "sw")
+} finally {
+  try {
+    tmux("kill-server")
+  } catch {}
+  await Promise.all(started.map((ep) => ep.stop().catch(() => {})))
+  if (stackUp) cli("down")
+  await stopBroker()
+  rmSync(home, { recursive: true, force: true })
+  rmSync(store, { recursive: true, force: true })
+}
+
+console.log(`TUI COMPOSER SMOKE: ${pass} passed, ${fail} failed`)
+process.exit(fail === 0 ? 0 : 1)
