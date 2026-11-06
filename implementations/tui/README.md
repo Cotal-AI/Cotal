@@ -93,7 +93,8 @@ session. The session may post only to the channel it opened on, or to none when 
 agent, and it ends 15 minutes after it opened; the line under the box shows the time. Posting
 elsewhere means `/quit`, then `enter` in that channel.
 
-Your session ends when you switch spaces, quit, or type `/quit`. After it ends, `enter` opens a new
+Your session ends when you switch spaces, quit, or type `/quit`. A message you sent with `enter`
+just before still goes, the first one included while its session opens. After it ends, `enter` opens a new
 session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent drafts
 asks first. Quitting closes the session and prints how it closed.
 
