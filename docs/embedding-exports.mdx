@@ -29,6 +29,21 @@ A process handle alone does not establish ownership or closure of its descendant
 remote effects, or promise at-most-once execution. These APIs do not enable the built-in
 PTY runtime's automatic restart policy. The runtime must separately prove work closure.
 
+### Namespace adapter qualification
+
+The manager contains an unregistered namespace adapter for integration tests. It is not a
+selectable runtime and does not declare automatic restart support. The adapter uses a packaged
+Node bootstrap, a private durable custody record and installed Linux `unshare` and `bwrap` tools.
+The bootstrap blocks application execution until the host records namespace-init ownership.
+It then uses Node's experimental `process.execve` API, available from Node 22.15, to replace itself.
+
+The tests exercise terminal behavior and authenticated Manager/Delivery recovery with inert
+connectors. Their test-only policy admission does not enable the adapter for ordinary spawns.
+The current mount profile exposes the caller's workspace and `/usr`; it is not an adversarial
+sandbox or a complete connector mount policy. System-tool packaging, crash-recovery coverage
+and production adoption remain unqualified. Missing tools, unavailable identity or unsupported
+hosts refuse; the built-in PTY runtime is unchanged.
+
 ## Workspace registry liveness
 
 `@cotal-ai/workspace` exports `pruneStaleMeshes()` for a liveness sweep. It keeps every
