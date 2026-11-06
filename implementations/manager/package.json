@@ -26,7 +26,8 @@
     "prepublishOnly": "pnpm run build",
     "smoke:namespace-pty": "tsx smoke/namespace-pty.smoke.ts",
     "smoke:namespace-manager": "tsx smoke/namespace-manager.smoke.ts",
-    "smoke:shutdown-custody": "tsx smoke/shutdown-custody.smoke.ts"
+    "smoke:shutdown-custody": "tsx smoke/shutdown-custody.smoke.ts",
+    "probe:namespace-cold": "tsx smoke/namespace-cold.smoke.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",

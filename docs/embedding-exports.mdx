@@ -40,8 +40,10 @@ It then uses Node's experimental `process.execve` API, available from Node 22.15
 The tests exercise terminal behavior and authenticated Manager/Delivery recovery with inert
 connectors. Their test-only policy admission does not enable the adapter for ordinary spawns.
 The current mount profile exposes the caller's workspace and `/usr`; it is not an adversarial
-sandbox or a complete connector mount policy. System-tool packaging, crash-recovery coverage
-and production adoption remain unqualified. Missing tools, unavailable identity or unsupported
+sandbox or a complete connector mount policy. Cold owner-crash probes, both during startup and after durable readiness, closed the old work
+but left an unproved closure journal. The successor started no replacement and retained the
+slot in its terminalizing phase. This is safe refusal, not successful cold recovery. System-tool
+packaging, wider startup-failure coverage and production adoption remain unqualified. Missing tools, unavailable identity or unsupported
 hosts refuse; the built-in PTY runtime is unchanged.
 
 ## Workspace registry liveness
