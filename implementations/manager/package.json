@@ -25,7 +25,8 @@
     "build:console-bundle": "esbuild src/console-session-entry.ts --bundle --format=iife --platform=browser --target=es2020 --alias:node:crypto=./src/console-crypto-shim.ts --outfile=dist/console/session-bundle.js && node scripts/console-bundle-loadtest.mjs",
     "prepublishOnly": "pnpm run build",
     "smoke:namespace-pty": "tsx smoke/namespace-pty.smoke.ts",
-    "smoke:namespace-manager": "tsx smoke/namespace-manager.smoke.ts"
+    "smoke:namespace-manager": "tsx smoke/namespace-manager.smoke.ts",
+    "smoke:shutdown-custody": "tsx smoke/shutdown-custody.smoke.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",
