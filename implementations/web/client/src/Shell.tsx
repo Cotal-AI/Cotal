@@ -7,7 +7,6 @@ import type { Controller } from "./state/controller.js";
 import { useStore } from "./state/hooks.js";
 import type { Store } from "./state/store.js";
 import type { DashboardState } from "./state/types.js";
-import type { Theme } from "./lib/theme.js";
 import { AppShell } from "./ui/AppShell.tsx";
 import type { Places } from "./ui/Rail.tsx";
 import { Compose } from "./ui/Composer.tsx";
@@ -129,12 +128,12 @@ function centreView(
  *  `phone` draws mock section F (see `AppShell`). It has to be what `useIsMobile` says, as `App`
  *  passes it, because the Sidebar reads that hook for itself: the places sheet is the Sidebar's own,
  *  opened from a view header's SidebarToggle and closed on Escape, on the overlay or on any new route.
- *  `theme` and `onTheme` are the Settings menu's; without `onTheme` Settings is disabled.
+ *  Settings reads the theme from the `ThemeProvider` that `App` holds.
  *
  *  The composers the views draw reach the controller's `send` and `draft` through `Compose`, and
  *  every avatar of a roster row finds its initial badge through `BadgeOf`. The dashboard's one
  *  TooltipProvider sits here too, so every shadcn Tooltip in it shares one delay. */
-export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false, theme, onTheme }: {
+export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false }: {
   store: Store<DashboardState>;
   controller: Controller | null;
   route: Route;
@@ -142,8 +141,6 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   msgPerSecond: () => number;
   clock?: () => number;
   phone?: boolean;
-  theme?: Theme;
-  onTheme?: (t: Theme) => void;
 }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
@@ -177,8 +174,6 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
         paneOpen={shown}
         panel={panelBody}
         places={places}
-        theme={theme}
-        onTheme={onTheme}
         phone={phone}
         waiting={needing}
         working={busy}

@@ -75,8 +75,8 @@ function bundleLicenses(): Plugin {
 }
 
 /** The theme boot script: `bootTheme` (src/lib/themeBoot.ts) as a classic script, run on the page's
- *  own storage and root element. */
-const THEME_BOOT_JS = `(${bootTheme.toString()})(() => localStorage, document.documentElement);\n`;
+ *  own storage, root element and OS setting. */
+const THEME_BOOT_JS = `(${bootTheme.toString()})(() => localStorage, document.documentElement, () => matchMedia("(prefers-color-scheme: dark)").matches);\n`;
 
 /** Writes `theme-boot.js` beside the page and puts it first in the page's head, ahead of the
  *  stylesheet and the module script the build adds. The stylesheet blocks the first paint and the

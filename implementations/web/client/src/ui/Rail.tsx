@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/toolt
 import { RailIcon, type RailIconName } from "../icons/rail.js";
 import { formatRoute, type Route } from "../lib/route.js";
 import type { Theme } from "../lib/theme.js";
+import { useTheme } from "./theme-provider.tsx";
 
 interface View {
   label: string;
@@ -69,45 +70,40 @@ const CHOICES: { value: Theme; label: string }[] = [
 /** The Settings item at the foot of the rail and the menu it opens: the theme, System, Light or Dark,
  *  as radio items with the chosen one checked. Picking one applies it and closes the menu. The menu
  *  owns its keys, Escape and outside click, and gives focus back to Settings when it closes. Up and
- *  Down wrap at the ends, which Radix does only when the content gets `loop`. With no
- *  `onTheme` the item is disabled. */
-function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => void }) {
+ *  Down wrap at the ends, which Radix does only when the content gets `loop`. The theme comes from
+ *  `ThemeProvider`. */
+function Settings() {
   const label = useId();
+  const { theme, setTheme } = useTheme();
   return (
     <DropdownMenu>
       <Tooltip>
-        {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it, which
-            takes the focus while the button cannot. */}
         <TooltipTrigger asChild>
-          <span className="flex" tabIndex={onTheme ? undefined : 0}>
-            <DropdownMenuTrigger asChild>
-              <SidebarMenuButton disabled={!onTheme}>
-                <RailIcon name="gear" />
-                <span>Settings</span>
-              </SidebarMenuButton>
-            </DropdownMenuTrigger>
-          </span>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuButton>
+              <RailIcon name="gear" />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="right">Settings</TooltipContent>
       </Tooltip>
-      {onTheme && (
-        <DropdownMenuContent side="right" align="end" loop>
-          <DropdownMenuGroup aria-labelledby={label}>
-            <DropdownMenuLabel id={label}>Theme</DropdownMenuLabel>
-            <DropdownMenuRadioGroup
-              value={theme}
-              onValueChange={(next) => {
-                const picked = CHOICES.find((t) => t.value === next);
-                if (picked) onTheme(picked.value);
-              }}
-            >
-              {CHOICES.map((t) => (
-                <DropdownMenuRadioItem key={t.value} value={t.value}>{t.label}</DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      )}
+      <DropdownMenuContent side="right" align="end" loop>
+        <DropdownMenuGroup aria-labelledby={label}>
+          <DropdownMenuLabel id={label}>Theme</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={theme}
+            onValueChange={(next) => {
+              const picked = CHOICES.find((t) => t.value === next);
+              if (picked) setTheme(picked.value);
+            }}
+          >
+            {CHOICES.map((t) => (
+              <DropdownMenuRadioItem key={t.value} value={t.value}>{t.label}</DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
     </DropdownMenu>
   );
 }
@@ -120,10 +116,9 @@ function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => v
  *  which shows whether or not the sidebar is collapsed. An item that leads nowhere yet is a button
  *  marked disabled, which keyboard and screen readers still reach, with the empty state it would show
  *  as its Tooltip and its accessible description. A button marked so takes no pointer events, so that
- *  Tooltip hangs on a span around it. Settings opens the theme menu when `onTheme` is given and is
- *  disabled until then. The mark is drawn in `currentColor`, so the stylesheet's `--mark` token gives
+ *  Tooltip hangs on a span around it. Settings opens the theme menu. The mark is drawn in `currentColor`, so the stylesheet's `--mark` token gives
  *  it the brand navy by day and cream at night. */
-export function Rail({ route, places, theme, onTheme }: { route: Route; places: Places; theme?: Theme; onTheme?: (t: Theme) => void }) {
+export function Rail({ route, places }: { route: Route; places: Places }) {
   return (
     <>
       <SidebarHeader>
@@ -170,7 +165,7 @@ export function Rail({ route, places, theme, onTheme }: { route: Route; places: 
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <Settings theme={theme} onTheme={onTheme} />
+            <Settings />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

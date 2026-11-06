@@ -74,16 +74,11 @@ const block = (css: string, selector: string) => {
 const vars = (body: string) => new Map([...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()]));
 
 const light = block(tokens, ":root");
-const night = block(tokens, ':root[data-theme="dark"]');
-const media = block(tokens, "@media (prefers-color-scheme: dark)");
-const system = media && block(media, ':root:not([data-theme="light"])');
+const night = block(tokens, ".dark");
 ok("tokens.css defines the Quiet palette on :root", !!light && vars(light).get("--bg") === "#FFFFFF" && vars(light).get("--ink") === "#1F2430");
-ok('tokens.css defines the Night palette on :root[data-theme="dark"]', !!night && vars(night).get("--bg") === "#16181D" && vars(night).get("--ink") === "#E6E8EE");
-ok("tokens.css gives system the Night palette in a prefers-color-scheme: dark block that spares data-theme=light",
-  !!system && vars(system).get("--bg") === "#16181D" && vars(system).get("--ink") === "#E6E8EE");
-const nightVars = vars(night ?? ""), systemVars = vars(system ?? ""), lightVars = vars(light ?? "");
-ok("the system block and the dark block carry the same declarations",
-  nightVars.size > 0 && [...nightVars].every(([k, v]) => systemVars.get(k) === v) && systemVars.size === nightVars.size);
+ok("tokens.css defines the Night palette once, on shadcn's .dark class", !!night && vars(night).get("--bg") === "#16181D" && vars(night).get("--ink") === "#E6E8EE"
+  && !tokens.includes("data-theme") && !tokens.includes("prefers-color-scheme"));
+const nightVars = vars(night ?? ""), lightVars = vars(light ?? "");
 ok("every Night token overrides a Quiet token", [...nightVars.keys()].every((k) => lightVars.has(k)), [...nightVars.keys()].filter((k) => !lightVars.has(k)));
 ok("the fonts are Inter Variable and the system mono stack",
   lightVars.get("--body") === '"Inter Variable", system-ui, sans-serif' && lightVars.get("--mono") === 'ui-monospace, "SF Mono", Menlo, Consolas, monospace');
@@ -120,16 +115,16 @@ ok("shadcn.css scans all of client/src for Tailwind classes, and only through it
     && scanned.includes(src) && !/@source\s+not\b/.test(shadcnCss),
   scanned);
 
-/** shadcn's names, each set on :root from one of our tokens, so Night follows from our Night blocks. */
+/** shadcn's names, each set on :root from one of our tokens, so Night follows from our .dark block. */
 const BRIDGE: Record<string, string> = {
   "--background": "--bg", "--foreground": "--ink", "--card-foreground": "--ink", "--popover-foreground": "--ink",
   "--secondary-foreground": "--ink", "--accent-foreground": "--ink", "--muted": "--soft", "--secondary": "--soft",
   "--muted-foreground": "--dim", "--border": "--line", "--input": "--card-line", "--ring": "--focus",
   "--accent": "--hover", "--primary-foreground": "--primary-ink", "--destructive": "--red-ink", "--popover": "--card",
 };
-const unbridged = Object.entries(BRIDGE).filter(([name, ours]) => lightVars.get(name) !== `var(${ours})` || nightVars.has(name) || systemVars.has(name));
+const unbridged = Object.entries(BRIDGE).filter(([name, ours]) => lightVars.get(name) !== `var(${ours})` || nightVars.has(name));
 ok("tokens.css's :root defines each bridged shadcn name as var(--ours) per the map", unbridged.length === 0,
-  unbridged.map(([name]) => ({ name, root: lightVars.get(name), night: nightVars.get(name), system: systemVars.get(name) })));
+  unbridged.map(([name]) => ({ name, root: lightVars.get(name), night: nightVars.get(name) })));
 
 // Every class rule in app.css that runs an animation is stopped under reduced motion.
 const appRules = cssRules(app);

@@ -3,7 +3,6 @@ import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { openTarget, syncOpen } from "../lib/routeOpen.js";
 import type { Route } from "../lib/route.js";
 import type { Controller } from "../state/controller.js";
-import type { Theme } from "../lib/theme.js";
 import { Sheet, SheetContent, SheetTitle } from "#client/ui/shadcn/sheet.tsx";
 import { Sidebar, SidebarInset, SidebarProvider } from "#client/ui/shadcn/sidebar.tsx";
 import { Rail, type Places } from "./Rail.tsx";
@@ -43,8 +42,6 @@ export function AppShell(props: {
   sidebar?: ReactNode;
   panel?: ReactNode;
   children?: ReactNode;
-  theme?: Theme;
-  onTheme?: (t: Theme) => void;
   /** Phone width as `useIsMobile` reads it, the hook the Sidebar reads too. */
   phone: boolean;
   /** How many agents are waiting, for the phone tab bar's Agents count. */
@@ -66,7 +63,7 @@ export function AppShell(props: {
     <SidebarProvider className={cn("h-dvh", phone && "ui-phone flex-col")} style={SIDEBAR_WIDTH} data-view={route.view} data-presence={presence}>
       <Sidebar collapsible="icon" className="overflow-hidden *:data-[sidebar=sidebar]:flex-row">
         <Sidebar collapsible="none" role="navigation" aria-label="Views" className="hidden w-[calc(var(--sidebar-width-icon)+1px)]! border-r md:flex">
-          <Rail route={route} places={props.places} theme={props.theme} onTheme={props.onTheme} />
+          <Rail route={route} places={props.places} />
         </Sidebar>
         <Sidebar collapsible="none" role="complementary" aria-label="Space" data-presence={presence} className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
           {props.sidebar}

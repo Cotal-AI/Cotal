@@ -35,12 +35,16 @@ const root = document.documentElement;
 // ── The page's width, as the suite says ──────────────────────────────────────────────────────────
 // shadcn's useIsMobile reads the window's width and listens on a width query for changes.
 let phoneNow = false;
+let darkNow = false;
 const watchers = new Set<() => void>();
+const schemeWatchers = new Set<() => void>();
 const asked: string[] = [];
 Object.defineProperty(window, "innerWidth", { configurable: true, get: () => (phoneNow ? 390 : 1440) });
 (window as unknown as { matchMedia: (q: string) => unknown }).matchMedia = (q: string) => {
   asked.push(q);
-  return { get matches() { return phoneNow; }, media: q, addEventListener: (_t: string, l: () => void) => watchers.add(l), removeEventListener: (_t: string, l: () => void) => watchers.delete(l) };
+  const scheme = q === "(prefers-color-scheme: dark)";
+  const heard = scheme ? schemeWatchers : watchers;
+  return { get matches() { return scheme ? darkNow : phoneNow; }, media: q, addEventListener: (_t: string, l: () => void) => heard.add(l), removeEventListener: (_t: string, l: () => void) => heard.delete(l) };
 };
 /** Let the timers Radix sets run: as a layer opens, so it hears a press outside, and as it closes,
  *  since it gives focus back from a timeout. */
@@ -120,10 +124,17 @@ const openWithKeys = (el: HTMLElement) => {
   for (const choice of ["Dark", "Light", "System"]) {
     if (menu() === null) await m.run(() => openWithKeys(settings()));
     await m.run(() => items().find((i) => textOf(i) === choice)!.click());
-    cycle.push([choice, root.dataset.theme ?? "", localStorage.getItem("cotal.theme") ?? "", String(menu() === null), String(document.activeElement === settings())]);
+    cycle.push([choice, root.className, localStorage.getItem("cotal.theme") ?? "", String(menu() === null), String(document.activeElement === settings())]);
   }
   same("1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
-    cycle, [["Dark", "dark", "dark", "true", "true"], ["Light", "light", "light", "true", "true"], ["System", "system", "system", "true", "true"]]);
+    cycle, [["Dark", "dark", "dark", "true", "true"], ["Light", "light", "light", "true", "true"], ["System", "light", "system", "true", "true"]]);
+  const follows: string[] = [];
+  for (const dark of [true, false]) {
+    darkNow = dark;
+    await m.run(() => schemeWatchers.forEach((l) => l()));
+    follows.push(root.className);
+  }
+  same("1.6b while System is chosen the root element follows the OS setting as it changes", follows, ["dark", "light"]);
   await m.run(() => openWithKeys(settings()));
   await m.run(() => items().find((i) => textOf(i) === "Dark")!.click());
   await m.unmount();

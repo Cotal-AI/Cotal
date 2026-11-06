@@ -68,11 +68,5 @@
   --radius-2xl: 9px;
 }
 
-/* dark: follows the theme the way tokens.css does. data-theme="dark" forces Night; system or unset
-   follows the OS setting; data-theme="light" pins Quiet. */
-@custom-variant dark {
-  &:where([data-theme="dark"], [data-theme="dark"] *) { @slot; }
-  @media (prefers-color-scheme: dark) {
-    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) { @slot; }
-  }
-}
+/* dark: is shadcn's own variant, on the .dark class tokens.css switches Night on. */
+@custom-variant dark (&:is(.dark *));

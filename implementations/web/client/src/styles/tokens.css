@@ -1,8 +1,9 @@
-/* Design tokens for the dashboard. Light (Quiet) is :root. Night is chosen by data-theme="dark",
-   or follows the system when data-theme is "system" or unset. data-theme="light" pins Quiet.
-   color-scheme follows the same choice, so native scrollbars and form controls draw in Night too. */
+/* Design tokens for the dashboard. Light (Quiet) is :root and Night is .dark, shadcn's class on the
+   root element, which the theme boot script and ThemeProvider put there: for Dark, and for System
+   while the OS is dark. color-scheme follows the class, so native scrollbars and form controls draw
+   in Night too. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --body: "Inter Variable", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --multi: #4D69E6; --uni: #E38C6E; --any: #5FA866; --gold: #E5B94E; --red: #E0625A; --idle: #B9B4A6;
@@ -39,9 +40,7 @@
   --shiki-token-punctuation: var(--ink); --shiki-token-link: var(--ink);
 }
 
-:root[data-theme="light"] { color-scheme: light; }
-
-:root[data-theme="dark"] {
+.dark {
   color-scheme: dark;
   --bg: #16181D; --side: #1B1E24; --side-ink: #E4E6EC; --side-dim: #9097A6;
   --side-hover: #23272F; --side-sel: #2A2F39; --side-line: #262A32;
@@ -51,17 +50,4 @@
   --multi-ink: #8EA2F2; --uni-ink: #EBA48B; --any-ink: #8CC892; --gold-ink: #E5C776; --red-ink: #F08A82;
   --mark: #FFFCEE;
   --id-off: #8E939C;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #16181D; --side: #1B1E24; --side-ink: #E4E6EC; --side-dim: #9097A6;
-    --side-hover: #23272F; --side-sel: #2A2F39; --side-line: #262A32;
-    --ink: #E6E8EE; --dim: #9097A6; --faint: #6E7484; --line: #262A32; --hover: #1C1F25; --soft: #20242B;
-    --card: #1E2128; --card-line: #2E333C; --card-shadow: 0 6px 24px rgba(0, 0, 0, .35);
-    --primary: #E6E8EE; --primary-ink: #16181D; --code: #20242B; --focus: #8EA2F2;
-    --multi-ink: #8EA2F2; --uni-ink: #EBA48B; --any-ink: #8CC892; --gold-ink: #E5C776; --red-ink: #F08A82;
-    --mark: #FFFCEE;
-    --id-off: #8E939C;
-  }
 }

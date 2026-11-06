@@ -75,7 +75,6 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
   same("1.5 every item names itself in a Tooltip when it takes the focus", tips, ["Activity", "Channels", "Direct messages", "Agents", "Topology", "Settings"]);
   ok("1.6 the rail sits in the Views landmark", viewsNav(parseHtml(html)) !== null);
   ok("1.7 and the item count is exactly six", items.length === 6, items.length);
-  ok("1.8 Settings is disabled while the shell gives it no handler", items[5].attrs.disabled !== undefined, items[5].attrs);
   const at = html.indexOf('aria-label="Views"');
   const markAt = html.indexOf(mark("currentColor"), at);
   ok("1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour, before its first view",

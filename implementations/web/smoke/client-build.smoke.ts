@@ -43,44 +43,48 @@ ok("the page carries no inline script", [...html.matchAll(/<script\b([^>]*)>/g)]
 ok("the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
   bootTag !== null && !/type=|defer|async/.test(bootTag[0]) && sheetAt > 0 && bootTag.index < sheetAt && bootTag.index < html.indexOf("</head>"), { tag: bootTag?.[0], at: bootTag?.index, sheetAt });
 // The function the build writes into the script, driven directly, then the built script itself.
-const marks = (saved: string | null | "blocked") => {
-  let set: [string, string] | undefined;
+/** The classes `bootTheme` puts on the root element with `saved` under cotal.theme (or storage that
+ *  throws when "blocked") and the OS set to dark when `dark`, or "threw". */
+const marks = (saved: string | null | "blocked", dark: boolean) => {
+  const set: string[] = [];
   const storage = () => {
     if (saved === "blocked") throw new Error("storage blocked");
     return { getItem: (k: string) => (k === "cotal.theme" ? saved : null) };
   };
   try {
-    bootTheme(storage, { setAttribute: (name, value) => void (set = [name, value]) });
+    bootTheme(storage, { classList: { add: (c) => void set.push(c) } }, () => dark);
   } catch {
     return "threw";
   }
-  return set;
+  return set.join(" ");
 };
-ok("bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
-  JSON.stringify([...THEMES.map((t) => marks(t)), marks(null), marks("sepia"), marks("blocked")])
-    === JSON.stringify([...THEMES.map((t) => ["data-theme", t]), ["data-theme", "system"], ["data-theme", "system"], ["data-theme", "system"]]));
+const saves = [...THEMES, null, "sepia", "blocked"] as const;
+const marked = Object.fromEntries(saves.map((t) => [String(t), [marks(t, false), marks(t, true)]]));
+ok("bootTheme puts one class on the root element for each save under cotal.theme: light or dark as chosen, and the OS setting for system, nothing, a value that is no theme, or blocked storage",
+  JSON.stringify(marked) === JSON.stringify({ system: ["light", "dark"], light: ["light", "light"], dark: ["dark", "dark"], null: ["light", "dark"], sepia: ["light", "dark"], blocked: ["light", "dark"] }), marked);
 const bootCode = readFileSync(join(out, "theme-boot.js"), "utf8");
-/** The root element's data-theme after the built boot script runs in a fresh page whose storage
- *  holds `saved` (nothing when undefined, or storage that throws when "blocked"), or "threw" when
- *  the script itself threw. */
-const booted = (saved: string | undefined | "blocked"): string | null => {
+/** The root element's class after the built boot script runs in a fresh page whose storage holds
+ *  `saved` (nothing when undefined, or storage that throws when "blocked") and whose OS setting is
+ *  dark when `dark`, or "threw" when the script itself threw. */
+const booted = (saved: string | undefined | "blocked", dark = false): string | null => {
   const page = new JSDOM("<!doctype html><html><head></head><body></body></html>", { url: "http://localhost/", runScripts: "outside-only" });
   const win = page.window as unknown as { eval(code: string): unknown; localStorage: { setItem(k: string, v: string): void }; document: { documentElement: { getAttribute(n: string): string | null } } };
   if (saved === "blocked") Object.defineProperty(win, "localStorage", { get() { throw new Error("storage blocked"); } });
   else if (saved !== undefined) win.localStorage.setItem("cotal.theme", saved);
+  Object.defineProperty(win, "matchMedia", { value: (q: string) => ({ matches: dark && q === "(prefers-color-scheme: dark)" }) });
   let threw = false;
   try {
     win.eval(bootCode);
   } catch {
     threw = true;
   }
-  const theme = threw ? "threw" : win.document.documentElement.getAttribute("data-theme");
+  const theme = threw ? "threw" : win.document.documentElement.getAttribute("class");
   page.window.close();
   return theme;
 };
-const runs = { dark: booted("dark"), light: booted("light"), system: booted("system"), none: booted(undefined), junk: booted("sepia"), blocked: booted("blocked") };
-ok("the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
-  JSON.stringify(runs) === JSON.stringify({ dark: "dark", light: "light", system: "system", none: "system", junk: "system", blocked: "system" }), runs);
+const runs = { dark: booted("dark", false), light: booted("light", true), system: booted("system", true), none: booted(undefined, false), osDark: booted(undefined, true), junk: booted("sepia", true), blocked: booted("blocked", true) };
+ok("the built boot script puts the saved theme on the root element as shadcn's class, and the OS setting for system, nothing saved, a value that is no theme, or blocked storage",
+  JSON.stringify(runs) === JSON.stringify({ dark: "dark", light: "light", system: "dark", none: "light", osDark: "dark", junk: "dark", blocked: "dark" }), runs);
 
 // color-scheme, read from the built stylesheet: native scrollbars and form controls follow it.
 const css = readdirSync(join(out, "assets")).filter((a) => a.endsWith(".css")).map((a) => readFileSync(join(out, "assets", a), "utf8")).join("\n");
@@ -104,9 +108,9 @@ const schemeOf = (selector: string): string | undefined => {
   }
   return undefined;
 };
-const schemes = [schemeOf(":root"), schemeOf(":root[data-theme=light]"), schemeOf(":root[data-theme=dark]")];
-ok("the built stylesheet's color-scheme follows the theme: light dark for system, and each forced value under its data-theme",
-  JSON.stringify(schemes) === JSON.stringify(["light dark", "light", "dark"]), schemes);
+const schemes = [schemeOf(":root"), schemeOf(".dark")];
+ok("the built stylesheet's color-scheme follows the theme: light on :root, and dark under shadcn's .dark class",
+  JSON.stringify(schemes) === JSON.stringify(["light", "dark"]), schemes);
 
 // Tailwind comes in without its reset, so the existing screens keep app.css's own base. Input's
 // `file:` utilities style ::file-selector-button under their own class; preflight styles it bare.
@@ -125,14 +129,13 @@ ok("the [data-slot] border reset sits inside @layer base",
 // colour here, border: 0 solid falls back to currentColor and the rule takes the text colour.
 ok("the [data-slot] border reset draws shadcn borders in our border colour",
   slotResets.length > 0 && slotResets.some((r) => /(?:^|;)\s*border(?:-color)?\s*:[^;]*var\(--border\)/.test(r.body)), slotResets.map((r) => r.body));
-// The dark variant follows the theme the way tokens.css does: forced by data-theme="dark", and from
-// the OS setting when the theme is system or unset. Button's outline variant uses dark:bg-transparent.
+// The dark variant is shadcn's own, on the .dark class tokens.css switches Night on. Button's outline
+// variant uses dark:bg-transparent.
 const DARK_BG = ".dark\\:bg-transparent:";
 const darkSelectors = rules.filter((r) => /(?:^|;)\s*background-color\s*:/.test(r.body))
   .flatMap((r) => r.selectors.filter((s) => s.startsWith(DARK_BG)).map((selector) => ({ selector, within: r.within })));
-ok("a dark: utility from a shadcn file is emitted under [data-theme=dark] and inside @media (prefers-color-scheme: dark)",
-  darkSelectors.some((d) => d.selector.includes("[data-theme=dark]") && !d.within.some((w) => w.includes("prefers-color-scheme")))
-    && darkSelectors.some((d) => d.selector.includes(":root:not([data-theme=light])") && d.within.some((w) => /prefers-color-scheme:\s*dark/.test(w))),
+ok("a dark: utility from a shadcn file is emitted under .dark alone, with no media query",
+  darkSelectors.length > 0 && darkSelectors.every((d) => /:is\(\.dark \*\)/.test(d.selector) && !d.within.some((w) => w.includes("prefers-color-scheme"))),
   darkSelectors);
 
 const licenses = JSON.parse(readFileSync(join(out, "bundle-licenses.json"), "utf8")) as {
