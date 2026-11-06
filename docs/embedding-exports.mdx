@@ -5,6 +5,30 @@ kind: Reference
 audience: integrators
 ---
 
+## Linux process handles
+
+`@cotal-ai/seat` exports `capturePeerProcess(socket)` and `recoverProcess(identity)`.
+They return a `LinuxProcessHandle` bound to one Linux kernel process, with a frozen
+`LinuxProcessIdentity` containing its PID, UID, boot token, start token and PID namespace.
+The peer must be a connected Unix socket. Capture requires `SO_PEERPIDFD`; unsupported
+kernels and non-Linux platforms refuse instead of looking up the peer by numeric PID.
+
+Only processes whose real, effective, saved and filesystem UIDs match the caller are
+accepted. Recovery checks every recorded field while retaining the kernel handle.
+Missing, unreadable, exited or mismatched identity refuses. Keep records in a trusted
+owner-controlled store: the API validates process identity, not who supplied the record.
+
+`handle.hasExited()` reports kernel exit readiness, including a zombie awaiting reaping.
+`handle.waitForExit({ signal })` uses kernel readiness events; abort rejects only that wait.
+`handle.signal("SIGTERM")` rechecks identity before signalling through the retained handle.
+The kernel still enforces signal permissions. `handle.close()` releases the handle and
+rejects pending waits. Closing a descriptor does not establish process exit. Close handles
+explicitly when finished; worker shutdown releases pending native observation resources.
+
+A process handle alone does not establish ownership or closure of its descendants, cancel
+remote effects, or promise at-most-once execution. These APIs do not enable the built-in
+PTY runtime's automatic restart policy. The runtime must separately prove work closure.
+
 ## Workspace registry liveness
 
 `@cotal-ai/workspace` exports `pruneStaleMeshes()` for a liveness sweep. It keeps every
