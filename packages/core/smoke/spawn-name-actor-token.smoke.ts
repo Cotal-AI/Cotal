@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import ts from "typescript";
 import { firstFreeName, spawnNameError } from "../src/agent-file.js";
+import { assertBoundedOwner } from "../src/endpoint-subjects.js";
 import { assertValidOwnerToken } from "../src/subjects.js";
 
 let passed = 0;
@@ -91,6 +92,53 @@ check(
   { producedRejected },
 );
 
+// THE LENGTH BOUND (#4981). The bearer exchange refuses an actor through assertBoundedOwner at 64
+// characters, and in user mode the name IS that actor. A door that checks only the alphabet accepts
+// the name, the host enrolls it, and the refusal lands after the effect. The cells hand the issue's
+// own name shape to the door and to the real bound, so the two can disagree only by this reddening.
+const servable = (n: string): boolean => {
+  try { assertBoundedOwner(n, "actor"); return true; } catch { return false; }
+};
+const LONG = `cloud_${"a".repeat(64)}`;
+const AT64 = "b".repeat(64);
+const AT65 = "c".repeat(65);
+check("instrument control: the issue's 70-character name is past the exchange bound",
+  LONG.length === 70 && !servable(LONG));
+check("instrument control: 64 characters is inside the exchange bound and 65 is not",
+  AT64.length === 64 && servable(AT64) && AT65.length === 65 && !servable(AT65));
+const longRefusal = spawnNameError(LONG, { userMode: true });
+check("user mode REFUSES the 70-character name the exchange refuses",
+  longRefusal !== undefined && /64 characters/.test(longRefusal), { msg: longRefusal });
+check("user mode REFUSES a 65-character name and ACCEPTS a 64-character one",
+  spawnNameError(AT65, { userMode: true }) !== undefined && spawnNameError(AT64, { userMode: true }) === undefined);
+check("static/open mode still ACCEPTS the 70-character name (the name is not the actor there)",
+  spawnNameError(LONG, { userMode: false }) === undefined);
+// Numbering widens. A base of 63 characters is itself servable, and its second instance is not.
+const AT63 = "d".repeat(63);
+const numbered = firstFreeName(AT63, (n) => n === AT63);
+check("numbering a 63-character base yields a name past the bound",
+  numbered === `${AT63}_2` && numbered.length === 65 && !servable(numbered), { numbered });
+check("user mode REFUSES that numbered name", spawnNameError(numbered, { userMode: true }) !== undefined);
+let numberingStopped = false;
+try { firstFreeName(AT63, (n) => n === AT63, { userMode: true }); }
+catch { numberingStopped = true; }
+check("user-mode numbering STOPS instead of producing the unservable name", numberingStopped);
+check("user-mode numbering still returns a free base unchanged",
+  firstFreeName(AT63, () => false, { userMode: true }) === AT63);
+const AT62 = "e".repeat(62);
+check("user-mode numbering still produces the one instance that fits",
+  firstFreeName(AT62, (n) => n === AT62, { userMode: true }) === `${AT62}_2`);
+const AT61 = "f".repeat(61);
+const takenTo = (last: number) => (n: string) => n === AT61 || Array.from({ length: last - 1 }, (_, i) => `${AT61}_${i + 2}`).includes(n);
+check("user-mode numbering of a 61-character base still reaches the 64-character instance",
+  firstFreeName(AT61, takenTo(98), { userMode: true }) === `${AT61}_99` && `${AT61}_99`.length === 64);
+let hundredthStopped = false;
+try { firstFreeName(AT61, takenTo(99), { userMode: true }); }
+catch { hundredthStopped = true; }
+check("user-mode numbering STOPS at the next instance, which passes the bound", hundredthStopped && `${AT61}_100`.length === 65);
+check("numbering without the mode still produces the unservable name (static mode is not the actor)",
+  firstFreeName(AT63, (n) => n === AT63) === `${AT63}_2`);
+
 // USER MODE narrows, and says why.
 check("user mode REFUSES a hyphenated name", spawnNameError("my-agent", { userMode: true }) !== undefined);
 check(
@@ -126,10 +174,13 @@ const DOOR = DOOR_AST.statements.find(
 );
 const TRAVERSAL_GUARD = "/^[A-Za-z0-9_-]+$/";
 let validatorCalls = 0;
+let boundCalls = 0;
 const doorRegexes: string[] = [];
 const walkDoor = (node: ts.Node): void => {
   if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "assertValidOwnerToken")
     validatorCalls++;
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "assertBoundedOwner")
+    boundCalls++;
   if (ts.isRegularExpressionLiteral(node)) doorRegexes.push(node.text);
   ts.forEachChild(node, walkDoor);
 };
@@ -141,6 +192,9 @@ check("instrument control: the predicate was parsed and its regex literals are v
 check("the narrow half CALLS the shipped validator (delegation, not a restatement)",
   validatorCalls >= 1,
   { validatorCalls });
+check("the length half CALLS the shipped actor bound (delegation, not a restated 64)",
+  boundCalls >= 1,
+  { boundCalls });
 check("…and carries no second copy of the token alphabet",
   doorRegexes.every((r) => r === TRAVERSAL_GUARD),
   { doorRegexes });

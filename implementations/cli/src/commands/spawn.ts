@@ -415,7 +415,7 @@ async function provisionFreshForeground<T>(
 ): Promise<{ name: string; provisioned: T }> {
   const occupied = new Set<string>();
   for (;;) {
-    const name = firstFreeName(requested, (candidate) => occupied.has(candidate));
+    const name = firstFreeName(requested, (candidate) => occupied.has(candidate), { userMode: true });
     try {
       return { name, provisioned: await provision(name) };
     } catch (e) {

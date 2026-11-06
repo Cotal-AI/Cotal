@@ -32,6 +32,7 @@ import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
+import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
 export interface AgentDef {
@@ -578,11 +579,22 @@ const NUMBER_SEPARATOR = "_";
 /** First free name in the series `base`, `base_2`, `base_3`, … — the first candidate for which
  *  `taken` returns false. The single source of the spawn auto-numbering scheme, shared by the
  *  manager's funnel (checked against its live + reserved slots) and `cotal spawn` (checked against
- *  the live mesh roster), so a colliding name numbers up identically whichever path spawns it. */
-export function firstFreeName(base: string, taken: (name: string) => boolean): string {
+ *  the live mesh roster), so a colliding name numbers up identically whichever path spawns it.
+ *  In user mode the produced name is the actor, so the series stops at the last name
+ *  {@link spawnNameError} accepts: a base of 63 characters would otherwise become `base_2`, which
+ *  the bearer exchange can never serve. A base that is itself unservable is returned unchanged, so
+ *  the caller's own door reports it rather than this search. */
+export function firstFreeName(base: string, taken: (name: string) => boolean, opts?: { userMode?: boolean }): string {
+  const servable = (name: string): boolean => opts?.userMode !== true || spawnNameError(name, { userMode: true }) === undefined;
   if (!taken(base)) return base;
   for (let n = 2; ; n++) {
     const candidate = `${base}${NUMBER_SEPARATOR}${n}`;
+    if (!servable(candidate)) {
+      throw new Error(
+        `name ${JSON.stringify(base)} has no free instance that can be a mesh identity in user mode: ` +
+        `numbering it to ${JSON.stringify(candidate)} passes 64 characters, and an actor token is at most that (SPEC §13.2)`,
+      );
+    }
     if (!taken(candidate)) return candidate;
   }
 }
@@ -594,13 +606,17 @@ export function firstFreeName(base: string, taken: (name: string) => boolean): s
  *   - ALWAYS: the name becomes a `.cotal/agents/<name>.md` path, so it must be a bare token and
  *     never a path — this is the traversal guard, and it holds in every mode.
  *   - USER MODE ONLY: the name is additionally the mesh ACTOR, so it must satisfy the principal
- *     grammar, which is strictly narrower — no `-`. Static/open mode keys the actor on the freshly
- *     minted nkey instead of the name, so the narrow rule does not apply there and an existing
- *     `my-agent` persona keeps spawning across an upgrade.
+ *     grammar, which is strictly narrower — no `-` — and the endpoint rail's actor bound of 64
+ *     characters (SPEC §13.2). Static/open mode keys the actor on the freshly minted nkey instead
+ *     of the name, so the narrow rule does not apply there and an existing `my-agent` persona
+ *     keeps spawning across an upgrade.
  *
- *  The narrow half DELEGATES to {@link assertValidOwnerToken} rather than restating it as a second
- *  regex. A copy of an authority's alphabet drifts silently, and the copy that drifts is the one on
- *  the door nobody is reading — the same reason the persona doors share one ownership predicate.
+ *  The narrow half DELEGATES to {@link assertValidOwnerToken} and {@link assertBoundedOwner}
+ *  rather than restating either as a second regex or a second length. A copy of an authority's
+ *  alphabet or bound drifts silently, and the copy that drifts is the one on the door nobody is
+ *  reading — the same reason the persona doors share one ownership predicate. The length half is
+ *  what the bearer exchange enforces, so a name this door accepts is one the exchange can serve.
+ *  Checked here, before any enrollment, a name past the bound refuses with nothing enrolled.
  *  Returns undefined when the name is acceptable, else the refusal to show the caller. */
 export function spawnNameError(name: string, opts: { userMode: boolean }): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name))
@@ -612,6 +628,14 @@ export function spawnNameError(name: string, opts: { userMode: boolean }): strin
     return (
       `name ${JSON.stringify(name)} cannot be a mesh identity in user mode: the name becomes this ` +
       `agent's actor token, and '-' is reserved as the principal name-form separator - use '_'`
+    );
+  }
+  try {
+    assertBoundedOwner(name, "actor");
+  } catch {
+    return (
+      `name ${JSON.stringify(name)} cannot be a mesh identity in user mode: the name becomes this ` +
+      `agent's actor token, and an actor token is at most 64 characters (SPEC §13.2)`
     );
   }
   return undefined;

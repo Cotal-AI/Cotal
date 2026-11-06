@@ -6184,10 +6184,11 @@ export class Manager {
    *  either, even while its advisory presence record ages out. A numbered name is never reissued
    *  ({@link issuedNumberedNames}), even after its holder retired. The requested base is exempt
    *  from that history: it is the persona's own name, which stays reusable even when it once came
-   *  out of another persona's numbering. */
+   *  out of another persona's numbering. In user mode the series stops at the last name the actor
+   *  bound accepts, so a long base refuses instead of numbering into a name the exchange cannot serve. */
   private uniqueName(base: string): string {
     const live = this.liveRosterNames();
-    const name = firstFreeName(base, (n) => this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)));
+    const name = firstFreeName(base, (n) => this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)), { userMode: this.userMode });
     if (name !== base) this.issuedNumberedNames.add(name);
     return name;
   }
