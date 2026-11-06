@@ -19,8 +19,8 @@ stay registered. The reason argument and `PruneReason` type are removed. Callers
 
 ## Node connection signing
 
-Node endpoints and `standaloneConnectOpts` sign NATS authentication challenges with the existing
-native Ed25519 signer. Credentials are read on every connection attempt, including reconnects,
+Node endpoints, the Manager's standing service, goal-writer and session-ledger connections, and
+`standaloneConnectOpts` sign NATS authentication challenges with the existing native Ed25519 signer. Credentials are read on every connection attempt, including reconnects,
 and the temporary signer is cleared after each callback. JWT, public-key and signature fields
 use the NATS authenticator contract. Browser connections keep the NATS JavaScript implementation.
 
