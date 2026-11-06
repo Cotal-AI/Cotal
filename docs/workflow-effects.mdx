@@ -53,21 +53,26 @@ accepted and ignored.
 
 ## Supervision [#supervision]
 
-`supervise` is the restart policy this host asks the manager to enforce:
-`restarts`, how many in-window process deaths may come back under the same handle, and `window`,
-the duration those deaths are counted in (default `10m`). The manager restarts the process in
-place under the same name, lifecycle uid, persona, worktree and permits; `monitor` does not fire
-for a restart, and `wait(down)` fires only when the seat is gone for good. Spending the budget
-retires the seat, and the next `turn` is the catchable L4002. The policy also covers the manager's
-own death. On a static mesh, when the manager ends without stopping the seat (a crash, or a pty seat
-that ended with its manager), the next manager of the same instance restarts the seat the same way
-and counts that as one restart. A turn the dead manager had accepted for the seat is served to the
-restarted seat, so the interrupted turn runs again and finished turns do not. A turn an older
-manager accepted is not served again, because its record does not name the seat's owner, and it
-ends at its deadline as L4003. A seat whose budget
-is spent, or whose persona file or credential changed or expired while no manager ran, is retired instead. A policy this host cannot enforce
-(an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
-at the spawn rather than accepted and ignored.
+`supervise` requests a bounded restart policy: `restarts` counts process deaths in `window`
+(default `10m`). Before restarting, the manager requires the runtime to prove that all prior local
+work ended, including tools in separate sessions or process groups. Parent exit and an empty
+original process group are insufficient. Missing, failed or timed-out proof refuses the restart.
+
+The built-in PTY runtime does not provide work closure and refuses `supervise` before launch.
+Ordinary launches without a restart policy remain available. Check any surviving tools and their
+outcome before manually starting the work again. The manager does not cancel completed remote
+effects or guarantee at-most-once execution.
+
+A runtime that provides closure can restart within the policy budget under the same name,
+lifecycle UID, persona, worktree and permits. Pending turns remain addressed to that lifecycle;
+finished turns are not replayed. After a manager crash, recovery additionally requires a durable
+custody reference and a runtime operation that proves all work under that reference ended.
+Older PTY records without that reference are refused, even if the seat process exited.
+A refused recovery retires the seat. Outstanding turns retain their existing deadline and death
+record; refusal does not invent a successful or cancelled result.
+
+Unknown policy keys, user-mode seats and runtimes that cannot respawn a name in place also refuse
+at spawn. A spent restart budget, changed persona or expired credential prevents recovery.
 
 ## Event plane [#event-plane]
 

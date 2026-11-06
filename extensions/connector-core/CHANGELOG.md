@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.146.0
+
+### Minor Changes
+
+- 6cd9b65: `cotal who` and `cotal_roster` mark a shared name by the same rule a direct message uses, so a session's own row and a lone offline participant no longer carry an instance id.
+
 ## 0.145.1
 
 No changes in this release.

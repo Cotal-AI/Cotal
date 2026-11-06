@@ -482,9 +482,10 @@ for (const probe of [
     backlog: async () => { reads++; throw new TypeError("recovery tail probe"); },
     onExit: (listener: (code: number) => void) => { exits.add(listener); return () => { exits.delete(listener); }; },
   };
-  (mgr as unknown as { runtime: { kind: string; spawn: (name: string) => AgentHandle } }).runtime = {
+  (mgr as unknown as { runtime: { kind: string; supportsWorkClosure: boolean; spawn: (name: string) => AgentHandle } }).runtime = {
     kind: "pty",
-    spawn: (name) => ({ name, kind: "pty", status: () => running ? "running" : "exited", stop() { running = false; }, interrupt() {}, attach: () => session }),
+    supportsWorkClosure: true, // Inert unit runtime; it launches no process or tool.
+    spawn: (name) => ({ name, kind: "pty", status: () => running ? "running" : "exited", stop() { running = false; }, waitForWorkExit: async () => {}, interrupt() {}, attach: () => session }),
   };
   const before = agentCount();
   const started = await mgr.startAgent({ name, agent: "smoke-tail-restart", events: false, supervise: { restarts: 1, windowMs: 60_000 } });

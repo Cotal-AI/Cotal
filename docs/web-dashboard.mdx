@@ -13,7 +13,8 @@ For a terminal display or authorized operator controls, use the [console](consol
 ## Configure the service [#web-dashboard]
 
 The supported dashboard is the `@cotal-ai/web` service preset.
-It needs a registered static-auth root, an existing protected credential file, and explicit read-only intent.
+It needs a registered static-auth root, a protected credential file, and explicit read-only intent.
+`cotal up` mints the credential for the space as its `web.creds`, and the preset uses that file unless you pass `--creds`.
 It is separate from stack startup.
 
 It cannot substitute a cached operator login, an account signer, or an open connection.
@@ -23,10 +24,15 @@ See the [dashboard service instructions](cli-observation.mdx#web-dashboard) for 
 ![The browser dashboard shows the roster, activity, and agents needing attention](../assets/dashboard.png)
 
 ```bash
-cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
 cotal service start web --space main
 cotal service logs web --space main
 cotal service stop web --space main --yes
+```
+
+To run it on a credential you minted yourself, pass the file once when you save the definition:
+
+```bash
+cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
 ```
 
 Before taking PID custody, the child validates the file's signature, matching user key, and current validity against the registered root's full static trust chain and current signing key.
@@ -218,7 +224,7 @@ the agent page show. The dashboard shows only data the observer can read.
 
 ## Check visibility limits
 
-The service uses the supplied protected credential file and its grants.
+The service uses the space's `web.creds` or the protected credential file you supplied, and its grants.
 It does not mint a replacement admin credential. A chat-only file hides DM views.
 A restricted read is not an empty mesh and does not prove that a hidden DM is absent.
 

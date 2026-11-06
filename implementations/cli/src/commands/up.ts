@@ -133,6 +133,8 @@ import {
   membershipRwCredsKey,
   MEMBERSHIP_CONFIG_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  WEB_CREDS_KIND,
+  webCredsKey,
   parsePositiveIntegerFlag,
   recordMesh,
   retainedLegacyBroker,
@@ -181,7 +183,7 @@ import {
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
   type ProcessOwner,
-  type RestoreListenerProof,
+  type ListenerProof,
   type StoreIdentity,
   readBrokerPolicy,
   writeBrokerPolicy,
@@ -354,7 +356,7 @@ interface PendingOrdinaryResume {
   serverName: string;
   serverNonce: string;
   /** Present when a live bound listener from a prior coordinator should be adopted, not respawned. */
-  adoptProof?: RestoreListenerProof;
+  adoptProof?: ListenerProof;
 }
 const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
 
@@ -1265,7 +1267,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // The bound listener decides re-entry: a live exact listener is ADOPTED, a provably dead
         // one is durably retired before a fresh spawn, ambiguity refuses, and a manager-committed
         // resume never replaces the listener its durable token is bound to.
-        let adoptProof: RestoreListenerProof | undefined;
+        let adoptProof: ListenerProof | undefined;
         let recoveredProof = journal.listenerProof;
         let recoveredState: PendingOrdinaryResume["journalState"] = journal.state;
         if (recoveredProof) {
@@ -1996,8 +1998,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // Open meshes hold no creds and need none (a bare connection has the rights) — but they DO
         // carry the same three TTL'd buckets, so they drift identically and are reconciled too.
         let reconcileCreds: string | undefined;
+        let spaceAuth: SpaceAuth | undefined;
         if (held.mode !== "open") {
-          const spaceAuth = await getSpaceAuth(workspaceSecretStore(root), held.space);
+          spaceAuth = await getSpaceAuth(workspaceSecretStore(root), held.space);
           if (!spaceAuth) {
             stderrLine("✗ ", `mesh "${held.space}" has no trust material under ${authDir(root)} - cannot reconcile its presence/lease TTLs; restore or re-provision \`.cotal/auth\``, c.red);
             process.exit(1);
@@ -2018,6 +2021,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is memory-backed and was lost when the broker restarted`
             : `  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
+        // The dashboard cred is minted on a refresh too: a space that predates it may never boot again.
+        if (held.mode === "auth" && spaceAuth) await provisionWebCreds(spaceAuth, root, held.space);
       } catch (e) {
         stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
@@ -2667,7 +2672,7 @@ function sameProcessOwner(a: ProcessOwner, b: ProcessOwner): boolean {
   return a.pid === b.pid && a.host === b.host && a.startedAt === b.startedAt && a.id === b.id;
 }
 
-function sameRestoreListenerProof(a: RestoreListenerProof, b: RestoreListenerProof): boolean {
+function sameListenerProof(a: ListenerProof, b: ListenerProof): boolean {
   return a.attemptId === b.attemptId && a.serverName === b.serverName &&
     a.serverNonce === b.serverNonce && sameProcessOwner(a.processOwner, b.processOwner) &&
     a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target);
@@ -2725,10 +2730,10 @@ function readNatsInfo(label: string, endpoint: string, timeoutMs = 2_000): Promi
 async function proveBoundListener(
   kind: "restore" | "resume",
   attempt: Pick<PendingOrdinaryResume, "attemptId" | "serverName" | "serverNonce" | "server" | "root" | "space" | "mode">,
-  proof: RestoreListenerProof | undefined,
-  journalStore: (proof: RestoreListenerProof) => StoreIdentity | undefined,
+  proof: ListenerProof | undefined,
+  journalStore: (proof: ListenerProof) => StoreIdentity | undefined,
   store: { path: string; changed: string },
-): Promise<RestoreListenerProof> {
+): Promise<ListenerProof> {
   const label = `${kind} attempt ${attempt.attemptId}`;
   if (!proof) throw new Error(`${label} has no bound listener proof`);
   if (proof.attemptId !== attempt.attemptId || proof.serverName !== attempt.serverName ||
@@ -2781,12 +2786,12 @@ async function proveBoundListener(
   return proof;
 }
 
-function provePreparedRestoreListener(prepared: PreparedRestore): Promise<RestoreListenerProof> {
+function provePreparedRestoreListener(prepared: PreparedRestore): Promise<ListenerProof> {
   return proveBoundListener("restore", prepared, prepared.listenerProof, (proof) => {
     const journal = readMaintenanceJournal(prepared.root);
     if (!journal || (journal.state !== "commit-intent" && journal.state !== "manager-committed" && journal.state !== "degraded" && journal.state !== "active") ||
         journal.restore.attemptId !== prepared.attemptId || !journal.listenerProof ||
-        !sameRestoreListenerProof(journal.listenerProof, proof) || journal.launch.server !== proof.serverEndpoint)
+        !sameListenerProof(journal.listenerProof, proof) || journal.launch.server !== proof.serverEndpoint)
       return undefined;
     return journal.restore.target;
   }, { path: prepared.targetPath, changed: "target identity changed" });
@@ -2958,11 +2963,11 @@ function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: 
   }
 }
 
-function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<RestoreListenerProof> {
+function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<ListenerProof> {
   return proveBoundListener("resume", pending, pending.adoptProof, (proof) => {
     const journal = readMaintenanceJournal(pending.root);
     if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId ||
-        !journal.listenerProof || !sameRestoreListenerProof(journal.listenerProof, proof) ||
+        !journal.listenerProof || !sameListenerProof(journal.listenerProof, proof) ||
         journal.ordinaryResume.launch.server !== proof.serverEndpoint)
       return undefined;
     return journal.source;
@@ -5547,6 +5552,7 @@ async function authSetup(
   }
   // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
   await healMembershipDataCreds(auth, cotalRoot(), space, quietBoot);
+  await provisionWebCreds(auth, cotalRoot(), space, quietBoot);
   // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
   // A rotation that committed the trust record and then died leaves them stale, unexpired, and
   // broker-dead and, crash-before-either-write, stale in a way that no comparison between the two
@@ -5728,6 +5734,24 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
     // Best-effort, exactly like the fresh-space provisioner: a failure here leaves the graph on
     // traffic-only and leaves delivery untouched. It must never keep the mesh from starting.
     console.error(c.dim(`• broker-sourced membership not repaired: ${(e as Error).message}`));
+  }
+}
+
+/** The web dashboard's read-only cred, on EVERY `up` of a static space: `cotal service start web`
+ *  defaults its `--creds` to this file. Idempotent and absent-means-mint, through the resolver as
+ *  {@link healMembershipDataCreds} is. It is the `observer` profile, minted without an expiry, as the
+ *  `cotal auth mint --profile observer` recipe this replaces was: the dashboard reads the file once at
+ *  start and holds its connection, and no renewal owner reloads it. Best-effort for the same reason as
+ *  the membership heal: a failure here must never keep the mesh from starting. */
+async function provisionWebCreds(auth: SpaceAuth, root: string, space: string, quietBoot = false): Promise<void> {
+  try {
+    const store = workspaceSecretStore(root);
+    const key = webCredsKey(space, { injected: false, root });
+    if ((await store.get(key)) !== undefined) return;
+    await store.put(key, await mintCreds(auth, newIdentity(), "observer"));
+    if (!quietBoot) console.log(c.dim(`• web: provisioned ${WEB_CREDS_KIND} - the dashboard's read-only credential, the \`service start web\` default`));
+  } catch (e) {
+    console.error(c.dim(`• web dashboard credential not provisioned: ${(e as Error).message}`));
   }
 }
 

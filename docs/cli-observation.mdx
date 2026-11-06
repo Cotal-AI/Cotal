@@ -59,11 +59,11 @@ the seat has left.
 ### Dashboard command [#web]
 
 The dashboard is an owned service preset from `@cotal-ai/web`, not a top-level `web` command.
-It is not started by `up`. An absent extension requires the explicit `cotal ext add @cotal-ai/web`;
-starting a service never installs it or creates a caller credential.
+It is not started by `up`, which only mints its read-only credential, the space's `web.creds`. An
+absent extension requires the explicit `cotal ext add @cotal-ai/web`; starting a service never
+installs it or creates a caller credential.
 
 ```bash
-cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
 cotal service start web --space main
 cotal service status web --space main
 cotal service logs web --space main
@@ -73,8 +73,8 @@ cotal service stop web --space main --yes
 
 ### Dashboard authority
 
-This route requires a registered static-auth target, an existing protected credential file
-and explicit read-only intent. `--host` chooses a concrete bind/browser address, default
+This route requires a registered static-auth target, a protected credential file and explicit
+read-only intent. The file is the space's `web.creds` unless `--creds` names another one. `--host` chooses a concrete bind/browser address, default
 `127.0.0.1`; wildcard binds refuse. `--port` is 1 to 65535, default 7799. Broker coordinates and
 required TLS come from the registered target. Broker TLS does not encrypt the dashboard's HTTP
 listener. The file supplies the only connection authority.

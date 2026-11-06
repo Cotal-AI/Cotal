@@ -15,7 +15,7 @@ Cotal does not bundle the pi runtime.
 <Callout type="info" title="Alpha connector">
 
 This release targets pi `0.79.10`.
-Persona files, model selection, initial prompts, session forks, and managed crash recovery are supported.
+Persona files, model selection, initial prompts, and session forks are supported.
 Model variants, MCP tool sharing, and arbitrary launch options are refused.
 
 </Callout>
@@ -99,9 +99,9 @@ cotal spawn --harness pi --resume <pi-session-id>
 ```
 
 Pi forks the source session and leaves its transcript unchanged.
-A managed process crash instead reopens the seat's current session with the same Cotal identity and durable inbox.
-The manager allows three restarts in two minutes; another crash retires the seat.
-A deliberate stop does not restart it.
+Automatic crash recovery requires the runtime to prove that all prior local work has ended, including detached tools.
+The built-in PTY runtime cannot provide that proof, so a crashed Pi seat is retired without an automatic restart.
+Its tools may still be running; check their outcome before starting the work again. A deliberate stop does not restart the seat.
 
 For a team member declared `continuity: exact`, Cotal opens its recorded pi session and refuses a missing session.
 See [Define a team](define-a-team.mdx) for continuity and [Session lifecycle](pi-connector-reference.mdx#session-lifecycle) for reload behavior.

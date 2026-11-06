@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { credsClaims } from "@cotal-ai/core";
-import { deliveryCredsKey, membershipRwCredsKey } from "@cotal-ai/workspace";
+import { deliveryCredsKey, membershipRwCredsKey, webCredsKey } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 
 const suite = createSuite();
@@ -44,6 +44,11 @@ try {
       const up = run(...args);
       started = true;
       suite.check(`${scenario}: shipped CLI starts the owned stack`, up.status === 0, up.text);
+      if (!open) {
+        // The dashboard's `service start web` default: minted on every static `up`, without an expiry.
+        const web = credsClaims(readFileSync(join(root, ".cotal", webCredsKey(space, { injected: false, root })), "utf8"));
+        suite.check(`${scenario}: up provisions the space's web.creds with no expiry`, web.exp === undefined, web);
+      }
       const expected = !open && !managed;
       const warning = controller ? up.envelope?.warnings?.find((w) => w.code === code)?.message : up.text;
       suite.check(`${scenario}: warning is limited to broker-only authenticated starts`, expected ? warning?.includes("--no-manager starts no local daemon-credential renewal owner") === true : !up.text.includes(code) && !up.text.includes("no local daemon-credential renewal owner"), up.text);
