@@ -7,6 +7,20 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## The web dashboard starts on the space's own credential
+
+`cotal up` on a static space now mints a read-only `observer` credential for the dashboard, the
+space's `web.creds`, and the `web` service preset uses it as its `--creds` default. `cotal service
+start web` works with no flags once the space holds it.
+
+### What changes for you
+
+- Run `cotal up` once on each existing space before `cotal service start web`; until then the start
+  refuses and names `--creds`, as before. The file is minted without an expiry and `cotal doctor auth`
+  reports it with the daemon credentials.
+- A saved `web` definition keeps the `--creds` file it was added with. Pass `--creds` to use a
+  credential you minted yourself.
+
 ## Claude seats need the registered user-scope MCP entry
 
 Claude Code binds the wake channel of a session Cotal launches (`server:cotal`) only to a server

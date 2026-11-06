@@ -74,6 +74,13 @@ export const DELIVERY_CREDS_KIND = "delivery.creds";
  *  `membership` component without a hand-copied string. */
 export const MEMBERSHIP_RW_CREDS_KIND = "membership-rw.creds";
 
+/** The web dashboard's read-only cred kind: the `observer` profile, minted by `cotal up` for a static
+ *  space and the `web` service preset's `--creds` default. The dashboard reads the file once at start
+ *  and holds its connection, so it is minted without an expiry, as the `cotal auth mint --profile
+ *  observer` recipe it replaces was; nothing renews it and `doctor auth` reports it with the
+ *  daemon creds. Never root-scoped: it postdates the per-space layout, so it is not legacy material. */
+export const WEB_CREDS_KIND = "web.creds";
+
 /** The `$SYS` CONNZ observer's kind — the graph feed's read connection and the account-scoped sweep
  *  every liveness/eviction verdict is measured against.
  *
@@ -387,6 +394,11 @@ export function membershipRwCredsKey(space: string, composition: SpaceMaterialCo
   return spaceMaterialKey(MEMBERSHIP_RW_CREDS_KIND, space, composition);
 }
 
+/** {@link WEB_CREDS_KIND}'s key for `space` — see {@link spaceMaterialKey}. */
+export function webCredsKey(space: string, composition: SpaceMaterialComposition): string {
+  return spaceMaterialKey(WEB_CREDS_KIND, space, composition);
+}
+
 /** {@link MEMBERSHIP_OBSERVER_CREDS_KIND}'s key for `space` — see {@link spaceMaterialKey}. */
 export function membershipObserverCredsKey(space: string, composition: SpaceMaterialComposition): string {
   return spaceMaterialKey(MEMBERSHIP_OBSERVER_CREDS_KIND, space, composition);
@@ -419,7 +431,7 @@ export function spaceMaterialDir(root: string, space: string): string {
  *  {@link MEMBERSHIP_CONFIG_KIND} is absent: it has no store reader at all (it is read raw by the
  *  eviction path's workstation cross-check), so the segment removal is the whole of its reap. */
 const P7_STORE_KINDS: readonly string[] = [
-  DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND,
+  DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND, WEB_CREDS_KIND,
 ];
 
 /**

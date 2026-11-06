@@ -124,14 +124,12 @@ same command finds it gone and goes on. After an abrupt manager death, the same 
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
 process through any runtime custody reference recorded on the slot, and only then retires the
-lifecycle and frees the alias. A seat whose spawn carried `supervise` with restarts left is restarted
-instead of retired: the successor reaps any seat the slot still names, relaunches it under the same
-name, lifecycle uid, credential, persona and cwd, and counts the restart against the policy. The
-seat record counts that restart as soon as the replacement launches, and a replacement that joins
-after its readiness window is still restarted in place on its next crash, like one that joined in
-time. New
-built-in `pty` seats have no custody reference. Their supervised recovery validates the runtime
-saved in the seat record; a custodial runtime still requires its matching slot reference. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
+lifecycle and frees the alias. Automatic restart also requires proof that all prior local work ended, including detached tools.
+A successor needs a durable custody reference and the runtime's work-closure operation; ordinary
+seat-process reap is insufficient. Missing, failed or timed-out proof refuses recovery and retires
+the seat without claiming its tools or remote effects were cancelled. Built-in `pty` provides no
+work-closure guarantee and refuses new `supervise` requests before launch. Its older supervised
+records cannot authorize recovery without proof. Ordinary launches remain available. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
 starts is adopted in place: the successor checks that the recorded tmux server, window and pane are
 the ones the slot names and that the pane's process still runs, then manages that seat again under
 its existing credential, without a restart. Both paths read the record the manager writes to

@@ -2,7 +2,7 @@ import { rmSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { registry, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, observeServiceStartup,
+  CommandFailure, WEB_CREDS_KIND, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, observeServiceStartup,
   oneLine, publishServiceStartup, readLocalRecordSource, readPinnedStaticCredential,
   resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, serviceWebSessionPath, validateServiceStartupPath,
   type LocalProcess, type ServicePreset, type WebSession,
@@ -23,8 +23,8 @@ function target(root: string, space: string, server?: string) {
 
 export const webServicePreset: ServicePreset = {
   kind: "service-preset", name: "web", adapter: "web-service", timeoutMs: 40000,
-  summary: "the read-only web dashboard, with a credential file you give it",
-  defaults: { root: { space: "root" }, "read-only": { value: true } },
+  summary: "the read-only web dashboard, on this space's dashboard credential",
+  defaults: { root: { space: "root" }, creds: { space: "material", kind: WEB_CREDS_KIND }, "read-only": { value: true } },
 };
 
 export const webService: LocalProcess = {
@@ -36,7 +36,7 @@ export const webService: LocalProcess = {
     paths: { root: "directory", creds: "private-file" },
     optionsSchema: { type: "object", additionalProperties: false, required: ["root", "creds", "read-only"], properties: {
       root: { type: "string", minLength: 1, maxLength: 4096, description: "existing registered static-auth root; no signer is minted or handed to HTTP handlers" },
-      creds: { type: "string", minLength: 1, maxLength: 4096, description: "explicit protected credential file for the dashboard; no cached operator or seat identity fallback" },
+      creds: { type: "string", minLength: 1, maxLength: 4096, description: `protected credential file for the dashboard (default: this space's ${WEB_CREDS_KIND}); no cached operator or seat identity fallback` },
       "read-only": { type: "boolean", const: true, description: "required explicit read-only intent; no channel-purger or alternate transport is acquired" },
       host: { type: "string", minLength: 1, maxLength: 253, description: `HTTP bind/browser host (default ${WEB_HOST}); remote exposure is explicit` },
       port: { type: "integer", minimum: 1, maximum: 65535, description: `HTTP port (default ${WEB_PORT}); no implicit port substitution` },

@@ -15,7 +15,7 @@ import {
   CommandFailure, beginOrdinaryResume, bindOrdinaryResumeListener, bindRestoreListener, controllerAttemptBinding, controllerAttemptBroker, cutController,
   isCommandFailure, readMaintenanceJournal, recordControllerAttemptBroker, requestControllerMemberStart, settleControllerMemberStart, sweepTokenHandoff, writeTokenHandoff,
   type AttemptBrokerInstance, type CommitIntentRecord, type ControllerCutBinding, type ControllerListenerInstance, type ControllerMember, type ControllerRole,
-  type ControllerStartedMember, type JsonValue, type MaintenanceJournal, type MaintenanceLock, type RestoreListenerProof, type ServiceAdapterAttempt,
+  type ControllerStartedMember, type JsonValue, type MaintenanceJournal, type MaintenanceLock, type ListenerProof, type ServiceAdapterAttempt,
 } from "@cotal-ai/workspace";
 import { serviceDefinitionStore } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstanceStore, type ServiceInstance } from "./service-instances.js";
@@ -227,13 +227,13 @@ export function managerResumeAttempt(root: string): ServiceAdapterAttempt {
 export function bindControllerBroker(lock: MaintenanceLock, root: string, space: string, launch: { server: string; serverName: string; serverNonce: string }): void {
   const attempt = currentControllerAttempt(root);
   const { record, cut, started, attemptId, restore } = attempt;
-  if ((record as { listenerProof?: RestoreListenerProof }).listenerProof) return;
+  if ((record as { listenerProof?: ListenerProof }).listenerProof) return;
   const instanceId = attemptInstanceId(attempt, cut.members.find((row) => row.role === "broker")!);
   const row = [...started].reverse().find((entry) => entry.role === "broker" && entry.outcome === "running");
   const value = serviceInstanceStore(space).read(instanceId)?.record.value;
   if (!row || row.instanceId !== instanceId || !value?.process || value.launchRequestId !== row.launchRequestId || value.attempt?.attemptId !== attemptId) return hold("the started broker is not the running instance its row records; no listener proof was bound", { root, space });
   const instance: ControllerListenerInstance = { instanceId, launchRequestId: row.launchRequestId!, process: { pid: value.process.pid, token: value.process.token } };
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     kind: "controller", attemptId, serverName: launch.serverName, serverNonce: launch.serverNonce,
     processOwner: { pid: value.process.pid, host: hostname(), startedAt: new Date().toISOString(), id: `controller-broker-${row.launchRequestId}` },
     serverEndpoint: launch.server, target: restore ? (record as CommitIntentRecord).restore.target : record.source, instance,

@@ -59,6 +59,16 @@ export interface AgentHandle {
   /** Resolve only after the runtime has authoritatively proved the process/window/workspace is gone.
    * Optional during the preservation rollout; a manager maintenance cut must fail closed when absent. */
   waitForExit?(): Promise<void>;
+  /** Prove this launch and all local work it started have ended, including descendants that
+   *  detached into other sessions or process groups. The runtime must own that work from launch;
+   *  a parent exit, process-group census, reused PID or environment match is not proof. It may
+   *  terminate work only through that ownership. Resolve only when no predecessor can create
+   *  further local work. Reject when ownership or closure is unknown. This does not undo remote
+   *  effects or promise at-most-once execution.
+   *
+   *  Optional; automatic restart refuses when absent. A manager waits for this separately from
+   *  waitForExit and never starts a replacement on rejection or timeout. */
+  waitForWorkExit?(): Promise<void>;
   interrupt(): void;
   /** Type `data` into the agent as if it came from the keyboard: the one-shot sibling of
    *  {@link interrupt} (which already writes `\x03`). A caller that wants to deliver a line of
@@ -119,6 +129,15 @@ export interface Runtime {
    * stopping the underlying agent. Absent is false for PTY runtimes and irrelevant for runtimes
    * that hold no process-owning PTY master. */
   readonly supportsRelease?: boolean;
+  /** True only when every spawned handle supplies authoritative waitForWorkExit. A requested
+   *  restart policy is refused before launch when absent or false. Built-in PTY does not provide
+   *  descendant containment and must not declare this. */
+  readonly supportsWorkClosure?: boolean;
+  /** Prove all local work for this durable launch reference ended before a successor manager
+   *  restarts it. Requires the same ownership and closure guarantees as waitForWorkExit, including
+   *  detached descendants. An absent record is unknown, never proof. Missing means restart across
+   *  a manager crash is unsupported, even when ordinary seat-process reap is available. */
+  reapWork?(reference: RuntimeReference): Promise<void>;
   /** True when every handle this runtime spawns reports {@link AgentHandle.startupOutcome}. A `once`
    *  spawn on a connector with {@link Connector.onceNeedsConfirmed} is refused without it. */
   readonly reportsStartupOutcome?: boolean;
