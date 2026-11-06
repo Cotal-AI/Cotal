@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 980,
+    "total": 981,
     "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 762
+    "non-render/control": 763
   },
   "renderers": [
     {
@@ -7144,6 +7144,13 @@
       "anchor": "s.setStatus(command.status, command.activity)",
       "class": "command-ack",
       "rationale": "App /status: sets the human session's own presence as cotal chat's /status does; the outcome line acknowledges the command."
+    },
+    {
+      "path": "implementations/tui/src/talk.ts",
+      "kind": "derived-output",
+      "anchor": "return talk",
+      "class": "non-render/control",
+      "rationale": "App chat session: returns the session object, whose /status method sets presence; the return renders nothing."
     }
   ]
 }
