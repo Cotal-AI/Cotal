@@ -77,11 +77,29 @@ It then uses Node's experimental `process.execve` API, available from Node 22.15
 The tests exercise terminal behavior and authenticated Manager/Delivery recovery with inert
 connectors. Their test-only policy admission does not enable the adapter for ordinary spawns.
 The current mount profile exposes the caller's workspace and `/usr`; it is not an adversarial
-sandbox or a complete connector mount policy. Cold owner-crash probes, both during startup and after durable readiness, closed the old work
-but left an unproved closure journal. The successor started no replacement and retained the
-slot in its terminalizing phase. This is safe refusal, not successful cold recovery. System-tool
-packaging, wider startup-failure coverage and production adoption remain unqualified. Missing tools, unavailable identity or unsupported
-hosts refuse; the built-in PTY runtime is unchanged.
+sandbox or a complete connector mount policy. Without an external custody store, a cold crash
+can still leave an unproved journal and the successor refuses replacement.
+
+An optional internal `SystemdNamespaceCustody` binding takes a trusted host receipt naming the
+exact user unit, source file and SHA-256. It verifies native MainPID and invocation, unchanged
+source bytes, no drop-ins or pending reload, and the required storage policy. Native D-Bus
+integer metadata uses standard JSON reviver source text, preserving uint64 values without
+rounding. Unsupported metadata parsing refuses.
+
+The adapter writes a versioned launch receipt before retention, confirms the exact stored
+kernel object before execution, and rejects late admission after timeout or socket closure.
+Cold recovery imports the retained object, observes old namespace exit, verifies removal and
+journals closure before the replacement starts. Actual Manager/Delivery probes recovered the
+same actor and lifecycle; the replacement pulled and yielded its pending turn through its own
+issued credential. A late storage acknowledgment did not launch the connector. Deliberately
+lost storage left the native slot terminalizing without a replacement or invented closure.
+
+This remains an unregistered test path. The existing CLI service installer does not provision
+this configuration, and the host must supply its trusted installation receipt. System-tool
+packaging, connector compatibility, scale costs and production adoption remain unqualified.
+The service pin assumes a trusted local host/controller; it is not an adversarial same-UID
+boundary. Missing tools, unavailable evidence or unsupported hosts refuse; the built-in PTY
+runtime is unchanged.
 
 ## Workspace registry liveness
 

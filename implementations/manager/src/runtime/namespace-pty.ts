@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 import { capturePeerProcess, processStartToken, processStatFields, recoverProcess, type LinuxProcessHandle, type LinuxProcessIdentity } from "@cotal-ai/seat";
 import type { AgentHandle, LaunchSpec, RuntimeReference } from "@cotal-ai/core";
 import { LegacyPtyRuntime } from "./pty.js";
+import { SystemdNamespaceCustody, type StoredNamespace } from "./systemd-custody.js";
 
-interface ClosureRecord { version: 1; identity: LinuxProcessIdentity; closed: boolean }
+interface ClosureRecord { version: 1 | 2; identity: LinuxProcessIdentity; closed: boolean; storage?: StoredNamespace }
 
 /** Unregistered Linux containment adapter for explicit integration testing. System tools and
  * host mount policy are caller prerequisites; this does not enable automatic restart support. */
@@ -15,9 +16,11 @@ export class NamespacePtyRuntime extends LegacyPtyRuntime {
   readonly #root: string;
   readonly #bwrap: string;
   readonly #unshare: string;
+  readonly #storage?: SystemdNamespaceCustody;
 
-  constructor(root: string, tools: { bwrap: string; unshare: string }) {
+  constructor(root: string, tools: { bwrap: string; unshare: string }, storage?: SystemdNamespaceCustody) {
     super();
+    this.#storage = storage;
     if (process.platform !== "linux" || typeof process.execve !== "function")
       throw new Error("namespace PTY requires Linux with process.execve");
     mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -86,15 +89,24 @@ export class NamespacePtyRuntime extends LegacyPtyRuntime {
     let accepting = false;
     let closed = false;
     let failure: Error | undefined;
+    let journal: ClosureRecord | undefined;
+    let retention: Promise<void> = Promise.resolve();
+    const admissionDeadline = Date.now() + 10_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let resolveCustody!: (handle: LinuxProcessHandle) => void;
     let rejectCustody!: (error: Error) => void;
     const custody = new Promise<LinuxProcessHandle>((resolve, reject) => { resolveCustody = resolve; rejectCustody = reject; });
     // Launch may fail before a caller requests closure; retain the failure without an unhandled rejection.
     void custody.catch(() => undefined);
-    const fail = (error: Error) => { failure ??= error; rejectCustody(error); server.close(); inner?.stop({ graceful: false }); };
+    const fail = (error: Error) => {
+      failure ??= error; rejectCustody(error); clearTimeout(timer); server.close();
+      try { if (processHandle && !closed && !processHandle.hasExited()) processHandle.signal("SIGKILL"); }
+      catch (cleanupError) { failure = new Error(`${failure.message}; namespace stop unconfirmed: ${String(cleanupError)}`); }
+      inner?.stop({ graceful: false });
+    };
     const server = createServer((socket) => {
       if (accepting) { socket.destroy(); return; }
-      socket.setTimeout(5_000, () => socket.destroy());
+      socket.setTimeout(5_000, () => { socket.destroy(); fail(new Error("namespace bootstrap admission timed out")); });
       socket.on("error", (error) => fail(error));
       let text = "";
       socket.on("data", (chunk) => {
@@ -113,13 +125,18 @@ export class NamespacePtyRuntime extends LegacyPtyRuntime {
           const nsPids = /^NSpid:\s+(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/);
           if (fields?.[1] !== String(inner.pid) || processStartToken(inner.pid) !== rootBirth || nsPids?.at(-1) !== "1" || handle.hasExited())
             throw new Error("namespace PID1 custody could not be bound before execution");
-          processHandle = handle;
-          bound = true;
-          this.#save(recordPath, { version: 1, identity: handle.identity, closed: false });
+          const storage = this.#storage?.prepare(reference.id, handle);
+          journal = { version: storage ? 2 : 1, identity: handle.identity, closed: false, ...(storage ? { storage } : {}) };
+          this.#save(recordPath, journal);
+          processHandle = handle; bound = true;
+          if (storage) retention = this.#storage!.retain(storage, handle);
           resolveCustody(handle);
-          socket.end("+\n");
-          server.close();
-          } finally { if (!bound) handle.close(); }
+          void retention.then(() => {
+            if (failure || Date.now() >= admissionDeadline || socket.destroyed || handle.hasExited())
+              throw new Error("namespace admission expired or closed before storage confirmation");
+            clearTimeout(timer); socket.end("+\n"); server.close();
+          }).catch(error => { socket.destroy(); fail(error as Error); });
+          } finally { if (!bound) { try { if (!handle.hasExited()) handle.signal("SIGKILL"); } finally { handle.close(); } } }
         } catch (error) { socket.destroy(); fail(error as Error); }
       });
     });
@@ -135,14 +152,19 @@ export class NamespacePtyRuntime extends LegacyPtyRuntime {
       if (!rootBirth) throw new Error("namespace launcher birth unavailable");
     } catch (error) { fail(error as Error); throw error; }
     const actual = inner;
-    const timer = setTimeout(() => fail(new Error("namespace custody admission timed out")), 10_000);
-    void custody.finally(() => clearTimeout(timer)).catch(() => undefined);
+    timer = setTimeout(() => fail(new Error("namespace custody admission timed out")), Math.max(0, admissionDeadline - Date.now()));
     void actual.waitForExit!().then(() => { if (!accepting) fail(new Error("launcher exited before namespace custody")); });
     const workExit = async () => {
       const handle = await custody;
-      if (failure) throw failure;
-      await handle.waitForExit();
-      if (!closed) { this.#save(recordPath, { version: 1, identity: handle.identity, closed: true }); closed = true; handle.close(); }
+      try {
+        if (failure && !this.#storage) throw failure;
+        await handle.waitForExit();
+        // A late native request may still have an effect. Settle it, then explicitly remove
+        // and verify storage before declaring the journal fully closed.
+        await retention.catch(() => undefined);
+        if (journal?.storage) await this.#storage!.release(journal.storage, handle.identity);
+        if (!closed) { this.#save(recordPath, { ...journal!, closed: true }); closed = true; }
+      } finally { handle.close(); }
     };
     // Observe from admission, even when no caller asks to wait. Ordinary manager shutdown
     // must persist the same kernel closure evidence and release the retained pidfd.
@@ -169,20 +191,29 @@ export class NamespacePtyRuntime extends LegacyPtyRuntime {
       record = JSON.parse(readFileSync(fd, "utf8")) as ClosureRecord;
     } finally { closeSync(fd); }
     const identity = record?.identity;
-    if (record?.version !== 1 || typeof record.closed !== "boolean" || !identity ||
+    if (![1, 2].includes(record?.version) || typeof record.closed !== "boolean" || !identity ||
         !Number.isSafeInteger(identity.pid) || identity.pid <= 0 || identity.pid > 0x7fffffff ||
         identity.uid !== process.getuid!() || typeof identity.birth !== "string" || !/^\d+$/.test(identity.birth) ||
         typeof identity.boot !== "string" || !/^[a-f0-9-]{36}$/.test(identity.boot) ||
         typeof identity.namespace !== "string" || !/^pid:\[\d+\]$/.test(identity.namespace))
       throw new Error("invalid namespace closure record");
-    if (record.closed) return;
-    const handle = recoverProcess(record.identity);
+    if (record.storage && record.storage.name !== `cotal-ns-${reference.id}`) throw new Error("namespace storage receipt references another launch");
+    if (record.version === 2 && (!record.storage || !this.#storage)) throw new Error("namespace native service custody unavailable");
+    if (record.version === 1 && record.storage) throw new Error("invalid legacy namespace storage receipt");
+    if (record.closed) {
+      if (record.storage) await this.#storage!.release(record.storage, record.identity);
+      return;
+    }
+    const handle = record.storage ? await this.#storage!.recover(record.storage, record.identity) : recoverProcess(record.identity);
     try {
-      const status = readFileSync(`/proc/${handle.identity.pid}/status`, "utf8");
-      if (/^NSpid:\s+(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/).at(-1) !== "1") throw new Error("record does not bind namespace PID1");
-      handle.signal("SIGKILL");
+      if (!handle.hasExited()) {
+        const status = readFileSync(`/proc/${handle.identity.pid}/status`, "utf8");
+        if (/^NSpid:\s+(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/).at(-1) !== "1") throw new Error("record does not bind namespace PID1");
+        handle.signal("SIGKILL");
+      }
       await handle.waitForExit();
-      this.#save(path, { version: 1, identity: handle.identity, closed: true });
+      if (record.storage) await this.#storage!.release(record.storage, record.identity);
+      this.#save(path, { ...record, closed: true });
     } finally { handle.close(); }
   }
 
