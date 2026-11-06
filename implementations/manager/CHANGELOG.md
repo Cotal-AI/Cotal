@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.147.1
+
+### Patch Changes
+
+- f65ebc2: Use native signing for the Manager's standing broker connections.
+  The service, goal-writer and session-ledger connections use the existing connection helper with current-credential getters while retaining their identity-bound inboxes and transport policy.
+- @cotal-ai/core@0.147.1
+  - @cotal-ai/seat@0.147.1
+  - @cotal-ai/workspace@0.147.1
+
 ## 0.147.0
 
 ### Patch Changes

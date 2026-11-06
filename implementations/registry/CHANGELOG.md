@@ -1,5 +1,11 @@
 # @cotal-ai/registry
 
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+
 ## 0.147.0
 
 ### Patch Changes
