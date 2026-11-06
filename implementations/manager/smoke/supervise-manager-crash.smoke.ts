@@ -1,10 +1,10 @@
 /**
  * A supervised seat outlives its manager's crash as one restart of its own policy (#4094).
  *
- * Live: a JWT-auth scratch broker, the real Manager in a child process, the real pty runtime and a
+ * Live: a JWT-auth scratch broker, the real Manager in a child process, a PTY fixture with durable childless-work closure and a
  * stub seat that joins presence. The first manager spawns `worker` with supervise { restarts: 1 }
- * and accepts a turn for it, then is SIGKILLed. The built-in pty records no custody reference.
- * The old seat must exit and the successor must start only one replacement. It must restart the seat
+ * and accepts a turn for it, then is SIGKILLed. The fixture records each child birth before accepting work.
+ * Stock PTY refuses this policy. In this fixture, the old seat must exit and the successor must start only one replacement. It must restart the seat
  * under the same principal and lifecycle uid, and the restarted incarnation must pull and yield the
  * turn the dead manager accepted. A second crash past the budget retires the seat instead.
  *
