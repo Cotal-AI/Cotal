@@ -131,8 +131,8 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   static-auth space that a real `cotal up --detach` stack serves. It reads each send off the broker:
   a post with its mention, a direct message to one of two agents that share a name, an answer to a
   waiting agent, `/reply` with the message it answers, and a message to an offline agent. It reads
-  each refusal off the screen: no recipient, your own session, unknown commands, the post grant and
-  an unreachable broker. It also covers watching unseen while you type, the first `enter` opening
+  each refusal off the screen: no recipient, unknown commands, the post grant and an unreachable
+  broker. It also covers watching unseen while you type, the first `enter` opening
   the session and sending, your name turning gold, the shared-name warning, `/quit` and the
   two-step reopen, a space switch that closes the session and keeps the draft, `ctrl+c` with a
   draft, and Change your name.
