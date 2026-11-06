@@ -304,6 +304,7 @@ const OPERATOR_READINESS_MS = 3_000;
  * inside a rolling two-minute window; the fourth crash is a loop and retires the seat loud. */
 const SESSION_RESTART_LIMIT = 3;
 const SESSION_RESTART_WINDOW_MS = 120_000;
+const RESTART_WORK_EXIT_MS = 10_000;
 /** Upper bound on a detached agent-exit deprovision (#159 B2). A wedged broker must not leave the
  *  fire-and-forget teardown pending forever with no log — past this it rejects into freeSlot's fail-loud
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
@@ -6068,7 +6069,15 @@ export class Manager {
     void (async () => {
       let replacement: AgentHandle | undefined;
       try {
+        // A dead PTY leader may have left tool processes in other sessions. Never build or launch
+        // a replacement until the runtime proves the whole prior execution closed.
+        if (!a.handle.waitForWorkExit)
+          throw new Error(`runtime "${a.handle.kind}" cannot prove prior local work ended; automatic restart refused`);
+        await withTimeout(a.handle.waitForWorkExit(), RESTART_WORK_EXIT_MS,
+          `prior local work was not proved ended within ${RESTART_WORK_EXIT_MS}ms; automatic restart refused`);
+        if (this.agents.get(a.name) !== a || a.terminalizing || this.maintenanceState !== "active") return;
         const connector = await this.resolveConnector(a.agent);
+        if (this.agents.get(a.name) !== a || a.terminalizing || this.maintenanceState !== "active") return;
         const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
         const opts: LaunchOpts = continueSession !== undefined
           ? { ...restart.opts, resume: undefined, reopenSession: undefined, prompt: undefined, continueSession }
@@ -6084,6 +6093,10 @@ export class Manager {
         const runtime = this.runtimeFor(a.launch.runtime);
         const custody = this.reserveCustody(runtime);
         if (custody) await this.recordSlotCustody(a, custody);
+        if (this.agents.get(a.name) !== a || a.terminalizing || this.maintenanceState !== "active") {
+          discardLaunchArtifacts(spec.artifacts); // No spawn was attempted, so no child can use them.
+          return;
+        }
         const handle = await this.spawnCustodied(runtime, a.name, spec, a.launch.cwd, custody);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
@@ -7100,6 +7113,8 @@ export class Manager {
         return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${runtime.kind}" cannot respawn a name in place` };
       if (this.userMode)
         return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
+      if (runtime.supportsWorkClosure !== true)
+        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${runtime.kind}" cannot prove prior local work ended` };
     }
     // One read of the cotal config per spawn: the delegated refusal, the model policy and the launch
     // fields below all take this value, so the awaits between the policy check and the launch cannot
@@ -11748,15 +11763,16 @@ export class Manager {
     const crashes = [...record.crashes.filter((at) => now - at < policy.windowMs), now];
     if (crashes.length > policy.restarts)
       return `its supervise restart budget is spent (${crashes.length} deaths in ${policy.windowMs / 1000}s, ${policy.restarts} allowed)`;
-    // A seat that outlived its manager must not run beside its replacement, so the one the slot
-    // names is reaped first. A runtime that cannot prove it gone refuses, and the terminal retires it.
-    if (row.runtime !== undefined) {
-      try {
-        const evidence = await requireRuntimeReap(this.runtimeFor(row.runtime.kind), row.runtime);
-        console.error(`${row.alias}: the seat its previous manager left ${evidence.detail}`);
-      } catch (error) {
-        return `the seat its previous manager left could not be reaped: ${rejectionText(error)}`;
-      }
+    // Ordinary reap proves only the runtime's seat process/window gone. A durable work-closure
+    // proof must also cover detached tools. No reference means unknown, not an empty execution.
+    if (row.runtime === undefined) return "prior local work has no durable custody reference; automatic restart refused";
+    const runtime = this.runtimeFor(row.runtime.kind);
+    if (!runtime.reapWork) return `runtime "${runtime.kind}" cannot prove prior local work ended after a manager crash; automatic restart refused`;
+    try {
+      await withTimeout(runtime.reapWork(row.runtime), RESTART_WORK_EXIT_MS,
+        `prior local work was not proved ended within ${RESTART_WORK_EXIT_MS}ms`);
+    } catch (error) {
+      return `prior local work could not be closed; automatic restart refused: ${rejectionText(error)}`;
     }
     await this.ep.waitForPresenceSnapshot();
     // Readiness counts only a heartbeat newer than any the dead seat left, as an in-place restart does.

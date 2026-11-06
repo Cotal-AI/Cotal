@@ -1,5 +1,43 @@
 # @cotal-ai/auth
 
+## 0.146.0
+
+### Patch Changes
+
+- Updated dependencies [d312807]
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+- Updated dependencies [e3cfcdb]
+  - @cotal-ai/workspace@0.146.0
+  - @cotal-ai/core@0.146.0
+  - @cotal-ai/lang@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- 4887f2e: A user-mode `cotal chat` session connects again. Since endpoint caller grants were added, the callout looked up a chat session as an actor grant when resolving its endpoint caller rights, found none and denied the connect, so every user-mode chat session was admitted but failed with `Authorization Violation`. The callout now mints a chat principal no endpoint capability without that lookup, as the spec states, and the chat arm stays its connect authority.
+- @cotal-ai/core@0.145.1
+  - @cotal-ai/lang@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+  - @cotal-ai/lang@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+  - @cotal-ai/lang@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
 ## 0.143.0
 
 ### Patch Changes

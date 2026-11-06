@@ -4,6 +4,7 @@ import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomi
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
 import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
+import { chatNameProblem } from "./chat-name.js";
 
 /**
  * Personal workstation preferences: defaults a person sets for their own commands, saved for the
@@ -14,7 +15,7 @@ import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js
 
 export const PREFERENCES_SCHEMA_VERSION = 1;
 
-export type PreferenceKey = "harness" | "persona" | "detach-key" | "color" | "editor";
+export type PreferenceKey = "harness" | "persona" | "detach-key" | "color" | "editor" | "name";
 
 /** Where a value came from, in the order a launch setting is decided: a flag, a persona pin, a named
  *  environment variable, the per-space preference, the user preference, then the product default. */
@@ -112,6 +113,15 @@ const KEYS: readonly KeySpec[] = [
     env: ["VISUAL", "EDITOR"],
     check: nonEmpty,
     fromEnv: fromNonEmpty,
+  },
+  {
+    // No environment variable, since `COTAL_NAME` names a seat's agent, and no product default,
+    // since the default depends on the space's mode and `resolveChatName` adds it.
+    key: "name",
+    about: "the name your chat sessions appear as, in place of your sign-in name or OS login",
+    perSpace: false,
+    env: [],
+    check: chatNameProblem,
   },
 ];
 

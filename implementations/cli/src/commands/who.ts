@@ -1,4 +1,4 @@
-import { peerLabel, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type PresenceCondition } from "@cotal-ai/core";
+import { peerLabel, sharedNameIds, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type PresenceCondition } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { openTransient } from "../lib/transient.js";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -157,8 +157,7 @@ export async function who(args: ParsedArgs): Promise<void> {
     }
   }
 
-  const counts = new Map<string, number>();
-  for (const p of roster) counts.set(p.card.name.toLowerCase(), (counts.get(p.card.name.toLowerCase()) ?? 0) + 1);
+  const shared = sharedNameIds(roster);
   const listed = roster.filter((p) => v.all || p.card.kind !== "endpoint" || isChatSession(p));
   const items = listed
     .filter((p) => !v.waiting || p.status === "waiting" || p.condition !== undefined)
@@ -193,14 +192,14 @@ export async function who(args: ParsedArgs): Promise<void> {
       warnings: [...warnings, ...labels],
       ...(unread ? { partial: { message: `who could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}`, ...(remedy ? { remedy } : {}) } } : {}),
     },
-    (r) => whoView(r, space, Boolean(v.all), (name) => (counts.get(name.toLowerCase()) ?? 0) > 1, roster),
+    (r) => whoView(r, space, Boolean(v.all), shared, roster),
   );
 }
 
 const STATUS_TONE: Record<Presence["status"], Styled["tone"]> = { working: "ok", waiting: "waiting", idle: undefined, offline: "hint" };
 const STATUS_MARK: Record<Presence["status"], string> = { working: "●", waiting: "◐", idle: "○", offline: "⨯" };
 
-function whoView(r: WhoResult, space: string, all: boolean, duplicate: (name: string) => boolean, roster: readonly Presence[]): Report {
+function whoView(r: WhoResult, space: string, all: boolean, shared: ReadonlySet<string>, roster: readonly Presence[]): Report {
   const now = Date.now();
   const byId = new Map(roster.map((p) => [p.card.id, p]));
   const columns: Column[] = [
@@ -220,7 +219,7 @@ function whoView(r: WhoResult, space: string, all: boolean, duplicate: (name: st
     // A live manager shows by its name, or by `<host>/<runtime>` when it was started without one.
     const label = p && isManager(p) ? `manager ${peerLabel({ name: managerLabel(p) })}` : peerLabel({ name: row.name, ...(row.role ? { role: row.role } : {}) });
     return {
-      name: duplicate(row.name) ? `${label} [${row.id}]` : label,
+      name: shared.has(row.id) ? `${label} [${row.id}]` : label,
       kind: row.sessionKind === "chat" ? "chat session" : row.kind,
       status: { text: `${row.status === "working" ? "working · progress unknown" : row.status}${facts.condition}`, tone: STATUS_TONE[row.status], mark: STATUS_MARK[row.status] },
       attention: row.attention ?? "-",

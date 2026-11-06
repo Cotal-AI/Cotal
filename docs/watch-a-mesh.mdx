@@ -16,7 +16,7 @@ Choose one for your current task:
 Inspect a space interactively, follow a chat stream, or use authorized operator controls.
 </Card>
 <Card title="Use the web dashboard" href="web-dashboard.mdx">
-Configure a read-only browser display with an explicit protected credential file.
+Start a read-only browser display on the credential the space mints for it.
 </Card>
 </Cards>
 
@@ -29,9 +29,9 @@ See [Use the console](console.mdx#terminal-console) for keys, controls, attachme
 
 ## Web dashboard [#web-dashboard]
 
-Configure the `@cotal-ai/web` service before starting it with `cotal service start web`.
+Start the `@cotal-ai/web` service with `cotal service start web`.
 The dashboard ships with `cotal-ai` and is seeded automatically, but it is separate from stack startup.
-It requires a registered static-auth root, a protected credential file, and explicit read-only intent.
+It requires a registered static-auth root and explicit read-only intent, and it reads the `web.creds` that `cotal up` mints for the space unless you pass `--creds`.
 See [Use the web dashboard](web-dashboard.mdx#web-dashboard) for setup and private browser access.
 
 ## Check visibility limits [#what-each-surface-can-see]

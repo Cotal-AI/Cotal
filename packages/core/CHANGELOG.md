@@ -1,5 +1,30 @@
 # @cotal-ai/core
 
+## 0.146.0
+
+### Minor Changes
+
+- 4536cfe: Automatic restarts now require proof that the previous seat's local work has ended.
+  
+  The built-in PTY runtime cannot prove detached tools have stopped, so it refuses explicit `supervise` requests before launch. Pi crash recovery and recovery of older supervised records also refuse without authoritative work closure. Ordinary launches remain supported. This is a breaking safety restriction; it does not kill surviving tools or cancel remote effects.
+  
+  Runtime adapters can declare `supportsWorkClosure` and provide each handle's `waitForWorkExit`. Recovery after a manager crash additionally needs a durable reference and `reapWork`. Missing, failed or timed-out proof never permits a replacement. Outstanding turns retain their existing deadline semantics rather than receiving a fabricated successful or cancelled result.
+- 6cd9b65: `cotal who` and `cotal_roster` mark a shared name by the same rule a direct message uses, so a session's own row and a lone offline participant no longer carry an instance id.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+### Minor Changes
+
+- d7b0be0: Report a TCP listener that does not offer required TLS as `tls-unsupported`, rather than unreachable. Preserve the registration and show the transport mismatch in raw connection, registration and status diagnostics. Consumers of `ProbeResult` must handle the new failure reason.
+
+## 0.144.0
+
+No changes in this release.
+
 ## 0.143.0
 
 ### Minor Changes

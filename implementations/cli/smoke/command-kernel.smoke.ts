@@ -625,7 +625,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   for (const sub of ["get", "set", "unset"]) {
     const keys = await completionOut(["config", sub, ""]);
-    assert.ok(["harness", "persona", "detach-key", "color", "editor"].every((key) => new RegExp(`^${key}\t`, "mu").test(keys)) && !/^--/mu.test(keys), `config ${sub} offers the preference keys`);
+    assert.ok(["harness", "persona", "detach-key", "color", "editor", "name"].every((key) => new RegExp(`^${key}\t`, "mu").test(keys)) && !/^--/mu.test(keys), `config ${sub} offers the preference keys`);
   }
   const colors = await completionOut(["config", "set", "color", ""]);
   assert.ok(["auto", "always", "never"].every((value) => new RegExp(`^${value}$`, "mu").test(colors)) && colors.trimEnd().endsWith(":nofiles"), "config set color offers its values");

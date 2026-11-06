@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 960,
-    "honest-text": 64,
+    "total": 981,
+    "honest-text": 66,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 744
+    "non-render/control": 763
   },
   "renderers": [
     {
@@ -6345,18 +6345,46 @@
       "rationale": "Cleanup preview line: \"waiting\" is the color tone for files no Cotal store writes in the previous store, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/chat.ts",
+      "path": "packages/workspace/src/chat/name.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Chat name check: finds present participants that share the chosen name; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/commands/chat.ts",
+      "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`the name \"${self.label}\" is already in use here by ${who}; a direct message to \"${self.label}\" refuses as ambiguous while both are present, so pass another --name to be reached by name`",
-      "class": "command-ack",
-      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+      "anchor": "`not signed in to ${idp}; run \\`cotal login --idp ${idp}\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`run \\`cotal login --idp ${idp}\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`your sign-in at ${idp} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`sign in again with \\`cotal login --idp ${idp}\\`, or ${SAVE_NAME}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`your sign-in at ${idp}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/config.ts",
@@ -6704,7 +6732,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "feedFor(p.mesh, open())",
+      "anchor": "conversationFeed(p.mesh, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS)",
       "class": "non-render/control",
       "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
     },
@@ -6746,7 +6774,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`\u25d0 ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `\u201c${pr().activity}\u201d` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\"}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
+      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`\u25d0 ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `\u201c${pr().activity}\u201d` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\" && !composing()}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
       "class": "honest-text",
       "rationale": "App peer header: a waiting agent's own question, then the overview fields whose status names working progress as unknown.",
       "proof": {
@@ -6839,27 +6867,6 @@
       "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
     },
     {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "fallback={\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
-      "class": "non-render/control",
-      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{\n            <>\n              <text fg={theme.text.base}>Nothing needs you.</text>\n              <text fg={theme.text.muted}>{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}</text>\n            </>\n          }",
-      "class": "non-render/control",
-      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "derived-output",
-      "anchor": "{mesh() ? \"Agents that wait for an answer show here.\" : \"Waiting agents show here once a space is open.\"}",
-      "class": "non-render/control",
-      "rationale": "App inspector placeholder: fixed copy for an empty needs-you list; no agent status is rendered."
-    },
-    {
       "path": "implementations/tui/src/live.ts",
       "kind": "derived-output",
       "anchor": "v.on(\"change\", show)",
@@ -6872,6 +6879,13 @@
       "anchor": "ter((a) => a.status !== \"offline\").length\n  items.push({ ",
       "class": "non-render/control",
       "rationale": "App agents header: the offline filter feeding the live-agent count; routing only."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "status-token",
+      "anchor": "\"chat\" || (p.status !== \"offline\" && p.card.id !== self))",
+      "class": "non-render/control",
+      "rationale": "App tree endpoints: the offline filter that leaves an ended chat session out of the tree; it picks rows and renders no status word."
     },
     {
       "path": "implementations/tui/src/screen.ts",
@@ -6972,14 +6986,14 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "status-token",
-      "anchor": "teSignal<Stop>({ phase: \"idle\" })\n  const clockTimer =",
+      "anchor": "teSignal<Stop>({ phase: \"idle\" })\n  const [composer, s",
       "class": "non-render/control",
       "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
     },
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "status-token",
-      "anchor": "})\n    setStop({ phase: \"idle\" })\n    await old?.close",
+      "anchor": "})\n    setStop({ phase: \"idle\" })\n    const chat = awa",
       "class": "non-render/control",
       "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
     },
@@ -6996,6 +7010,147 @@
       "anchor": "cur === done ? { phase: \"idle\" } : cur)), STOP_NOTICE_",
       "class": "non-render/control",
       "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{(b) => {\n          const Composer = b().Composer\n          return (\n            <Composer\n              talk={b().talk}\n              space={b().mesh.status.space}\n              open={open()}\n              mesh={b().mesh}\n              state={composer()}\n              setState={setComposer}\n              // A dialog hands focus back to whatever held it when it opened, which is not the box\n              // when a palette command opens a second dialog, so the box takes it back itself.\n              focused={focus() === \"box\" && dialog.stack.length === 0}\n              toTree={() => setFocus(\"tree\")}\n              maxRows={dims().height >= 40 ? 6 : 3}\n            />\n          )\n        }}",
+      "class": "non-render/control",
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "space={b().mesh.status.space}",
+      "class": "non-render/control",
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{b().mesh.status.space}",
+      "class": "non-render/control",
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "mesh={b().mesh}",
+      "class": "non-render/control",
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{b().mesh}",
+      "class": "non-render/control",
+      "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "status-token",
+      "anchor": "   if (peer?.status === \"waiting\") return `answering ${pe",
+      "class": "non-render/control",
+      "rationale": "App input box line: picks the answering wording only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "derived-output",
+      "anchor": "`answering ${peer.card.name}${ends()}`",
+      "class": "honest-text",
+      "rationale": "App input box line: names the waiting agent the message answers; it makes no progress claim, and the agent's status shows only in the overview.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/compose.ts",
+      "kind": "status-token",
+      "anchor": " \"opening\") return note(\"waiting\", `still joining ${at.sp",
+      "class": "non-render/control",
+      "rationale": "App composer notice: the shared outcome words' waiting tone colours a notice; it is not an agent's presence."
+    },
+    {
+      "path": "implementations/tui/src/compose.ts",
+      "kind": "status-token",
+      "anchor": "}, notice: { key, tone: \"waiting\", lines: [`sending to ${",
+      "class": "non-render/control",
+      "rationale": "App composer notice: the shared outcome words' waiting tone colours a notice; it is not an agent's presence."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "derived-output",
+      "anchor": "conversationRecipient(props.open, props.mesh)",
+      "class": "non-render/control",
+      "rationale": "App composer: derives where the draft goes from the open conversation; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "derived-output",
+      "anchor": "peerOf(props.mesh, props.open.id)",
+      "class": "non-render/control",
+      "rationale": "App composer: looks up the open peer to tell whether it waits; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "derived-output",
+      "anchor": "{target()}",
+      "class": "honest-text",
+      "rationale": "App input box line: where the message goes, and for a waiting agent `answering <name>`; it makes no progress claim, and the agent's status shows only in the overview.",
+      "proof": {
+        "path": "implementations/tui/src/screen.ts",
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+      }
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "status-token",
+      "anchor": "osed?.clean === false ? \"waiting\" : \"ok\", lines: [closed ",
+      "class": "non-render/control",
+      "rationale": "App composer notice: the shared outcome words' waiting tone colours a notice; it is not an agent's presence."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "derived-output",
+      "anchor": "onSubmit={onSubmit}",
+      "class": "non-render/control",
+      "rationale": "App composer: wires Enter to the submit handler; nothing is rendered."
+    },
+    {
+      "path": "implementations/tui/src/composer.tsx",
+      "kind": "derived-output",
+      "anchor": "{onSubmit}",
+      "class": "non-render/control",
+      "rationale": "App composer: wires Enter to the submit handler; nothing is rendered."
+    },
+    {
+      "path": "implementations/tui/src/screen.ts",
+      "kind": "derived-output",
+      "anchor": "peerOf(mesh, open.id)",
+      "class": "non-render/control",
+      "rationale": "App recipient: the open peer's name for a direct message's label; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/talk.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "App outcome type: the shared outcome words' waiting tone; it is not an agent's presence."
+    },
+    {
+      "path": "implementations/tui/src/talk.ts",
+      "kind": "derived-output",
+      "anchor": "s.setStatus(command.status, command.activity)",
+      "class": "command-ack",
+      "rationale": "App /status: sets the human session's own presence as cotal chat's /status does; the outcome line acknowledges the command."
+    },
+    {
+      "path": "implementations/tui/src/talk.ts",
+      "kind": "derived-output",
+      "anchor": "return talk",
+      "class": "non-render/control",
+      "rationale": "App chat session: returns the session object, whose /status method sets presence; the return renders nothing."
     }
   ]
 }

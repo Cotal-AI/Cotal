@@ -18,8 +18,9 @@
  *
  * Run: pnpm smoke:claude-launch-env
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
 
 let pass = 0;
@@ -183,7 +184,20 @@ check(
 // a managed launch with its `cwd`; a foreground launch has none and keeps Claude's own mode.
 const permissionModes = (args: string[]): string[] =>
   args.flatMap((a, i) => (a === "--permission-mode" ? [args[i + 1] ?? ""] : []));
-const defaultArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-3", events: false, cwd: tmpdir() } as never).args;
+// A managed launch needs a declared cotal server: this project's .mcp.json names one, so the cells
+// below launch; a cwd without one, under a user config without one, refuses.
+const managedRoot = mkdtempSync(join(tmpdir(), "cotal-launch-env-"));
+const managedCwd = join(managedRoot, "project"); mkdirSync(managedCwd);
+writeFileSync(join(managedCwd, ".mcp.json"), JSON.stringify({ mcpServers: { cotal: { command: "node" } } }));
+const emptyProfile = join(managedRoot, "profile"); mkdirSync(emptyProfile);
+const bareCwd = join(managedRoot, "bare"); mkdirSync(bareCwd);
+const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+process.env.CLAUDE_CONFIG_DIR = emptyProfile;
+let refusal = "";
+try { claudeConnector.buildLaunch({ space: "smoke", name: "claude-7", events: false, cwd: bareCwd } as never); } catch (e) { refusal = (e as Error).message; }
+if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+check("a managed launch with no declared cotal server refuses and names the remedy", /server:cotal/.test(refusal) && /cotal setup/.test(refusal), refusal);
+const defaultArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-3", events: false, cwd: managedCwd } as never).args;
 check(
   "a managed launch with no permission option bypasses permission prompts",
   JSON.stringify(permissionModes(defaultArgs)) === JSON.stringify(["bypassPermissions"]),
@@ -199,7 +213,7 @@ const promptedArgs = claudeConnector.buildLaunch({
   space: "smoke",
   name: "claude-4",
   events: false,
-  cwd: tmpdir(),
+  cwd: managedCwd,
   launchOptions: { "permission-mode": "default" },
 } as never).args;
 check(
@@ -219,6 +233,7 @@ check(
   skippedArgs.filter((a) => a.includes("permission")),
 );
 
+rmSync(managedRoot, { recursive: true, force: true });
 if (fail) {
   console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
   process.exit(1);

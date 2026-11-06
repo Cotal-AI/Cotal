@@ -1,5 +1,41 @@
 # @cotal-ai/workspace
 
+## 0.146.0
+
+### Minor Changes
+
+- d312807: The shared listener proof type is `ListenerProof`, and its `target` is the store the attempt binds.
+- e3cfcdb: `cotal up` mints a read-only dashboard credential for a static space, its `web.creds`, and the `web` service preset uses it as the `--creds` default, so `cotal service start web` starts with no flags. `doctor auth` reports the file, and `clean` and a space reset remove it.
+
+### Patch Changes
+
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+  - @cotal-ai/core@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+
+## 0.145.0
+
+### Minor Changes
+
+- d7b0be0: Report a TCP listener that does not offer required TLS as `tls-unsupported`, rather than unreachable. Preserve the registration and show the transport mismatch in raw connection, registration and status diagnostics. Consumers of `ProbeResult` must handle the new failure reason.
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+
 ## 0.143.0
 
 ### Minor Changes

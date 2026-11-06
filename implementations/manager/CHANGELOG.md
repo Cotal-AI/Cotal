@@ -1,5 +1,51 @@
 # @cotal-ai/manager
 
+## 0.146.0
+
+### Minor Changes
+
+- d312807: The shared listener proof type is `ListenerProof`, and its `target` is the store the attempt binds.
+- 4536cfe: Automatic restarts now require proof that the previous seat's local work has ended.
+  
+  The built-in PTY runtime cannot prove detached tools have stopped, so it refuses explicit `supervise` requests before launch. Pi crash recovery and recovery of older supervised records also refuse without authoritative work closure. Ordinary launches remain supported. This is a breaking safety restriction; it does not kill surviving tools or cancel remote effects.
+  
+  Runtime adapters can declare `supportsWorkClosure` and provide each handle's `waitForWorkExit`. Recovery after a manager crash additionally needs a durable reference and `reapWork`. Missing, failed or timed-out proof never permits a replacement. Outstanding turns retain their existing deadline semantics rather than receiving a fabricated successful or cancelled result.
+
+### Patch Changes
+
+- Updated dependencies [d312807]
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+- Updated dependencies [e3cfcdb]
+  - @cotal-ai/workspace@0.146.0
+  - @cotal-ai/core@0.146.0
+  - @cotal-ai/seat@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+  - @cotal-ai/seat@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+  - @cotal-ai/seat@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+  - @cotal-ai/seat@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
 ## 0.143.0
 
 ### Patch Changes

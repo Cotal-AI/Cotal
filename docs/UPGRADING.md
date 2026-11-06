@@ -7,7 +7,7 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
-## Personas read `endpoints` after 0.143.0
+## Personas read `endpoints` after 0.146.0
 
 A persona file's `endpoints` key used to be an unmodeled list that loading ignored. It now names the
 endpoint commands the persona hands its agent, as a closed list of `{ endpoint, commands }` entries,
@@ -24,6 +24,37 @@ included.
   endpoint access. Rename the key.
 - A manifest whose persona lists `endpoints` is refused. Start that agent with
   `cotal spawn --detach` instead.
+
+## The web dashboard starts on the space's own credential
+
+`cotal up` on a static space now mints a read-only `observer` credential for the dashboard, the
+space's `web.creds`, and the `web` service preset uses it as its `--creds` default. `cotal service
+start web` works with no flags once the space holds it.
+
+### What changes for you
+
+- Run `cotal up` once on each existing space before `cotal service start web`; until then the start
+  refuses and names `--creds`, as before. The file is minted without an expiry and `cotal doctor auth`
+  reports it with the daemon credentials.
+- A saved `web` definition keeps the `--creds` file it was added with. Pass `--creds` to use a
+  credential you minted yourself.
+
+## Claude seats need the registered user-scope MCP entry
+
+Claude Code binds the wake channel of a session Cotal launches (`server:cotal`) only to a server
+its own configuration declares, the user config or the project's `.mcp.json`; the launch's
+`--mcp-config` entry alone does not count. A seat without it joins the mesh, reports idle and never
+answers a turn or a direct message. `cotal setup` and `cotal update` now register the plugin's
+server as the user-scope entry `cotal`, and a managed Claude launch without a declared `cotal`
+server is refused with a message naming `cotal setup`.
+
+### What changes for you
+
+- Run `cotal update` (or `cotal setup`) on every machine whose manager spawns Claude seats before
+  spawning one. Until then a spawn refuses rather than starting a seat that never wakes.
+- `cotal status` shows a `Claude wake channel` row with the entry's state.
+- A plain Claude Code session loads the entry and the installed plugin's server, which are the same
+  command and arguments, as one process.
 
 ## More streams take a history limit after 0.139.1
 
@@ -121,8 +152,8 @@ spawn: this spawn hands its helper more than the spawner holds: <parts>. A spawn
 The persona file, the channel overrides on the spawn request, and the default a channel-less persona
 takes from its spawner are all measured. The operator's own commands, such as `cotal spawn
 --detach`, call the manager with a one-shot instrument and are exempt. So are agents holding
-`capabilities: [admin]`, and anything the manager starts on its own behalf. After 0.143.0 the same
-refusal also covers a persona's endpoint commands ([above](#personas-read-endpoints-after-01430)).
+`capabilities: [admin]`, and anything the manager starts on its own behalf. After 0.146.0 the same
+refusal also covers a persona's endpoint commands ([above](#personas-read-endpoints-after-01460)).
 
 ### What changes for you
 

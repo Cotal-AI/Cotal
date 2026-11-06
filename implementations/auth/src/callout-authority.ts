@@ -145,6 +145,9 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
   return {
     resolveEndpointCaller: async (t) => {
       refuse();
+      // A chat session is not an actor grant, so no caller policy can name it: it is minted no
+      // endpoint capability, and the chat arm above is its connect authority.
+      if (chat.isChatPrincipal(t.owner, t.act.actor)) return { capabilities: [] };
       const grantee = { owner: t.owner, actor: t.act.actor, lifecycleUid: assertLifecycleToken(t.act.lifecycleUid ?? "", "caller lifecycleUid") };
       const effective = await effectiveEndpointCaller(registry, dataAccount.pub, dir, grantee);
       const checkCallerPayload = deps.checkCallerPayload;

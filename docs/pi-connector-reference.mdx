@@ -91,10 +91,13 @@ Pi session id. Only `session_shutdown { reason: "quit" }` stops the mesh.
 
 For managed PTY seats, `cotal spawn --harness pi --detach --resume <pi-session-id>` forks that transcript into
 a new meshed Pi session (`pi --fork`; the source is untouched). After readiness, the manager binds
-the exact current Pi session through the token-authenticated local control socket. An unexpected Pi
-process exit reopens that session with the same Cotal identity, lifecycle UID, credentials and durable
-inbox. Three restarts are allowed in a rolling two-minute window; a fourth is a crash loop and retires
-the seat loud. A deliberate stop/despawn/maintenance cut never restarts it.
+the exact current Pi session through the token-authenticated local control socket. Automatic recovery
+requires runtime proof that all prior local work ended, including tools in other sessions or process
+groups. The built-in PTY runtime has no such proof and retires a crashed seat without restarting it.
+A runtime that proves closure may reopen the same session and lifecycle, with three restarts in a
+rolling two-minute window. Missing, failed or timed-out proof refuses recovery. Surviving tools and
+remote effects remain unknown; retirement does not cancel those effects. A deliberate stop, despawn
+or maintenance cut never restarts the seat.
 
 A manifest agent declared `continuity: exact` is reopened with `pi --session <id>`, which
 fails when Pi no longer has that session instead of creating an empty one under the same id.

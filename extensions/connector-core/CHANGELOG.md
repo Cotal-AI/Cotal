@@ -1,5 +1,25 @@
 # @cotal-ai/connector-core
 
+## 0.146.0
+
+### Minor Changes
+
+- 6cd9b65: `cotal who` and `cotal_roster` mark a shared name by the same rule a direct message uses, so a session's own row and a lone offline participant no longer carry an instance id.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+No changes in this release.
+
+## 0.144.0
+
+### Minor Changes
+
+- f792696: Refuse MCP environment references to reserved per-seat COTAL names before launch, preventing a spawned agent from inheriting its parent's role or model. Keep non-COTAL references and machine-wide operator variables available.
+
 ## 0.143.0
 
 No changes in this release.

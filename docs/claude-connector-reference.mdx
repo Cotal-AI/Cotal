@@ -30,6 +30,16 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 # env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_CHANNEL=1, plus claude's documented auth vars
 ```
 
+- **Wake channel.** Claude Code binds the `server:cotal` channel only to a server its own
+  configuration declares, the user config or the project's `.mcp.json`; the `--mcp-config` entry
+  alone does not count. `cotal setup` and `cotal update` register the plugin's server as the
+  user-scope entry `cotal`, the same command and arguments as the plugin's own server, so a plain
+  session runs one process and a managed launch's same-named entry replaces it. A carried seat's
+  private home declares it itself. A managed launch whose user config and project `.mcp.json`
+  declare no `cotal` server is refused with a message naming `cotal setup`, because a seat whose
+  channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
+  `cotal status` reports the entry under `Claude wake channel`.
+
 - **Tool permissions.** A managed seat has no human at its terminal, so it launches with
   `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
   tool call until someone answered it, and nobody can. To get prompts back, pass
@@ -875,8 +885,11 @@ Carried sessions also stay strict and keep their seat-private home; operator pro
 connected-account credentials are not copied into them. Native managed policy still applies.
 
 The child environment stays allowlisted. References in declared shared servers and the selected
-user-owned MCP configuration forward their named variables. Repository and plugin files cannot
-add ambient secret names merely by referencing them; supply such names through an explicit
+user-owned MCP configuration forward their named variables. References to per-seat `COTAL_` names,
+such as `COTAL_ROLE` and `COTAL_MODEL`, are refused before launch. The check is case-insensitive;
+machine-wide names such as `COTAL_HOME` remain allowed. Use a non-`COTAL_` name for a server input.
+Repository and plugin files cannot add ambient secret names merely by referencing them; supply
+such names through an explicit
 shared declaration or the existing `spawn.env` policy. Native files retain their own configured
 values. Documented native MCP switches, including the connected-account opt-out and tool-search
 choice, keep their explicit values. Cotal does not forward the entire parent environment or force

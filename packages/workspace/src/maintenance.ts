@@ -395,11 +395,13 @@ export interface MaintenanceResumeDescriptor {
   readonly sha256: string;
 }
 
-/** Bounded, non-secret identity of the normal listener spawned for one restore attempt. The
- *  controller variant (`kind: "controller"`) additionally binds the exact service-controller broker
- *  instance, launch request and creation-pinned process; its `processOwner` is still required. A
- *  legacy proof has no `kind`, and the two variants never compare equal. */
-export interface RestoreListenerProof {
+/** Bounded, non-secret identity of the normal listener spawned for one attempt. `target` is the
+ *  store that attempt binds: the restore target for a restore, and the preserved source for an
+ *  ordinary resume. The controller variant (`kind: "controller"`) additionally binds the exact
+ *  service-controller broker instance, launch request and creation-pinned process; its
+ *  `processOwner` is still required. A legacy proof has no `kind`, and the two variants never
+ *  compare equal. */
+export interface ListenerProof {
   readonly kind?: "controller";
   readonly attemptId: string;
   readonly serverName: string;
@@ -420,7 +422,7 @@ export interface ControllerListenerInstance {
 export interface RestoreListenerReplacement {
   readonly generation: number;
   readonly replacedAt: string;
-  readonly proof: RestoreListenerProof;
+  readonly proof: ListenerProof;
 }
 
 export interface ReplaceDeadRestoreListenerOptions {
@@ -451,7 +453,7 @@ export interface CommitIntentRecord extends CompletedJournalBase {
   readonly state: "commit-intent";
   readonly restore: RestoreContext & { readonly target: StoreIdentity };
   readonly launch: { readonly [key: string]: JsonValue };
-  readonly listenerProof?: RestoreListenerProof;
+  readonly listenerProof?: ListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
   /** Set only after manager commitment; carried unchanged here. */
   readonly tokenHandoff?: TokenHandoff;
@@ -461,7 +463,7 @@ export interface RestoreManagerCommittedRecord extends CompletedJournalBase {
   readonly state: "manager-committed";
   readonly restore: RestoreContext & { readonly target: StoreIdentity };
   readonly launch: { readonly [key: string]: JsonValue };
-  readonly listenerProof: RestoreListenerProof;
+  readonly listenerProof: ListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
   readonly tokenHandoff?: TokenHandoff;
   readonly managerCommittedAt: string;
@@ -472,7 +474,7 @@ export interface RestoreActiveRecord extends CompletedJournalBase {
   readonly state: "active";
   readonly restore: RestoreContext & { readonly target: StoreIdentity };
   readonly launch: { readonly [key: string]: JsonValue };
-  readonly listenerProof?: RestoreListenerProof;
+  readonly listenerProof?: ListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
   readonly tokenHandoff?: TokenHandoff;
   readonly managerCommittedAt: string;
@@ -485,7 +487,7 @@ export interface RestoreDegradedRecord extends CompletedJournalBase {
   readonly state: "degraded";
   readonly restore: RestoreContext & { readonly target: StoreIdentity };
   readonly launch: { readonly [key: string]: JsonValue };
-  readonly listenerProof?: RestoreListenerProof;
+  readonly listenerProof?: ListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
   readonly tokenHandoff?: TokenHandoff;
   /** Present when degradation followed manager commitment, including after finalization. */
@@ -518,7 +520,7 @@ export interface OrdinaryResumeActivationEvidence {
 /** Exact bound listener identity + retired-listener history shared by every resume phase. The
  *  proof's `target` is the preserved SOURCE store identity for an ordinary resume. */
 interface OrdinaryResumeListenerState {
-  readonly listenerProof?: RestoreListenerProof;
+  readonly listenerProof?: ListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
   /** The commit-token handoff file for a manager-committed attempt, in any custody. */
   readonly tokenHandoff?: TokenHandoff;
@@ -1171,8 +1173,8 @@ function validControllerListenerInstance(value: unknown, owner: ProcessOwner): v
     owner.pid === pinned.pid && owner.id === `controller-broker-${instance.launchRequestId}`);
 }
 
-function validListenerProof(value: unknown): value is RestoreListenerProof {
-  const proof = value as RestoreListenerProof;
+function validListenerProof(value: unknown): value is ListenerProof {
+  const proof = value as ListenerProof;
   const controller = Boolean(proof && typeof proof === "object" && (proof as { kind?: unknown }).kind !== undefined);
   return Boolean(proof && typeof proof === "object" &&
     (controller
@@ -1485,7 +1487,7 @@ function restoreProofScope(record: { readonly restore: RestoreContext; readonly 
  *  request. An attempt broker of a resume must be that exact pair too. The caller still checks
  *  that the instance record is running at that launch request with that process. */
 function controllerProofFits(
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   cut: ControllerCutBinding,
   scope: ControllerProofScope,
 ): boolean {
@@ -1504,7 +1506,7 @@ function controllerProofFits(
 
 /** The proof variant follows the cut's custody, and a controller proof fits its scope. */
 function listenerProofFitsCustody(
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   cut: MaintenanceCutContext,
   scope: ControllerProofScope | undefined,
 ): boolean {
@@ -1537,7 +1539,7 @@ function validCutCompletionEvidence(
     evidence.listener.endpoint === cut.launch.server && evidence.listener.unreachable === true);
 }
 
-function normalizedListenerProof(value: RestoreListenerProof): RestoreListenerProof {
+function normalizedListenerProof(value: ListenerProof): ListenerProof {
   if (!validListenerProof(value))
     maintenanceError("listener-proof-invalid", "restore listener proof is invalid, non-canonical, or oversized");
   return {
@@ -1577,7 +1579,7 @@ function sameProcessOwner(a: ProcessOwner, b: ProcessOwner): boolean {
  *  live check that the named instance is running at that launch request with that process. A
  *  controller proof without that check refuses. */
 function requireCustodyProof(
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   cut: MaintenanceCutContext,
   scope: ControllerProofScope | undefined,
   running: ((instance: ControllerListenerInstance) => boolean) | undefined,
@@ -1592,7 +1594,7 @@ function requireCustodyProof(
     maintenanceError("listener-proof-mismatch", "the controller listener's broker instance is not proven running at that launch request and process", { root, attemptId });
 }
 
-function sameListenerProof(a: RestoreListenerProof, b: RestoreListenerProof): boolean {
+function sameListenerProof(a: ListenerProof, b: ListenerProof): boolean {
   return a.kind === b.kind && a.attemptId === b.attemptId && a.serverName === b.serverName &&
     a.serverNonce === b.serverNonce && sameProcessOwner(a.processOwner, b.processOwner) &&
     a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target) &&
@@ -1601,7 +1603,7 @@ function sameListenerProof(a: RestoreListenerProof, b: RestoreListenerProof): bo
       a.instance.process.pid === b.instance.process.pid && a.instance.process.token === b.instance.process.token));
 }
 
-function reusesListenerIdentity(a: RestoreListenerProof, b: RestoreListenerProof): boolean {
+function reusesListenerIdentity(a: ListenerProof, b: ListenerProof): boolean {
   return a.serverName === b.serverName || a.serverNonce === b.serverNonce ||
     sameProcessOwner(a.processOwner, b.processOwner) ||
     Boolean(a.instance && b.instance && a.instance.launchRequestId === b.instance.launchRequestId);
@@ -1623,7 +1625,7 @@ function validListenerReplacements(value: unknown): value is readonly RestoreLis
   return Buffer.byteLength(JSON.stringify(replacements)) <= 512 * 1024;
 }
 
-function assertListenerOwnerAlive(proof: RestoreListenerProof): void {
+function assertListenerOwnerAlive(proof: ListenerProof): void {
   const status = localProcessOwnerStatus(proof.processOwner);
   if (status === "unknown")
     maintenanceError("listener-owner-ambiguous", "restore listener process ownership cannot be proven locally", {
@@ -2761,7 +2763,7 @@ export function beginOrdinaryResume(
 }
 
 function ordinaryListenerState(record: OrdinaryResumeRecord): {
-  listenerProof?: RestoreListenerProof;
+  listenerProof?: ListenerProof;
   listenerReplacements?: readonly RestoreListenerReplacement[];
   tokenHandoff?: TokenHandoff;
 } {
@@ -3031,7 +3033,7 @@ function requireSettledTokenHandoff(record: { readonly tokenHandoff?: TokenHando
  *  proof's target is the preserved SOURCE store. */
 export function bindOrdinaryResumeListener(
   lock: MaintenanceLock,
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   options: { readonly controllerInstanceRunning?: (instance: ControllerListenerInstance) => boolean } = {},
 ): OrdinaryResumeIntentRecord | OrdinaryResumeDegradedRecord {
   const record = currentJournal(lock);
@@ -3089,7 +3091,7 @@ export function bindOrdinaryResumeListener(
  *  manager-committed resume never replaces its listener: the durable token is bound to it. */
 export function replaceDeadOrdinaryResumeListener(
   lock: MaintenanceLock,
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   options: ReplaceDeadRestoreListenerOptions = {},
 ): OrdinaryResumeIntentRecord | OrdinaryResumeActiveRecord | OrdinaryResumeDegradedRecord {
   const record = currentJournal(lock);
@@ -3580,7 +3582,7 @@ export function writeRestoreCommitIntent(
 /** Fsync the exact normal listener identity after spawn and before activation is published. */
 export function bindRestoreListener(
   lock: MaintenanceLock,
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   options: { readonly controllerInstanceRunning?: (instance: ControllerListenerInstance) => boolean } = {},
 ): CommitIntentRecord {
   const record = currentJournal(lock);
@@ -3629,7 +3631,7 @@ export function bindRestoreListener(
  */
 export function replaceDeadRestoreListener(
   lock: MaintenanceLock,
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   options: ReplaceDeadRestoreListenerOptions = {},
 ): CommitIntentRecord {
   const record = currentJournal(lock);
@@ -3680,7 +3682,7 @@ export function replaceDeadRestoreListener(
 /** Fsync the manager's suppression-retaining commit token before requesting finalization. */
 export function recordRestoreManagerCommit(
   lock: MaintenanceLock,
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   evidence: ManagerCommitEvidence,
 ): RestoreManagerCommittedRecord {
   const record = currentJournal(lock);
@@ -3733,7 +3735,7 @@ export function recordRestoreManagerCommit(
 
 export function markRestoreActive(
   lock: MaintenanceLock,
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   evidence: ManagerFinalizeEvidence,
 ): RestoreActiveRecord {
   const record = currentJournal(lock);
@@ -3817,7 +3819,7 @@ export function markRestoreDegraded(
 /** Recover forward only by re-presenting the exact bound listener plus fresh readiness evidence. */
 export function repairRestoreDegradedToActive(
   lock: MaintenanceLock,
-  proof: RestoreListenerProof,
+  proof: ListenerProof,
   evidence: ManagerFinalizeEvidence,
 ): RestoreActiveRecord {
   const record = currentJournal(lock);

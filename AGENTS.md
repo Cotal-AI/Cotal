@@ -148,7 +148,8 @@ Herdr session (they survive the manager's terminal going away).
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
 time) and self-registers its command.
 - `**@cotal-ai/tui**` (`implementations/tui`): the terminal app, one full-screen workspace that
-lists this machine's spaces and opens one read-only. Built on OpenCode's Solid and OpenTUI
+lists this machine's spaces and opens one, which the human watches unseen and writes to through a
+chat session opened on the first write. Built on OpenCode's Solid and OpenTUI
 components, vendored under `vendor/opencode/` and held to their recorded hashes by
 `scripts/check-vendor.mjs`. Private, needs Node 26.4 or newer, and depends on core and workspace.
 The `cotal` binary does not start it yet.

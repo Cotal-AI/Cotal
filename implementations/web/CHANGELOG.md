@@ -1,5 +1,23 @@
 # @cotal-ai/web
 
+## 0.146.0
+
+### Minor Changes
+
+- e3cfcdb: `cotal up` mints a read-only dashboard credential for a static space, its `web.creds`, and the `web` service preset uses it as the `--creds` default, so `cotal service start web` starts with no flags. `doctor auth` reports the file, and `clean` and a space reset remove it.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+No changes in this release.
+
+## 0.144.0
+
+No changes in this release.
+
 ## 0.143.0
 
 No changes in this release.

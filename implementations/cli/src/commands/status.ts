@@ -1769,6 +1769,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
     "slow-link": "connection timed out",
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
+    "tls-unsupported": "listener does not offer required TLS",
     "stale-auth": "credentials need renewal",
     "auth-required": "authentication required",
     "open-wants-auth": "authentication required",

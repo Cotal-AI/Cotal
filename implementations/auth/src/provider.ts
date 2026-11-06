@@ -621,7 +621,7 @@ export const cotalAuthProvider: AuthProvider = {
     const idpUrl = idp ? idp.url : ua!.idp.url;
     const session = loadIdpSession(homeCotalDir(), idpUrl);
     if (!session?.sub) return { idpUrl };
-    const login = { sub: session.sub, expiresAt: session.expiresAt };
+    const login = { sub: session.sub, expiresAt: session.expiresAt, ...(session.name ? { name: session.name } : {}) };
     if (!idp) return { idpUrl, login };
     const secret = await loadOwnerSecret(store, space);
     if (!secret) return { idpUrl, login };
