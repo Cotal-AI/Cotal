@@ -400,8 +400,11 @@ export async function readinessAddressSurvivors(space: string, names?: readonly 
   return warnings;
 }
 
-export async function serviceReadiness(row: ServiceInstanceSnapshot, definition: ServiceDefinitionInput, adapter?: { provider: LoadedServiceAdapter; context: ServiceAdapterContext }): Promise<ServiceInstanceSnapshot> {
+export async function serviceReadiness(row: ServiceInstanceSnapshot, definition: ServiceDefinitionInput, adapter?: { provider: LoadedServiceAdapter; context: ServiceAdapterContext }, foreground = false): Promise<ServiceInstanceSnapshot> {
   const deadline = Date.now() + definition.readiness.timeoutMs;
+  // A foreground native child can still be registering after the background observation window.
+  // Keep its controller alive while the adapter reports pending; each observation stays bounded.
+  const awaitNativeChild = foreground && definition.readiness.type === "adapter";
   // The last HTTP readiness observation, named when the deadline passes first: the status the
   // service answered with, or what a failed request saw.
   let seen: { status: number } | { failure: string } | undefined;
@@ -415,7 +418,7 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
       const began = Date.now();
       let observation;
       try {
-        observation = serviceAdapterReadiness(await adapterCall((signal) => adapter.provider.readiness({ ...adapter.context, process: { ...row.record.value.process! }, signal }), deadline - Date.now()));
+        observation = serviceAdapterReadiness(await adapterCall((signal) => adapter.provider.readiness({ ...adapter.context, process: { ...row.record.value.process! }, signal }), awaitNativeChild ? definition.readiness.timeoutMs : deadline - Date.now()));
         if (observation.state === "ready") {
           const process = row.record.value.process, observedAt = Date.parse(observation.observedAt);
           if (observation.process.pid !== process.pid || observation.process.token !== process.token || observedAt < began - 1000 || observedAt > Date.now() + 1000 || (adapter.provider.declaration.readiness === "endpoint") !== (observation.native !== undefined) || (adapter.provider.declaration.readiness === "listener") !== (observation.listener !== undefined)) throw new Error("unattributed adapter observation");
@@ -426,7 +429,7 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
         const uncertain = transition(row, { state: "unknown", readiness: "not-checked" });
         throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter did not establish current readiness for the owned process before its deadline, or returned mismatched evidence; no hook or launch was retried", { target: instanceProjection(uncertain), remedy: "inspect the original full instance and its launch request before another start" });
       }
-      await delay(Math.min(100, Math.max(0, deadline - Date.now())));
+      await delay(awaitNativeChild ? 100 : Math.min(100, Math.max(0, deadline - Date.now())));
       continue;
     }
     try {
@@ -439,7 +442,7 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
       seen = { failure: httpReadinessFailure(error) };
     }
     await delay(Math.min(100, Math.max(0, deadline - Date.now())));
-  } while (Date.now() < deadline);
+  } while (awaitNativeChild || Date.now() < deadline);
   const uncertain = transition(row, { state: "unknown", readiness: "not-checked" });
   if (definition.readiness.type === "http") {
     // The address alone is named: a definition's URL is kept out of reports, and its path may carry a token.
@@ -705,7 +708,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     // and that exit is then settled below with the code this parent observed.
     if (value.readiness.type === "process") await Promise.race([exit, delay(Math.min(PROCESS_SETTLE_MS, value.readiness.timeoutMs))]);
     let running: ServiceInstanceSnapshot;
-    try { running = await serviceReadiness(row, value, adapter); }
+    try { running = await serviceReadiness(row, value, adapter, options.foreground === true); }
     catch (error) {
       // Only an exit of the pinned child itself is settled here, with the exit this parent observed.
       if (!isCommandFailure(error) || error.code !== "OPERATION_FAILED" || observeServiceProcess(row.record.value) === "running") throw error;

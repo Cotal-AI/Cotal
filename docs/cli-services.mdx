@@ -136,6 +136,11 @@ loopback health URL answers 200:
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
 
+For a foreground adapter service, `timeoutMs` bounds each readiness observation. While the adapter
+reports pending, the controller stays with its owned child, including a manager still registering.
+It reports readiness only after a valid adapter observation. A timed-out observation or invalid
+evidence still returns an unknown outcome; background starts and HTTP readiness retain their overall deadline.
+
 A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `add` checks whether
 the selected space already has a service of that name. No other field is accepted. `add` saves the
 definition with the space's root, which `show` lists as `Added in`; a file that sets `root` itself
