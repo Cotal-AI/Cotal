@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.147.6
+
+### Patch Changes
+
+- ea56030: Keep a foreground native service attached to its owned child while startup readiness remains pending, so a manager still registering does not lose its controller at the background observation deadline. Individual readiness calls remain bounded, and background and HTTP deadlines are unchanged.
+- @cotal-ai/core@0.147.6
+  - @cotal-ai/workspace@0.147.6
+
 ## 0.147.5
 
 ### Patch Changes
