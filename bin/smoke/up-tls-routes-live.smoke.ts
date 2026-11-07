@@ -43,7 +43,7 @@
  * follow `findCotalRoot` from cwd. A probe that sets only `COTAL_HOME` and runs `cotal up` from a
  * tree whose walked root is the operator home can still write live operator config — do not copy
  * that pattern. Every broker started here is reaped in the `finally`.
- * Needs `nats-server` and `openssl` on PATH. Run: pnpm smoke:up-tls:live  (BUILD FIRST — the CLI
+ * Needs `nats-server` and `openssl` on PATH. Run: pnpm smoke:up-tls-routes  (BUILD FIRST — the CLI
  * subprocess runs built dist, so an unbuilt edit to `packages/core` is invisible to it.)
  */
 import { strict as assert } from "node:assert";
