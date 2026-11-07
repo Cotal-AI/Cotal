@@ -95,7 +95,9 @@ login. The name at the bottom of the left column is dim until then and gold afte
   The other `cotal chat` commands are refused with a line that says where they run.
 - `ctrl+p`, Change your name, saves the `name` preference for every chat session on this machine.
   An open session keeps its name until it ends. When another participant already holds your name,
-  a warning says so.
+  a warning says so. The name at the bottom of the tree is the one your next session joins under.
+  The app reads it when the space opens, when a session ends and when you change it here, so a
+  name saved with `cotal config set name` shows from the next of those.
 - `ctrl+p`, End your chat session, does what `/quit` does.
 
 On a static-auth space the space's manager admits the session, as it admits a `cotal chat`

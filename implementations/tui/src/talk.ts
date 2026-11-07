@@ -35,7 +35,9 @@ export type TalkPhase =
   | { phase: "ended"; name: string; at: number; why: string }
   | { phase: "refused"; message: string; remedy?: string }
 
-/** The name the next session appears as, resolved when the space opens and again at each open. */
+/** The name the next session joins under: resolved when the space opens, when a session ends and on
+ *  Change your name, and at an open only when there is none to show, so a session joins under the
+ *  name the app showed. */
 export type NameState = { state: "resolving" } | { state: "ok"; name: ChatName } | { state: "refused"; message: string; remedy?: string }
 
 /** The human as a sender: the principals of the chat sessions this app run opened, in any space, and
@@ -163,6 +165,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
     const expired = id.expiresAt !== undefined && Date.now() >= id.expiresAt
     const why = ending ? "you ended it" : reason ? oneLine(reason) : expired ? (id.mode === "static" ? "static sessions last 15 minutes" : "user sessions last 8 hours") : "the session ended"
     setPhase({ phase: "ended", name: id.label, at: Date.now(), why })
+    void resolveName()
   }
 
   // The open session's name, else the name the next one would take.
@@ -181,7 +184,8 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       const p = phase().phase
       if (closing || p === "opening" || p === "open") return
       setPhase({ phase: "opening", name: current() ?? "" })
-      const found = await resolveName()
+      const shown = name()
+      const found = shown.state === "ok" ? shown.name : await resolveName()
       if (shut) return
       const n = name()
       if (!found) return void setPhase({ phase: "refused", message: `no name to join with: ${n.state === "refused" ? n.message : "unresolved"}`, ...(n.state === "refused" && n.remedy ? { remedy: n.remedy } : {}) })
