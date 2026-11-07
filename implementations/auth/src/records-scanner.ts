@@ -225,6 +225,8 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     const out: GoalIndexEntry[] = [];
     for (const [subject, row] of latest) {
       const key = subject.slice(keyPrefixLen);
+      // clearGoalIndex deletes settled or withdrawn entries; only live goals need reconciliation.
+      if (row.op === "DEL") continue;
       if (row.op !== undefined)
         throw new EpEnvelopeError("failed-precondition", `manager goal-index entry ${key} carries a ${row.op} marker; a deletion is never a live index row`);
       let raw: unknown;

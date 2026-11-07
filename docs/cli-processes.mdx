@@ -76,6 +76,10 @@ inventories are not readable from the serve credential. See [control surface](co
 The manager prints what its boot inventory found once it is up, so a start that is refused prints
 no boot line.
 
+A remote manager's boot goal-index scan skips entries deleted after settlement or withdrawal and
+returns the remaining live entries for its owner. Purged entries and malformed live rows still
+refuse the scan; an ordinary terminal deletion does not prevent predecessor reconciliation.
+
 
 ### Control-only execution
 
