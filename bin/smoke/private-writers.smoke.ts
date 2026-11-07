@@ -189,12 +189,16 @@ try {
     const home = dir("claude-home");
     const transcript = join(root, "transcript.jsonl");
     writeFileSync(transcript, "{}\n");
-    const linked = planted(join(home, ".claude.json"), () => placeCarried(home, transcript, undefined, root));
+    // Serialized into the carried home only; this suite does not launch an MCP server.
+    const server = { command: process.execPath, args: ["--version"] };
+    const linked = planted(join(home, ".claude.json"), () => placeCarried(home, transcript, undefined, root, server));
     check("the carried seat home's state refuses a symlink with EPERM", linked.code === "EPERM", linked);
     check("...and the link's target keeps its bytes and mode", linked.intact);
-    const project = placeCarried(home, transcript, undefined, root).CLAUDE_CODE_PROJECT_DIR_NAME!;
+    const project = placeCarried(home, transcript, undefined, root, server).CLAUDE_CODE_PROJECT_DIR_NAME!;
+    const state = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")) as { mcpServers?: { cotal?: typeof server } };
+    check("the carried home records its supplied MCP server", JSON.stringify(state.mcpServers?.cotal) === JSON.stringify(server));
     const copied = join(home, "projects", project, "resume-1.jsonl");
-    const linked2 = planted(copied, () => placeCarried(home, transcript, "resume-1", root));
+    const linked2 = planted(copied, () => placeCarried(home, transcript, "resume-1", root, server));
     check("the carried transcript copy refuses an existing name (a link included) with EEXIST", linked2.code === "EEXIST", linked2);
     check("...and the link's target keeps its bytes and mode", linked2.intact);
 
