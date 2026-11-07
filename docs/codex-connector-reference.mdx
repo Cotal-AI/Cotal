@@ -10,7 +10,7 @@ The `codex` connector runs a host process that owns one mesh endpoint and drives
 
 ## Tool connection
 
-Codex has no in-process plugin runtime and its MCP client cannot wake an idle session, so the
+Codex's MCP client cannot wake an idle session, so the managed
 connector runs Codex's own client/server split: a small **host process** embeds the mesh
 endpoint and drives a `codex app-server` thread over JSON-RPC (the same protocol the Codex TUI
 runs on). The app-server runs as an authenticated loopback **listener** rather than a private
@@ -185,7 +185,9 @@ and how to read it. The launcher sets `COTAL_EVENTS` by default; pass `--no-even
 unrestricted space. A registration that requires events refuses `--no-events`, and its launch
 always carries the flag and the workspace root the event log lives under. A hand-driven user-mode
 launch with `COTAL_EVENTS_REQUIRED=1` arms the plane without that flag.
-Your own `codex` publishes nothing unless its environment arms the plane.
+Your own `codex` publishes nothing unless its environment arms the plane or the Cotal plugin connects
+it. A plugin connection publishes its own activity from the moment you approve it; see
+[your own Codex conversations](connect-codex.mdx#personal).
 
 ```bash
 cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`

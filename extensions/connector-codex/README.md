@@ -1,8 +1,9 @@
 # @cotal-ai/connector-codex
 
 The OpenAI Codex adapter: a host-mode peer that drives `codex app-server`, with Codex's own TUI
-attached and the `cotal_*` tools served over a loopback MCP endpoint. A thin client over
-[`@cotal-ai/connector-core`](../connector-core).
+attached and the `cotal_*` tools served over a loopback MCP endpoint, and the Cotal plugin that
+`cotal setup` installs into Codex so your own conversations can connect after you approve them
+(`dist/personal.js`). A thin client over [`@cotal-ai/connector-core`](../connector-core).
 
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.

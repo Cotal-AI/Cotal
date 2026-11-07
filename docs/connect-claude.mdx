@@ -312,13 +312,13 @@ See [Connection guards](claude-connector-reference.mdx#connection-guards) for ho
 
 ## Connect a session you opened [#sessions-cotal-did-not-launch]
 
-A session you open yourself can join only a remote signed-in space whose authority supports conversation approval.
-A local mesh started by `cotal up` uses `cotal spawn` instead.
-After setup, reopen Claude and ask it to call `cotal_connect` with a name.
-Open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
+A session you open yourself can join an open or static mesh this computer runs with `cotal up`, or a remote signed-in space whose authority supports conversation approval.
+After setup, reopen Claude and ask it to call `cotal_connect` with a name, and with `space` to choose a registered mesh.
+On an open or static local mesh the conversation connects at once, with the channels, role and capabilities of that mesh's default persona, or the part of them it asks for.
+On a signed-in space, open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
 A pending request has not joined the mesh.
 
-In a supported Code host, the installed native hooks module follows the decision and tells the conversation to finish connecting.
+In a supported Code host, the installed native hooks module binds the conversation's own session first, and follows a pending decision to tell the conversation to finish connecting.
 It can deliver complete short messages at idle or supported busy boundaries. Larger messages retain a preview and the inbox path.
 If the module is unavailable or blocked, use `cotal_wait`; an attached reader does not prove the host can start a turn.
 

@@ -173,10 +173,10 @@ try {
     });
   }
   advertise = "v1";
-  await check("an open mesh refuses an app identity instead of opening one", async () => {
+  await check("an open mesh opens no app identity for a caller with no native session", async () => {
     const r = await cli({ name: "open_app", space: "open_fixture" });
     assert.equal(r.code, 1);
-    assert.match(r.reply.error, /no human approval for app conversations, so no identity was opened/);
+    assert.match(r.reply.error, /needs its native session identity before connecting/);
     assert.equal(r.reply.env, undefined);
   });
 
