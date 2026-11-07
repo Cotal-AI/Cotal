@@ -105,8 +105,9 @@ Retained channel history and durable channel delivery use JetStream too, with di
 
 A stored sequence proves that the broker accepted the publication.
 It does not prove that a recipient read it or completed the work.
-`cotal_dm` reports both the stored sequence and the recipient's roster status at send time.
-That status can change immediately after publication.
+The [CLI send receipt](cli-messaging.mdx#send) includes that sequence.
+`cotal_dm` names the recipient and warns when the recipient is offline or has no roster row.
+Its success text does not show the stored sequence or confirm delivery or wakeup.
 The [send receipt reference](connector-runtime-reference.mdx#send-receipts) describes offline and unrostered recipients.
 
 A DM durable belongs to the recipient's lifecycle.

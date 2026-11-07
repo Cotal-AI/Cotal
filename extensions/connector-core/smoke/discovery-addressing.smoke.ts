@@ -42,7 +42,7 @@ const space = "discoverysmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const srv = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 
 let pass = 0;
@@ -191,6 +191,15 @@ try {
     "the next holder of that role receives the queued request",
     await until(() => reviewer.agent.inboxSnapshot(8).items.some((i) => i.kind === "anycast" && i.text === "queued for a reviewer"), 10000),
     texts(reviewer),
+  );
+
+  const messageFlow = await run(me, "cotal_docs", { page: "presence-and-delivery" });
+  check("the message-flow page is served through cotal_docs", !messageFlow.isError && messageFlow.text.includes("`cotal_dm`"), messageFlow.text);
+  check(
+    "message-flow docs do not promise fields absent from the live DM result",
+    !messageFlow.text.includes("`cotal_dm` reports both the stored sequence and the recipient's roster status at send time.") ||
+      (/\bseq(?:uence)?\b[^\n]*\d/i.test(full.text) && /\b(idle|working|waiting|offline)\b/.test(full.text)),
+    full.text,
   );
 
   console.log(`\nDISCOVERY AND ADDRESSING TESTS PASSED ✅  (${pass} checks)`);
