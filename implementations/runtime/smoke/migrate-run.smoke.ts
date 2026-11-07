@@ -215,7 +215,10 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   // migration is filed, and refuses when it has nothing to tear it down with: a record that said
   // "released" over a seat nothing released would be the fake success this row exists to refuse.
   const torn: string[] = [];
-  const discharger = { discharge: async (es: readonly JournalEntry[]) => { for (const e of es) torn.push((e.result as { agent: string }).agent); } };
+  const discharger = {
+    discharge: async (es: readonly JournalEntry[]) => { for (const e of es) torn.push((e.result as { agent: string }).agent); },
+    endPause: async () => { /* this cell releases a settled spawn, which armed no pause */ },
+  };
   const committed = await commitMigration(kv, EP, released, "driver-r", { entries, handler: discharger });
   c("committing a --release migration despawns exactly the named seat through the run's discharge",
     torn.length === 1 && torn[0] === handle && committed.released.includes(handle), { torn, released: committed.released });
