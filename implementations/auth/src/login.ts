@@ -35,7 +35,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
-import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
+import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
@@ -513,8 +513,7 @@ function catalogUrlFromLink(idpUrl: string, link: string | null): string | undef
     } catch {
       return undefined;
     }
-    const loopback = url.protocol === "http:" && isLoopbackLiteral(url.hostname);
-    if (url.origin !== origin || (url.protocol !== "https:" && !loopback) || url.username || url.password)
+    if (url.origin !== origin || !isCredentialTransportUrl(url) || url.username || url.password)
       return undefined;
     return url.toString();
   }
