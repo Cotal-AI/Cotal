@@ -121,6 +121,7 @@ An unknown name after a successful read receives the ordinary unknown-peer refus
 A stored sequence proves broker acceptance, without confirming receipt or completed work.
 `cotal_dm` names the recipient, says other agents can't read the DM, and points what others could use at the task's channel.
 It reads the recipient's roster status immediately before publication.
+It uses that observation for offline and unrostered warnings; the success text does not include the stored sequence or a full roster-status report.
 When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
 The same lifecycle receives it after reconnect. A new spawn under the same name does not inherit that inbox.
 Retention and the lifecycle interval still bound delivery.
