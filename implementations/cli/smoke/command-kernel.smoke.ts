@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -14,7 +14,7 @@ import "../src/index.js"; // self-register the CLI commands (for the completion 
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
-import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -60,6 +60,7 @@ function updateRuntime(opts: {
     },
     selfArgv: () => ["/node", "/old/cotal.js"],
     checkout: () => opts.checkout ?? false,
+    installPrefix: () => undefined,
     npm: (args, inherit) => {
       events.push(`npm:${args.join(" ")}${inherit ? ":inherit" : ""}`);
       const r = opts.npm?.(args, inherit) ?? { status: 0, stdout: '"0.13.1"' };
@@ -1673,6 +1674,71 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   const streaming = renderReport(managedLaunchView({ ...result, acl: null, detached: false }), "plain");
   assert.match(streaming, /View:\s+attaching to the allocated incarnation\n/, "a streaming runtime still attaches in this terminal");
   assert.match(renderReport(managedLaunchView({ ...result, acl: null, streamsTerminal: null }), "plain"), /Runtime:\s+pty\n/, "a manager too old to report it is shown as before");
+}
+
+// Installed POSIX packages identify their prefix through the real package and global bin link.
+if (process.platform !== "win32") {
+  const temp = mkdtempSync(join(tmpdir(), "cotal-update-prefix-"));
+  const prefix = join(temp, "install with spaces");
+  const modules = join(prefix, "lib", "node_modules");
+  const pkg = join(modules, "cotal-ai");
+  const entry = join(pkg, "dist", "cotal.js");
+  const bin = join(prefix, "bin", "cotal");
+  let checks = 0;
+  const check = (value: unknown, label: string): void => { assert.ok(value, label); checks++; };
+  const refuses = (fn: () => unknown): void => { assert.throws(fn); checks++; };
+  try {
+    mkdirSync(join(pkg, "dist"), { recursive: true });
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.13.1", bin: { cotal: "dist/cotal.js" } }));
+    writeFileSync(entry, "// fixture entry\n");
+    symlinkSync(entry, bin);
+    check(installedUpdatePrefix(pkg, bin) === realpathSync(prefix), "bin entry identifies the invoked prefix");
+    check(installedUpdatePrefix(pkg, entry) === realpathSync(prefix), "direct entry identifies the same prefix");
+    symlinkSync(prefix, join(temp, "alias"));
+    check(installedUpdatePrefix(join(temp, "alias/lib/node_modules/cotal-ai"), bin) === realpathSync(prefix), "prefix aliases canonicalize");
+    unlinkSync(bin);
+    refuses(() => installedUpdatePrefix(pkg, entry));
+    const other = join(temp, "other.js");
+    writeFileSync(other, "// unrelated entry\n");
+    symlinkSync(other, bin);
+    refuses(() => installedUpdatePrefix(pkg, entry));
+    unlinkSync(bin);
+    symlinkSync(entry, bin);
+    refuses(() => installedUpdatePrefix(pkg, other));
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.13.1", bin: { cotal: other } }));
+    refuses(() => installedUpdatePrefix(pkg, other));
+    for (const rel of ["checkout/bin", "cache/_npx/123/node_modules/cotal-ai", "project/node_modules/cotal-ai"]) {
+      const local = join(temp, rel);
+      mkdirSync(local, { recursive: true });
+      check(installedUpdatePrefix(local, join(local, "cotal.js")) === undefined, `${rel} keeps the separate global destination`);
+    }
+    for (const mode of ["bound", "conflicting-prefix", "wrong-root", "broken-layout"] as const) {
+      const r = updateRuntime({
+        env: mode === "conflicting-prefix" ? { NPM_CONFIG_PREFIX: temp } : {},
+        npm: (args) => args[0] === "view" ? { status: 0, stdout: '"0.13.2"' }
+          : { status: 0, stdout: mode === "wrong-root" ? temp : modules },
+        spawn: (_file, _args, env) => {
+          check(env.npm_config_prefix === realpathSync(prefix), "reconcile child retains the selected prefix");
+          return { status: 0 };
+        },
+      });
+      r.rt.installPrefix = () => {
+        if (mode === "broken-layout") throw new Error("broken global bin link");
+        return realpathSync(prefix);
+      };
+      check(await executeUpdate(true, r.rt) === (mode === "bound" ? 0 : 1), `${mode} exit`);
+      if (mode === "bound") {
+        check(r.events.includes(`npm:root -g --prefix ${prefix}`), "root query uses the selected prefix");
+        check(r.events.some((e) => e.startsWith("global:install:") && e.includes(`install -g --prefix ${prefix} cotal-ai@0.13.2`)), "installation uses that same prefix");
+      } else {
+        check(!r.events.some((e) => e.startsWith("claim-global:") || e.startsWith("global:install:")), `${mode} refuses before locking or installing`);
+      }
+    }
+    console.log(`✓ update prefix: ${checks} checks`);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 }
 
 console.log("✓ command-kernel smoke passed");
