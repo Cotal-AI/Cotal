@@ -105,10 +105,12 @@ elsewhere means `/quit`, then `enter` in that channel.
 
 Your session ends when you switch spaces, quit, or type `/quit`. A message you sent with `enter`
 just before still goes if it finishes sending within 5 seconds, the first one included while its
-session opens. One that takes longer is dropped, and the app does not say so. A message still
-sending in one space never holds up `enter` in another. After it ends, `enter` opens a new session
-under a new identity and sends nothing; the next `enter` sends. Quitting with unsent drafts asks
-first. Quitting closes the session and prints how it closed.
+session opens. When that first message's session is still opening after 5 seconds, the message is
+not sent: a switch warns you and keeps its draft, and a quit says so as the app exits. While a
+switch waits, the conversation reads `Leaving <space>…`. A message still sending in one space
+never holds up `enter` in another. After it ends, `enter` opens a new session under a new identity
+and sends nothing; the next `enter` sends. Quitting with unsent drafts asks first. Quitting closes
+the session and prints how it closed.
 
 ## Vendored OpenCode code
 

@@ -59,6 +59,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
   const [composer, setComposer] = createSignal<ComposerState>({ drafts: {}, sending: {} })
   const [focus, setFocus] = createSignal<Focus>("box")
+  // The space a switch opens, and the one it leaves until that one's chat session has closed.
+  const [switching, setSwitching] = createSignal<{ to?: string; from?: string }>({})
   // The composer imports the chat library, a few hundred milliseconds of loading, so it loads once a
   // space is opening and never delays the first frame. Solid's lazy() is not used: with no Suspense
   // boundary it leaves the shell's effects stalled.
@@ -70,7 +72,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const l = load()
     return l.phase === "ready" ? l.catalog.entries : []
   }
-  const conn = (): Conn => session()?.conn() ?? { phase: "connecting" }
+  const conn = (): Conn => session()?.conn() ?? { phase: "connecting", space: switching().to }
   const mesh = () => meshOf(conn())
   const managed = (): Managed => session()?.managed() ?? { phase: "loading" }
   const talk = (): Talk | undefined => session()?.talk()
@@ -157,11 +159,13 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const mine = ++switches
     const old = session()
     const was = conn().space
+    setSwitching({ to: space, from: old && was })
     setSession(undefined)
     setOpen({ kind: "channel", channel: DEFAULT_CHANNEL })
     setSeen({})
     setStop({ phase: "idle" })
     const chat = await old?.close()
+    if (mine === switches) setSwitching({ to: space })
     if (chat && !chat.clean) toast.show({ variant: "warning", message: `your session on ${was} did not close cleanly: ${chat.summary}` })
     const next = await props.openSpace(space)
     if (!ui()) void import("./composer.js").then((m) => setUi(() => m))
@@ -466,8 +470,10 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       return e && { title: e.kind === "unusable" ? baseName(e.source) : e.space, lines: entryLines(e) }
     }
     const c = conn()
-    if (c.phase === "connecting")
-      return { title: c.space ?? "Opening a space", lines: [{ text: c.space ? `Connecting to ${c.space}…` : "Finding the space for this folder…", fg: theme.text.muted }] }
+    if (c.phase === "connecting") {
+      const from = switching().from
+      return { title: c.space ?? "Opening a space", lines: [{ text: from ? `Leaving ${from}…` : c.space ? `Connecting to ${c.space}…` : "Finding the space for this folder…", fg: theme.text.muted }] }
+    }
     if (c.phase === "closed") return { title: c.space ?? "No space open", lines: [{ text: "Closed.", fg: theme.text.muted }] }
     if (c.phase === "failed") {
       const none = entries().length === 0 && load().phase === "ready" ? [{ text: "Prepare one with `cotal space create <name>`, or start one in a project with `cotal up`.", fg: theme.text.muted }] : []

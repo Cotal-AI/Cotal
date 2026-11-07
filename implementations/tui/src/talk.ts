@@ -77,7 +77,8 @@ export interface Talk {
   /** Saves the `name` preference, or unsets it, and resolves the name again. An open session keeps
    *  its name. Returns the refusal, if the write refused. */
   rename(name: string | undefined): Promise<string | undefined>
-  /** The space is closing: waits up to `graceMs` for a send in flight, then closes the session. */
+  /** The space is closing: waits up to `graceMs` for a send in flight, then closes the session. A
+   *  first message whose session is still opening by then is never sent, and the result says so. */
   close(graceMs?: number): Promise<Closed | undefined>
 }
 
@@ -265,11 +266,13 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
     },
     close: async (graceMs = QUIT_MS) => {
       closing = true
-      if (sending) await Promise.race([sending, new Promise((r) => setTimeout(r, graceMs))])
+      const late = sending !== undefined && (await Promise.race([sending.then(() => false), new Promise<boolean>((r) => setTimeout(() => r(true), graceMs))]))
+      const unopened = late && phase().phase === "opening"
       shut = true
       unsubscribe?.()
       const s = session
       session = undefined
+      if (unopened) return { clean: false, summary: `the session was still opening after ${graceMs / 1000} seconds, so your message was not sent` }
       if (!s) return undefined
       const report = await Promise.race([s.close(), new Promise<undefined>((r) => setTimeout(r, graceMs))])
       return report ? closed(s.identity(), report) : { clean: false, summary: `the session did not finish closing within ${graceMs / 1000} seconds; messages already sent remain under the space's retention policy` }
