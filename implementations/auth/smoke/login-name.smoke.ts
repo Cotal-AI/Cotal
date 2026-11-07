@@ -7,6 +7,7 @@
  *
  * Loopback HTTP only; broker-free. Run: pnpm smoke:auth-login-name
  */
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,7 +21,7 @@ import { jwt } from "better-auth/plugins/jwt";
 import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
-import { approveDevice } from "./_device-approval.js";
+import { approveDevice, type DeviceApprover } from "./_device-approval.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-login-name-home-"));
 const spaceDir = mkdtempSync(join(tmpdir(), "cotal-login-name-space-"));
@@ -49,6 +50,28 @@ const auth = betterAuth({
 });
 handler = toNodeHandler(auth);
 
+/** Run the real `cotal login --idp <base> --plain` in its own home, approving its device code as `user`. */
+const cotalLogin = (user: DeviceApprover) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+  const own = mkdtempSync(join(tmpdir(), "cotal-login-name-cli-"));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: own, COTAL_HOME: own, XDG_CONFIG_HOME: join(own, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "login", "--idp", base, "--plain"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let approval: Promise<void> | undefined;
+  child.stdout.on("data", (d: Buffer) => { stdout += d; });
+  child.stderr.on("data", (d: Buffer) => {
+    stderr += d;
+    const code = /Approval code\W+(\S+)/.exec(stderr)?.[1];
+    if (code && !approval) approval = approveDevice(user, code).catch((e: unknown) => { stderr += `\napproval failed: ${String(e)}`; child.kill(); });
+  });
+  const timer = setTimeout(() => child.kill(), 60_000);
+  child.on("close", (status) => {
+    clearTimeout(timer);
+    rmSync(own, { recursive: true, force: true });
+    done({ status, stdout, stderr: stderr.slice(-600) });
+  });
+});
+
 try {
   const signup = await auth.api.signUpEmail({ body: { email: EMAIL, password: "correct-horse-battery", name: "Human 42" }, returnHeaders: true });
   const idp = { base, origin, cookie: signup.headers.get("set-cookie")!.split(";")[0]! };
@@ -73,6 +96,13 @@ try {
   const unnamed = await status();
   check("a login whose local part and name are both not chat names records no handle",
     none.label === "a+b@example.test" && loadIdpSession(home, base)?.name === undefined && unnamed.login?.sub === other.response.user.id && unnamed.login.name === undefined, { label: none.label, unnamed });
+
+  const named = await cotalLogin(idp);
+  check("cotal login prints the chat name it recorded",
+    named.status === 0 && /^\s*Chat name\b.*\bhuman$/m.test(named.stdout) && !named.stdout.includes("cotal config set name"), named);
+  const nameless = await cotalLogin(otherIdp);
+  check("cotal login says it recorded no chat name, and how to save one",
+    nameless.status === 0 && /^\s*Chat name\b.*\bnone$/m.test(nameless.stdout) && nameless.stdout.includes("cotal config set name <name>"), nameless);
 } finally {
   server.close();
   rmSync(home, { recursive: true, force: true });
