@@ -24,7 +24,7 @@
  */
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isCredentialTransportUrl, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { issueServiceRenewalProof, type ServiceRenewalClaims } from "./service-renewal.js";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
@@ -269,7 +269,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
  *  because resolution would then choose the trust anchor. */
 export function pinnedJwksResolver(jwksUri: string): JWTVerifyGetKey {
   const url = new URL(jwksUri);
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackLiteral(url.hostname)))
+  if (!isCredentialTransportUrl(url))
     throw new Error(`JWKS origin must be https (or http on a loopback IP literal for dev), got ${url.protocol}//${url.hostname}`);
   return createRemoteJWKSet(url);
 }
