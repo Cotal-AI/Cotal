@@ -26,7 +26,7 @@
  * jobs keep the existing launch-session HOME behavior; --load-exec is not an env override.
  *
  * `--retain-state` keeps the private broker directory, configuration and broker stderr after
- * normal completion, failure or handled signals. Processes still stop. The path is printed on
+ * normal completion, failure or handled signals. The broker still stops. The path is printed on
  * stderr; callers must archive and remove it. Retention adds log I/O, so use the same setting
  * in compared runs. Without this flag, the existing automatic directory cleanup remains.
  *
