@@ -22,6 +22,12 @@
  *        handler leaves its copy unacked and the next DM still arrives.
  *   C    stop waits for a running handler and its ack lands; a handler that never settles makes
  *        stop throw after closing the connection, and its copy stays pending.
+ *   F    while one handler is held, a second published DM stays pending and is not handed to
+ *        another handler; stop waits for the running handler, resolves after it settles, and
+ *        leaves that second copy pending. The same two copies with no stop both reach the
+ *        handler and are acked. A handler held across reconnect has its ack, nak and
+ *        in-progress signal refused, and its copy is redelivered on the new connection and
+ *        acked there. The same hold with no reconnect acks once.
  *   custody  every endpoint, connection and the broker are proven closed or exited.
  * Output is cell names, PASS/FAIL and safe classes or counts. No error text, keys or creds.
  */
@@ -29,7 +35,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, nanos } from "@nats-io/transport-node";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/nats-core";
 import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
@@ -384,6 +390,143 @@ try {
     const hAfter = await pending(hJsm, Hx.durable);
     check("C.unsettled-retained: the unsettled copy stays unacked", hAfter.ackPending + hAfter.pending >= 1, hAfter);
     ownedEndpoints.splice(ownedEndpoints.indexOf(hung), 1); // its stop is proven (connection closed, throw is the contract)
+  }
+
+  // ---- F: stop while one handler runs and another DM is published, and an ack across reconnect
+  // The shipped consume pulls one message and does not pull the next until that handler settles,
+  // so a second published DM stays pending rather than reaching the client beside the running
+  // handler. stop still has to wait for that handler and leave the second copy untouched. The
+  // reconnect half holds the handler across the connection replacement.
+  {
+    const Fx = await recipient();
+    const fJsm = await provAgentJsm(Fx.agentCreds, Fx.id);
+    const seen: string[] = [];
+    let entered!: () => void;
+    const inHandler = new Promise<void>((r) => { entered = r; });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const ep = own(new CotalEndpoint(dmOnlyOpts(Fx, Fx.narrow, {
+      handler: async (m, d) => {
+        const t = textOf(m);
+        seen.push(t);
+        if (t === "f1") { entered(); await gate; }
+        d.ack();
+      },
+    })));
+    await ep.start();
+    await sender.unicast(Fx.key, "f1");
+    await within(inHandler, 5000);
+    await sender.unicast(Fx.key, "f2");
+    await sleep(400);
+    const during = await pending(fJsm, Fx.durable);
+    check("F.second-pending: the second DM stays pending while the first handler is held", during.pending === 1 && during.ackPending === 1 && seen.join(",") === "f1", during);
+    let stopDone = false;
+    const stopping = ep.stop().then(() => { stopDone = true; return "ok"; }, (e) => errClass(e));
+    await sleep(300);
+    check("F.stop-waits: stop does not resolve while the first handler runs", !stopDone);
+    release();
+    const res = await within(stopping, 10000);
+    const after = await pending(fJsm, Fx.durable);
+    check("F.stop-resolves: stop resolves after the first handler settles and leaves the second copy pending", res === "ok" && !seen.includes("f2") && after.pending === 1 && after.ackPending === 0, { res, ...after, seen: seen.length });
+
+    const Fc = await recipient();
+    const cJsm = await provAgentJsm(Fc.agentCreds, Fc.id);
+    const cSeen: string[] = [];
+    const cep = own(new CotalEndpoint(dmOnlyOpts(Fc, Fc.narrow, {
+      handler: async (m, d) => {
+        const t = textOf(m);
+        cSeen.push(t);
+        if (t === "fc1") await sleep(400);
+        d.ack();
+      },
+    })));
+    await cep.start();
+    await sender.unicast(Fc.key, "fc1");
+    await sender.unicast(Fc.key, "fc2");
+    for (let i = 0; i < 50 && !(cSeen.includes("fc1") && cSeen.includes("fc2")); i++) await sleep(100);
+    await sleep(300);
+    const cAfter = await pending(cJsm, Fc.durable);
+    check("F.control-both: without stop both copies reach the handler", cSeen.includes("fc1") && cSeen.includes("fc2"), { count: cSeen.length });
+    check("F.control-drained: without stop both copies are acked", cAfter.pending === 0 && cAfter.ackPending === 0, cAfter);
+    await cep.stop();
+
+    const shortAck = async (durable: string) => {
+      const provJsm = await jetstreamManager(await ownConn(provCreds, provId.id), { checkAPI: false });
+      await provJsm.consumers.update(DM, durable, { ack_wait: nanos(2_000) });
+    };
+    const Bx = await recipient();
+    await shortAck(Bx.durable);
+    const bJsm = await provAgentJsm(Bx.agentCreds, Bx.id);
+    const bSeen: string[] = [];
+    let bEntered!: () => void;
+    const bIn = new Promise<void>((r) => { bEntered = r; });
+    let bRelease!: () => void;
+    const bGate = new Promise<void>((r) => { bRelease = r; });
+    const refused: string[] = [];
+    const bep = own(new CotalEndpoint(dmOnlyOpts(Bx, Bx.narrow, {
+      handler: async (m, d) => {
+        const t = textOf(m);
+        const count = d.redelivery?.deliveryCount ?? 0;
+        bSeen.push(`${t}:${count}`);
+        if (t === "b1" && count === 1) {
+          bEntered();
+          await bGate;
+          for (const [name, act] of [["ack", () => d.ack()], ["nak", () => d.nak()], ["working", () => d.redelivery?.working()]] as const) {
+            try { act(); } catch (e) { if (e instanceof Error && /connection that delivered this copy is closed/.test(e.message)) refused.push(name); }
+          }
+          return;
+        }
+        d.ack();
+      },
+    })));
+    await bep.start();
+    await sender.unicast(Bx.key, "b1");
+    await within(bIn, 5000);
+    const reconnecting = bep.reconnect().then(() => "ok", (e) => errClass(e));
+    await sleep(400);
+    bRelease();
+    const rec = await within(reconnecting, 15000);
+    for (let i = 0; i < 40 && !bSeen.includes("b1:2"); i++) await sleep(100);
+    await sleep(300);
+    const bAfter = await pending(bJsm, Bx.durable);
+    check("F.reconnect-resolves: reconnect completes after the held handler settles", rec === "ok", { rec });
+    check("F.ack-refused: ack, nak and working on the closed connection throw", refused.join(",") === "ack,nak,working", { refused: refused.length });
+    check("F.redelivered: the copy is handled again on the new connection and acked", bSeen.includes("b1:1") && bSeen.includes("b1:2") && bAfter.pending === 0 && bAfter.ackPending === 0, { ...bAfter, seen: bSeen.length });
+    await bep.stop();
+
+    const Bc = await recipient();
+    await shortAck(Bc.durable);
+    const bcJsm = await provAgentJsm(Bc.agentCreds, Bc.id);
+    const bcSeen: string[] = [];
+    let bcEntered!: () => void;
+    const bcIn = new Promise<void>((r) => { bcEntered = r; });
+    let bcRelease!: () => void;
+    const bcGate = new Promise<void>((r) => { bcRelease = r; });
+    let bcThrew = false;
+    const bcep = own(new CotalEndpoint(dmOnlyOpts(Bc, Bc.narrow, {
+      handler: async (m, d) => {
+        const t = textOf(m);
+        bcSeen.push(t);
+        if (t === "bc1" && (d.redelivery?.deliveryCount ?? 0) === 1) {
+          bcEntered();
+          await bcGate;
+          try { d.ack(); } catch { bcThrew = true; }
+          return;
+        }
+        d.ack();
+      },
+    })));
+    await bcep.start();
+    await sender.unicast(Bc.key, "bc1");
+    await within(bcIn, 5000);
+    await sleep(400);
+    bcRelease();
+    for (let i = 0; i < 30 && !bcSeen.includes("bc1"); i++) await sleep(100);
+    await sleep(300);
+    const bcAfter = await pending(bcJsm, Bc.durable);
+    check("F.control-ack: without reconnect the held handler's ack succeeds", !bcThrew && bcSeen.includes("bc1"));
+    check("F.control-once: without reconnect the copy is not redelivered", bcSeen.filter((t) => t === "bc1").length === 1 && bcAfter.pending === 0 && bcAfter.ackPending === 0, bcAfter);
+    await bcep.stop();
   }
 
   // ---- option refusals, each paired with the accepted shape -------------------------------------
