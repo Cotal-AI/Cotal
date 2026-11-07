@@ -25,6 +25,11 @@
  * directories privately on each generator host and retain/clean them afterward. Without it,
  * jobs keep the existing launch-session HOME behavior; --load-exec is not an env override.
  *
+ * `--retain-state` keeps the private broker directory, configuration and broker stderr after
+ * normal completion, failure or handled signals. Processes still stop. The path is printed on
+ * stderr; callers must archive and remove it. Retention adds log I/O, so use the same setting
+ * in compared runs. Without this flag, the existing automatic directory cleanup remains.
+ *
  * A RESULT is accepted only after the local child (or SSH client) closes with exit 0 and no
  * signal. Expected authentication refusals remain measurement data. Failed child reports/output
  * are retained in a separate private cotal-load-failure-* directory named on stderr; callers
@@ -66,7 +71,7 @@
  */
 import { randomUUID, createHash } from "node:crypto";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, appendFileSync, rmSync, unlinkSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -78,7 +83,7 @@ import { pickFreePort } from "./_free-port.js";
 import { assertLoopbackListener, remoteJobCommand } from "./_callout-load-ssh.js";
 import { collectLoadResult, LoadChildFailure, retainLoadFailure } from "./_callout-load-result.js";
 import { clientSigning, nativeLoadAuthenticator, type ClientSigning } from "./_callout-load-signing.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------------------------
 // shared shapes
@@ -396,6 +401,7 @@ const num = (name: string, dflt?: string): number => {
   return v;
 };
 
+const RETAIN_STATE = argv.includes("--retain-state");
 const SCENARIO = flag("scenario");
 const ARM = flag("arm", "main");
 const CLIENT_SIGNING = clientSigning(flag("client-signing", "nats"));
@@ -576,15 +582,18 @@ const conf = serverConfig(auth, [auth], {
   transport: { kind: "plaintext" }, host: BIND, port: PORT, storeDir: join(dir, "js"),
   extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
 }) + `\nhttp: 127.0.0.1:${MON_PORT}\n` + (AUTH_TIMEOUT ? `authorization { timeout: ${AUTH_TIMEOUT} }\n` : "");
-writeFileSync(join(dir, "server.conf"), conf);
+writeFileSync(join(dir, "server.conf"), conf, { mode: 0o600 });
 const srv = spawn(NATS_BIN, ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
-const releaseBroker = teardownOnSignal(srv, dir);
+const brokerClosed = new Promise<void>((resolve) => { srv.once("close", () => resolve()); });
+const releaseBroker = teardownOnSignal(srv, RETAIN_STATE ? undefined : dir);
+if (RETAIN_STATE) console.error(`  retained broker state: ${dir}`);
 // The client sees the same "Authorization Violation" for a signed callout denial and for a callout
 // the broker gave up on, so the broker's own log tells them apart: a connect the callout refused in
 // time logs the callout's reason, and any other refusal does not.
 const brokerLog = { calloutReasons: 0, partial: "" };
 srv.stderr!.setEncoding("utf8");
 srv.stderr!.on("data", (d: string) => {
+  if (RETAIN_STATE) appendFileSync(join(dir, "broker.log"), d, { mode: 0o600 });
   const lines = (brokerLog.partial + d).split("\n");
   brokerLog.partial = lines.pop() ?? "";
   for (const l of lines) if (l.includes("Auth callout service returned an error")) brokerLog.calloutReasons++;
@@ -1092,8 +1101,9 @@ try {
   for (const c of [...children, ...calloutChildren]) { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
   for (const ssh of sshTransports) { try { await stopTunnel(ssh); } catch (error) { console.error("  ✗", (error as Error).message); process.exitCode = 1; } }
   try { await calloutNc?.close(); } catch { /* closing a dead conn is not a result */ }
-  srv.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  await killAndAwaitExit(srv, "SIGKILL");
+  await brokerClosed;
+  if (!RETAIN_STATE) rmSync(dir, { recursive: true, force: true });
   for (const f of armFiles) { try { unlinkSync(f); } catch { /* already gone */ } }
   releaseBroker(); // last: ownership is held until this teardown has actually finished
   // A run leaves live handles behind (the callout's own subscription pump, and undici's keep-alive
