@@ -43,6 +43,13 @@ try {
   });
   setCurrent(space);
 
+  // `--on` is read before any mesh is dialed, with the grammar every other manager command uses: an
+  // empty value and a roster principal id are refused naming the instance id the flag wants, so a
+  // pin typed for the manager whose custody this install carries is never silently dropped.
+  for (const [on, why] of [["", "an empty pin"], ["local.U0123456789abcdefghijklmnop", "a principal id"]] as const) {
+    await assert.rejects(readManagerContinuity({ space, on }), (e: unknown) => (e as { code?: string }).code === "USAGE_INVALID" && String((e as Error).message).includes("--on"), `${why} is refused as a manager pin before the continuity read`);
+  }
+
   const baseline = supervisorMayServe(space);
   if (baseline) {
     console.log("note: a supervisor on this machine may already serve any space; the skip is not asserted here");

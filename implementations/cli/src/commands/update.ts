@@ -46,7 +46,8 @@ import {
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { legacyManagerReport, type LegacyManagerReport } from "../lib/legacy-manager-report.js";
 import { askManager } from "@cotal-ai/workspace/control";
-import { cliControl } from "../lib/control.js";
+import { cliControl, onFlag } from "../lib/control.js";
+import { managerPin } from "../lib/manager-choice.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -56,6 +57,7 @@ export const updateFlags: readonly FlagSpec[] = [
   { name: "check", type: "boolean", description: "read version availability and the recorded extension inventory; install and restart nothing" },
   jsonFlag, plainFlag,
   ...targetFlags,
+  onFlag,
 ];
 
 interface CommandResult {
@@ -168,8 +170,8 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Pro
 export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.values.check === true) {
-    if (args.values.self || args.values.space !== undefined || args.values.server !== undefined || args.values.creds !== undefined)
-      throw new CommandFailure("refused", "USAGE_INVALID", "update --check reads this installation and takes no --self or mesh selection");
+    if (args.values.self || args.values.space !== undefined || args.values.server !== undefined || args.values.creds !== undefined || args.values.on !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "update --check reads this installation and takes no --self, mesh selection or --on");
   } else if (args.values.json || args.values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "structured and plain update reports require --check; the installer keeps its native progress output");
 }
 
@@ -450,7 +452,7 @@ export async function reportRunningManagers(
   try {
     return await readOne(flags);
   } catch (e) {
-    const selected = ["space", "server", "creds"].some((name) => typeof flags[name] === "string");
+    const selected = ["space", "server", "creds", "on"].some((name) => typeof flags[name] === "string");
     const spaces = selected ? undefined : runningSpaces(e);
     if (!spaces) throw e;
     console.log(c.dim(`${spaces.length} meshes running; reading each manager's continuity`));
@@ -467,6 +469,12 @@ export async function reportRunningManagers(
 }
 
 export async function readManagerContinuity(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
+  // `--on` names the manager whose custody this install carries. An owner with several live
+  // managers on a user-auth mesh (one per machine, say) gets the exchange's selection refusal
+  // without it, naming `--on` as the remedy; the flag has to exist here for that remedy to be real,
+  // and it has to reach the MINT below, since a credential cannot gain an instance rail after it is
+  // issued. A name or host resolves to an instance id the same way `ps` resolves it.
+  const on = await managerPin(flags, "cotal update");
   let remote = false;
   // #2158: a remote user mesh's manager runs under another install, on another machine. Replacing
   // THIS machine's binary interrupts no manager there, so there is no custody here to preserve and
@@ -527,7 +535,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       ...(typeof flags.server === "string" ? { server: flags.server } : {}),
       ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
       offline,
-    }, "control-caller-admin", undefined, { onRefusal: "throw" });
+    }, "control-caller-admin", on, { onRefusal: "throw" });
   } catch (e) {
     // No running manager means no custody to preserve and nothing this update could interrupt. Only
     // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
@@ -537,18 +545,19 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     if (isNoMeshRefusal(e)) return "none";
     throw e;
   }
-  const status = await askManager(cliControl, target.space, target.server, "managerStatus", undefined, target.auth);
+  const pin = on === undefined ? {} : { instanceId: on };
+  const status = await askManager(cliControl, target.space, target.server, "managerStatus", undefined, target.auth, "owner", undefined, pin);
   if (!status.ok) {
     // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
     // core's answer-provenance marker; the headline beside it is operator prose and is now scoped to
     // the rail the caller rode (#1630), so this call, which runs under an issued control caller, saw
-    // the headline naming the versioned rail and threw instead of reporting "none". The string test
-    // was redundant the day it was written: this call passes no `--on`, so an unanswered reply here
-    // can only ever be the unpinned verdict.
-    if (status.unanswered) return "none";
+    // the headline naming the versioned rail and threw instead of reporting "none". Unpinned, an
+    // unanswered reply is the verdict that no manager holds custody. Pinned, it is a manager the
+    // operator named and this command could not read, which is not "none".
+    if (status.unanswered && on === undefined) return "none";
     throw new Error(status.error ?? "manager status request failed");
   }
-  const seats = await askManager(cliControl, target.space, target.server, "ps", undefined, target.auth);
+  const seats = await askManager(cliControl, target.space, target.server, "ps", undefined, target.auth, "owner", undefined, pin);
   if (!seats.ok) throw new Error(seats.error ?? "manager seat inventory request failed");
   const report = await legacyManagerReport(
     (status.data ?? {}) as { custody?: unknown },
@@ -714,7 +723,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
 function targetArgv(target: Record<string, unknown>): string[] {
   const argv: string[] = [];
-  for (const name of ["space", "server", "creds"] as const) {
+  for (const name of ["space", "server", "creds", "on"] as const) {
     const value = target[name];
     if (typeof value === "string") argv.push(`--${name}`, value);
   }
