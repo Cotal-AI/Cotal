@@ -15,7 +15,7 @@
  * Run: pnpm --filter @cotal-ai/tui smoke
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -146,6 +146,14 @@ function middleLines(frame: string, width: number): string[] {
 const treeLines = (frame: string, width: number) => frame.split("\n").map((line) => [...line].slice(0, layoutFor(width).tree).join("").trim())
 /** The conversation column's text as one line, so a sentence the column wraps reads whole. */
 const middle = (frame: string, width: number) => middleLines(frame, width).join(" ")
+/** The toast's text as one line: what sits between the last two `┃` of each line it covers. */
+const toastOf = (frame: string) =>
+  frame
+    .split("\n")
+    .map((l) => l.split("┃"))
+    .filter((parts) => parts.length >= 3)
+    .map((parts) => parts.at(-2)!.trim())
+    .join(" ")
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
 const type = (text: string) => keys("-l", text)
 // A key sent within tmux's escape-time after Escape would read as alt+<key>.
@@ -292,7 +300,8 @@ const SPACE_ROWS = 3
 const titleOf = (frame: string) => frame.split("\n").find((l) => l.includes("SPACES")) ?? ""
 const footer = (frame: string) => frame.trimEnd().split("\n").at(-1)!.trim()
 // A space is live once its conversation heads the middle column and the footer has nothing to report.
-const live = (space: string) => (frame: string) => titleOf(frame).includes(`  ${space}`) && !/Connecting to/.test(frame) && footer(frame) === "? help · ctrl+p commands"
+// While a switch closes the last space's session, the title already names the next space.
+const live = (space: string) => (frame: string) => titleOf(frame).includes(`  ${space}`) && !/Connecting to|Leaving /.test(frame) && footer(frame) === "? help · ctrl+p commands"
 const row = (s: Space, name: string): Presence | undefined => s.reader.getRoster().find((p) => p.card.name === name && p.status !== "offline")
 const chatRow = (s: Space) => s.reader.getRoster().find((p) => p.card.name === login && p.card.meta?.sessionKind === "chat" && p.status !== "offline")
 const times = (n: number, key: string) => Array<string>(n).fill(key)
@@ -938,6 +947,93 @@ async function switchWhileOpening(s: Space, tag: string) {
   await see(has("EXIT=0"), 15000)
 }
 
+/** A first message whose session cannot open, because the static space's manager is held. A switch
+ *  and a quit each stop waiting for it after 5 seconds and say it was not sent, and the space the
+ *  switch opens sends at once. */
+async function heldManager(s: Space, tag: string) {
+  const at = `${s.mode} 209x52`
+  const dot = join(s.root, ".cotal")
+  const pidFile = readdirSync(dot).find((f) => /^manager\.[^.]+\.pid$/.test(f))
+  if (!pidFile) throw new Error(`no manager pidfile in ${dot}`)
+  const manager = Number(readFileSync(join(dot, pidFile), "utf8").trim())
+  const other = new CotalEndpoint({ space: s.other.space, servers: server, card: { name: "reader", kind: "endpoint" }, consume: false, registerPresence: false })
+  other.on("error", () => {})
+  started.push(other)
+  await other.start()
+  const notSent = (frame: string) => toastOf(frame).replace(/\s+/g, "").includes("yourmessagewasnotsent")
+  const opening = (frame: string) => frame.includes(`joining ${s.space} as ${login}`)
+  const dir = join(captures, s.mode, "209x52")
+  mkdirSync(dir, { recursive: true })
+
+  launch(s.root, 209, 52, join(work, `${s.mode}-held.err`))
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
+  const first = `sent while the manager is held (${tag})`
+  type(first)
+  await see((f) => middleLines(f, 209).includes(first), 4000)
+  process.kill(manager, "SIGSTOP")
+  try {
+    keys("Enter")
+    await see(opening, 4000)
+    keys("Tab", ...times(40, "k"), ...times(s.other.row, "j"), "Enter")
+    const waited: string[] = []
+    const start = Date.now()
+    while (!live(s.other.space)(waited.at(-1) ?? "") && Date.now() - start < 20000) {
+      waited.push(capture())
+      await sleep(200)
+    }
+    const next = `sent on ${s.other.space} at once (${tag})`
+    type(next)
+    keys("Enter")
+    const after = await see(has("still being sent"), 1000)
+    const there = await until(() => other.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === next), 4000)
+    writeFileSync(join(dir, `held-switch-${tag}.txt`), [...waited, after].join("\n----\n"))
+    check(
+      `${at}: while the switch waits for the first message, the conversation says it is leaving ${s.space}, not that it is finding the space for this folder`,
+      waited.some((f) => middle(f, 209).includes(`Leaving ${s.space}…`)) && !waited.some((f) => f.includes("Finding the space for this folder")),
+      waited.find((f) => f.includes("Finding the space for this folder")) ?? waited.at(-1)!,
+    )
+    check(`${at}: the switch says the first message was not sent`, [...waited, after].some(notSent), [...waited, after].map(toastOf).filter(Boolean).join("\n") || after)
+    check(
+      `${at}: on ${s.other.space}, enter sends at once while the message on ${s.space} still waits for its session`,
+      !after.includes("still being sent") && there.some((m) => textOf(m) === next),
+      `${Date.now() - start}ms after the switch\n${after}`,
+    )
+  } finally {
+    process.kill(manager, "SIGCONT")
+  }
+  keys("C-c")
+  await see(has("Quit with"), 4000)
+  keys("y")
+  await see(has("EXIT=0"), 15000)
+
+  launch(s.root, 209, 52, join(work, `${s.mode}-held-quit.err`))
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
+  const last = `sent as the app quits (${tag})`
+  type(last)
+  await see((f) => middleLines(f, 209).includes(last), 4000)
+  process.kill(manager, "SIGSTOP")
+  let exited = ""
+  try {
+    keys("Enter")
+    await see(opening, 4000)
+    keys("C-c")
+    await see(has("Quit with 1 unsent draft?"), 4000)
+    keys("y")
+    exited = await see(has("EXIT=0"), 20000)
+  } finally {
+    process.kill(manager, "SIGCONT")
+  }
+  writeFileSync(join(dir, `held-quit-${tag}.txt`), exited)
+  check(
+    `${at}: quitting while the first message waits for its session says, as the app exits, that it was not sent`,
+    exited.replace(/\s+/g, "").includes(`${s.space}:thesessionwasstillopeningafter5seconds,soyourmessagewasnotsent`),
+    exited,
+  )
+  await sleep(3000)
+  const stored = (await s.reader.channelHistory("general", { limit: 200 })).filter((m) => textOf(m) === first || textOf(m) === last)
+  check(`${at}: neither message the app said was not sent was stored`, stored.length === 0, JSON.stringify(stored))
+}
+
 let stackUp = false
 try {
   const open = await openSpace()
@@ -961,6 +1057,11 @@ try {
     }
   for (const s of [open, stat]) await rename(s, s.mode)
   await switchWhileOpening(open, "sw")
+  try {
+    await heldManager(stat, "held")
+  } catch (e) {
+    check(`${stat.mode} 209x52: the held-manager flow ran to its end`, false, `${(e as Error).message}\n${capture()}`)
+  }
 } finally {
   try {
     tmux("kill-server")

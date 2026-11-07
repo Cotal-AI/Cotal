@@ -154,6 +154,8 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   After Change your name and `/quit`, `↑` passes over your own direct messages.
   `↑` and a click also pass over a namesake's message, an agent's channel posts in its
   conversation, and a direct message between two agents in all traffic.
+  With the static space's manager held, a switch and a quit each say the first message was not
+  sent, and the space switched to sends at once.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
