@@ -230,6 +230,13 @@ claims the already-running process changed. From a source checkout, the `update 
 local reconcile without reinstalling it. Each npm install it runs starts with 022 added to your
 umask, so a umask of 0002 does not leave the installed tree group-writable.
 
+On POSIX, an installed npm CLI binds the update to the prefix whose package and `bin/cotal`
+link identify the running entry. This also applies when a service invokes the package bin
+without the installer's external launcher. The vendored Node runtime's own npm prefix is not
+used. A missing or redirected global bin link, a conflicting `npm_config_prefix`, or an npm
+root that disagrees with that prefix refuses before installation. Local/npx copies and source
+checkouts still install a separate global copy; Windows keeps npm's configured global root.
+
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
 explains the wait, keeps its update lock and does not send terminal interrupts into the child
