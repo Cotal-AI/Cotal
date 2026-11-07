@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.147.8
+
+### Patch Changes
+
+- 99cb97d: Keep self-updates of installed POSIX CLIs in the prefix owning the invoked package and bin link, including when bypassing the installer launcher with a vendored Node runtime. Refuse conflicting or incomplete global layouts before installation, and preserve separate global updates from local/npx copies and source checkouts.
+- @cotal-ai/core@0.147.8
+  - @cotal-ai/workspace@0.147.8
+
 ## 0.147.7
 
 ### Patch Changes
