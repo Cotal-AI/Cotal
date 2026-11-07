@@ -14,7 +14,7 @@ import "../src/index.js"; // self-register the CLI commands (for the completion 
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
-import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -659,8 +659,14 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "check", "json", "plain", "space", "server", "creds"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "check", "json", "plain", "space", "server", "creds", "on"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
+  assert.equal(parseCommandArgs(cmd!, ["--on", "inst_0123456789abcdefghijklmnopqrs"]).values.on, "inst_0123456789abcdefghijklmnopqrs", "update takes the manager pin every other manager command takes");
+  assert.throws(
+    () => validateUpdateArguments(parseCommandArgs(cmd!, ["--check", "--on", "x"])),
+    (e: unknown) => (e as { code?: string }).code === "USAGE_INVALID",
+    "--check reads this installation and takes no manager pin",
+  );
   assert.throws(
     () => parseCommandArgs(cmd!, ["--unknown"]),
     (e: unknown) => String((e as { code?: string }).code).startsWith("ERR_PARSE_ARGS"),
@@ -1202,6 +1208,21 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(
     namedTarget.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update --space named-space --server nats://example:4222 --creds /tmp/creds.creds")),
     "self-update replacement child carries the selected target flags",
+  );
+
+  // #3239: an owner with several live managers names this machine's with `--on`; the reconcile the
+  // new binary runs reads the same manager, or it refuses the selection the parent just passed.
+  const pinnedTarget = updateRuntime({
+    npm: (args) => {
+      if (args[0] === "view") return { status: 0, stdout: '"0.13.2"' };
+      if (args[0] === "root") return { status: 0, stdout: "/alternate/global/node_modules\n" };
+      return { status: 0 };
+    },
+  });
+  assert.equal(await executeUpdate(true, pinnedTarget.rt, { space: "named-space", on: "66m64nqra6qn8q6xlakgpiwelikogaw" }), 0);
+  assert.ok(
+    pinnedTarget.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update --space named-space --on 66m64nqra6qn8q6xlakgpiwelikogaw")),
+    "self-update replacement child carries the manager pin with the target flags",
   );
 
   const selfLegacy = updateRuntime({
