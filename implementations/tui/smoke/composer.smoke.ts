@@ -811,9 +811,34 @@ async function rename(s: Space, tag: string) {
   writeFileSync(join(dir, `renamed-${tag}.ansi`), tmux("capture-pane", "-p", "-e", "-t", "t"))
   check(`${at}: Change your name shows the new name at the bottom of the tree, and the box still takes text once the dialog closes`, nameAtBottom(209).name === "ops-lead" && middleLines(typed, 209).includes(hello), renamed)
   check(`${at}: the next session appears under the new name on the roster and posts from it`, named?.card.meta?.sessionKind === "chat" && landed.some((m) => textOf(m) === hello && m.from.id === named.card.id), JSON.stringify(named?.card))
+
+  await openRow(s, "planner")
+  const dm = `from ops-lead (${tag})`
+  type(dm)
+  keys("Enter")
+  await until(() => s.reader.dmHistory({ limit: 500 }), (h) => h.some((m) => textOf(m) === dm && m.from.id === named?.card.id))
+  const back = `noted, ops-lead (${tag})`
+  await s.peer("planner/planner").ep.unicast(named?.card.id ?? "unknown", back)
+  await see((f) => middleLines(f, 209).includes(`┃ ${back}`))
   await dialog()
   keys("Enter")
   await see((f) => !f.includes("Your name is"), 4000)
+  type("/quit")
+  keys("Enter")
+  await see((f) => middle(f, 209).includes("session ended"))
+  const walked: string[] = []
+  for (let i = 0; i < 8; i++) {
+    keys("Up")
+    await sleep(250)
+    walked.push(capture())
+  }
+  writeFileSync(join(dir, `renamed-quote-after-quit-${tag}.txt`), walked.find((f) => f.includes("↳ ops-lead:")) ?? walked.at(-1)!)
+  check(
+    `${at}: after Change your name and /quit, ↑ in planner's conversation quotes none of the direct messages the ended ops-lead session sent`,
+    walked.some((f) => f.includes("↳ planner:")) && walked.every((f) => !f.includes("↳ ops-lead:")),
+    walked.find((f) => f.includes("↳ ops-lead:")) ?? walked.at(-1)!,
+  )
+  await esc()
   keys("C-c")
   await see(has("EXIT=0"), 15000)
 }
