@@ -5342,7 +5342,7 @@ on a generation by a static issuer (a static incarnation's credential, an operat
 expires no later than the horizon. A static incarnation's generation has a horizon 30 days after
 its issuance; each renewal of its credential is capped at it, none is minted at or after it, and
 the incarnation is respawned to continue. An agent seat a terminal starts on a static space (a
-foreground spawn, a bare join) is issued against its own §13.1 lifecycle, activated before the mint
+foreground spawn, a bare join, a personal conversation's connection) is issued against its own §13.1 lifecycle, activated before the mint
 with `terminal` as its minting authority. Its generation's horizon is the expiry the person set, or
 the furthest a generation can name (`0xffffffff`, 2106-02-07); its credential expires with it and is
 never renewed. When the seat leaves cleanly the terminal retires the lifecycle, retiring its

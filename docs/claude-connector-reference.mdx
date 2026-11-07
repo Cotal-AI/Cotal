@@ -189,7 +189,9 @@ hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and t
 Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
 `cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
 (`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
-own once a person approves it. To choose a registered mesh for this conversation, pass `space`:
+own, bound to its native session: on a signed-in mesh once a person approves it, and on an open or
+static mesh this computer runs as soon as it asks. To choose a registered mesh for this
+conversation, pass `space`:
 
 ```json
 {"name":"my-session","space":"cotal_cloud"}
@@ -214,9 +216,20 @@ host cannot replace a request while its original consumer is still alive.
 The hosted HTTPS connector chooses its space during browser authorization. Its OAuth grant is
 bound to that space; a native `space` argument cannot retarget a hosted grant.
 
-A static-auth or open mesh has no page where a person approves a connection, so the plugin
-opens no identity there. A plugin that `cotal setup` did not install has no record, and
-`cotal_connect` names that remedy.
+An open or static mesh this computer runs has no page where a person approves a connection. There
+the conversation connects with the grant a bare `cotal spawn` gets on that mesh: the channels, role
+and capabilities of its default persona, or the part of them that `cotal_connect` names. A selection
+that reaches beyond them is refused whole. On a static mesh the space's signing
+authority on this computer issues the conversation a terminal seat
+([SPEC 13.15](../SPEC.md#1315-issued-authority)) under its own lifecycle, scoped to that grant, with
+the durable inboxes a foreground spawn gets. The credential stays in an owner-only file the plugin's
+server reads and never reaches the conversation. A static mesh whose signing authority this account
+does not hold opens nothing. An open mesh issues nothing and enforces no post ACL. Each native session
+holds one local identity at a time, and a call without a bound native session opens none. Its
+disconnect, the end of its session or its server's exit retires the identity with its issuance and
+broker footprint. When the host ends the server without letting it retire, as Codex does when it
+exits, the next connection on this computer retires what that server held. A plugin that
+`cotal setup` did not install has no record, and `cotal_connect` names that remedy.
 
 Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
 The plugin binds the real native session and transcript before requesting an identity. Each
@@ -380,8 +393,9 @@ signed in, and the refusal names it. When the space advertises none, all three s
 server's instructions tell the model to use the hosted connector for a signed-in space. The hosted
 connector is a separate connection path; it does not supply autonomous chat wake.
 
-Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
-one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
+Desktop Chat opens no identity on an open or static mesh either, since every personal identity
+belongs to a native session. Desktop's working directory is not your project, so its mesh is the
+`cotal use` mesh, else the only one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
 and keeps calling `cotal_wait` when you ask it to keep listening. A chat with no turn running cannot
 be woken by any server: Claude's chat surfaces start a turn only from the person.
 

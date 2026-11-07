@@ -180,6 +180,8 @@
     "smoke:web-session-view": "tsx implementations/web/smoke/session-view.smoke.ts",
     "smoke:codex-installed": "pnpm --filter cotal-ai... build && tsx extensions/connector-codex/smoke/codex-installed.smoke.ts",
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",
+    "smoke:personal-codex-native:live": "tsx implementations/auth/smoke/personal-codex-native.smoke.ts",
+    "smoke:personal-codex-local:live": "tsx implementations/cli/smoke/personal-local-codex-live.smoke.ts",
     "smoke:codex-tui-live": "tsx extensions/connector-codex/smoke/codex-tui-live.smoke.ts",
     "smoke:jcode-args": "tsx extensions/connector-jcode/smoke/jcode-args.smoke.ts",
     "smoke:jcode-journal-lifecycle": "pnpm --filter @cotal-ai/connector-core build && tsx extensions/connector-jcode/smoke/journal-lifecycle.smoke.ts",
