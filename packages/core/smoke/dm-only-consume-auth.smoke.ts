@@ -466,7 +466,10 @@ try {
     await sleep(300);
     check("F.stop.second-never-handled: the copy already at the client never enters the handler", !seen.includes("f2"), { seen: seen.length });
     const after = await pending(fJsm, Fx.durable);
-    check("F.stop.second-unacked: that copy stays ack-pending", after.ackPending >= 1, after);
+    const left = await jetstream(await ownConn(Fx.agentCreds, Fx.id.id), { checkAPI: false }).consumers.get(DM, Fx.durable).then((c) => c.next({ expires: 2000 }));
+    const leftText = left ? textOf(left.json()) : "";
+    if (left) left.nak();
+    check("F.stop.second-unacked: the second copy, not the first, stays outstanding", after.ackPending === 1 && after.pending === 0 && leftText === "f2" && !seen.includes("f2"), { ...after, left: leftText === "f2" });
 
     const Pc = await recipient();
     await shortAck(Pc.durable);
