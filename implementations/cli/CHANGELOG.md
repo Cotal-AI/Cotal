@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.147.5
+
+### Patch Changes
+
+- 3f8da10: `cotal update` no longer reads a remote mesh's manager custody because of a `cotal supervise` process that serves another space through `COTAL_SPACE` with no `--space` argument. That read went to an unpinned manager selection and failed the reconcile whenever the owner had more than one live remote manager; the supervisor's environment now names the space it serves.
+- @cotal-ai/core@0.147.5
+  - @cotal-ai/workspace@0.147.5
+
 ## 0.147.4
 
 ### Patch Changes
