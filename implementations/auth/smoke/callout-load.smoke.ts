@@ -199,6 +199,8 @@ function reasonOf(e: unknown): string {
 // ---------------------------------------------------------------------------------------------
 
 async function runChild(): Promise<void> {
+  // Optional parent IPC: imports are complete; job material still arrives only over stdin.
+  process.send?.({ type: "load-ready" });
   const chunks: Buffer[] = [];
   for await (const c of process.stdin) chunks.push(c as Buffer);
   const job = JSON.parse(Buffer.concat(chunks).toString("utf8")) as ChildJob;
