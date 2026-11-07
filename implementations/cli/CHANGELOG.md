@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.147.4
+
+### Patch Changes
+
+- c579bc5: `cotal update` reads the custody of a manager that serves a remote user mesh from this machine, where it used to report that the manager runs elsewhere and let the install leave that manager on its loaded generation. A `legacy` verdict on such a mesh names `cotal manager stop` as the stop before the cold update.
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+
 ## 0.147.3
 
 ### Patch Changes

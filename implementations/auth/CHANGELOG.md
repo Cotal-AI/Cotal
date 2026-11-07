@@ -1,5 +1,15 @@
 # @cotal-ai/auth
 
+## 0.147.4
+
+### Patch Changes
+
+- c733b63: Let remote manager boot scans skip cleared goal-index entries so a terminal goal does not prevent reconciliation of remaining live goals. Keep purged entries and malformed live rows as errors.
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+  - @cotal-ai/lang@0.147.4
+
 ## 0.147.3
 
 ### Patch Changes
