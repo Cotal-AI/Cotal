@@ -554,6 +554,10 @@ async function run(s: Space, width: number, height: number, tag: string) {
     save("burst-quote")
     check(`${at}: ↑ passes over a direct-message burst whose first copy went to another agent, so no reply names that copy`, !burstPick.includes("↳ planner: “standup in 5") && quoting("planner", "ship it today?")(burstPick), burstPick)
     await esc()
+    click(burst)
+    const refusal = await see((f) => says(f, "several recipients"), 3000)
+    save("burst-click")
+    check(`${at}: a click on that burst in planner's own conversation says to answer planner here, not to open it in the tree`, says(refusal, "that message went to several recipients; answer its sender here without a quote") && !refusal.includes("↳ planner: “standup in 5"), refusal)
 
     const retro = `retro at 4 (${tag})`
     const yours = await planner.ep.unicast(principal, retro)
@@ -589,6 +593,26 @@ async function run(s: Space, width: number, height: number, tag: string) {
       JSON.stringify({ want: yours?.id, got: toPlanner3.filter((m) => textOf(m) === burstReply) }),
     )
   }
+  await see((f) => !f.includes("↳ "))
+  const walkedDms: string[] = []
+  for (let i = 0; i < 10; i++) {
+    keys("Up")
+    await sleep(200)
+    walkedDms.push(capture())
+  }
+  save("dm-walk")
+  check(
+    `${at}: in planner's conversation ↑ quotes only direct messages, never planner's #general posts`,
+    walkedDms.some((f) => f.includes("↳ planner:")) && walkedDms.every((f) => !target(f, "#general")),
+    walkedDms.find((f) => target(f, "#general")) ?? walkedDms.at(-1)!,
+  )
+  await esc()
+  if (width === 209) {
+    click(pair)
+    const post = await see((f) => says(f, "#general post"), 3000)
+    save("post-click-in-dm")
+    check(`${at}: a click on planner's #general post in planner's conversation refuses and says where to reply`, says(post, "that is a #general post; reply to it in #general") && !post.includes("↳ "), post)
+  }
 
   const before = (await general()).length
   const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
@@ -600,7 +624,24 @@ async function run(s: Space, width: number, height: number, tag: string) {
   check(`${at}: an unknown slash command refuses and keeps the line`, says(unknown, "unknown command /foo; try") && inBox(unknown, "/foo"), unknown)
   check(`${at}: /who is not in the app and is not sent`, says(who, "/who is not in the app; the tree lists who is here") && (await general()).length === before, who)
 
+  const aside = `between agents (${tag})`
+  if (s.mode === "open") await planner.ep.unicast(coder, aside)
   const traffic = await openRow(s, "all traffic")
+  if (s.mode === "open") {
+    await see((f) => inFeed(f, aside))
+    keys("Up")
+    await sleep(300)
+    const up = capture()
+    click(aside)
+    const elsewhere = await see((f) => says(f, "not sent to you"), 3000)
+    save("between-agents")
+    check(
+      `${at}: in all traffic a direct message between two agents cannot be quoted: ↑ passes over it and a click refuses`,
+      !up.includes("↳ planner: “between agents") && says(elsewhere, "that direct message was not sent to you") && !elsewhere.includes("↳ planner: “between agents"),
+      `${up}\n${elsewhere}`,
+    )
+    await esc()
+  }
   const nowhere = await enter(`hello all (${tag})`, (f) => says(f, "choose a recipient first"))
   save("no-recipient")
   check(`${at}: all traffic has no recipient: the box says so, and enter refuses, keeps the draft and stores nothing`, target(traffic, "no recipient in all traffic") && says(nowhere, "choose a recipient first (open a channel or an agent)") && inBox(nowhere, `hello all (${tag})`) && (await general()).length === before, nowhere)
@@ -651,6 +692,22 @@ async function run(s: Space, width: number, height: number, tag: string) {
 
   const namesake = await s.namesake(tag)
   await until(() => row(s, login.toUpperCase()), (p) => p !== undefined)
+  // At 80x24 the name-in-use toast later opens where this click leaves the pointer, and a toast
+  // under the pointer does not time out.
+  if (s.mode === "open" && width === 209) {
+    const hello = `same name, other session (${tag})`
+    await namesake.ep.unicast(principal, hello)
+    await openRow(s, login.toUpperCase())
+    await see((f) => inFeed(f, hello))
+    click(hello)
+    const named = await see((f) => says(f, "under your name"), 3000)
+    save("namesake-click")
+    check(
+      `${at}: a direct message from another session under the human's name, in other letter case, refuses with a line that says so`,
+      says(named, "that is from another session under your name") && !named.includes(`↳ ${login.toUpperCase()}:`),
+      named,
+    )
+  }
   const quit = await enter("/quit", (f) => says(f, "session ended"))
   const gone = await until(() => s.reader.getRoster().find((p) => p.card.id === principal), (p) => p === undefined || p.status === "offline")
   const left = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)

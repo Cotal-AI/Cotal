@@ -151,6 +151,8 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   Its quotes reply with `replyTo` from `↑` and a click. A burst of one direct message to several
   agents is quoted only when its first copy came to you, and its reply names your copy.
   After Change your name and `/quit`, `↑` passes over your own direct messages.
+  `↑` and a click also pass over a namesake's message, an agent's channel posts in its
+  conversation, and a direct message between two agents in all traffic.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
