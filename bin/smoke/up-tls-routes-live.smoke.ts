@@ -625,17 +625,17 @@ async function main(): Promise<void> {
 
     try {
       // `status` is informational. Its security claim is the rendered verdict: the substituted
-      // listener must be UNREACHABLE, never ok. BOTH surfaces matter: the selected space's
+      // listener must report its missing required TLS, never ok. BOTH surfaces matter: the selected space's
       // connection AND the Recorded Meshes row, whose CHECK is the list's own probe. A fix that reds
       // only the selected line while the list still prints green `reachable` via a bare TCP/INFO
       // probe is the FAIL1 residual that greened a substitute in one section while redding another.
       // The approved screen shows the selected verdict; `--verbose` adds the record-level sections,
       // the list among them. Color is pinned off so a word boundary is not an ANSI code.
       const result = cotal(["status", "--verbose"], home, cwd, { FORCE_COLOR: "0" });
-      assert.match(result.out, /Connection:\s+.*unreachable/,
-        `GATE FAILED (status): the selected space did not report the substituted plaintext broker unreachable:\n${result.out}`);
-      assert.match(result.out, /connection:\s+.*unreachable/,
-        `GATE FAILED (status Selected Mesh): did not report the substituted plaintext broker unreachable:\n${result.out}`);
+      assert.match(result.out, /Connection:[^\r\n]*listener does not offer required TLS/,
+        `GATE FAILED (status): the selected space did not report the plaintext broker's missing required TLS:\n${result.out}`);
+      assert.match(result.out, /connection:\s+tls-unsupported\b/,
+        `GATE FAILED (status Selected Mesh): did not classify the substituted plaintext broker as tls-unsupported:\n${result.out}`);
       assert.match(result.out, new RegExp(`\\bdown\\b.*127\\.0\\.0\\.1:${port}\\b.*tls-required`),
         `GATE FAILED (status Recorded Meshes): list did not mark the TLS-required mesh down ` +
         `under a plaintext substitute (still greening via bare isReachable):\n${result.out}`);
@@ -647,7 +647,7 @@ async function main(): Promise<void> {
     } finally {
       try { process.kill(-nats.pid!, "SIGKILL"); } catch { try { nats.kill("SIGKILL"); } catch { /* */ } }
     }
-    console.log("  ✓ status: DEMANDS TLS - reported a plaintext broker under a TLS-required record unreachable");
+    console.log("  ✓ status: DEMANDS TLS - reported missing required TLS on the substituted plaintext broker");
   });
 
 
@@ -1078,15 +1078,15 @@ async function main(): Promise<void> {
     try {
       // The approved screen names a tls-trust verdict "TLS could not be verified".
       const st = cotal(["status"], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
-      assert.match(st.out, /Connection:\s+.*unreachable/,
-        `GATE FAILED (S10 mirror): plaintext-on-port must be unreachable, not tls-trust:\n${st.out}`);
+      assert.match(st.out, /Connection:[^\r\n]*listener does not offer required TLS/,
+        `GATE FAILED (S10 mirror): plaintext-on-port must report missing required TLS, not tls-trust:\n${st.out}`);
       assert.doesNotMatch(st.out, /tls-trust|TLS could not be verified/,
         `GATE FAILED (S10 mirror): plaintext substitute classified tls-trust:\n${st.out}`);
     } finally {
       try { process.kill(plain.pid!, "SIGTERM"); } catch { /* */ }
       down(home, cwd);
     }
-    console.log("  ✓ S10: no-CA keeps tlsRequired registry; plaintext-on-port is unreachable not tls-trust");
+    console.log("  ✓ S10: no-CA keeps tlsRequired registry; plaintext-on-port lacks required TLS, distinct from tls-trust");
   });
 
   // ── T: A CERTIFICATE THAT NAMES ONLY THE DIALED IP. ────────────────────────────────────────────
