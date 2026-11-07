@@ -133,7 +133,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const k = draftHere()
     const t = talk()
     if (!u || !k || !t) return
-    setComposer((s) => u.quoteRow(s, k, e, t.isYou))
+    setComposer((s) => u.quoteRow(s, k, e, t.you()))
     toBox()
   }
   // A quote moved off screen scrolls into view; with none the conversation follows its newest row again.

@@ -1,7 +1,7 @@
 import { publishOutcome, recipientLabel, replyRecipient, settlePublish, SLASH_COMMANDS, submitDraft, type Answerable, type PublishResult, type Recipient, type SlashCommand } from "@cotal-ai/workspace/chat"
 import type { FeedEntry } from "./live.js"
 import type { DraftKey } from "./screen.js"
-import type { AppSlash, Outcome, TalkPhase } from "./talk.js"
+import type { AppSlash, Outcome, TalkPhase, You } from "./talk.js"
 
 /** The message a draft answers. Its recipient came from the reply rule, not from the open
  *  conversation, and `line` shows the human what is being answered. */
@@ -139,17 +139,18 @@ export function unsent(state: ComposerState): ComposerState {
 
 type Quotable = Answerable & { text: string }
 
-/** Whether a sender is the human, under the open session or an earlier one. */
-export type You = (who: FeedEntry["from"]) => boolean
+/** Whether a sender is the human: a session this app run opened, or one under their chat name in any
+ *  letter case. */
+const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
 
 /** Where a reply to `m` goes. The reply rule refuses a direct message from `self`, and each of the
- *  human's sessions has its own principal, so a message from an earlier one counts as `self` too. */
-const answer = (m: Answerable, you: You) => replyRecipient(m, you(m.from) ? m.from.id : "")
+ *  human's sessions has its own principal, so a message from any of them counts as `self` too. */
+const answer = (m: Answerable, you: You) => replyRecipient(m, isYou(you, m.from) ? m.from.id : "")
 
 /** A burst coalesced into one row keeps its first copy's id, so the row answers only when that copy
  *  came to the human. */
 function rowAnswer(e: FeedEntry, you: You): Recipient | { readonly refused: string } {
-  if ((e.count ?? 1) > 1 && !you({ id: e.toIds?.[0] ?? "", name: e.toNames?.[0] ?? "" })) return { refused: "that message went to several recipients; open its sender in the tree to answer" }
+  if ((e.count ?? 1) > 1 && !isYou(you, { id: e.toIds?.[0] ?? "", name: e.toNames?.[0] ?? "" })) return { refused: "that message went to several recipients; open its sender in the tree to answer" }
   return answer(answerable(e), you)
 }
 

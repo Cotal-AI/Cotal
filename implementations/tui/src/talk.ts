@@ -38,6 +38,10 @@ export type TalkPhase =
 /** The name the next session appears as, resolved when the space opens and again at each open. */
 export type NameState = { state: "resolving" } | { state: "ok"; name: ChatName } | { state: "refused"; message: string; remedy?: string }
 
+/** The human as a sender: the principals of the chat sessions this app run opened, in any space, and
+ *  the chat name, in lower case, that any other session of theirs carries. */
+export type You = { readonly principals: ReadonlySet<string>; readonly name?: string }
+
 /** The directed messages the session received and sent, as feed rows. */
 export type OwnTraffic = { received: readonly FeedEntry[]; sent: readonly FeedEntry[] }
 
@@ -65,9 +69,9 @@ export interface Talk {
   latest(): SessionMessage | undefined
   /** Whether a row's mentions name the human, under the open session's name or the next one's. */
   mentionsYou(e: FeedEntry): boolean
-  /** Whether a sender is the human: the open session, or any session under the human's name, as
-   *  each session joins under its own principal and earlier ones stay in the conversation. */
-  isYou(who: FeedEntry["from"]): boolean
+  /** Who the human is as a sender. Each session joins under its own principal, and earlier ones stay
+   *  in the conversation. The name is the open session's, else the next one's. */
+  you(): You
   /** `/quit` and End your chat session. */
   end(): Promise<Closed | undefined>
   /** Saves the `name` preference, or unsets it, and resolves the name again. An open session keeps
@@ -86,6 +90,9 @@ export const APP_WORDS: ChatWords = {
 const NAME_REMEDY = "change it with ctrl+p, Change your name, to be reached by name"
 const OWN_ROWS = 200
 const QUIT_MS = 5000
+
+/** The principals of the chat sessions this app run opened, in every space it opened. */
+const opened = new Set<string>()
 
 /** What the app's session asks for. It reads nothing itself, because the observer reads every
  *  channel. A static or user session may post to the channel it opened on, as `cotal chat <channel>`
@@ -188,6 +195,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       }
       if (shut) return void (await s.close())
       session = s
+      opened.add(s.identity().principal)
       ending = false
       unsubscribe = s.subscribe((ev) => {
         if (ev.type === "message") {
@@ -239,10 +247,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       const n = current()
       return n !== undefined && mentionsName(e.mentions, n)
     },
-    isYou: (who) => {
-      const p = phase()
-      return (p.phase === "open" && who.id === p.identity.principal) || who.name === current()
-    },
+    you: () => ({ principals: opened, name: current()?.toLowerCase() }),
     end: async () => {
       const s = session
       if (!s) return undefined
