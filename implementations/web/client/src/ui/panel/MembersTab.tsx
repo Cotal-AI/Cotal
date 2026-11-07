@@ -1,6 +1,7 @@
 import { Delete02Icon } from "@hugeicons/core-free-icons";
-import { useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import { Icon } from "../../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import { channelMembers } from "../../lib/members.js";
 import { pillState } from "../../lib/membership.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
@@ -17,10 +18,6 @@ import { DeleteChannelDialog } from "./DeleteChannelDialog.tsx";
 
 /** Stable empty list, so the store selector returns the same reference while nothing is open. */
 const NONE: StoredMessage[] = [];
-
-/** The part of the trigger button focus returns to. Spelled out rather than taken from the DOM lib,
- *  because the suites typecheck the components that render on the server with no DOM lib. */
-type Focusable = { focus(): void };
 
 /** How the channel delivers, as the Delivery row says it: its class, then its replay window
  *  ("durable, replay 24h"). Undefined for a channel whose policy the server has not sent yet (a row
@@ -66,8 +63,6 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
   const peers = useMemo(() => new Map(everyone.map((r) => [r.id, r])), [everyone]);
   const info = channels.find((c) => c.channel === channel);
   const delivery = deliveryText(info);
-  const [deleting, setDeleting] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
   const n = members.length;
   return (
     <>
@@ -97,21 +92,12 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
         {delivery && <><dt>Delivery</dt><dd>{delivery}</dd></>}
         {info && <><dt>Messages</dt><dd className="ui-num">{info.messages}</dd></>}
       </dl>
-      <button ref={trigger} type="button" className="ui-btn ui-btn-danger" style={{ marginTop: 4 }} onClick={() => setDeleting(true)}>
-        <Icon icon={Delete02Icon} size={16} className="ui-ic ui-ic16" />
-        Delete channel
-      </button>
-      {deleting && (
-        <DeleteChannelDialog
-          channel={channel}
-          space={space}
-          controller={controller}
-          onClose={() => {
-            setDeleting(false);
-            (trigger.current as unknown as Focusable | null)?.focus();
-          }}
-        />
-      )}
+      <DeleteChannelDialog channel={channel} space={space} controller={controller}>
+        <Button type="button" variant="destructive" className="mt-1">
+          <Icon icon={Delete02Icon} data-icon="inline-start" />
+          Delete channel
+        </Button>
+      </DeleteChannelDialog>
     </>
   );
 }

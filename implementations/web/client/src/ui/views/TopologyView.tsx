@@ -6,6 +6,8 @@ import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { TopologyGraph } from "../graph/TopologyGraph.tsx";
 import { MembershipPill } from "../MembershipPill.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
+import { Toggle } from "#client/ui/shadcn/toggle.tsx";
 
 /** What each kind of line in the graph means, in the same dress the graph gives it, and the arc a
  *  working agent's node carries. */
@@ -57,9 +59,9 @@ export function useTopology(store: Store<DashboardState>, clock: () => number, i
   return { model, membership, now, hideOffline, setHideOffline };
 }
 
-/** The topology view: the mesh as a graph from the rail. The header holds the membership pill
- *  and the "Hide offline" button (on by default, as the old graph had it), the graph fills the page
- *  and the legend sits under it.
+/** The topology view: the mesh as a graph from the rail. The header holds the SidebarToggle, the
+ *  membership pill and the "Hide offline" button (on by default, as the old graph had it), the graph
+ *  fills the page and the legend sits under it.
  *
  *  The graph is a function of the store and of `clock`, the one place time comes in (`useTopology`).
  *  A suite passes a fixed clock.
@@ -70,12 +72,13 @@ export function TopologyView({ store, clock = Date.now, initialHideOffline = tru
   return (
     <>
       <header className="ui-bar">
+        <SidebarToggle />
         <h1>Topology</h1>
         <span className="ui-sp" />
         <MembershipPill state={pillState(membership, now)} reason={membership.unreadable} />
-        <button type="button" className="ui-btn ui-btn-sm" aria-pressed={hideOffline} onClick={() => setHideOffline(!hideOffline)}>
+        <Toggle variant="outline" size="sm" pressed={hideOffline} onPressedChange={setHideOffline}>
           Hide offline
-        </button>
+        </Toggle>
       </header>
       <div className="ui-scroll">
         <div className="ui-col ui-col-wide">

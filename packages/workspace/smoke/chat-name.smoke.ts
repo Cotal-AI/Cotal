@@ -55,6 +55,9 @@ try {
     accepted.every((v) => chatNameProblem(v) === undefined), accepted.filter((v) => chatNameProblem(v) !== undefined));
   check("an @mention of every accepted name gives the name back whole",
     accepted.every((v) => JSON.stringify(mentionsIn(`@${v}`)) === JSON.stringify([v])), accepted.map((v) => mentionsIn(`@${v}`)));
+  const ended = accepted.flatMap((v) => [`thanks @${v}.`, `ask @${v}...`, `@${v}-`, `@${v}.-`]);
+  check("an @mention at the end of a sentence, or followed by a dash, gives the name back whole",
+    ended.every((t, i) => JSON.stringify(mentionsIn(t)) === JSON.stringify([accepted[Math.floor(i / 4)]])), ended.map((t) => mentionsIn(t)));
   check("the name preference is held to the same rule", preferenceValueProblem("name", "Ops Lead")?.endsWith(RULE) === true && preferenceValueProblem("name", "ops_lead") === undefined);
 
   console.log("2. open and static: the OS login, with no suffix");
@@ -64,8 +67,8 @@ try {
     const s = await resolveChatName(staticTarget, { preferences: NONE, login: () => "manas" });
     check("a static space names it the OS login too", s.name === "manas" && s.source === "login", s);
     const bad = await refusal(resolveChatName(open, { preferences: NONE, login: () => "" }));
-    check("an OS login that fails the rule refuses with the config remedy",
-      bad?.code === "USAGE_INVALID" && bad.message.includes(RULE) && bad.remedy === "save a name with `cotal config set name <name>`", bad);
+    check("an OS login that fails the rule refuses on its own, naming --name and the config remedy",
+      bad?.code === "USAGE_INVALID" && bad.selfContained === true && bad.message.includes(RULE) && bad.remedy === "pass `--name <name>`, or save a name with `cotal config set name <name>`", bad);
   }
 
   console.log("3. the flag, then the saved name, win over the mode's name");
@@ -105,7 +108,8 @@ try {
 
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "human@example.test" } };
     const long = await refusal(resolveChatName(user, { preferences: NONE }));
-    check("an account name an earlier build recorded that fails the rule refuses with the config remedy", long?.code === "USAGE_INVALID" && long.remedy === "save a name with `cotal config set name <name>`", long);
+    check("an account name an earlier build recorded that fails the rule refuses on its own, naming signing in again, --name and the config remedy",
+      long?.code === "USAGE_INVALID" && long.selfContained === true && long.remedy === `sign in again with \`cotal login --idp ${IDP}\`, pass \`--name <name>\`, or save a name with \`cotal config set name <name>\``, long);
 
     const unknown = await refusal(resolveChatName({ ...user, userAuth: { ...user.userAuth!, provider: "absent-provider" } }, { preferences: NONE }));
     check("an unregistered auth provider refuses as UNSUPPORTED", unknown?.code === "UNSUPPORTED" && unknown.message.includes("absent-provider"), unknown);

@@ -17,7 +17,7 @@ function TurnHead({ turn, row }: { turn: WorkTurn; row: RosterRow }) {
   const now = useNow(current && (row.status === "working" || row.status === "waiting"));
   const { title, failed } = turnTitle(turn, row.status, now);
   const description = turnDescription(turn);
-  const icon = live ? <Spinner className="ox-live" />
+  const icon = live ? <Spinner className="ox-live" role={undefined} aria-label={undefined} aria-hidden />
     : <Icon icon={turn.outcome === "finished" ? Tick02Icon : turn.outcome === "failed" ? AlertCircleIcon : current && row.status === "waiting" ? HourglassIcon : UnavailableIcon} size={16} />;
   return (
     <TraceLine status={turn.outcome === "failed" ? "error" : undefined} className="ox-line">

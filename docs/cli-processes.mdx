@@ -76,6 +76,10 @@ inventories are not readable from the serve credential. See [control surface](co
 The manager prints what its boot inventory found once it is up, so a start that is refused prints
 no boot line.
 
+A remote manager's boot goal-index scan skips entries deleted after settlement or withdrawal and
+returns the remaining live entries for its owner. Purged entries and malformed live rows still
+refuse the scan; an ordinary terminal deletion does not prevent predecessor reconciliation.
+
 
 ### Control-only execution
 
@@ -107,6 +111,8 @@ that hosts the space. Before it connects, `supervise` refuses the same way, with
 stopped or not started gets `TARGET_UNAVAILABLE` and `cotal up` there, and with `--server` also the
 folder whose `cotal up` started that broker. A static or user-auth space that another folder hosts
 gets `PERMISSION_DENIED` and the folder that hosts it, when this folder holds no signer for it.
+
+For a stopped seat with a runtime custody reference, shutdown carries that reference into retirement so the runtime can reap its recorded work before footprint cleanup.
 
 Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops process-bound seats, releases seats the runtime can leave running, and applies retained-state policy to preserved seats. For a seat selected for stop, the runtime must prove exit before the manager releases its lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while

@@ -1,7 +1,7 @@
 import { publishOutcome, recipientLabel, replyRecipient, settlePublish, SLASH_COMMANDS, submitDraft, type Answerable, type PublishResult, type Recipient, type SlashCommand } from "@cotal-ai/workspace/chat"
 import type { FeedEntry } from "./live.js"
-import type { DraftKey } from "./screen.js"
-import type { AppSlash, Outcome, TalkPhase } from "./talk.js"
+import type { DraftKey, Open } from "./screen.js"
+import type { AppSlash, Outcome, TalkPhase, You } from "./talk.js"
 
 /** The message a draft answers. Its recipient came from the reply rule, not from the open
  *  conversation, and `line` shows the human what is being answered. */
@@ -12,11 +12,16 @@ export type Draft = { text: string; reply?: Quote }
 
 export type Tone = Outcome["tone"]
 
-/** The composer's state. Only the composer writes drafts. One send is in flight at a time, with the
- *  text the draft held at Enter. */
+/** A send in flight: the conversation it was typed in, where it goes, and the text its draft held at
+ *  Enter. */
+type Sending = { key: DraftKey; to: Recipient; text: string }
+
+/** The composer's state. Only the composer writes drafts. */
 export type ComposerState = {
   drafts: Readonly<Record<DraftKey, Draft>>
-  sending?: { key: DraftKey; to: Recipient; text: string }
+  /** Each space's send in flight. A space sends one message at a time, and a send in one space
+   *  never holds up another. */
+  sending: Readonly<Record<string, Sending>>
   /** The latest outcome or refusal, shown under the draft it belongs to. */
   notice?: { key: DraftKey; tone: Tone; lines: readonly string[] }
 }
@@ -87,7 +92,7 @@ export function submit(
     return p.phase === "ended" && at.name ? note("hint", `new session as ${at.name}; enter sends`, open) : { state: { ...state, notice: undefined }, effect: open }
   }
   const watching = p.phase === "watching"
-  const d = submitDraft(draft.text, { recipient: at.recipient, connection: watching ? "connected" : p.connection, sending: state.sending !== undefined, pick: NO_RECIPIENT })
+  const d = submitDraft(draft.text, { recipient: at.recipient, connection: watching ? "connected" : p.connection, sending: state.sending[at.space] !== undefined, pick: NO_RECIPIENT })
   switch (d.kind) {
     case "nothing":
       return { state, effect: { kind: "none" } }
@@ -107,17 +112,23 @@ export function submit(
     }
     case "publish":
       return {
-        state: { ...state, sending: { key, to: d.to, text: draft.text }, notice: { key, tone: "waiting", lines: [`sending to ${recipientLabel(d.to, NO_RECIPIENT)}…`] } },
+        state: { ...state, sending: { ...state.sending, [at.space]: { key, to: d.to, text: draft.text } }, notice: { key, tone: "waiting", lines: [`sending to ${recipientLabel(d.to, NO_RECIPIENT)}…`] } },
         effect: { kind: "publish", to: d.to, text: d.text, ...(watching ? { open: postTo(d.to) } : {}) },
       }
   }
 }
 
-/** A send's outcome. The draft clears only when it still holds the text sent, a stored reply drops
- *  its quote, and a refused or unknown send keeps the draft and is never resent. A plain stored send
- *  says nothing: the message shows in the conversation. */
-export function settled(state: ComposerState, result: PublishResult): ComposerState {
-  const s = state.sending
+/** `space`'s send settled: its slot frees, and the notice under the draft it was typed in goes. */
+function sent(state: ComposerState, space: string, s: Sending): ComposerState {
+  const { [space]: _, ...sending } = state.sending
+  return { ...state, sending, notice: state.notice?.key === s.key ? undefined : state.notice }
+}
+
+/** `space`'s send has its outcome. The draft clears only when it still holds the text sent, a stored
+ *  reply drops its quote, and a refused or unknown send keeps the draft and is never resent. A plain
+ *  stored send says nothing: the message shows in the conversation. */
+export function settled(state: ComposerState, space: string, result: PublishResult): ComposerState {
+  const s = state.sending[space]
   if (!s) return state
   const draft = state.drafts[s.key] ?? { text: "" }
   const now = { recipient: draft.reply?.to, draft: draft.text }
@@ -125,31 +136,44 @@ export function settled(state: ComposerState, result: PublishResult): ComposerSt
   const reply = out.recipient === now.recipient ? draft.reply : undefined
   const said = publishOutcome(result)
   const lines = result.outcome === "unknown" ? [out.notice!.text] : [said.text, ...(out.notice ? [out.notice.text] : [])]
-  const { sending: _, ...rest } = withDraft(state, s.key, { text: out.draft, ...(reply ? { reply } : {}) })
-  if (result.outcome === "stored" && !out.notice) return { ...rest, notice: undefined }
+  const rest = sent(withDraft(state, s.key, { text: out.draft, ...(reply ? { reply } : {}) }), space, s)
+  if (result.outcome === "stored" && !out.notice) return rest
   return { ...rest, notice: { key: s.key, tone: out.notice?.tone ?? said.tone, lines } }
 }
 
-/** The session a first message needed did not open: nothing was sent, the draft stays, and the
- *  session's own line says why. */
-export function unsent(state: ComposerState): ComposerState {
-  const { sending: _, ...rest } = state
-  return { ...rest, notice: undefined }
+/** The session `space`'s first message needed did not open: nothing was sent, the draft stays, and
+ *  the session's own line or the space's close says why. */
+export function unsent(state: ComposerState, space: string): ComposerState {
+  const s = state.sending[space]
+  return s ? sent(state, space, s) : state
 }
 
 type Quotable = Answerable & { text: string }
+type Refused = { readonly refused: string }
 
-/** Whether a sender is the human, under the open session or an earlier one. */
-export type You = (who: FeedEntry["from"]) => boolean
+/** Whether a sender is the human: a session this app run opened, or one under their chat name in any
+ *  letter case. */
+const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
 
-/** Where a reply to `m` goes. The reply rule refuses a direct message from `self`, and each of the
- *  human's sessions has its own principal, so a message from an earlier one counts as `self` too. */
-const answer = (m: Answerable, you: You) => replyRecipient(m, you(m.from) ? m.from.id : "")
+/** Where a reply to `m` goes. A direct message or role task from the human refuses, from any of their
+ *  sessions. One under their name that this app run did not open may be another person's, so its
+ *  refusal says only that. */
+function answer(m: Answerable, you: You): Recipient | Refused {
+  if (m.kind !== "channel" && !you.principals.has(m.from.id) && isYou(you, m.from)) return { refused: "that is from another session under your name" }
+  return replyRecipient(m, you.principals.has(m.from.id) ? m.from.id : "")
+}
 
-/** A burst coalesced into one row keeps its first copy's id, so the row answers only when that copy
+/** Where a reply to a row of the `open` conversation goes, or why the row cannot be quoted. A direct
+ *  conversation quotes only direct messages. A direct message is answered only by a recipient, and a
+ *  burst coalesced into one row keeps its first copy's id, so the row answers only when that copy
  *  came to the human. */
-function rowAnswer(e: FeedEntry, you: You): Recipient | { readonly refused: string } {
-  if ((e.count ?? 1) > 1 && !you({ id: e.toIds?.[0] ?? "", name: e.toNames?.[0] ?? "" })) return { refused: "that message went to several recipients; open its sender in the tree to answer" }
+function rowAnswer(e: FeedEntry, you: You, open: Open): Recipient | Refused {
+  if (e.delivery === "multicast" && open.kind === "peer") return { refused: `that is a #${e.channel} post; reply to it in #${e.channel}` }
+  if (e.delivery === "unicast" && !isYou(you, e.from)) {
+    const yours = (e.toIds ?? []).map((id, i) => isYou(you, { id, name: e.toNames?.[i] ?? "" }))
+    if (!yours.includes(true)) return { refused: "that direct message was not sent to you" }
+    if (!yours[0]) return { refused: `that message went to several recipients; ${open.kind === "peer" && open.id === e.from.id ? "answer its sender here without a quote" : "open its sender in the tree to answer"}` }
+  }
   return answer(answerable(e), you)
 }
 
@@ -163,7 +187,7 @@ const answerable = (e: FeedEntry): Quotable => ({
 })
 
 /** Quotes `m` in the draft for `key`, keeping its text. `to` is where the reply rule sends it. */
-function quote(state: ComposerState, key: DraftKey, m: Quotable, to: Recipient | { readonly refused: string }): ComposerState {
+function quote(state: ComposerState, key: DraftKey, m: Quotable, to: Recipient | Refused): ComposerState {
   if ("refused" in to) return { ...state, notice: { key, tone: "failed", lines: [to.refused] } }
   const line = m.text.split("\n")[0]!
   return { ...withDraft(state, key, { text: state.drafts[key]?.text ?? "", reply: { id: m.id, to, from: m.from.name, line } }), notice: undefined }
@@ -175,8 +199,8 @@ export function replyFrom(state: ComposerState, key: DraftKey, m: Quotable | und
   return quote(state, key, m, answer(m, you))
 }
 
-/** Quotes a conversation row, as a click or `↑` `↓` picks it. */
-export const quoteRow = (state: ComposerState, key: DraftKey, e: FeedEntry, you: You) => quote(state, key, answerable(e), rowAnswer(e, you))
+/** Quotes a row of the `open` conversation, as a click or `↑` `↓` picks it. */
+export const quoteRow = (state: ComposerState, key: DraftKey, e: FeedEntry, you: You, open: Open) => quote(state, key, answerable(e), rowAnswer(e, you, open))
 
 /** `esc`: the draft drops its quote and keeps its text. */
 export function unquote(state: ComposerState, key: DraftKey): ComposerState {
@@ -184,16 +208,16 @@ export function unquote(state: ComposerState, key: DraftKey): ComposerState {
   return d?.reply ? withDraft(state, key, { text: d.text }) : state
 }
 
-/** The conversation rows a quote moves through, oldest first: event traffic and the rows the reply
- *  rule refuses, such as the human's own direct messages, are passed over. */
-export const quotable = (feed: readonly FeedEntry[], you: You) => feed.filter((e) => !e.events && !("refused" in rowAnswer(e, you)))
+/** The rows of the `open` conversation a quote moves through, oldest first: event traffic and the rows
+ *  the reply rule refuses, such as the human's own direct messages, are passed over. */
+export const quotable = (feed: readonly FeedEntry[], you: You, open: Open) => feed.filter((e) => !e.events && !("refused" in rowAnswer(e, you, open)))
 
 /** `↑` (-1) or `↓` (1) on an empty box moves the quote through `rows`. With no quote, or one not
  *  among them, it starts below the newest. `↑` stops at the oldest; `↓` past the newest drops it. */
-export function walk(state: ComposerState, key: DraftKey, rows: readonly FeedEntry[], you: You, by: -1 | 1): ComposerState {
+export function walk(state: ComposerState, key: DraftKey, rows: readonly FeedEntry[], you: You, open: Open, by: -1 | 1): ComposerState {
   const at = rows.findIndex((e) => e.id === state.drafts[key]?.reply?.id)
   const next = (at < 0 ? rows.length : at) + by
   if (next >= rows.length) return unquote(state, key)
   const e = rows[Math.max(0, next)]
-  return e ? quoteRow(state, key, e, you) : state
+  return e ? quoteRow(state, key, e, you, open) : state
 }

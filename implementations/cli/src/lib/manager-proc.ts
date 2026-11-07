@@ -139,16 +139,35 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
 
 /** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
  *  records its pid under whatever folder it was started from, so no one root's record can rule it
- *  out; the process table can. One whose argv names no space serves what its folder or environment
- *  selects, so it counts, and a process table that cannot be listed proves nothing. */
+ *  out; the process table can. One whose argv names no space serves what its environment or folder
+ *  selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that variable names the
+ *  space it serves, and one it reads for another space is not a manager of this one. A supervisor
+ *  whose environment cannot be read or names no space counts, and a process table that cannot be
+ *  listed proves nothing. */
 export function supervisorMayServe(space: string): boolean {
-  const ps = spawnSync("ps", ["-A", "-ww", "-o", "args="], { encoding: "utf8" });
+  const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
   if (ps.error || ps.status !== 0) return true;
-  return ps.stdout.split("\n").some((command) => {
-    if (!commandIsCotalSupervisor(command)) return false;
-    const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(command)?.[1];
+  return ps.stdout.split("\n").some((line) => {
+    const row = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!row || !commandIsCotalSupervisor(row[2]!)) return false;
+    const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(row[2]!)?.[1] ?? environmentSpace(Number(row[1]));
     return named === undefined || named === space;
   });
+}
+
+/** The `COTAL_SPACE` a process was started with, read from its environment; undefined when the
+ *  environment is unreadable (another user's process, or no procfs) or names no space. */
+function environmentSpace(pid: number): string | undefined {
+  let environ: string;
+  try {
+    environ = readFileSync(`/proc/${pid}/environ`, "latin1");
+  } catch {
+    return undefined;
+  }
+  for (const entry of environ.split("\0")) {
+    if (entry.startsWith("COTAL_SPACE=")) return entry.slice("COTAL_SPACE=".length) || undefined;
+  }
+  return undefined;
 }
 
 

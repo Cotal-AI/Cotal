@@ -298,7 +298,7 @@ const metadata = [
   "---",
   "title: MCP tool catalog",
   "description: Arguments, availability, and effects of the Cotal tools exposed to agent sessions.",
-  "kind: Reference",
+  "kind: \"Reference: the `cotal_*` tool surface every connected agent gets.\"",
   "audience: agents and operators",
   "---",
   "",

@@ -5,6 +5,7 @@ import { partsToText } from "../../lib/parts.js";
 import type { RosterRow } from "../../lib/roster.js";
 import { formatRoute } from "../../lib/route.js";
 import type { StoredMessage } from "../../state/types.js";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { Avatar } from "../Avatar.tsx";
 import { useBadgeOf } from "../identity.js";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
@@ -48,7 +49,7 @@ function Row({ msg, row, place, href, label }: { msg: CotalMessage; row: RosterR
       <div>
         <div className="ui-mh">
           <b>{row.name}</b>
-          <span className="ui-role">{place}</span>
+          <Badge variant="secondary">{place}</Badge>
           <Time ts={msg.ts} />
           <span className="ui-sp" />
           <a className="ox-act" href={href}>

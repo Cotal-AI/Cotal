@@ -3,7 +3,7 @@
  *  words, from what the controller now keeps (when each source last landed, when the observer's
  *  presence watch went silent, a partial page's counts); the partial banner in the Activity view; the
  *  retry that makes "Retrying." true; a closed feed that stays closed; rail items with nowhere to go
- *  that are disabled buttons titled with the empty state; Channels and Direct messages landing on the
+ *  that are disabled buttons described by the empty state; Channels and Direct messages landing on the
  *  last place visited, a conversation named by both parties; the panel's Tab stop when the selected tab is disabled; and an Agents row
  *  marked only while the panel shows that agent. Each cell renders the real components over a seeded
  *  store, on the server or mounted in jsdom, or drives the controller and the boot over a fake Api,
@@ -28,6 +28,7 @@ import { RightPanel, type Panel } from "../client/src/ui/panel/RightPanel.tsx";
 import { StaleMarker } from "../client/src/ui/StaleMarker.tsx";
 import { bootReads, gate, page, unusedApi } from "./controller-harness.js";
 import { mount, type Mounted } from "./mount.js";
+import { inShell } from "./providers.js";
 import { renderShell } from "./render-shell.js";
 
 let n = 0;
@@ -37,6 +38,11 @@ const ok = (name: string, cond: unknown, detail?: unknown) => {
 };
 const same = (name: string, got: unknown, want: unknown) => ok(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
 const settle = () => new Promise((r) => setTimeout(r, 0));
+/** Press a tab as a mouse does: Radix selects a tab on mousedown, not on click. */
+const press = (el: Element | undefined) => {
+  assert.ok(el, "nothing to press");
+  el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+};
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────────────────────────
 const entry = (id: string, name: string, status: RosterEntry["status"]): RosterEntry =>
@@ -54,10 +60,18 @@ const parse = (html: string): HTMLElement => {
   el.innerHTML = html;
   return el;
 };
-/** The stale marker drawn over `marks`: its label and its sentences, in order. */
+/** The label, the sentences in order, and the reasons a callout carries: the reasons are its Tooltip
+ *  on hover and its screen reader text, which a server render holds. */
+const callout = (el: Element) => ({
+  label: textOf(el.querySelector("[data-slot=alert-title]")),
+  lines: Array.from(el.querySelectorAll("[data-slot=alert-description] > div")).map(textOf),
+  reasons: el.querySelector(".ui-sr")?.textContent,
+});
+/** The stale marker drawn over `marks`, as the sidebar draws it. */
 const marker = (marks: StaleMark[]) => {
-  const el = parse(renderToString(createElement(StaleMarker, { store: createStore<DashboardState>({ ...initialState, stale: marks }) })));
-  return { label: textOf(el.querySelector(".ui-stale b")), lines: Array.from(el.querySelectorAll(".ui-stale span")).map(textOf), title: el.querySelector(".ui-stale")?.getAttribute("title") };
+  const el = parse(renderToString(inShell(createElement(StaleMarker, { store: createStore<DashboardState>({ ...initialState, stale: marks }) }))));
+  const note = el.querySelector("#stale[role=note]");
+  return note ? callout(note) : { label: "", lines: [], reasons: undefined };
 };
 const dmMsg = (id: string, from: string, to: string, ts: number) =>
   ({ msg: { id, ts, space: "main", from: { id: from }, to, parts: [{ kind: "text", text: "hi" }] } as unknown as CotalMessage, senderId: from });
@@ -71,20 +85,20 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   const start = (s: Store<DashboardState>, onArrival: () => void) => startDashboard({ store: s, api, openFeed: (h) => ((handlers = h), () => undefined), onArrival });
   const host: RouteHost = { location: { hash: "#/activity", pathname: "/" }, history: { replaceState: () => undefined }, addEventListener: () => undefined, removeEventListener: () => undefined };
   const m = await mount(createElement(App, { host, start }));
-  const side = () => m.container.querySelector("aside.ui-side") as HTMLElement;
+  const side = () => m.container.querySelector("[role=complementary][aria-label=Space]") as HTMLElement;
   const view = () => m.container.querySelector("section.ui-view") as HTMLElement;
   const skeleton = () => ({
-    places: side().querySelectorAll("nav[aria-busy=true] .ui-skel-row").length,
-    rows: side().querySelectorAll("a.ui-row").length,
-    centre: view().querySelectorAll(".ui-skel-msg").length,
+    places: side().querySelectorAll("[role=navigation][aria-label=Places][aria-busy=true] [data-slot=sidebar-menu-skeleton]").length,
+    rows: side().querySelectorAll("[role=navigation][aria-label=Places] a").length,
+    centre: view().querySelectorAll("[aria-hidden=true] [data-slot=skeleton]").length,
     title: textOf(view().querySelector("h1")),
   });
-  same("1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre two skeleton messages, with no place and no view",
-    skeleton(), { places: 6, rows: 0, centre: 2, title: "" });
-  const heads = Array.from(side().querySelectorAll("nav[aria-busy=true] .ui-sec")).map(textOf);
+  same("1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre a title bar and two skeleton messages (eight bars, hidden from assistive tech), with no place and no view",
+    skeleton(), { places: 6, rows: 0, centre: 8, title: "" });
+  const heads = Array.from(side().querySelectorAll("[role=navigation][aria-busy=true] [data-slot=sidebar-group-label]")).map(textOf);
   same("1.2 the skeleton keeps the Channels and Direct messages headings, as the mock draws them", heads, ["Channels", "Direct messages"]);
   await m.run(() => handlers.roster(roster));
-  same("1.3 the roster arriving on the feed does not end the wait while the channel read is still out", skeleton(), { places: 6, rows: 0, centre: 2, title: "" });
+  same("1.3 the roster arriving on the feed does not end the wait while the channel read is still out", skeleton(), { places: 6, rows: 0, centre: 8, title: "" });
   await m.run(async () => {
     channelsRead.resolve([{ channel: "general", messages: 1 }]);
     rosterRead.resolve(roster);
@@ -108,7 +122,7 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   ok("1.7 a refused channel read leaves its wait standing, and the marker says why",
     refused.get().loading.channels && !refused.get().loading.roster && refused.get().stale.some((s) => s.name === "channels"), { loading: refused.get().loading, stale: refused.get().stale });
   const plain = parse(renderShell({ roster }));
-  ok("1.8 a store with nothing outstanding draws no skeleton", plain.querySelector(".ui-skel") === null && plain.querySelector("aside nav[aria-label=Places] a.ui-row") !== null);
+  ok("1.8 a store with nothing outstanding draws no skeleton", plain.querySelector("[data-slot=skeleton]") === null && plain.querySelector("[role=navigation][aria-label=Places] a") !== null);
   const boot = createStore<DashboardState>(structuredClone(initialState));
   const never = new Promise<never>(() => undefined);
   const dash = startDashboard({ store: boot, api: { ...unusedApi, ...bootReads, roster: () => never, channels: () => never } as Api, openFeed: () => () => undefined });
@@ -125,18 +139,18 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
     { kind: "refused", name: "activity", reason: "the read failed: connection reset", lastRead: at(10, 48) },
   ]);
   same("2.2 with two refused sources it names the older read, so neither is claimed fresher than it is, under the mock's label and tooltip",
-    two, { label: "stale: peers, activity", lines: ["Showing what we last read at 10:48. Retrying."], title: "peers: HTTP 503 from /api/roster\nactivity: the read failed: connection reset" });
+    two, { label: "stale: peers, activity", lines: ["Showing what we last read at 10:48. Retrying."], reasons: "peers: HTTP 503 from /api/roster\nactivity: the read failed: connection reset" });
   same("2.3 a source that has never read says only that it is retrying: nothing on screen came from it",
     marker([{ kind: "refused", name: "channels", reason: "HTTP 503" }]).lines, ["Retrying."]);
   const deaf = presenceViewMark({ state: "stale", fresh: false, staleSince: at(10, 52, 14) })!;
   ok("2.4 the observer's silent watch carries the time it went silent", deaf.since === at(10, 52, 14) && deaf.name === "roster", deaf);
   same("2.5 and the marker says it as the notes do, with no retry claim, since no read repairs a silent watch",
-    marker([deaf]), { label: "stale: roster", lines: ["No presence updates since 10:52:14. Showing the last roster we heard."], title: `roster: ${deaf.reason}` });
+    marker([deaf]), { label: "stale: roster", lines: ["No presence updates since 10:52:14. Showing the last roster we heard."], reasons: `roster: ${deaf.reason}` });
   const loading = presenceViewMark({ state: "unpopulated", fresh: false })!;
   same("2.6 a watch still loading has no silent-since time, so there is no sentence and the reason stays in the tooltip",
     [loading.since, marker([loading]).lines], [undefined, []]);
   same("2.7 a partial read says how many sources answered", marker([{ kind: "partial", name: "activity", reason: "direct messages: timeout", read: 1, of: 2, missing: ["direct messages"] }]),
-    { label: "partial: activity", lines: ["1 of 2 sources answered"], title: "activity: direct messages: timeout" });
+    { label: "partial: activity", lines: ["1 of 2 sources answered"], reasons: "activity: direct messages: timeout" });
   same("2.8 refused and partial together draw one sentence each, refused first",
     marker([{ kind: "partial", name: "activity", reason: "x", read: 1, of: 2 }, { kind: "refused", name: "peers", reason: "y", lastRead: at(9, 5) }]).lines,
     ["Showing what we last read at 09:05. Retrying.", "1 of 2 sources answered"]);
@@ -170,7 +184,7 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   same("2.11 a partial page's mark carries its counts and its missing sources",
     partial && { read: partial.read, of: partial.of, missing: partial.missing }, { read: 1, of: 2, missing: ["direct messages"] });
   same("2.12 and its tooltip reads as the mock's: each missing source with its reason",
-    marker(partialStore.get().stale).title, "activity: direct messages: the read did not finish within 8000ms");
+    marker(partialStore.get().stale).reasons, "activity: direct messages: the read did not finish within 8000ms");
 
   let historyUp = true;
   now = at(11, 2);
@@ -188,13 +202,15 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
 // ── 3. The partial banner in the Activity view ───────────────────────────────────────────────────
 {
   const banner = (marks: StaleMark[]) => {
-    const el = parse(renderShell({ roster, stale: marks }, { view: "activity" })).querySelector("section.ui-view .s-banner");
-    return el && { title: el.getAttribute("title"), label: textOf(el.querySelector("b")), spans: Array.from(el.querySelectorAll("span")).map(textOf), role: el.getAttribute("role") };
+    const el = parse(renderShell({ roster, stale: marks }, { view: "activity" })).querySelector("section.ui-view [role=status]");
+    if (!el) return null;
+    const { label, lines, reasons } = callout(el);
+    return { reasons, label, spans: lines, role: el.getAttribute("role") };
   };
   const dm: StaleMark = { kind: "partial", name: "activity", reason: "direct messages: the read did not finish within 8000ms", read: 1, of: 2, missing: ["direct messages"] };
-  same("3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover",
+  same("3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover and for screen readers",
     banner([dm]), {
-      title: "direct messages: the read did not finish within 8000ms",
+      reasons: "direct messages: the read did not finish within 8000ms",
       label: "partial: activity",
       spans: ["1 of 2 sources answered", "Direct messages didn't load in time, so this page shows channel messages only."],
       role: "status",
@@ -205,11 +221,11 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   ok("3.4 a whole page, or a refusal that is not partial, has no banner",
     banner([]) === null && banner([{ kind: "refused", name: "activity", reason: "x" }]) === null);
   const first = parse(renderShell({ roster, stale: [dm] }, { view: "activity" })).querySelector("section.ui-view .ui-col")?.firstElementChild;
-  ok("3.5 the banner heads the list, above the rows", first?.classList.contains("s-banner") === true, first?.className);
+  ok("3.5 the banner heads the list, above the rows", first?.getAttribute("role") === "status" && textOf(first).startsWith("partial: activity"), first?.outerHTML.slice(0, 200));
   const bar = (marks: StaleMark[]) => parse(renderShell({ roster, stale: marks }, { view: "activity" })).querySelector("section.ui-view header.ui-bar");
   ok("3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it",
-    bar([dm])?.querySelector(".ui-stale") === null && textOf(bar([dm])?.querySelector("h1")) === "Activity"
-      && bar([{ kind: "refused", name: "peers", reason: "x" }])?.querySelector(".ui-stale") !== null);
+    bar([dm])?.querySelector("[role=note]") === null && textOf(bar([dm])?.querySelector("h1")) === "Activity"
+      && bar([{ kind: "refused", name: "peers", reason: "x" }])?.querySelector("[role=note]") !== null);
 }
 
 // ── 4. The boot: a closed feed stays closed, and refused reads are retried ───────────────────────
@@ -301,22 +317,25 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   ok("4.12 stopping clears the one pending retry", queue.size === 0, queue.size);
 }
 
-// ── 5. The rail: disabled items, their titles, and the last place visited ────────────────────────
+// ── 5. The rail: disabled items, their descriptions, and the last place visited ──────────────────
 {
-  const railItems = (el: ParentNode) => Array.from(el.querySelectorAll("nav.ui-rail .ui-rail-btn")).map((i) => ({
+  /** The rail's view items in order: a view's accessible name is its aria-label or its text. */
+  const railButtons = (el: ParentNode) => Array.from(el.querySelectorAll("[role=navigation][aria-label=Views] [data-sidebar=menu-button]"));
+  const nameOf = (i: Element) => i.getAttribute("aria-label") ?? textOf(i);
+  const railItems = (el: ParentNode) => railButtons(el).map((i) => ({
     tag: i.tagName.toLowerCase(),
-    label: i.getAttribute("aria-label"),
+    label: nameOf(i),
     href: i.getAttribute("href"),
     type: i.getAttribute("type"),
     disabled: i.getAttribute("aria-disabled"),
-    title: i.getAttribute("title"),
+    description: textOf(el.querySelector(`[id="${i.getAttribute("aria-describedby")}"]`)) || null,
   }));
   const bare = railItems(parse(renderShell({ space: "main" })));
   same("5.1 Channels and Direct messages with nowhere to go are buttons marked disabled, not bare links, so the keyboard still reaches them",
     bare.slice(1, 3).map((i) => [i.tag, i.type, i.disabled, i.href]), [["button", "button", "true", null], ["button", "button", "true", null]]);
-  same("5.2 each is titled with the empty state the reader would find, keeping its name as its label",
-    bare.slice(1, 3).map((i) => [i.label, i.title]), [["Channels", "No channels yet. One appears with its first message."], ["Direct messages", "No direct messages yet."]]);
-  ok("5.3 an item with somewhere to go is a link titled with its name", bare[0].tag === "a" && bare[0].title === "Activity" && bare[0].disabled === null, bare[0]);
+  same("5.2 each is described by the empty state the reader would find, which its Tooltip shows, keeping its name as its label",
+    bare.slice(1, 3).map((i) => [i.label, i.description]), [["Channels", "No channels yet. One appears with its first message."], ["Direct messages", "No direct messages yet."]]);
+  ok("5.3 an item with somewhere to go is a link named by its label", bare[0].tag === "a" && bare[0].label === "Activity" && bare[0].href === "#/activity" && bare[0].disabled === null, bare[0]);
 
   let goTo!: (r: Route) => void;
   const store = createStore<DashboardState>({
@@ -331,7 +350,7 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
     return createElement(Shell, { store, controller: null, route, paneOpen: false, msgPerSecond: () => 0 });
   };
   const m = await mount(createElement(Harness));
-  const href = (label: string) => m.container.querySelector(`nav.ui-rail [aria-label="${label}"]`)?.getAttribute("href");
+  const href = (label: string) => railButtons(m.container).find((i) => nameOf(i) === label)?.getAttribute("href");
   await m.run(() => goTo({ view: "dm", peer: "local.rev", with: "local.dav" }));
   await m.run(() => goTo({ view: "activity" }));
   same("5.4 Channels lands on the channel last visited, not the first one", href("Channels"), formatRoute({ view: "channel", channel: "review" }));
@@ -356,13 +375,21 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
 {
   const noop = () => undefined;
   const panel = (p: Partial<Panel>): Panel => ({ open: true, tab: "members", agent: null, setTab: noop, selectAgent: noop, showMembers: noop, close: noop, toggle: noop, ...p });
-  const stops = (p: Panel, channel: string | null) =>
-    Array.from(parse(renderToString(createElement(RightPanel, { store: createStore<DashboardState>(structuredClone(initialState)), controller: null, channel, route: channel === null ? { view: "activity" } : { view: "channel", channel }, panel: p, clock: () => 0 }))).querySelectorAll("[role=tab]"))
-      .map((t) => [textOf(t), t.getAttribute("tabindex")]);
-  same("6.1 when the selected tab is disabled the first enabled tab is the list's Tab stop, so the keyboard does not skip the list",
-    stops(panel({ tab: "agent", agent: null }), "review"), [["Members", "0"], ["Agent", "-1"], ["Topology", "-1"]]);
-  same("6.2 off a channel that is Topology", stops(panel({ tab: "members" }), null), [["Members", "-1"], ["Agent", "-1"], ["Topology", "0"]]);
-  same("6.3 an enabled selected tab stays the Tab stop", stops(panel({ tab: "agent", agent: "local.rev" }), "review"), [["Members", "-1"], ["Agent", "0"], ["Topology", "-1"]]);
+  /** Where Tab lands in the panel's tabs: the list is the one Tab stop (`tabindex` 0) and passes the
+   *  focus on to a tab as it arrives, as Radix's roving focus does. */
+  const stops = async (p: Panel, channel: string | null) => {
+    const m = await mount(inShell(createElement(RightPanel, { store: createStore<DashboardState>(structuredClone(initialState)), controller: null, channel, route: channel === null ? { view: "activity" } : { view: "channel", channel }, panel: p, clock: () => 0 })));
+    const list = m.container.querySelector("[role=tablist]") as HTMLElement;
+    const tabStops = Array.from(m.container.querySelectorAll('[role=tablist], [role=tab]')).filter((t) => t.getAttribute("tabindex") === "0").length;
+    await m.run(() => list.focus());
+    const landed = document.activeElement?.getAttribute("role") === "tab" ? textOf(document.activeElement) : null;
+    await m.unmount();
+    return { tabStops, landed };
+  };
+  same("6.1 when the selected tab is disabled Tab lands on the first enabled tab, so the keyboard does not skip the list",
+    await stops(panel({ tab: "agent", agent: null }), "review"), { tabStops: 1, landed: "Members" });
+  same("6.2 off a channel that is Topology", await stops(panel({ tab: "members" }), null), { tabStops: 1, landed: "Topology" });
+  same("6.3 an enabled selected tab is where Tab lands", await stops(panel({ tab: "agent", agent: "local.rev" }), "review"), { tabStops: 1, landed: "Agent" });
 
   localStorage.clear();
   const store = createStore<DashboardState>({ ...structuredClone(initialState), roster });
@@ -372,9 +399,9 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   const row = Array.from(m.container.querySelectorAll(".v3-arow")).find((r) => textOf(r.querySelector("b")) === "david") as HTMLElement;
   await m.run(() => row.click());
   same("6.4 picking a row opens the panel on that agent and marks the row", marked(), ["david"]);
-  await m.run(() => tab("Topology")?.click());
+  await m.run(() => press(tab("Topology")));
   same("6.5 while the panel shows another tab the row is not marked", marked(), []);
-  await m.run(() => tab("Agent")?.click());
+  await m.run(() => press(tab("Agent")));
   same("6.6 back on the Agent tab it is marked again", marked(), ["david"]);
   await m.run(() => (m.container.querySelector('section.ui-pane [aria-label="Close panel"]') as HTMLElement).click());
   same("6.7 a closed panel marks nothing", marked(), []);

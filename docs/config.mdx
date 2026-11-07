@@ -1,7 +1,7 @@
 ---
 title: Configuration
 description: Config files, preferences, environment variables, and local storage for the Cotal CLI and connectors.
-kind: Reference
+kind: "Reference: describes the TypeScript reference implementation (the `cotal` CLI and connectors), not the wire contract."
 audience: operators
 ---
 
@@ -157,7 +157,7 @@ operator default when that preference is absent. `cotal space forget` removes th
 | `detach-key` | `ctrl-<char>` or `^<char>` | no | `COTAL_DETACH_KEY` | `ctrl-]` | `attach` |
 | `color` | `auto`, `always` or `never` | no | `FORCE_COLOR`, then `NO_COLOR` | `auto` | every command |
 | `editor` | an editor command, such as `code --wait` | no | `VISUAL`, then `EDITOR` | none | `persona edit`, `personas edit` |
-| `name` | 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_` | no | none | the handle `cotal login` recorded on a user-auth space, else your OS login | `chat` |
+| `name` | 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_` | no | none | on a user-auth space, the handle `cotal login` recorded; on an open or static space, your OS login | `chat` |
 
 Preference precedence, highest first, is:
 

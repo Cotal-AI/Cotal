@@ -106,11 +106,12 @@ export function Composer(props: {
         // Read before the wait, since a space switch or a catalog entry can unmount the box while
         // the send is out, and the send settles either way.
         const talk = props.talk
+        const space = props.space
         let result: PublishResult | undefined
         try {
           result = await talk.publish(effect.to, effect.text, effect.open)
         } finally {
-          props.setState((s) => (result ? settled(s, result) : unsent(s)))
+          props.setState((s) => (result ? settled(s, space, result) : unsent(s, space)))
         }
         return show(k)
       }
@@ -119,7 +120,7 @@ export function Composer(props: {
         return props.setState((s) => ({ ...s, notice: { key: k, ...out } }))
       }
       case "reply-latest":
-        return props.setState((s) => replyFrom(s, k, props.talk.latest(), props.talk.isYou))
+        return props.setState((s) => replyFrom(s, k, props.talk.latest(), props.talk.you()))
       case "end": {
         const closed = await props.talk.end()
         return props.setState((s) => ({ ...s, notice: { key: k, tone: closed?.clean === false ? "waiting" : "ok", lines: [closed ? closed.summary : "no session was open"] } }))
@@ -144,7 +145,10 @@ export function Composer(props: {
     commands: [{ id: "cotal.compose.tree", bind: "tab", title: "Move to the tree", group: "Move", run: () => props.toTree() }],
   }))
   // With text in the box, the arrows move its cursor.
-  const step = (by: -1 | 1) => props.setState((s) => walk(s, key(), quotable(props.feed, props.talk.isYou), props.talk.isYou, by))
+  const step = (by: -1 | 1) => {
+    const you = props.talk.you()
+    props.setState((s) => walk(s, key(), quotable(props.feed, you, props.open), you, props.open, by))
+  }
   Keymap.createLayer(() => ({
     mode: "compose",
     enabled: (draft()?.text ?? "") === "",

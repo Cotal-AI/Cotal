@@ -1,7 +1,7 @@
 ---
 title: Integration interfaces
 description: Choose Cotal's CLI, endpoint commands, libraries, agent tools, wire protocol, or HTTP interfaces.
-kind: Reference
+kind: "Reference (informative)"
 audience: developers integrating with Cotal
 ---
 
@@ -83,6 +83,17 @@ KV stream keeps its configured storage. Each call still reads fresh broker data 
 completion before returning; interrupted reads throw rather than return a partial view. Consumer
 cleanup, inactivity expiry and recreated-consumer checks remain in place. The temporary cursor
 is not persistent across server loss.
+
+Endpoint registration barriers use this complete value scan for non-service credential families,
+including retained revoked rows. Enumeration keeps its endpoint/instance filter and row validation;
+revocation, verified eviction and freeze/reopen CAS checks are unchanged. Service-authority
+pre-activation evidence still uses the tombstone-preserving leader walk.
+
+The CLI endpoint executor can acknowledge native flow control only for its space's auth KV stream
+(`$JS.FC.KV_<auth-bucket>.>`). Its data writes stay instance-key-pinned; it gains no flow-control
+publication for other streams or accounts, no response wildcard and no longer credential lifetime.
+The remote Manager executor profile is unchanged. A complete scan uses a bounded number of API
+requests plus native flow-control acknowledgments as its payload grows.
 
 ## Agent tools
 

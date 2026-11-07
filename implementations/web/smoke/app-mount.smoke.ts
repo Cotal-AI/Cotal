@@ -32,8 +32,8 @@ const rig = (hash: string) => {
   };
   return { opened, stops: () => stops, start, host, listeners, go: (h: string) => { host.location.hash = h; listeners.forEach((l) => l()); } };
 };
-/** Which rail item says it is the current page. */
-const current = (root: HTMLElement) => root.querySelector('.ui-rail [aria-current="page"]')?.getAttribute("aria-label");
+/** Which item of the Views rail says it is the current page, by the name it shows. */
+const current = (root: HTMLElement) => root.querySelector('[role="navigation"][aria-label="Views"] [aria-current="page"]')?.textContent;
 
 {
   const r = rig("#/channel/review");

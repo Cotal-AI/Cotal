@@ -1,17 +1,6 @@
-// The browser half of the phone layout: whether the window is phone width, followed as it changes.
-import { useSyncExternalStore } from "react";
+// Whether the reader asked for reduced motion. The phone layout follows shadcn's `useIsMobile`.
 
-/** Below 768px wide the dashboard draws the phone layout (mock section F). */
-export const PHONE_QUERY = "(max-width: 767.98px)";
-
-const subscribe = (onChange: () => void): (() => void) => {
-  const query = window.matchMedia(PHONE_QUERY);
-  query.addEventListener("change", onChange);
-  return () => query.removeEventListener("change", onChange);
-};
-
-/** Whether the window is phone width now, redrawing the caller when that changes. A server render
- *  has no window and draws the wide layout. Browser only. */
-export function usePhone(): boolean {
-  return useSyncExternalStore(subscribe, () => window.matchMedia(PHONE_QUERY).matches, () => false);
-}
+/** Whether the reader asked for reduced motion, read when called. A server render has no window and
+ *  reads no. */
+export const reducedMotion = (): boolean =>
+  (globalThis as { matchMedia?: (q: string) => { matches: boolean } }).matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;

@@ -1,5 +1,44 @@
 # @cotal-ai/connector-core
 
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+### Patch Changes
+
+- 1d3edea: Correct bundled DM tool documentation so it no longer promises a stored sequence or complete recipient-status report. The existing tool response and message delivery are unchanged.
+- 9973a9a: Restore the descriptive classifications of migrated documentation pages in the offline docs index while preserving their current categories. Share category parsing between the bundle generator and website checks so a full classification is not mistaken for its category.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
 ## 0.146.0
 
 ### Minor Changes
