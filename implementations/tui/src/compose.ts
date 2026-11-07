@@ -12,11 +12,16 @@ export type Draft = { text: string; reply?: Quote }
 
 export type Tone = Outcome["tone"]
 
-/** The composer's state. Only the composer writes drafts. One send is in flight at a time, with the
- *  text the draft held at Enter. */
+/** A send in flight: the conversation it was typed in, where it goes, and the text its draft held at
+ *  Enter. */
+type Sending = { key: DraftKey; to: Recipient; text: string }
+
+/** The composer's state. Only the composer writes drafts. */
 export type ComposerState = {
   drafts: Readonly<Record<DraftKey, Draft>>
-  sending?: { key: DraftKey; to: Recipient; text: string }
+  /** Each space's send in flight. A space sends one message at a time, and a send in one space
+   *  never holds up another. */
+  sending: Readonly<Record<string, Sending>>
   /** The latest outcome or refusal, shown under the draft it belongs to. */
   notice?: { key: DraftKey; tone: Tone; lines: readonly string[] }
 }
@@ -87,7 +92,7 @@ export function submit(
     return p.phase === "ended" && at.name ? note("hint", `new session as ${at.name}; enter sends`, open) : { state: { ...state, notice: undefined }, effect: open }
   }
   const watching = p.phase === "watching"
-  const d = submitDraft(draft.text, { recipient: at.recipient, connection: watching ? "connected" : p.connection, sending: state.sending !== undefined, pick: NO_RECIPIENT })
+  const d = submitDraft(draft.text, { recipient: at.recipient, connection: watching ? "connected" : p.connection, sending: state.sending[at.space] !== undefined, pick: NO_RECIPIENT })
   switch (d.kind) {
     case "nothing":
       return { state, effect: { kind: "none" } }
@@ -107,17 +112,23 @@ export function submit(
     }
     case "publish":
       return {
-        state: { ...state, sending: { key, to: d.to, text: draft.text }, notice: { key, tone: "waiting", lines: [`sending to ${recipientLabel(d.to, NO_RECIPIENT)}…`] } },
+        state: { ...state, sending: { ...state.sending, [at.space]: { key, to: d.to, text: draft.text } }, notice: { key, tone: "waiting", lines: [`sending to ${recipientLabel(d.to, NO_RECIPIENT)}…`] } },
         effect: { kind: "publish", to: d.to, text: d.text, ...(watching ? { open: postTo(d.to) } : {}) },
       }
   }
 }
 
-/** A send's outcome. The draft clears only when it still holds the text sent, a stored reply drops
- *  its quote, and a refused or unknown send keeps the draft and is never resent. A plain stored send
- *  says nothing: the message shows in the conversation. */
-export function settled(state: ComposerState, result: PublishResult): ComposerState {
-  const s = state.sending
+/** `space`'s send settled: its slot frees, and the notice under the draft it was typed in goes. */
+function sent(state: ComposerState, space: string, s: Sending): ComposerState {
+  const { [space]: _, ...sending } = state.sending
+  return { ...state, sending, notice: state.notice?.key === s.key ? undefined : state.notice }
+}
+
+/** `space`'s send has its outcome. The draft clears only when it still holds the text sent, a stored
+ *  reply drops its quote, and a refused or unknown send keeps the draft and is never resent. A plain
+ *  stored send says nothing: the message shows in the conversation. */
+export function settled(state: ComposerState, space: string, result: PublishResult): ComposerState {
+  const s = state.sending[space]
   if (!s) return state
   const draft = state.drafts[s.key] ?? { text: "" }
   const now = { recipient: draft.reply?.to, draft: draft.text }
@@ -125,16 +136,16 @@ export function settled(state: ComposerState, result: PublishResult): ComposerSt
   const reply = out.recipient === now.recipient ? draft.reply : undefined
   const said = publishOutcome(result)
   const lines = result.outcome === "unknown" ? [out.notice!.text] : [said.text, ...(out.notice ? [out.notice.text] : [])]
-  const { sending: _, ...rest } = withDraft(state, s.key, { text: out.draft, ...(reply ? { reply } : {}) })
-  if (result.outcome === "stored" && !out.notice) return { ...rest, notice: undefined }
+  const rest = sent(withDraft(state, s.key, { text: out.draft, ...(reply ? { reply } : {}) }), space, s)
+  if (result.outcome === "stored" && !out.notice) return rest
   return { ...rest, notice: { key: s.key, tone: out.notice?.tone ?? said.tone, lines } }
 }
 
-/** The session a first message needed did not open: nothing was sent, the draft stays, and the
- *  session's own line says why. */
-export function unsent(state: ComposerState): ComposerState {
-  const { sending: _, ...rest } = state
-  return { ...rest, notice: undefined }
+/** The session `space`'s first message needed did not open: nothing was sent, the draft stays, and
+ *  the session's own line or the space's close says why. */
+export function unsent(state: ComposerState, space: string): ComposerState {
+  const s = state.sending[space]
+  return s ? sent(state, space, s) : state
 }
 
 type Quotable = Answerable & { text: string }

@@ -106,11 +106,12 @@ export function Composer(props: {
         // Read before the wait, since a space switch or a catalog entry can unmount the box while
         // the send is out, and the send settles either way.
         const talk = props.talk
+        const space = props.space
         let result: PublishResult | undefined
         try {
           result = await talk.publish(effect.to, effect.text, effect.open)
         } finally {
-          props.setState((s) => (result ? settled(s, result) : unsent(s)))
+          props.setState((s) => (result ? settled(s, space, result) : unsent(s, space)))
         }
         return show(k)
       }

@@ -57,7 +57,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const [seen, setSeen] = createSignal<Record<string, number>>({})
   const [now, setNow] = createSignal(Date.now())
   const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
-  const [composer, setComposer] = createSignal<ComposerState>({ drafts: {} })
+  const [composer, setComposer] = createSignal<ComposerState>({ drafts: {}, sending: {} })
   const [focus, setFocus] = createSignal<Focus>("box")
   // The composer imports the chat library, a few hundred milliseconds of loading, so it loads once a
   // space is opening and never delays the first frame. Solid's lazy() is not used: with no Suspense
