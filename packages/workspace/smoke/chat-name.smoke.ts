@@ -55,6 +55,9 @@ try {
     accepted.every((v) => chatNameProblem(v) === undefined), accepted.filter((v) => chatNameProblem(v) !== undefined));
   check("an @mention of every accepted name gives the name back whole",
     accepted.every((v) => JSON.stringify(mentionsIn(`@${v}`)) === JSON.stringify([v])), accepted.map((v) => mentionsIn(`@${v}`)));
+  const ended = accepted.flatMap((v) => [`thanks @${v}.`, `ask @${v}...`, `@${v}-`, `@${v}.-`]);
+  check("an @mention at the end of a sentence, or followed by a dash, gives the name back whole",
+    ended.every((t, i) => JSON.stringify(mentionsIn(t)) === JSON.stringify([accepted[Math.floor(i / 4)]])), ended.map((t) => mentionsIn(t)));
   check("the name preference is held to the same rule", preferenceValueProblem("name", "Ops Lead")?.endsWith(RULE) === true && preferenceValueProblem("name", "ops_lead") === undefined);
 
   console.log("2. open and static: the OS login, with no suffix");
