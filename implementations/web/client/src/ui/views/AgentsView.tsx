@@ -12,10 +12,12 @@ import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { AttentionMark } from "../Attention.tsx";
 import { Avatar } from "../Avatar.tsx";
+import { ToggleGroup, ToggleGroupItem } from "#client/ui/shadcn/toggle-group.tsx";
 import { useBadgeOf } from "../identity.js";
 import { clock as clockTime } from "../../lib/time.js";
 import { harnessName } from "../MessageRow.tsx";
 import { needsDetail } from "../NeedsCard.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { STATUS_ICON, statusIconClass, StatusWord, word } from "../Status.tsx";
 import { useOwnMessages, useSession } from "../agent/work.ts";
 import { ToolLine } from "../work/ToolLine.tsx";
@@ -300,6 +302,7 @@ export function AgentsView({ store, controller = null, group, focusWaiting = fal
   return (
     <>
       <header className="ui-bar">
+        <SidebarToggle />
         <h1>Agents</h1>
         {!empty && (
           <span className="ui-topic">
@@ -312,10 +315,10 @@ export function AgentsView({ store, controller = null, group, focusWaiting = fal
         )}
         <span className="ui-sp" />
         {!empty && (
-          <span className="v3-toggle" role="group" aria-label="Group by">
-            <button type="button" aria-pressed={grouping === "status"} onClick={() => choose("status")}>Status</button>
-            <button type="button" aria-pressed={grouping === "host"} onClick={() => choose("host")}>Host</button>
-          </span>
+          <ToggleGroup type="single" size="sm" aria-label="Group by" value={grouping} onValueChange={(next) => (next === "status" || next === "host") && choose(next)}>
+            <ToggleGroupItem value="status">Status</ToggleGroupItem>
+            <ToggleGroupItem value="host">Host</ToggleGroupItem>
+          </ToggleGroup>
         )}
       </header>
       <div className="ui-scroll">

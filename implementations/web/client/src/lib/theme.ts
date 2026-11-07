@@ -1,5 +1,6 @@
 // The theme choices, with no browser in them, so the shell can name them while it renders on the
-// server. Reading, saving and applying a choice is `../theme.ts`, which runs in the browser only.
+// server. Reading, saving and applying a choice is `../ui/theme-provider.tsx`, which runs in the
+// browser only.
 
 export type Theme = "system" | "light" | "dark";
 

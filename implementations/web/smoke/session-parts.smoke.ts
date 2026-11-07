@@ -31,7 +31,8 @@ import { SessionFoot } from "../client/src/ui/session/SessionFoot.tsx";
 import { Prose } from "../client/src/ui/work/Prose.tsx";
 import { ToolLine } from "../client/src/ui/work/ToolLine.tsx";
 import { WorkList } from "../client/src/ui/work/WorkList.tsx";
-import { mount, type Mounted } from "./mount.js";
+import { TooltipProvider } from "../client/src/ui/shadcn/tooltip.tsx";
+import { mount as mountBare, type Mounted } from "./mount.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -40,12 +41,16 @@ const ok = (name: string, cond: unknown, detail?: unknown) => {
 };
 const same = (name: string, got: unknown, want: unknown) => ok(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
 
+/** `el` under the one TooltipProvider the dashboard's `Shell` holds, as every part sits in the page. */
+const inPage = (el: ReactElement): ReactElement => createElement(TooltipProvider, null, el);
+const mount = (el: ReactElement): Promise<Mounted> => mountBare(inPage(el));
+
 /** `el` rendered to HTML and parsed into a detached element. A render that throws fails the named
  *  cell, so a mutation that breaks a part reddens the cell that reads it. */
 const draw = (name: string, el: ReactElement): HTMLElement => {
   let html: string;
   try {
-    html = renderToString(el);
+    html = renderToString(inPage(el));
   } catch (e) {
     assert.fail(`${name}: the render threw ${String(e)}`);
   }
@@ -56,11 +61,16 @@ const draw = (name: string, el: ReactElement): HTMLElement => {
 const all = (el: ParentNode, sel: string) => [...el.querySelectorAll(sel)] as HTMLElement[];
 /** Text with runs of whitespace collapsed, as a reader sees it. */
 const text = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+/** What a sighted reader sees of `el`: the text it hides from screen readers when it has any, which
+ *  is then the shortened name, or all its text. */
+const shown = (el: Element | null | undefined) => text(el?.querySelector("[aria-hidden=true]") ?? el);
+/** What a screen reader reads of `el`: its text without the parts hidden from assistive tech. */
+const spoken = (el: Element | null | undefined) => {
+  const copy = el?.cloneNode(true) as Element | undefined;
+  copy?.querySelectorAll("[aria-hidden=true]").forEach((h) => h.remove());
+  return text(copy);
+};
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-// Radix measures the tooltip it opens, and jsdom has no ResizeObserver.
-const g = globalThis as { ResizeObserver?: unknown };
-g.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
 
 /** A time on the reader's own clock, so an expected `hh:mm` holds in any time zone. */
 const L = (h: number, m: number, s = 0) => new Date(2026, 9, 22, h, m, s).getTime();
@@ -263,7 +273,7 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
   const root = draw("4.1", list(work([legacy], false), row({ status: "idle" })));
   const group = trigger(root, "Called Write, Bash and Bash");
   same("4.1 a connector without tool status gets the note, and its calls read \"Called Write, Bash and Bash\" with \"3 calls · 10:38 to 10:43\"",
-    { note: text(root.querySelector(".ui-plane")), group: text(group?.querySelector("[data-slot=trace-description]")) },
+    { note: text(root.querySelector("[role=note]")), group: text(group?.querySelector("[data-slot=trace-description]")) },
     {
       note: "logic's connector reports which tools it calls but not when they finish, so Work can't show running, done or failed. A connector that reports tool results shows them here once logic restarts on it.",
       group: "3 calls · 10:38 to 10:43",
@@ -281,15 +291,23 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
 {
   const hostile = { ...call("x", L(10, 40), { end: L(10, 40) + 100, failed: false }), name: "<b>x</b>", full: "mcp__evil__<b>x</b>" };
   const root = draw("5.2", createElement(ToolLine, { call: hostile, state: "done" }));
-  same("5.2 a tool name <b>x</b> renders as escaped text",
-    [all(root, "b").length, text(root.querySelector("[data-slot=trace-description] code"))], [0, "<b>x</b>"]);
+  const code = root.querySelector("[data-slot=trace-description] code");
+  same("5.2 a tool name <b>x</b> renders as escaped text, both where it shows and in the whole name a screen reader reads",
+    [all(root, "b").length, shown(code), spoken(code)], [0, "<b>x</b>", "mcp__evil__<b>x</b>"]);
 }
 {
   const long = "t".repeat(200);
-  const root = draw("5.3", createElement(ToolLine, { call: { ...call("x", L(10, 40), { end: L(10, 40) + 100, failed: false }), name: long, full: `mcp__x__${long}` }, state: "done" }));
+  const hostile = { ...call("x", L(10, 40), { end: L(10, 40) + 100, failed: false }), name: long, full: `mcp__x__${long}` };
+  const root = draw("5.3", createElement(ToolLine, { call: hostile, state: "done" }));
   const code = root.querySelector("[data-slot=trace-description] code");
-  same("5.3 a 200-character tool name shows its first 64 characters and keeps the whole name in title",
-    [code?.textContent, code?.getAttribute("title")], [`${"t".repeat(64)}…`, `mcp__x__${long}`]);
+  const m = await mount(createElement(ToolLine, { call: hostile, state: "done" }));
+  const target = m.container.querySelector("[data-slot=trace-description] code") as HTMLElement;
+  await m.run(() => void target.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" })));
+  await m.run(() => sleep(20));
+  const tip = tipWords();
+  await m.unmount();
+  same("5.3 a 200-character tool name shows its first 64 characters, and a screen reader and the Tooltip on hover have the whole name",
+    [shown(code), spoken(code), tip], [`${"t".repeat(64)}…`, `mcp__x__${long}`, `mcp__x__${long}`]);
 }
 
 // ── 6. Code ──────────────────────────────────────────────────────────────────────────────────────
@@ -332,10 +350,16 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
 
 {
   const long = "x".repeat(200);
-  const root = draw("6.4", createElement(Prose, { src: `A block:\n\`\`\`${long}\nplain\n\`\`\``, className: "ox-said" }));
-  const label = root.querySelector("[data-slot=code-block-header] > span");
-  same("6.4 a 200-character language word shows its first 24 characters as text and keeps the whole word in title",
-    [label?.textContent, label?.getAttribute("title")], [`${"x".repeat(24)}…`, long]);
+  const prose = createElement(Prose, { src: `A block:\n\`\`\`${long}\nplain\n\`\`\``, className: "ox-said" });
+  const label = draw("6.4", prose).querySelector("[data-slot=code-block-header] > span");
+  const m = await mount(prose);
+  const target = m.container.querySelector("[data-slot=code-block-header] > span") as HTMLElement;
+  await m.run(() => void target.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" })));
+  await m.run(() => sleep(20));
+  const tip = tipWords();
+  await m.unmount();
+  same("6.4 a 200-character language word shows its first 24 characters as text, and a screen reader and the Tooltip on hover have the whole word",
+    [shown(label), spoken(label), tip], [`${"x".repeat(24)}…`, long, long]);
 }
 
 // ── 7. Posts ─────────────────────────────────────────────────────────────────────────────────────
@@ -392,10 +416,10 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
 {
   const bare = draw("10.1", createElement(RunError, { ts: L(10, 52) }));
   same("10.1 the run error without a condition says the turn failed and that the plane doesn't say why, with no \"Presence reports\"",
-    [text(bare.querySelector(".ui-runerr b")), all(bare, ".ui-runerr span").map(text)], ["Turn failed at 10:52", ["The event plane doesn't say why."]]);
+    [text(bare.querySelector("[role=note] [data-slot=alert-title]")), all(bare, "[role=note] [data-slot=alert-description] > div").map(text)], ["Turn failed at 10:52", ["The event plane doesn't say why."]]);
   const quoted = draw("10.2", createElement(RunError, { ts: L(10, 52), condition: { code: "<i>rate_limit</i>", since: L(10, 52) } }));
   same("10.2 with a condition it quotes the code as text and when it began",
-    [all(quoted, ".ui-runerr i").length, all(quoted, ".ui-runerr span").map(text)[1]], [0, "Presence reports <i>rate_limit</i> since 10:52."]);
+    [all(quoted, "[role=note] i").length, all(quoted, "[role=note] [data-slot=alert-description] > div").map(text)[1]], [0, "Presence reports <i>rate_limit</i> since 10:52."]);
 }
 {
   const failed = turn({ outcome: "failed", end: L(10, 52), steps: [{ kind: "runError", key: "e1", ts: L(10, 52), live: false }] });
@@ -404,7 +428,8 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
   // The failed turn is the last turn in each, so it is open and its run error drawn.
   const says = (items: WorkItem[]) => {
     const root = draw("10.3", list(work(items), row({ status: "idle" }), { condition }));
-    return [all(root, ".ui-runerr").length, text(root.querySelector(".ui-runerr")).includes("Presence reports")];
+    const errors = all(root, "[role=note]").filter((n) => text(n.querySelector("[data-slot=alert-title]")).startsWith("Turn failed"));
+    return [errors.length, text(errors[0]).includes("Presence reports")];
   };
   same("10.3 a failed turn carries presence's condition only when it is the list's last item",
     [says([before, failed]), says([failed, said("after it")])], [[1, true], [1, false]]);
@@ -430,11 +455,12 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
 }
 {
   const m = await mount(createElement(PromptBlock, { text: "word ".repeat(80), cut: false }));
-  const more = () => m.container.querySelector(".ui-more") as HTMLButtonElement | null;
-  const before = [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null];
+  const more = () => all(m.container, "button").find((b) => /^Show (more|less)$/.test(text(b)));
+  const state = () => [text(more()), more()?.getAttribute("aria-expanded"), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null];
+  const before = state();
   await m.run(() => more()?.click());
   same("11.4 a long prompt clamps with Show more, and opens with Show less",
-    [before, [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null]], [["Show more", true], ["Show less", false]]);
+    [before, state()], [["Show more", "false", true], ["Show less", "true", false]]);
   await m.unmount();
 }
 

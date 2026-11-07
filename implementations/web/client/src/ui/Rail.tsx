@@ -1,11 +1,12 @@
-import { Tick02Icon } from "@hugeicons/core-free-icons";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useId } from "react";
 import { mark } from "../art/index.ts";
-import { Icon } from "../icons/Icon.tsx";
-import { pageDocument } from "./focusTrap.tsx";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "#client/ui/shadcn/dropdown-menu.tsx";
+import { SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "#client/ui/shadcn/sidebar.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { RailIcon, type RailIconName } from "../icons/rail.js";
 import { formatRoute, type Route } from "../lib/route.js";
 import type { Theme } from "../lib/theme.js";
+import { useTheme } from "./theme-provider.tsx";
 
 interface View {
   label: string;
@@ -66,123 +67,108 @@ const CHOICES: { value: Theme; label: string }[] = [
   { value: "dark", label: "Dark" },
 ];
 
-/** The parts of an element the menu's keys and its outside click use. Spelled out rather than taken
- *  from the DOM lib, because the suites typecheck the components that render on the server with no
- *  DOM lib. */
-type Focusable = { focus(): void };
-type Box = { contains(other: unknown): boolean; querySelectorAll(selector: string): ArrayLike<Focusable> };
-
 /** The Settings item at the foot of the rail and the menu it opens: the theme, System, Light or Dark,
- *  as radio items with the chosen one checked by a tick as well as by state. Picking one applies it
- *  and closes the menu. Up and Down (wrapping), Home and End move between the items; Escape closes
- *  the menu and puts focus back on Settings; a click outside closes it. With no `onTheme` the item is
- *  disabled. */
-function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => void }) {
-  const [open, setOpen] = useState(false);
-  const button = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const items = () => Array.from((menu.current as unknown as Box | null)?.querySelectorAll("[role=menuitemradio]") ?? []);
-  // Focus moves once, when the menu opens, so the checked item is read at that moment only.
-  useEffect(() => {
-    if (!open) return;
-    const checked = CHOICES.findIndex((t) => t.value === theme);
-    items()[Math.max(checked, 0)]?.focus();
-    const doc = pageDocument();
-    const outside = (e: { target: unknown }) => {
-      const inside = [menu.current, button.current].some((el) => (el as unknown as Box | null)?.contains(e.target));
-      if (!inside) setOpen(false);
-    };
-    doc.addEventListener("pointerdown", outside);
-    return () => doc.removeEventListener("pointerdown", outside);
-  }, [open]);
-  const close = () => {
-    setOpen(false);
-    (button.current as unknown as Focusable | null)?.focus();
-  };
-  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape" || e.key === "Tab") {
-      if (e.key === "Escape") e.preventDefault();
-      close();
-      return;
-    }
-    const list = items();
-    const at = list.findIndex((el) => el === pageDocument().activeElement);
-    const step: Record<string, number> = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: list.length - 1 };
-    if (!Object.hasOwn(step, e.key) || list.length === 0) return;
-    e.preventDefault();
-    list[(step[e.key] + list.length) % list.length]?.focus();
-  };
+ *  as radio items with the chosen one checked. Picking one applies it and closes the menu. The menu
+ *  owns its keys, Escape and outside click, and gives focus back to Settings when it closes. Up and
+ *  Down wrap at the ends, which Radix does only when the content gets `loop`. The theme comes from
+ *  `ThemeProvider`. */
+function Settings() {
+  const label = useId();
+  const { theme, setTheme } = useTheme();
   return (
-    <div className="ui-rail-set">
-      <button
-        ref={button}
-        type="button"
-        className="ui-rail-btn"
-        aria-label="Settings"
-        title="Settings"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={!onTheme}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <RailIcon name="gear" size={22} />
-      </button>
-      {open && onTheme && (
-        <div ref={menu} className="ui-card ui-menu" role="menu" aria-label="Theme" onKeyDown={onKey}>
-          <div className="ui-menu-h" aria-hidden="true">Theme</div>
-          {CHOICES.map((t) => (
-            <button
-              key={t.value}
-              type="button"
-              role="menuitemradio"
-              aria-checked={theme === t.value}
-              tabIndex={-1}
-              onClick={() => {
-                onTheme(t.value);
-                close();
-              }}
-            >
-              {theme === t.value ? <Icon icon={Tick02Icon} size={16} className="ui-ic ui-ic16" /> : <span className="ui-menu-gap" />}
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuButton>
+              <RailIcon name="gear" />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="right">Settings</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent side="right" align="end" loop>
+        <DropdownMenuGroup aria-labelledby={label}>
+          <DropdownMenuLabel id={label}>Theme</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={theme}
+            onValueChange={(next) => {
+              const picked = CHOICES.find((t) => t.value === next);
+              if (picked) setTheme(picked.value);
+            }}
+          >
+            {CHOICES.map((t) => (
+              <DropdownMenuRadioItem key={t.value} value={t.value}>{t.label}</DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
-/** The view rail down the left edge, under the Cotal mark. `places` says where Channels and Direct
- *  messages lead when the route is not already on them. Agents is current on an agent's page too.
- *  An item that leads nowhere yet is a button marked disabled, which keyboard and screen readers
- *  still reach, titled with the empty state it would show. Settings opens the theme menu when
- *  `onTheme` is given and is disabled until then. The mark is drawn in `currentColor`, so the
- *  stylesheet's `--mark` token gives it the brand navy by day and cream at night. */
-export function Rail({ route, places, theme, onTheme }: { route: Route; places: Places; theme?: Theme; onTheme?: (t: Theme) => void }) {
+/** The view rail: the Cotal mark in the header, the views as shadcn's sidebar menu, and Settings in
+ *  the footer. The shell draws it as the icon column of its nested Sidebar, so it is the inside of a
+ *  Sidebar, not one of its own. `places` says where Channels and Direct messages lead when the route
+ *  is not already on them. Agents is current on an agent's page too, marked active and
+ *  `aria-current`. Each item's label is clipped by the narrow column and named again by its Tooltip,
+ *  which shows whether or not the sidebar is collapsed. An item that leads nowhere yet is a button
+ *  marked disabled, which keyboard and screen readers still reach, with the empty state it would show
+ *  as its Tooltip and its accessible description. A button marked so takes no pointer events, so that
+ *  Tooltip hangs on a span around it. Settings opens the theme menu. The mark is drawn in `currentColor`, so the stylesheet's `--mark` token gives
+ *  it the brand navy by day and cream at night. */
+export function Rail({ route, places }: { route: Route; places: Places }) {
   return (
-    <nav className="ui-rail" aria-label="Views">
-      <span className="ui-rail-mark" dangerouslySetInnerHTML={{ __html: mark("currentColor") }} />
-      {VIEWS.map(({ label, icon, view }) => {
-        const to = leadsTo(view, route, places);
-        const here = route.view === view || (view === "agents" && route.view === "agent");
-        const Item = to ? "a" : "button";
-        return (
-          <Item
-            key={view}
-            className="ui-rail-btn"
-            href={to ? formatRoute(to) : undefined}
-            type={to ? undefined : "button"}
-            aria-disabled={to ? undefined : true}
-            aria-current={here ? "page" : undefined}
-            aria-label={label}
-            title={to ? label : (EMPTY_TITLE[view] ?? label)}
-          >
-            <RailIcon name={icon} size={22} />
-          </Item>
-        );
-      })}
-      <div className="ui-grow" />
-      <Settings theme={theme} onTheme={onTheme} />
-    </nav>
+    <>
+      <SidebarHeader>
+        <span className="ui-rail-mark self-center" dangerouslySetInnerHTML={{ __html: mark("currentColor") }} />
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {VIEWS.map(({ label, icon, view }) => {
+                const to = leadsTo(view, route, places);
+                const here = route.view === view || (view === "agents" && route.view === "agent");
+                const why = EMPTY_TITLE[view];
+                return (
+                  <SidebarMenuItem key={view}>
+                    {to ? (
+                      <SidebarMenuButton asChild isActive={here} tooltip={{ children: label, hidden: false }}>
+                        <a href={formatRoute(to)} aria-current={here ? "page" : undefined}>
+                          <RailIcon name={icon} />
+                          <span>{label}</span>
+                        </a>
+                      </SidebarMenuButton>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="flex">
+                            <SidebarMenuButton type="button" aria-disabled aria-label={label} aria-describedby={`rail-why-${view}`}>
+                              <RailIcon name={icon} />
+                              <span>{label}</span>
+                              <span id={`rail-why-${view}`} className="ui-sr">{why}</span>
+                            </SidebarMenuButton>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">{why}</TooltipContent>
+                      </Tooltip>
+                    )}
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <Settings />
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+    </>
   );
 }

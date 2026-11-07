@@ -37,6 +37,10 @@ if (typeof win.matchMedia !== "function") {
   g.matchMedia = win.matchMedia;
 }
 
+// jsdom has no ResizeObserver, and Radix measures every tooltip, menu and sheet it opens with one.
+// Nothing here lays out, so an observer that never fires is what a suite needs.
+if (typeof g.ResizeObserver !== "function") g.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+
 /** Close the window's timers and handles, so the suite's process can exit.
  *
  *  It waits a moment first. d3-force starts a timer when a simulation is built, and the topology

@@ -3,7 +3,7 @@ import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { messageRoute, type ComposeTarget } from "../../lib/compose.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
-import { rosterRows, statusLabel, type RosterRow } from "../../lib/roster.js";
+import { rosterRows, type RosterRow } from "../../lib/roster.js";
 import { formatRoute, type AgentTab, type Route } from "../../lib/route.js";
 import { eventCount, foldWork, SESSION_EVENT_CAP, type SessionFrame, type Work, type WorkItem } from "../../lib/session.js";
 import { SESSION_LIMIT_MAX, type Controller } from "../../state/controller.js";
@@ -21,13 +21,17 @@ import { harnessName } from "../MessageRow.tsx";
 import { Navigate } from "../navigate.js";
 import { PlaneNote } from "../session/PlaneNote.tsx";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
-import { Badge } from "../shadcn/badge.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { Button } from "../shadcn/button.tsx";
+import { Marker, MarkerContent } from "../shadcn/marker.tsx";
 import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
-import { Spinner } from "../shadcn/spinner.tsx";
+import { Skeleton } from "../shadcn/skeleton.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
-import { STATUS_ICON, word } from "../Status.tsx";
+import { Toggle } from "../shadcn/toggle.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
+import { StatusWord } from "../Status.tsx";
 import { WorkList } from "../work/WorkList.tsx";
+import { reducedMotion } from "../../viewport.ts";
 
 /** A reader within this many pixels of the bottom is following the work again. */
 const PINNED_PX = 24;
@@ -57,26 +61,12 @@ type Scroller = {
   querySelectorAll(selector: string): ArrayLike<{ getAttribute(name: string): string | null; scrollIntoView?(opts?: { block?: string }): void }>;
 };
 
-/** The status in the page's header (mock B1, `sh-badge`): shadcn's Badge in the status's colour, with
- *  its icon and word. The working icon turns. */
-function StatusBadge({ row }: { row: RosterRow }) {
-  const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
-  return (
-    <Badge variant="secondary" className={`ox-badge ox-badge-${row.status}`}>
-      <span className="ox-badge-i">
-        {row.status === "working" ? <Spinner /> : icon && <Icon icon={icon} size={16} />}
-      </span>
-      {word(statusLabel(row))}
-    </Badge>
-  );
-}
-
 /** The skeleton rows of mock C, Loading. The bars are drawing, so assistive tech skips them. */
 function WorkSkeleton() {
-  const bar = (width: string) => <span className="ui-skel" style={{ width }} />;
+  const bar = (width: string) => <Skeleton className="h-2.5" style={{ width }} />;
   return (
-    <div className="ox-col ox-skel" aria-busy="true">
-      <div aria-hidden="true">
+    <div className="ox-col" aria-busy="true">
+      <div className="flex flex-col gap-3" aria-hidden="true">
         {bar("36%")}
         {bar("88%")}
         {bar("64%")}
@@ -105,23 +95,19 @@ function NewSteps({ steps, away }: { steps: readonly StepKey[]; away: boolean })
   if (fresh === 0) return null;
   return (
     <Button type="button" variant="outline" size="sm" className="ox-newsteps" data-active="true" onClick={() => scrollToEnd({ behavior: reducedMotion() ? "auto" : "smooth" })}>
-      <Icon icon={ArrowDown02Icon} size={16} />
+      <Icon icon={ArrowDown02Icon} data-icon="inline-start" />
       {fresh === 1 ? "1 new step" : `${fresh} new steps`}
     </Button>
   );
 }
 
-/** Whether the reader asked for reduced motion. Read on a click only, so a server render never asks. */
-const reducedMotion = (): boolean =>
-  (globalThis as { matchMedia?: (q: string) => { matches: boolean } }).matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
-
 /** One agent as a place (overhaul mock B1, C, D and E): `#/agent/<id>` with Work, Messages and
  *  Profile tabs.
  *
- *  - The header: the crumb back to `back` with its label, the avatar with its badge, the name, role
- *    and harness, the status Badge (the working icon turns), Message to the operator's conversation
- *    with the agent with its composer focused, and the panel button. On a phone the crumb is the back
- *    button, the role and harness are left out and Message is an icon.
+ *  - The header: the SidebarToggle, the crumb back to `back` with its label, the avatar with its
+ *    badge, the name, role and harness, the status Badge (the working icon turns), Message to the
+ *    operator's conversation with the agent with its composer focused, and the panel button. On a
+ *    phone the crumb is the back button, the role and harness are left out and Message is an icon.
  *  - The tabs are the route: choosing a tab writes `#/agent/<id>/<tab>` through `Navigate`, so back
  *    and reload keep it. Arrow keys only move focus (manual activation), so they add no history.
  *    Messages carries the count of the posts and direct messages it lists.
@@ -222,14 +208,9 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   } else if (load === "refused") {
     body = (
       <div className="ox-col">
-        <SessionEmpty icon={SquareLock02Icon} title={`This dashboard can't read ${name}'s work`}>
+        <SessionEmpty icon={SquareLock02Icon} title={`This dashboard can't read ${name}'s work`} action={session?.grant && <CopyCommand command={session.grant} />}>
           <p>{`The broker refused it: ${session?.reason ?? ""}.`}</p>
-          {session?.grant && (
-            <>
-              <p>The mesh owner can grant a read on that channel:</p>
-              <CopyCommand command={session.grant} />
-            </>
-          )}
+          {session?.grant && <p>The mesh owner can grant a read on that channel:</p>}
         </SessionEmpty>
         {steps.length > 0 && list}
       </div>
@@ -237,9 +218,8 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   } else if (load === "failed" && steps.length === 0) {
     body = (
       <div className="ox-col">
-        <SessionEmpty icon={InformationCircleIcon} title={`${name}'s work didn't load`}>
+        <SessionEmpty icon={InformationCircleIcon} title={`${name}'s work didn't load`} action={<Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>}>
           <p>{session?.reason ?? ""}</p>
-          <button type="button" className="ui-btn ui-btn-sm" onClick={() => void controller?.reloadSession(id)}>Try again</button>
         </SessionEmpty>
       </div>
     );
@@ -273,18 +253,25 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
     body = (
       <div className="ox-col">
         {load === "failed" && (
-          <PlaneNote>
-            {`${name}'s work didn't load. ${session?.reason ?? ""} `}
-            <button type="button" className="ui-btn ui-btn-sm" onClick={() => void controller?.reloadSession(id)}>Try again</button>
+          <PlaneNote action={<Button type="button" variant="outline" size="sm" onClick={() => void controller?.reloadSession(id)}>Try again</Button>}>
+            {`${name}'s work didn't load. ${session?.reason ?? ""}`}
           </PlaneNote>
         )}
         {more && !atCap && (
-          <div className="ui-cutoff">
-            <button type="button" className="ui-btn ui-btn-sm" disabled={load === "loading"} onClick={() => void controller?.loadEarlier(id)}>Load earlier</button>
-          </div>
+          <Marker variant="separator" className="mb-3">
+            <Button type="button" variant="outline" size="sm" disabled={load === "loading"} onClick={() => void controller?.loadEarlier(id)}>Load earlier</Button>
+          </Marker>
         )}
-        {more && atCap && <div className="ui-cutoff">Showing the newest 2,000 events</div>}
-        {load === "loading" && <div className="ui-cutoff" role="status">Loading</div>}
+        {more && atCap && (
+          <Marker className="mb-3">
+            <MarkerContent>Showing the newest 2,000 events</MarkerContent>
+          </Marker>
+        )}
+        {load === "loading" && (
+          <Marker className="mb-3" role="status">
+            <MarkerContent>Loading</MarkerContent>
+          </Marker>
+        )}
         {list}
       </div>
     );
@@ -293,54 +280,81 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   return (
     <>
       <header className="ox-head">
+        <SidebarToggle />
         {phone ? (
-          <a className="ui-tool" href={formatRoute(back.route)} title={backTitle} aria-label={backTitle}>
-            <Icon icon={ArrowLeft01Icon} className="ui-ic" />
-          </a>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button asChild variant="ghost" size="icon">
+                <a href={formatRoute(back.route)} aria-label={backTitle}>
+                  <Icon icon={ArrowLeft01Icon} />
+                </a>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{backTitle}</TooltipContent>
+          </Tooltip>
         ) : (
           <>
-            <a className="ui-crumb" href={formatRoute(back.route)} title={backTitle}>
-              <Icon icon={ArrowLeft01Icon} size={16} className="ui-ic" />
-              {back.label}
-            </a>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a className="ui-crumb" href={formatRoute(back.route)} aria-label={backTitle}>
+                  <Icon icon={ArrowLeft01Icon} size={16} className="ui-ic" />
+                  {back.label}
+                </a>
+              </TooltipTrigger>
+              <TooltipContent>{backTitle}</TooltipContent>
+            </Tooltip>
             <span className="ox-sep" />
           </>
         )}
         <Avatar vendor={known?.harness} status={row.status} size={30} badge={known ? badgeOf(id) : undefined} />
         <h1>{name}</h1>
         {!phone && sub && <span className="ui-topic">{sub}</span>}
-        {known && <StatusBadge row={known} />}
+        {known && <StatusWord row={known} />}
         <span className="ui-sp" />
         {phone ? (
-          <a className="ui-tool" href={messageHref} title={`Message ${name}`} aria-label={`Message ${name}`} onClick={focus}>
-            <Icon icon={Message01Icon} className="ui-ic" />
-          </a>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button asChild variant="ghost" size="icon">
+                <a href={messageHref} aria-label={`Message ${name}`} onClick={focus}>
+                  <Icon icon={Message01Icon} />
+                </a>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{`Message ${name}`}</TooltipContent>
+          </Tooltip>
         ) : (
           <>
-            <Button asChild variant="outline" size="sm" className="ox-btn">
+            <Button asChild variant="outline" size="sm">
               <a href={messageHref} onClick={focus}>
-                <Icon icon={Message01Icon} size={16} />
+                <Icon icon={Message01Icon} data-icon="inline-start" />
                 Message
               </a>
             </Button>
             {onTogglePanel && (
-              <button type="button" className="ui-tool" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
-                <Icon icon={SidebarRightIcon} className="ui-ic" />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Toggle aria-label={panelLabel} pressed={panelOpen} onPressedChange={onTogglePanel}>
+                    <Icon icon={SidebarRightIcon} />
+                  </Toggle>
+                </TooltipTrigger>
+                <TooltipContent>{panelLabel}</TooltipContent>
+              </Tooltip>
             )}
           </>
         )}
       </header>
       <Tabs value={tab} activationMode="manual" onValueChange={(next) => (next === "work" || next === "messages" || next === "profile") && navigate({ view: "agent", id, tab: next })} className="ox-tabs">
-        <TabsList variant="line" aria-label={name} className="ox-tablist">
-          <TabsTrigger value="work" className="ox-tab">Work</TabsTrigger>
-          <TabsTrigger value="messages" className="ox-tab">Messages <span className="ox-n">{count}</span></TabsTrigger>
-          <TabsTrigger value="profile" className="ox-tab">Profile</TabsTrigger>
-        </TabsList>
+        <div className="ox-tablist">
+          <TabsList aria-label={name}>
+            <TabsTrigger value="work">Work</TabsTrigger>
+            <TabsTrigger value="messages">Messages <span className="ox-n">{count}</span></TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+          </TabsList>
+        </div>
         <TabsContent value="work" className="ox-tabc">
           <MessageScrollerProvider autoScroll={following}>
             <MessageScroller className="ox-scroller">
-              <MessageScrollerViewport ref={viewport} aria-label="Work" className="ox-viewport" onScroll={onScroll}>
+              <MessageScrollerViewport ref={viewport} aria-label="Work" onScroll={onScroll}>
                 <MessageScrollerContent className="ox-scrollc">{body}</MessageScrollerContent>
               </MessageScrollerViewport>
               <NewSteps steps={steps} away={!following} />

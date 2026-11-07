@@ -1,18 +1,25 @@
 /** The app shell: the rail lists the five views and Settings in the mock's order with no runs link,
- *  the active item follows the route, the details panel's absence is the `no-pane` class, a channel
- *  route shows that channel as the open one, and a route change reaches the controller. The shell is
- *  server-rendered over a seeded store and its HTML is read; the hash listener and the open call are
- *  driven in Node over a fake location and a fake controller. The DOM shim is installed first, because
- *  a DM route draws message bodies, which render Markdown only through a working sanitizer. */
+ *  the active item follows the route, a closed details panel is not drawn, a channel route shows that
+ *  channel as the open one, and a route change reaches the controller. The shell is server-rendered
+ *  over a seeded store and its HTML is read by role and name; the rail's Tooltips are read from the
+ *  shell mounted in jsdom, since Tooltip content is drawn only once it opens. The hash listener and the
+ *  open call are driven in Node over a fake location and a fake controller. The DOM shim is installed
+ *  first, because a DM route draws message bodies, which render Markdown only through a working
+ *  sanitizer. */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
+import { createElement } from "react";
 import type { CotalMessage } from "../client/src/api/types.js";
 import { mark } from "../client/src/art/index.ts";
 import { openTarget, syncOpen } from "../client/src/lib/routeOpen.js";
 import { formatRoute, type Route } from "../client/src/lib/route.js";
 import { currentRoute, watchRoute, type RouteHost } from "../client/src/routeWatch.js";
+import { Shell } from "../client/src/Shell.tsx";
 import type { Controller } from "../client/src/state/controller.js";
-import { renderShell, startTags } from "./render-shell.js";
+import { createStore } from "../client/src/state/store.js";
+import { initialState, type DashboardState } from "../client/src/state/types.js";
+import { mount } from "./mount.js";
+import { parseHtml, renderShell } from "./render-shell.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -28,13 +35,18 @@ const seed = {
   dms: [{ msg: dm }],
 };
 
-/** The rail's items in document order: tag, accessible name, and the other attributes. */
-const rail = (html: string) => {
-  const nav = /<nav class="ui-rail" aria-label="Views">([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
-  return [...nav.matchAll(/<(a|button)\b[^>]*>/g)].map((m) => ({ tag: m[1], attrs: startTags(m[0], m[1])[0] }));
-};
-const names = (html: string) => rail(html).map((i) => i.attrs["aria-label"]);
-const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current"] === "page").map((i) => i.attrs["aria-label"]);
+/** The Views landmark in a document. */
+const viewsNav = (doc: Document) => doc.querySelector('[role="navigation"][aria-label="Views"]');
+/** An element's accessible name as the rail gives it: its aria-label, or else its text. */
+const nameOf = (el: Element) => el.getAttribute("aria-label") ?? el.textContent?.trim() ?? "";
+/** The rail's items in document order: tag, accessible name, and the attributes. */
+const rail = (html: string) => [...(viewsNav(parseHtml(html))?.querySelectorAll("a, button") ?? [])].map((el) => ({
+  tag: el.tagName.toLowerCase(),
+  name: nameOf(el),
+  attrs: Object.fromEntries([...el.attributes].map((a) => [a.name, a.value])) as Record<string, string>,
+}));
+const names = (html: string) => rail(html).map((i) => i.name);
+const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current"] === "page").map((i) => i.name);
 
 // ── 1. The rail ──────────────────────────────────────────────────────────────────────────────────
 {
@@ -48,14 +60,25 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
   same("1.4 each view links to its route hash",
     items.slice(0, 5).map((i) => i.attrs.href),
     ["#/activity", "#/channel/general", "#/dm/local.ab/local.cd", "#/agents", "#/topology"]);
-  ok("1.5 every item carries its name as a title too", items.every((i) => i.attrs.title === i.attrs["aria-label"]), items.map((i) => i.attrs));
-  ok("1.6 the rail sits in the Views landmark", /<nav class="ui-rail" aria-label="Views">/.test(html));
-  const railBtns = startTags(html, "a").filter((a) => a.class === "ui-rail-btn").length + startTags(html, "button").filter((b) => b.class === "ui-rail-btn").length;
-  ok("1.7 and the item count is exactly six", railBtns === 6, railBtns);
-  ok("1.8 Settings is disabled while the shell gives it no handler", items[5].attrs.disabled !== undefined, items[5].attrs);
-  const head = /<nav class="ui-rail" aria-label="Views">(<span class="ui-rail-mark">([\s\S]*?)<\/span>)?/.exec(html);
-  ok("1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour",
-    head?.[2] === mark("currentColor") && head[2].includes("<path"), head?.[0]?.slice(0, 160));
+  const store = createStore<DashboardState>({ ...initialState, ...seed } as DashboardState);
+  const m = await mount(createElement(Shell, { store, controller: null, route: { view: "activity" }, paneOpen: false, msgPerSecond: () => 0 }));
+  const tips: string[] = [];
+  const nav = viewsNav(m.container.ownerDocument)!;
+  for (const item of [...nav.querySelectorAll("a, button")]) {
+    // A disabled button takes no focus, so its Tooltip hangs on the span around it, which does.
+    const target = (item as HTMLButtonElement).disabled ? item.closest('[tabindex="0"]') as HTMLElement : item as HTMLElement;
+    await m.run(() => target.focus());
+    tips.push(m.container.ownerDocument.querySelector('[role="tooltip"]')?.textContent ?? "");
+    await m.run(() => target.blur());
+  }
+  await m.unmount();
+  same("1.5 every item names itself in a Tooltip when it takes the focus", tips, ["Activity", "Channels", "Direct messages", "Agents", "Topology", "Settings"]);
+  ok("1.6 the rail sits in the Views landmark", viewsNav(parseHtml(html)) !== null);
+  ok("1.7 and the item count is exactly six", items.length === 6, items.length);
+  const at = html.indexOf('aria-label="Views"');
+  const markAt = html.indexOf(mark("currentColor"), at);
+  ok("1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour, before its first view",
+    at >= 0 && markAt > at && markAt < html.indexOf('href="#/activity"', at) && mark("currentColor").includes("<path"), { at, markAt });
 }
 
 // ── 2. The active item follows the route ─────────────────────────────────────────────────────────
@@ -88,36 +111,32 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
     hrefs(renderShell(seed, { view: "dm", peer: "local.zz" }))[2], formatRoute({ view: "dm", peer: "local.zz" }));
 }
 
-// ── 4. The grid and the details panel ────────────────────────────────────────────────────────────
+// ── 4. The layout and the details panel ──────────────────────────────────────────────────────────
 {
-  const root = (html: string) => startTags(html, "div").find((d) => (d.class ?? "").split(" ").includes("ui-app"));
-  const closed = renderShell(seed, { view: "activity" }, false);
-  const open = renderShell(seed, { view: "channel", channel: "review" }, true);
-  ok("4.1 the shell root carries the no-pane class when the panel is closed", (root(closed)?.class ?? "").split(" ").includes("no-pane"), root(closed));
-  ok("4.2 and not when it is open", !(root(open)?.class ?? "").split(" ").includes("no-pane") && root(open) !== undefined, root(open));
-  const panes = (html: string) => startTags(html, "section").filter((s) => s.class === "ui-pane");
-  ok("4.3 a closed panel draws no panel element", panes(closed).length === 0, panes(closed));
-  same("4.4 an open panel draws the labelled panel", panes(open).map((p) => p["aria-label"]), ["Details"]);
+  const closed = parseHtml(renderShell(seed, { view: "activity" }, false));
+  const open = parseHtml(renderShell(seed, { view: "channel", channel: "review" }, true));
+  const panes = (doc: Document) => [...doc.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"));
+  same("4.3 a closed panel draws no panel region", panes(closed), []);
+  same("4.4 an open panel draws the labelled panel", panes(open), ["Details"]);
   same("4.5 the sidebar and the centre are always labelled landmarks",
-    [startTags(closed, "aside").map((a) => a["aria-label"]), startTags(closed, "main").length], [["Space"], 1]);
-  const order = (html: string) => ["ui-rail", "ui-side", "ui-center", "ui-pane"].map((c) => html.indexOf(`class="${c}`));
-  const o = order(open);
-  ok("4.6 the four columns come in grid order: rail, sidebar, centre, panel", o.every((i) => i >= 0) && o.every((i, k) => k === 0 || o[k - 1] < i), o);
+    [[...closed.querySelectorAll('[role="complementary"]')].map((a) => a.getAttribute("aria-label")), closed.querySelectorAll("main").length], [["Space"], 1]);
+  const cols = [viewsNav(open), open.querySelector('[role="complementary"][aria-label="Space"]'), open.querySelector("main"), open.querySelector('section[aria-label="Details"]')];
+  const inOrder = cols.every((c) => c !== null) && cols.every((c, k) => k === 0 || (cols[k - 1]!.compareDocumentPosition(c!) & 4) !== 0);
+  ok("4.6 the four columns come in order: rail, sidebar, centre, panel", inOrder, cols.map((c) => c?.tagName));
 }
 
 // ── 5. A channel route shows that channel as the open one ────────────────────────────────────────
 // The channel list is the sidebar's (Task 4); the centre draws the channel itself.
-/** The channel links in the sidebar, in document order. */
-const channelLinks = (html: string) => {
-  const side = /<aside class="ui-side" aria-label="Space">([\s\S]*?)<\/aside>/.exec(html)?.[1] ?? "";
-  return startTags(side, "a").filter((a) => (a.href ?? "").startsWith("#/channel/"));
-};
+/** The channel links in the Space sidebar, in document order: their href and aria-current. */
+const channelLinks = (html: string) =>
+  [...(parseHtml(html).querySelector('[role="complementary"][aria-label="Space"]')?.querySelectorAll('a[href^="#/channel/"]') ?? [])]
+    .map((a) => ({ href: a.getAttribute("href"), "aria-current": a.getAttribute("aria-current") ?? undefined }));
 {
   const html = renderShell(seed, { view: "channel", channel: "review" });
   const links = channelLinks(html);
   same("5.1 the channel list links each channel to its route", links.map((a) => a.href), ["#/channel/general", "#/channel/review"]);
   same("5.2 and only the routed channel is the current one", links.filter((a) => a["aria-current"] === "page").map((a) => a.href), ["#/channel/review"]);
-  same("5.3 the centre says which view it is showing", startTags(html, "section").find((s) => s.class === "ui-view")?.["data-view"], "channel");
+  same("5.3 the centre says which view it is showing", parseHtml(html).querySelector("main section[data-view]")?.getAttribute("data-view"), "channel");
   const elsewhere = channelLinks(renderShell(seed, { view: "topology" }));
   ok("5.4 off a channel route no channel is the current one", elsewhere.length === 2 && elsewhere.every((a) => a["aria-current"] === undefined), elsewhere);
   const encoded = renderShell({ channels: [{ channel: "team / a", messages: 0 }] }, { view: "channel", channel: "team / a" });

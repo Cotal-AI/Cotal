@@ -1,7 +1,8 @@
 /** The sidebar (mock section D): the space name with no menu, Needs you with its gold count,
  *  Activity with the message rate, the channels with their unread counts, one row per direct
  *  message conversation, and the operator footer with the connection pill. Each cell server-renders
- *  the shell over a seeded store and reads the HTML. Three cells run the wiring: the feed reports
+ *  the shell over a seeded store and reads the HTML by role, name and text; the Tooltips, which are
+ *  drawn only once they open, are read from the places mounted in jsdom. Three cells run the wiring: the feed reports
  *  every arrival to the dashboard's `onArrival`, the mounted app turns those arrivals into the
  *  rate, and the one-second tick that redraws the rate stops on unmount.
  *
@@ -13,7 +14,7 @@
  *  lists the rest in place, and a roster change redraws the names without regrouping the DMs. A
  *  channel row counts its working members from the broker's membership and presence alone, never
  *  from the event plane or from who posted, and a DM row's parties draw their status dots. */
-import { closeDom } from "./dom-globals.js";
+import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { Plug01Icon } from "@hugeicons/core-free-icons";
 import { createElement } from "react";
@@ -34,7 +35,8 @@ import { initialState, type DashboardState, type StoredMessage } from "../client
 import { UNVERIFIED } from "../client/src/ui/MessageRow.tsx";
 import { DM_ROWS, Sidebar } from "../client/src/ui/Sidebar.tsx";
 import { mount } from "./mount.js";
-import { renderShell, startTags, unescapeHtml } from "./render-shell.js";
+import { inShell } from "./providers.js";
+import { parseHtml, renderShell } from "./render-shell.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -58,59 +60,87 @@ const dm = (id: string, from: string, to: string, ts: number, senderId?: string)
   senderId,
 });
 
-// ── Reading the sidebar's HTML ───────────────────────────────────────────────────────────────────
-const strip = (html: string) => unescapeHtml(html.replace(/<!--[\s\S]*?-->/g, "").replace(/<[^>]*>/g, ""));
-const side = (html: string) => /<aside class="ui-side" aria-label="Space">([\s\S]*?)<\/aside>/.exec(html)?.[1] ?? "";
-const scroll = (html: string) => /<nav class="ui-side-scroll" aria-label="Places">([\s\S]*?)<\/nav>/.exec(side(html))?.[1] ?? "";
-interface Row { attrs: Record<string, string>; inner: string; label: string; badge?: { cls: string; title?: string; text: string } }
-const rowsOf = (html: string): Row[] =>
-  [...html.matchAll(/<a ([^>]*class="ui-row[^"]*"[^>]*)>([\s\S]*?)<\/a>/g)].map((m) => {
-    const b = /<span class="(ui-badge-(?:gold|blue))"([^>]*)>([^<]*)<\/span>/.exec(m[2]);
-    return {
-      attrs: startTags(`<a ${m[1]}>`, "a")[0],
-      inner: m[2],
-      label: strip(/<span class="ui-row-lbl">([\s\S]*?)<\/span>/.exec(m[2])?.[1] ?? ""),
-      badge: b ? { cls: b[1], title: startTags(`<span ${b[2]}>`, "span")[0].title, text: b[3] } : undefined,
-    };
-  });
-/** The part of the scroll area under the heading `name`, up to the next heading. */
-const section = (html: string, name: string): string => {
-  const parts = scroll(html).split(/<div class="ui-sec">/);
-  return parts.find((p) => p.startsWith(`${name}</div>`)) ?? "";
+// ── Reading the sidebar ──────────────────────────────────────────────────────────────────────────
+const textOf = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+/** What a screen reader reads in `el`: its text without what is hidden from assistive tech. */
+const spoken = (el: Element | null | undefined): string => {
+  if (!el) return "";
+  const copy = el.cloneNode(true) as Element;
+  copy.querySelectorAll('[aria-hidden="true"]').forEach((h) => h.remove());
+  return textOf(copy);
 };
-const head = (html: string) => /<div class="ui-side-head">([\s\S]*?)<\/div>/.exec(side(html))?.[1] ?? "";
-const foot = (html: string) => side(html).slice(Math.max(0, side(html).indexOf('<div class="ui-side-foot">')));
-const needs = (html: string) => rowsOf(scroll(html)).find((r) => r.label === "Needs you");
-const activity = (html: string) => rowsOf(scroll(html)).find((r) => r.label.startsWith("Activity"));
-const channels = (html: string) => rowsOf(section(html, "Channels"));
-const dms = (html: string) => rowsOf(section(html, "Direct messages"));
-const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(activity(html)?.inner ?? "")?.[1];
+const side = (html: string) => parseHtml(html).querySelector('[role="complementary"][aria-label="Space"]');
+const placesIn = (html: string) => side(html)?.querySelector('[role="navigation"][aria-label="Places"]') ?? null;
+interface Row { a: HTMLAnchorElement; href: string | null; current: string | null; label: string; name: string; badge?: string }
+/** A place's row: its link, the words it shows, the name a screen reader reads, and the count at its
+ *  end, which sits beside the link and is hidden from assistive tech. */
+const rowOf = (a: HTMLAnchorElement): Row => {
+  const label = Array.from(a.children).find((c) => c.tagName === "SPAN" && c.getAttribute("aria-hidden") !== "true" && !c.matches(".ui-sr, [data-slot=tooltip-trigger]"));
+  const badge = a.closest("li")?.querySelector('[data-sidebar="menu-badge"]');
+  return { a, href: a.getAttribute("href"), current: a.getAttribute("aria-current"), label: textOf(label), name: spoken(a), badge: badge ? textOf(badge) : undefined };
+};
+const rowsIn = (el: Element | null | undefined): Row[] => Array.from(el?.querySelectorAll("a") ?? []).map((a) => rowOf(a as HTMLAnchorElement));
+/** The places group under the heading `name`. */
+const section = (html: string, name: string) =>
+  Array.from(placesIn(html)?.querySelectorAll('[data-sidebar="group"]') ?? []).find((g) => textOf(g.querySelector('[data-sidebar="group-label"]')) === name);
+const head = (html: string) => side(html)?.querySelector('[data-sidebar="header"]') ?? null;
+const foot = (html: string) => side(html)?.querySelector('[data-sidebar="footer"]') ?? null;
+const needs = (html: string) => rowsIn(placesIn(html)).find((r) => r.label === "Needs you");
+const activity = (html: string) => rowsIn(placesIn(html)).find((r) => r.label === "Activity");
+const channels = (html: string) => rowsIn(section(html, "Channels"));
+const dms = (html: string) => rowsIn(section(html, "Direct messages"));
+const rateOf = (html: string) => activity(html)?.badge;
+/** `html` parsed, as the first element it holds. */
+const elementOf = (html: string) => parseHtml(html).body.firstElementChild;
+/** The Tooltip each element shows when it takes the focus, from the places mounted over `patch`. */
+const tipsOn = async (patch: Partial<DashboardState>, pick: (places: Element) => (Element | null | undefined)[]): Promise<string[]> => {
+  const store = createStore<DashboardState>({ ...initialState, ...patch });
+  const m = await mount(inShell(createElement(Sidebar, { store, route: { view: "activity" }, msgPerSecond: () => 0 })));
+  const places = m.container.querySelector('[aria-label="Places"]')!;
+  const tips: string[] = [];
+  for (const el of pick(places)) {
+    // A Tooltip on a part inside a link opens on the part, which does not take the focus; the pointer opens it.
+    const target = el as HTMLElement;
+    if (target?.matches("a")) await m.run(() => target.focus());
+    else {
+      await m.run(() => target?.dispatchEvent(new PointerEvent("pointermove", { bubbles: true })));
+      await m.run(() => new Promise<void>((r) => setTimeout(r, 0)));
+    }
+    tips.push(textOf(document.querySelector('[role="tooltip"]')));
+    if (target?.matches("a")) await m.run(() => target.blur());
+    else await m.run(() => document.dispatchEvent(new (dom.window.KeyboardEvent as typeof KeyboardEvent)("keydown", { key: "Escape", bubbles: true })));
+  }
+  await m.unmount();
+  return tips;
+};
 
 // ── 1. The head: the space name, no menu ─────────────────────────────────────────────────────────
 {
   const html = renderShell({ space: "main", roster, connection: "connected" });
-  ok("1.1 the head names the space", /<span class="ui-space[^"]*">main/.test(head(html)), head(html));
+  ok("1.1 the head names the space", textOf(head(html)) === "main", head(html)?.outerHTML);
   ok("1.2 and has no menu: no button, no link, no chevron icon",
-    !/<(button|a)\b/.test(head(html)) && !head(html).includes("<svg"), head(html));
+    head(html)?.querySelector("button, a, svg") === null, head(html)?.outerHTML);
   ok("1.3 before the first read names the space nothing is drawn for it, not a placeholder",
-    !/null|undefined/.test(head(renderShell({ space: null }))) && strip(head(renderShell({ space: null }))).trim() === "");
+    head(renderShell({ space: null })) !== null && textOf(head(renderShell({ space: null }))) === "", head(renderShell({ space: null }))?.outerHTML);
 }
 
 // ── 2. Needs you ─────────────────────────────────────────────────────────────────────────────────
 {
   const two = needs(renderShell({ roster }));
-  ok("2.1 Needs you is a link to the needs view", two?.attrs.href === formatRoute({ view: "needs" }), two?.attrs);
-  ok("2.2 it carries a gold count of the agents waiting: two here, and only the waiting ones",
-    two?.badge?.cls === "ui-badge-gold" && two.badge.text === "2", two?.badge);
-  ok("2.3 whose tooltip counts them in words", two?.badge?.title === "2 agents waiting", two?.badge);
+  ok("2.1 Needs you is a link to the needs view", two?.href === formatRoute({ view: "needs" }), two?.href);
+  ok("2.2 it carries a count of the agents waiting: two here, and only the waiting ones", two?.badge === "2", two?.badge);
+  ok("2.3 which a screen reader hears in words", two?.name === "Needs you 2 agents waiting", two?.name);
   const one = needs(renderShell({ roster: roster.filter((p) => p.card.id !== "local.pln") }));
-  ok("2.4 and says \"1 agent waiting\" for one", one?.badge?.text === "1" && one.badge.title === "1 agent waiting", one?.badge);
+  ok("2.4 and says \"1 agent waiting\" for one", one?.badge === "1" && one.name === "Needs you 1 agent waiting", one);
   const none = needs(renderShell({ roster: roster.filter((p) => p.status !== "waiting") }));
-  ok("2.5 with nobody waiting the row stays and shows no count", none !== undefined && none.badge === undefined, none);
+  ok("2.5 with nobody waiting the row stays and shows no count", none !== undefined && none.badge === undefined && none.name === "Needs you", none?.name);
   const empty = needs(renderShell({}));
-  ok("2.6 an empty mesh shows the row with no count, not a zero", empty !== undefined && empty.badge === undefined && !/>0</.test(empty.inner), empty);
+  ok("2.6 an empty mesh shows the row with no count, not a zero", empty !== undefined && empty.badge === undefined && !textOf(empty.a.closest("li")).includes("0"), empty?.name);
   ok("2.7 the row is current on the needs route and not elsewhere",
-    needs(renderShell({ roster }, { view: "needs" }))?.attrs["aria-current"] === "page" && two?.attrs["aria-current"] === undefined);
+    needs(renderShell({ roster }, { view: "needs" }))?.current === "page" && two?.current === null);
+  same("2.8 its Tooltip counts the agents waiting in words, and with nobody waiting it has none",
+    [await tipsOn({ roster }, (p) => [p.querySelector('a[href="#/needs"]')]), await tipsOn({ roster: roster.filter((r) => r.status !== "waiting") }, (p) => [p.querySelector('a[href="#/needs"]')])],
+    [["2 agents waiting"], [""]]);
 }
 
 // ── 3. Activity and the message rate ─────────────────────────────────────────────────────────────
@@ -120,10 +150,11 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   for (let i = 0; i < 8; i++) rate.hit(NOW - i * 1000);
   const html = renderShell({ roster }, { view: "activity" }, false, () => rate.perSecond(NOW));
   ok("3.1 Activity is a link to the activity view, current on that route",
-    activity(html)?.attrs.href === formatRoute({ view: "activity" }) && activity(html)?.attrs["aria-current"] === "page", activity(html)?.attrs);
-  ok("3.2 it shows the rate the sidebar was handed, to one decimal: 0.8 msg/s", rateOf(html) === "0.8 msg/s", rateOf(html));
+    activity(html)?.href === formatRoute({ view: "activity" }) && activity(html)?.current === "page", activity(html)?.href);
+  ok("3.2 it shows the rate the sidebar was handed, to one decimal: 0.8 msg/s, and a screen reader hears it in the row's name",
+    rateOf(html) === "0.8 msg/s" && activity(html)?.name === "Activity 0.8 msg/s", activity(html)?.name);
   ok("3.3 with no messages it says 0 msg/s", rateOf(renderShell({ roster })) === "0 msg/s", rateOf(renderShell({ roster })));
-  ok("3.4 and it is not current off the activity route", activity(renderShell({ roster }, { view: "agents", group: "status" }))?.attrs["aria-current"] === undefined);
+  ok("3.4 and it is not current off the activity route", activity(renderShell({ roster }, { view: "agents", group: "status" }))?.current === null);
   same("3.5 the text rounds to one decimal and drops a trailing .0",
     [0, 0.84, 0.86, 4, 12.34, 0.04].map(rateText), ["0 msg/s", "0.8 msg/s", "0.9 msg/s", "4 msg/s", "12.3 msg/s", "0 msg/s"]);
 }
@@ -138,24 +169,28 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   const html = renderShell(seed, { view: "channel", channel: "team.backend" });
   const rows = channels(html);
   same("4.1 one row per channel, in the store's order", rows.map((r) => r.label), ["general", "team.backend", "run.build-0412", "runner", "a b/c"]);
-  const hash = renderToString(createElement(RailIcon, { name: "hash", size: 18 }));
-  ok("4.2 an ordinary channel opens with the round 2 hash icon", rows[0].inner.startsWith(hash) && rows[1].inner.startsWith(hash), rows[0].inner.slice(0, 120));
+  const hash = elementOf(renderToString(createElement(RailIcon, { name: "hash" })));
+  ok("4.2 an ordinary channel opens with the round 2 hash icon",
+    hash !== null && rows[0].a.firstElementChild?.isEqualNode(hash) === true && rows[1].a.firstElementChild?.isEqualNode(hash) === true, rows[0].a.innerHTML.slice(0, 120));
   same("4.3 each row links to its channel route, the name encoded",
-    rows.map((r) => r.attrs.href), seed.channels.map((c) => formatRoute({ view: "channel", channel: c.channel })));
-  same("4.4 the open channel is the current one", rows.map((r) => r.attrs["aria-current"]), [undefined, "page", undefined, undefined, undefined]);
-  ok("4.5 an unread count is a blue badge on a bold row", rows[1].badge?.cls === "ui-badge-blue" && rows[1].badge.text === "3" && rows[1].attrs.class.includes("ui-row-bold"), rows[1]);
-  ok("4.6 a channel with none unread, counted zero or not at all, has no badge and is not bold",
-    rows.filter((_, i) => i !== 1).every((r) => r.badge === undefined && !r.attrs.class.includes("ui-row-bold")), rows.map((r) => r.attrs.class));
-  const plug = renderToString(createElement(Icon, { icon: Plug01Icon, size: 18, className: "ui-ic" }));
+    rows.map((r) => r.href), seed.channels.map((c) => formatRoute({ view: "channel", channel: c.channel })));
+  same("4.4 the open channel is the current one", rows.map((r) => r.current), [null, "page", null, null, null]);
+  ok("4.5 an unread count shows at the row's end, and a screen reader hears it in the row's name", rows[1].badge === "3" && rows[1].name === "team.backend 3", rows[1].name);
+  same("4.6 a channel with none unread, counted zero or not at all, has no count",
+    rows.filter((_, i) => i !== 1).map((r) => [r.badge ?? null, r.name]),
+    [[null, "general"], [null, "run.build-0412 Events from run build-0412"], [null, "runner"], [null, "a b/c"]]);
+  const plug = elementOf(renderToString(createElement(Icon, { icon: Plug01Icon })));
   ok("4.7 an event channel (run.*) is the one row drawn with the Hugeicons plug",
-    rows[2].inner.startsWith(plug) && !rows[0].inner.includes(plug) && !rows[1].inner.includes(plug), rows[2].inner.slice(0, 120));
-  ok("4.8 and its tooltip names the run: Events from run build-0412", rows[2].attrs.title === "Events from run build-0412", rows[2].attrs);
-  ok("4.9 only the run. prefix makes an event channel: runner is an ordinary channel with no tooltip",
-    rows[3].attrs.title === undefined && rows[3].inner.startsWith(hash) && rows[0].attrs.title === undefined, rows[3].attrs);
+    plug !== null && rows[2].a.firstElementChild?.isEqualNode(plug) === true && rows.filter((r) => r.a.firstElementChild?.isEqualNode(plug)).length === 1, rows[2].a.innerHTML.slice(0, 120));
+  ok("4.8 and it names the run to a screen reader: Events from run build-0412", rows[2].name === "run.build-0412 Events from run build-0412", rows[2].name);
+  ok("4.9 only the run. prefix makes an event channel: runner is an ordinary channel named by itself",
+    rows[3].name === "runner" && rows[3].a.firstElementChild?.isEqualNode(hash) === true && rows[0].name === "general", rows[3].name);
+  same("4.10 the Tooltip names the run, and an ordinary channel has none",
+    await tipsOn(seed, (p) => [p.querySelector('a[href="#/channel/run.build-0412"]'), p.querySelector('a[href="#/channel/runner"]')]), ["Events from run build-0412", ""]);
   const bare = section(renderShell({ roster }), "Channels");
-  ok("4.10 with no channels the section says so, in the notes' words",
-    strip(bare) === "ChannelsNo channels yet. One appears with its first message." || strip(bare).includes("No channels yet. One appears with its first message."), strip(bare));
-  ok("4.11 and says nothing of the kind once a channel exists", !strip(section(html, "Channels")).includes("No channels yet"));
+  ok("4.11 with no channels the section says so, in the notes' words",
+    textOf(bare).includes("No channels yet. One appears with its first message.") && rowsIn(bare).length === 0, textOf(bare));
+  ok("4.12 and says nothing of the kind once a channel exists", !textOf(section(html, "Channels")).includes("No channels yet"));
 }
 
 // ── 5. Direct messages ───────────────────────────────────────────────────────────────────────────
@@ -170,7 +205,7 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   const html = renderShell({ roster, dms: dmRows });
   const rows = dms(html);
   same("5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
-    rows.map((r) => r.attrs.href), [
+    rows.map((r) => r.href), [
       formatRoute({ view: "dm", peer: "local.rv2", with: "local.sco" }),
       formatRoute({ view: "dm", peer: "local.rev", with: "local.dav" }),
       formatRoute({ view: "dm", peer: "local.rv2", with: "local.dav" }),
@@ -179,56 +214,69 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   same("5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows",
     rows.map((r) => r.label), ["reviewer_2, scout", "reviewer, david", "reviewer_2, david", "scout, local.ghost"]);
   ok("5.3 no row or page text carries the payload's name", !html.includes("mallory"));
+  const inner = (r: Row) => r.a.innerHTML;
   same("5.4 each row shows two small avatars, one per party, and a status dot for each party the roster holds, so a working one's dot breathes",
-    [rows.map((r) => (r.inner.match(/<span class="ui-av[ "]/g) ?? []).length), rows.map((r) => (r.inner.match(/class="ui-st ui-st-/g) ?? []).length), rows[1].inner.includes("ui-st ui-st-working"), /<span class="ui-stack"/.test(rows[0].inner)],
+    [rows.map((r) => (inner(r).match(/<span class="ui-av[ "]/g) ?? []).length), rows.map((r) => (inner(r).match(/class="ui-st ui-st-/g) ?? []).length), inner(rows[1]).includes("ui-st ui-st-working"), rows[0].a.querySelector(".ui-stack") !== null],
     [[2, 2, 2, 2], [2, 2, 2, 1], true, true]);
   ok("5.5 a party not on the roster is drawn offline, as the roster's own offline agents are",
-    (rows[3].inner.match(/ui-av-off/g) ?? []).length === 2 && (rows[0].inner.match(/ui-av-off/g) ?? []).length === 1 && !rows[1].inner.includes("ui-av-off"), rows[3].inner.slice(0, 300));
-  const at = (route: Route) => dms(renderShell({ roster, dms: dmRows }, route)).map((r) => r.attrs["aria-current"]);
+    (inner(rows[3]).match(/ui-av-off/g) ?? []).length === 2 && (inner(rows[0]).match(/ui-av-off/g) ?? []).length === 1 && !inner(rows[1]).includes("ui-av-off"), inner(rows[3]).slice(0, 300));
+  const at = (route: Route) => dms(renderShell({ roster, dms: dmRows }, route)).map((r) => r.current);
   same("5.6 the row whose pair is open is current, whichever party the address names first",
-    [at({ view: "dm", peer: "local.rev", with: "local.dav" }), at({ view: "dm", peer: "local.dav", with: "local.rev" })], [[undefined, "page", undefined, undefined], [undefined, "page", undefined, undefined]]);
-  same("5.7 a route that names one peer marks no row", at({ view: "dm", peer: "local.dav" }), [undefined, undefined, undefined, undefined]);
-  ok("5.8 no row reads \"to you\": the page does not know which id is the operator", !strip(section(html, "Direct messages")).includes("to you"));
-  ok("5.9 with no conversations the heading stays and no row follows", dms(renderShell({ roster })).length === 0 && section(renderShell({ roster }), "Direct messages") !== "");
-  const marks = rows.map((r) => startTags(r.inner, "span").filter((s) => s.class === "ui-unverified").map((s) => s.title));
-  same("5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one",
+    [at({ view: "dm", peer: "local.rev", with: "local.dav" }), at({ view: "dm", peer: "local.dav", with: "local.rev" })], [[null, "page", null, null], [null, "page", null, null]]);
+  same("5.7 a route that names one peer marks no row", at({ view: "dm", peer: "local.dav" }), [null, null, null, null]);
+  ok("5.8 no row reads \"to you\": the page does not know which id is the operator", !textOf(section(html, "Direct messages")).includes("to you"));
+  ok("5.9 with no conversations the heading stays and no row follows", dms(renderShell({ roster })).length === 0 && section(renderShell({ roster }), "Direct messages") !== undefined);
+  /** The row's name after the two names it shows: the unverified mark, read with its reason, or nothing. */
+  const rest = (r: Row) => r.name.slice(r.label.length).trim();
+  const marks = rows.map((r) => (rest(r) === `unverified ${UNVERIFIED}` ? [UNVERIFIED] : []));
+  same("5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' reason, and only that one",
     marks, [[], [UNVERIFIED], [], []]);
   ok("5.11 each row's avatars are hidden from assistive tech, so its dots do not change the row's name",
-    rows.every((r) => startTags(r.inner, "span").find((t) => t.class === "ui-stack")?.["aria-hidden"] === "true"), rows.map((r) => startTags(r.inner, "span")[0]));
+    rows.every((r) => r.a.querySelectorAll(".ui-av").length === 2 && Array.from(r.a.querySelectorAll(".ui-av")).every((av) => av.closest('[aria-hidden="true"]') !== null))
+      && rows.every((r) => r.name.startsWith(r.label) && (rest(r) === "" || marks[rows.indexOf(r)].length === 1)), rows.map((r) => r.name));
 }
 
 // ── 6. The operator footer and the connection pill ───────────────────────────────────────────────
 {
   const up = foot(renderShell({ roster, connection: "connected" }));
-  ok("6.1 the footer names the operator with the OP initials", /<span class="ui-me">OP<\/span>/.test(up) && /<b>operator<\/b>/.test(up), up);
-  const pill = (html: string) => /<span class="(ui-live[^"]*)"([^>]*)>(<i><\/i>)?([^<]*)<\/span>/.exec(html);
-  const titleOf = (p: RegExpExecArray | null) => (p ? startTags(`<span ${p[2]}>`, "span")[0].title : undefined);
+  ok("6.1 the footer names the operator with the OP initials",
+    textOf(up?.querySelector('[data-slot="avatar"]')) === "OP" && textOf(up?.querySelector('[data-slot="item-title"]')) === "operator", up?.outerHTML.slice(0, 300));
+  /** The pill: the word it shows, what a screen reader hears, its variant and its dot's mark. */
+  const pill = (f: Element | null) => {
+    const el = f?.querySelector('[data-slot="item-actions"] > *');
+    return el ? {
+      word: Array.from(el.childNodes).filter((c) => c.nodeType === 3).map((c) => c.textContent).join("").trim(),
+      said: spoken(el),
+      variant: el.getAttribute("data-variant"),
+      dot: el.querySelector("i")?.className,
+    } : undefined;
+  };
   const p = pill(up);
-  ok("6.2 a live feed reads Connected, with its tooltip", p?.[4] === "Connected" && titleOf(p) === "Connected to cotal web", p?.[0]);
-  ok("6.3 and the pill is not in the down state", p?.[1] === "ui-live", p?.[1]);
+  ok("6.2 a live feed reads Connected, and says what it is connected to", p?.word === "Connected" && p.said === "Connected Connected to cotal web", p);
   const down = pill(foot(renderShell({ roster, connection: "reconnecting" })));
-  ok("6.4 a feed that dropped reads Reconnecting, never Connected", down?.[4] === "Reconnecting" && titleOf(down) === "Reconnecting to cotal web", down?.[0]);
-  ok("6.5 and the dot takes its own shape (ui-live-down), so the state is not colour alone", down?.[1] === "ui-live ui-live-down" && down[3] === "<i></i>", down?.[0]);
+  ok("6.3 and its dot is not the dot of a feed that is down", p?.dot !== undefined && down?.dot !== undefined && p.dot !== down.dot, { up: p?.dot, down: down?.dot });
+  ok("6.4 a feed that dropped reads Reconnecting, never Connected", down?.word === "Reconnecting" && down.said === "Reconnecting Reconnecting to cotal web", down);
+  ok("6.5 and the dot takes its own shape, so the state is not colour alone", down?.dot !== p?.dot && down?.variant === p?.variant, { up: p, down });
   const first = pill(foot(renderShell({ roster })));
-  ok("6.4b before the feed first opens it reads Connecting, with its tooltip, and not Reconnecting",
-    first?.[4] === "Connecting" && titleOf(first) === "Connecting to cotal web" && first[1] === "ui-live ui-live-down", first?.[0]);
-  ok("6.4c while the browser is still trying, the page does not say it is disconnected", !/Disconnected|Not connected|will not retry/.test(foot(renderShell({ roster })) + foot(renderShell({ roster, connection: "reconnecting" }))));
+  ok("6.4b before the feed first opens it reads Connecting, says so in words, and not Reconnecting",
+    first?.word === "Connecting" && first.said === "Connecting Connecting to cotal web" && first.dot === down?.dot, first);
+  ok("6.4c while the browser is still trying, the page does not say it is disconnected", !/Disconnected|Not connected|will not retry/.test(textOf(foot(renderShell({ roster }))) + textOf(foot(renderShell({ roster, connection: "reconnecting" })))));
   const gone = pill(foot(renderShell({ roster, connection: "closed" })));
-  ok("6.4d a feed the browser closed for good reads Disconnected, says why and what to do, and keeps the down shape",
-    gone?.[4] === "Disconnected" && gone[1] === "ui-live ui-live-down"
-      && titleOf(gone) === "The live feed closed and will not retry. Reload the page, or open the link cotal web printed when it started.", gone?.[0]);
+  ok("6.4d a feed the browser closed for good reads Disconnected, says why and what to do, keeps the down shape and turns destructive",
+    gone?.word === "Disconnected" && gone.dot === down?.dot && gone.variant === "destructive"
+      && gone.said === "Disconnected The live feed closed and will not retry. Reload the page, or open the link cotal web printed when it started.", gone);
   ok("6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here",
-    !/On the roster|Not on the roster|Read only/.test(up), strip(up));
+    !/On the roster|Not on the roster|Read only/.test(textOf(up)), textOf(up));
 }
 
 // ── 7. The sidebar's place in the shell ──────────────────────────────────────────────────────────
 {
   const html = renderShell({ space: "main", roster, connection: "connected", stale: [{ kind: "refused", name: "peers", reason: "HTTP 503" }] });
   const s = side(html);
-  const at = (needle: string) => s.indexOf(needle);
+  const parts = [s?.querySelector('[data-sidebar="header"]'), s?.querySelector("#stale"), s?.querySelector('[aria-label="Places"]'), s?.querySelector('[data-sidebar="footer"]')];
   ok("7.1 the head comes first, then the stale marker, then the places, then the footer",
-    at('class="ui-side-head"') >= 0 && at('class="ui-side-head"') < at('id="stale"') && at('id="stale"') < at('class="ui-side-scroll"') && at('class="ui-side-scroll"') < at('class="ui-side-foot"'), s.slice(0, 200));
-  const text = strip(scroll(html));
+    parts.every((x) => x) && parts.every((x, k) => k === 0 || (parts[k - 1]!.compareDocumentPosition(x!) & 4) !== 0), parts.map((x) => x?.tagName));
+  const text = textOf(placesIn(html));
   ok("7.2 the places hold Needs you, Activity, then Channels and Direct messages, in that order",
     text.indexOf("Needs you") >= 0 && text.indexOf("Needs you") < text.indexOf("Activity") && text.indexOf("Activity") < text.indexOf("Channels")
     && text.indexOf("Channels") < text.indexOf("Direct messages"), text);
@@ -310,7 +358,7 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   g.clearInterval = ((id: Parameters<typeof clearInterval>[0]) => { live.delete(id); realClear(id); }) as typeof clearInterval;
   try {
     const m = await mount(createElement(App, { host, start: start as never, clock }));
-    const shown = () => m.container.querySelector(".ui-side .ui-row-n")?.textContent;
+    const shown = () => m.container.querySelector('[aria-label="Places"] a[href="#/activity"]')?.closest("li")?.querySelector('[data-sidebar="menu-badge"]')?.textContent;
     ok("9.1 a freshly mounted app shows 0 msg/s", shown() === "0 msg/s", shown());
     ok("9.2 the app is ticking while mounted", live.size === 1, live.size);
     await m.run(() => { arrive(); arrive(); arrive(); });
@@ -333,24 +381,23 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   const people = [...roster, ...many];
   const talk = many.map((p, i) => dm(`c${i}`, p.card.id, "local.dav", 1000 - i, p.card.id));
   const routeTo = (i: number): Route => ({ view: "dm", peer: `local.a${i}`, with: "local.dav" });
-  const toggle = (html: string) => startTags(section(html, "Direct messages"), "button").find((b) => b.class?.includes("ui-row-more"));
-  const toggleText = (html: string) => strip(/<button [^>]*class="ui-row ui-row-more"[^>]*>([\s\S]*?)<\/button>/.exec(section(html, "Direct messages"))?.[1] ?? "");
+  const toggle = (html: string) => section(html, "Direct messages")?.querySelector("button[aria-expanded]") ?? undefined;
   const html = renderShell({ roster: people, dms: talk });
   same("10.1 with twelve conversations the sidebar lists the ten most recent, newest first",
-    dms(html).map((r) => r.attrs.href), Array.from({ length: DM_ROWS }, (_, i) => formatRoute(routeTo(i))));
+    dms(html).map((r) => r.href), Array.from({ length: DM_ROWS }, (_, i) => formatRoute(routeTo(i))));
   ok("10.2 then a Show all button with the count, collapsed",
-    toggle(html)?.type === "button" && toggle(html)?.["aria-expanded"] === "false" && toggleText(html) === "Show all 12", { tag: toggle(html), text: toggleText(html) });
+    toggle(html)?.getAttribute("type") === "button" && toggle(html)?.getAttribute("aria-expanded") === "false" && textOf(toggle(html)) === "Show all 12", toggle(html)?.outerHTML);
   const openOld = renderShell({ roster: people, dms: talk }, routeTo(11));
   same("10.3 an open conversation older than the ten is listed too, after them, and is the current row",
-    dms(openOld).map((r) => [r.attrs.href, r.attrs["aria-current"] ?? null]).slice(DM_ROWS - 1),
+    dms(openOld).map((r) => [r.href, r.current]).slice(DM_ROWS - 1),
     [[formatRoute(routeTo(9)), null], [formatRoute(routeTo(11)), "page"]]);
   const ten = renderShell({ roster: people, dms: talk.slice(0, DM_ROWS) });
   ok("10.4 with ten conversations every one is listed and there is no button", dms(ten).length === DM_ROWS && toggle(ten) === undefined, toggle(ten));
 
   const store = createStore<DashboardState>({ ...initialState, roster: people, dms: talk });
-  const m = await mount(createElement(Sidebar, { store, route: { view: "activity" }, msgPerSecond: () => 0 }));
-  const listed = () => [...m.container.querySelectorAll("nav a.ui-row")].filter((a) => a.getAttribute("href")?.startsWith("#/dm")).length;
-  const button = () => m.container.querySelector("button.ui-row-more") as HTMLButtonElement | null;
+  const m = await mount(inShell(createElement(Sidebar, { store, route: { view: "activity" }, msgPerSecond: () => 0 })));
+  const listed = () => m.container.querySelectorAll('[aria-label="Places"] a[href^="#/dm"]').length;
+  const button = () => m.container.querySelector('[aria-label="Places"] button[aria-expanded]') as HTMLButtonElement | null;
   await m.run(() => button()?.click());
   ok("10.5 Show all lists every conversation in place, and the button then reads Show fewer, expanded",
     listed() === 12 && button()?.getAttribute("aria-expanded") === "true" && button()?.textContent === "Show fewer", { listed: listed(), button: button()?.outerHTML });
@@ -366,11 +413,12 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   const walk = Array.prototype[Symbol.iterator];
   counted[Symbol.iterator] = function (this: StoredMessage[]) { walks++; return walk.call(this); };
   const live = createStore<DashboardState>({ ...initialState, roster: people, dms: counted });
-  const shown = await mount(createElement(Sidebar, { store: live, route: { view: "activity" }, msgPerSecond: () => 0 }));
+  const shown = await mount(inShell(createElement(Sidebar, { store: live, route: { view: "activity" }, msgPerSecond: () => 0 })));
   const before = walks;
   const renamed = people.map((p) => (p.card.id === "local.dav" ? { ...p, card: { ...p.card, name: "dave" }, ts: 2 } : { ...p, ts: 2 }));
   await shown.run(() => live.set({ roster: renamed }));
-  const firstLabel = shown.container.querySelector("nav a.ui-row[href^='#/dm'] .ui-row-lbl")?.textContent;
+  const firstDm = shown.container.querySelector('[aria-label="Places"] a[href^="#/dm"]');
+  const firstLabel = firstDm ? rowOf(firstDm as HTMLAnchorElement).label : undefined;
   ok("10.7 a roster change does not group the DMs again", before > 0 && walks === before, { before, after: walks });
   ok("10.8 and the rows take their names from the new roster", firstLabel === "agent0, dave", firstLabel);
   await shown.unmount();
@@ -388,25 +436,31 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
     ],
   } as unknown as MembershipSnapshot;
   const chans = [{ channel: "general", messages: 3 }, { channel: "team.backend", messages: 1 }, { channel: "ops", messages: 1 }];
+  /** A channel row's working count: the spokes and the number it shows, and the names a screen reader hears. */
+  const spokes = (r: Row | undefined) => Array.from(r?.a.querySelectorAll('[data-slot="tooltip-trigger"]') ?? []).find((t) => t.querySelector("svg") !== null);
   const working = (r: Row | undefined) => {
-    const m = /<span class="ox-sbw" title="([^"]*)">([\s\S]*?)<\/span>/.exec(r?.inner ?? "");
-    return m ? { title: unescapeHtml(m[1]!), text: strip(m[2]!), spins: m[2]!.includes("ox-spin") } : undefined;
+    const w = spokes(r);
+    return w ? { title: spoken(w), text: textOf(w.querySelector('[aria-hidden="true"]:not(svg)')), spins: w.querySelector("svg")?.classList.contains("ox-spin") === true } : undefined;
   };
   const rows = channels(renderShell({ roster: crew, channels: chans, membership: { snapshot: feed }, unread: { general: 3 } }));
   same("11.1 a channel with working members shows the turning spokes and how many, from the broker's membership and presence, titled with their names",
     working(rows[0]), { title: "2 members working: reviewer, david", text: "2", spins: true });
-  ok("11.2 the count comes before the unread count", (rows[0]?.inner.indexOf("ox-sbw") ?? -1) >= 0 && rows[0]!.inner.indexOf("ox-sbw") < rows[0]!.inner.indexOf("ui-badge-blue"), rows[0]?.inner);
+  const unreadBadge = rows[0]?.a.closest("li")?.querySelector('[data-sidebar="menu-badge"]');
+  ok("11.2 the count comes before the unread count", spokes(rows[0]) !== undefined && unreadBadge != null && (spokes(rows[0])!.compareDocumentPosition(unreadBadge) & 4) !== 0, rows[0]?.a.outerHTML);
   same("11.3 one working member reads 1 member working", working(rows[1]), { title: "1 member working: reviewer", text: "1", spins: true });
-  ok("11.4 a channel whose members are waiting or idle shows no count", rows[2] !== undefined && working(rows[2]) === undefined && !rows[2].inner.includes("ox-sbw"), rows[2]?.inner);
+  ok("11.4 a channel whose members are waiting or idle shows no count", rows[2] !== undefined && working(rows[2]) === undefined && rows[2].name === "ops", rows[2]?.name);
+  same("11.4b the spokes' Tooltip names the members working",
+    await tipsOn({ roster: crew, channels: chans, membership: { snapshot: feed } }, (p) => [spokes(rowOf(p.querySelector('a[href="#/channel/general"]') as HTMLAnchorElement))]),
+    ["2 members working: reviewer, david"]);
   // The event plane says reviewer is running a command; presence says idle. The count follows presence.
   const ts = Date.now() - 5000;
   const plane = { views: 1, frames: [{ id: "f1", ts, live: true, events: [{ type: "RUN_STARTED", threadId: "t", runId: "r1", timestamp: ts }, { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "Bash", timestamp: ts }] }], posts: [], load: "ok" as const, more: false, limit: 200 };
   const idle = crew.map((p) => ({ ...p, status: "idle" as const }));
   const quiet = channels(renderShell({ roster: idle, channels: chans, membership: { snapshot: feed }, sessions: { "local.rev": plane } }));
-  ok("11.5 the count reads presence alone: an idle roster with a working frame on the event plane shows no count", quiet.length === 3 && quiet.every((r) => working(r) === undefined), quiet.map((r) => r.inner));
+  ok("11.5 the count reads presence alone: an idle roster with a working frame on the event plane shows no count", quiet.length === 3 && quiet.every((r) => working(r) === undefined), quiet.map((r) => r.name));
   const posted: StoredMessage[] = [{ msg: { id: "p1", ts, space: "main", from: { id: "local.rev", name: "mallory" }, channel: "general", parts: [{ kind: "text", text: "hi" }] } as unknown as CotalMessage, senderId: "local.rev" }];
   const traffic = channels(renderShell({ roster: crew, channels: chans, membership: {}, open: { channel: "general", messages: posted } }));
-  ok("11.6 with no authoritative membership feed no channel shows a count, though a working agent posted there", traffic.length === 3 && traffic.every((r) => working(r) === undefined), traffic.map((r) => r.inner));
+  ok("11.6 with no authoritative membership feed no channel shows a count, though a working agent posted there", traffic.length === 3 && traffic.every((r) => working(r) === undefined), traffic.map((r) => r.name));
 }
 
 await closeDom();

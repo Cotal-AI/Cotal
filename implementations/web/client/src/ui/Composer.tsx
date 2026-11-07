@@ -1,6 +1,16 @@
 import { ArrowUp02Icon, AtIcon, SquareLock02Icon } from "@hugeicons/core-free-icons";
 import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
+import { Avatar, AvatarFallback } from "#client/ui/shadcn/avatar.tsx";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
+import { Bubble, BubbleContent } from "#client/ui/shadcn/bubble.tsx";
+import { Field, FieldDescription, FieldError } from "#client/ui/shadcn/field.tsx";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupText, InputGroupTextarea } from "#client/ui/shadcn/input-group.tsx";
+import { Message, MessageAvatar, MessageContent, MessageHeader } from "#client/ui/shadcn/message.tsx";
+import { MessageScrollerItem } from "#client/ui/shadcn/message-scroller.tsx";
+import { useSidebar } from "#client/ui/shadcn/sidebar.tsx";
+import { Spinner } from "#client/ui/shadcn/spinner.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { composeKey, composerNote, messageRoute, POST_OFF_CREDS, sendCommand, type ComposeTarget } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
 import type { Controller } from "../state/controller.js";
@@ -8,7 +18,6 @@ import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { DashboardState, Draft } from "../state/types.js";
 import { CopyCommand } from "./CopyCommand.tsx";
-import { SheetMenu } from "./sheet.js";
 import { clock } from "../lib/time.js";
 
 /** The controller's two composer calls, for the composers the views draw. Null before the dashboard
@@ -17,7 +26,7 @@ export const Compose = createContext<Pick<Controller, "send" | "draft"> | null>(
 
 /** The parts of an element the composer uses. Spelled out rather than taken from the DOM lib, because
  *  the suites typecheck the components that render on the server with no DOM lib. */
-type Field = { focus(): void; value: string };
+type TextBox = { focus(): void; value: string };
 
 /** The composer the next Message button asked to focus, by `composeKey`. The first composer for that
  *  target to mount takes it and clears it, a composer that cannot post included, so a request the
@@ -38,8 +47,8 @@ const withCode = (text: string): ReactNode[] => text.split("`").map((part, i) =>
 /** A target nothing has been typed for. */
 const BLANK: Draft = { text: "", outgoing: [] };
 
-/** The composer (mock section B, the four composer states, and section D's dock): the card and the
- *  note line under it, the same two elements in every state so the dock keeps one height.
+/** The composer (mock section B, the four composer states, and section D's dock): the box and the
+ *  note line under it, in every state. The box grows with the draft up to a cap, then scrolls.
  *
  *  - Nothing until `/api/meta` has said what the dashboard can post as.
  *  - Posting off: the reason with a lock, the command that posts from a terminal, a disabled send
@@ -47,12 +56,12 @@ const BLANK: Draft = { text: "", outgoing: [] };
  *  - Live: the box (`Message <where>`), Mention, the mode dot with `to`, "as operator", and send.
  *    Enter sends and Shift+Enter starts a new line.
  *  - Sending: send is disabled and spins until the server answers.
- *  - Refused: the draft is back in the box, the card is ringed, Try again replaces the row, and the
- *    note is the refusal, as plain text: the server's part of it is not ours to format.
+ *  - Refused: the draft is back in the box, the box is marked invalid, Try again replaces the row,
+ *    and the note is the refusal, as plain text: the server's part of it is not ours to format.
  *
- *  On a phone (`SheetMenu`) the row fits the screen as mock D draws it: Mention is its icon alone,
- *  named for assistive tech, and "as operator" is left out. The mode line shrinks before the send
- *  button moves.
+ *  On a phone (`useSidebar().isMobile`) the row fits the screen as mock D draws it: Mention is its
+ *  icon alone, named for assistive tech, and "as operator" is left out. The mode line shrinks before
+ *  the send button moves.
  *
  *  `where` is `#review` or the agent's name; `to` is the mode line, `to #review · 5 members`. */
 export function Composer({ store, target, where, to }: { store: Store<DashboardState>; target: ComposeTarget; where: string; to: string }) {
@@ -60,9 +69,9 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
   const post = useStore(store, (s) => s.post);
   const draft = useStore(store, (s) => s.drafts[key]) ?? BLANK;
   const ctl = useContext(Compose);
-  const phone = useContext(SheetMenu) !== null;
+  const phone = useSidebar().isMobile;
   const box = useRef<HTMLTextAreaElement>(null);
-  const field = () => box.current as unknown as Field | null;
+  const field = () => box.current as unknown as TextBox | null;
   useLayoutEffect(() => {
     const take = () => {
       if (wanted !== key) return;
@@ -77,22 +86,30 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
 
   if (post.mode === "off") {
     return (
-      <>
-        <div className="ui-card ui-composer" aria-disabled="true">
-          <div className="ui-reason">
-            <Icon icon={SquareLock02Icon} size={16} className="ui-ic ui-ic16" />
-            <span>{post.reason === POST_OFF_CREDS ? withCode("This dashboard was started with `--creds`, which can only read.") : post.reason}</span>
-          </div>
-          <div className="ui-crow">
+      <Field>
+        <InputGroup aria-disabled="true">
+          <InputGroupAddon align="block-start">
+            <Icon icon={SquareLock02Icon} />
+            <InputGroupText>{post.reason === POST_OFF_CREDS ? withCode("This dashboard was started with `--creds`, which can only read.") : post.reason}</InputGroupText>
+          </InputGroupAddon>
+          <InputGroupAddon align="block-end">
             <CopyCommand command={sendCommand(target)} />
-            <span className="ui-sp" />
-            <button type="button" className="ui-send" disabled title={post.reason} aria-label="Send">
-              <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />
-            </button>
-          </div>
-        </div>
-        <div className="ui-cnote">{withCode(composerNote(post))}</div>
-      </>
+            <Tooltip>
+              {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it,
+                  which takes the focus instead. The reason is also the box's first line. */}
+              <TooltipTrigger asChild>
+                <span className="ml-auto inline-flex" tabIndex={0}>
+                  <InputGroupButton variant="default" size="icon-xs" disabled aria-label="Send">
+                    <Icon icon={ArrowUp02Icon} />
+                  </InputGroupButton>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{post.reason}</TooltipContent>
+            </Tooltip>
+          </InputGroupAddon>
+        </InputGroup>
+        <FieldDescription className="truncate">{withCode(composerNote(post))}</FieldDescription>
+      </Field>
     );
   }
 
@@ -107,94 +124,131 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
     ctl?.draft(target, `${draft.text}@`);
     field()?.focus();
   };
+  // A disabled control fires no pointer events, so where a Tooltip names it, it hangs on a span
+  // around the control, which takes the focus while the control cannot.
+  const pick = (
+    <InputGroupButton size={phone ? "icon-xs" : "xs"} disabled={ctl === null} onClick={mention} aria-label={phone ? "Mention" : undefined}>
+      <Icon icon={AtIcon} data-icon={phone ? undefined : "inline-start"} />
+      {!phone && "Mention"}
+    </InputGroupButton>
+  );
   return (
-    <>
-      <div className={refused === undefined ? "ui-card ui-composer" : "ui-card ui-composer ui-composer-err"}>
-        <textarea
+    <Field data-invalid={refused !== undefined}>
+      <InputGroup>
+        <InputGroupTextarea
           ref={box}
-          className={draft.text === "" ? "ui-input" : "ui-input ui-input-typed"}
+          className="max-h-48"
           placeholder={`Message ${where}`}
           aria-label={`Message ${where}`}
+          aria-invalid={refused !== undefined}
           value={draft.text}
           readOnly={ctl === null}
-          onChange={(e) => ctl?.draft(target, (e.currentTarget as unknown as Field).value)}
+          onChange={(e) => ctl?.draft(target, (e.currentTarget as unknown as TextBox).value)}
           onKeyDown={(e) => {
             if (e.key !== "Enter" || e.shiftKey || (e.nativeEvent as { isComposing?: boolean }).isComposing) return;
             e.preventDefault();
             submit();
           }}
         />
-        <div className="ui-crow">
+        <InputGroupAddon align="block-end">
           {refused === undefined ? (
             <>
-              <button type="button" className="ui-pick" disabled={ctl === null} onClick={mention} title={phone ? "Mention" : undefined} aria-label={phone ? "Mention" : undefined}>
-                <Icon icon={AtIcon} size={16} className="ui-ic" />
-                {!phone && "Mention"}
-              </button>
-              <span className="ui-sp" />
-              <span className="ui-pick">
+              {phone ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex" tabIndex={ctl === null ? 0 : undefined}>{pick}</span>
+                  </TooltipTrigger>
+                  <TooltipContent>Mention</TooltipContent>
+                </Tooltip>
+              ) : pick}
+              <InputGroupText className="ml-auto min-w-0">
                 <i className="ui-mode-dot" style={{ background: target.kind === "msg" ? "var(--multi)" : "var(--uni)" }} />
-                {to}
-              </span>
-              {!phone && <span className="ui-pick">as operator</span>}
-              <button type="button" className="ui-send" title={sending ? "Sending" : "Send"} aria-label={sending ? "Sending" : "Send"} disabled={!ready} onClick={submit}>
-                {sending ? <span className="ui-spin" /> : <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />}
-              </button>
+                <span className="truncate">{to}</span>
+              </InputGroupText>
+              {!phone && <InputGroupText>as operator</InputGroupText>}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" tabIndex={ready ? undefined : 0}>
+                    <InputGroupButton variant="default" size="icon-xs" aria-label={sending ? "Sending" : "Send"} disabled={!ready} onClick={submit}>
+                      {sending ? <Spinner /> : <Icon icon={ArrowUp02Icon} />}
+                    </InputGroupButton>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{sending ? "Sending" : "Send"}</TooltipContent>
+              </Tooltip>
             </>
           ) : (
-            <>
-              <span className="ui-sp" />
-              <button type="button" className="ui-btn ui-btn-sm" disabled={!ready} onClick={submit}>Try again</button>
-            </>
+            <InputGroupButton variant="outline" size="sm" className="ml-auto" disabled={!ready} onClick={submit}>Try again</InputGroupButton>
           )}
-        </div>
-      </div>
+        </InputGroupAddon>
+      </InputGroup>
       {refused === undefined ? (
-        <div className="ui-cnote">{withCode(composerNote(post))}</div>
+        <FieldDescription className="truncate">{withCode(composerNote(post))}</FieldDescription>
       ) : (
-        <div className="ui-cnote ui-cnote-err" role="alert" title={refused}>{refused}</div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <FieldError className="truncate">{refused}</FieldError>
+          </TooltipTrigger>
+          <TooltipContent>{refused}</TooltipContent>
+        </Tooltip>
       )}
-    </>
+    </Field>
   );
 }
 
 /** The operator's posts to `target` that the view does not show yet (mock section B, sending then
- *  sent): faded while the server has not answered, then plain until the message itself arrives.
- *  `shown` is the ids the view already draws. The text is drawn as typed, not as Markdown. */
+ *  sent), each in its own MessageScrollerItem as the operator's Message at the end side: in the muted
+ *  bubble with "sending" after the time while the server has not answered, then in the operator's
+ *  default bubble until the message itself arrives. `shown` is the ids the view already draws. The
+ *  text is drawn as typed, not as Markdown. */
 export function OutgoingRows({ store, target, shown }: { store: Store<DashboardState>; target: ComposeTarget; shown: ReadonlySet<string> }) {
   const draft = useStore(store, (s) => s.drafts[composeKey(target)]) ?? BLANK;
   return (
     <>
       {draft.outgoing.filter((o) => o.id === undefined || !shown.has(o.id)).map((o) => {
         const at = new Date(o.ts);
+        const sending = o.id === undefined;
         return (
-          <div key={o.seq} className={o.id === undefined ? "ui-msg ui-pending" : "ui-msg"}>
-            <div className="ui-gut"><span className="ui-me" style={{ width: 34, height: 34 }}>OP</span></div>
-            <div>
-              <div className="ui-mh"><b>operator</b><span className="ui-role">operator</span><time dateTime={at.toISOString()}>{clock(at)}</time></div>
-              <div className="ui-tx"><p style={{ whiteSpace: "pre-wrap" }}>{o.text}</p></div>
-            </div>
-          </div>
+          <MessageScrollerItem key={o.seq}>
+            <Message align="end">
+              <MessageAvatar>
+                <Avatar>
+                  <AvatarFallback>OP</AvatarFallback>
+                </Avatar>
+              </MessageAvatar>
+              <MessageContent>
+                <MessageHeader className="gap-2">
+                  <span>operator</span>
+                  <Badge variant="secondary">operator</Badge>
+                  <time dateTime={at.toISOString()}>{clock(at)}</time>
+                  {sending && <span>sending</span>}
+                </MessageHeader>
+                <Bubble variant={sending ? "muted" : "default"}>
+                  <BubbleContent className="whitespace-pre-wrap">{o.text}</BubbleContent>
+                </Bubble>
+              </MessageContent>
+            </Message>
+          </MessageScrollerItem>
         );
       })}
     </>
   );
 }
 
-/** In the dock of a conversation between two agents, which the operator is not in (mock B's dock
- *  size): one line saying so, and Message, which opens the operator's own conversation with `peer`
- *  with its composer focused. The same two elements as the composer, so the dock keeps its height. */
+/** In the dock of a conversation between two agents, which the operator is not in: the composer's
+ *  box with one line saying so, and Message, which opens the operator's own conversation with `peer`
+ *  with its composer focused. */
 export function BetweenAgents({ peer, name, selfId }: { peer: string; name: string; selfId: string | null }) {
   return (
-    <>
-      <div className="ui-card ui-composer">
-        <div className="ui-reason"><span>This conversation is between two agents.</span></div>
-        <div className="ui-crow">
-          <span className="ui-sp" />
-          <a className="ui-btn ui-btn-sm" href={formatRoute(messageRoute(peer, selfId))} onClick={() => focusComposer({ kind: "dm", to: peer })}>{`Message ${name}`}</a>
-        </div>
-      </div>
-      <div className="ui-cnote" />
-    </>
+    <InputGroup>
+      <InputGroupAddon align="block-start">
+        <InputGroupText>This conversation is between two agents.</InputGroupText>
+      </InputGroupAddon>
+      <InputGroupAddon align="block-end">
+        <InputGroupButton asChild variant="outline" size="sm" className="ml-auto">
+          <a href={formatRoute(messageRoute(peer, selfId))} onClick={() => focusComposer({ kind: "dm", to: peer })}>{`Message ${name}`}</a>
+        </InputGroupButton>
+      </InputGroupAddon>
+    </InputGroup>
   );
 }

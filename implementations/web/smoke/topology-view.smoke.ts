@@ -22,6 +22,7 @@ import { TopologyView } from "../client/src/ui/views/TopologyView.tsx";
 import { bootReads, page, unusedApi } from "./controller-harness.js";
 import { renderShell } from "./render-shell.js";
 import { errorsDuring, mount } from "./mount.js";
+import { inShell } from "./providers.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -45,7 +46,7 @@ const CHANNELS = [chan("alerts"), chan("ops")];
 type Patch = Partial<DashboardState>;
 const seed = (patch: Patch = {}) => createStore<DashboardState>({ ...initialState, roster: ROSTER, channels: CHANNELS, membership: MEMBERS, ...patch });
 const view = (patch: Patch = {}, props: { clock?: () => number; initialHideOffline?: boolean } = {}) =>
-  renderToString(createElement(TopologyView, { store: seed(patch), clock: () => NOW, ...props }));
+  renderToString(inShell(createElement(TopologyView, { store: seed(patch), clock: () => NOW, ...props })));
 
 /** `html` parsed into a DOM, so a cell asks for elements and classes instead of matching text. */
 const parse = (html: string): HTMLElement => {
@@ -95,7 +96,7 @@ const text = (root: ParentNode, sel: string) => [...root.querySelectorAll(sel)].
   ok("2.6 and the channel's pill shows it", within.querySelector('[data-node="#alerts"]')!.classList.contains("ui-tn-hot") && !within.querySelector('[data-node="#ops"]')!.classList.contains("ui-tn-hot"));
   const after = parse(view(entry(NOW - 2000), { initialHideOffline: false }));
   ok("2.7 and cold after 2 seconds", lines(after, "ui-tl-hot") === 0 && after.querySelectorAll(".ui-tn-hot").length === 0);
-  const later = parse(renderToString(createElement(TopologyView, { store: seed(entry(NOW - 1999)), clock: () => NOW + 1, initialHideOffline: false })));
+  const later = parse(renderToString(inShell(createElement(TopologyView, { store: seed(entry(NOW - 1999)), clock: () => NOW + 1, initialHideOffline: false }))));
   ok("2.8 hot or cold is the clock's reading and nothing else: one more millisecond cools it", lines(later, "ui-tl-hot") === 0);
 
   const wide = parse(view({ membership: feed([member("A", [">"]), member("B", ["alerts"])]) }, { initialHideOffline: false }));
@@ -115,18 +116,22 @@ const text = (root: ParentNode, sel: string) => [...root.querySelectorAll(sel)].
   ok("2.15 and no all-channels badge", parse(view({ membership: { ...feed([member("A", [">"])]), unreadable: "x" } })).querySelector(".ui-wide") === null);
   ok("2.16 and the agents still draw from the roster", nodeIds(unread).includes("A") && nodeIds(unread).includes("B"));
 
-  const pill = (patch: Patch) => parse(view(patch)).querySelector(".ui-mpill");
+  /** The membership Badge: its state, then the note its Tooltip shows, which it carries as screen
+   *  reader text, and its Badge variant. */
+  const pill = (patch: Patch) => {
+    const el = [...parse(view(patch)).querySelectorAll("*")].filter((e) => (e.textContent ?? "").startsWith("Membership:")).at(-1);
+    return { text: el?.textContent ?? "", variant: el?.getAttribute("data-variant") };
+  };
   ok("2.17 the pill reads Membership: live for a fresh feed, with the daemon tooltip",
-    pill({})?.textContent === "Membership: live" && pill({})?.getAttribute("title") === "From broker membership, served by the delivery daemon" && pill({})?.classList.contains("ui-mpill-live") === true);
-  ok("2.18 stale for an old one", pill({ membership: feed([member("A", ["alerts"])], NOW - 60_000) })?.textContent === "Membership: stale" && pill({ membership: feed([], NOW - 60_000) })?.classList.contains("ui-mpill-stale") === true);
-  ok("2.18b and the stale pill says what stale means", pill({ membership: feed([member("A", ["alerts"])], NOW - 60_000) })?.getAttribute("title") === "The daemon's last report is older than 45 seconds, or has no time on it");
+    pill({}).text === "Membership: live From broker membership, served by the delivery daemon" && pill({}).variant === "outline", pill({}));
+  ok("2.18 stale for an old one", pill({ membership: feed([member("A", ["alerts"])], NOW - 60_000) }).text.startsWith("Membership: stale ") && pill({ membership: feed([], NOW - 60_000) }).text.startsWith("Membership: stale "));
+  ok("2.18b and the stale pill says what stale means", pill({ membership: feed([member("A", ["alerts"])], NOW - 60_000) }).text === "Membership: stale The daemon's last report is older than 45 seconds, or has no time on it");
   ok("2.19 traffic-only for no feed, with its tooltip",
-    pill({ membership: {} })?.textContent === "Membership: traffic-only" && pill({ membership: {} })?.getAttribute("title") === "No delivery daemon on an open mesh, so members come from who has posted"
-      && pill({ membership: {} })?.classList.contains("ui-mpill-traffic") === true);
-  ok("2.20 unreadable for a failed read", pill({ membership: { unreadable: "x" } })?.textContent === "Membership: unreadable" && pill({ membership: { unreadable: "x" } })?.classList.contains("ui-mpill-unread") === true);
+    pill({ membership: {} }).text === "Membership: traffic-only No delivery daemon on an open mesh, so members come from who has posted" && pill({ membership: {} }).variant === "outline");
+  ok("2.20 unreadable for a failed read, drawn as the destructive Badge", pill({ membership: { unreadable: "x" } }).text.startsWith("Membership: unreadable ") && pill({ membership: { unreadable: "x" } }).variant === "destructive");
 
-  ok("2.20b the unreadable pill's tooltip carries the reason the read gave", pill({ membership: { unreadable: "permissions violation" } })?.getAttribute("title") === "the read failed: permissions violation");
-  ok("2.20c and the other pills never claim a failure", pill({})?.getAttribute("title")?.includes("failed") === false);
+  ok("2.20b the unreadable pill's tooltip carries the reason the read gave", pill({ membership: { unreadable: "permissions violation" } }).text === "Membership: unreadable the read failed: permissions violation");
+  ok("2.20c and the other pills never claim a failure", pill({}).text !== "" && !pill({}).text.includes("failed"));
   ok("2.21 the legend names each line kind and the badge", text(dflt, ".ui-legend span").join("|") === "Member|Durable member|Offline agent|Posted here|Active now|Working|all channelsReads every channel", text(dflt, ".ui-legend span"));
   ok("2.21b durable and offline links have their own swatch and their own line class", [...dflt.querySelectorAll(".ui-legend i")].map((e) => e.className).join() === "ui-lg-member,ui-lg-durable,ui-lg-offline,ui-lg-traffic,ui-lg-hot,ui-lg-working"
     && d.querySelector("line.ui-tl-durable:not(.ui-tl-off)") !== null && d.querySelector("line.ui-tl-off:not(.ui-tl-durable)") !== null);
@@ -134,7 +139,7 @@ const text = (root: ParentNode, sel: string) => [...root.querySelectorAll(sel)].
   ok("2.23 the first draw is at rest and reproducible: one model renders to the same markup twice", view() === view());
 
   const shell = parse(renderShell({ roster: ROSTER, channels: CHANNELS, membership: MEMBERS }, { view: "topology" } as Route));
-  ok("2.24 the shell draws the topology view in its centre on the topology route", shell.querySelector("main.ui-center svg.ui-topo-svg") !== null && shell.querySelector("main.ui-center h1")?.textContent === "Topology");
+  ok("2.24 the shell draws the topology view in its centre on the topology route", shell.querySelector("main svg.ui-topo-svg") !== null && shell.querySelector("main h1")?.textContent === "Topology");
   ok("2.25 and on no other route", parse(renderShell({ roster: ROSTER }, { view: "agents" } as Route)).querySelector("svg.ui-topo-svg") === null);
 
   const future = NOW + 3_600_000;
@@ -273,7 +278,7 @@ const DomWheelEvent = (dom.window as unknown as { WheelEvent: typeof WheelEvent 
   }) as typeof clearInterval;
   try {
     const errors = await errorsDuring(async () => {
-      const m = await mount(createElement(TopologyView, { store, clock: () => clockNow }));
+      const m = await mount(inShell(createElement(TopologyView, { store, clock: () => clockNow })));
       const button = () => [...m.container.querySelectorAll("button")].find((b) => b.textContent === "Hide offline")!;
       ok("3.18 Hide offline starts pressed, with the offline agent gone", button().getAttribute("aria-pressed") === "true" && !nodeIds(m.container).includes("C"), nodeIds(m.container));
       await m.run(() => button().click());

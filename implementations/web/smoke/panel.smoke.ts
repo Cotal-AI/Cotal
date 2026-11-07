@@ -32,6 +32,7 @@ import { PANEL_KEY } from "../client/src/ui/panel/RightPanel.tsx";
 import { TopologyTab } from "../client/src/ui/panel/TopologyTab.tsx";
 import { harness } from "./controller-harness.js";
 import { errorsDuring, mount, type Mounted } from "./mount.js";
+import { inShell } from "./providers.js";
 import { renderShell } from "./render-shell.js";
 
 const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
@@ -115,15 +116,21 @@ const parse = (html: string): HTMLElement => {
 const none = (): HTMLElement => document.createElement("div");
 const textOf = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 const all = (el: ParentNode, sel: string) => [...el.querySelectorAll(sel)] as HTMLElement[];
+/** The button whose accessible name, its aria-label or else its text, is `name`. */
+const button = (el: ParentNode, name: string) =>
+  all(el, "button").find((b) => (b.getAttribute("aria-label") ?? textOf(b)) === name);
+/** The membership Badge's text: its state, then the note its Tooltip shows, which it carries as
+ *  screen reader text. */
+const pillText = (el: ParentNode) => textOf(all(el, "*").filter((b) => textOf(b).startsWith("Membership:")).at(-1));
 const pane = (el: ParentNode) => (el.querySelector("section.ui-pane") as HTMLElement | null) ?? none();
 const tabs = (el: ParentNode) => all(pane(el), ".ui-tabs [role=tab]").map((t) => [textOf(t), t.getAttribute("aria-selected"), (t as HTMLButtonElement).disabled]);
 const kv = (el: ParentNode) => all(el, "dl.ui-kv dt").map((dt) => [textOf(dt), textOf(dt.nextElementSibling)]);
 const storeOf = (patch: Partial<DashboardState> = {}) => createStore<DashboardState>({ ...initialState, ...seed(patch) });
 const agentTab = (id: string, patch: Partial<DashboardState> = {}) =>
-  parse(renderToString(createElement(AgentTab, { store: storeOf(patch), id })));
+  parse(renderToString(inShell(createElement(AgentTab, { store: storeOf(patch), id }))));
 /** The Profile tab of the agent's page, which holds what the Agent tab held before its peek. */
 const profile = (id: string, patch: Partial<DashboardState> = {}) =>
-  parse(renderToString(createElement(AgentProfile, { store: storeOf(patch), id, clock: () => NOW })));
+  parse(renderToString(inShell(createElement(AgentProfile, { store: storeOf(patch), id, clock: () => NOW }))));
 
 // ── 1. The panel in the shell and its tab defaults ───────────────────────────────────────────────
 {
@@ -131,12 +138,12 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
   same("1.1 beside a channel the panel opens on Members, with Agent disabled until someone is picked",
     tabs(open), [["Members", "true", false], ["Agent", "false", true], ["Topology", "false", false]]);
   ok("1.2 its body is the Members tab for the route's channel", textOf(pane(open).querySelector(".v3-mhead > span")) === "#review · 3 members", textOf(pane(open).querySelector(".v3-mhead")));
-  const close = pane(open).querySelector(".ui-tabs button.ui-tool") as HTMLElement | null;
-  ok("1.3 the tab bar ends with the Close panel button", close?.getAttribute("aria-label") === "Close panel" && close.title === "Close panel", close?.outerHTML);
+  const bar = pane(open).querySelector("[role=tablist]")?.parentElement ?? none();
+  const close = all(bar, "button").at(-1);
+  ok("1.3 the tab bar ends with the Close panel button, after the tabs", close?.getAttribute("aria-label") === "Close panel" && close.closest("[role=tablist]") === null, close?.outerHTML);
   const off = parse(renderShell(seed(), { view: "activity" }, false));
-  ok("1.4 off a channel, with nobody picked, there is no panel and the grid drops its column",
-    off.querySelector("section.ui-pane") === null && (off.querySelector(".ui-app")?.className ?? "").split(" ").includes("no-pane"));
-  const toggle = open.querySelector("header.ui-bar button[title='Toggle panel']");
+  ok("1.4 off a channel, with nobody picked, there is no Details panel", off.querySelector("section[aria-label=Details]") === null && off.querySelector("[role=tablist][aria-label=Details]") === null);
+  const toggle = button(open.querySelector("header") ?? none(), "Toggle panel");
   ok("1.5 the channel header carries Toggle panel, pressed while the panel is open", toggle?.getAttribute("aria-pressed") === "true", toggle?.outerHTML);
 }
 
@@ -147,22 +154,19 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
   const live = members({});
   same("2.1 an authoritative feed gives the channel's members from membership, in roster order, waiting first",
     rows(live), [["local.rv2", "membership"], ["local.dav", "membership"], ["local.rev", "membership"]]);
-  const pill = live.querySelector(".ui-mpill") as HTMLElement;
-  same("2.2 the pill reads Membership: live with the notes' tooltip", [textOf(pill), pill?.title], ["Membership: live", "From broker membership, served by the delivery daemon"]);
+  same("2.2 the pill reads Membership: live with the notes' tooltip", pillText(live), "Membership: live From broker membership, served by the delivery daemon");
   same("2.3 each row is the character, the name and role, and the status word",
-    all(live, "button.v3-mrow").map((r) => [textOf(r.querySelector(".v3-mname")), textOf(r.querySelector(".v3-spill")), r.querySelector(".ui-av .ui-st") !== null]),
+    all(live, "button.v3-mrow").map((r) => [textOf(r.querySelector(".v3-mname")), textOf(r.querySelector("[data-slot=badge]")), r.querySelector(".ui-av .ui-st") !== null]),
     [["reviewer_2reviewer", "Waiting", true], ["davidengineer", "Working", true], ["reviewerreviewer", "Working", true]]);
   const traffic = members({ membership: {} });
   same("2.4 with no membership feed the members are who posted here, from traffic", rows(traffic), [["local.dav", "traffic"], ["local.rev", "traffic"]]);
-  const tp = traffic.querySelector(".ui-mpill") as HTMLElement;
-  same("2.5 and the pill says traffic-only with its tooltip", [textOf(tp), tp?.title], ["Membership: traffic-only", "No delivery daemon on an open mesh, so members come from who has posted"]);
+  same("2.5 and the pill says traffic-only with its tooltip", pillText(traffic), "Membership: traffic-only No delivery daemon on an open mesh, so members come from who has posted");
   const unread = members({ membership: { snapshot: reviewMembers, unreadable: "403 permissions violation" } });
-  const up = unread.querySelector(".ui-mpill") as HTMLElement;
   same("2.6 an unreadable feed says so with the reason, and falls back to traffic",
-    [textOf(up), up?.title, rows(unread).map((r) => r[1])], ["Membership: unreadable", "the read failed: 403 permissions violation", ["traffic", "traffic"]]);
+    [pillText(unread), rows(unread).map((r) => r[1])], ["Membership: unreadable the read failed: 403 permissions violation", ["traffic", "traffic"]]);
   const stranger = members({ membership: { snapshot: snapshot([{ id: "local.zzz", live: ["review"] }, { id: "local.rv2", live: ["review"] }]) } });
   same("2.7 a member the roster does not know is listed last by its id, with no status to show",
-    all(stranger, "button.v3-mrow").map((r) => [textOf(r.querySelector(".v3-mname")), r.querySelector(".v3-spill") === null]), [["reviewer_2reviewer", false], ["local.zzz", true]]);
+    all(stranger, "button.v3-mrow").map((r) => [textOf(r.querySelector(".v3-mname")), r.querySelector("[data-slot=badge]") === null]), [["reviewer_2reviewer", false], ["local.zzz", true]]);
   const one = members({ membership: { snapshot: snapshot([{ id: "local.rv2", live: ["review"] }]) } });
   ok("2.8 one member reads 1 member", textOf(one.querySelector(".v3-mhead > span")) === "#review · 1 member", textOf(one.querySelector(".v3-mhead > span")));
   same("2.9 the channel's details are its topic, its delivery and its message count", kv(live),
@@ -171,8 +175,10 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
   same("2.10 a live channel with replay off reads live, and with no topic has no Topic row", kv(plain), [["Delivery", "live"], ["Messages", "1"]]);
   const bare = pane(parse(renderShell(seed({ channels: [{ channel: "review", messages: 4 }] as ChannelInfo[] }), inReview, true)));
   same("2.11 a channel whose policy the server has not sent says nothing about delivery", kv(bare), [["Messages", "4"]]);
-  const del = live.querySelector("button.ui-btn-danger") as HTMLElement | null;
-  ok("2.12 Delete channel closes the tab, and no dialog is drawn until it is clicked", textOf(del) === "Delete channel" && live.querySelector("[role=dialog]") === null, del?.outerHTML);
+  const del = button(live, "Delete channel");
+  ok("2.12 Delete channel closes the tab and opens a dialog, which is not drawn until it is clicked",
+    textOf(del) === "Delete channel" && del?.getAttribute("aria-haspopup") === "dialog" && del.getAttribute("aria-expanded") === "false"
+      && live.querySelector("[role=alertdialog], [role=dialog]") === null, del?.outerHTML);
   const unknownDot = all(stranger, "button.v3-mrow").map((r) => r.querySelector(".ui-av .ui-st") !== null);
   same("2.13 a member the roster does not know draws no status dot, as it shows no status word", unknownDot, [true, false]);
 }
@@ -186,7 +192,7 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
   ok("3.2 Profile draws the character at 88px with no status dot", big?.getAttribute("style")?.includes("--s:88px") === true && big.querySelector(".ui-st") === null, big?.outerHTML.slice(0, 120));
   const sline = rev.querySelector(".ui-sline") ?? none();
   same("3.3 the peek's status line is the status word, the activity, and when it reported",
-    [textOf(sline.querySelector(".v3-spill")), textOf(sline.querySelector(":scope > span:not(.v3-spill)")), textOf(sline.querySelector("small"))],
+    [textOf(sline.querySelector("[data-slot=badge]")), textOf(sline.querySelector(":scope > span:not([data-slot])")), textOf(sline.querySelector("small"))],
     ["Working", "Reviewing the presence TTL diff", "Reported 10:43"]);
   const message = rev.querySelector(".ui-actions a[data-variant=outline]") as HTMLAnchorElement | null;
   same("3.4 the peek's Message opens the DM view with this agent", [textOf(message), message?.getAttribute("href")], ["Message", formatRoute({ view: "dm", peer: "local.rev" })]);
@@ -195,20 +201,20 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
   const beat = all(card, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat");
   ok("3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago", `${textOf(beat)} ${textOf(beat?.nextElementSibling)}` === "Heartbeat 2s ago", textOf(card.querySelector("dl.ui-kv")));
   same("3.7 Profile's details are harness, model, host, attention, heartbeat and work events", kv(card),
-    [["Harness", "Codex"], ["Model", "gpt-5.5-codex"], ["Host", "build-box"], ["Attention", "Do not disturb"], ["Heartbeat", "2s ago"], ["Work events", "not reported"]]);
+    [["Harness", "Codex"], ["Model", "gpt-5.5-codex"], ["Host", "build-box"], ["Attention", "Do not disturb Channel messages wait for its next turn. DMs and mentions still wake it."], ["Heartbeat", "2s ago"], ["Work events", "not reported"]]);
   const dnd = card.querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
-  ok("3.8 Do not disturb carries its icon and the notes' tooltip",
-    dnd?.title === "Channel messages wait for its next turn. DMs and mentions still wake it." && dnd.querySelector("svg") !== null, dnd?.outerHTML.slice(0, 160));
+  ok("3.8 Do not disturb carries its icon and the notes' tooltip, which it reads to a screen reader",
+    textOf(dnd) === "Do not disturb Channel messages wait for its next turn. DMs and mentions still wake it." && dnd?.querySelector("svg") !== null, dnd?.outerHTML.slice(0, 160));
   const model = all(profile("local.rv2"), "dl.ui-kv dt").find((dt) => textOf(dt) === "Model")?.nextElementSibling as HTMLElement | undefined;
   ok("3.9 a card with no model reads Model not reported", textOf(model) === "not reported" && model?.className === "ui-nr", model?.outerHTML);
   const focus = profile("local.pln").querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
-  same("3.10 Focus shows with its own tooltip", [textOf(focus), focus?.title], ["Focus", "Channel messages stay in the channel. DMs and role requests still reach it."]);
+  same("3.10 Focus shows with its own tooltip, read to a screen reader", textOf(focus), "Focus Channel messages stay in the channel. DMs and role requests still reach it.");
   const attention = (a: string | undefined) => kv(profile("local.dav", { roster: [entry("local.dav", "david", "working", { attention: a })] })).map((r) => r[0]);
   same("3.11 open attention, an unknown mode and none show no Attention row", [attention("open"), attention("away"), attention(undefined)],
     [["Model", "Heartbeat", "Work events"], ["Model", "Heartbeat", "Work events"], ["Model", "Heartbeat", "Work events"]]);
   const unknown = agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { progress: { kind: "unknown" } })] });
   same("3.12 working with no reported progress reads Working, and no activity or time reads as none",
-    [textOf(unknown.querySelector(".ui-sline .v3-spill")), textOf(unknown.querySelector(".ui-sline > span:not(.v3-spill)")), unknown.querySelector(".ui-sline small")],
+    [textOf(unknown.querySelector(".ui-sline [data-slot=badge]")), textOf(unknown.querySelector(".ui-sline > span:not([data-slot])")), unknown.querySelector(".ui-sline small")],
     ["Working", "No current activity", null]);
   const channelRows = (el: HTMLElement) => all(el, ".ui-chrow").map((r) => [...r.children].map(textOf));
   same("3.13 Channels are the agent's from membership, sorted, with its quiet or muted mode and no other", channelRows(card), [["#general", "quiet"], ["#review", ""]]);
@@ -219,7 +225,7 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
     activity: [{ mode: "chat", channel: "ops", msg: msg("a1", "local.dav", "hi", 1, "ops") }, { mode: "chat", channel: "review", msg: msg("a2", "local.rev", "hi", 2) }],
   });
   same("3.15 with no membership feed the channels are where the agent has posted", channelRows(posted), [["#ops", ""]]);
-  same("3.16 Skills are the card's", all(card, ".ui-tags .ui-chip").map(textOf), ["code-review", "typescript", "spec"]);
+  same("3.16 Skills are the card's", all(card, ".ui-tags [data-slot=badge]").map(textOf), ["code-review", "typescript", "spec"]);
   ok("3.17 the peek holds no commands, details, channels, skills or recent messages: Profile and Messages have them",
     rev.querySelector(".ui-cmd, dl.ui-kv, .ui-chrow, .ui-tags, .ui-mini") === null, rev.innerHTML.slice(0, 300));
   same("3.18 an id the roster does not hold reads Not on the roster, in the peek and in Profile",
@@ -232,7 +238,7 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
     [0, 1999, 59_999, 60_000, 3_599_999, 3_600_000, 86_400_000, -5, Number.NaN].map(heartbeatAt),
     ["0s ago", "1s ago", "59s ago", "1m ago", "59m ago", "1h ago", "1d ago", "0s ago", "not reported"]);
   let t = NOW;
-  const ticking = await mount(createElement(AgentProfile, { store: storeOf(), id: "local.rev", clock: () => t }));
+  const ticking = await mount(inShell(createElement(AgentProfile, { store: storeOf(), id: "local.rev", clock: () => t })));
   const beatNow = () => textOf(all(ticking.container, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat")?.nextElementSibling);
   const first = beatNow();
   t += 5000;
@@ -242,24 +248,32 @@ const profile = (id: string, patch: Partial<DashboardState> = {}) =>
 }
 
 // ── 4. The delete dialog's markup ────────────────────────────────────────────────────────────────
-const dialogHtml = (space: string | null = "main") =>
-  parse(renderToString(createElement(DeleteChannelDialog, { channel: "review", space, controller: null, onClose: () => undefined })));
 {
-  const d = dialogHtml();
-  const box = d.querySelector("[role=dialog]") as HTMLElement | null;
-  const title = all(box ?? none(), "[id]").find((e) => e.id === box?.getAttribute("aria-labelledby"));
-  ok("4.1 the dialog is a modal named by its title, Delete #review?", box?.getAttribute("aria-modal") === "true" && title?.tagName === "H4" && textOf(title) === "Delete #review?", box?.outerHTML.slice(0, 200));
-  ok("4.2 its body is the notes' sentence, with the channel and the space",
-    textOf(box?.querySelector("p")) === "This deletes every message in #review for everyone on main. You can't undo it. If anyone posts to #review again, it comes back empty.", textOf(box?.querySelector("p")));
-  ok("4.3 the field asks for the name: Type review to confirm", textOf(box?.querySelector("label > span")) === "Type review to confirm" && box?.querySelector("label input.ui-field") !== null);
-  same("4.4 the buttons are Keep channel and Delete #review, the destructive one disabled and not yet red",
-    all(box ?? none(), ".ui-btns button").map((b) => [textOf(b), (b as HTMLButtonElement).disabled, b.className]), [["Keep channel", false, "ui-btn"], ["Delete #review", true, "ui-btn"]]);
-  ok("4.5 the dialog sits on a scrim, in the mock's fixed-size card", box?.parentElement?.className === "ui-scrim" && box?.className === "ui-card ui-dialog");
+  const d = await mount(inShell(createElement(DeleteChannelDialog, { channel: "review", space: "main", controller: null, children: createElement("button", { type: "button" }, "Delete channel") })));
+  ok("4.0 the dialog is not drawn until its button is pressed", document.querySelector("[role=alertdialog]") === null);
+  await d.run(() => (d.container.querySelector("button") as HTMLElement).click());
+  const box = document.querySelector("[role=alertdialog]") as HTMLElement | null;
+  const labelled = (attr: string) => document.getElementById(box?.getAttribute(attr) ?? "");
+  ok("4.1 the dialog is an alert dialog named by its title, Delete #review?", textOf(labelled("aria-labelledby")) === "Delete #review?", box?.outerHTML.slice(0, 200));
+  ok("4.2 its description is the notes' sentence, with the channel and the space",
+    textOf(labelled("aria-describedby")) === "This deletes every message in #review for everyone on main. You can't undo it. If anyone posts to #review again, it comes back empty.", textOf(labelled("aria-describedby")));
+  const input = box?.querySelector("input");
+  const label = box?.querySelector(`label[for="${input?.id}"]`);
+  ok("4.3 the field asks for the name: Type review to confirm", input !== null && input !== undefined && textOf(label) === "Type review to confirm", label?.outerHTML);
+  same("4.4 the buttons are Keep channel and Delete #review, the destructive one disabled",
+    all(box ?? none(), "button").map((b) => [textOf(b), (b as HTMLButtonElement).disabled]), [["Keep channel", false], ["Delete #review", true]]);
+  ok("4.5 the dialog is modal: an overlay covers the page behind it", document.querySelector("[data-slot=alert-dialog-overlay]") !== null);
+  await d.unmount();
 }
 
 // ── 5. Mounted: tabs, picking an agent, closing and remembering ──────────────────────────────────
 const KeyboardEventOf = dom.window.KeyboardEvent as typeof KeyboardEvent;
-const click = (el: Element | null | undefined) => (el as HTMLElement | null)?.click();
+/** A mouse press and click, as a pointer makes them: Radix's tabs select on the press. */
+const click = (el: Element | null | undefined) => {
+  if (!el) return;
+  el.dispatchEvent(new (dom.window.MouseEvent as typeof MouseEvent)("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+  (el as HTMLElement).click();
+};
 const key = (el: Element | null | undefined, k: string, shift = false) =>
   el?.dispatchEvent(new KeyboardEventOf("keydown", { key: k, shiftKey: shift, bubbles: true, cancelable: true }));
 const typeInto = (input: Element | null | undefined, value: string) => {
@@ -285,6 +299,9 @@ const liveTraffic: DashboardState["activity"] = [{ mode: "chat", channel: "revie
 const mountShell = async (controller: Controller | null = null, patch: Partial<DashboardState> = {}) =>
   mount(createElement(Harness, { store: storeOf({ activity: liveTraffic, ...patch }), controller, initial: inReview }));
 const tabBy = (m: Mounted, label: string) => all(pane(m.container), "[role=tab]").find((t) => textOf(t) === label);
+/** The sender name buttons in the centre's message headers, and their avatar buttons. */
+const names = (el: ParentNode) => all(el, "main [data-slot=message-header] button");
+const faceButtons = (el: ParentNode) => all(el, "main [data-slot=message-avatar] button");
 const selected = (m: Mounted) => textOf(pane(m.container).querySelector("[role=tab][aria-selected=true]"));
 
 localStorage.clear();
@@ -297,25 +314,26 @@ localStorage.clear();
   await m.run(() => click(pane(m.container).querySelector("button.v3-mrow[data-member='local.dav']")));
   ok("5.3 picking a member opens the Agent tab on that agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "david", selected(m));
   await m.run(() => click(tabBy(m, "Topology")));
-  await m.run(() => click(m.container.querySelector("header button.ui-members")));
-  ok("5.4 the channel's member stack opens the Members tab", selected(m) === "Members" && (m.container.querySelector("header button.ui-members") as HTMLButtonElement).disabled === false, selected(m));
-  await m.run(() => click(m.container.querySelector(".ui-dock .ui-btns > button")));
+  const stack = button(m.container.querySelector("header") ?? none(), "3 members") as HTMLButtonElement | undefined;
+  await m.run(() => click(stack));
+  ok("5.4 the channel's member stack opens the Members tab", selected(m) === "Members" && stack?.disabled === false, selected(m));
+  await m.run(() => click(button(m.container.querySelector(".ui-dock") ?? none(), "View agent")));
   ok("5.5 the Needs card's View agent opens the Agent tab on the waiting agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "reviewer_2", selected(m));
-  const name = all(m.container, "main .ui-msg .ui-mh button.ui-who").map(textOf);
+  const name = names(m.container).map(textOf);
   ok("5.6 a verified sender's name in the channel is a button, and a history row's is not", JSON.stringify(name) === JSON.stringify(["david", "reviewer"]), name);
-  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
+  await m.run(() => click(names(m.container).find((b) => textOf(b) === "reviewer")));
   ok("5.7 clicking a sender's name opens its Agent tab", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "reviewer", selected(m));
-  const faces = all(m.container, "main .ui-msg .ui-gut button.ui-who");
+  const faces = faceButtons(m.container);
   await m.run(() => click(faces[0]));
   ok("5.8 a verified sender's avatar opens it too, and is not a second tab stop",
     selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "david" && JSON.stringify(faces.map((f) => [f.getAttribute("aria-label"), f.tabIndex])) === JSON.stringify([["david", -1], ["reviewer", -1]]),
     faces.map((f) => [f.getAttribute("aria-label"), f.tabIndex]));
-  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
+  await m.run(() => click(names(m.container).find((b) => textOf(b) === "reviewer")));
   await m.run(() => goTo({ view: "channel", channel: "general" }));
   same("5.9 a new channel route goes back to Members and keeps the pick one click away", tabs(m.container), [["Members", "true", false], ["Agent", "false", false], ["Topology", "false", false]]);
   await m.run(() => goTo({ view: "activity" }));
   ok("5.10 a route with no panel drops the pick, so no panel is drawn", m.container.querySelector("section.ui-pane") === null);
-  await m.run(() => click(m.container.querySelector("main .ui-msg .ui-mh button.ui-who")));
+  await m.run(() => click(names(m.container)[0]));
   same("5.11 off a channel, picking a sender opens the panel on the Agent tab, with Members disabled",
     [tabs(m.container), textOf(pane(m.container).querySelector(".ox-peek-who b"))], [[["Members", "false", true], ["Agent", "true", false], ["Topology", "false", false]], "david"]);
   await m.run(() => goTo(inReview));
@@ -324,12 +342,12 @@ localStorage.clear();
   await m.unmount();
 
   const again = await mountShell();
-  const toggle = again.container.querySelector("header button[title='Toggle panel']");
+  const toggle = button(again.container.querySelector("header") ?? none(), "Toggle panel");
   ok("5.13 a new page keeps the panel closed, and Toggle panel says it is", again.container.querySelector("section.ui-pane") === null && toggle?.getAttribute("aria-pressed") === "false", toggle?.outerHTML);
   await again.run(() => click(toggle));
   ok("5.14 Toggle panel opens it again and saves that", again.container.querySelector("section.ui-pane") !== null && localStorage.getItem(PANEL_KEY) === "1", localStorage.getItem(PANEL_KEY));
   await again.run(() => click(pane(again.container).querySelector("button[aria-label='Close panel']")));
-  await again.run(() => click(again.container.querySelector(".ui-dock .ui-btns > button")));
+  await again.run(() => click(button(again.container.querySelector(".ui-dock") ?? none(), "View agent")));
   ok("5.15 picking an agent opens a closed panel on the Agent tab", selected(again) === "Agent" && localStorage.getItem(PANEL_KEY) === "1", selected(again));
   await again.unmount();
   localStorage.clear();
@@ -362,14 +380,22 @@ localStorage.clear();
 {
   const m = await mountShell();
   const roving = () => all(pane(m.container), "[role=tab]").map((t) => [textOf(t), t.tabIndex]);
-  same("5.17 the selected tab is the list's one Tab stop", roving(), [["Members", 0], ["Agent", -1], ["Topology", -1]]);
-  tabBy(m, "Members")?.focus();
-  await m.run(() => key(document.activeElement, "ArrowRight"));
+  const list = pane(m.container).querySelector("[role=tablist]") as HTMLElement | null;
+  const stops = [list?.tabIndex, roving()];
+  await m.run(() => list?.focus());
+  same("5.17 the tab list is one Tab stop, and Tab into it lands on the selected tab",
+    [stops, textOf(document.activeElement), roving()], [[0, [["Members", -1], ["Agent", -1], ["Topology", -1]]], "Members", [["Members", 0], ["Agent", -1], ["Topology", -1]]]);
+  // Radix moves the focus on the next task, so each key waits for it.
+  const press = async (k: string) => {
+    await m.run(() => key(document.activeElement, k));
+    await m.run(() => sleep(0));
+  };
+  await press("ArrowRight");
   ok("5.18 Right moves to the next enabled tab and selects it, skipping a disabled one",
     selected(m) === "Topology" && document.activeElement === tabBy(m, "Topology"), [selected(m), textOf(document.activeElement)]);
   const walk: string[] = [];
   for (const k of ["ArrowRight", "ArrowLeft", "Home", "End"]) {
-    await m.run(() => key(document.activeElement, k));
+    await press(k);
     walk.push(`${k} ${selected(m)} ${textOf(document.activeElement)}`);
   }
   same("5.19 Right and Left wrap, Home and End go to the ends, and focus follows the selection",
@@ -382,13 +408,12 @@ localStorage.clear();
 {
   const { controller, deleted } = fakeController();
   const m = await mountShell(controller);
-  const trigger = pane(m.container).querySelector("button.ui-btn-danger");
+  const trigger = button(pane(m.container), "Delete channel");
   await m.run(() => click(trigger));
-  const box = () => m.container.querySelector("[role=dialog]");
+  const box = () => document.querySelector("[role=alertdialog]");
   const field = () => box()?.querySelector("input");
-  const destroy = () => all(box() ?? none(), ".ui-btns button")[1] as HTMLButtonElement | undefined;
-  const shape = () => [box()?.className, [...(box()?.children ?? [])].map((c) => `${c.tagName}.${c.className}`)];
-  const FIXED = ["ui-card ui-dialog", ["H4.", "P.", "LABEL.", "SPAN.ui-dialog-err", "DIV.ui-btns"]];
+  const destroy = () => button(box() ?? none(), "Delete #review") as HTMLButtonElement | undefined;
+  const shape = () => all(box() ?? none(), "[data-slot]").map((c) => c.dataset.slot);
   ok("6.1 Delete channel opens the dialog with the field focused", box() !== null && document.activeElement === field(), document.activeElement?.outerHTML);
   const before = JSON.stringify(shape());
   const states: [string, boolean | undefined][] = [];
@@ -397,18 +422,20 @@ localStorage.clear();
     states.push([v, destroy()?.disabled]);
   }
   same("6.2 the destructive button waits for the exact name", states, [["revie", true], ["Review", true], ["review ", true], ["review", false]]);
-  ok("6.3 the dialog keeps its shape before and after typing, with the error row always there",
-    before === JSON.stringify(FIXED) && JSON.stringify(shape()) === before && destroy()?.className === "ui-btn ui-btn-danger-solid", { before, after: shape() });
+  ok("6.3 the dialog keeps its parts before and after typing, and its confirm is the destructive button",
+    JSON.parse(before).length > 0 && JSON.stringify(shape()) === before && destroy()?.dataset.variant === "destructive", { before, after: shape() });
   destroy()?.focus();
   key(destroy(), "Tab");
   ok("6.4 Tab from the last control wraps to the field", document.activeElement === field(), document.activeElement?.outerHTML);
   key(field(), "Tab", true);
   ok("6.5 and Shift+Tab from the field wraps to the last control", document.activeElement === destroy(), document.activeElement?.outerHTML);
   await m.run(() => key(document.activeElement, "Escape"));
+  await m.run(() => sleep(0));
   ok("6.6 Escape closes the dialog and focus returns to Delete channel", box() === null && document.activeElement === trigger, document.activeElement?.outerHTML);
   ok("6.7 closing deletes nothing", deleted.length === 0, deleted);
   await m.run(() => click(trigger));
-  await m.run(() => click(all(box() ?? none(), ".ui-btns button")[0]));
+  await m.run(() => click(button(box() ?? none(), "Keep channel")));
+  await m.run(() => sleep(0));
   ok("6.8 Keep channel closes it too, with focus back on the trigger", box() === null && document.activeElement === trigger);
   await m.run(() => click(trigger));
   await m.run(() => typeInto(field(), "review"));
@@ -417,26 +444,28 @@ localStorage.clear();
   ok("6.9 confirming deletes the channel by name, once, and closes the dialog", JSON.stringify(deleted) === JSON.stringify(["review"]) && box() === null && document.activeElement === trigger, deleted);
   await m.run(() => click(trigger));
   (document.activeElement as HTMLElement | null)?.blur();
-  const scrim = box()?.parentElement;
+  const scrim = document.querySelector("[data-slot=alert-dialog-overlay]");
   await m.run(() => {
-    scrim?.dispatchEvent(new (dom.window.MouseEvent as typeof MouseEvent)("mousedown", { bubbles: true, cancelable: true }));
+    scrim?.dispatchEvent(new (dom.window.PointerEvent as typeof PointerEvent)("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
     click(scrim);
   });
-  const kept = document.activeElement === field();
+  const kept = box() !== null;
   await m.run(() => key(document.activeElement, "Escape"));
-  ok("6.10 a click on the scrim keeps focus in the dialog, so Escape still closes it", kept && box() === null && document.activeElement === trigger, { kept, open: box() !== null });
+  await m.run(() => sleep(0));
+  ok("6.10 a click on the overlay keeps the dialog open, and Escape still closes it with focus back on the trigger",
+    kept && box() === null && document.activeElement === trigger, { kept, open: box() !== null });
   await m.unmount();
 
   const refused = fakeController(async () => { throw new Error("delete #review: permissions violation for publish"); });
   const r = await mountShell(refused.controller);
-  await r.run(() => click(pane(r.container).querySelector("button.ui-btn-danger")));
-  const rbox = () => r.container.querySelector("[role=dialog]");
+  await r.run(() => click(button(pane(r.container), "Delete channel")));
+  const rbox = () => document.querySelector("[role=alertdialog]");
   await r.run(() => typeInto(rbox()?.querySelector("input"), "review"));
-  await r.run(() => click(all(rbox() ?? none(), ".ui-btns button")[1]));
+  await r.run(() => click(button(rbox() ?? none(), "Delete #review")));
   await r.run(() => sleep(0));
   ok("6.11 a refusal keeps the dialog open and shows the server's error in it",
     rbox() !== null && textOf(rbox()?.querySelector("[role=alert]")) === "delete #review: permissions violation for publish" && refused.deleted.length === 1, textOf(rbox()));
-  ok("6.12 and the button can be pressed again", (all(rbox() ?? none(), ".ui-btns button")[1] as HTMLButtonElement | undefined)?.disabled === false);
+  ok("6.12 and the button can be pressed again", (button(rbox() ?? none(), "Delete #review") as HTMLButtonElement | undefined)?.disabled === false);
   await r.unmount();
 }
 
@@ -453,10 +482,10 @@ fg.requestAnimationFrame = (cb) => {
 fg.cancelAnimationFrame = (id) => { clearTimeout(frames.get(id)); frames.delete(id); };
 const idle = async () => { for (let i = 0; i < 500 && frames.size > 0; i++) await sleep(10); };
 {
-  const t = parse(renderToString(createElement(TopologyTab, { store: storeOf(), clock: () => NOW })));
+  const t = parse(renderToString(inShell(createElement(TopologyTab, { store: storeOf(), clock: () => NOW }))));
   same("7.1 the Topology tab draws the pill, Hide offline on, and the graph at the panel's 360 by 420",
-    [textOf(t.querySelector(".ui-mpill")), t.querySelector("button[aria-pressed]")?.getAttribute("aria-pressed"), t.querySelector("svg.ui-topo-svg")?.getAttribute("viewBox")],
-    ["Membership: live", "true", "0 0 360 420"]);
+    [pillText(t), button(t, "Hide offline")?.getAttribute("aria-pressed"), t.querySelector("svg.ui-topo-svg")?.getAttribute("viewBox")],
+    ["Membership: live From broker membership, served by the delivery daemon", "true", "0 0 360 420"]);
   const model: TopoModel = topologyModel({ roster, channels: [review, general], membership: { snapshot: reviewMembers }, recent: [], hideOffline: true, hideEmpty: true, now: NOW });
   const layout = new ForceLayout(360, 420);
   layout.sync(model);
@@ -537,7 +566,7 @@ const sessionController = () => {
   return { controller, calls };
 };
 const tabWith = (rev: RosterEntry, patch: Partial<DashboardState> = {}, route?: Route) =>
-  parse(renderToString(createElement(AgentTab, { store: storeOf({ roster: othersAnd(rev), ...patch }), id: "local.rev", route })));
+  parse(renderToString(inShell(createElement(AgentTab, { store: storeOf({ roster: othersAnd(rev), ...patch }), id: "local.rev", route }))));
 const steps = (tab: HTMLElement) => all(tab, ".ox-compact > .ox-step").map(textOf);
 {
   const rev = agentTab("local.rev");
@@ -566,16 +595,16 @@ const steps = (tab: HTMLElement) => all(tab, ".ox-compact > .ox-step").map(textO
 
   const off = tabWith(withPlane("off"), { sessions: { "local.rev": sessionOf({ frames: openTurn() }) } });
   same("8.5 with the plane off the peek holds only the note that the agent publishes no work events",
-    [all(off, ".ox-peek > .ui-plane").map(textOf), off.querySelector(".ox-now-head"), off.querySelector(".ox-compact")],
+    [all(off, ".ox-peek > [role=note]").map(textOf), off.querySelector(".ox-now-head"), off.querySelector(".ox-compact")],
     [["reviewer publishes no work events."], null, null]);
 
   const offSpy = sessionController();
-  const offTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("off")) }), controller: offSpy.controller, id: "local.rev" }));
+  const offTab = await mount(inShell(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("off")) }), controller: offSpy.controller, id: "local.rev" })));
   await offTab.unmount();
   same("8.6 with the plane off the peek opens nothing", offSpy.calls, []);
 
   const onSpy = sessionController();
-  const onTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("on")) }), controller: onSpy.controller, id: "local.rev" }));
+  const onTab = await mount(inShell(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("on")) }), controller: onSpy.controller, id: "local.rev" })));
   const whileOpen = [...onSpy.calls];
   await onTab.unmount();
   same("8.7 with the plane on the peek opens the agent's work on mount and closes it on unmount, once each",
@@ -614,7 +643,7 @@ const steps = (tab: HTMLElement) => all(tab, ".ox-compact > .ox-step").map(textO
   h.ctl.onHello("feed-1");
   const controller = { ...h.ctl, open: async () => undefined } as Controller;
   const m = await mount(createElement(Harness, { store: h.store, controller, initial: inReview }));
-  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
+  await m.run(() => click(names(m.container).find((b) => textOf(b) === "reviewer")));
   await m.run(() => sleep(0));
   const before = [...calls];
   await m.run(() => goTo({ view: "agent", id: "local.rev", tab: "work" }));

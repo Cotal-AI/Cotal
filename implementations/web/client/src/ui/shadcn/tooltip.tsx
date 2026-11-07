@@ -1,8 +1,7 @@
-// Copied from the shadcn/ui registry, version 4.22.1 (radix base, Rhea style, Hugeicons icons) on
-// 2026-10-22. MIT licence, copyright (c) 2023 shadcn.
-// Edited: imports are relative with their extensions and `cn` comes from ./lib/utils.ts.
+"use client"
+
 import * as React from "react"
-import { cn } from "./lib/utils.ts"
+import { cn } from "cn"
 import { Tooltip as TooltipPrimitive } from "radix-ui"
 
 function TooltipProvider({

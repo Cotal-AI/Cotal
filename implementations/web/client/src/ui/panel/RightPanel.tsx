@@ -1,6 +1,9 @@
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
-import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "#client/ui/shadcn/tabs.tsx";
 import { formatRoute, type Route } from "../../lib/route.js";
 import type { Controller } from "../../state/controller.js";
 import type { Store } from "../../state/store.js";
@@ -10,11 +13,6 @@ import { MembersTab } from "./MembersTab.tsx";
 import { TopologyTab } from "./TopologyTab.tsx";
 
 export type PanelTab = "members" | "agent" | "topology";
-
-/** The parts of an element the tab keys use. Spelled out rather than taken from the DOM lib, because
- *  the suites typecheck the components that render on the server with no DOM lib. */
-type Focusable = { focus(): void };
-type Box = { querySelector(selector: string): unknown };
 
 /** Where this browser keeps whether the panel is open: "1" or "0". */
 export const PANEL_KEY = "cotal.panel.open";
@@ -68,7 +66,7 @@ const tabFor = (route: Route): PanelTab => (route.view === "agent" ? "agent" : (
  *  - A new route resets the tab: Members on a channel route, with the picked agent kept so its tab
  *    stays one click away; the Agent tab on an agent's page, with that agent picked; any other
  *    route drops the pick.
- *  - On a phone (`phone`) the panel covers the whole page, so it starts closed, opens only when the
+ *  - On a phone (`phone`) the panel is a sheet over the page, so it starts closed, opens only when the
  *    reader asks (the member stack, the panel button, picking an agent), closes again on a new route,
  *    and none of that touches the saved choice, which is the wide layout's. */
 export function usePanel(route: Route, phone = false): Panel {
@@ -132,10 +130,9 @@ export const panelShown = (panel: Panel, routeHasPanel: boolean): boolean => pan
  *  button, and the open tab's body. A tab with nothing to show is disabled: Members off a channel
  *  route, Agent before an agent is picked. `clock` is the time the pill and the heartbeat read.
  *
- *  The tabs follow the ARIA tabs pattern: the selected tab is the one Tab stop in the list, and Left
- *  and Right (wrapping), Home and End move between the enabled tabs and select them. When the
- *  selected tab is disabled, the first enabled tab is the Tab stop instead, so the list is never
- *  skipped by the keyboard. */
+ *  The tabs are shadcn's Tabs, so they follow the ARIA tabs pattern: Tab reaches the selected tab, and
+ *  Left and Right (wrapping), Home and End move between the enabled tabs and select them. When the
+ *  selected tab is disabled, Tab reaches the first enabled tab instead. */
 export function RightPanel({ store, controller, channel, route, panel, clock }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -151,48 +148,33 @@ export function RightPanel({ store, controller, channel, route, panel, clock }: 
     { id: "agent", label: "Agent", off: panel.agent === null },
     { id: "topology", label: "Topology", off: false },
   ];
-  const tab = panel.tab;
-  const stop = tabs.find((t) => t.id === tab && !t.off)?.id ?? tabs.find((t) => !t.off)?.id;
-  // Arrow keys, Home and End move between the tabs that can show, and select the one they reach.
-  const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    const live = tabs.filter((t) => !t.off).map((t) => t.id);
-    const at = live.indexOf(tab);
-    const step: Record<string, number> = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: live.length - 1 };
-    if (!Object.hasOwn(step, e.key) || live.length === 0) return;
-    e.preventDefault();
-    const next = live[(step[e.key] + live.length) % live.length];
-    panel.setTab(next);
-    ((e.currentTarget as unknown as Box).querySelector(`#pane-tab-${next}`) as Focusable | null)?.focus();
-  };
   return (
-    <>
-      <div className="ui-tabs" role="tablist" aria-label="Details" onKeyDown={onTabKey}>
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className="ui-tab"
-            role="tab"
-            id={`pane-tab-${t.id}`}
-            aria-selected={tab === t.id}
-            tabIndex={stop === t.id ? 0 : -1}
-            aria-controls="pane-body"
-            disabled={t.off}
-            onClick={() => panel.setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
+    <Tabs value={panel.tab} onValueChange={(next) => (next === "members" || next === "agent" || next === "topology") && panel.setTab(next)} className="min-h-0 flex-1 gap-0">
+      <div className="ui-tabs">
+        <TabsList aria-label="Details">
+          {tabs.map((t) => (
+            <TabsTrigger key={t.id} value={t.id} disabled={t.off}>{t.label}</TabsTrigger>
+          ))}
+        </TabsList>
         <span className="ui-sp" />
-        <button type="button" className="ui-tool" title="Close panel" aria-label="Close panel" onClick={panel.close}>
-          <Icon icon={Cancel01Icon} className="ui-ic" />
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="icon" aria-label="Close panel" onClick={panel.close}>
+              <Icon icon={Cancel01Icon} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Close panel</TooltipContent>
+        </Tooltip>
       </div>
-      <div className="ui-pane-body" role="tabpanel" id="pane-body" aria-labelledby={`pane-tab-${tab}`} data-tab={tab}>
-        {tab === "members" && channel !== null && <MembersTab store={store} controller={controller} channel={channel} now={clock()} onPick={panel.selectAgent} />}
-        {tab === "agent" && panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} route={route} />}
-        {tab === "topology" && <TopologyTab store={store} clock={clock} />}
-      </div>
-    </>
+      <TabsContent value="members" className="ui-pane-body">
+        {channel !== null && <MembersTab store={store} controller={controller} channel={channel} now={clock()} onPick={panel.selectAgent} />}
+      </TabsContent>
+      <TabsContent value="agent" className="ui-pane-body">
+        {panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} route={route} />}
+      </TabsContent>
+      <TabsContent value="topology" className="ui-pane-body">
+        <TopologyTab store={store} clock={clock} />
+      </TabsContent>
+    </Tabs>
   );
 }
