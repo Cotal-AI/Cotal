@@ -2,8 +2,9 @@
 
 Status: checkpoint capture and seal, the three admission gates, the per-seat writer generation,
 the continuity class, the restore, and carrying the session files shipped in 0.51.0 (#1745,
-#1748). Since 0.59.0 the jcode connector declares `supportsResume` and a jcode seat records as
-`fork`. The eviction evidence for the residual case in 3.3, everything in section 4, and a
+#1748). Since 0.59.0 the jcode connector declares `supportsResume`, so `sessionContinuityClass`
+gives `fork`, and the checkpoint still records `drain-only` because no session bytes travel
+with it. The eviction evidence for the residual case in 3.3, everything in section 4, and a
 cross-host writer fence are not built. The note below says which sections are implemented,
 where, and what changed against what they propose. Every claim about current behavior names
 the file and the function it was read from. The design below that note is left as written.
