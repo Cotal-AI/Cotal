@@ -27,6 +27,7 @@ const space = `update-remote-${process.pid}`;
 const broker = createServer((socket) => socket.destroy());
 const exchange = createServer((socket) => socket.destroy());
 let decoy: ChildProcess | undefined;
+let other: ChildProcess | undefined;
 try {
   await new Promise<void>((resolve) => broker.listen(0, "127.0.0.1", resolve));
   await new Promise<void>((resolve) => exchange.listen(0, "127.0.0.1", resolve));
@@ -42,11 +43,21 @@ try {
   });
   setCurrent(space);
 
-  if (supervisorMayServe(space)) {
+  const baseline = supervisorMayServe(space);
+  if (baseline) {
     console.log("note: a supervisor on this machine may already serve any space; the skip is not asserted here");
   } else {
     assert.equal(await readManagerContinuity({ space }), "none", "a remote mesh no supervisor here may serve is skipped");
   }
+
+  // A service unit's supervisor passes no `--space`; its environment names the space it serves.
+  other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise"],
+    { stdio: "ignore", env: { ...process.env, COTAL_SPACE: `${space}-other` } });
+  await once(other, "spawn");
+  assert.equal(supervisorMayServe(space), baseline, "a space-less supervisor whose environment names another space is not a manager of this one");
+  assert.equal(supervisorMayServe(`${space}-other`), true, "it is seen as a supervisor of the space its environment names");
+  other.kill("SIGKILL");
+  other = undefined;
 
   // A process whose command line is a supervisor for this space, as `ps` reports it.
   decoy = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise", "--space", space], { stdio: "ignore" });
@@ -63,6 +74,7 @@ try {
   console.log(`update-remote-custody: ok (${outcome.slice(0, 160)})`);
 } finally {
   decoy?.kill("SIGKILL");
+  other?.kill("SIGKILL");
   broker.close();
   exchange.close();
   rmSync(root, { recursive: true, force: true });
