@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'parse5';
-import { readDocument } from '@cotal-ai/docs-content';
+import { readDocument, documentationCategory } from '@cotal-ai/docs-content';
 import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -34,7 +34,7 @@ for (const slug of slugs) {
   assert(!/^> \*\*Reference\*\*/m.test(markdown), `classification outside prose: ${slug}`);
   const document = await readDocument(new URL(`../../docs/${slug}.mdx`, import.meta.url).pathname);
   assert.equal(document.format, 'mdx', `direct MDX reference: ${slug}`);
-  assert.equal(document.metadata.kind, 'Reference', `reference metadata: ${slug}`);
+  assert.equal(documentationCategory(document.metadata.kind, document.sourcePath), 'Reference', `reference metadata: ${slug}`);
   assert(document.metadata.audience, `audience metadata: ${slug}`);
   if (Object.hasOwn(configuration, slug) || slug === 'mesh-view' || slug === 'lang-card') {
     assert(nodes.some(node => node.tagName === 'table'), `native reference tables: ${slug}`);
