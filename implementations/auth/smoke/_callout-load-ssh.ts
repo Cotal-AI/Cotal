@@ -5,8 +5,14 @@ export function assertLoopbackListener(out: string, port: number, host: string):
     throw new Error(`callout-load: generator ${host} allocated an unsafe SSH listener for port ${port}: ${JSON.stringify(listeners)}`);
 }
 
-/** Keep the trusted launcher's session environment, then drop ambient credentials before the Node job. */
-export function remoteJobCommand(dir: string, command: string, launchPrefix = ""): string {
-  const quotedDir = `'${dir.replace(/'/g, `'\\''`)}'`;
-  return `cd ${quotedDir} && exec ${launchPrefix ? `${launchPrefix} ` : ""}env -i PATH="$PATH" HOME="$HOME" DO_NOT_TRACK=1 COTAL_TELEMETRY=off ${command}`;
+/** Drop ambient credentials before the Node job. An explicit home belongs to the caller and is
+ *  never created or removed here; its existing tmp directory keeps runtime caches in the same root. */
+export function remoteJobCommand(dir: string, command: string, launchPrefix = "", home?: string): string {
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  if (home !== undefined && (!home.startsWith("/") || home.includes("\0")))
+    throw new Error("callout-load: --load-home must be an absolute path without NUL");
+  const jobEnv = home === undefined ? 'HOME="$HOME"'
+    : `HOME=${quote(home)} TMPDIR=${quote(`${home}/tmp`)} COTAL_HOME=${quote(home)}`;
+  const directories = home === undefined ? "" : `test -d ${quote(home)} && test -d ${quote(`${home}/tmp`)} && `;
+  return `cd ${quote(dir)} && ${directories}exec ${launchPrefix ? `${launchPrefix} ` : ""}env -i PATH="$PATH" ${jobEnv} DO_NOT_TRACK=1 COTAL_TELEMETRY=off ${command}`;
 }
