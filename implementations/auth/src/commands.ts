@@ -185,7 +185,13 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [
-      { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()]] }, { kind: "lines", lines: [{ text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" }] }] },
+      { title: "Signed in", blocks: [
+        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
+        { kind: "lines", lines: [
+          ...(session.name ? [] : [{ text: "The provider gave no user name, email or name that can be a chat name, so a chat session on a user-auth space refuses until you save one with `cotal config set name <name>`.", tone: "failed" as const }]),
+          { text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" },
+        ] },
+      ] },
       ...(discovered.length ? [{ title: "Your spaces", blocks: [{ kind: "fields" as const, rows: discovered.map((m): [string, string] => [m.space, [m.catalogName ?? m.space, m.catalogRole].filter(Boolean).join(" · ")]) }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: discovered.length
         ? [{ command: "cotal use <name>", description: "Select one of your spaces for the commands that follow" }, { command: "cotal space", description: "See every registered space" }]

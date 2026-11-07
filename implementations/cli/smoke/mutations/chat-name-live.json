@@ -14,7 +14,7 @@
       "name": "the resolver appends a host suffix to the OS login",
       "file": "packages/workspace/src/chat/name.ts",
       "find": "found = { name: (opts.login ?? osLogin)(), source: \"login\"",
-      "replace": "found = { name: `${(opts.login ?? osLogin)()}@host-1a2b`, source: \"login\"",
+      "replace": "found = { name: `${(opts.login ?? osLogin)()}-host-1a2b`, source: \"login\"",
       "expectRed": "a session opened without --name is on the roster as the OS login, with no suffix",
       "cell": "a session opened without --name is on the roster as the OS login, with no suffix",
       "afterRestore": "pnpm --filter @cotal-ai/workspace --filter @cotal-ai/cli build"
