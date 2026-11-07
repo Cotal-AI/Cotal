@@ -174,7 +174,7 @@ try {
       stealRequests = 0;
       await assert.rejects(
         waitForDetachedWeb(child, { pidPath, sessionPath, url: `http://127.0.0.1:${bound.port}/`, space: "fixture", timeoutMs: 600 }),
-        new RegExp(`did not become HTTP-ready within 600ms \\(pid \\d+\\); last probe http://127\\.0\\.0\\.1:${bound.port}/api/meta: HTTP ${redirect.code}$`),
+        new RegExp(`did not become HTTP-ready within 600ms \\(pid \\d+\\); last probe http://127\\.0\\.0\\.1:${bound.port}${WEB_READINESS_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: HTTP ${redirect.code}$`),
         `a ${redirect.code} to ${redirect.location} is not ready`,
       );
       assert.ok(nonceAt.length > 0, `the probe presented the nonce on /api/meta (${redirect.code} to ${redirect.location})`);
