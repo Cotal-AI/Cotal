@@ -145,6 +145,8 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   the session and sending, your name turning gold, the shared-name warning, `/quit` and the
   two-step reopen, a space switch that closes the session and keeps the draft, a space switch while
   the first message opens its session, `ctrl+c` with a draft, and Change your name.
+  Its quotes reply with `replyTo` from `↑` and a click. A burst of one direct message to several
+  agents is quoted only when its first copy came to you, and its reply names your copy.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space

@@ -543,9 +543,10 @@ async function run(s: Space, width: number, height: number, tag: string) {
     JSON.stringify({ want: shipMsg?.id, got: toPlanner2.filter((m) => textOf(m) === shipReply) }),
   )
 
+  const coder = s.peer("coder-2/coder").id
   if (s.mode === "open") {
     const burst = `standup in 5 (${tag})`
-    await planner.ep.unicast(s.peer("coder-2/coder").id, burst)
+    await planner.ep.unicast(coder, burst)
     await planner.ep.unicast(principal, burst)
     await see((f) => inFeed(f, burst))
     keys("Up")
@@ -553,6 +554,40 @@ async function run(s: Space, width: number, height: number, tag: string) {
     save("burst-quote")
     check(`${at}: ↑ passes over a direct-message burst whose first copy went to another agent, so no reply names that copy`, !burstPick.includes("↳ planner: “standup in 5") && quoting("planner", "ship it today?")(burstPick), burstPick)
     await esc()
+
+    const retro = `retro at 4 (${tag})`
+    const yours = await planner.ep.unicast(principal, retro)
+    await planner.ep.unicast(coder, retro)
+    await see((f) => lines(f).some((l) => l.includes(`→ ${login}, coder-2 ×2`)))
+    keys("Up")
+    const retroPick = await see(quoting("planner", "retro at 4"), 3000)
+    const retroReply = `retro works (${tag})`
+    type(retroReply)
+    keys("Enter")
+    const toPlanner3 = await until(dms, (h) => h.some((m) => textOf(m) === retroReply))
+    save("burst-yours-sent")
+    check(
+      `${at}: ↑ quotes a burst whose first copy came to the human, and the reply reaches planner with replyTo naming that copy`,
+      quoting("planner", "retro at 4")(retroPick) && toPlanner3.some((m) => textOf(m) === retroReply && m.to === planner.id && m.replyTo === yours?.id),
+      JSON.stringify({ want: yours?.id, got: toPlanner3.filter((m) => textOf(m) === retroReply) }),
+    )
+  } else {
+    const burst = `standup in 5 (${tag})`
+    await planner.ep.unicast(coder, burst)
+    const yours = await planner.ep.unicast(principal, burst)
+    await see((f) => inFeed(f, burst))
+    keys("Up")
+    const burstPick = await see(quoting("planner", "standup in 5"), 3000)
+    const burstReply = `standup works (${tag})`
+    type(burstReply)
+    keys("Enter")
+    const toPlanner3 = await until(dms, (h) => h.some((m) => textOf(m) === burstReply))
+    save("burst-sent")
+    check(
+      `${at}: the observer sees no direct messages here, so ↑ quotes the copy of a burst that came to the human, and the reply names that copy`,
+      quoting("planner", "standup in 5")(burstPick) && toPlanner3.some((m) => textOf(m) === burstReply && m.to === planner.id && m.replyTo === yours?.id),
+      JSON.stringify({ want: yours?.id, got: toPlanner3.filter((m) => textOf(m) === burstReply) }),
+    )
   }
 
   const before = (await general()).length
