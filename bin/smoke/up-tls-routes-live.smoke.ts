@@ -160,6 +160,14 @@ function cotal(args: string[], home: string, cwd: string, env: Record<string, st
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
+// Only completed pre-launch refusal cells may have no stack to stop.
+const absentStacks = new Set<string>();
+function down(home: string, cwd: string, allowAbsent = false): void {
+  const result = cotal(["down"], home, cwd);
+  if (allowAbsent && result.status === 2 && /^\s*Code:\s+TARGET_NOT_FOUND\s*$/m.test(result.out)) return;
+  assert.equal(result.status, 0, `TEARDOWN FAILED (${cwd}): cotal down exited ${result.status}\n${result.out}`);
+}
+
 /** The server's greeting, read in the clear. This is what an on-path attacker sees and can forge,
  *  and it is how we tell an encrypted listener from a plaintext one without trusting the CLI's
  *  own success line — which is the exact thing that lied on three routes. */
@@ -380,7 +388,7 @@ async function main(): Promise<void> {
     // failure, which is what lets this assert on the REASON rather than on a boolean.
     assertCleartextRefused(await cleartextReply(port), "--detach");
     console.log("  ✓ --detach: tls_required, verifying client ADMITTED (PONG over TLS), cleartext REFUSED");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
   // ── ROUTE B: `up -f manifest`. Same downgrade, different entry point. ─────────────────────────
@@ -410,7 +418,7 @@ async function main(): Promise<void> {
     assert.equal(admitted.ok, true, `ADMISSION FAILED (-f manifest): ${admitted.detail}`);
     assertCleartextRefused(await cleartextReply(port), "-f manifest");
     console.log("  ✓ -f manifest: a nats:// broker REFUSED; tls_required, verifying client ADMITTED, cleartext REFUSED");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
   // ── ROUTE B2: a RECORDED TLS policy with a `nats://` --server. The flag path's half of Route B. ─
@@ -426,7 +434,7 @@ async function main(): Promise<void> {
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
     assert.equal(first.status, 0, `the recording start must succeed:\n${first.out}`);
     assert.equal((await serverInfo(port))?.tls_required, true, "the recording start must require TLS");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
 
     const policy = readFileSync(join(cwd, ".cotal", "broker-policy.json"), "utf8");
     const plain = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`], home, cwd);
@@ -445,7 +453,7 @@ async function main(): Promise<void> {
     assert.equal((await serverInfo(port))?.tls_required, true, "the restart must require TLS");
     assertCleartextRefused(await cleartextReply(port), "recorded-tls/nats-address");
     console.log("  ✓ recorded-tls: a nats:// --server REFUSED before launch naming the policy and the tls:// form; the tls:// form restarts it");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
   // ── ROUTE C: the already-running refresh. Printed `✓ already running` over an unchanged listener. ─
@@ -466,7 +474,7 @@ async function main(): Promise<void> {
     const info = await serverInfo(port);
     assert.notEqual(info?.tls_required, true, "the running listener must be unchanged by a refused refresh");
     console.log("  ✓ refresh: --tls-cert against a running mesh REFUSED, naming the transport; listener untouched");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
   // ── D: an EXPIRED cert must refuse before launch. nats-server would start and serve it. ───────
@@ -479,6 +487,7 @@ async function main(): Promise<void> {
     assert.notEqual(r.status, 0, `an EXPIRED certificate must not yield a started mesh:\n${r.out}`);
     assert.match(r.out, /EXPIRED/, `the refusal must name expiry as the cause:\n${r.out}`);
     assert.equal(await serverInfo(port), undefined, "nothing may be listening after an expired-cert refusal");
+    absentStacks.add(cwd);
     console.log("  ✓ expired cert: refused before launch, naming expiry, no listener");
   });
 
@@ -492,6 +501,7 @@ async function main(): Promise<void> {
     assert.notEqual(r.status, 0, `a certificate that does not cover the dial host must refuse:\n${r.out}`);
     assert.match(r.out, /does not cover the dial host/, `the refusal must name the host mismatch:\n${r.out}`);
     assert.equal(await serverInfo(port), undefined, "nothing may be listening after a hostname refusal");
+    absentStacks.add(cwd);
     console.log("  ✓ wrong-host cert: refused before launch, naming the mismatch, no listener");
   });
 
@@ -558,7 +568,7 @@ async function main(): Promise<void> {
     assertCleartextRefused(await cleartextReply(port, line), "authed/cleartext");
 
     console.log("  ✓ authed: TLS+creds ADMITTED (flush, right port), same credential in cleartext REFUSED");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
 
@@ -780,7 +790,7 @@ async function main(): Promise<void> {
     assert.equal(firstInfo?.tls_required, true, "first child listener must require TLS");
     assertCleartextRefused(await cleartextReply(childPort), "s4/first-up");
 
-    cotal(["down"], home, child);
+    down(home, child);
     const bare = cotal(["up", "--detach", "--space", "child-space",
       "--server", `tls://127.0.0.1:${childPort}`], home, child);
     assert.equal(bare.status, 0, `bare child re-up must inherit TLS policy:\n${bare.out}`);
@@ -809,8 +819,8 @@ async function main(): Promise<void> {
       `GATE FAILED (S4): MeshEntry.root is not the child root:\n${JSON.stringify(rec)}`);
 
     console.log("  ✓ S4: child TLS policy on child root; bare re-up retains TLS; parent policy untouched");
-    cotal(["down"], home, child);
-    cotal(["down"], home, parent);
+    down(home, child);
+    down(home, parent);
   });
 
   // ── J2: S4 OPEN-CHILD ARM — pin is mode-independent. ───────────────────────────────────────────
@@ -862,7 +872,7 @@ async function main(): Promise<void> {
     assert.notEqual((await serverInfo(parentPort))?.tls_required, true, "parent still plaintext");
     assertCleartextRefused(await cleartextReply(childPort), "s4o/first");
 
-    cotal(["down"], home, child);
+    down(home, child);
     // Parent must still be reachable after child down (no shared pid/store).
     assert.ok(await serverInfo(parentPort), "parent listener must survive child down");
 
@@ -874,8 +884,8 @@ async function main(): Promise<void> {
     assertCleartextRefused(await cleartextReply(childPort), "s4o/bare");
 
     console.log("  ✓ S4-open: open child owns root/policy/pid; parent untouched; bare re-up retains TLS");
-    cotal(["down"], home, child);
-    cotal(["down"], home, parent);
+    down(home, child);
+    down(home, parent);
   });
 
   // ── K: REFRESH REFUSE MUST NOT MUTATE POLICY (S5). ─────────────────────────────────────────────
@@ -916,7 +926,7 @@ async function main(): Promise<void> {
     assert.ok(ok.reply, `CONTROL: plaintext listener must still accept cleartext CONNECT:\n${JSON.stringify(ok)}`);
 
     console.log("  ✓ S5: refused TLS refresh mutates nothing; bare refresh does not claim TLS");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
   // ── L: DRY-RUN MUST CHECK DIAL-HOST SAN (S6). ──────────────────────────────────────────────────
@@ -965,7 +975,7 @@ async function main(): Promise<void> {
       `GATE FAILED (S9): delivery launched WITHOUT --tls (flagless auto-upgrade):\n${line}`);
 
     console.log("  ✓ S9: fresh TLS detach launches delivery with --tls");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
   // ── N': S11 (#836) — A REFRESH THAT RELAUNCHES DELIVERY MUST CARRY THE TRANSPORT IT DECIDED. ───
@@ -1023,7 +1033,7 @@ async function main(): Promise<void> {
       `GATE FAILED (S11/#836): refresh relaunched delivery WITHOUT --tls against a TLS-required broker:\n${line}`);
 
     console.log("  ✓ S11: same-root refresh relaunches delivery with --tls from the registry record");
-    cotal(["down"], home, cwd);
+    down(home, cwd);
   });
 
   // ── N: S10 — NO-CA CONNECT MUST NOT PRUNE A LIVE tlsRequired REGISTRY ENTRY. ───────────────────
@@ -1050,7 +1060,7 @@ async function main(): Promise<void> {
       `GATE FAILED (S10): registry entry gone after no-CA connect:\n${meshes.out}`);
 
     // Mirror hazard: replace TLS listener with plaintext on the same port; status must not say tls-trust.
-    cotal(["down"], home, cwd);
+    down(home, cwd);
     // Re-up then kill only nats, leave registry — same shape as the status cell (G).
     const up2 = cotal(["up", "--detach", "--open", "--server", `tls://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
@@ -1074,7 +1084,7 @@ async function main(): Promise<void> {
         `GATE FAILED (S10 mirror): plaintext substitute classified tls-trust:\n${st.out}`);
     } finally {
       try { process.kill(plain.pid!, "SIGTERM"); } catch { /* */ }
-      cotal(["down"], home, cwd);
+      down(home, cwd);
     }
     console.log("  ✓ S10: no-CA keeps tlsRequired registry; plaintext-on-port is unreachable not tls-trust");
   });
@@ -1099,7 +1109,7 @@ async function main(): Promise<void> {
     assert.match(up.out, new RegExp(`TLS: serving .* at tls://127\\.0\\.0\\.1:${port},`), `the receipt must name the tls:// address:\n${up.out}`);
     const send = cotal(["send", "-c", "general", "probe"], home, cwd);
     assert.equal(send.status, 0, `a send must reach the mesh over TLS:\n${send.out}`);
-    cotal(["down"], home, cwd);
+    down(home, cwd);
 
     const other = sandbox();
     rememberSandbox(other.home, port, other.cwd);
@@ -1108,6 +1118,7 @@ async function main(): Promise<void> {
     assert.match(nats.out, new RegExp(`pass --server tls://127\\.0\\.0\\.1:${port}`), `the refusal must name the tls:// address:\n${nats.out}`);
     assert.equal(await serverInfo(port), undefined, "the refused start must not start a listener");
     assert.equal(existsSync(join(other.cwd, ".cotal", "broker-policy.json")), false, "the refused start must not record a TLS policy");
+    absentStacks.add(other.cwd);
     console.log("  ✓ ip-only certificate: untrusted names the handshake and NODE_EXTRA_CA_CERTS, trusted starts, sends and names tls://, nats:// refuses as usage");
   });
 
@@ -1120,7 +1131,7 @@ async function main(): Promise<void> {
     rememberSandbox(home, port, cwd);
     const plain = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`], home, cwd);
     assert.equal(plain.status, 0, `a plaintext start must record the folder's address:\n${plain.out}`);
-    cotal(["down"], home, cwd);
+    down(home, cwd);
     const up = cotal(["up", "--detach", "--tls-cert", pkiFiles.ipCert, "--tls-key", pkiFiles.ipKey], home, cwd);
     assert.equal(up.status, 0, `the folder's address must start over TLS:\n${up.out}`);
     assert.match(up.out, new RegExp(`as it last ran: tls://127\\.0\\.0\\.1:${port}`), `the restart must name the tls:// address:\n${up.out}`);
@@ -1130,7 +1141,7 @@ async function main(): Promise<void> {
     assert.match(meshes.out, new RegExp(`"server":"tls://127\\.0\\.0\\.1:${port}"`), `the registry must record tls://:\n${meshes.out}`);
     const send = cotal(["send", "-c", "general", "probe"], home, cwd);
     assert.equal(send.status, 0, `a send must reach the restarted mesh over TLS:\n${send.out}`);
-    cotal(["down"], home, cwd);
+    down(home, cwd);
     console.log("  ✓ implicit address: a stopped folder restarts with --tls-cert at tls://, records it, names it and serves it");
   });
 
@@ -1148,14 +1159,30 @@ async function main(): Promise<void> {
     throw new Error(`HARNESS: expected 20 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
     throw new Error(`${failed.length}/20 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 20/20 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
+const failures: unknown[] = [];
 try {
   await main();
+} catch (error) {
+  failures.push(error);
 } finally {
+  const cleanupFailures: unknown[] = [];
   for (const h of homes) {
-    try { cotal(["down"], h.home, h.cwd); } catch { /* best effort */ }
+    try {
+      down(h.home, h.cwd, absentStacks.has(h.cwd));
+      assert.equal(await serverInfo(h.port), undefined, `TEARDOWN FAILED (${h.cwd}): listener remains on ${h.port}`);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
   }
-  try { rmSync(root, { recursive: true, force: true }); } catch { /* */ }
+  if (cleanupFailures.length > 0) {
+    failures.push(...cleanupFailures);
+    console.error(`Teardown failed; sandbox retained at ${root}`);
+  } else {
+    try { rmSync(root, { recursive: true, force: true }); }
+    catch (error) { failures.push(error); }
+  }
 }
+if (failures.length > 0) throw new AggregateError(failures, "up-tls-routes failed");
+console.log("✓ up-tls-routes: 20/20 routes encrypt or refuse; admission proved on each, one variable apart");
