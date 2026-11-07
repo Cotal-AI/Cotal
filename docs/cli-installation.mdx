@@ -182,9 +182,12 @@ command, not an automatic install.
 Before disk reconciliation, `update` reads the selected running manager. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
 holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
-`cotal meshes add --mode user`, is named and skipped: its manager runs under another install, so
-there is no custody on this machine to preserve, and a `legacy` verdict still comes only from a
-manager this machine read. A stopped mesh that this machine runs, chosen with `--space` or by running
+`cotal meshes add --mode user`, is named and skipped when no `cotal manager start` or
+`cotal supervise` process on this machine may be serving its space: its manager runs under another
+install, so there is no custody on this machine to preserve. When such a process runs here, that
+manager is read like a local one, and a `legacy` verdict's `Next` line names
+`cotal manager stop --space <space>` as the stop before the cold update. A `legacy` verdict still
+comes only from a manager this machine read. A stopped mesh that this machine runs, chosen with `--space` or by running
 inside its project, has no running manager either when no `cotal supervise` process on this machine
 may be serving its space and nothing listens at its recorded broker address, so the read is skipped
 there too. A controller stack that completed ordinary `cotal down` is eligible after its retained
