@@ -12,11 +12,13 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
+import { PermissionViolationError } from "@nats-io/nats-core";
+import { openPublishDenialWatch } from "../src/endpoint-publish-denial.js";
 import type { Bucket } from "@nats-io/kv/internal";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   createBrokerAuth, createSpaceAccountAuth, mintCreds, mintPublicUserJwt, credsFromJwt, remoteManagerActors, newIdentity, serverConfig, setupSpaceStreams,
-  isReachable, standaloneConnectOpts, mintLifecycleUid, principalKey, DEV_OWNER, epAuthBucket,
+  isReachable, standaloneConnectOpts, mintLifecycleUid, principalKey, DEV_OWNER, epAuthBucket, recordsBucket,
   epgateKey, epcredRowKey, provisionEndpointGateOpen, serveIssuanceGateKv, endpointRegistrationBarrier,
   IncompleteKvScan, type EpServeLedgerRow,
 } from "@cotal-ai/core";
@@ -76,8 +78,29 @@ try {
   const foreignId = mintLifecycleUid(), foreign = await execFor(foreignId);
   await provisionEndpointGateOpen(foreign.kv, { endpoint, instanceId: foreignId, principal });
   await serveIssuanceGateKv(foreign.kv, space, { endpoint, instanceId: foreignId }).stage(rowFor(foreignId));
+  const measure = async (nc: NatsConnection, work: () => EpServeLedgerRow[] | Promise<EpServeLedgerRow[]>) => {
+    const request = nc.request.bind(nc); let rpcRequests = 0;
+    nc.request = (...args: Parameters<typeof request>) => { rpcRequests++; return request(...args); };
+    const before = nc.stats().outMsgs, wall = performance.now(), cpu = process.cpuUsage();
+    try {
+      const rows = await work(), elapsed = process.cpuUsage(cpu), totalPublishes = nc.stats().outMsgs - before;
+      return { rows, rpcRequests, totalPublishes, nonRpcPublishes: totalPublishes - rpcRequests,
+        wallMs: performance.now() - wall, cpuMs: (elapsed.user + elapsed.system) / 1000 };
+    } finally { nc.request = request; }
+  };
+  const deniedPublish = async (nc: NatsConnection, subject: string, name: string) => {
+    const watch = openPublishDenialWatch(nc, subject, error => error, name);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      nc.publish(subject);
+      const error = await Promise.race([watch.denied.catch(error => error), new Promise<unknown>(resolve => {
+        timer = setTimeout(() => resolve(new Error("broker denial not observed")), 5000);
+      })]);
+      check(name, error instanceof PermissionViolationError && error.subject === subject);
+    } finally { clearTimeout(timer); watch.release(); }
+  };
   const costs: number[] = [], remoteCosts: number[] = [];
-  for (const count of [0, 1, 1000]) {
+  for (const count of [0, 7905, 12753]) {
     const instanceId = mintLifecycleUid(), setup = await execFor(instanceId);
     await provisionEndpointGateOpen(setup.kv, { endpoint, instanceId, principal });
     const writer = serveIssuanceGateKv(setup.kv, space, { endpoint, instanceId });
@@ -88,31 +111,34 @@ try {
     }));
     const before = await setup.kv.get(epgateKey(endpoint, instanceId));
     const consumersBefore = (await jsm.streams.info(`KV_${epAuthBucket(space)}`)).state.consumer_count;
-    const outBefore = setup.nc.stats().outMsgs, wall = performance.now(), cpu = process.cpuUsage();
-    const rows = await barrier.enumerate();
-    const elapsed = process.cpuUsage(cpu), requests = setup.nc.stats().outMsgs - outBefore;
-    record({ count, rows: rows.length, requests, wallMs: performance.now() - wall, cpuMs: (elapsed.user + elapsed.system) / 1000 });
-    costs.push(requests);
+    const measured = await measure(setup.nc, () => barrier.enumerate()), { rows } = measured;
+    record({ count, ...measured, rows: rows.length });
+    costs.push(measured.rpcRequests);
     check(`${count}: exact retained family including revoked rows`, rows.length === count && new Set(rows.map(row => row.credentialId)).size === count && rows.every(row => expected.has(row.credentialId) && row.state === "revoked" && row.endpoint === endpoint && row.lifecycleUid === instanceId));
     const after = await setup.kv.get(epgateKey(endpoint, instanceId));
     check(`${count}: enumeration leaves the gate unchanged`, before?.revision === after?.revision && Buffer.from(before!.value).equals(Buffer.from(after!.value)));
     check(`${count}: scan reclaims its native consumer`, (await jsm.streams.info(`KV_${epAuthBucket(space)}`)).state.consumer_count === consumersBefore);
-    const remote = await remoteFor(instanceId), remoteBefore = remote.nc.stats().outMsgs;
-    const remoteRows = await endpointRegistrationBarrier(remote.kv, space, { endpoint, instanceId, opId: mintLifecycleUid() }).enumerate();
-    const remoteRequests = remote.nc.stats().outMsgs - remoteBefore;
-    remoteCosts.push(remoteRequests); record({ count, profile: "remote-manager-executor", rows: remoteRows.length, requests: remoteRequests });
+    const remote = await remoteFor(instanceId);
+    const remoteMeasured = await measure(remote.nc, () => endpointRegistrationBarrier(remote.kv, space, { endpoint, instanceId, opId: mintLifecycleUid() }).enumerate());
+    const remoteRows = remoteMeasured.rows;
+    remoteCosts.push(remoteMeasured.rpcRequests); record({ count, profile: "remote-manager-executor", ...remoteMeasured, rows: remoteRows.length });
     check(`${count}: host-signed remote executor sees the same exact family`, remoteRows.length === count && new Set(remoteRows.map(value => value.credentialId)).size === count && remoteRows.every(value => expected.has(value.credentialId) && value.state === "revoked"));
     check(`${count}: remote executor deletes its scan consumer`, (await jsm.streams.info(`KV_${epAuthBucket(space)}`)).state.consumer_count === consumersBefore);
     let remoteDenied: unknown;
     try { await (await new Kvm(remote.nc).open(epAuthBucket(otherSpace))).status(); } catch (error) { remoteDenied = error; }
     check(`${count}: remote executor cannot read the other account`, remoteDenied instanceof Error && /Permissions Violation/.test(remoteDenied.message));
+    await deniedPublish(setup.nc, `$JS.FC.KV_${recordsBucket(space)}.probe`, `${count}: CLI flow control cannot reach another stream`);
+    await deniedPublish(setup.nc, `$JS.FC.KV_${epAuthBucket(otherSpace)}.probe`, `${count}: CLI flow control cannot reach another account`);
+    let foreignWrite: unknown;
+    try { await provisionEndpointGateOpen(setup.kv, { endpoint, instanceId: foreignId, principal }); } catch (error) { foreignWrite = error; }
+    check(`${count}: CLI data writes stay instance-key-pinned`, foreignWrite instanceof Error && /Permissions Violation/.test(foreignWrite.message));
     let denied: unknown;
     try { await (await new Kvm(setup.nc).open(epAuthBucket(otherSpace))).status(); } catch (error) { denied = error; }
     check(`${count}: native broker refuses another account's stream`, denied instanceof Error && /Permissions Violation/.test(denied.message));
   }
-  check("1000 retained rows do not add per-row requests", costs[2]! <= costs[1]! + 2);
+  check("large retained families do not add per-row API requests", costs[2]! <= costs[1]! + 2);
 
-  check("remote executor also avoids per-row requests", remoteCosts[2]! <= remoteCosts[1]! + 2);
+  check("remote executor also avoids per-row API requests", remoteCosts[2]! <= remoteCosts[1]! + 2);
 
   const instanceId = mintLifecycleUid(), active = await remoteFor(instanceId);
   await provisionEndpointGateOpen(active.kv, { endpoint, instanceId, principal });
@@ -155,5 +181,5 @@ try {
   if (evidence) writeFileSync(join(dir, "OUTCOME.json"), JSON.stringify({ passed, port, brokerExited: true }) + "\n", { mode: 0o600 });
   else rmSync(dir, { recursive: true, force: true });
 }
-assert.equal(passed, 34, "all family scan cells ran");
+assert.equal(passed, 43, "all family scan cells ran");
 console.log(`ENDPOINT FAMILY SCAN: ${passed} passed`);

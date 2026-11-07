@@ -2906,6 +2906,8 @@ function endpointServeExecutorPermissions(
         `$JS.API.CONSUMER.CREATE.KV_${AUTH}.>`,
         `$JS.API.CONSUMER.INFO.KV_${AUTH}.>`,
         `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
+        // Ordered value scans acknowledge flow control only for this authorized auth stream.
+        `$JS.FC.KV_${AUTH}.>`,
         ...recordKeys.map((k) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${k}`),
         `$JS.API.STREAM.MSG.GET.KV_${REC}`,
       ],
