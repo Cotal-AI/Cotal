@@ -15,6 +15,7 @@ import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
 import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
 
@@ -785,11 +786,14 @@ async function completionOut(positionals: string[]): Promise<string> {
 // --- #5027: the legacy verdict names the cold path past it, not just that this is not a hot update --
 {
   const lines: string[] = [];
-  printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", (line) => lines.push(line));
+  printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", undefined, (line) => lines.push(line));
   assert.ok(lines[0]?.includes("this update is not a hot update"), "the verdict line comes first");
   assert.ok(lines[1]?.includes("linkedin-animator: fork"), "each seat's continuity class is printed");
   assert.ok(lines[2]?.startsWith("  Next: stop that mesh with `cotal down --space alpha`"), `the next step names the stop for that space: ${lines[2]}`);
   assert.ok(lines[2]?.includes("then run this update again"), "and the rerun after it");
+  const remote: string[] = [];
+  printLegacyReport({ custody: "legacy", seats: [] }, "alpha", "cotal manager stop --space alpha", (line) => remote.push(line));
+  assert.ok(remote[1]?.startsWith("  Next: stop that mesh with `cotal manager stop --space alpha`"), `a remote mesh's manager is stopped through the manager verb: ${remote[1]}`);
 }
 
 // --- #1879: the continuity refusal carries the workspace renderer's remedy ------------------------
@@ -939,47 +943,61 @@ async function completionOut(positionals: string[]): Promise<string> {
     }
     const elapsedMs = Date.now() - started;
 
-    assert.equal(thrown, undefined, "#2158: a remote user mesh is skipped before the manager-caller mint");
-    assert.equal(verdict, "none", "#2158: a remote user mesh is skipped before the manager-caller mint");
-    assert.ok(
-      out.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
-      "#2158: the skip names the mesh and says its manager runs elsewhere",
-    );
+    if (supervisorMayServe("hosted")) {
+      // A supervisor on this machine whose command line names no space may be serving "hosted", so
+      // the remote entry is read like a local manager's and the read ends at the mint it cannot make.
+      assert.notEqual(thrown, undefined, "a remote user mesh a supervisor here may serve is read, not skipped");
+      assert.ok(
+        out.includes("hosted: a manager for this mesh runs on this machine; reading its custody"),
+        "the read names the mesh and says its manager runs on this machine",
+      );
+    } else {
+      assert.equal(thrown, undefined, "#2158: a remote user mesh is skipped before the manager-caller mint");
+      assert.equal(verdict, "none", "#2158: a remote user mesh is skipped before the manager-caller mint");
+      assert.ok(
+        out.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+        "#2158: the skip names the mesh and says its manager runs elsewhere",
+      );
+    }
     assert.ok(!out.includes("manager-caller"), "#2158: the skip names the mesh and says its manager runs elsewhere");
     assert.ok(
       !out.includes("running manager continuity check"),
       "#2158: the skip names the mesh and says its manager runs elsewhere",
     );
-    assert.ok(elapsedMs < 1_000, "#2158: the skip reaches no exchange");
+    if (!supervisorMayServe("hosted")) assert.ok(elapsedMs < 1_000, "#2158: the skip reaches no exchange");
 
     // A remote entry among several running meshes contributes none and does not clear a legacy verdict.
+    // A supervisor here that may serve any space reads the remote entry instead, so the cell holds
+    // only where none runs.
     function ambiguous2158(): never {
       throw new MeshTargetError("ambiguous-target", "multiple meshes running: alpha (/a), hosted (/h)", {
         available: ["alpha (/a)", "hosted (/h)"],
         spaces: ["alpha", "hosted"],
       });
     }
-    let out2 = "";
-    const realLog2 = console.log;
-    console.log = (s?: unknown) => void (out2 += `${s}\n`);
-    let verdict2: "none" | "legacy";
-    try {
-      verdict2 = await reportRunningManagers({}, async (flags) => {
-        if (typeof flags.space !== "string") ambiguous2158();
-        return flags.space === "hosted" ? readManagerContinuity(flags) : "legacy";
-      });
-    } finally {
-      console.log = realLog2;
+    if (!supervisorMayServe("hosted")) {
+      let out2 = "";
+      const realLog2 = console.log;
+      console.log = (s?: unknown) => void (out2 += `${s}\n`);
+      let verdict2: "none" | "legacy";
+      try {
+        verdict2 = await reportRunningManagers({}, async (flags) => {
+          if (typeof flags.space !== "string") ambiguous2158();
+          return flags.space === "hosted" ? readManagerContinuity(flags) : "legacy";
+        });
+      } finally {
+        console.log = realLog2;
+      }
+      assert.equal(
+        verdict2,
+        "legacy",
+        "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+      );
+      assert.ok(
+        out2.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+        "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+      );
     }
-    assert.equal(
-      verdict2,
-      "legacy",
-      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
-    );
-    assert.ok(
-      out2.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
-      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
-    );
   } finally {
     if (realHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = realHome;
@@ -1035,12 +1053,18 @@ async function completionOut(positionals: string[]): Promise<string> {
       });
     }
     process.chdir(shared);
-    const pair = await capture(() => reportRunningManagers({}, readManagerContinuity));
-    assert.equal(pair.verdict, "none", "two remote registrations in one folder name no manager here, so the update proceeds");
-    for (const space of ["cloud_a", "cloud_b"])
-      assert.ok(pair.out.includes(`${space}: this mesh's manager runs elsewhere; no custody on this machine`), `${space} is read by name and skipped`);
-    assert.ok(pair.out.includes("2 meshes running; reading each manager's continuity"), "the folder's two registrations are enumerated, not refused");
-    console.log("  ✓ update --self skips a never-started prepared space and reads a folder's two remote registrations by name");
+    if (supervisorMayServe("cloud_a")) {
+      // A supervisor here that may serve any space reads both remote entries instead of skipping them.
+      await assert.rejects(reportRunningManagers({}, readManagerContinuity), "a remote registration a supervisor here may serve is read, and the read refuses without its exchange");
+      console.log("  ✓ update --self skips a never-started prepared space; a supervisor here reads the folder's remote registrations instead of skipping them");
+    } else {
+      const pair = await capture(() => reportRunningManagers({}, readManagerContinuity));
+      assert.equal(pair.verdict, "none", "two remote registrations in one folder name no manager here, so the update proceeds");
+      for (const space of ["cloud_a", "cloud_b"])
+        assert.ok(pair.out.includes(`${space}: this mesh's manager runs elsewhere; no custody on this machine`), `${space} is read by name and skipped`);
+      assert.ok(pair.out.includes("2 meshes running; reading each manager's continuity"), "the folder's two registrations are enumerated, not refused");
+      console.log("  ✓ update --self skips a never-started prepared space and reads a folder's two remote registrations by name");
+    }
   } finally {
     process.chdir(cwd);
     removePreparedSpace("drafted");

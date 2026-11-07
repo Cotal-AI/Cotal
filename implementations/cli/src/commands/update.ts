@@ -467,6 +467,7 @@ export async function reportRunningManagers(
 }
 
 export async function readManagerContinuity(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
+  let remote = false;
   // #2158: a remote user mesh's manager runs under another install, on another machine. Replacing
   // THIS machine's binary interrupts no manager there, so there is no custody here to preserve and
   // no answer from that mesh's exchange can change what this install does. Peek the mode the same
@@ -499,9 +500,17 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       }
       if (e.code !== "unknown-space" && e.code !== "no-meshes") throw e;
     }
+    // The skip holds only while no supervisor on THIS machine may be serving that space. A `cotal
+    // manager start` or `cotal supervise` process here that serves a remote mesh loaded this
+    // machine's install, so its custody is read like a local manager's; reporting it as elsewhere
+    // let the install go ahead and left that manager on the generation it had loaded.
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
-      console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
-      return "none";
+      if (!supervisorMayServe(peek.space)) {
+        console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
+        return "none";
+      }
+      remote = true;
+      console.log(c.dim(`  ${peek.space}: a manager for this mesh runs on this machine; reading its custody`));
     }
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
     // mesh is no custody rather than a refusal. Decided before the control connect, whose user-mode
@@ -548,18 +557,25 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       : [],
   );
   if (!report) return "none";
-  printLegacyReport(report, target.space);
+  printLegacyReport(report, target.space, remote ? `cotal manager stop --space ${target.space}` : `cotal down --space ${target.space}`);
   return "legacy";
 }
 
 /** What a `legacy` verdict prints: the verdict, each seat's continuity class, and the cold path past
  *  it as the next step. The verdict alone left the operator with no way on (#5027): the update exits
- *  nonzero, and the path the docs name, `cotal down` then `cotal update`, was nowhere on the screen. */
-export function printLegacyReport(report: LegacyManagerReport, space: string, out: (line: string) => void = console.log): void {
+ *  nonzero, and the path the docs name, `cotal down` then `cotal update`, was nowhere on the screen.
+ *  `stop` is the command that ends that manager: `cotal down` for a mesh this machine runs, and
+ *  `cotal manager stop` for a remote mesh whose manager this machine runs. */
+export function printLegacyReport(
+  report: LegacyManagerReport,
+  space: string,
+  stop: string = `cotal down --space ${space}`,
+  out: (line: string) => void = console.log,
+): void {
   out(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
   for (const seat of report.seats)
     out(c.dim(`  ${seat.name}: ${seat.continuity}`));
-  out(`  Next: stop that mesh with \`cotal down --space ${space}\`, then run this update again; the stop ends the seats above, and the update after it is a cold one`);
+  out(`  Next: stop that mesh with \`${stop}\`, then run this update again; the stop ends the seats above, and the update after it is a cold one`);
 }
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
