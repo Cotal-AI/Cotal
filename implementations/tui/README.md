@@ -151,7 +151,8 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   broker. It also covers watching unseen while you type, the first `enter` opening
   the session and sending, your name turning gold, the shared-name warning, `/quit` and the
   two-step reopen, a space switch that closes the session and keeps the draft, a space switch while
-  the first message opens its session, `ctrl+c` with a draft, and Change your name.
+  the first message opens its session, `ctrl+c` with a draft, Change your name, and a name saved
+  with `cotal config set name` while the app runs.
   Its quotes reply with `replyTo` from `↑` and a click. A burst of one direct message to several
   agents is quoted only when its first copy came to you, and its reply names your copy.
   After Change your name and `/quit`, `↑` passes over your own direct messages.

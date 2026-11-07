@@ -905,6 +905,25 @@ async function rename(s: Space, tag: string) {
     walked.find((f) => f.includes("↳ ops-lead:")) ?? walked.at(-1)!,
   )
   await esc()
+
+  const outside = cli("config", "set", "name", "ops-lead-2")
+  if (outside.status !== 0) throw new Error(`cotal config set name failed:\n${outside.stdout}${outside.stderr}`)
+  const offered = await see((f) => /enter opens a new one as \S+/.test(middle(f, 209)), 4000)
+  const shown = /enter opens a new one as (\S+)/.exec(middle(offered, 209))?.[1]
+  keys("Enter")
+  const opened = await see((f) => /new session as \S+; enter sends/.test(middle(f, 209)))
+  const told = /new session as (\S+); enter sends/.exec(middle(opened, 209))?.[1]
+  const joined = await until(
+    () => s.reader.getRoster().find((p) => p.card.meta?.sessionKind === "chat" && p.status !== "offline" && p.card.id !== named?.card.id && [login, "ops-lead-2"].includes(p.card.name)),
+    (p) => p !== undefined,
+  )
+  writeFileSync(join(dir, `renamed-outside-${tag}.txt`), opened)
+  check(
+    `${at}: with the name changed outside the app, the session enter opens joins under the name the box gave before and after the enter`,
+    !!shown && shown === told && joined?.card.name === told,
+    JSON.stringify({ shown, told, joined: joined?.card.name }),
+  )
+  cli("config", "unset", "name")
   keys("C-c")
   await see(has("EXIT=0"), 15000)
 }
