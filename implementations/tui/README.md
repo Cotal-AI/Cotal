@@ -83,9 +83,10 @@ login. The name at the bottom of the left column is dim until then and gold afte
   too, and keeps what you typed. The quoted message is highlighted and shown above the box, and
   `enter` sends your reply: in a channel it stays there, and a direct message's reply goes back to
   its sender. `esc` drops the quote and keeps the text. A reply shows `↩` and the name it answers.
-- `↑` and `↓` pass over your own direct messages, and a click on one says so. A message is yours
-  when it comes from a session the app opened, or from any session under your name in any letter
-  case.
+- `↑` and `↓` pass over what a reply cannot answer, and a click on it says why: your own direct
+  messages, and direct messages between two others. In an agent's conversation only direct
+  messages are quoted, so a reply there never posts to a channel. A message is yours when it comes
+  from a session the app opened, or from any session under your name in any letter case.
 - `@name` in a channel post mentions that peer, as `cotal send` does. A message that mentions you
   is marked `@you`.
 - A line that starts with `/` is a command: `/reply` quotes the newest direct message you received

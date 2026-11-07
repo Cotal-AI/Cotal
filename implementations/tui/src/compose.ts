@@ -1,6 +1,6 @@
 import { publishOutcome, recipientLabel, replyRecipient, settlePublish, SLASH_COMMANDS, submitDraft, type Answerable, type PublishResult, type Recipient, type SlashCommand } from "@cotal-ai/workspace/chat"
 import type { FeedEntry } from "./live.js"
-import type { DraftKey } from "./screen.js"
+import type { DraftKey, Open } from "./screen.js"
 import type { AppSlash, Outcome, TalkPhase, You } from "./talk.js"
 
 /** The message a draft answers. Its recipient came from the reply rule, not from the open
@@ -138,19 +138,31 @@ export function unsent(state: ComposerState): ComposerState {
 }
 
 type Quotable = Answerable & { text: string }
+type Refused = { readonly refused: string }
 
 /** Whether a sender is the human: a session this app run opened, or one under their chat name in any
  *  letter case. */
 const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
 
-/** Where a reply to `m` goes. The reply rule refuses a direct message from `self`, and each of the
- *  human's sessions has its own principal, so a message from any of them counts as `self` too. */
-const answer = (m: Answerable, you: You) => replyRecipient(m, isYou(you, m.from) ? m.from.id : "")
+/** Where a reply to `m` goes. A direct message or role task from the human refuses, from any of their
+ *  sessions. One under their name that this app run did not open may be another person's, so its
+ *  refusal says only that. */
+function answer(m: Answerable, you: You): Recipient | Refused {
+  if (m.kind !== "channel" && !you.principals.has(m.from.id) && isYou(you, m.from)) return { refused: "that is from another session under your name" }
+  return replyRecipient(m, you.principals.has(m.from.id) ? m.from.id : "")
+}
 
-/** A burst coalesced into one row keeps its first copy's id, so the row answers only when that copy
+/** Where a reply to a row of the `open` conversation goes, or why the row cannot be quoted. A direct
+ *  conversation quotes only direct messages. A direct message is answered only by a recipient, and a
+ *  burst coalesced into one row keeps its first copy's id, so the row answers only when that copy
  *  came to the human. */
-function rowAnswer(e: FeedEntry, you: You): Recipient | { readonly refused: string } {
-  if ((e.count ?? 1) > 1 && !isYou(you, { id: e.toIds?.[0] ?? "", name: e.toNames?.[0] ?? "" })) return { refused: "that message went to several recipients; open its sender in the tree to answer" }
+function rowAnswer(e: FeedEntry, you: You, open: Open): Recipient | Refused {
+  if (e.delivery === "multicast" && open.kind === "peer") return { refused: `that is a #${e.channel} post; reply to it in #${e.channel}` }
+  if (e.delivery === "unicast" && !isYou(you, e.from)) {
+    const yours = (e.toIds ?? []).map((id, i) => isYou(you, { id, name: e.toNames?.[i] ?? "" }))
+    if (!yours.includes(true)) return { refused: "that direct message was not sent to you" }
+    if (!yours[0]) return { refused: `that message went to several recipients; ${open.kind === "peer" && open.id === e.from.id ? "answer its sender here without a quote" : "open its sender in the tree to answer"}` }
+  }
   return answer(answerable(e), you)
 }
 
@@ -164,7 +176,7 @@ const answerable = (e: FeedEntry): Quotable => ({
 })
 
 /** Quotes `m` in the draft for `key`, keeping its text. `to` is where the reply rule sends it. */
-function quote(state: ComposerState, key: DraftKey, m: Quotable, to: Recipient | { readonly refused: string }): ComposerState {
+function quote(state: ComposerState, key: DraftKey, m: Quotable, to: Recipient | Refused): ComposerState {
   if ("refused" in to) return { ...state, notice: { key, tone: "failed", lines: [to.refused] } }
   const line = m.text.split("\n")[0]!
   return { ...withDraft(state, key, { text: state.drafts[key]?.text ?? "", reply: { id: m.id, to, from: m.from.name, line } }), notice: undefined }
@@ -176,8 +188,8 @@ export function replyFrom(state: ComposerState, key: DraftKey, m: Quotable | und
   return quote(state, key, m, answer(m, you))
 }
 
-/** Quotes a conversation row, as a click or `↑` `↓` picks it. */
-export const quoteRow = (state: ComposerState, key: DraftKey, e: FeedEntry, you: You) => quote(state, key, answerable(e), rowAnswer(e, you))
+/** Quotes a row of the `open` conversation, as a click or `↑` `↓` picks it. */
+export const quoteRow = (state: ComposerState, key: DraftKey, e: FeedEntry, you: You, open: Open) => quote(state, key, answerable(e), rowAnswer(e, you, open))
 
 /** `esc`: the draft drops its quote and keeps its text. */
 export function unquote(state: ComposerState, key: DraftKey): ComposerState {
@@ -185,16 +197,16 @@ export function unquote(state: ComposerState, key: DraftKey): ComposerState {
   return d?.reply ? withDraft(state, key, { text: d.text }) : state
 }
 
-/** The conversation rows a quote moves through, oldest first: event traffic and the rows the reply
- *  rule refuses, such as the human's own direct messages, are passed over. */
-export const quotable = (feed: readonly FeedEntry[], you: You) => feed.filter((e) => !e.events && !("refused" in rowAnswer(e, you)))
+/** The rows of the `open` conversation a quote moves through, oldest first: event traffic and the rows
+ *  the reply rule refuses, such as the human's own direct messages, are passed over. */
+export const quotable = (feed: readonly FeedEntry[], you: You, open: Open) => feed.filter((e) => !e.events && !("refused" in rowAnswer(e, you, open)))
 
 /** `↑` (-1) or `↓` (1) on an empty box moves the quote through `rows`. With no quote, or one not
  *  among them, it starts below the newest. `↑` stops at the oldest; `↓` past the newest drops it. */
-export function walk(state: ComposerState, key: DraftKey, rows: readonly FeedEntry[], you: You, by: -1 | 1): ComposerState {
+export function walk(state: ComposerState, key: DraftKey, rows: readonly FeedEntry[], you: You, open: Open, by: -1 | 1): ComposerState {
   const at = rows.findIndex((e) => e.id === state.drafts[key]?.reply?.id)
   const next = (at < 0 ? rows.length : at) + by
   if (next >= rows.length) return unquote(state, key)
   const e = rows[Math.max(0, next)]
-  return e ? quoteRow(state, key, e, you) : state
+  return e ? quoteRow(state, key, e, you, open) : state
 }

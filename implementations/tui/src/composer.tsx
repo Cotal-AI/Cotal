@@ -146,7 +146,7 @@ export function Composer(props: {
   // With text in the box, the arrows move its cursor.
   const step = (by: -1 | 1) => {
     const you = props.talk.you()
-    props.setState((s) => walk(s, key(), quotable(props.feed, you), you, by))
+    props.setState((s) => walk(s, key(), quotable(props.feed, you, props.open), you, props.open, by))
   }
   Keymap.createLayer(() => ({
     mode: "compose",
