@@ -589,7 +589,7 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
         writeHead: (s: number, h: Record<string, string>) => { rec.status = s; rec.headers = h ?? {}; },
         end: (b?: string) => { rec.body = b ?? ""; },
       },
-      CROSS_ORIGIN, SESSION_COOKIE: "cotal_web_session", WEB_READINESS_HEADER,
+      CROSS_ORIGIN, SESSION_COOKIE: "cotal_web_session",
       __routeReached: () => { rec.routeReached = true; }, globalThis: undefined, console, JSON,
     };
     ctx.globalThis = ctx;
