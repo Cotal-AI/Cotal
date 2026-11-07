@@ -30,8 +30,8 @@ function osLogin(): string {
 }
 
 /** The account name the user-mode target's IdP gave at `cotal login`, through the space's
- *  registered auth provider. */
-async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth">): Promise<ChatName> {
+ *  registered auth provider, and the step that records it again. */
+async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth">): Promise<{ found: ChatName; signIn: string }> {
   const space = target.space;
   if (!target.userAuth)
     throw new CommandFailure("refused", "UNSUPPORTED", "a user-mode chat name requires a recorded user-auth target", { target: { space } });
@@ -49,14 +49,15 @@ async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot read your sign-in for space "${space}": ${e instanceof Error ? e.message : String(e)}`, { target: { space } });
   }
   const idp = status.idpUrl;
+  const signIn = `sign in again with \`cotal login --idp ${idp}\``;
   if (!status.login)
     throw new CommandFailure("refused", "AUTH_REQUIRED", `not signed in to ${idp}; run \`cotal login --idp ${idp}\``, { target: { space }, remedy: `run \`cotal login --idp ${idp}\`` });
   if (!status.login.name)
     throw new CommandFailure("refused", "AUTH_REQUIRED", `your sign-in at ${idp} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`, {
       target: { space },
-      remedy: `sign in again with \`cotal login --idp ${idp}\`, or ${SAVE_NAME}`,
+      remedy: `${signIn}, or ${SAVE_NAME}`,
     });
-  return { name: status.login.name, source: "account", from: `your sign-in at ${idp}` };
+  return { found: { name: status.login.name, source: "account", from: `your sign-in at ${idp}` }, signIn };
 }
 
 /**
@@ -71,16 +72,18 @@ export async function resolveChatName(
 ): Promise<ChatName> {
   const chosen = resolvePreference("name", { flag: { name: "name", value: opts.flag }, preferences: opts.preferences }).winner;
   let found: ChatName;
+  let signIn: string | undefined;
   if (chosen?.source === "flag") found = { name: chosen.value, source: "flag", from: "--name" };
   else if (chosen) found = { name: chosen.value, source: "preference", from: "your saved name" };
-  else if (target.mode === "user") found = await accountName(target);
+  else if (target.mode === "user") ({ found, signIn } = await accountName(target));
   else if (target.mode === "open" || target.mode === "auth") found = { name: (opts.login ?? osLogin)(), source: "login", from: "your OS login" };
   else throw new CommandFailure("refused", "UNSUPPORTED", `chat has no name for a mesh recorded in "${String(target.mode)}" mode`, { target: { space: target.space } });
   const problem = chatNameProblem(found.name);
   if (problem)
     throw new CommandFailure("refused", "USAGE_INVALID", `${found.from}, ${JSON.stringify(oneLine(found.name))}, cannot be a chat name: ${problem}`, {
       target: { space: target.space },
-      remedy: found.source === "flag" ? "pass another --name" : SAVE_NAME,
+      remedy: found.source === "flag" ? "pass another --name" : `${signIn ? `${signIn}, ` : ""}pass \`--name <name>\`, or ${SAVE_NAME}`,
+      selfContained: true,
     });
   return found;
 }
