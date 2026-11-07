@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WEB_READINESS_HEADER } from "@cotal-ai/workspace";
+import { WEB_READINESS_HEADER, WEB_READINESS_PATH } from "@cotal-ai/workspace";
 import { appendedLogTail, detachedArgs, terminateDetachedWeb, waitForDetachedWeb } from "../src/web.js";
 
 const root = mkdtempSync(join(tmpdir(), "cotal-web-detach-"));
@@ -158,7 +158,7 @@ try {
   const bound = await listen((req, res) => {
     if (req.headers[WEB_READINESS_HEADER] === nonce) nonceAt.push(req.url ?? "");
     if (req.url === "/steal") { stealRequests++; return answerMeta(res); }
-    if (req.url !== "/api/meta") return res.writeHead(404).end();
+    if (req.url !== WEB_READINESS_PATH) return res.writeHead(404).end();
     if (answer === "meta") return answerMeta(res);
     res.writeHead(answer.code, { location: answer.location }).end();
   });
@@ -178,14 +178,14 @@ try {
         `a ${redirect.code} to ${redirect.location} is not ready`,
       );
       assert.ok(nonceAt.length > 0, `the probe presented the nonce on /api/meta (${redirect.code} to ${redirect.location})`);
-      assert.deepEqual([...new Set(nonceAt)], ["/api/meta"], `the nonce reaches only /api/meta (${redirect.code} to ${redirect.location})`);
+      assert.deepEqual([...new Set(nonceAt)], [WEB_READINESS_PATH], `the nonce reaches only /api/meta (${redirect.code} to ${redirect.location})`);
       assert.equal(stealRequests, 0, `the redirect target is never requested (${redirect.code} to ${redirect.location})`);
     }
     answer = "meta";
     nonceAt.length = 0;
     const session = await waitForDetachedWeb(child, { pidPath, sessionPath, url: `http://127.0.0.1:${bound.port}/`, space: "fixture", timeoutMs: 2000 });
     assert.equal(session.readiness, nonce, "the same server answering /api/meta itself is ready");
-    assert.deepEqual([...new Set(nonceAt)], ["/api/meta"], "the ready probe presented the nonce on /api/meta only");
+    assert.deepEqual([...new Set(nonceAt)], [WEB_READINESS_PATH], "the ready probe presented the nonce on /api/meta only");
     console.log(`web detach smoke: ${redirects.length} redirects refused, nonce kept on /api/meta, direct answer ready`);
   } finally {
     await new Promise<void>((resolve) => bound.server.close(() => resolve()));
