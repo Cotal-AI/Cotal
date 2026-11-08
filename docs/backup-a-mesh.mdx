@@ -72,6 +72,7 @@ It validates the complete space trust bundle before staging or changing the pres
 That commitment includes the validated operator, system, and data-account root chain, plus the static or user-auth authority state.
 
 A successful full restore recreates conservative consumer checkpoints bound to the snapshot's stream sequences.
+A fresh consumer may report a zero acknowledgement floor; its recorded replay start still applies.
 Retained agents resume under their original principals.
 In every auth mode, including open mode, maintenance uses isolated, operation-specific logins.
 Ordinary agent credentials cannot enter that listener.
