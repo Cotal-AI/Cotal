@@ -44,10 +44,10 @@ import {
   deregisterServiceInstance, describeEndpoint, epProbeInstanceInterest, unansweredRequest,
   readEndpointGateGeneration,
   type EpCaller, type EpInstanceLiveness, type ServiceDeregistration,
+  rejectionText,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { rejectionText } from "./rejection-text.js";
 
 /** Which guard refused. Printed verbatim by the command and asserted on by the smoke, so one
  *  refusal can never be mistaken for another. */

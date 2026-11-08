@@ -11,10 +11,10 @@ import {
   type RuntimeKind,
   type RuntimeProvider,
   type RuntimeReference,
+  rejectionText,
 } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
-import { rejectionText } from "../rejection-text.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";

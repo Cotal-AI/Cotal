@@ -9,8 +9,7 @@ import { chmodSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeF
 import { join } from "node:path";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ensureTransferStore, fetchTransfer, listTransfers, objectStoreStream, removeTransfer, transferBucket } from "@cotal-ai/core";
-import { rejectionText } from "./rejection-text.js";
+import { ensureTransferStore, fetchTransfer, listTransfers, objectStoreStream, removeTransfer, transferBucket, rejectionText } from "@cotal-ai/core";
 
 /** A transfer whose last write is older than this is abandoned, and so is a claim. */
 const TRANSFER_IDLE_MS = 10 * 60_000;

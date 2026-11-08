@@ -8,6 +8,7 @@ import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, parseEndpointRepl
 import type { CompiledContract } from "./schema-profile.js";
 import { epCall, type EpVerbTarget, type EpAttributedReply } from "./endpoint-call.js";
 import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, assertLifecycleToken, type EpCaller, type EpRoute, type IssuedCaller } from "./endpoint-subjects.js";
+import { rejectionText } from "./rejection-text.js";
 
 export const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => base64url(globalThis.crypto.getRandomValues(new Uint8Array(24)));
@@ -17,15 +18,12 @@ const nonce = (): string => base64url(globalThis.crypto.getRandomValues(new Uint
  *  is invisible until the caller pays the whole deadline. Commands are never retried here. */
 const DESCRIBE_RETRY_MS = 250;
 
-/** Format a caught value on a path that cannot afford to throw (timer/callback). A
- *  poisoned `Error.message` getter or `toString` must not escape the catch; the
- *  fallback is the detail, never a reason to skip the rejection. */
+/** Format a caught value on a path that cannot afford to throw (timer/callback). The
+ *  shared coercion reads a plain object's `message` and returns its own sentence when
+ *  the value cannot be read; this path keeps the detail it was given instead. */
 function caughtText(e: unknown, fallback: string): string {
-  try {
-    return e instanceof Error ? e.message : String(e);
-  } catch {
-    return fallback;
-  }
+  const text = rejectionText(e);
+  return text === "an unreadable rejection" ? fallback : text;
 }
 
 /** Delivery margin above an action owner's accepted readiness budget. Spawn's established generic

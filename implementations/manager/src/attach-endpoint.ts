@@ -4,8 +4,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { EpEnvelopeError } from "@cotal-ai/core";
-import { rejectionText } from "./rejection-text.js";
+import { EpEnvelopeError, rejectionText } from "@cotal-ai/core";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
