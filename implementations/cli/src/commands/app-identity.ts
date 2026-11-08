@@ -6,7 +6,6 @@ import {
   acquireLock,
   agentFilePath,
   checkConversationSelection,
-  CotalEndpoint,
   DEV_OWNER,
   deprovisionAgent,
   eventChannel,
@@ -28,6 +27,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { activateTerminalSeat, defaultPersonaRef, homeCotalDir, issueTerminalSeat, resolveTargetOrThrow, retireTerminalSeat, type MeshTarget } from "@cotal-ai/workspace";
+import { withProvisioner } from "../lib/provisioner.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { ConversationRefusal, isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
@@ -214,41 +214,25 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
   const reply = { ok: true as const, env, retire: { dir }, grant: { ...grant, allowPublish } };
   if (!t.auth) return reply;
   const auth = t.auth;
-  const prov = new CotalEndpoint({
-    space: t.space,
-    servers: t.server,
-    creds: await mintCreds(auth, newIdentity(), "provisioner"),
-    tls: t.tlsRequired,
-    channels: [],
-    consume: false,
-    registerPresence: false,
-    watchPresence: false,
-    watchChannels: false,
-    card: { name: "app-provisioner", role: "provisioner", kind: "endpoint" },
-  });
-  // The awaited calls below own the verdict; the provisioner's own events would only reach stdout.
-  prov.on("error", () => {});
-  prov.on("warning", () => {});
   const seatTarget = { server: t.server, space: t.space, tlsRequired: t.tlsRequired, auth };
   const seat = { actor: identity.id, alias: name, lifecycleUid };
   let acceptedToken: string;
   try {
-    await prov.start();
-    await activateTerminalSeat(seatTarget, seat);
-    const creds = await issueTerminalSeat(seatTarget, seat, undefined, (issue) => {
-      acceptedToken = issue.issued.acceptedToken;
-      return provisionAgent(prov, auth, identity, {
-        subscribe, allowSubscribe: grant.allowSubscribe, allowPublish, ...(grant.role ? { role: grant.role } : {}), capabilities: grant.scope,
-        lifecycleUid, expiresAt: issue.expiresAt, issued: issue.issued, issuance: issue.issuance,
+    const creds = await withProvisioner({ space: t.space, servers: t.server, tls: t.tlsRequired, auth }, "app-provisioner", async (prov) => {
+      await activateTerminalSeat(seatTarget, seat);
+      return issueTerminalSeat(seatTarget, seat, undefined, (issue) => {
+        acceptedToken = issue.issued.acceptedToken;
+        return provisionAgent(prov, auth, identity, {
+          subscribe, allowSubscribe: grant.allowSubscribe, allowPublish, ...(grant.role ? { role: grant.role } : {}), capabilities: grant.scope,
+          lifecycleUid, expiresAt: issue.expiresAt, issued: issue.issued, issuance: issue.issuance,
+        });
       });
     });
     writeFileSync(join(dir, "agent.creds"), creds, { mode: 0o600 });
   } catch (e) {
-    await prov.stop().catch(() => {});
     await retireDir(dir).catch(() => {});
     throw e;
   }
-  await prov.stop();
   return { ...reply, env: { ...env, COTAL_CREDS: join(dir, "agent.creds"), COTAL_ACCEPTED_TOKEN: acceptedToken! } };
 }
 
