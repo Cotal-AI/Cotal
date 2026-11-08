@@ -41,9 +41,9 @@ server is refused with a message naming `cotal setup`.
 ## Identity mint helpers take a mint
 
 `createManagerInstanceIdentity` and `createAuthInstanceIdentity` from `@cotal-ai/workspace` now
-take `mint`, a function that returns the identity. They call it only when the root has no record.
-They used to take the identity itself, so a caller minted a lifecycle uid and a serve nkey on every
-call and threw them away when a record was already there.
+take `mint`, a function that returns the identity. They call it after reading no existing record.
+They used to take the identity itself, so minting that argument happened before the helper could
+adopt an existing record.
 
 A restart still returns the stored identity. A fresh root still creates one record, and a second
 start that arrives while the first is creating it still adopts that record.

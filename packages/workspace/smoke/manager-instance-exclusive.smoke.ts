@@ -19,6 +19,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createManagerInstanceIdentity,
+  createAuthInstanceIdentity,
+  loadAuthInstanceIdentity,
   loadManagerInstanceIdentity,
   spaceSegment,
 } from "../src/auth-paths.js";
@@ -55,10 +57,17 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     mkdirSync(join(root, ".cotal"), { recursive: true });
 
     const planted = candidate("planted");
-    createManagerInstanceIdentity(root, SPACE, () => planted);
-    const adopted = createManagerInstanceIdentity(root, SPACE, () => candidate("loser"));
-    check("ACCEPT: an existing identity is adopted, the candidate is discarded",
-      adopted.instanceId === planted.instanceId && adopted.serveIdentity.id === planted.serveIdentity.id);
+    let managerMints = 0;
+    createManagerInstanceIdentity(root, SPACE, () => { managerMints++; return planted; });
+    const adopted = createManagerInstanceIdentity(root, SPACE, () => { managerMints++; return candidate("loser"); });
+    const auth = candidate("auth");
+    let authMints = 0;
+    createAuthInstanceIdentity(root, SPACE, () => { authMints++; return auth; });
+    const adoptedAuth = createAuthInstanceIdentity(root, SPACE, () => { authMints++; return candidate("auth-loser"); });
+    check("ACCEPT: manager and auth identities mint once and adopt without calling mint again",
+      managerMints === 1 && authMints === 1 &&
+      adopted.instanceId === planted.instanceId && adopted.serveIdentity.id === planted.serveIdentity.id &&
+      adoptedAuth.instanceId === auth.instanceId && loadAuthInstanceIdentity(root, SPACE)?.instanceId === auth.instanceId);
 
     const refuseRoot = mkdtempSync(join(tmpdir(), "cotal-iid-refuse-"));
     mkdirSync(join(refuseRoot, ".cotal", spaceSegment(SPACE)), { recursive: true });
