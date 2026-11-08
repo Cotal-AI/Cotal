@@ -612,11 +612,12 @@ async function runStartedDelivery(
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
   await validateScanTargetAdmission(scanTarget);
   const spaceAuth = loadSpaceAuth(authDir(root), space);
-  if (!spaceAuth) throw new Error(`delivery startup: space "${space}" has no composed trust record, so its kick holder cannot start`);
-  await ensureStoredKickRequester({ auth: spaceAuth, secrets: scanTarget.source.secrets, composition: scanTarget.source });
+  if (spaceAuth) await ensureStoredKickRequester({ auth: spaceAuth, secrets: scanTarget.source.secrets, composition: scanTarget.source });
   const admittedObserver = await scanTarget.source.secrets.get(membershipObserverCredsKey(space, scanTarget.source));
-  if (!admittedObserver) throw new Error(`delivery startup: space "${space}" has no admitted membership observer, so its kick holder cannot check a connection`);
-  const kickHolder = await startKickHolder({ servers: server, auth: spaceAuth, observerCreds: admittedObserver, secrets: scanTarget.source.secrets });
+  const kickHolder = spaceAuth && admittedObserver
+    ? await startKickHolder({ servers: server, auth: spaceAuth, observerCreds: admittedObserver, secrets: scanTarget.source.secrets })
+      .catch((e: unknown) => { log.err(`• delivery: kick holder not started (${e instanceof Error ? e.message : String(e)})`); return undefined; })
+    : undefined;
   log.err(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
   // THIS daemon's connection nkey, pinned once. It is what the endpoint AUTHENTICATES as, and it is
