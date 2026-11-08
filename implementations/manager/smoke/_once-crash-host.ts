@@ -32,6 +32,7 @@ const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: roo
     observerCreds: process.env.REPRO_OBSERVER_CREDS!,
     evictorCreds: process.env.REPRO_EVICTOR_CREDS!,
     accountId: process.env.REPRO_ACCOUNT_ID!,
+    space: process.env.REPRO_SPACE!,
     principal,
     options: { maxVerifyRounds: 12 },
   });

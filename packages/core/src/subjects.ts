@@ -1129,9 +1129,19 @@ export function accountDisconnectSubject(accountId: string): string {
  *  (KICK is not fan-out; a cid is only meaningful on its own server). System-account only. There is
  *  no per-cid success ack — the caller re-scans CONNZ to confirm the connection is gone. This is the
  *  kill-live half of revocation; it is ALWAYS paired with a deny-new (ledger revoke / cred expiry /
- *  signer strip / ACL removal), since a kicked client reconnects with a fresh cid until its cred dies. */
+ *  signer strip / ACL removal), since a kicked client reconnects with a fresh cid until its cred dies.
+ *
+ *  The subject itself has no account. The only publisher is the space's checked kick holder. */
 export function serverKickSubject(serverId: string): string {
   return `$SYS.REQ.SERVER.${serverId}.KICK`;
+}
+
+/** The data-account request one space's stored evictor may publish. The holder subscribes to it,
+ *  checks the unfiltered account census, and is the only connection that publishes the raw kick.
+ *  `space` is the data account's own space name, one token, so a request cannot name another account. */
+export function kickRequestSubject(space: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(space)) throw new Error("kick request requires one space token");
+  return `cotal.${space}.ctl.kick`;
 }
 
 /** Extract the channel pattern from a live chat SUBSCRIPTION subject in this space, or `null` if it

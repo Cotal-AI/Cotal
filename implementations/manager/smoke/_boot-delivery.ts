@@ -88,14 +88,14 @@ export async function bootDeliveryDaemon(opts: {
     evictPrincipal: async (principal) => {
       await opts.onEvict?.([principal]);
       return evictDeniedPrincipalWithCreds({
-        servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+        servers, observerCreds, evictorCreds, accountId: auth.account.pub, space, principal,
         options: { maxVerifyRounds: 12 },
       });
     },
     evictPrincipals: async (principals) => {
       await opts.onEvict?.(principals);
       return evictDeniedPrincipalsWithCreds({
-        servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
+        servers, observerCreds, evictorCreds, accountId: auth.account.pub, space, principals,
         options: { maxVerifyRounds: 12 },
       });
     },

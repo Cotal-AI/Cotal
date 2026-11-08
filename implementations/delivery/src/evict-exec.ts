@@ -120,7 +120,7 @@ export async function validateScanTargetAdmission(target: ScanTarget): Promise<{
   if (tenancy) throw new Error(`delivery startup: ${tenancy}. Refusing before endpoint construction and lease admission`);
   if (sys.evictor !== undefined) {
     const torn = tornRotationProblem(sys.observer, sys.evictor, () =>
-      repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
+      repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]), target.expectedAccount);
     if (torn) throw new Error(`delivery startup: ${torn}. Refusing before endpoint construction and lease admission`);
   }
   return scan;
@@ -149,7 +149,7 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
     // The torn-rotation check now covers this path too. It used to exist only in the feed, so
     // eviction could open a half-rotated pair and get a bare "Authorization Violation" from the
     // broker with nothing naming the cause.
-    const torn = tornRotationProblem(observer, sys.evictor, () => repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
+    const torn = tornRotationProblem(observer, sys.evictor, () => repairAdvice(target.source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]), target.expectedAccount);
     if (torn) throw new Error(`${verb}: ${torn}. Refusing`);
   }
   return { observer, ...(sys.evictor !== undefined ? { evictor: sys.evictor } : {}) };
@@ -194,6 +194,7 @@ export async function executeEvictions(server: string, target: ScanTarget, princ
     servers: server,
     observerCreds: sys.observer,
     accountId,
+    space: target.source.space,
     principals,
     openEvictor: async () => (await loadCheckedSys(target, verb, "both")).evictor as string,
   });

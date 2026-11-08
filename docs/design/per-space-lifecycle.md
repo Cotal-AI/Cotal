@@ -270,9 +270,12 @@ space added after first boot cannot mint its `$SYS` users at all. `mintMembershi
 
 The two creds are not equivalent. The membership observer pins the data account id in its CONNZ and
 connect and disconnect subjects, so it is genuinely per-space and a new space needs its own. The
-connection evictor is `$SYS.REQ.SERVER.*.KICK` with no account scoping, so it is broker-wide and one
-per broker would do, though today one is minted per space at `up`. Both land on root-scoped paths,
-alongside a root-scoped `membership.json` naming one account and a root-scoped `membership-rw.creds`
+stored connection evictor publishes one data-account subject, `cotal.<space>.ctl.kick`. It cannot
+publish `$SYS.REQ.SERVER.*.KICK`. The delivery daemon holds the raw kick in memory and publishes it
+only after this space's unfiltered account census still lists that server, connection, and account.
+A second space can mint its requester from its data-account signing seed. It does not need a
+broker-wide system rotation, and a copy of one space's requester cannot ask another space's holder
+to disconnect a connection. Both land on root-scoped paths, alongside a root-scoped `membership.json` naming one account and a root-scoped `membership-rw.creds`
 store key. One tenant's set is all a root can hold, and the way that bites is INHERITANCE, not an
 overwrite. A second space's `up` cannot overwrite the first space's, because `up` refuses a `--space`
 the root does not already hold — at the workspace-root identity check, before any trust write — so on

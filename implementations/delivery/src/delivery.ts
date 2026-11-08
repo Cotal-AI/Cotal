@@ -27,11 +27,12 @@ import {
   type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isStoreIdFile, isWorkspaceTargetError, listenForLocalStop, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removePidPair, requireCotalRoot, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isStoreIdFile, isWorkspaceTargetError, listenForLocalStop, loadSpaceAuth, membershipObserverCredsKey, reclaimDeadPreUpgradeRecord, removePidPair, requireCotalRoot, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executeEvictions, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
+import { startKickHolder } from "./kick-holder.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
 
 type Values = Record<string, string | undefined>;
@@ -610,6 +611,12 @@ async function runStartedDelivery(
   // before it can claim that slot. A wrong-root process previously acquired and renewed lease.0,
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
   await validateScanTargetAdmission(scanTarget);
+  const spaceAuth = loadSpaceAuth(authDir(root), space);
+  const admittedObserver = await scanTarget.source.secrets.get(membershipObserverCredsKey(space, scanTarget.source));
+  const kickHolder = spaceAuth && admittedObserver
+    ? await startKickHolder({ servers: server, auth: spaceAuth, observerCreds: admittedObserver, secrets: scanTarget.source.secrets })
+      .catch((e: unknown) => { log.err(`• delivery: kick holder not started (${e instanceof Error ? e.message : String(e)})`); return undefined; })
+    : undefined;
   log.err(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
   // THIS daemon's connection nkey, pinned once. It is what the endpoint AUTHENTICATES as, and it is
@@ -898,6 +905,7 @@ async function runStartedDelivery(
         throw new Error(`delivery: the lease release for shard ${shard} could not be confirmed (${(e as Error).message}); the bucket TTL expires a row left behind`, { cause: e });
       } finally {
         try { await membership?.stop(); } catch { /* broker may be gone */ }
+        try { await kickHolder?.close(); } catch { /* broker may be gone */ }
         try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
         try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
         wakeTimerWriterBackoff?.();
@@ -1172,6 +1180,7 @@ async function runStartedDelivery(
       // the crash-safe authority for anything this path cannot reach.
       try { await releaseOwnLease(); } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
       try { await membership?.stop(); } catch { /* broker may be gone */ }
+      try { await kickHolder?.close(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }

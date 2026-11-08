@@ -75,7 +75,7 @@ import {
   MANAGER_LEASE_KEY,
   MANAGER_RENEWAL_LEASE_KEY,
   connzRequestSubject,
-  accountCensusInboxPrefix,
+  accountCensusInboxPrefix, kickRequestSubject,
   accountConnectSubject,
   accountDisconnectSubject,
   MEMBERSHIP_INBOX_PREFIX,
@@ -3192,44 +3192,65 @@ export async function mintAccountCensusCreds(
   return new TextDecoder().decode(fmtCreds(jwt, user));
 }
 
-/** The KICK-ONLY connection-evictor permission set — a SYSTEM-account user that can do
- *  exactly ONE thing: `$SYS.REQ.SERVER.*.KICK` (disconnect a live client by cid). It CANNOT read
- *  CONNZ (discovery stays on the separate observer cred — never one broad sys user that both
- *  enumerates and kills), touch any other `$SYS` verb, or reach another account's data. A leaked
- *  evictor cred can DoS live connections on this broker (KICK is not account-scoped — the honest
- *  blast radius), which is why it is a HIGH-POWER standing credential: minted only at `up`,
- *  rate-limited + audited by its one caller (the delivery daemon), and its cid/server-id inputs come
- *  only from the observer's own CONNZ scan, never a user-facing API. Wildcard `*` over server id
- *  because a cluster's server ids aren't known at mint time; the scan pins the exact id per KICK. */
-function connectionEvictorPermissions(): Record<string, unknown> {
+/** The stored connection-evictor permission set. It is a DATA-account user that can publish exactly
+ *  one subject: this space's kick request. It cannot publish `$SYS.REQ.SERVER.*.KICK`, read CONNZ, or
+ *  reach another space. The checked holder is the only connection that publishes the raw kick, and
+ *  only after this space's unfiltered census still lists the connection. */
+function connectionEvictorPermissions(space: string): Record<string, unknown> {
   return {
-    pub: { allow: ["$SYS.REQ.SERVER.*.KICK"] },
-    // Request/reply KICK replies land on the client's default inbox; no other subscription — it
-    // serves nothing and reads no feed.
+    pub: { allow: [kickRequestSubject(space)] },
     sub: { allow: ["_INBOX.>"] },
   };
 }
 
-/** Mint the scoped `connection-evictor` creds — the kick-only SYSTEM-account user for live
- *  eviction. Same mint-only-at-provision property as the observer (the $SYS seed is in-memory
- *  only), same fail-loud when it's absent. Paired with the observer at `up`. */
+/** Mint the stored `connection-evictor` creds. The user belongs to the space's data account, so a
+ *  second space on the broker does not require a broker-wide system rotation to mint it. The
+ *  data-account signing seed is the signer. A copy can ask this space's holder to check one
+ *  connection. It cannot disconnect a connection the holder has not listed in this account. */
 export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
-  if (!auth.sys.signingSeed)
-    throw new Error(
-      "mintConnectionEvictorCreds: no in-memory system-account signing seed - the evictor can only be minted from a system account that is being (re)provisioned, because the trust record carries no $SYS seed. Rotate the system account to mint a fresh one (`cotal down` then `cotal up --rotate-sys`); a plain re-`up` reuses the existing account and its existing creds.",
-    );
-  const signer = nativeNkeySigner(new TextEncoder().encode(auth.sys.signingSeed));
-  // Bounded exp: `rotation-renewed`, same posture as the observer above.
+  if (!auth.account.signingSeed)
+    throw new Error("mintConnectionEvictorCreds: the data-account signing seed is required");
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed));
   const validDates = userValidDates("connection-evictor", opts);
   const userJwt = await encodeUser(
     "connection-evictor",
     fromPublic(identity.id),
-    fromPublic(auth.sys.pub),
-    connectionEvictorPermissions(),
+    fromPublic(auth.account.pub),
+    connectionEvictorPermissions(auth.space),
     { signer, ...validDates },
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);
+}
+
+/** The data-account user that listens for one space's kick requests. It subscribes to that one
+ *  subject and publishes nothing. The raw kick stays on a separate system user. */
+function kickRequestListenerPermissions(space: string): Record<string, unknown> {
+  return { pub: { allow: [] }, sub: { allow: [kickRequestSubject(space)] } };
+}
+
+/** Mint the listener for one space's kick request. Signed by the data account, so each space has
+ *  its own and a second space does not need a system rotation. */
+export async function mintKickRequestListenerCreds(auth: SpaceAuth, identity: Identity): Promise<string> {
+  if (!auth.account.signingSeed) throw new Error("mintKickRequestListenerCreds: the data-account signing seed is required");
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed));
+  const userJwt = await encodeUser(
+    "kick-request-listener", fromPublic(identity.id), fromPublic(auth.account.pub), kickRequestListenerPermissions(auth.space), { signer },
+  );
+  return new TextDecoder().decode(fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed))));
+}
+
+/** The system user that publishes the raw kick. It is held in memory by the kick holder and is
+ *  never written to the credential store. Its only publish is `$SYS.REQ.SERVER.*.KICK`. */
+export async function mintKickHolderCreds(auth: SpaceAuth, identity: Identity): Promise<string> {
+  if (!auth.sys.signingSeed) throw new Error("mintKickHolderCreds: the in-memory system-account signing seed is required");
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.sys.signingSeed));
+  const userJwt = await encodeUser(
+    "kick-holder", fromPublic(identity.id), fromPublic(auth.sys.pub),
+    { pub: { allow: ["$SYS.REQ.SERVER.*.KICK"] }, sub: { allow: ["_INBOX.>"] } },
+    { signer },
+  );
+  return new TextDecoder().decode(fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed))));
 }
 
 /**

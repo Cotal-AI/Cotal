@@ -173,18 +173,19 @@ export function observerTenancyProblem(observerCreds: string, expectedAccount: s
  * sit on a healthy path (`loadCheckedSys` runs per eviction), and eagerly building advice nobody
  * will read would put a directory listing on every successful call.
  */
-export function tornRotationProblem(observerCreds: string, evictorCreds: string, advice: () => string): string | undefined {
-  let obsIss: string | undefined, evIss: string | undefined;
+export function tornRotationProblem(observerCreds: string, evictorCreds: string, advice: () => string, expectedAccount?: string): string | undefined {
+  let obsIss: string | undefined, evictor: ReturnType<typeof credsClaims> | undefined;
   try {
     obsIss = credsClaims(observerCreds).iss;
-    evIss = credsClaims(evictorCreds).iss;
+    evictor = credsClaims(evictorCreds);
   } catch {
-    return undefined; // an undecodable cred is the health check's case, reported with its own message
+    return undefined;
   }
-  if (obsIss === undefined || evIss === undefined || obsIss === evIss) return undefined;
+  const allowed = evictor.nats?.pub?.allow ?? [];
+  if (expectedAccount && evictor.iss === expectedAccount && allowed.length === 1 && /^cotal\.[A-Za-z0-9_-]+\.ctl\.kick$/.test(allowed[0] ?? "")) return undefined;
+  if (obsIss !== undefined && evictor.iss === obsIss) return undefined;
   return (
-    `the two $SYS creds are signed by DIFFERENT system accounts (observer ${obsIss.slice(0, 12)}…, evictor ${evIss.slice(0, 12)}…) - ` +
-    `a system-account rotation did not finish, so one of them is broker-dead: ${advice()} to land a complete generation`
+    `the stored evictor is not this space's kick requester (issuer ${String(evictor.iss).slice(0, 12)}…, publish ${allowed.join(", ") || "none"}): ${advice()}`
   );
 }
 

@@ -125,14 +125,14 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     if (req.op === "evictPrincipal") {
       const result = await evictDeniedPrincipalWithCreds({
-        servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+        servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, space, principal,
       });
       return { ok: true, data: result };
     }
     if (req.op === "evictPrincipals") {
       const principals = (req.args as { principals?: string[] })?.principals ?? [];
       const result = await evictDeniedPrincipalsWithCreds({
-        servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
+        servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, space, principals,
       });
       return { ok: true, data: result };
     }

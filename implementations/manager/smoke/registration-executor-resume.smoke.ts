@@ -103,7 +103,7 @@ const startDaemon = async () => {
         await wait(7_000);
       }
       const principals = (req.args as { principals: string[] }).principals;
-      return { ok: true, data: await evictDeniedPrincipalsWithCreds({ servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principals }) };
+      return { ok: true, data: await evictDeniedPrincipalsWithCreds({ servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, space, principals }) };
     }
     if (req.op === "reloadStoreIdentity") {
       let holds = false;

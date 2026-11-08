@@ -195,6 +195,7 @@ try {
           observerCreds,
           evictorCreds,
           accountId: auth.account.pub,
+          space,
           principals,
         }),
       };
@@ -208,6 +209,7 @@ try {
         observerCreds,
         evictorCreds,
         accountId: auth.account.pub,
+        space,
         principal,
       }),
     };
@@ -734,7 +736,7 @@ try {
         return {
           ok: true,
           data: await evictDeniedPrincipalsWithCreds({
-            servers: broker.servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
+            servers: broker.servers, observerCreds, evictorCreds, accountId: auth.account.pub, space, principals,
           }),
         };
       }
@@ -743,7 +745,7 @@ try {
       return {
         ok: true,
         data: await evictDeniedPrincipalWithCreds({
-          servers: broker.servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+          servers: broker.servers, observerCreds, evictorCreds, accountId: auth.account.pub, space, principal,
         }),
       };
     };

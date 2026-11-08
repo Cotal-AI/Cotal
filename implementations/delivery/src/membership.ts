@@ -101,7 +101,7 @@ export async function startMembership(
   // "Authorization Violation" either way. Shared with the eviction path as of this change — it used
   // to live only here, which left eviction opening a half-rotated pair blind.
   if (sys.evictor !== undefined) {
-    const torn = tornRotationProblem(obsCreds, sys.evictor, () => repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]));
+    const torn = tornRotationProblem(obsCreds, sys.evictor, () => repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND]), opts.accountId);
     if (torn) {
       log.err(`! membership: ${torn}; graph membership degraded, delivery unaffected`);
       return { down: torn };

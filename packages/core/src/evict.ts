@@ -35,7 +35,7 @@ import { fromPublic } from "@nats-io/nkeys";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
 import { credsClaims, isAccountNkey, isUserNkey } from "./identity.js";
-import { accountCensusInboxPrefix, connzRequestSubject, isPrincipalOwnerToken, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
+import { accountCensusInboxPrefix, connzRequestSubject, isPrincipalOwnerToken, kickRequestSubject, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const MAX_PAGES = 64; // fan-out pagination guard (mirrors the membership feed's under-report ceiling)
@@ -46,6 +46,10 @@ interface LiveConn {
   cid: number;
   serverId: string;
   principal: string;
+  /** The space whose checked holder may publish the raw kick for this connection. */
+  space: string;
+  /** The account whose unfiltered CONNZ page listed this connection. */
+  accountId: string;
 }
 
 interface ConnzConn {
@@ -88,6 +92,8 @@ export interface EvictionResult {
 /** Options bounding the scan→kick→re-scan loop. Defaults suit a local single-server broker; the
  *  cluster case widens the settle window. */
 export interface EvictOptions {
+  /** The space whose checked holder serves `accountId`. */
+  space?: string;
   /** How many verify re-scans to attempt before reporting `remaining` (default 3). */
   maxVerifyRounds?: number;
   /** Per-CONNZ-round settle window in ms after the last reply (default 250). */
@@ -105,6 +111,7 @@ export interface EvictOptions {
 async function scanLive(
   observerConn: NatsConnection,
   accountId: string,
+  space: string,
   opts: Required<Pick<EvictOptions, "settleMs" | "maxWaitMs" | "pageLimit">>,
 ): Promise<{ conns: LiveConn[]; complete: boolean }> {
   const conns: LiveConn[] = [];
@@ -145,7 +152,7 @@ async function scanLive(
           unroutable = true;
           continue;
         }
-        conns.push({ cid: c.cid, serverId, principal });
+        conns.push({ cid: c.cid, serverId, principal, space, accountId });
       }
       const total = r.data?.total ?? 0;
       // Same progress rule as `livenessSweep`: answering is not delivering (see there).
@@ -213,14 +220,16 @@ function connzRound(
   });
 }
 
-/** KICK one connection by cid on the server that reported it. No per-cid ack from the broker; the
- *  caller's re-scan is the verification. A publish/permission failure is surfaced (thrown up), so a
- *  mis-scoped evictor cred fails loud rather than silently not-kicking. */
+/** KICK one connection by asking this space's checked holder. The stored connection cannot publish
+ *  the raw kick. The holder reads the unfiltered account census and publishes only when that page
+ *  still lists this exact server, cid and account. A missing holder, a refused check, or a broker
+ *  error is surfaced. The caller's re-scan is the verification. */
 async function kick(evictorConn: NatsConnection, conn: LiveConn): Promise<void> {
-  // Request/reply so a broker-side error (bad permissions, unknown server) surfaces rather than a
-  // fire-and-forget publish that a mis-scoped cred would swallow. The ServerAPIResponse `data` is
-  // empty on success; we don't parse it (re-scan verifies) but DO honor an `error` field.
-  const res = await evictorConn.request(serverKickSubject(conn.serverId), enc(JSON.stringify({ cid: conn.cid })), { timeout: 2000 });
+  const res = await evictorConn.request(
+    kickRequestSubject(conn.space),
+    enc(JSON.stringify({ serverId: conn.serverId, cid: conn.cid })),
+    { timeout: 2000 },
+  );
   const body = res.json<{ error?: { description?: string } }>();
   if (body?.error) throw new Error(`KICK cid ${conn.cid} on ${conn.serverId} refused: ${body.error.description ?? "unknown"}`);
 }
@@ -274,6 +283,8 @@ export async function evictDeniedPrincipals(
     maxWaitMs: options.maxWaitMs ?? 2000,
     pageLimit: options.pageLimit ?? 1024,
   };
+  if (!options.space) throw new Error("evictDeniedPrincipals: the space whose kick holder serves this account is required");
+  const space = options.space;
   const set = [...new Set(principals)];
   if (set.length > EVICT_PRINCIPALS_MAX)
     throw new Error(`evictDeniedPrincipals: ${set.length} principals exceed the ${EVICT_PRINCIPALS_MAX}-principal sweep bound; send them in chunks`);
@@ -285,7 +296,7 @@ export async function evictDeniedPrincipals(
     return m;
   };
 
-  const first = await scanLive(observerConn, accountId, opts);
+  const first = await scanLive(observerConn, accountId, space, opts);
   if (!first.complete) {
     for (const p of set)
       out.set(p, { principal: p, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note: "CONNZ scan under-reported (no responder or truncated) - eviction UNKNOWN, not attempted" });
@@ -322,7 +333,7 @@ export async function evictDeniedPrincipals(
   // Verify by re-scan — a client kicked before deny-new fully propagates can reconnect with a fresh
   // cid, so loop until every principal is gone or the rounds run out (never one snapshot).
   for (let round = 0; round < opts.maxVerifyRounds && pending.size > 0; round++) {
-    const rescan = await scanLive(observerConn, accountId, opts);
+    const rescan = await scanLive(observerConn, accountId, space, opts);
     if (!rescan.complete) {
       for (const [p, st] of pending)
         out.set(p, { principal: p, kicked: st.kicked, remaining: 0, verifiedGone: false, scanComplete: false, note: st.note ?? "verify re-scan under-reported - eviction UNKNOWN" });
@@ -865,6 +876,8 @@ export async function evictDeniedPrincipalWithCreds(opts: {
   /** Loaded only after a complete scan finds a live match. Wins over `evictorCreds` when both are set. */
   openEvictor?: () => Promise<string>;
   accountId: string;
+  /** The space whose checked holder serves `accountId`. */
+  space: string;
   principal: string;
   options?: EvictOptions;
 }): Promise<EvictionResult> {
@@ -881,6 +894,8 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
   /** Loaded only after a complete scan finds a live match. Wins over `evictorCreds` when both are set. */
   openEvictor?: () => Promise<string>;
   accountId: string;
+  /** The space whose checked holder serves `accountId`. */
+  space: string;
   principals: readonly string[];
   options?: EvictOptions;
 }): Promise<EvictionResult[]> {
@@ -903,9 +918,61 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
         maxReconnectAttempts: 0,
       });
       return evictor;
-    }, opts.accountId, opts.principals, opts.options ?? {});
+    }, opts.accountId, opts.principals, { ...opts.options, space: opts.space });
   } finally {
     if (evictor) await evictor.drain().catch(() => {});
     await observer.drain().catch(() => {});
   }
+}
+
+/** One space's checked kick holder. It is the only connection that publishes the raw kick. */
+export interface KickHolder {
+  close(): Promise<void>;
+}
+
+/** Serve one space's kick requests.
+ *
+ *  `kicker` is a system user that can publish the raw kick and nothing else. `census` can read this
+ *  account's unfiltered CONNZ page and nothing else. A request names a server and a connection id.
+ *  The holder reads the unfiltered page and publishes only when that page is complete and still
+ *  lists that exact server, connection and account. A filtered census is not accepted: a connection
+ *  id filter returns a foreign account's connection. The stored evictor never receives either of
+ *  these credentials. */
+export async function serveKickHolder(opts: {
+  /** Data-account user. Subscribe to this space's kick request only. */
+  requests: NatsConnection;
+  /** System user. Publish `$SYS.REQ.SERVER.*.KICK` only. */
+  kicker: NatsConnection;
+  /** System user. Read this account's unfiltered CONNZ page only. */
+  census: NatsConnection;
+  accountId: string;
+  space: string;
+  bounds?: Pick<EvictOptions, "settleMs" | "maxWaitMs" | "pageLimit">;
+}): Promise<KickHolder> {
+  const bounds = { settleMs: opts.bounds?.settleMs ?? 250, maxWaitMs: opts.bounds?.maxWaitMs ?? 2000, pageLimit: opts.bounds?.pageLimit ?? 1024 };
+  const sub = opts.requests.subscribe(kickRequestSubject(opts.space), {
+    callback: (err, msg) => {
+      if (err) return;
+      void (async () => {
+        let body: { serverId?: unknown; cid?: unknown };
+        try { body = msg.json(); } catch { msg.respond(enc(JSON.stringify({ error: { description: "kick request is not json" } }))); return; }
+        const serverId = body.serverId, cid = body.cid;
+        if (typeof serverId !== "string" || serverId.length === 0 || serverId.length > 128 || !Number.isSafeInteger(cid) || (cid as number) <= 0) {
+          msg.respond(enc(JSON.stringify({ error: { description: "kick request requires a server and a connection id" } })));
+          return;
+        }
+        const page = await scanLive(opts.census, opts.accountId, opts.space, bounds);
+        const listed = page.complete && page.conns.some((row) => row.serverId === serverId && row.cid === cid && row.accountId === opts.accountId);
+        if (!listed) {
+          msg.respond(enc(JSON.stringify({ error: { description: `connection ${cid} on ${serverId} is not listed by account ${opts.accountId}` } })));
+          return;
+        }
+        const kicked = await opts.kicker.request(serverKickSubject(serverId), enc(JSON.stringify({ cid })), { timeout: bounds.maxWaitMs });
+        msg.respond(kicked.data);
+      })().catch((e: unknown) => {
+        try { msg.respond(enc(JSON.stringify({ error: { description: e instanceof Error ? e.message : String(e) } }))); } catch { /* requester gone */ }
+      });
+    },
+  });
+  return { close: async () => { sub.unsubscribe(); } };
 }

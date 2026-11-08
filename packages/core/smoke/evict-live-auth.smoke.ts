@@ -32,10 +32,10 @@ import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  mintMembershipObserverCreds, mintConnectionEvictorCreds,
+  mintMembershipObserverCreds, mintConnectionEvictorCreds, mintKickHolderCreds, mintKickRequestListenerCreds,
   principalKey, MEMBERSHIP_INBOX_PREFIX,
 } from "../src/index.js";
-import { evictDeniedPrincipal, observePlaneLiveness, type PlaneConnTuple } from "../src/evict.js";
+import { evictDeniedPrincipal, observePlaneLiveness, serveKickHolder, type PlaneConnTuple } from "../src/evict.js";
 import {
   createCalloutAuth, startAuthCallout, calloutPermissions,
   createUserTokenIssuer, generateSigningKey,
@@ -54,7 +54,6 @@ const until = async (cond: () => boolean, ms = 2500): Promise<boolean> => {
   return cond();
 };
 // Tighter scan windows than the module defaults keep every eviction round snappy (total < 40s).
-const EVICT_OPTS = { maxWaitMs: 1500, settleMs: 200, maxVerifyRounds: 3 } as const;
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -64,6 +63,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 // ---------- a real operator-mode broker with the callout account preloaded ----------
 const space = `evictlive-${randomUUID().slice(0, 8)}`;
+const EVICT_OPTS = { space, maxWaitMs: 1500, settleMs: 200, maxVerifyRounds: 3 } as const;
 const auth = await createSpaceAuth(space);
 // Mint the two SYSTEM-account creds NOW, from the fresh auth — the in-memory `$SYS` signing seed is the
 // only window in which they can be minted (mintMembershipObserverCreds/mintConnectionEvictorCreds throw
@@ -102,7 +102,9 @@ const issuer = createUserTokenIssuer({ issuer: ISS, key: await generateSigningKe
 const bearerP = await issuer.issue({ owner: ownerU, space, actor: "victim", scope: [], lifecycleUid: victimRow.lifecycleUid, ttlSec: 300 });
 
 let calloutNc: NatsConnection | undefined, observerNc: NatsConnection | undefined,
-  evictorNc: NatsConnection | undefined, ncP: NatsConnection | undefined;
+  evictorNc: NatsConnection | undefined, ncP: NatsConnection | undefined,
+  listenerNc: NatsConnection | undefined, holderNc: NatsConnection | undefined,
+  holder: { close(): Promise<void> } | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -136,6 +138,9 @@ try {
   evictorNc = await connect({
     servers: SERVERS, authenticator: credsAuthenticator(enc(evictorCreds)), maxReconnectAttempts: 0,
   });
+  listenerNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(await mintKickRequestListenerCreds(auth, newIdentity()))), maxReconnectAttempts: 0 });
+  holderNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(await mintKickHolderCreds(auth, newIdentity()))), maxReconnectAttempts: 0 });
+  holder = await serveKickHolder({ requests: listenerNc, kicker: holderNc, census: observerNc, accountId: auth.account.pub, space });
   check(
     "membership-observer + connection-evictor sys creds mint and both connect (authorized)",
     observerCreds.length > 0 && evictorCreds.length > 0 && !observerNc.isClosed() && !evictorNc.isClosed(),
@@ -393,7 +398,7 @@ try {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
-  for (const nc of [ncP, observerNc, evictorNc, calloutNc]) { try { await nc?.close(); } catch { /* */ } }
+  for (const nc of [ncP, observerNc, evictorNc, calloutNc, listenerNc, holderNc]) { try { await holder?.close(); await nc?.close(); } catch { /* */ } }
   srv.kill("SIGKILL"); // exact PID — never pkill nats-server
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
