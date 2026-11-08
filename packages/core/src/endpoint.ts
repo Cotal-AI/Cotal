@@ -824,6 +824,8 @@ export class CotalEndpoint extends EventEmitter {
    *  refusal to the refused subscription's callback and then dispatches that same instance on the
    *  connection status, so the callback owns it (see {@link subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
+  /** Service iterators and connection status can receive the same subscription denial. */
+  private readonly reportedSubRefusals = new WeakSet<PermissionViolationError>();
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
    *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
@@ -2814,7 +2816,9 @@ export class CotalEndpoint extends EventEmitter {
         if (own) void answer().catch((e) => this.emit("error", e as Error));
         else inOrder = inOrder.then(answer).catch((e) => { this.emit("error", e as Error); });
       }
-    })().catch((e) => this.emit("error", e as Error));
+    })().catch((e) => {
+      if (!this.reportSubscriptionDenial(e)) this.emit("error", e as Error);
+    });
     return sub;
   }
 
@@ -4826,7 +4830,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
           && this.isOwnWatchDelete(s.error.subject))
           continue;
-        this.emit("error", describeStatusError(s.error));
+        if (!this.reportSubscriptionDenial(s.error)) this.emit("error", describeStatusError(s.error));
       }
     })().catch((e) => {
       // Defensive symmetry with the reachable in-loop epoch guard above. Measured against five real
@@ -4845,6 +4849,16 @@ export class CotalEndpoint extends EventEmitter {
     // through a real pending dial, a stopped endpoint announced a live transport it never had.
     if (this.stopped) return;
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
+  }
+
+  /** Report a subscription denial once by error identity, whichever reporting path receives it first. */
+  private reportSubscriptionDenial(error: unknown): boolean {
+    if (!(error instanceof PermissionViolationError) || error.operation !== "subscription") return false;
+    if (!this.reportedSubRefusals.has(error)) {
+      this.reportedSubRefusals.add(error);
+      this.emit("error", describeStatusError(error));
+    }
+    return true;
   }
 
   /** Wrap `nc.request` to record each publish denial nats.js rejects one of this connection's requests
