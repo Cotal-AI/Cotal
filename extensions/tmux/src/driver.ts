@@ -38,17 +38,20 @@ export function currentSession(): string {
   }
 }
 
+/** True when `session` exists. A session tmux cannot find, and a server that is not running, are absent.
+ *  Every other failure throws: a missing socket or a refused query is not a session to create. */
 function hasSession(session: string): boolean {
   try {
-    execFileSync("tmux", ["-u", "has-session", "-t", session], { stdio: "ignore" });
+    execFileSync("tmux", ["-u", "has-session", "-t", session], { stdio: ["ignore", "ignore", "pipe"] });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (sessionAbsent(err) || noServer(err)) return false;
+    throw new Error(`tmux: couldn't check session ${session}: ${failureText(err)}`, { cause: err });
   }
 }
 
 /** Ensure a detached tmux session exists; creates it if absent. A detached session has no client
- *  to size it, and some tmux builds then treat its window as sizeless — so `split-window` fails
+ *  to size it, and some tmux builds then treat its window as sizeless, so `split-window` fails
  *  with "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
 export function ensureSession(session: string, cwd: string): void {
   if (hasSession(session)) return;
@@ -80,6 +83,12 @@ export function windowAliveRef(windowId: string): boolean {
  *  start of stderr counts. A missing socket or an unsafe socket directory is a failed call. */
 function noServer(err: unknown): boolean {
   return String((err as { stderr?: unknown }).stderr ?? "").startsWith("no server running on ");
+}
+
+/** True when tmux itself reports that a session does not exist. tmux says `can't find session: <name>`,
+ *  and the socket path or the name may itself hold those words, so only the start of stderr counts. */
+function sessionAbsent(err: unknown): boolean {
+  return /^can't find session: /.test(String((err as { stderr?: unknown }).stderr ?? ""));
 }
 
 /** A failed tmux call's text: tmux's stderr, then Node's message, which names the command. */

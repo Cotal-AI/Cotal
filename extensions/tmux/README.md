@@ -38,8 +38,10 @@ import.
 
 Session-name, pane-capture, session-creation, window-selection and text/key delivery failures
 name the operation, include tmux's error text and retain the failed call as `cause`.
+A session is created only when tmux reports that it does not exist, or that no server is running.
+A failed session check, such as a missing socket, throws instead of starting another server.
 A failed capture returns no screen only when the pane's exit is confirmed. A failed exit probe
-still throws. Runtime spawn refusals also carry the session-creation reason.
+still throws. A runtime spawn that cannot check or create its session carries that failure.
 
 The package tests include native write controls on a fresh private socket when tmux is installed.
 They check failure diagnostics, successful delivery and the server-identity fence without using

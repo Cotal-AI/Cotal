@@ -1,6 +1,6 @@
 /** Native write diagnostics on a fresh private tmux socket; no model or operator session. */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as tmux from "./dist/driver.js";
@@ -58,6 +58,24 @@ try {
   tmux.ensureSession(session, root);
   tmux.ensureSession(session, root);
   check("ensureSession preserves an existing session", tmux.serverPid() === server);
+
+  const moved = `${socket}.moved`;
+  renameSync(socket, moved);
+  try {
+    const direct = spawnSync("tmux", ["-u", "has-session", "-t", session], { encoding: "utf8" });
+    check("a moved socket makes has-session fail to connect", direct.status === 1 && direct.stderr.startsWith("error connecting to "));
+    const missed = caught(() => tmux.ensureSession(session, root));
+    check("ensureSession names the failed session check and keeps its cause",
+      missed !== undefined && missed.message.startsWith(`tmux: couldn't check session ${session}:`) && missed.message.includes(direct.stderr.trim()));
+    const cause = missed?.cause as { status?: number; stderr?: unknown } | undefined;
+    check("the failed session check retains the original call", cause?.status === direct.status && String(cause?.stderr) === direct.stderr);
+    check("a failed session check starts no server on the original socket", !existsSync(socket));
+    check("the first server still answers through the moved socket",
+      native(["-S", moved, "display-message", "-p", "#{pid}"]) === server);
+  } finally {
+    renameSync(moved, socket);
+  }
+  check("the original server answers again once its socket is back", tmux.serverPid() === server);
 
   failure("selectWindow", ["select-window", "-t", "@999999"], () => tmux.selectWindow("@999999"), "select window @999999", "can't find window");
   failure("send", ["send-keys", "-l", "-t", "%999999", "--", "probe"], () => tmux.send("probe", "%999999"), "send text to %999999", "can't find pane");
@@ -154,10 +172,10 @@ try {
   chmodSync(socketDir, 0o777);
   process.env.TMUX_TMPDIR = unsafe;
   try {
-    failure("ensureSession", ["new-session", "-d", "-s", "refused", "-x", "200", "-y", "50", "-c", root],
-      () => tmux.ensureSession("refused", root), "create session refused", "unsafe permissions");
+    failure("ensureSession", ["has-session", "-t", "refused"],
+      () => tmux.ensureSession("refused", root), "check session refused", "unsafe permissions");
     const refused = caught(() => new TmuxRuntime("refused").spawn("probe", { command: "/bin/true", args: [] }, root));
-    check("runtime SpawnRefused retains the native creation reason", refused instanceof SpawnRefused && refused.message.includes("unsafe permissions"));
+    check("runtime SpawnRefused retains the native session-check reason", refused instanceof SpawnRefused && refused.message.includes("unsafe permissions"));
   } finally {
     chmodSync(socketDir, 0o700);
     process.env.TMUX_TMPDIR = root;
