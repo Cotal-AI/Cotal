@@ -77,6 +77,21 @@ try {
   }
   check("the original server answers again once its socket is back", tmux.serverPid() === server);
 
+  const fresh = join(root, "fresh");
+  mkdirSync(fresh, { mode: 0o700 });
+  process.env.TMUX_TMPDIR = fresh;
+  try {
+    const direct = spawnSync("tmux", ["-u", "has-session", "-t", "first"], { encoding: "utf8" });
+    check("a fresh socket directory cannot connect before its first server", direct.status === 1 && direct.stderr.startsWith("error connecting to "));
+    tmux.ensureSession("first", root);
+    const created = native(["display-message", "-p", "#{socket_path}\t#{pid}\t#{session_name}"]).split("\t");
+    check("a fresh socket directory gets its first session", created[0]?.startsWith(`${fresh}/`) && created[2] === "first");
+    native(["-S", created[0]!, "kill-server"]);
+    check("the fresh server stopped", await waitFor(() => spawnSync("tmux", ["-S", created[0]!], { stdio: "ignore" }).status !== 0));
+  } finally {
+    process.env.TMUX_TMPDIR = root;
+  }
+
   failure("selectWindow", ["select-window", "-t", "@999999"], () => tmux.selectWindow("@999999"), "select window @999999", "can't find window");
   failure("send", ["send-keys", "-l", "-t", "%999999", "--", "probe"], () => tmux.send("probe", "%999999"), "send text to %999999", "can't find pane");
   failure("sendKey", ["send-keys", "-t", "%999999", "--", "Enter"], () => tmux.sendKey("Enter", "%999999"), "send key to %999999", "can't find pane");

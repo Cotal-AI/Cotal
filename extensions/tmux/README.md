@@ -38,8 +38,8 @@ import.
 
 Session-name, pane-capture, session-creation, window-selection and text/key delivery failures
 name the operation, include tmux's error text and retain the failed call as `cause`.
-A session is created only when tmux reports that it does not exist, or that no server is running.
-A failed session check, such as a missing socket, throws instead of starting another server.
+A session is created only when tmux reports that it does not exist, that no server is running, or that it cannot connect because nothing is listening there.
+A failed session check throws instead of starting another server. A socket directory that has never had a server is absent, and the session is created there. A socket that was moved while its server kept listening is a failed check.
 A failed capture returns no screen only when the pane's exit is confirmed. A failed exit probe
 still throws. A runtime spawn that cannot check or create its session carries that failure.
 

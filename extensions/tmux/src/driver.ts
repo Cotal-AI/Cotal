@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -78,11 +78,24 @@ export function windowAliveRef(windowId: string): boolean {
   return windowLines("#{window_id}").includes(windowId);
 }
 
-/** True when a tmux call failed because no server is listening on its socket. tmux reports that
- *  as `no server running on <socket>`, and the socket path may itself hold those words, so only the
- *  start of stderr counts. A missing socket or an unsafe socket directory is a failed call. */
+/** True when a tmux call failed because no server is listening on its socket. tmux reports a server
+ *  that has never started, and a server whose socket file remains after it exited, as
+ *  `no server running on <socket>`. A socket directory that exists before the first server answers
+ *  `error connecting to <socket> (No such file or directory)`. The same words follow a socket that was
+ *  moved while its server kept listening, so that report counts only when nothing is listening at
+ *  the named path. The socket path may itself hold either phrase, so only the start of stderr counts.
+ *  An unsafe socket directory is a failed call. */
 function noServer(err: unknown): boolean {
-  return String((err as { stderr?: unknown }).stderr ?? "").startsWith("no server running on ");
+  const text = String((err as { stderr?: unknown }).stderr ?? "");
+  if (text.startsWith("no server running on ")) return true;
+  const match = /^error connecting to (.*) \(No such file or directory\)\n$/.exec(text);
+  return match !== null && !socketListening(match[1]!);
+}
+
+/** True when the kernel lists a unix socket listening at `socket`. A server whose socket file was
+ *  moved keeps its listener under the original name, so the name outlives the file. */
+function socketListening(socket: string): boolean {
+  return readFileSync("/proc/net/unix", "utf8").split("\n").slice(1).some((row) => row.split(" ").at(-1) === socket);
 }
 
 /** True when tmux itself reports that a session does not exist. tmux says `can't find session: <name>`,
