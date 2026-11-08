@@ -18,6 +18,7 @@ cotal space add <name> --server <url> [--root <dir>] [--mode auth|open] [--tls] 
 cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root <dir>] [--server <url>] [--force] [-y|--yes]
 cotal space create <name> [--root <dir>] [--adopt]
 cotal space forget <name>
+cotal space export <name> --out <private-file> [--json|--plain]
 cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]
 cotal use [<space> | --clear] [--json|--plain]
 ```
@@ -90,6 +91,29 @@ its mode was not checked: `space` and `space show` show the mode as not checked,
 `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
 
+
+### Connection bundle export
+
+`space export <name> --out <private-file>` copies a registered remote user-auth space's
+connection bundle. It preserves the recorded server, TLS requirement, IdP and exchange pins,
+provisioning and Manager-authority URLs, and required-events policy. The existing sentinel
+credential comes from that space's private custody directory, including when a discovered
+space's project root is bound elsewhere. It must parse as a user credential whose declared
+permissions deny all publish and subscribe subjects and carry no response grant. These local
+checks do not verify its issuer signature or current broker admission. Local paths and catalog
+account metadata are omitted.
+
+The output passes the same bundle validator as `space add --file`. Export reads local state;
+it does not refresh a catalog, contact a broker, issue a credential or verify current access.
+The receiving user still needs their own sign-in and current space grant. Legacy custody that
+needs migration refuses without moving it. Open, static-auth and locally hosted registrations
+refuse this command. It never substitutes an account signer.
+
+The output parent must already exist and pass the protected-directory checks. Managed `.cotal`
+and workstation state are forbidden destinations. Publication creates a private file and
+refuses every existing path, including a symlink; there is no overwrite flag. Unconfirmed
+publication is reported as unknown and is not retried. Reports name the space and output path,
+never the bundle, sentinel, login token or signing material. Keep the exported file private.
 
 ### Local preparation
 
