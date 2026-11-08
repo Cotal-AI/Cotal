@@ -1644,7 +1644,8 @@ export function permissionsFor(
     `$JS.API.CONSUMER.INFO.${KV}.>`,
     // No CONSUMER.DELETE here or on the registry below: the watch's `oc_<nuid>_<serial>` name
     // cannot be pinned, and a stream-wide delete reaches every peer's watch cursor (#691). A
-    // rebuild's refused predecessor delete leaves that consumer to the broker's inactive threshold.
+    // rebuild's predecessor delete is not published under these claims (#4123), and the consumer
+    // stays until the broker's inactive threshold.
     "$JS.FC.>",
     presenceKeySubject(space, pr.owner, pr.actor), // own presence key (owner+actor) only — can't spoof peers
     // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
