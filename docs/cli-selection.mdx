@@ -105,8 +105,9 @@ account metadata are omitted.
 
 The output passes the same bundle validator as `space add --file`. Export reads local state;
 it does not refresh a catalog, contact a broker, issue a credential or verify current access.
-The receiving user still needs their own sign-in and current space grant. Open, static-auth
-and locally hosted registrations refuse this command. It never substitutes an account signer.
+The receiving user still needs their own sign-in and current space grant. Legacy custody that
+needs migration refuses without moving it. Open, static-auth and locally hosted registrations
+refuse this command. It never substitutes an account signer.
 
 The output parent must already exist and pass the protected-directory checks. Managed `.cotal`
 and workstation state are forbidden destinations. Publication creates a private file and

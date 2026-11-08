@@ -3,9 +3,9 @@
  * Private generated credentials remain in the printed fixture directory for scoped cleanup. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "space-export-"));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
@@ -14,7 +14,7 @@ const { createSpaceAuth } = await import("@cotal-ai/core");
 const { composeUserBundle, createCalloutAuth, finalizeUserBundleEndpoint } = await import("@cotal-ai/auth");
 const { checkBundleDocument, findMesh, recordMesh } = await import("@cotal-ai/workspace");
 const { remoteUserEntry } = await import("../src/commands/meshes-add.js");
-const bin = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+const bin = process.env.SPACE_EXPORT_CLI ?? join(import.meta.dirname, "../../../bin/dist/cotal.js");
 assert.ok(existsSync(bin), "build the CLI before this suite");
 const root = join(home, "project"), output = join(home, "exports");
 for (const dir of [root, output]) mkdirSync(dir, { mode: 0o700 });
@@ -73,6 +73,10 @@ const local = run(["space", "export", "exported", "--out", join(output, "local.j
 check("local auth without a remote connection contract refuses", local.status === 2 && local.report?.error?.code === "UNSUPPORTED");
 recordMesh(original);
 const sentinel = original.userAuth!.sentinelCredsPath!;
+renameSync(sentinel, sentinel + ".held");
+const missingSentinel = run(["space", "export", "exported", "--out", join(output, "missing-sentinel.json"), "--json"]);
+check("missing sentinel refuses without output", missingSentinel.status === 2 && missingSentinel.report?.error?.code === "TARGET_NOT_FOUND" && !existsSync(join(output, "missing-sentinel.json")));
+renameSync(sentinel + ".held", sentinel);
 writeFileSync(sentinel, "not a credential", { mode: 0o600 });
 const malformed = run(["space", "export", "exported", "--out", join(output, "malformed.json"), "--json"]);
 check("malformed sentinel refuses without output", malformed.status === 1 && malformed.report?.error?.code === "SCHEMA_INVALID" && !existsSync(join(output, "malformed.json")));
@@ -89,6 +93,9 @@ if (process.platform !== "win32") {
 recordMesh({ ...original, userAuth: { ...original.userAuth!, sentinelCredsPath: file } });
 const foreign = run(["space", "export", "exported", "--out", join(output, "foreign.json"), "--json"]);
 check("sentinel outside selected-space custody refuses", foreign.status === 1 && foreign.report?.error?.code === "SCHEMA_INVALID" && !existsSync(join(output, "foreign.json")));
+recordMesh({ ...original, origin: "catalog", catalogOwner: "fixture-account", catalogRoot: root });
+const unbound = run(["space", "export", "exported", "--out", join(output, "unbound-catalog.json"), "--json"]);
+check("unbound catalog exports its existing connection snapshot", unbound.status === 0 && readFileSync(join(output, "unbound-catalog.json"), "utf8") === written);
 const project = join(home, "bound-project"); mkdirSync(project, { mode: 0o700 });
 recordMesh({ ...original, origin: "catalog", catalogOwner: "fixture-account", catalogRoot: root, root: project });
 const catalog = run(["space", "export", "exported", "--out", join(output, "catalog.json"), "--json"]);
@@ -97,6 +104,12 @@ const plain = run(["space", "export", "exported", "--out", join(output, "plain.j
 check("plain receipt names the output", plain.status === 0 && plain.stdout.includes(join(output, "plain.json")));
 const help = run(["space", "export", "--help"]);
 check("command help advertises required private output", help.status === 0 && help.stdout.includes("--out"));
+const canonical = dirname(sentinel), legacy = join(dirname(canonical), "exported");
+writeFileSync(join(canonical, "idp.json"), JSON.stringify(original.userAuth!.idp), { mode: 0o600 });
+renameSync(canonical, legacy);
+recordMesh({ ...original, userAuth: { ...original.userAuth!, sentinelCredsPath: join(legacy, "sentinel.creds") } });
+const oldLayout = run(["space", "export", "exported", "--out", join(output, "legacy.json"), "--json"]);
+check("legacy custody refuses without migrating or publishing", oldLayout.status === 2 && oldLayout.report?.error?.code === "LIFECYCLE_BLOCKED" && existsSync(legacy) && !existsSync(canonical) && !existsSync(join(output, "legacy.json")));
 console.log(`space-export: ${ran - failed} passed, ${failed} failed; fixture ${home}`);
-assert.equal(ran, process.platform === "win32" ? 35 : 37, "the suite ran every named check");
+assert.equal(ran, process.platform === "win32" ? 41 : 43, "the suite ran every named check");
 assert.equal(failed, 0);

@@ -29,7 +29,7 @@ export function spaceExport(rest: readonly string[], out: string | undefined, pr
   const auth = entry.mode === "user" ? entry.userAuth : undefined;
   if (!auth || auth.remote !== true)
     throw new CommandFailure("refused", "UNSUPPORTED", "space export requires a registered remote user-auth space; no signing authority is exported", { target: { space: name } });
-  const custody = userAuthStateDir(entry.catalogRoot ?? entry.root, name);
+  const custody = userAuthStateDir(entry.catalogRoot ?? entry.root, name, { readOnly: true });
   const source = auth.sentinelCredsPath;
   if (!source || !resolve(source).startsWith(resolve(custody) + sep))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the registered sentinel is not bound to this space's credential custody; nothing was exported");
