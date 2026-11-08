@@ -92,6 +92,7 @@ function rotationRefusal(root: string): string | undefined {
  *  pass it as a THUNK: it is built only on a path that has already failed, never on a healthy one. */
 export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): string {
   const named = kinds.length ? kinds.join(" + ") : "the $SYS pair";
+  const observerOnly = kinds.length > 0 && kinds.every((kind) => kind === MEMBERSHIP_OBSERVER_CREDS_KIND);
   // The hosted arm names a KEY to `put` under, so it must name the SEGMENTED one — the kind alone is
   // the pre-P7 key and putting there would leave the daemon still reading an empty location. The
   // workstation arm names a command, not a key, so it keeps the kinds an operator recognises.
@@ -102,6 +103,7 @@ export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): 
     }`;
   const refusal = rotationRefusal(source.root);
   if (refusal === undefined) return "re-mint it with `cotal down` then `cotal up --rotate-sys`";
+  if (!observerOnly) return `${refusal}. \`cotal up --space <space>\` mints a missing connection-evictor.creds from this space's persisted account signing seed; membership-observer.creds still needs the system-account rotation named above`;
   return (
     `${refusal}. There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +
     "so nothing re-signs it on this root until per-space segmentation lands"

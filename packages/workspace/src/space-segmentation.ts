@@ -90,13 +90,11 @@ export const WEB_CREDS_KIND = "web.creds";
  *  cred renewable. See `docs/design/u3-membership-sys-injection.md` §2. */
 export const MEMBERSHIP_OBSERVER_CREDS_KIND = "membership-observer.creds";
 
-/** The `$SYS` KICK-only evictor's kind — the write half of live eviction, paired with
- *  {@link MEMBERSHIP_OBSERVER_CREDS_KIND} by one rotation and read per call.
- *
- *  Same `rotation-renewed` posture and the same non-membership of `REMINTABLE_DAEMON_CREDS`. Its
- *  permission (`$SYS.REQ.SERVER.*.KICK`) carries NO account, so unlike the observer it cannot be
- *  tenancy-checked from its own JWT; its containment is that every cid it is handed comes from the
- *  observer's account-scoped scan. Keep the two spelled together for that reason. */
+/** The stored kick requester's kind. It publishes `cotal.<space>.ctl.kick` and nothing else, and the
+ *  data-account signing seed signs it. `cotal up` heals a missing one on every space. It stays out of
+ *  `REMINTABLE_DAEMON_CREDS`: renewal replaces an existing credential for the same user, and a missing
+ *  one is the heal's job. The raw `$SYS.REQ.SERVER.*.KICK` user is minted in memory by the delivery
+ *  daemon and is never this file. */
 export const CONNECTION_EVICTOR_CREDS_KIND = "connection-evictor.creds";
 
 /** The DATA account id the CONNZ/event subjects pin — non-secret, but kept 0600 beside the creds.

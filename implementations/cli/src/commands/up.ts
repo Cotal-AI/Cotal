@@ -128,6 +128,7 @@ import {
   writeResult,
   type Report,
   connectionEvictorCredsKey,
+  CONNECTION_EVICTOR_CREDS_KIND,
   membershipConfigPath,
   membershipObserverCredsKey,
   membershipRwCredsKey,
@@ -5692,11 +5693,12 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
  *
  *  WHY THIS IS SEPARATE FROM {@link provisionMembershipCreds}. That function mints the whole bundle
  *  in the fresh-space branch because the `$SYS` signing seed exists only there and is never
- *  persisted — true of `membership-observer.creds` and `connection-evictor.creds`, and the reason
- *  they can only be re-minted by a system-account rotation. It is NOT true of the other two.
+ *  persisted. That is true of `membership-observer.creds`, and a system-account rotation remains
+ *  its only re-mint. It is not true of the other three.
  *  `membership-rw.creds` is signed by the DATA account, whose signing seed IS persisted, and
- *  `membership.json` is just that account's public id. Neither needs the `$SYS` window, so binding
- *  them to it left every space provisioned before the feature permanently without the feed.
+ *  `membership.json` is just that account's public id. The stored connection evictor is signed by
+ *  that same seed: it publishes only this space's kick request. None of the three needs the `$SYS`
+ *  window. The observer still does, and a system-account rotation remains its only re-mint.
  *
  *  That gap was not theoretical. A space with a complete `$SYS` pair, missing only the rw cred,
  *  reported `the membership bundle is incomplete here (missing membership-rw.creds)` on every
@@ -5722,6 +5724,11 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
       await store.put(rwKey, await mintCreds(auth, newIdentity(), "membership-rw"));
       wrote.push(MEMBERSHIP_RW_CREDS_KIND); // the KIND is what an operator reads, never the segmented key
     } else if (credsProblem(rw) !== undefined && !quietBoot) console.error(c.yellow(`! ${unparsableDaemonCredsNotice([MEMBERSHIP_RW_CREDS_KIND])}`));
+    const evictor = await store.get(connectionEvictorCredsKey(space, composition));
+    if (evictor === undefined) {
+      await store.put(connectionEvictorCredsKey(space, composition), await mintConnectionEvictorCreds(auth, newIdentity()));
+      wrote.push(CONNECTION_EVICTOR_CREDS_KIND);
+    } else if (credsProblem(evictor) !== undefined && !quietBoot) console.error(c.yellow(`! ${unparsableDaemonCredsNotice([CONNECTION_EVICTOR_CREDS_KIND])}`));
     const configPath = membershipConfigPath(root, space);
     if (!existsSync(configPath)) {
       mkSecretDir(dirname(configPath)); // harden the per-space dir before the file lands, as the fresh path does

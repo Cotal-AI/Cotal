@@ -265,8 +265,9 @@ Porting that spike into this tree as the smoke P6 names is later work, not a pre
 
 `sys.signingSeed` is the capability to mint system-account users. It exists in memory only on a
 fresh `createBrokerAuth`, and `saveBrokerAuth` strips it before writing, so on the filesystem path a
-space added after first boot cannot mint its `$SYS` users at all. `mintMembershipObserverCreds` and
-`mintConnectionEvictorCreds` both throw when it is absent, and they are right to.
+space added after first boot cannot mint its membership observer at all. `mintMembershipObserverCreds`
+throws when the system seed is absent, and it is right to. `mintConnectionEvictorCreds` is signed by
+the persisted data-account seed, and `cotal up` heals a missing one on each space.
 
 The two creds are not equivalent. The membership observer pins the data account id in its CONNZ and
 connect and disconnect subjects, so it is genuinely per-space and a new space needs its own. The

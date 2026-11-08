@@ -139,8 +139,8 @@ try {
   const twoReasoning = guardReasoning(two);
   check("the advice quotes the guard's reasoning verbatim, so the two can never disagree", twoReasoning !== "" && twoAdvice.includes(twoReasoning), { twoReasoning, twoAdvice });
   check("the refusal names the tenants, so the operator can see WHY", twoAdvice.includes("alpha") && twoAdvice.includes("beta"), twoAdvice);
-  check("the advice states that NO other command mints the pair", twoAdvice.includes("no other command that mints"), twoAdvice);
-  check("...and names the kinds it is talking about", twoAdvice.includes(MEMBERSHIP_OBSERVER_CREDS_KIND) && twoAdvice.includes(CONNECTION_EVICTOR_CREDS_KIND), twoAdvice);
+  check("the advice names the per-space heal for the stored kick requester", twoAdvice.includes("`cotal up --space <space>` mints a missing connection-evictor.creds"), twoAdvice);
+  check("the advice still says the observer has no per-space re-mint", twoAdvice.includes("membership-observer.creds still needs the system-account rotation"), twoAdvice);
   // The corrupt root proves the advice consults the GUARD and not a tenant count: the count is one.
   const corruptRoot = built.get("corrupt") as string;
   const corruptAdvice = repairAdvice(fsSource(corruptRoot, "one"), BOTH_KINDS);
@@ -171,10 +171,11 @@ try {
   // path a caller composed, so the probe anchors on the builders: a `put` keyed by either of them IS
   // a write of the pair, and there is no other spelling that reaches the canonical location.
   const writers = (s: string) => (s.match(/put\(\s*(?:membershipObserverCredsKey|connectionEvictorCredsKey)\(/g) ?? []).length;
-  check("up.ts writes the pair in exactly ONE function (provisionMembershipCreds)", writers(upSrc) === 2, writers(upSrc));
-  check("...and that function has exactly ONE call site, in the fresh-space branch", (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length === 2, (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length);
+  check("up.ts writes the observer once and the stored kick requester twice", writers(upSrc) === 3, writers(upSrc));
+  check("the fresh provisioner has exactly one call site", (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length === 2, (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length);
+  check("the ordinary up heals a missing stored kick requester", /healMembershipDataCreds[\s\S]*connectionEvictorCredsKey\(space, composition\)/.test(upSrc));
   check("system-rotation.ts writes the pair in exactly ONE function (rotateSystemCreds)", writers(rotSrc) === 2, writers(rotSrc));
-  check("no OTHER module writes the pair at all", writers(upSrc) + writers(rotSrc) === 4);
+  check("no other module writes the observer or the stored kick requester", writers(upSrc) + writers(rotSrc) === 5);
   check("rotateSystemCreds is guarded by the single-space broker assert", /assertSingleSpaceBroker\(authDir\(root\), "a system-account rotation/.test(rotSrc));
   // And the standing renewal owner is excluded by design, so nothing repairs it on a timer either.
   const remintable = REMINTABLE_DAEMON_CREDS.map((r) => r.kind);
