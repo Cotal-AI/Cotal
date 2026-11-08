@@ -2573,11 +2573,6 @@ export class Manager {
       }, intervalMs);
       this.credRenewTimer.unref?.();
     }
-    // A user-mode lifecycle this instance provisioned and no longer holds is retired now, after the
-    // credential a remote retirement needs exists. A local user mesh has its signer already.
-    if (this.userMode) {
-      this.userCustodyReconcile = this.reconcileUserCustody().catch((e) => console.error(`! user custody reconcile: ${rejectionText(e)} - a later start re-reads the records`));
-    }
     // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
     // terminal drains, start() and stop() resume from the same await boundary; start must observe
     // the fence before it can publish a fresh service registration after shutdown.
@@ -2590,6 +2585,12 @@ export class Manager {
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
     await this.registerManagerService();
     if (this.staticReconcileStopping) return;
+    // A recorded user-mode lifecycle is retired only now. The remote retirement requester is minted
+    // for the serving epoch this registration just installed. Starting earlier sends epoch 0, the
+    // host refuses it, and registration completing does not retry that request.
+    if (this.userMode) {
+      this.userCustodyReconcile = this.reconcileUserCustody().catch((e) => console.error(`! user custody reconcile: ${rejectionText(e)} - a later start re-reads the records`));
+    }
     // Stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
@@ -7767,9 +7768,24 @@ export class Manager {
           await casStaticSlot(t, { ...slot.row, phase: "active", ...(handle.reference ? { runtime: handle.reference } : {}) }, slot.revision);
         });
       }
+      // The record comes before the seat is owned. A write that fails leaves the seat out of
+      // `agents`, stops it, and the finally below retires the footprint. Owning it first left a
+      // live seat with no record and retired that running seat from the orphan path.
+      try {
+        this.recordUserCustody(managed);
+      } catch (error) {
+        const refused = this.stopHandle(managed, false);
+        if (refused === undefined) {
+          try {
+            await this.awaitHandleExit(managed.handle);
+          } catch (exitError) {
+            throw new Error(`${rejectionText(error)}; the launched seat could not be proved stopped: ${rejectionText(exitError)}`, { cause: error });
+          }
+        }
+        throw error;
+      }
       this.agents.set(name, managed);
       this.reservedLive.add(name);
-      this.recordUserCustody(managed);
       if (managed.once) this.watchOnceExit(managed);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
