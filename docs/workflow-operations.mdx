@@ -267,6 +267,14 @@ stderr. The listing is then a partial result and exits 4 once every row is print
 `run-ps` rows carry the marker as `revoked` (`by` and `reason`) or a failed read as
 `revocationUnreadable`, beside the record's own `state`.
 
+Inventory record reads use batched Direct Get requests. The list-only operator credential permits
+that read on the records stream; single-run reads and checkpoint answers keep their existing
+permissions. Endpoint names and filters use the endpoint's name, including its dots. Record
+validation still applies, and a status ahead of its spec triggers the bounded consistency read.
+Revocation markers remain leader-served point reads, so an inventory with many markers can still
+exceed a request budget. Use the diagnostic page mode below for a bounded view; it is not a complete
+inventory or authority to retire runs.
+
 ## Refused steps [#refused-steps-and-timer-expiry]
 
 A run whose step was refused (L5016) stays held; a

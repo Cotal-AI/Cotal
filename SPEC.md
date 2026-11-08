@@ -6189,6 +6189,11 @@ split, mediated, written by the driver's commit path only.
   journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
   Interior loss is the journal's own ordinal chain's.
 
+**Inventory reads.** The list-only run-operator credential additionally permits
+`$JS.API.DIRECT.GET.KV_cotal_records_<space>` for non-fencing inventory reads. This permission
+MUST NOT be added to single-run read or checkpoint-answer credentials. It grants no consumer
+creation or record writes. Admission and revocation reads MUST remain leader-served.
+
 **Native personal participation.** An approved personal native lifecycle MAY opt into workflow
 turns through the manager's self-mode `turn-participate` command. The request body is empty. The
 broker-authenticated caller triple is the lifecycle being authorized. The manager MUST fresh-check
