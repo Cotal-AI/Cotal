@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -18,6 +18,7 @@ import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
+import { entryScript } from "../seed/paths.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -137,22 +138,70 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
   return managerLiveness(space, root) === "alive";
 }
 
-/** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
- *  records its pid under whatever folder it was started from, so no one root's record can rule it
- *  out; the process table can. One whose argv names no space serves what its environment or folder
- *  selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that variable names the
- *  space it serves, and one it reads for another space is not a manager of this one. A supervisor
- *  whose environment cannot be read or names no space counts, and a process table that cannot be
- *  listed proves nothing. */
+/** Whether a live supervisor on this machine may be serving `space` for this install.
+ *  A supervisor records its pid under whatever folder it was started from, so no one root's record
+ *  can rule it out; the process table can. Its program has to be this install's entry. A program
+ *  that resolves to another file is another install, and replacing this install does not replace
+ *  that one, so it is not custody here. A program that cannot be resolved still counts: the scan
+ *  has not shown it to be another install. One whose argv names no space serves what its
+ *  environment or folder selects. A service unit sets `COTAL_SPACE` and passes no `--space`, so
+ *  that variable names the space it serves, and one it reads for another space is not a manager of
+ *  this one. A supervisor whose environment cannot be read or names no space counts, and a process
+ *  table that cannot be listed proves nothing. */
 export function supervisorMayServe(space: string): boolean {
   const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
   if (ps.error || ps.status !== 0) return true;
   return ps.stdout.split("\n").some((line) => {
     const row = /^\s*(\d+)\s+(.*)$/.exec(line);
     if (!row || !commandIsCotalSupervisor(row[2]!)) return false;
+    if (!supervisorProgramIsThisInstall(row[2]!)) return false;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(row[2]!)?.[1] ?? environmentSpace(Number(row[1]));
     return named === undefined || named === space;
   });
+}
+
+/** Node flags that take the next `ps` token as their value, so it is not the script. */
+const NODE_VALUE_FLAGS = new Set([
+  "e", "p", "r", "eval", "print", "require", "import", "loader", "experimental-loader",
+  "test-reporter", "test-reporter-destination",
+]);
+
+/** The program a supervisor command line is running: the script after `node`, or the executable
+ *  itself when the process is not Node. Undefined when the line names no program. */
+function supervisorProgram(command: string): string | undefined {
+  const tokens = command.trim().split(/\s+/);
+  const executable = tokens[0];
+  if (executable === undefined) return undefined;
+  const base = executable.split(/[/\\]/).pop()?.toLowerCase();
+  if (base !== "node" && base !== "nodejs" && base !== "node.exe") return executable;
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token === "--") return tokens[i + 1];
+    if (token.startsWith("-") && token !== "-") {
+      const name = token.replace(/^-+/, "").split("=", 1)[0]!;
+      if (NODE_VALUE_FLAGS.has(name) && !token.includes("=")) i++;
+      continue;
+    }
+    return token;
+  }
+  return undefined;
+}
+
+/** True when `command` was not shown to be a program other than this install's entry. */
+function supervisorProgramIsThisInstall(command: string): boolean {
+  const program = supervisorProgram(command);
+  if (program === undefined) return true;
+  let entry: string;
+  try {
+    entry = entryScript();
+  } catch {
+    return true;
+  }
+  try {
+    return realpathSync(program) === entry;
+  } catch {
+    return true;
+  }
 }
 
 /** The `COTAL_SPACE` a process was started with, read from its environment; undefined when the

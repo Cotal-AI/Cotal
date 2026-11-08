@@ -78,6 +78,21 @@ try {
   }
   assert.notEqual(outcome, "none", "a remote mesh served from this machine is read, not reported as running elsewhere");
   assert.ok(outcome.startsWith("refused: "), `an exchange that answers nothing ends the read in a refusal: ${outcome}`);
+  if (decoy) {
+    decoy.kill("SIGKILL");
+    await once(decoy, "exit");
+    decoy = undefined;
+  }
+  const foreign = join(root, "other-install.js");
+  writeFileSync(foreign, "setInterval(() => {}, 1 << 30);\n");
+  decoy = spawn(process.execPath, [foreign, "supervise", "--space", space], { stdio: "ignore" });
+  await once(decoy, "spawn");
+  assert.equal(supervisorMayServe(space), baseline, "a supervisor whose program is another install does not add custody for this one");
+  decoy.kill("SIGKILL");
+  await once(decoy, "exit");
+  decoy = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", process.argv[1]!, "supervise", "--space", space], { stdio: "ignore" });
+  await once(decoy, "spawn");
+  assert.equal(supervisorMayServe(space), true, "a supervisor whose program is this process's entry is still read");
   console.log(`update-remote-custody: ok (${outcome.slice(0, 160)})`);
 } finally {
   decoy?.kill("SIGKILL");

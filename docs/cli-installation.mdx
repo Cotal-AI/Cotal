@@ -184,11 +184,13 @@ command, not an automatic install.
 Before disk reconciliation, `update` reads the selected running manager. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
 holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
-`cotal meshes add --mode user`, is named and skipped when no `cotal manager start` or
-`cotal supervise` process on this machine may be serving its space: its manager runs under another
-install, so there is no custody on this machine to preserve. A supervisor started without `--space`
-serves the space its `COTAL_SPACE` names, so a service unit's manager for another mesh does not count
-as this one's. When such a process runs here, that
+`cotal meshes add --mode user`, is named and skipped when no supervisor of this install may be
+serving its space. A supervisor counts when its program is this install's own entry, or when that
+program cannot be resolved. A supervisor started without `--space` serves the space its
+`COTAL_SPACE` names, so a service unit of this install for another mesh does not count as this
+one's. A manager running from another install on this machine is skipped the same way as a manager
+on another machine: this update does not replace that binary, so there is no custody here to
+preserve. When a supervisor of this install runs here, that
 manager is read like a local one, and a `legacy` verdict's `Next` line names
 `cotal manager stop --space <space>` as the stop before the cold update. A `legacy` verdict still
 comes only from a manager this machine read. A stopped mesh that this machine runs, chosen with `--space` or by running
@@ -201,7 +203,8 @@ then `cotal update`, and the verdict's `Next` line names it with that mesh's spa
 selected or named, has no broker and no manager, so it is named and skipped the same way. Any other
 selected mesh whose manager cannot be read is still a refusal: a named space that is not
 recorded, a mesh registered with `cotal meshes add`, a `--server` override, a `cotal supervise`
-process still running from any folder whose command line names that space or no space, or a broker
+process still running from any folder whose command line names that space or no space and whose
+program is this install, or a broker
 address where anything accepts the connection or the dial does not finish in time. With several
 meshes running and no `--space`, `--server` or `--creds`, the install is machine-wide, so every
 running manager is reported in turn, each under its space name, before anything is written; a
