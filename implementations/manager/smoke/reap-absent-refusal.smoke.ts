@@ -94,10 +94,13 @@ check(
 
 /** Every reap in a source file, read from its syntax tree. `guarded` is each `requireRuntimeReap`
  *  call, named by the callables that contain it (`Class.method`, with `<anonymous>` for an unnamed
- *  callback). `bypass` is every other use of a runtime's `reap`: a direct call, a read, or a
- *  destructured binding, which would see `absent` without the refusal. A key the census cannot read
- *  (`runtime[key]`, `{ [key]: f } = runtime`) on the runtime or a local alias of it fails closed as a
- *  bypass. `probes` are the `typeof x.reap` feature checks, which call nothing. `elements` counts each
+ *  callback). `bypass` is every other use of a runtime's `reap`: a direct call, a read, a
+ *  destructured binding, a spread, or a `Reflect.*` or `Object.*` call that takes the runtime, any
+ *  of which would see `absent` without the refusal. A key the census cannot read (`runtime[key]`,
+ *  `{ [key]: f } = runtime`) on the runtime or a local alias of it fails closed as a bypass. A
+ *  runtime is `this.requiredRuntime`, `this.runtimeFor(...)`, the `runtime` field that getter
+ *  returns, a parameter typed `Runtime`, or a local name bound or assigned from one of those.
+ *  `probes` are the `typeof x.reap` feature checks, which call nothing. `elements` counts each
  *  element access by how it was classified, so the census says how much it read. */
 function censusReaps(fileName: string, text: string): { guarded: string[]; bypass: string[]; probes: string[]; elements: Record<string, number> } {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -121,19 +124,35 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
   const unwrap = (node: ts.Expression): ts.Expression =>
     ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node)
       ? unwrap(node.expression) : node;
-  // The runtime is `this.requiredRuntime`, or a local name bound to it (or to such a name).
+  // A runtime origin is `this.requiredRuntime`, `this.runtimeFor(...)`, the private `runtime` field
+  // that getter returns, a parameter typed `Runtime`, or a local name bound or assigned from one.
   const aliases = new Set<string>();
+  const isThis = (node: ts.Expression): boolean => unwrap(node).kind === ts.SyntaxKind.ThisKeyword;
+  const isRuntimeProperty = (node: ts.Expression): boolean =>
+    ts.isPropertyAccessExpression(node) && isThis(node.expression) && (node.name.text === "requiredRuntime" || node.name.text === "runtime");
+  const isRuntimeCall = (node: ts.Expression): boolean => {
+    if (!ts.isCallExpression(node)) return false;
+    const callee = unwrap(node.expression);
+    return ts.isPropertyAccessExpression(callee) && callee.name.text === "runtimeFor" && isThis(callee.expression);
+  };
   const isRuntime = (node: ts.Expression): boolean => {
     const bare = unwrap(node);
-    return (ts.isPropertyAccessExpression(bare) && bare.name.text === "requiredRuntime") || (ts.isIdentifier(bare) && aliases.has(bare.text));
+    return isRuntimeProperty(bare) || isRuntimeCall(bare) || (ts.isIdentifier(bare) && aliases.has(bare.text));
+  };
+  const typeNamesRuntime = (type: ts.TypeNode | undefined): boolean => {
+    if (type === undefined) return false;
+    const bare = ts.isTypeReferenceNode(type) ? type.typeName : type;
+    return ts.isIdentifier(bare) && bare.text === "Runtime";
   };
   for (let grew = true; grew;) {
     grew = false;
+    const note = (name: string | undefined): void => {
+      if (name !== undefined && !aliases.has(name)) { aliases.add(name); grew = true; }
+    };
     const collect = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && !aliases.has(node.name.text) && isRuntime(node.initializer)) {
-        aliases.add(node.name.text);
-        grew = true;
-      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isRuntime(node.initializer)) note(node.name.text);
+      if (ts.isParameter(node) && ts.isIdentifier(node.name) && typeNamesRuntime(node.type)) note(node.name.text);
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && isRuntime(node.right)) note(node.left.text);
       ts.forEachChild(node, collect);
     };
     collect(source);
@@ -148,8 +167,16 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
     ts.isIdentifier(key) || ts.isStringLiteralLike(key) || ts.isNumericLiteral(key) ? key.text
       : ts.isComputedPropertyName(key) ? literalKey(key.expression) : undefined;
   const out = { guarded: [] as string[], bypass: [] as string[], probes: [] as string[], elements: { "literal reap": 0, "literal, not reap": 0, "unreadable, on the runtime": 0, "unreadable, not on the runtime": 0 } };
+  const noteBypass = (node: ts.Node): void => { out.bypass.push(`${where(node)} (line ${line(node)})`); };
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "requireRuntimeReap") out.guarded.push(where(node));
+    if (ts.isCallExpression(node)) {
+      const callee = unwrap(node.expression);
+      const owner = ts.isPropertyAccessExpression(callee) ? unwrap(callee.expression) : undefined;
+      const method = ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined;
+      if (owner !== undefined && method !== undefined && ts.isIdentifier(owner) && (owner.text === "Reflect" || owner.text === "Object") && node.arguments.some((arg) => isRuntime(arg))) noteBypass(node);
+    }
+    if ((ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) && isRuntime(node.expression)) noteBypass(node);
     let reap = ts.isPropertyAccessExpression(node) && node.name.text === "reap";
     if (ts.isElementAccessExpression(node)) {
       const key = literalKey(node.argumentExpression);
@@ -166,7 +193,7 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
       const key = bindingKey(node.propertyName ?? node.name);
       const declaration = node.parent.parent;
       const fromRuntime = ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined && isRuntime(declaration.initializer);
-      if (key === "reap" || (key === undefined && fromRuntime)) out.bypass.push(`${where(node)} (line ${line(node)})`);
+      if (key === "reap" || (key === undefined && fromRuntime)) noteBypass(node);
     }
     ts.forEachChild(node, visit);
   };
@@ -192,6 +219,21 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
   ["a quoted or computed reap binding is a bypass",
     fixture('  private async later() { const { "reap": a } = this.requiredRuntime; const { ["reap"]: b } = other; }'),
     (c) => c.bypass.length === 2 && c.bypass.every((b) => b.startsWith("Manager.later"))],
+  ["a reflective read of reap is a bypass",
+    fixture('  private async later() { await Reflect.get(this.requiredRuntime, "reap")(ref); }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
+  ["Object.values of the runtime is a bypass",
+    fixture('  private async later() { Object.values(this.requiredRuntime); }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
+  ["a spread of the runtime is a bypass",
+    fixture('  private async later() { const copy = { ...this.requiredRuntime }; }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
+  ["an unreadable key on a runtime parameter is a bypass",
+    fixture('  private async later(runtime: Runtime) { const key = "reap"; await runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["an unreadable key on a runtimeFor result is a bypass",
+    fixture('  private async later() { const key = "reap"; await this.runtimeFor(kind)[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
 ];
 for (const [name, text, holds] of instrument) {
   const c = censusReaps("fixture.ts", text);
@@ -201,10 +243,10 @@ for (const [name, text, holds] of instrument) {
 // The real file. What each reviewed site does with a refusal:
 //   reapOrphanedResumeSeat: returns it, and the resume does not relaunch over that seat.
 //   reapOrphanSeat: lets it propagate into driveStaticRetirement, which holds the name.
-//   restartSupervisedSeat (#4094): returns it, and the caller retires the lifecycle through the
-//     terminal, which reaps again in reapOrphanSeat and so holds the name.
 //   spawnCustodied: carries it into the throw, saying the seat was not proved gone.
-const REVIEWED_SITES = ["Manager.reapOrphanSeat", "Manager.reapOrphanedResumeSeat", "Manager.restartSupervisedSeat", "Manager.spawnCustodied"];
+//   restartSupervisedSeat proves prior work through runtime.reapWork, not requireRuntimeReap, so it
+//   is not a site of this refusal.
+const REVIEWED_SITES = ["Manager.reapOrphanSeat", "Manager.reapOrphanedResumeSeat", "Manager.spawnCustodied"];
 const census = censusReaps(managerFile, managerSrc);
 check(
   `CONTROL: every requireRuntimeReap call in manager.ts sits in a reviewed callable (${REVIEWED_SITES.join(", ")})`,
