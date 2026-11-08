@@ -1,16 +1,15 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 import {
+  busRoute,
   C,
   currentPhase,
   fontFamily,
   gridLine,
-  horizontalPath,
   pick,
   spliceWordmark,
   STATUS,
   WM_WIDTH,
-  type Cell,
   type Dot,
 } from "../_shared";
 import { Grid, PhaseLabel, Ticker, Tagline } from "../components";
@@ -70,26 +69,18 @@ const RAW: string[] = [
 ];
 const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 10, (W - WM_WIDTH) >> 1);
 
-const down = (col: number): Cell[] => [
-  { row: 5, col },
-  { row: 6, col },
-];
-const busRun = (c1: number, c2: number) => horizontalPath(6, c1, c2);
-
 function flowDots(mode: string, t: number): Dot[] {
   const [A, B, Cc] = TAP as [number, number, number];
   if (mode === "multicast") {
-    const toB = [...down(A), ...busRun(A, B), { row: 5, col: B }];
-    const toC = [...down(A), ...busRun(A, Cc), { row: 5, col: Cc }];
     return [
-      { ...pick(toB, t), color: C.cyan },
-      { ...pick(toC, t), color: C.cyan },
+      { ...pick(busRoute(6, A, B), t), color: C.cyan },
+      { ...pick(busRoute(6, A, Cc), t), color: C.cyan },
     ];
   }
   if (mode === "unicast") {
-    return [{ ...pick([...down(A), ...busRun(A, B), { row: 5, col: B }], t), color: C.magenta }];
+    return [{ ...pick(busRoute(6, A, B), t), color: C.magenta }];
   }
-  return [{ ...pick([...down(B), ...busRun(B, Cc), { row: 5, col: Cc }], t), color: C.yellow }];
+  return [{ ...pick(busRoute(6, B, Cc), t), color: C.yellow }];
 }
 
 export const MeshFrame: React.FC = () => {

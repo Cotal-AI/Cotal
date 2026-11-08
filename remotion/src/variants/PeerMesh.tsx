@@ -1,15 +1,14 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 import {
+  busRoute,
   C,
   currentPhase,
   fontFamily,
   gridLine,
-  horizontalPath,
   pick,
   spliceWordmark,
   WM_WIDTH,
-  type Cell,
   type Dot,
 } from "../_shared";
 import { Grid, PhaseLabel, Ticker, Tagline } from "../components";
@@ -44,28 +43,18 @@ const RAW: string[] = [
 // wordmark centered, one row below the schematic (rows 7..12)
 const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 7, (W - WM_WIDTH) >> 1);
 
-const down = (col: number): Cell[] => [
-  { row: 3, col },
-  { row: 4, col },
-];
-const busRun = (c1: number, c2: number) => horizontalPath(4, c1, c2);
-
 function dotsFor(mode: string, t: number): Dot[] {
   if (mode === "multicast") {
-    const toB = [...down(A), ...busRun(A, B), { row: 3, col: B }];
-    const toC = [...down(A), ...busRun(A, Cc), { row: 3, col: Cc }];
     return [
-      { ...pick(toB, t), color: C.cyan },
-      { ...pick(toC, t), color: C.cyan },
+      { ...pick(busRoute(4, A, B), t), color: C.cyan },
+      { ...pick(busRoute(4, A, Cc), t), color: C.cyan },
     ];
   }
   if (mode === "unicast") {
-    const p = [...down(A), ...busRun(A, B), { row: 3, col: B }];
-    return [{ ...pick(p, t), color: C.magenta }];
+    return [{ ...pick(busRoute(4, A, B), t), color: C.magenta }];
   }
   // anycast: bob → whoever is reviewer (carol)
-  const p = [...down(B), ...busRun(B, Cc), { row: 3, col: Cc }];
-  return [{ ...pick(p, t), color: C.yellow }];
+  return [{ ...pick(busRoute(4, B, Cc), t), color: C.yellow }];
 }
 
 export const PeerMesh: React.FC = () => {
