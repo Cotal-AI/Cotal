@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { C, currentPhase, fontFamily, gridLine, horizontalPath, pick, spliceWordmark, type Cell, type Dot } from "../_shared";
+import { busRoute, C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, type Dot } from "../_shared";
 import { Grid, Tagline } from "../components";
 
 // Short, wide logo banner: wordmark left, a compact peer+bus diagram right.
@@ -25,23 +25,16 @@ const RAW: string[] = [
 // wordmark on the LEFT, vertically aligned with the diagram
 const GRID = spliceWordmark(RAW, W, 0, 4);
 
-const down = (col: number): Cell[] => [
-  { row: 2, col },
-  { row: 3, col },
-];
-const busRun = (c1: number, c2: number) => horizontalPath(3, c1, c2);
-
 function flowDots(mode: string, t: number): Dot[] {
   const [A, B, Cc] = TAP as [number, number, number];
   if (mode === "multicast") {
     return [
-      { ...pick([...down(A), ...busRun(A, B), { row: 2, col: B }], t), color: C.cyan },
-      { ...pick([...down(A), ...busRun(A, Cc), { row: 2, col: Cc }], t), color: C.cyan },
+      { ...pick(busRoute(3, A, B), t), color: C.cyan },
+      { ...pick(busRoute(3, A, Cc), t), color: C.cyan },
     ];
   }
-  if (mode === "unicast")
-    return [{ ...pick([...down(A), ...busRun(A, B), { row: 2, col: B }], t), color: C.magenta }];
-  return [{ ...pick([...down(B), ...busRun(B, Cc), { row: 2, col: Cc }], t), color: C.yellow }];
+  if (mode === "unicast") return [{ ...pick(busRoute(3, A, B), t), color: C.magenta }];
+  return [{ ...pick(busRoute(3, B, Cc), t), color: C.yellow }];
 }
 
 export const MeshBanner: React.FC = () => {
