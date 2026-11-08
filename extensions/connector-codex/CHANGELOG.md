@@ -1,5 +1,13 @@
 # @cotal-ai/connector-codex
 
+## 0.148.1
+
+### Patch Changes
+
+- 471f3d0: Keep Cotal upgrades working on computers without the Codex plugin installed.
+  
+  Refresh checks Codex's native plugin cache before invoking its executable. Cached installations still require a working Codex command, and unreadable caches refuse the upgrade rather than being treated as absent.
+
 ## 0.148.0
 
 ### Minor Changes

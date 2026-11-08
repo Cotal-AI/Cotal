@@ -1,5 +1,9 @@
 # @cotal-ai/core
 
+## 0.148.1
+
+No changes in this release.
+
 ## 0.148.0
 
 ### Patch Changes
