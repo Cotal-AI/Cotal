@@ -6226,71 +6226,27 @@ export class Manager {
     return false;
   }
 
-  /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
+  /** Parse a served `spawn` request into {@link StartAgentOpts}. The compiled spawn input contract
+   *  is the shape check: it already refused a non-mapping `launchOptions`, a `supervise` that is not
+   *  the closed `{ restarts, windowMs }` pair, and a list on `subscribe`, `allowSubscribe`,
+   *  `allowPublish`, `shareTools`, `join` or `callerAcl` that is not an array of strings. This reads
+   *  those fields as admitted, the way it reads the string fields. The connector still validates the
+   *  launch-option keys, and `startAgent` still refuses a supervise budget the seat record would not
+   *  take. `once` is shape-checked by that same contract. Its omitted `deadlineMs` takes the default
+   *  here, and a deadline past the scheduler's last instant is refused here, which the schema does
+   *  not express. */
   private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller, served?: string): Promise<ControlReply> {
-    // Opaque launch options, when present, must be a mapping — a raw control message could send a
-    // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
-    if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
-      return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
-    if (args.runtime !== undefined && (typeof args.runtime !== "string" || !args.runtime.trim()))
-      return Promise.resolve({ ok: false, error: "runtime: expected a non-empty runtime name" });
-    let supervise: { restarts: number; windowMs: number } | undefined;
-    if (args.supervise !== undefined) {
-      const raw = args.supervise;
-      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-        return Promise.resolve({ ok: false, error: "supervise: expected { restarts, windowMs }" });
-      const rec = raw as Record<string, unknown>;
-      const extra = Object.keys(rec).filter((k) => k !== "restarts" && k !== "windowMs");
-      if (extra.length > 0)
-        return Promise.resolve({ ok: false, error: `supervise: unknown key ${extra[0]}; it takes restarts and windowMs` });
-      if (typeof rec.restarts !== "number" || !Number.isInteger(rec.restarts) || rec.restarts < 1)
-        return Promise.resolve({ ok: false, error: "supervise.restarts: expected a positive integer" });
-      if (typeof rec.windowMs !== "number" || !Number.isInteger(rec.windowMs) || rec.windowMs < 1)
-        return Promise.resolve({ ok: false, error: "supervise.windowMs: expected a positive integer" });
-      supervise = { restarts: rec.restarts, windowMs: rec.windowMs };
-    }
+    const supervise = args.supervise as { restarts: number; windowMs: number } | undefined;
     let once: StartAgentOpts["once"];
     if (args.once !== undefined) {
-      const raw = args.once;
-      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-        return Promise.resolve({ ok: false, error: "once: expected { deadlineMs? }" });
-      const rec = raw as Record<string, unknown>;
-      const extra = Object.keys(rec).filter((k) => k !== "deadlineMs");
-      if (extra.length > 0)
-        return Promise.resolve({ ok: false, error: `once: unknown key ${extra[0]}; it takes deadlineMs` });
+      const rec = args.once as { deadlineMs?: number };
       // The default is applied here, so every caller of the wire gets the same one.
       const d = rec.deadlineMs ?? ONCE_DEFAULT_DEADLINE_MS;
       if (d !== -1 && (typeof d !== "number" || !Number.isSafeInteger(d) || d < 1 || Date.now() + d > MAX_SCHEDULE_MS))
         return Promise.resolve({ ok: false, error: "once.deadlineMs: expected -1 (no deadline) or a positive whole number of milliseconds that ends by the deadline scheduler's last instant (the end of year 9999)" });
       once = { deadlineMs: d === -1 ? undefined : d };
     }
-    // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
-    // not something to coerce (no fallbacks).
-    const strList = (v: unknown, flag: string): string[] | undefined => {
-      if (v === undefined) return undefined;
-      if (!Array.isArray(v) || v.some((s) => typeof s !== "string"))
-        throw new Error(`${flag}: expected an array of strings`);
-      return v as string[];
-    };
-    let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, shareTools: string[] | undefined;
-    let join: string[] | undefined, callerAcl: StartAgentOpts["callerAcl"];
-    try {
-      subscribe = strList(args.subscribe, "subscribe");
-      allowSubscribe = strList(args.allowSubscribe, "allowSubscribe");
-      allowPublish = strList(args.allowPublish, "allowPublish");
-      shareTools = strList(args.shareTools, "shareTools");
-      join = strList(args.join, "join");
-      if (args.callerAcl !== undefined) {
-        const rec = args.callerAcl as Record<string, unknown> | null;
-        if (rec === null || typeof rec !== "object" || Array.isArray(rec)) throw new Error("callerAcl: expected an object");
-        const sub = strList(rec.allowSubscribe, "callerAcl.allowSubscribe");
-        const pub = strList(rec.allowPublish, "callerAcl.allowPublish");
-        if (!sub || !pub) throw new Error("callerAcl: allowSubscribe and allowPublish are both required");
-        callerAcl = { allowSubscribe: sub, allowPublish: pub };
-      }
-    } catch (e) {
-      return Promise.resolve({ ok: false, error: rejectionText(e) });
-    }
+    const callerAcl = args.callerAcl as StartAgentOpts["callerAcl"];
     // #373: the event-plane admission gate. `startAgent` resolves `eventsRequired || opts.events
     // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
     // omitting it. The gate is on the DECISION, and it runs before connector resolution and
@@ -6344,12 +6300,12 @@ export class Manager {
         eventsNotice,
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
-        subscribe,
-        allowSubscribe,
-        allowPublish,
-        join,
+        subscribe: args.subscribe as string[] | undefined,
+        allowSubscribe: args.allowSubscribe as string[] | undefined,
+        allowPublish: args.allowPublish as string[] | undefined,
+        join: args.join as string[] | undefined,
         callerAcl,
-        shareTools,
+        shareTools: args.shareTools as string[] | undefined,
         ...(supervise !== undefined ? { supervise } : {}),
         ...(once !== undefined ? { once } : {}),
         ...(typeof args.runtime === "string" ? { runtime: args.runtime.trim() } : {}),
