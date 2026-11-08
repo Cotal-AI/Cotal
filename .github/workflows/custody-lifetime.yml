@@ -10,14 +10,19 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        broker: [2.12.12, 2.14.5]
     env:
       DO_NOT_TRACK: "1"
       COTAL_TELEMETRY: "off"
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: da024923ce94b4f6c34c87c23fbce6d3467a4228
           persist-credentials: false
-          fetch-depth: 3
+          fetch-depth: 2
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
@@ -26,27 +31,29 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - uses: actions/setup-go@v6
         with:
-          go-version: 1.25.11
+          go-version: 1.25.12
           cache: false
-      - name: Install CI-pinned broker from verified Go modules
+      - name: Install the version-pinned broker from verified Go modules
         shell: bash
         env:
           GOSUMDB: sum.golang.org
           GOPROXY: https://proxy.golang.org
           GOTOOLCHAIN: local
+          BROKER_VERSION: ${{ matrix.broker }}
         run: |
           set -euo pipefail
           export GOBIN="$RUNNER_TEMP/backup-broker"
           mkdir -p "$GOBIN"
-          go install github.com/nats-io/nats-server/v2@v2.12.12
+          go install "github.com/nats-io/nats-server/v2@v$BROKER_VERSION"
           printf '%s\n' "$GOBIN" >> "$GITHUB_PATH"
       - run: pnpm --filter "cotal-ai..." build
-      - name: Verify unchanged source and an unused runner
+      - name: Verify the exact candidate and an unused runner
         shell: bash
         run: |
           set -euo pipefail
-          git merge-base --is-ancestor fd5e4b95de5c3e059d5afec78823d1defad3f8f4 HEAD
-          test "$(git diff --name-only fd5e4b95de5c3e059d5afec78823d1defad3f8f4 HEAD)" = .github/workflows/custody-lifetime.yml
+          test "$(git rev-parse HEAD)" = da024923ce94b4f6c34c87c23fbce6d3467a4228
+          test "$(git rev-parse HEAD^)" = fd5e4b95de5c3e059d5afec78823d1defad3f8f4
+          git diff --exit-code
           if pgrep -x nats-server; then exit 1; else test "$?" -eq 1; fi
           test ! -e "$HOME/.cotal"
           git rev-parse HEAD
@@ -54,7 +61,7 @@ jobs:
           node --version
           pnpm --version
           nats-server --version
-      - name: Reproduce the user-mode backup lifecycle
+      - name: Replay the user-mode backup lifecycle
         shell: bash
         run: |
           set -euo pipefail
@@ -62,3 +69,12 @@ jobs:
           export TMPDIR="$RUNNER_TEMP/backup-usermode"
           mkdir -p "$TMPDIR"
           timeout --signal=TERM --kill-after=30s 600s pnpm smoke:backup-usermode:live
+      - name: Check CLI source and smoke types
+        if: ${{ !cancelled() && matrix.broker == '2.12.12' }}
+        run: pnpm --filter @cotal-ai/cli typecheck
+      - name: Check documentation and release plan
+        if: ${{ !cancelled() && matrix.broker == '2.12.12' }}
+        run: |
+          pnpm check:doc-comments
+          pnpm check:docs-voice
+          pnpm changeset status --since=fd5e4b95de5c3e059d5afec78823d1defad3f8f4
