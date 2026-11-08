@@ -1,24 +1,23 @@
-name: Custody lifetime
+name: Backup user-mode reproduction
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '41 4 * * 1'
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-  queue: max
-
 jobs:
-  lifetime:
+  backup:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
+    env:
+      DO_NOT_TRACK: "1"
+      COTAL_TELEMETRY: "off"
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 2
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
@@ -29,17 +28,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/custody-broker"
+          work="$RUNNER_TEMP/backup-broker"
           mkdir -p "$work"
-          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.12.12/nats-server-v2.12.12-linux-amd64.tar.gz -o "$work/nats-server.tar.gz"
-          tar -xzf "$work/nats-server.tar.gz" -C "$work"
-          echo "$work/nats-server-v2.12.12-linux-amd64" >> "$GITHUB_PATH"
-      - run: pnpm build
-      - name: Full custody lifetime qualification
+          asset=nats-server-v2.12.12-linux-amd64.tar.gz
+          release=https://github.com/nats-io/nats-server/releases/download/v2.12.12
+          curl -fsSL "$release/$asset" -o "$work/$asset"
+          curl -fsSL "$release/SHA256SUMS" -o "$work/SHA256SUMS"
+          cd "$work"
+          grep -E " [*]?$asset$" SHA256SUMS > selected.sha256
+          test "$(wc -l < selected.sha256)" -eq 1
+          sha256sum --check selected.sha256
+          tar -xzf "$asset"
+          printf '%s\n' "$work/nats-server-v2.12.12-linux-amd64" >> "$GITHUB_PATH"
+      - run: pnpm --filter "cotal-ai..." build
+      - name: Verify unchanged source and an unused runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = fd5e4b95de5c3e059d5afec78823d1defad3f8f4
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD)" = .github/workflows/custody-lifetime.yml
+          if pgrep -x nats-server; then exit 1; else test "$?" -eq 1; fi
+          test ! -e "$HOME/.cotal"
+          git rev-parse HEAD
+          sha256sum bin/smoke/backup-usermode-live.smoke.ts
+          node --version
+          pnpm --version
+          nats-server --version
+      - name: Reproduce the user-mode backup lifecycle
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          export TMPDIR="$RUNNER_TEMP/custody-lifetime"
+          export TMPDIR="$RUNNER_TEMP/backup-usermode"
           mkdir -p "$TMPDIR"
-          pnpm smoke:tool-result-custody-lifetime
+          timeout --signal=TERM --kill-after=30s 600s pnpm smoke:backup-usermode:live
