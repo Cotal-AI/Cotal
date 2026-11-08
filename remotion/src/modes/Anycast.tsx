@@ -33,16 +33,16 @@ const JUNCTION = MODE_MIDDLE;
 // The role's bracket follows the pool's extreme coordinates, not the cast's
 // array order. Claimant selection still walks MODE_PEERS in order. Below the
 // lowest peer the bracket leaves room for its name.
-const POOL_TOP = {
-  x: Math.min(...MODE_PEERS.map((p) => p.at.x)),
-  y: Math.min(...MODE_PEERS.map((p) => p.at.y)),
-};
+const POOL_TOP_Y = Math.min(...MODE_PEERS.map((p) => p.at.y));
 const POOL_BOTTOM_Y = Math.max(...MODE_PEERS.map((p) => p.at.y));
-const BRACKET_TOP = POOL_TOP.y - NODE_R - 17;
+const POOL_LEFT_X = Math.min(...MODE_PEERS.map((p) => p.at.x));
+const POOL_RIGHT_X = Math.max(...MODE_PEERS.map((p) => p.at.x));
+const BRACKET_TOP = POOL_TOP_Y - NODE_R - 17;
+const BRACKET_LEFT = POOL_LEFT_X - NODE_R - 65;
 const BRACKET = {
-  left: POOL_TOP.x - NODE_R - 65,
+  left: BRACKET_LEFT,
   top: BRACKET_TOP,
-  width: 2 * (NODE_R + 65),
+  width: POOL_RIGHT_X + NODE_R + 65 - BRACKET_LEFT,
   height: POOL_BOTTOM_Y + NODE_R + 73 - BRACKET_TOP,
 };
 
