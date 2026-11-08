@@ -1,10 +1,24 @@
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  dialerFor, MEMBERSHIP_INBOX_PREFIX, mintKickHolderCreds, mintKickRequestListenerCreds, newIdentity, serveKickHolder, type SpaceAuth,
+  dialerFor, MEMBERSHIP_INBOX_PREFIX, mintConnectionEvictorCreds, mintKickHolderCreds, mintKickRequestListenerCreds, newIdentity, serveKickHolder, type SecretStore, type SpaceAuth,
 } from "@cotal-ai/core";
+import { connectionEvictorCredsKey, type SpaceMaterialComposition } from "@cotal-ai/workspace";
 import { readRetainedSystemSeed } from "./kick-holder-source.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
+
+/** Write this space's stored kick requester when the store has none. The data-account signing seed
+ *  signs it, so a second space does not wait for a broker-wide system rotation. An existing value is
+ *  left untouched. */
+export async function ensureStoredKickRequester(opts: {
+  auth: SpaceAuth;
+  secrets: SecretStore;
+  composition: SpaceMaterialComposition;
+}): Promise<void> {
+  const key = connectionEvictorCredsKey(opts.auth.space, opts.composition);
+  if ((await opts.secrets.get(key)) !== undefined) return;
+  await opts.secrets.put(connectionEvictorCredsKey(opts.auth.space, opts.composition), await mintConnectionEvictorCreds(opts.auth, newIdentity()));
+}
 
 /** Start one space's checked kick holder.
  *

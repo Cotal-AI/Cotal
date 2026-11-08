@@ -171,11 +171,13 @@ try {
   // path a caller composed, so the probe anchors on the builders: a `put` keyed by either of them IS
   // a write of the pair, and there is no other spelling that reaches the canonical location.
   const writers = (s: string) => (s.match(/put\(\s*(?:membershipObserverCredsKey|connectionEvictorCredsKey)\(/g) ?? []).length;
+  const deliverySrc = readFileSync("implementations/delivery/src/kick-holder.ts", "utf8");
   check("up.ts writes the observer once and the stored kick requester twice", writers(upSrc) === 3, writers(upSrc));
   check("the fresh provisioner has exactly one call site", (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length === 2, (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length);
   check("the ordinary up heals a missing stored kick requester", /healMembershipDataCreds[\s\S]*connectionEvictorCredsKey\(space, composition\)/.test(upSrc));
+  check("the delivery daemon writes a missing stored kick requester at startup", writers(deliverySrc) === 1, writers(deliverySrc));
   check("system-rotation.ts writes the pair in exactly ONE function (rotateSystemCreds)", writers(rotSrc) === 2, writers(rotSrc));
-  check("no other module writes the observer or the stored kick requester", writers(upSrc) + writers(rotSrc) === 5);
+  check("no other module writes the observer or the stored kick requester", writers(upSrc) + writers(rotSrc) + writers(deliverySrc) === 6);
   check("rotateSystemCreds is guarded by the single-space broker assert", /assertSingleSpaceBroker\(authDir\(root\), "a system-account rotation/.test(rotSrc));
   // And the standing renewal owner is excluded by design, so nothing repairs it on a timer either.
   const remintable = REMINTABLE_DAEMON_CREDS.map((r) => r.kind);
