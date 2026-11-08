@@ -621,7 +621,11 @@ provisioned and exited 0. So a space started before the pair existed, or a space
 pair were removed, has a finding after the upgrade. Without the pair, the membership feed and live
 connection eviction do not run, as before the upgrade.
 
-A plain `cotal up` does not mint the pair, because it reuses the existing trust record. To mint it:
+A plain `cotal up` does not mint the pair, because it reuses the existing trust record. When this
+root retained its system-account seed, `cotal mint-evictor` writes the missing `connection-evictor`
+credential from that seed. It does not rotate the system account, restart the broker, or change
+the observer, so earlier full backups stay restorable. A root that retained no seed, and a missing
+`membership-observer`, still need the rotation:
 
 1. Run `cotal down`.
 2. Run `cotal up --rotate-sys`.

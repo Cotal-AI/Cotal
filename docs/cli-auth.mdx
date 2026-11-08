@@ -330,8 +330,11 @@ still checked. Each file is also parsed the way `--creds` checks one, so a file 
 client cannot parse is a finding even when its claims are legible, such as one with Windows (CRLF)
 line endings.
 Once the root holds the space's trust, a missing `membership-observer` or `connection-evictor`
-credential is a finding too, with `cotal down` then `cotal up --rotate-sys` as its repair, because
-nothing else mints that pair again. A missing delivery or membership-rw credential is only noted,
+credential is a finding too. A missing `connection-evictor` names `cotal mint-evictor` when this
+root retained the system-account seed that signs it: that command writes only the missing file,
+and a running broker accepts it on the delivery daemon's next eviction. A root that retained no
+seed, and a missing `membership-observer`, still name `cotal down` then `cotal up --rotate-sys`,
+because nothing else mints that observer again. A missing delivery or membership-rw credential is only noted,
 since `cotal up` mints it.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until it
 is revoked or its signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential

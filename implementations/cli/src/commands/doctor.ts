@@ -38,6 +38,7 @@ import {
   preflightTarget,
   remintDaemonCreds,
   REMINTABLE_DAEMON_CREDS,
+  readSystemSigningSeed,
   type Report,
   resolveMeshTarget,
   spaceAccountPath,
@@ -174,9 +175,10 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     if (values.fix && userMode) throw new CommandFailure("refused", "UNSUPPORTED", "this static daemon repair cannot replace a user-auth space's supported issuer authority", { target });
     repair.migrationAttempted = values.fix === true;
     const revocations = accountRevocations(auth.account.jwt);
-    reports = inventory(root, auth.space, auth.sys.pub, !values.fix, (receipt) => repair.migrations.push(receipt), revocations);
+    const retainedSeed = await rootRetainedSeed(root, auth);
+    reports = inventory(root, auth.space, auth.sys.pub, !values.fix, (receipt) => repair.migrations.push(receipt), revocations, retainedSeed);
     if (values.fix && reports.some((row) => row.problem && isRemintable(row.kind))) await repairDoctorCredentials(root, auth, repair, new Set(reports.filter((row) => row.unparsable && isRemintable(row.kind)).map((row) => row.label)));
-    if (repair.attempted) reports = inventory(root, auth.space, auth.sys.pub, true, undefined, revocations);
+    if (repair.attempted) reports = inventory(root, auth.space, auth.sys.pub, true, undefined, revocations, retainedSeed);
   } catch (error) {
     const changed = [...repair.migrations.map((receipt) => ({ kind: "credential-material-migrated", materialKind: receipt.kind, from: receipt.from, to: receipt.to, space: receipt.space })), ...repair.results.filter((row) => row.ok).map((row) => ({ kind: "daemon-credential-resigned", file: row.file, space: auth!.space }))];
     if (isCommandFailure(error) && !repair.attempted && !repair.migrations.length) throw error;
@@ -375,18 +377,21 @@ function daemonRemintRepair(): string {
   return `it holds no key to re-sign, so the manager cannot renew it. While its broker does not answer, \`${cmd} doctor auth --fix\` mints it again under a new identity, as \`${cmd} up\` does for a missing one; stop a running stack with \`${cmd} down\` first`;
 }
 
-/** The repair for the $SYS pair, which nothing re-signs in place. A plain `down` + `up` does NOT
- *  touch these: `up` mints them only on the branch that CREATES the trust record, so re-upping an
- *  existing space reuses the same files and reports success. The rotation must be asked for. */
-function systemRotationRepair(): string {
+/** The repair for the $SYS pair. A plain `down` + `up` does not touch it: `up` mints it only on
+ *  the branch that creates the trust record. Where this root retained the system-account seed, the
+ *  missing kick credential is minted from that seed without a rotation. The observer, and a root
+ *  that retained no seed, still need the rotation. */
+function systemRotationRepair(kind?: CredentialKind, retainedSeed = false): string {
+  if (kind === "connection-evictor" && retainedSeed) return `the kick credential is missing and this root retained its system-account seed: \`${displayCmd()} mint-evictor\` mints it without rotating the system account or restarting the broker`;
   return `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
 }
 
 /** A credential file that is absent. Only the $SYS pair is a finding then, once the space has its
- *  trust: `up` mints the other two when they are missing, and nothing but a rotation mints these. */
-function missingReport(label: string, kind: CredentialKind, path: string, sysPub?: string): CredReport {
+ *  trust. `up` mints the other two when they are missing. A missing kick credential names
+ *  `mint-evictor` when this root retained the seed that signs it, and the rotation otherwise. */
+function missingReport(label: string, kind: CredentialKind, path: string, sysPub?: string, retainedSeed = false): CredReport {
   if (sysPub === undefined || (kind !== "membership-observer" && kind !== "connection-evictor")) return { label, kind, path };
-  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair() };
+  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair(kind, retainedSeed) };
 }
 
 /** Local filename/issued-at ordering only. No role here proves a connected or running successor. */
@@ -501,10 +506,20 @@ function aliasOf(label: string): string {
   return m ? m[1] : base;
 }
 
+/** Whether this root retained a system-account seed for the system account `auth` names. A missing
+ *  record is the older root, whose repair stays the rotation. A record that does not parse, or that
+ *  names another account, is not a seed this command may offer to mint from. */
+async function rootRetainedSeed(root: string, auth: SpaceAuth): Promise<boolean> {
+  try {
+    const record = await readSystemSigningSeed(workspaceSecretStore(root), auth.space);
+    return record?.sysPub === auth.sys.pub;
+  } catch { return false; }
+}
+
 /** Inspect every managed credential file for this folder. Missing files are noted (with how they
  *  get provisioned) but only EXISTING-but-bad material is a problem — process presence is `cotal
  *  status`'s job; this surface owns credential health. */
-function inventory(root: string, space: string, sysPub?: string, readOnly = false, onMigrated?: (receipt: MaterialMigrationReceipt) => void, revocations: Readonly<Record<string, number>> = {}): CredReport[] {
+function inventory(root: string, space: string, sysPub?: string, readOnly = false, onMigrated?: (receipt: MaterialMigrationReceipt) => void, revocations: Readonly<Record<string, number>> = {}, retainedSeed = false): CredReport[] {
   // Through the choke point, not a hand-composed `.cotal/<file>` (P7 §2 rule 1). The four kinds are
   // per-space now, and a diagnosis that read the canonical location past an unmigrated copy would
   // report every one of them "missing" on a root `up` has not re-provisioned — the worst possible
@@ -521,7 +536,7 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   // Ask the staleness question ONCE, through the same helper the boot path uses, so `doctor auth`
   // and `cotal up` can never disagree about which $SYS creds the trust record authorizes.
   const stale = new Map(sysPub ? staleSystemCreds(root, sysPub, space, { readOnly, onMigrated }).map((x) => [x.file, x] as const) : []);
-  const reports = fixed.map((f) => report(f.label, f.kind, f.path, sysPub, stale.get(f.label)));
+  const reports = fixed.map((f) => report(f.label, f.kind, f.path, sysPub, stale.get(f.label), undefined, undefined, revocations, retainedSeed));
   // Same posture for the per-agent secrets (P1), and for the same reason: this space's segment
   // through the choke point, never `join(authDir(root), "creds")`, so an operator running `doctor`
   // on a root that has not migrated yet sees their agents' creds rather than an empty inventory. It
@@ -543,7 +558,7 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   );
 }
 
-function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily, space?: string, revocations: Readonly<Record<string, number>> = {}): CredReport {
+function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily, space?: string, revocations: Readonly<Record<string, number>> = {}, retainedSeed = false): CredReport {
   let health: CredHealth;
   // A cause the operator can act on, reported in place of the generic parse finding. Its text is
   // fixed and never quotes the file.
@@ -552,7 +567,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
   let unparsable = false;
   try {
     bytes = readLocalRecordSource(path, 1024 * 1024, true);
-    if (!bytes) return missingReport(label, kind, path, sysPub);
+    if (!bytes) return missingReport(label, kind, path, sysPub, retainedSeed);
     const creds = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     // The NATS client's own parse, the check `--creds` makes, so a file whose claims are legible but
     // that the client cannot present is not called healthy.
@@ -581,7 +596,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
     ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager - it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
       ? agentRepair(path, live, space, grants, claims?.name)
-      : systemRotationRepair();
+      : systemRotationRepair(kind, retainedSeed);
   // A $SYS cred is only usable if the system account that SIGNED it is the one the broker loads,
   // i.e. the one in this root's trust record. Expiry alone cannot see a RETIRED issuer: a rotation
   // that committed the record and then died leaves a file that is structurally valid and years from

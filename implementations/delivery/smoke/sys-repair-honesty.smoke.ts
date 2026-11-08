@@ -139,7 +139,7 @@ try {
   const twoReasoning = guardReasoning(two);
   check("the advice quotes the guard's reasoning verbatim, so the two can never disagree", twoReasoning !== "" && twoAdvice.includes(twoReasoning), { twoReasoning, twoAdvice });
   check("the refusal names the tenants, so the operator can see WHY", twoAdvice.includes("alpha") && twoAdvice.includes("beta"), twoAdvice);
-  check("the advice states that NO other command mints the pair", twoAdvice.includes("no other command that mints"), twoAdvice);
+  check("the advice states that no per-space command mints the pair", twoAdvice.includes("no per-space command that mints"), twoAdvice);
   check("...and names the kinds it is talking about", twoAdvice.includes(MEMBERSHIP_OBSERVER_CREDS_KIND) && twoAdvice.includes(CONNECTION_EVICTOR_CREDS_KIND), twoAdvice);
   // The corrupt root proves the advice consults the GUARD and not a tenant count: the count is one.
   const corruptRoot = built.get("corrupt") as string;
@@ -151,7 +151,11 @@ try {
   const soloAdvice = repairAdvice(fsSource(solo, "solo"), BOTH_KINDS);
   // POSITIVE CONTROL for section 1: the working command is still handed out where it works, so the
   // biconditional is not satisfied by advice that simply never names anything.
-  check("CONTROL: the single-tenant root still gets the real command, unchanged", soloAdvice === "re-mint it with `cotal down` then `cotal up --rotate-sys`", soloAdvice);
+  check("CONTROL: the single-tenant root still gets the real command for the pair", soloAdvice === "re-mint it with `cotal down` then `cotal up --rotate-sys`", soloAdvice);
+  const evictorAdvice = repairAdvice(fsSource(solo, "solo"), [CONNECTION_EVICTOR_CREDS_KIND]);
+  check("CONTROL: a missing kick credential on that root names mint-evictor, not the rotation", evictorAdvice === "mint the missing kick credential with `cotal mint-evictor`", evictorAdvice);
+  const multiEvictor = repairAdvice(fsSource(two, "alpha"), [CONNECTION_EVICTOR_CREDS_KIND]);
+  check("CONTROL: the same missing kick credential on a multi-tenant root names no command", !INSTRUCTS(multiEvictor) && !multiEvictor.includes("mint-evictor"), multiEvictor);
   // POSITIVE CONTROL: the hosted arm forks on the composition root's own fact and names no CLI verb
   // on ANY root — including the multi-tenant one, where a host has no `cotal` to run either way.
   for (const [label, root] of built) {
@@ -167,6 +171,7 @@ try {
   // this suite rather than quietly invalidate the claim that no minting path exists on such a root.
   const upSrc = readFileSync("implementations/cli/src/commands/up.ts", "utf8");
   const rotSrc = readFileSync("packages/workspace/src/system-rotation.ts", "utf8");
+  const mintSrc = readFileSync("implementations/cli/src/commands/mint-evictor.ts", "utf8");
   // As of P7 the pair is written through the SecretStore under the per-space key builders, never at a
   // path a caller composed, so the probe anchors on the builders: a `put` keyed by either of them IS
   // a write of the pair, and there is no other spelling that reaches the canonical location.
@@ -174,7 +179,8 @@ try {
   check("up.ts writes the pair in exactly ONE function (provisionMembershipCreds)", writers(upSrc) === 2, writers(upSrc));
   check("...and that function has exactly ONE call site, in the fresh-space branch", (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length === 2, (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length);
   check("system-rotation.ts writes the pair in exactly ONE function (rotateSystemCreds)", writers(rotSrc) === 2, writers(rotSrc));
-  check("no OTHER module writes the pair at all", writers(upSrc) + writers(rotSrc) === 4);
+  check("mint-evictor writes only the kick credential, and only when it is absent", /const key = connectionEvictorCredsKey\(/.test(mintSrc) && /await store\.put\(key, creds\)/.test(mintSrc) && !/membershipObserverCredsKey\(/.test(mintSrc));
+  check("no OTHER module writes the pair at all", writers(upSrc) + writers(rotSrc) === 4 && !/put\(\s*(?:membershipObserverCredsKey|connectionEvictorCredsKey)\(/.test(mintSrc));
   check("rotateSystemCreds is guarded by the single-space broker assert", /assertSingleSpaceBroker\(authDir\(root\), "a system-account rotation/.test(rotSrc));
   // And the standing renewal owner is excluded by design, so nothing repairs it on a timer either.
   const remintable = REMINTABLE_DAEMON_CREDS.map((r) => r.kind);

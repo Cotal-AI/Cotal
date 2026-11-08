@@ -101,10 +101,15 @@ export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): 
       kinds.length ? kinds.map((k) => segmentedKey(k, source.space)).join(" + ") : "the $SYS pair's per-space keys"
     }`;
   const refusal = rotationRefusal(source.root);
-  if (refusal === undefined) return "re-mint it with `cotal down` then `cotal up --rotate-sys`";
+  if (refusal === undefined) {
+    // A missing kick credential is the one half the retained seed can sign without a rotation.
+    // Anything else, including the observer and a torn pair, still needs the rotation.
+    if (kinds.length === 1 && kinds[0] === CONNECTION_EVICTOR_CREDS_KIND) return "mint the missing kick credential with `cotal mint-evictor`";
+    return "re-mint it with `cotal down` then `cotal up --rotate-sys`";
+  }
   return (
-    `${refusal}. There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +
-    "so nothing re-signs it on this root until per-space segmentation lands"
+    `${refusal}. There is no per-space command that mints ${named}: the kick subject is broker-wide, ` +
+    "and the trust record carries no $SYS signing seed, so nothing re-signs it on this root until per-space segmentation lands"
   );
 }
 

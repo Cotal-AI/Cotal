@@ -45,6 +45,7 @@ import { status, statusFlags, validateStatusArguments } from "./commands/status.
 import { who, whoFlags } from "./commands/who.js";
 import { whoami, whoamiFlags } from "./commands/whoami.js";
 import { doctor, doctorFlags, validateDoctorArguments } from "./commands/doctor.js";
+import { mintEvictor, mintEvictorFlags, validateMintEvictorArguments } from "./commands/mint-evictor.js";
 import { endpoints, endpointsFlags } from "./commands/endpoints.js";
 import { endpoint, endpointFlags, validateEndpointReferenceArguments } from "./commands/endpoint.js";
 import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags, validateEndpointArguments } from "./commands/describe.js";
@@ -423,6 +424,19 @@ const baseCommands: Command[] = [
     subcommands: [{ name: "auth", flagNames: ["space", "fix", "json", "plain"], summary: "inspect local credential claims; --fix requests guarded native daemon repair", examples: [{ command: "cotal doctor auth", note: "check the health of every local credential" }, { command: "cotal doctor auth --fix", note: "also ask the daemon to repair what it can" }], usage: "cotal doctor auth [--fix] [--space <s>] [--json|--plain]", reads: true, outputs: ["json", "plain"], prepareMeshTarget: false }],
     validate: validateDoctorArguments,
     run: doctor,
+  },
+  {
+    kind: "command",
+    name: "mint-evictor",
+    group: "Mesh",
+    summary: "mint the missing connection-evictor credential for this space from the retained system-account seed, without rotating the system account",
+    usage: "cotal mint-evictor [--space <s>] [--json|--plain]",
+    flags: mintEvictorFlags,
+    outputs: ["json", "plain"],
+    prepareMeshTarget: false,
+    examples: [{ command: "cotal mint-evictor", note: "mint the missing kick credential for this space" }, { command: "cotal mint-evictor --space <s>", note: "mint it for one named space" }],
+    validate: validateMintEvictorArguments,
+    run: mintEvictor,
   },
   {
     kind: "command",

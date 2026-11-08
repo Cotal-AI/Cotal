@@ -18,7 +18,7 @@
  * Run: pnpm smoke:doctor-auth
  */
 import { strict as nodeAssert } from "node:assert";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,7 +32,7 @@ import {
   newIdentity,
 } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, recordMesh, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
+import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, recordMesh, retainSystemSigningSeed, saveSpaceAuth, spaceMaterialDir, workspaceSecretStore, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 
 const counted = countedAssert(nodeAssert);
@@ -161,7 +161,7 @@ try {
     assert.equal(item(report, "membership-observer.creds")?.problem, null, "and not a finding");
     assert.equal(item(report, "connection-evictor.creds")?.state, "missing", "the connection-evictor is missing");
     assert.equal(item(report, "connection-evictor.creds")?.problem, "missing - live connection eviction cannot run without it", "and a finding, since only a rotation mints it again");
-    assert.match(item(report, "connection-evictor.creds")?.repair ?? "", /down` then `.* up --rotate-sys`/, "its repair is the system-account rotation");
+    assert.match(item(report, "connection-evictor.creds")?.repair ?? "", /down` then `.* up --rotate-sys`/, "its repair is the system-account rotation when no seed was retained");
     assert.equal(item(report, "alice.creds")?.state, "unbounded", "fixture: alice.creds carries no expiry claim");
     assert.match(item(report, "alice.creds")?.problem ?? "", /^unbounded credential \(no expiry claim\)/, "the unbounded static agent cred is a finding");
     assert.ok(!report.result.items.some((row) => row.label.includes("sentinel")), "the user-auth sentinel is not listed as a static agent cred");
@@ -269,6 +269,16 @@ try {
     const remote = await refusal({ space: "remote" }, ["auth"]);
     assert.equal(remote.code, "AUTH_REQUIRED", "a --space registered at another root refuses here");
     assert.equal(remote.remedy, `run \`cotal doctor auth --space remote\` in the folder space remote is registered at: ${elsewhere}`, "its step names that root");
+  }
+
+  // A root that retained the seed names mint-evictor for the missing kick credential, and still names
+  // the rotation for the observer. The file is not written by the diagnosis.
+  {
+    rmSync(join(material, "connection-evictor.creds"));
+    await retainSystemSigningSeed(workspaceSecretStore(root), auth);
+    const { envelope } = await runDoctor({ json: true });
+    assert.match(item(envelope!, "connection-evictor.creds")?.repair ?? "", /mint-evictor/, "a retained seed names mint-evictor for the missing kick credential");
+    assert.equal(existsSync(join(material, "connection-evictor.creds")), false, "the diagnosis writes nothing");
   }
 } finally {
   process.chdir(startCwd);
