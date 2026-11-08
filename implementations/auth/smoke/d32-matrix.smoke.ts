@@ -1052,8 +1052,13 @@ console.log("7. the run-operator profile (SPEC 14.3): a read form and an answeri
       subscribe: [`_INBOX_${CONN}.>`],
     }), read);
   const list = runOperatorGrants(S, { endpoint: EP, takeoverId: TK }, CONN);
-  c("a run-ps (no run named) holds the records point read + INFO alone: no replay durable of any run, since a durable name is one token no pattern spans",
-    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`, "$JS.API.INFO"]), list.publish);
+  c("a run-ps (no run named) holds the records point read, the batched records Direct Get and INFO: no replay durable of any run, since a durable name is one token no pattern spans",
+    JSON.stringify(list.publish) === JSON.stringify([
+      `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
+      `$JS.API.DIRECT.GET.KV_cotal_records_${S}`,
+      `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`,
+      "$JS.API.INFO",
+    ]), list.publish);
   const ans = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } }, CONN);
   c("an ANSWER of one pause is EXACTLY the records point read + THAT token's answer record, checkpoint status and settle fact + the EPF fact read + INFO: no replay row, and no row that spans a second token",
     JSON.stringify(ans.publish) === JSON.stringify([
