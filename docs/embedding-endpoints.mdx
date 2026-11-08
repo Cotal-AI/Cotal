@@ -116,6 +116,13 @@ Within one connection, an older write's late result cannot replace newer settled
 The diagnosis reports observed presence-write refusals. It does not establish that the fault is limited to presence.
 See [connector presence display](connector-runtime-reference.mdx#presence-display-and-name-verification) for tool behavior.
 
+## Service subscription errors [#service-subscription-errors]
+
+A broker refusal of a `serveControl()` subscription emits one endpoint `error` event.
+Its message identifies the permission denial, and its `cause` retains the broker error.
+The service iterator and connection-status observer share reporting by error identity.
+A separate refusal on the same subject still emits its own event. Other service-iterator failures remain reported.
+
 ## Plane liveness probes [#plane-liveness-probes]
 
 `probeLiveness(plane, timeoutMs = 2000)` accepts `manager` or `delivery`.
