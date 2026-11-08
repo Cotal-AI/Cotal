@@ -2104,12 +2104,12 @@ export class Manager {
   }
 
   /** What a default process stop does with this manager's seats. `release` drops manager-local
-   *  custody and leaves every seat running. `stop` means this runtime keeps its PTYs inside the
-   *  manager process, so those seats close with it: the stop stops and deprovisions them, and still
-   *  releases every seat that can outlive it. */
+   *  custody and leaves every seat running. `stop` means a default stop stops and deprovisions the
+   *  seats: this runtime keeps its PTYs inside the manager process, or its handles have no release
+   *  hook, so dropping them would leave their lifecycle and grant with nobody to finish. */
   get spareSeats(): "release" | "stop" {
     if (this.execution === "none") return "release";
-    return this.requiredRuntime.kind !== "pty" || this.requiredRuntime.supportsRelease === true ? "release" : "stop";
+    return this.requiredRuntime.supportsRelease === true ? "release" : "stop";
   }
 
   /** Reattach this manager's runtime to a durable handle. Refuses by name when adopt is absent. */
@@ -3552,7 +3552,7 @@ export class Manager {
   }
 
   /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the
-   *  in-process seats a default stop cannot detach. A manager exit is
+   *  seats a default stop cannot release. A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
    *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
    *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
@@ -3603,11 +3603,18 @@ export class Manager {
     return agent.handle.kind === "pty" && typeof agent.handle.release !== "function";
   }
 
-  /** Drop this manager's local custody of every seat that can outlive it. A pty seat whose handle
-   *  cannot be released lives in this process and closes with it, so it is left for {@link stop} to
-   *  stop instead. */
+  /** A seat this process can detach and leave running. A missing release hook is not that: calling
+   *  nothing and forgetting the seat leaves its lifecycle and grant with no successor to finish them. */
+  private canReleaseSeat(agent: ManagedAgent): boolean {
+    return !this.isProcessBoundSeat(agent) && typeof agent.handle.release === "function";
+  }
+
+  /** Drop this manager's local custody of every seat it can release. A pty seat whose handle cannot
+   *  be released lives in this process and closes with it, so it is left for {@link stop} to stop
+   *  instead. Any other seat that cannot be released is left there too: dropping it here would retire
+   *  nothing, and no later manager finishes a seat this one forgot. */
   private releaseManagedAgents(): string[] {
-    const managed = [...this.agents.values()].filter((a) => !this.isProcessBoundSeat(a));
+    const managed = [...this.agents.values()].filter((a) => this.canReleaseSeat(a));
     const failures: string[] = [];
     for (const a of managed) {
       try {
@@ -3746,11 +3753,13 @@ export class Manager {
       if (this.maintenanceState === "active" && !this.resumeRequired) {
         if (withAgents) await this.teardownManagedAgents();
         else {
-          // An in-process seat cannot be detached from the process that is exiting, so the default
-          // stop stops and deprovisions it as `withAgents` does instead of orphaning its footprint.
-          const inProcess = [...this.agents.values()].filter((a) => this.isProcessBoundSeat(a));
+          // A seat this process cannot release cannot be left running: an in-process pty closes with
+          // the process, and any other handle with no release hook would keep its lifecycle and grant
+          // with no successor. The default stop stops and deprovisions those seats as `withAgents`
+          // does, and only releases the seats whose handles can drop custody.
+          const retained = [...this.agents.values()].filter((a) => !this.canReleaseSeat(a));
           releaseFailures = this.releaseManagedAgents();
-          await this.teardownManagedAgents(inProcess);
+          await this.teardownManagedAgents(retained);
         }
       } else {
         // A signal after a partial preservation must never fall back into destructive teardown.
@@ -9223,7 +9232,7 @@ export class Manager {
             lifecycleUid: a.lifecycleUid,
             mode: a.handle.kind,
             defaultAction: this.maintenanceState !== "active" || this.resumeRequired
-              ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
+              ? "stop-retaining-state" : this.canReleaseSeat(a) ? "release-custody" : "stop",
             withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
           })),
         // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later

@@ -158,8 +158,8 @@ verdict. A reopened gate with retained cursor cleanup returns exit 4.
 
 The native manager status contract includes its selected `lifecycleUid` and a caller-scoped `stopImpact` observation. It lists
 visible managed principals and lifecycle IDs, their runtime modes and the seat actions a default
-stop or `--with-agents` would request. In-process PTYs without a release hook stop by default;
-releasable seats lose manager custody. Preservation or pending resume uses the native retained-state
+stop or `--with-agents` would request. Seats without a release hook stop by default, including an
+in-process PTY; releasable seats lose manager custody. Preservation or pending resume uses the native retained-state
 policy instead. None of these labels confirms seat exit, authority retirement or cleanup. From
 manager cluster revision 33, a manager that is not `active` and holds a preservation inventory also
 reports `preservation`: the attempt and the inventory digest a preserved-exit stop names. A

@@ -1246,6 +1246,24 @@ let openInventory: ManagerResumeAgent;
   check("normal stop drops the old manager's table", map.size === 0, map.size);
 }
 
+// #4005: a seat with no release hook is not detachable. Dropping it on a default stop leaves its
+// lifecycle and grant with no successor, so the stop stops and deprovisions it instead.
+{
+  const manager = managerWith((name) => fakeHandle(name));
+  const handle = fakeHandle("stranded");
+  delete (handle as { release?: unknown }).release;
+  const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
+  map.set("stranded", managed("stranded", "stranded_id", handle, "persona"));
+  let deprovisions = 0;
+  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  const impact = (manager as unknown as { managerStatusData: (owner: string | undefined) => { stopImpact: { agents: Array<{ name: string; defaultAction: string; withAgentsAction: string }> } } }).managerStatusData(undefined).stopImpact.agents.find((row) => row.name === "stranded");
+  check("status names a seat that cannot release custody as a stop", impact?.defaultAction === "stop" && impact.withAgentsAction === "stop", impact);
+  await manager.stop();
+  check("normal stop stops a seat that cannot release custody", handle.stops === 1, handle.stops);
+  check("normal stop deprovisions a seat that cannot release custody", deprovisions === 1, deprovisions);
+  check("normal stop drops a stopped unreleasable seat", map.size === 0, map.size);
+}
+
 {
   const manager = managerWith((name) => fakeHandle(name));
   const handle = fakeHandle("reaped");
