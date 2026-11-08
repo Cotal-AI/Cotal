@@ -1,6 +1,6 @@
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { credsAuthenticator } from "@nats-io/transport-node";
+import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -1569,9 +1569,8 @@ function resolveHarness(name: string, requires: readonly string[]): { binaries: 
 type LeaseState = "held" | "held-unrenewed" | "gone" | "unknown";
 
 /** True only when the delivery-admin rail has no bound responder. A timeout is a hung rail, not absence. */
-function isAbsentDeliveryAdmin(msg: string): boolean {
-  if (/timeout/i.test(msg)) return false;
-  return /no responders|\b503\b/i.test(msg);
+function isAbsentDeliveryAdmin(error: unknown): boolean {
+  return error instanceof RequestError && error.isNoResponders();
 }
 
 /** The store challenge went UNANSWERED while a delivery daemon exists: the rail timed out, or it had
@@ -2679,7 +2678,7 @@ export class Manager {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, timeoutMs);
     } catch (e) {
       const msg = rejectionText(e);
-      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow(isUnansweredDeliveryAdmin(e));
+      if (isAbsentDeliveryAdmin(e)) return this.absentByLeaseRow(isUnansweredDeliveryAdmin(e));
       const failure = `could not challenge the delivery daemon's SecretStore: ${msg}`;
       throw isUnansweredDeliveryAdmin(e) ? new DeliveryAdminUnanswered(failure) : new Error(failure);
     }

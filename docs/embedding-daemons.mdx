@@ -89,8 +89,10 @@ file under any name, and a `store.id` that is a symbolic link or holds anything 
 `--creds` that names one real workstation while process cwd resolves another is refused
 at start, naming both, because membership-rw still uses `findCotalRoot`. A `--creds`
 path that is not under any `.cotal` tree is not that case and is not refused here. It never
-walks ancestors with `findCotalRoot`. No bound daemon is not a named
-store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
+walks ancestors with `findCotalRoot`. The manager proceeds without a bound daemon only after a structural
+no-responder result and a delivery lease row that is missing or holderless. A timeout or an
+answered reply that cannot be decoded does not establish absence, even when its error text contains
+`503` or `no responders`. A later daemon on a foreign store is refused on the next remint.
 The first-party filesystem adapter declares its workspace-root identity on the store itself. Other
 injected adapters declare their stable coordinate on `SecretStore.identity`, or name it in
 `COTAL_SECRET_STORE` on both processes. It never throws: it

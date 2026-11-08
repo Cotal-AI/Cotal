@@ -9,19 +9,21 @@
  *      fixture's next renew CAS is refused, and the fixture never writes the row again.
  *   3. `stop()` during an in-flight renew waits for that renew, then releases the row by CAS.
  *   4. `stop()` does not release a row it no longer owns.
- *   5. The admin wait retries promptly, preserves refusals and sends nothing after its deadline.
+ *   5. Real manager startup rejects answered malformed challenges and accepts a no-responder with no lease.
+ *   6. The admin wait retries promptly, preserves refusals and sends nothing after its deadline.
  *
  * Run: pnpm smoke:boot-delivery-lease
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth, mintCreds, newIdentity, openDeliveryRegistry, leaseKey, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
+import { CONTROL_DELIVERY_ADMIN, controlServiceSubject, createSpaceAuth, mintCreds, newIdentity, openDeliveryRegistry, leaseKey, setupSpaceStreams, standaloneConnectOpts, type ControlRequest } from "@cotal-ai/core";
 import { connect, TimeoutError } from "@nats-io/transport-node";
 import { untilDeliveryAdminAnswers } from "../src/endpoint-evict.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
-import { workspaceSecretStore } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { Manager } from "../src/manager.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -34,6 +36,9 @@ const space = `bootdlv-${Math.random().toString(36).slice(2, 8)}`;
 const auth = await createSpaceAuth(space);
 const broker = await bootBroker(auth);
 const ws = mkdtempSync(join(tmpdir(), "cotal-bootdlv-"));
+const previousHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = join(ws, "home");
+mkdirSync(process.env.COTAL_HOME);
 const RENEW_MS = 300;
 let reader: Awaited<ReturnType<typeof connect>> | undefined;
 const daemons: Array<{ stop: () => Promise<void> }> = [];
@@ -110,7 +115,46 @@ try {
     await kv.delete(leaseKey(0));
   }
 
-  console.log("5. an unanswered admin rail is retried promptly without weakening the deadline");
+  console.log("5. a manager distinguishes an answered malformed store challenge from no responder");
+  for (const [index, payload] of [undefined, "x 503 y", "x no responders y", "x timeout y"].entries()) {
+    const workspaceRoot = join(ws, `manager-${index}`);
+    mkdirSync(workspaceRoot);
+    saveSpaceAuth(authDir(workspaceRoot), auth);
+    let answered = 0;
+    let unexpected = 0;
+    const responder = payload === undefined ? undefined : reader.subscribe(
+      controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, "*", "*"),
+      { queue: CONTROL_DELIVERY_ADMIN, callback: (error, message) => {
+        if (error) { unexpected++; return; }
+        if (message.json<ControlRequest>().op !== "reloadStoreIdentity") { unexpected++; return; }
+        answered++;
+        message.respond(new TextEncoder().encode(payload));
+      } },
+    );
+    await reader.flush();
+    const manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+    let started = false;
+    let failure: unknown;
+    try {
+      c(`store challenge ${index} starts without a delivery lease holder`, (await row()) === undefined);
+      try { await manager.start(); started = true; } catch (error) { failure = error; }
+      if (payload === undefined) {
+        c("a real no-responder with no lease row still permits manager startup", started && failure === undefined,
+          failure instanceof Error ? failure.message : failure);
+      } else {
+        c(`malformed store reply ${index} was actually answered`, answered > 0 && unexpected === 0, { answered, unexpected });
+        c(`answered malformed store reply ${index} refuses instead of settling absent`,
+          !started && failure instanceof Error && failure.message.includes("could not challenge the delivery daemon's SecretStore"),
+          failure instanceof Error ? failure.message : { started });
+      }
+    } finally {
+      responder?.unsubscribe();
+      await reader.flush();
+      await manager.stop();
+    }
+  }
+
+  console.log("6. an unanswered admin rail is retried promptly without weakening the deadline");
   {
     let attempts = 0;
     const delays: number[] = [];
@@ -164,8 +208,10 @@ for (const d of daemons) await d.stop().catch(() => {});
 await reader?.drain().catch(() => reader?.close());
 await broker.stop().catch(() => undefined);
 rmSync(ws, { recursive: true, force: true });
+if (previousHome === undefined) delete process.env.COTAL_HOME;
+else process.env.COTAL_HOME = previousHome;
 
-const EXPECTED_CELLS = 11;
+const EXPECTED_CELLS = 22;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
