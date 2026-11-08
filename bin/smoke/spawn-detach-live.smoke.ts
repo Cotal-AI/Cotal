@@ -21,7 +21,8 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -638,6 +639,63 @@ try {
     env: subEnv,
   });
   ok("a bare spawn runs in this terminal, so --creds without -d is refused as a manager credential", bare.status === 1 && /a spawn in this terminal takes no .*manager credential/.test(bare.stderr) && !/managed attachment|attaching to a manager/.test(bare.stderr), bare.stderr.slice(0, 300));
+
+  // K — a local resume transcript must use the mesh the launch already selected (#4067).
+  // A registered TCP listener that sends no NATS INFO counts the resolver's two probes per sweep.
+  // The missing persona stops every case after carry, before an application can be launched.
+  {
+    const resumeRoot = mkdtempSync(join(tmpdir(), "cotal-detach-resume-"));
+    const callerRoot = join(resumeRoot, "caller");
+    const transcriptRoot = join(resumeRoot, "claude");
+    mkdirSync(callerRoot);
+    mkdirSync(join(resumeRoot, "offline"));
+    mkdirSync(join(transcriptRoot, "projects", "synthetic"), { recursive: true });
+    const heldId = "11111111-2222-4333-8444-555555555555";
+    const unheldId = "99999999-2222-4333-8444-555555555555";
+    writeFileSync(join(transcriptRoot, "projects", "synthetic", `${heldId}.jsonl`), '{"type":"user","message":{"role":"user","content":"synthetic carry probe"}}\n');
+    let accepts = 0;
+    const sockets = new Set<Socket>();
+    const tarpit = createServer((socket) => { accepts++; sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+    await new Promise<void>((resolve) => tarpit.listen(0, "127.0.0.1", resolve));
+    const address = tarpit.address();
+    if (!address || typeof address === "string") throw new Error("resume probe listener has no TCP address");
+    const childRun = (args: string[]): Promise<{ status: number | null; out: string }> => new Promise((resolve) => {
+      const child = spawnProc(TSX, [join(import.meta.dirname, "..", "cotal.ts"), ...args], {
+        cwd: callerRoot, env: { ...subEnv, CLAUDE_CONFIG_DIR: transcriptRoot }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      kids.push(child);
+      let out = "";
+      child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
+      child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
+      const timeout = setTimeout(() => child.kill("SIGKILL"), 60_000);
+      child.once("close", (status) => { clearTimeout(timeout); resolve({ status, out }); });
+    });
+    try {
+      const added = await childRun(["space", "add", "resume-offline", "--server", `nats://127.0.0.1:${address.port}`, "--mode", "open", "--root", join(resumeRoot, "offline"), "--force"]);
+      ok("resume probe records its own offline broker", added.status === 0, added.out);
+      const cleared = await childRun(["use", "--clear"]);
+      ok("resume probe leaves the target to registry resolution", cleared.status === 0, cleared.out);
+      const on = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+      for (const [label, id, explicit, expected] of [
+        ["held implicit", heldId, false, 2],
+        ["unheld implicit", unheldId, false, 2],
+        ["held explicit", heldId, true, 0],
+      ] as const) {
+        const before = accepts;
+        const result = await childRun(["spawn", "resume-missing", "--detach", "--agent", "claude", "--on", on, "--resume", id, "--cwd", workspaceRoot, ...(explicit ? ["--space", SPACE] : [])]);
+        const probes = accepts - before;
+        ok(`${label} resume reaches the missing-persona refusal without launching`, result.status === 2 && result.out.includes('no persona "resume-missing"'), result.out);
+        ok(`${label} resume carries only a transcript held here`, result.out.includes("carried session") === (id === heldId), result.out);
+        ok(`${label} resume does not repeat the registry sweep`, probes === expected, { probes, expected });
+      }
+    } finally {
+      const { removeMesh } = await import("@cotal-ai/workspace");
+      removeMesh("resume-offline");
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => tarpit.close(() => resolve()));
+      rmSync(resumeRoot, { recursive: true, force: true });
+    }
+  }
 
   console.log(`\nspawn-detach live e2e: ${pass} checks passed`);
 } finally {
