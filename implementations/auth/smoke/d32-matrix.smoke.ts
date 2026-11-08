@@ -793,8 +793,8 @@ for (const [profile, rows] of Object.entries(untrusted)) {
 }
 // The agent's ep reach = its minted caller rows PLUS the normative Appendix-B baseline
 // (wildcard describe + delivery join/leave/list + the self-mode lifecycle set: stop, the native
-// participation opt-in (SPEC "Native personal participation"), the two seat halves of the turn relay,
-// and caller-bound run-answer), pinned EXACTLY here so a widened baseline (or a stray extra
+// participation opt-in (SPEC "Native personal participation"), the turn relay and its unconfirmed
+// handoff report, and caller-bound run-answer), pinned EXACTLY here so a widened baseline (or a stray extra
 // row) fails this audit, not just the grants smoke.
 const BASELINE_PUB = [
   `cotal.${S}.ep.one.*.describe.u_abc.cli.${UID}.*`,
@@ -805,6 +805,7 @@ const BASELINE_PUB = [
   `cotal.${S}.ep.one.manager.turn-participate.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
 ];
 c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish + own reply rail)",
