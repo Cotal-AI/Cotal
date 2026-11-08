@@ -68,6 +68,14 @@ cell("the briefing says a live post misses an agent that is away, and where once
   assert.ok(MESH_FIRST_STEER.includes("starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends."), MESH_FIRST_STEER);
 });
 
+cell("every harness states channel retention defaults and operator control", () => {
+  for (const [h, text] of all) {
+    assert.ok(text.includes("no age limit and 1000 posts per sender per channel"), `${h}: missing retention defaults`);
+    assert.ok(text.includes("an operator can change those limits with cotal history limit"), `${h}: missing operator control`);
+    assert.ok(text.includes("older posts may no longer be available"), `${h}: missing history limitation`);
+  }
+});
+
 cell("every harness carries the reply etiquette", () => {
   for (const [h, text] of all) assert.ok(text.includes(REPLY_ETIQUETTE), h);
 });
