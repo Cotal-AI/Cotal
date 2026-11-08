@@ -20,6 +20,7 @@ import {
   type SpaceAccountAuth,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { systemSigningSeedKey } from "./system-signing-seed.js";
 
 /**
  * On-disk auth-material I/O for a local checkout's `.cotal/` — machine-local path resolution plus
@@ -1104,6 +1105,14 @@ export function loadSoleSpaceAuth(dir: string): SpaceAuth | undefined {
  *  owner rather than a per-space copy. It refuses a stripped value outright: `stripSpaceAuth` blanks
  *  the operator and system account, and decomposing that would blank broker persistence. */
 export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
+  if (auth.sys.signingSeed) {
+    const root = resolve(dir, "..", "..");
+    const target = join(root, ".cotal", systemSigningSeedKey(auth.space));
+    if (!existsSync(target)) {
+      mkSecretDir(dirname(target));
+      writeSecretFileAtomic(target, JSON.stringify({ v: 1, kind: "system-signing-seed", sysPub: auth.sys.pub, signingSeed: auth.sys.signingSeed }));
+    }
+  }
   saveBrokerAuth(dir, auth); // throws on a stripped/blank broker half
   saveSpaceAccountAuth(dir, auth);
 }
