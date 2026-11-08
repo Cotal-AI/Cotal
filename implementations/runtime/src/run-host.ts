@@ -15,12 +15,14 @@ import {
   readCheckpointStatus,
   readRunRevocation,
   readRunProgram,
+  parseRunProgram,
   replayRunJournal,
   runDriverCaller,
   walkKvEntries,
   lastKvEntries,
   decodeEntry,
   assertIdToken,
+  endpointNameOf,
   admissionBucket,
   revocationSnapshot,
   RUN_HOST_KIND,
@@ -40,7 +42,6 @@ import {
   type RunListRow,
   type RunSpecValue,
   type RunStatusValue,
-  type RunProgramValue,
   type RunStatusView,
   type RunValidation,
   EpEnvelopeError,
@@ -51,7 +52,7 @@ import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
-import type { KV } from "@nats-io/kv";
+import type { KV, KvEntry } from "@nats-io/kv";
 import { Kvm } from "@nats-io/kv";
 import { listRunPage } from "./run-list-page.js";
 import { logLineText } from "./log-line.js";
@@ -437,50 +438,67 @@ export const cotalLangRunHost: RunHost = {
     // space holds a few hundred lifetime runs. A page is 1024 messages, so the records of those
     // runs are a handful of round trips. The walk still carries every value a row needs.
     const records = await lastKvEntries(planes.kv);
-    const specs = new Map<string, { endpoint: string; runId: string; spec: RunSpecValue }>();
-    const statuses = new Map<string, RunStatusValue>();
-    const programs = new Map<string, RunProgramValue>();
+    const specs = new Map<string, { endpoint: string; runId: string; entry: KvEntry }>();
+    const statuses = new Map<string, KvEntry>();
+    const programs = new Map<string, KvEntry>();
     for (const entry of records) {
+      if (entry.operation === "DEL" || entry.operation === "PURGE") continue;
       const parts = entry.key.split(".");
       if (parts.length !== 4 && parts.length !== 3) continue;
       const kind = parts[0];
       if (kind !== "run" && kind !== "program") continue;
-      const endpoint = parts[1]!;
+      const endpoint = endpointNameOf(parts[1]!);
       const runId = assertIdToken(parts[2]!, "runId");
       if (req.endpoint !== undefined && endpoint !== req.endpoint) continue;
       const id = `${endpoint}/${runId}`;
       if (kind === "program") {
         if (parts.length !== 3) continue;
-        programs.set(id, decodeEntry<RunProgramValue>(entry, entry.key));
+        programs.set(id, entry);
         continue;
       }
-      if (parts[3] === "spec") specs.set(id, { endpoint, runId, spec: decodeEntry<RunSpecValue>(entry, entry.key) });
-      else if (parts[3] === "status") statuses.set(id, decodeEntry<RunStatusValue>(entry, entry.key));
+      if (parts[3] === "spec") specs.set(id, { endpoint, runId, entry });
+      else if (parts[3] === "status") statuses.set(id, entry);
     }
     // Revocation lives in the admission bucket, which the records walk does not see. One walk of
     // its markers, beside the records. A marker that cannot be read is that run's
     // revocationUnreadable, never a missing marker and never a failure of the whole list.
     const markers = new Map<string, Pick<RunListRow, "revoked" | "revocationUnreadable">>();
-    const admissions = await new Kvm(planes.nc).open(admissionBucket(planes.space));
-    for (const entry of await walkKvEntries(admissions, "revoked.>")) {
-      const marker = revocationOf(entry.key, entry);
-      if (marker === undefined) continue;
-      if (req.endpoint !== undefined && marker.endpoint !== req.endpoint) continue;
-      markers.set(`${marker.endpoint}/${marker.runId}`, marker.row);
+    let revocationUnreadable: string | undefined;
+    try {
+      const admissions = await new Kvm(planes.nc).open(admissionBucket(planes.space));
+      for (const entry of await walkKvEntries(admissions, "revoked.>")) {
+        const marker = revocationOf(entry.key, entry);
+        if (marker === undefined) continue;
+        if (req.endpoint !== undefined && marker.endpoint !== req.endpoint) continue;
+        markers.set(`${marker.endpoint}/${marker.runId}`, marker.row);
+      }
+    } catch (error) {
+      revocationUnreadable = (error as Error).message;
     }
     const rows: RunListRow[] = [];
     for (const [id, run] of specs) {
-      const st = statuses.get(id);
-      const program = programs.get(id);
-      const lineage = run.spec.forkedFrom;
+      let spec = decodeEntry<RunSpecValue>(run.entry, run.entry.key);
+      const statusEntry = statuses.get(id);
+      let st = statusEntry === undefined ? undefined : decodeEntry<RunStatusValue>(statusEntry, statusEntry.key);
+      if (st !== undefined && (!Number.isSafeInteger(st.observedSpecRevision) || st.observedSpecRevision < 0 || st.observedSpecRevision > run.entry.revision)) {
+        // Keep the canonical validation and bounded freshness repair for a mismatched pair.
+        // Ordinary rows need no point read; a concurrent spec update can still need one.
+        const record = await readRunRecord(planes.kv, run.endpoint, run.runId);
+        if (record === undefined) continue;
+        spec = record.spec.value;
+        st = record.status?.value;
+      }
+      const programEntry = programs.get(id);
+      const program = programEntry === undefined ? undefined : parseRunProgram(decodeEntry(programEntry, programEntry.key), programEntry.key);
+      const lineage = spec.forkedFrom;
       rows.push({
         runId: run.runId,
         endpoint: run.endpoint,
         ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh, ...(st.failure !== undefined ? { failure: st.failure } : {}) } : {}),
         ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
-        startedAt: run.spec.pins.startedAt,
+        startedAt: spec.pins.startedAt,
         ...(program !== undefined ? { programHash: programHashOf(program.source) } : {}),
-        ...markers.get(id),
+        ...(revocationUnreadable !== undefined ? { revocationUnreadable } : markers.get(id)),
       });
     }
     return rows;
@@ -492,7 +510,7 @@ export const cotalLangRunHost: RunHost = {
 function revocationOf(key: string, entry: { json<T>(): T }): { endpoint: string; runId: string; row: Pick<RunListRow, "revoked" | "revocationUnreadable"> } | undefined {
   const parts = key.split(".");
   if (parts.length !== 4 || parts[0] !== "revoked" || parts[1] !== "v1") return undefined;
-  const endpoint = parts[2]!;
+  const endpoint = endpointNameOf(parts[2]!);
   const runId = assertIdToken(parts[3]!, "runId");
   try {
     const marker = revocationSnapshot(entry.json(), runId);
