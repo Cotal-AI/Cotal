@@ -136,6 +136,7 @@
     "smoke:pi-sdk": "tsx extensions/pi/pi-sdk.smoke.ts",
     "smoke:pi-once": "tsx extensions/pi/smoke/once-handoff.smoke.ts",
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",
+    "smoke:codex-setup-refresh": "tsx extensions/connector-codex/smoke/setup-refresh.smoke.ts",
     "smoke:codex-host": "tsx extensions/connector-codex/smoke/codex-host.smoke.ts",
     "smoke:codex-dist": "tsx extensions/connector-codex/smoke/codex-dist.smoke.ts",
     "smoke:tree-hygiene": "tsx bin/smoke/tree-hygiene.smoke.ts",

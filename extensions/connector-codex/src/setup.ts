@@ -5,7 +5,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,6 +109,18 @@ function install(version: string): void {
   if (installedVersion() !== version) throw new Error(`Codex did not install ${PLUGIN}@${MARKETPLACE} ${version}`);
 }
 
+/** Codex installs plugin versions in its native cache. An absent cache needs no executable; an
+ * existing or unreadable one must not hide an integration the upgrade cannot verify. */
+function hasCachedPlugin(): boolean {
+  const home = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+  try {
+    return readdirSync(join(home, "plugins", "cache", MARKETPLACE, PLUGIN)).length > 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw new Error("Codex plugin cache could not be read", { cause: error });
+  }
+}
+
 /** The version Codex lists for the installed plugin, or undefined when it is not installed. */
 function installedVersion(): string | undefined {
   const listed = codex("plugin", "list");
@@ -157,7 +169,7 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     context: [DOCS_URL],
     run({ cotal }: ConnectorSetupInput) {
       return withLock(() => {
-        if (installedVersion() === undefined) return "not installed";
+        if (!hasCachedPlugin() || installedVersion() === undefined) return "not installed";
         const version = materializeCodexPlugin(cotal);
         install(version);
         return `${PLUGIN}@${MARKETPLACE} ${version}; new Codex conversations load it`;

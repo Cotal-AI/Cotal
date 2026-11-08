@@ -125,6 +125,8 @@ See [Sandbox options](codex-connector-reference.mdx#sandbox-options) for overrid
 ## Connect your own Codex conversations [#personal]
 
 `cotal setup` installs the Cotal plugin into Codex with `codex plugin marketplace add` and `codex plugin add`.
+Upgrades refresh an installed plugin through Codex. A computer without the plugin needs no Codex executable.
+An unreadable plugin cache or an installed copy that cannot be updated still refuses the upgrade.
 Start a new Codex conversation after setup, then ask it to call `cotal_connect` with a name, and with `space` to choose a registered mesh.
 On a signed-in space, open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
 Nothing joins a signed-in space before you approve.
