@@ -41,13 +41,12 @@
  * on every command, permanently.
  */
 import {
-  deregisterServiceInstance, describeEndpoint, epProbeInstanceInterest, unansweredRequest,
+  deregisterServiceInstance, describeEndpoint, epProbeInstanceInterest, unansweredRequest, rejectionText,
   readEndpointGateGeneration,
   type EpCaller, type EpInstanceLiveness, type ServiceDeregistration,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { rejectionText } from "./rejection-text.js";
 
 /** Which guard refused. Printed verbatim by the command and asserted on by the smoke, so one
  *  refusal can never be mistaken for another. */
