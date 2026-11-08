@@ -2,8 +2,9 @@
  * The two #4005 review findings, through Manager.start and startAgent.
  *
  * A recorded lifecycle is retired after registration, so the requester is minted for the serving
- * epoch and not for epoch 0. A custody write that fails after launch stops that seat and does not
- * own it. The rollback still retires the footprint, at the serving epoch when this manager has one.
+ * epoch and not for epoch 0. A custody write that fails after launch retires the footprint only
+ * when the seat is proved stopped. A refused stop or an unproved exit stays managed, and a later
+ * proved exit reaps it. A resume whose custody write fails uses that same split.
  * A preserved row with a resume pending, and a delegated row, are not retired here.
  */
 import assert from "node:assert/strict";
@@ -209,6 +210,81 @@ try {
     assert.equal(stops, 1);
     assert.equal(state, "exited");
     assert.equal(started.agents.has("worker"), false);
+  }
+
+  {
+    const workspace = join(root, "exit-after-unproved-stop");
+    const instance = mintLifecycleUid();
+    const started = manager(workspace, remote(instance));
+    started.userMode = true;
+    started.managerInstanceId = instance;
+    started.managerServeIdentity = started.remoteAuthority.identities.serve;
+    started.serviceServe = { grant: { epoch: 7 } };
+    mkdirSync(join(workspace, ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(workspace, ".cotal", "agents", "worker.md"), "---\nname: worker\n---\n");
+    writeFileSync(join(workspace, ".cotal", "user-custody"), "not a directory\n");
+    let state = "running";
+    let prepares = 0;
+    let emitExit = (): void => {};
+    started.remoteAuthority.prepareAgentRetirement = async () => { prepares += 1; };
+    const handle = {
+      name: "worker", kind: "fixture", reference: { kind: "fixture", id: "late-exit" }, status: () => state,
+      stop: () => { throw new Error("provider refused stop"); },
+      waitForExit: async () => { throw new Error("no authoritative exit"); }, release: () => {}, interrupt: () => {},
+      attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: (listener: () => void) => { emitExit = listener; return () => {}; }, write: () => {}, resize: () => {} }),
+    };
+    started.runtime = { kind: "fixture", streamsTerminal: false, spawn: () => handle };
+    started.ep = { ref: () => ({ id: "fixture.manager" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, getRoster: () => [], stop: async () => {}, readOwnManagerLease: async () => undefined, releaseDaemonRenewalLease: async () => {} };
+    const uid = mintLifecycleUid();
+    started.provisionUserAgent = async () => ({ owner, lifecycleUid: uid, files: {}, launch: { owner, actor: "worker", sentinelCredsPath: "", bearerCmd: [] } });
+    const reply = await started.startAgent({ name: "worker", agent: "custody_fixture", events: false, cwd: workspace }, principalKey(owner, "operator").key);
+    assert.equal(started.agents.has("worker"), true);
+    state = "exited";
+    emitExit();
+    await Promise.all([...started.deprovisioningFlight.values()]);
+    await tick();
+    assert.equal(reply.ok, false);
+    assert.match(reply.error, /unproven/);
+    assert.equal(prepares, 1);
+    assert.equal(started.agents.has("worker"), false);
+  }
+
+  {
+    const workspace = join(root, "resume-unproved");
+    const instance = mintLifecycleUid();
+    const uid = mintLifecycleUid();
+    const started = manager(workspace, remote(instance), { resumeAttemptId: "resume-1" });
+    started.userMode = true;
+    started.managerInstanceId = instance;
+    started.serviceServe = { grant: { epoch: 7 } };
+    mkdirSync(join(workspace, ".cotal", "agents"), { recursive: true });
+    const persona = join(workspace, ".cotal", "agents", "worker.md");
+    writeFileSync(persona, "---\nname: worker\n---\n");
+    writeFileSync(join(workspace, ".cotal", "user-custody"), "not a directory\n");
+    let prepares = 0;
+    started.remoteAuthority.prepareAgentRetirement = async () => { prepares += 1; };
+    const handle = {
+      name: "worker", kind: "fixture", reference: { kind: "fixture", id: "resume-unproved" }, status: () => "running",
+      stop: () => { throw new Error("provider refused stop"); },
+      waitForExit: async () => { throw new Error("no authoritative exit"); }, release: () => {}, interrupt: () => {},
+      attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} }),
+    };
+    started.runtime = { kind: "fixture", streamsTerminal: false, spawn: () => handle };
+    started.ep = { ref: () => ({ id: "fixture.manager" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, getRoster: () => [], stop: async () => {}, readOwnManagerLease: async () => undefined, releaseDaemonRenewalLease: async () => {} };
+    started.validateRetainedAuthority = async () => ({ id: principalKey(owner, "worker").key });
+    const reply = await started.resumePreserved({
+      version: "cotal-manager-resume/v2", space: "demo", createdAt: new Date().toISOString(),
+      agents: [{
+        space: "demo", name: "worker",
+        identity: { mode: "user", owner, actor: "worker", lifecycleUid: uid, actorToken: { kind: "file", path: persona, sha256: "ab".repeat(32) }, sentinelCredential: { kind: "file", path: persona, sha256: "ab".repeat(32) }, health: { kind: "file", path: persona } },
+        launch: { connector: "custody_fixture", runtime: "fixture", source: { kind: "persona", ref: "worker", configPath: persona, configSha256: "ab".repeat(32) }, cwd: workspace, subscribe: [], allowSubscribe: [], allowPublish: [], events: false },
+        dependencies: [persona],
+      }],
+    });
+    assert.equal(reply.ok, false);
+    assert.match(reply.agents?.[0]?.reply.error ?? "", /unproven/);
+    assert.equal(prepares, 0);
+    assert.equal(started.agents.has("worker"), true);
   }
   console.log("user-custody-startup: passed");
 } catch (error) {
