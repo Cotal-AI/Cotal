@@ -32,7 +32,6 @@ import {
   resolveAuthProvider,
   resolveReadAcl,
   runAgentBearer,
-  CotalEndpoint,
   GOAL_ENTITY_RUNNING_DETAIL_KIND,
   EP_UNDECLARED_ARG,
   seatCapFrom,
@@ -133,6 +132,7 @@ import {
 import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
+import { withProvisioner } from "../lib/provisioner.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -1642,49 +1642,36 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // the same connector function, so a foreground and a detached spawn of one persona land on one
     // channel rather than two.
     if (launchEvents) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: DEV_OWNER, actor: identity.id })];
-    const prov = new CotalEndpoint({
-      space,
-      servers: server,
-      creds: await mintCreds(auth, newIdentity(), "provisioner"),
-      channels: [],
-      consume: false,
-      registerPresence: false,
-      watchPresence: false,
-      watchChannels: false,
-      card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
-    });
-    const reportStaticProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
-    prov.on("error", reportStaticProvisioner);
-    prov.on("warning", reportStaticProvisioner);
-    await prov.start();
     // Foreground provisions the SAME durable footprint as `--detach` (DM/DLV durables + read-ACL
     // row): the daemon authorizes durable joins off the ACL row and leave is agent self-service, so
     // no managing host is required — and a silently live-only foreground agent permanently loses
     // every channel message posted while its connection blips (reconnect deliberately re-opens the
     // core-subs without re-backfill). `--live-only` opts back out; on a mesh with no delivery
-    // daemon the boot join itself reports live-only, ACL row or not.
+    // daemon the boot join itself reports live-only, ACL row or not. A failed provisioner stop
+    // never reaches this catch, so it cannot retire a credential the provisioning already minted.
     try {
-      // The seat's lifecycle is activated first, so the issuance can name its gate as the source of
-      // the evidence a helper's spawn is bounded by.
-      const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth };
-      seat = { actor: identity.id, alias: name, lifecycleUid };
-      await activateTerminalSeat(seatTarget, seat);
-      const creds = await issueTerminalSeat(seatTarget, seat, seatExpiry(values, true), (issue) => {
-        acceptedToken = issue.issued.acceptedToken;
-        return provisionAgent(prov, auth, identity, {
-          subscribe,
-          allowSubscribe,
-          allowPublish,
-          role,
-          capabilities: def.capabilities,
-          ...(values["live-only"] ? { durableMembership: false } : {}),
-          lifecycleUid,
-          expiresAt: issue.expiresAt,
-          issued: issue.issued,
-          issuance: issue.issuance,
+      const creds = await withProvisioner({ space, servers: server, auth }, "spawn-provisioner", async (prov) => {
+        // The seat's lifecycle is activated first, so the issuance can name its gate as the source of
+        // the evidence a helper's spawn is bounded by.
+        const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth };
+        seat = { actor: identity.id, alias: name, lifecycleUid };
+        await activateTerminalSeat(seatTarget, seat);
+        return issueTerminalSeat(seatTarget, seat, seatExpiry(values, true), (issue) => {
+          acceptedToken = issue.issued.acceptedToken;
+          return provisionAgent(prov, auth, identity, {
+            subscribe,
+            allowSubscribe,
+            allowPublish,
+            role,
+            capabilities: def.capabilities,
+            ...(values["live-only"] ? { durableMembership: false } : {}),
+            lifecycleUid,
+            expiresAt: issue.expiresAt,
+            issued: issue.issued,
+            issuance: issue.issuance,
+          });
         });
       });
-      await prov.stop();
       // Store first (the source of truth), then materialize — the child's launch reads this FILE.
       // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
       const secrets = workspaceSecretStore(target.root);
@@ -2111,33 +2098,15 @@ async function provisionUserForeground(
       custody: { kind: "foreground" },
     });
     ownedToken = grant.actorToken;
-    const prov = new CotalEndpoint({
-      space,
-      servers: server,
-      creds: await mintCreds(infra, newIdentity(), "provisioner"),
-      channels: [],
-      consume: false,
-      registerPresence: false,
-      watchPresence: false,
-      watchChannels: false,
-      card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
-    });
-    const reportUserProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
-    prov.on("error", reportUserProvisioner);
-    prov.on("warning", reportUserProvisioner);
-    await prov.start();
-    try {
+    await withProvisioner({ space, servers: server, auth: infra }, "spawn-provisioner", (prov) =>
       // Full durable footprint, same as the static foreground path: the ACL row is what lets the
       // delivery daemon authorize this agent's durable joins. `--live-only` opts out.
-      await provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
+      provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
         subscribe: opts.subscribe,
         allowSubscribe: opts.allowSubscribe,
         role: opts.role,
         ...(opts.liveOnly ? { durableMembership: false } : {}),
-      });
-    } finally {
-      await prov.stop();
-    }
+      }));
     // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
     // sentinel handoff read FILES — materialize both at the canonical paths (byte-identical
     // rewrites under this, the local FS, composition).

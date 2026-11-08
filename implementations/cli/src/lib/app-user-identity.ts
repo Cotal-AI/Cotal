@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  CotalEndpoint, acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
+  acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
   checkConversationSelection, conversationApprovalRefusal, conversationGrant, deprovisionAgent, mintCreds, mkSecretDir, newIdentity,
   principalKey, provisionAgentDurables, processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
   type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection,
@@ -12,6 +12,7 @@ import {
   checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, selectionRefusal, signedInSpace,
   type ConversationAuthority, type ConversationMaterial,
 } from "./conversation-identity.js";
+import { withProvisioner } from "./provisioner.js";
 
 interface SavedIdentity {
   v: 1;
@@ -287,16 +288,8 @@ async function provisionOnSpace(
       if (!local.sentinelCreds)
         throw new Error("this mesh has no human approval for a new conversation identity, so this unfinished one was not issued; disconnect it to remove its saved request");
       const grant = conversationGrant(local, record.selection);
-      const provisioner = new CotalEndpoint({ space: target.space, servers: target.server,
-        creds: await mintCreds(infra!, newIdentity(), "provisioner"), channels: [], consume: false,
-        registerPresence: false, watchPresence: false, watchChannels: false,
-        card: { name: "app-provisioner", kind: "endpoint" } });
-      provisioner.on("error", () => {});
-      provisioner.on("warning", () => {});
-      try {
-        await provisioner.start();
-        await provisionAgentDurables(provisioner, local, { subscribe: [], allowSubscribe: grant.allowSubscribe, ...(grant.role ? { role: grant.role } : {}) });
-      } finally { await provisioner.stop(); }
+      await withProvisioner({ space: target.space, servers: target.server, auth: infra! }, "app-provisioner", (provisioner) =>
+        provisionAgentDurables(provisioner, local, { subscribe: [], allowSubscribe: grant.allowSubscribe, ...(grant.role ? { role: grant.role } : {}) }));
     }
     record.state = "ready";
     save(dir, record);
