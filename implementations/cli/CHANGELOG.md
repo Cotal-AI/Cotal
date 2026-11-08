@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.148.2
+
+### Patch Changes
+
+- 4c6505c: Export a registered remote user-auth space to a private connection-bundle file with `cotal space export <name> --out <private-file>`.
+  
+  Preserve recorded trust pins, transport and event policy, and existing sentinel custody without copying a login session or signing authority. Existing output paths and unsupported registrations refuse; secret material stays out of command output.
+- @cotal-ai/core@0.148.2
+  - @cotal-ai/workspace@0.148.2
+
 ## 0.148.1
 
 ### Patch Changes
