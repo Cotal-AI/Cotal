@@ -1999,22 +1999,16 @@ export class Manager {
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
-      // A fresh root has no execution record, so construction does not read the identity. A restart's
-      // record names the instance, and its identity is read only to claim that record before start.
+      // A fresh root has no execution record, so construction does not read the identity. Records
+      // survive identity retirement; only the currently stored identity's record can be claimed.
       const prefix = `manager-execution.${spaceKey(this.space)}.`;
       const dir = join(this.workspaceRoot, ".cotal");
-      const names = existsSync(dir) ? readdirSync(dir).filter((name) => name.startsWith(prefix) && name.endsWith(".json")) : [];
-      if (names.length > 1) throw new Error(`space "${this.space}" has more than one manager execution record; refusing to choose one`);
-      const instanceId = names[0]?.slice(prefix.length, -".json".length);
-      if (instanceId && existsSync(this.executionRecordPath(instanceId))) {
-        const local = createManagerInstanceIdentity(this.workspaceRoot, this.space, () => {
-          throw new Error(`manager execution record ${instanceId} has no manager identity to claim`);
-        });
-        if (local.instanceId === instanceId) {
-          this.claimExecutionRecord(instanceId);
+      const hasRecord = existsSync(dir) && readdirSync(dir).some((name) => name.startsWith(prefix) && name.endsWith(".json"));
+      if (hasRecord) {
+        const local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
+        if (local && existsSync(this.executionRecordPath(local.instanceId))) {
+          this.claimExecutionRecord(local.instanceId);
           this.admittedLocalIdentity = local;
-        } else {
-          throw new Error(`manager execution record ${instanceId} does not match manager identity ${local.instanceId}`);
         }
       }
     }
