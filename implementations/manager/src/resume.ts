@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
@@ -245,4 +245,78 @@ export function removeSeatRecord(root: string, space: string, name: string, life
     return;
   }
   if (current?.agent.identity.lifecycleUid === lifecycleUid) rmSync(path, { force: true });
+}
+
+/** One user-mode lifecycle this manager provisioned. A static seat is found again through its slot
+ *  row. A user-mode seat has no such row, so this file is what a later start of the same instance
+ *  reads to retire a lifecycle it neither resumed nor still holds (#4005). It names the lifecycle
+ *  and its secret paths, never a secret value. */
+const userCustodyRecord = z.strictObject({
+  version: z.literal("cotal-user-custody/v1"),
+  space: z.string().min(1).max(128),
+  instanceId: z.string().min(1).max(256),
+  name: token,
+  id: z.string().min(1).max(256),
+  lifecycleUid,
+  userOwner: z.string().min(1).max(128),
+  delegated: z.boolean(),
+  /** Set when a preservation cut stopped the seat and kept its inventory. A later start leaves it
+   *  until a resume adopts it or an ordinary stop retires it. */
+  preserved: z.boolean().optional(),
+  secretPaths: z.strictObject({
+    creds: path.optional(),
+    actorToken: path.optional(),
+    sentinelCreds: path.optional(),
+    health: path.optional(),
+  }).optional(),
+  allowSubscribe: z.array(z.string().min(1).max(512)).max(256).optional(),
+  runtime: z.strictObject({ kind: z.string().min(1).max(64), id: z.string().min(1).max(256) }).optional(),
+});
+
+export type UserCustodyRecord = z.infer<typeof userCustodyRecord>;
+
+function userCustodyDir(root: string, space: string, instanceId: string): string {
+  return join(root, ".cotal", "user-custody", space, instanceId);
+}
+
+function userCustodyPath(root: string, space: string, instanceId: string, lifecycleUid: string): string {
+  return join(userCustodyDir(root, space, instanceId), `${lifecycleUid}.json`);
+}
+
+/** Replace one lifecycle's record atomically. A crash mid-write leaves the previous record. */
+export function writeUserCustody(root: string, record: UserCustodyRecord): void {
+  const path = userCustodyPath(root, record.space, record.instanceId, record.lifecycleUid);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeSecretFileAtomic(path, `${JSON.stringify(userCustodyRecord.parse(record))}\n`);
+}
+
+/** Every record this instance wrote. A record that does not parse throws: this code wrote it, so a
+ *  malformed one is damage to report, never a lifecycle to skip. An absent directory is none. */
+export function readUserCustody(root: string, space: string, instanceId: string): UserCustodyRecord[] {
+  const dir = userCustodyDir(root, space, instanceId);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  const out: UserCustodyRecord[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const path = join(dir, name);
+    const parsed = userCustodyRecord.safeParse(JSON.parse(readFileSync(path, "utf8")));
+    if (!parsed.success)
+      throw new Error(`user custody ${path}: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`).join("; ")}`);
+    if (parsed.data.space !== space || parsed.data.instanceId !== instanceId)
+      throw new Error(`user custody ${path} names space ${parsed.data.space} instance ${parsed.data.instanceId}, not ${space} ${instanceId}`);
+    out.push(parsed.data);
+  }
+  return out;
+}
+
+/** Remove one lifecycle's record. A record of another lifecycle under the same name is left. */
+export function removeUserCustody(root: string, space: string, instanceId: string, lifecycleUid: string): void {
+  const path = userCustodyPath(root, space, instanceId, lifecycleUid);
+  rmSync(path, { force: true });
 }

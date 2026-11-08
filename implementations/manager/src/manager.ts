@@ -122,7 +122,7 @@ import { RunHosting, servedRequestSubject } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { rejectionText, attemptCleanup, describeCleanupFailures, type CleanupFailure } from "@cotal-ai/core";
 import { controlSession } from "./control-session.js";
-import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, supervisePolicy, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, readUserCustody, removeSeatRecord, removeUserCustody, supervisePolicy, writeSeatRecord, writeUserCustody, type SeatRecord, type UserCustodyRecord } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
 // The static §13.1 lifecycle executor: the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
@@ -1853,6 +1853,9 @@ export class Manager {
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
    * already past an earlier shutdown check cannot finish after stop() returns. */
   private startTask?: Promise<void>;
+  /** The boot reconcile of user-mode lifecycles this instance recorded and no longer holds. stop()
+   *  drains it, so a stop does not report success while a recorded lifecycle is still being retired. */
+  private userCustodyReconcile?: Promise<void>;
   /** This instance's side of a carried resume transcript (#1499); absent where it has no transfer reader. */
   private transcripts?: TranscriptReceiver;
   /** The one stop this manager runs, with the agent policy it was asked for. A stop takes seats out
@@ -2569,6 +2572,11 @@ export class Manager {
         }
       }, intervalMs);
       this.credRenewTimer.unref?.();
+    }
+    // A user-mode lifecycle this instance provisioned and no longer holds is retired now, after the
+    // credential a remote retirement needs exists. A local user mesh has its signer already.
+    if (this.userMode) {
+      this.userCustodyReconcile = this.reconcileUserCustody().catch((e) => console.error(`! user custody reconcile: ${rejectionText(e)} - a later start re-reads the records`));
     }
     // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
     // terminal drains, start() and stop() resume from the same await boundary; start must observe
@@ -3372,6 +3380,7 @@ export class Manager {
   private async runPreservation(attemptId: string): Promise<ManagerPreserveResult> {
     const failures: ManagerPreserveFailure[] = [];
     for (const a of [...this.agents.values()]) a.suppressCleanup = true;
+    this.markUserCustodyPreserved();
     await Promise.all(
       [...this.agents.values()].map(async (a) => {
         try {
@@ -3726,6 +3735,7 @@ export class Manager {
       item.nextRetryAt = undefined;
     }
     await this.awaitStaticReconcileDrain();
+    await this.userCustodyReconcile?.catch(() => {});
     await starting?.catch(() => {});
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
@@ -5681,6 +5691,7 @@ export class Manager {
       } else {
         this.confirmedRetiredPredecessors.set(a.name, { principal: a.id, lifecycleUid: a.lifecycleUid });
         this.retiring.delete(a.name);
+        this.dropUserCustody(a);
         console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
       }
     } else if (cur) {
@@ -7758,6 +7769,7 @@ export class Manager {
       }
       this.agents.set(name, managed);
       this.reservedLive.add(name);
+      this.recordUserCustody(managed);
       if (managed.once) this.watchOnceExit(managed);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
@@ -8502,6 +8514,7 @@ export class Manager {
       this.agents.set(entry.name, managed);
       this.reservedLive.add(entry.name);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
+      this.recordUserCustody(managed, false);
       try {
         await this.recordSlotRuntime(managed);
       } catch (error) {
@@ -11530,6 +11543,86 @@ export class Manager {
     } catch (error) {
       console.error(`! ${a.name}: its seat record could not be updated (${rejectionText(error)}); a manager restart now retires it`);
       this.dropSeatRecord(a);
+    }
+  }
+
+  /** Persist what a later start of this instance needs to retire a user-mode lifecycle it no longer
+   *  holds. A static seat is found through its slot row. A user-mode seat has none, so a release,
+   *  a kill or a manager that never resumes it would otherwise leave the grant and the durables
+   *  with no owner (#4005). Written once the live slot owns the name. Removed when the retirement
+   *  confirms, not when the teardown starts, so a teardown that fails is retried by the next start.
+   *  A delegated seat is recorded too and then held, because only its user's retirement intent retires it. */
+  private recordUserCustody(a: ManagedAgent, preserved = false): void {
+    if (!this.userMode || !a.userOwner) return;
+    writeUserCustody(this.workspaceRoot, {
+      version: "cotal-user-custody/v1",
+      space: this.space,
+      instanceId: this.managerInstanceId,
+      name: a.name,
+      id: a.id,
+      lifecycleUid: a.lifecycleUid,
+      userOwner: a.userOwner,
+      delegated: a.delegated === true,
+      ...(a.secretPaths ? { secretPaths: a.secretPaths } : {}),
+      ...(a.launch.allowSubscribe.length ? { allowSubscribe: [...a.launch.allowSubscribe] } : {}),
+      ...(a.handle.reference ? { runtime: a.handle.reference } : {}),
+      ...(preserved ? { preserved: true } : {}),
+    });
+  }
+
+  /** A preservation cut keeps the lifecycle. Mark every recorded one so the next start does not
+   *  retire a seat the inventory still owns. */
+  private markUserCustodyPreserved(): void {
+    if (!this.userMode) return;
+    for (const a of this.agents.values()) this.recordUserCustody(a, true);
+  }
+
+  private dropUserCustody(a: { lifecycleUid: string }): void {
+    if (!this.userMode || !this.managerInstanceId) return;
+    try {
+      removeUserCustody(this.workspaceRoot, this.space, this.managerInstanceId, a.lifecycleUid);
+    } catch (error) {
+      console.error(`! user custody for ${a.lifecycleUid} could not be removed: ${rejectionText(error)}`);
+    }
+  }
+
+  /** Retire every user-mode lifecycle this instance recorded and does not hold now. A lifecycle the
+   *  resume adopted, or that this process still runs, stays. A delegated one is held for its user's
+   *  retirement intent. Everything else is driven through the same teardown a live exit uses, so a
+   *  seat released or killed by the previous process reaches `prepareAgentRetirement` and the rail. */
+  private async reconcileUserCustody(): Promise<void> {
+    if (!this.userMode || this.staticReconcileStopping) return;
+    let rows: UserCustodyRecord[];
+    try {
+      rows = readUserCustody(this.workspaceRoot, this.space, this.managerInstanceId);
+    } catch (error) {
+      console.error(`! user custody reconcile: ${rejectionText(error)} - the recorded lifecycles stay until a later start can read them`);
+      return;
+    }
+    for (const row of rows) {
+      if (this.staticReconcileStopping) return;
+      const live = [...this.agents.values()].find((a) => a.lifecycleUid === row.lifecycleUid);
+      if (live) continue;
+      if (row.preserved && this.resumeRequired) continue;
+      const target: TeardownTarget = {
+        id: row.id,
+        name: row.name,
+        lifecycleUid: row.lifecycleUid,
+        userOwner: row.userOwner,
+        ...(row.delegated ? { delegated: true as const } : {}),
+        ...(row.secretPaths ? { secretPaths: row.secretPaths } : {}),
+        ...(row.runtime ? { runtime: row.runtime } : {}),
+        ...(row.allowSubscribe ? { launch: { allowSubscribe: row.allowSubscribe } } : {}),
+      };
+      const principal = parsePrincipalKey(row.id);
+      if (principal) this.retiring.set(row.name, { opId: managedRetirementOpId(row.lifecycleUid), owner: principal.owner, actor: principal.actor, target, startedAt: Date.now() });
+      try {
+        await this.deprovision(target);
+      } catch (error) {
+        console.error(`! user custody reconcile ${row.name} (${row.lifecycleUid}): ${rejectionText(error)} - the record stays and a later start re-drives it`);
+        continue;
+      }
+      if (!this.retiring.has(row.name)) this.dropUserCustody(row);
     }
   }
 
