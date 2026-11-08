@@ -77,7 +77,7 @@ try {
   await released.stop().catch(() => {});
   assert.equal(released.agents.has(seat.name), false, "a default stop releases a detachable seat");
   assert.deepEqual(readUserCustody(workspace, "demo", instanceId), [], "before the record, a release leaves nothing a later start can retire");
-  assert.deepEqual(calls, [], "the release itself calls no retirement");
+  assert.deepEqual([...calls], [], "the release itself calls no retirement");
 
   const holding = new Manager({ space: "demo", runtime: "pty", workspaceRoot: workspace, remoteAuthority: remote() }) as unknown as Internals;
   holding.userMode = true;

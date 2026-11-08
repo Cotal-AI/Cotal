@@ -7768,19 +7768,25 @@ export class Manager {
           await casStaticSlot(t, { ...slot.row, phase: "active", ...(handle.reference ? { runtime: handle.reference } : {}) }, slot.revision);
         });
       }
-      // The record comes before the seat is owned. A write that fails leaves the seat out of
-      // `agents`, stops it, and the finally below retires the footprint. Owning it first left a
-      // live seat with no record and retired that running seat from the orphan path.
+      // The record comes before the seat is owned. If the write fails and the seat is proved
+      // stopped, the finally retires the footprint. If the stop is refused or its exit is unproved,
+      // the seat stays managed and is reaped when it exits. It is not retired while it is running.
       try {
         this.recordUserCustody(managed);
       } catch (error) {
         const refused = this.stopHandle(managed, false);
-        if (refused === undefined) {
-          try {
-            await this.awaitHandleExit(managed.handle);
-          } catch (exitError) {
-            throw new Error(`${rejectionText(error)}; the launched seat could not be proved stopped: ${rejectionText(exitError)}`, { cause: error });
-          }
+        const unproven = refused === undefined
+          ? await this.awaitHandleExit(managed.handle).then(() => undefined, rejectionText)
+          : `stop failed: ${refused}`;
+        if (unproven !== undefined) {
+          // The seat is still running. Own it and reap it when it exits. Retiring now would revoke
+          // the grant of a process that is still alive, and dropping the handle would let the name
+          // be reused with no exit proof.
+          this.agents.set(name, managed);
+          this.reservedLive.add(name);
+          this.watchExit(managed);
+          provisioned = undefined;
+          throw new Error(`${rejectionText(error)}; the launched seat stays managed because its stop is unproven: ${unproven}`, { cause: error });
         }
         throw error;
       }
@@ -8530,8 +8536,8 @@ export class Manager {
       this.agents.set(entry.name, managed);
       this.reservedLive.add(entry.name);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
-      this.recordUserCustody(managed, false);
       try {
+        this.recordUserCustody(managed, false);
         await this.recordSlotRuntime(managed);
       } catch (error) {
         return await this.stopFailedResume(managed, "resume-custody-unrecorded", `${managed.name} resumed, but ${rejectionText(error)}`);

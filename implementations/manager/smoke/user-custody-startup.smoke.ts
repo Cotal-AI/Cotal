@@ -139,6 +139,77 @@ try {
     assert.equal(readUserCustody(workspace, "demo", instance).length, 1);
     await started.stop();
   }
+  for (const behavior of ["stop-throws", "exit-unproved"] as const) {
+    const workspace = join(root, behavior);
+    const instance = mintLifecycleUid();
+    const started = manager(workspace, remote(instance));
+    started.userMode = true;
+    started.managerInstanceId = instance;
+    started.managerServeIdentity = started.remoteAuthority.identities.serve;
+    started.serviceServe = { grant: { epoch: 7 } };
+    mkdirSync(join(workspace, ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(workspace, ".cotal", "agents", "worker.md"), "---\nname: worker\n---\n");
+    writeFileSync(join(workspace, ".cotal", "user-custody"), "not a directory\n");
+    let state = "running";
+    let prepares = 0;
+    started.remoteAuthority.prepareAgentRetirement = async () => { prepares += 1; };
+    const handle = {
+      name: "worker", kind: "fixture", reference: { kind: "fixture", id: behavior }, status: () => state,
+      stop: () => { if (behavior === "stop-throws") throw new Error("provider refused stop"); },
+      waitForExit: async () => { throw new Error("no authoritative exit"); }, release: () => {}, interrupt: () => {},
+      attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} }),
+    };
+    started.runtime = { kind: "fixture", streamsTerminal: false, spawn: () => handle };
+    started.ep = { ref: () => ({ id: "fixture.manager" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, getRoster: () => [], stop: async () => {}, readOwnManagerLease: async () => undefined, releaseDaemonRenewalLease: async () => {} };
+    const uid = mintLifecycleUid();
+    started.provisionUserAgent = async () => ({ owner, lifecycleUid: uid, files: {}, launch: { owner, actor: "worker", sentinelCredsPath: "", bearerCmd: [] } });
+    const reply = await started.startAgent({ name: "worker", agent: "custody_fixture", events: false, cwd: workspace }, principalKey(owner, "operator").key);
+    await Promise.all([...started.deprovisioningFlight.values()]);
+    await tick();
+    assert.equal(reply.ok, false);
+    assert.match(reply.error, /unproven/);
+    assert.equal(state, "running");
+    assert.equal(prepares, 0);
+    assert.equal(started.agents.has("worker"), true);
+  }
+
+  {
+    const workspace = join(root, "resume-write");
+    const instance = mintLifecycleUid();
+    const uid = mintLifecycleUid();
+    const started = manager(workspace, remote(instance), { resumeAttemptId: "resume-1" });
+    started.userMode = true;
+    started.managerInstanceId = instance;
+    started.serviceServe = { grant: { epoch: 7 } };
+    mkdirSync(join(workspace, ".cotal", "agents"), { recursive: true });
+    const persona = join(workspace, ".cotal", "agents", "worker.md");
+    writeFileSync(persona, "---\nname: worker\n---\n");
+    writeFileSync(join(workspace, ".cotal", "user-custody"), "not a directory\n");
+    let state = "running";
+    let stops = 0;
+    const handle = {
+      name: "worker", kind: "fixture", reference: { kind: "fixture", id: "resumed" }, status: () => state,
+      stop: () => { stops += 1; state = "exited"; }, waitForExit: async () => {}, release: () => {}, interrupt: () => {},
+      attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} }),
+    };
+    started.runtime = { kind: "fixture", streamsTerminal: false, spawn: () => handle };
+    started.ep = { ref: () => ({ id: "fixture.manager" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, getRoster: () => [], stop: async () => {}, readOwnManagerLease: async () => undefined, releaseDaemonRenewalLease: async () => {} };
+    started.validateRetainedAuthority = async () => ({ id: principalKey(owner, "worker").key });
+    const reply = await started.resumePreserved({
+      version: "cotal-manager-resume/v2", space: "demo", createdAt: new Date().toISOString(),
+      agents: [{
+        space: "demo", name: "worker",
+        identity: { mode: "user", owner, actor: "worker", lifecycleUid: uid, actorToken: { kind: "file", path: persona, sha256: "ab".repeat(32) }, sentinelCredential: { kind: "file", path: persona, sha256: "ab".repeat(32) }, health: { kind: "file", path: persona } },
+        launch: { connector: "custody_fixture", runtime: "fixture", source: { kind: "persona", ref: "worker", configPath: persona, configSha256: "ab".repeat(32) }, cwd: workspace, subscribe: [], allowSubscribe: [], allowPublish: [], events: false },
+        dependencies: [persona],
+      }],
+    });
+    assert.equal(reply.ok, false);
+    assert.match(reply.error ?? "", /ENOTDIR/);
+    assert.equal(stops, 1);
+    assert.equal(state, "exited");
+    assert.equal(started.agents.has("worker"), false);
+  }
   console.log("user-custody-startup: passed");
 } catch (error) {
   failed = 1;
