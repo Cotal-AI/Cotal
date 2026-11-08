@@ -144,6 +144,12 @@ It also checks that the broker refuses a bare connection.
 That refusal is the expected result.
 The bundle's deny-all sentinel credential goes into a private `0600` file under the entry's root, not the registry.
 
+To copy an existing remote user-auth registration to a connection file, run
+`cotal space export <name> --out <private-file>`. This also works for a discovered space whose
+project root has been bound elsewhere. The file contains its recorded pins and sentinel,
+not your sign-in session or account signer. Keep it private; existing output files are refused.
+See [Connection bundle export](cli-selection.mdx#connection-bundle-export) for the supported scope.
+
 ## Maintain mesh entries
 
 For a broker shared by several spaces, `cotal up --space <name>` refreshes only the named space.

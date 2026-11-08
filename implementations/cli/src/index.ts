@@ -359,8 +359,8 @@ const baseCommands: Command[] = [
     name: "space",
     group: "Mesh",
     summary: "inspect and register spaces; preview or confirm exact live deletion impact",
-    usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name> | space delete <name> [--dry-run|-y]",
-    positionals: "[show [<name>] | add [<name>] | create <name> | forget <name> | delete <name> [--dry-run|-y]]",
+    usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name> | space delete <name> [--dry-run|-y] | space export <name> --out <private-file>",
+    positionals: "[show [<name>] | add [<name>] | create <name> | forget <name> | delete <name> [--dry-run|-y] | export <name> --out <private-file>]",
     subcommands: [
       { name: "show", flagNames: ["json", "plain"], summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", examples: [{ command: "cotal space show", note: "show the selected space in full" }, { command: "cotal space show <name> --json", note: "one space as a JSON document" }], usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
       {
@@ -372,6 +372,7 @@ const baseCommands: Command[] = [
       },
       { name: "create", flagNames: ["root", "json", "plain"], summary: "prepare a space to start here: records its name and root, and `cotal up` in the root starts it", examples: [{ command: "cotal space create <name>", note: "prepare a space in this folder" }, { command: "cotal space create <name> --root <dir>", note: "prepare one in another folder" }], usage: "cotal space create <name> [--root <dir>] [--json|--plain]", outputs: ["json", "plain"] },
       { name: "forget", flagNames: ["json", "plain"], summary: "remove a registration or a prepared space; stops nothing and keeps the root's files", examples: [{ command: "cotal space forget <name>", note: "drop a space from this machine's list" }], usage: "cotal space forget <name> [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "export", flagNames: ["out", "json", "plain"], summary: "write a registered remote user-auth connection bundle to a new private file", examples: [{ command: "cotal space export <name> --out <private-file>", note: "copy connection pins without exporting sign-in or signing authority" }], usage: "cotal space export <name> --out <private-file> [--json|--plain]", outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
       { name: "delete", flagNames: ["dry-run", "yes", "json", "plain"], summary: "preview native impact or delete the exact space after confirmation; local records stay", examples: [{ command: "cotal space delete <name> --dry-run", note: "show what deleting a space would remove" }, { command: "cotal space delete <name>", note: "delete it after you type its name" }], usage: "cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
     ],
     flags: spaceFlags,
