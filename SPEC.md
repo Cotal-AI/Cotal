@@ -6867,7 +6867,10 @@ The profile holds no other `CONSUMER.DELETE`. Its watch consumers are client-nam
 stream-wide, and a stream-wide grant lets one holder delete another principal's watch cursors and
 the delivery daemon's `fanout` durable. The broker removes these consumers at their inactive
 threshold (five minutes after the last interest), and a client MUST treat a refused delete of its
-own watch consumer as that outcome rather than as a failure.
+own watch consumer as that outcome rather than as a failure. A client MAY skip publishing that
+delete when it recorded the consumer as its own watch and the authenticated connection's known
+publish claims exclude the subject. Unknown claims or an unrecorded consumer do not establish this
+exception. A skipped delete does not prove the consumer is gone and grants no additional authority.
 
 ### Admin
 
