@@ -43,7 +43,7 @@
     {
       "name": "M4 read a remote user mesh's manager for continuity instead of skipping it",
       "file": "implementations/cli/src/commands/update.ts",
-      "find": "      if (!supervisorMayServe(peek.space)) {\n        console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));\n        return \"none\";\n      }",
+      "find": "      if (install === \"absent\") {\n        console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));\n        return \"none\";\n      }",
       "replace": "      throw new Error(\"remote continuity probe\");",
       "expectRed": "#2158: a remote user mesh is skipped before the manager-caller mint",
       "cell": "#2158: a remote user mesh is skipped before the manager-caller mint",

@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ process.env.XDG_CONFIG_HOME = config;
 process.env.DO_NOT_TRACK = "1";
 const { recordMesh, setCurrent, userAuthStateDir } = await import("@cotal-ai/workspace");
 const { readManagerContinuity } = await import("../src/commands/update.js");
-const { supervisorMayServe } = await import("../src/lib/manager-proc.js");
+const { supervisorInstall, supervisorMayServe } = await import("../src/lib/manager-proc.js");
 
 const space = `update-remote-${process.pid}`;
 // Hold both addresses for the whole run so no foreign listener answers a probe; neither accepts.
@@ -57,8 +57,9 @@ try {
     assert.equal(await readManagerContinuity({ space }), "none", "a remote mesh no supervisor here may serve is skipped");
   }
 
-  // A service unit's supervisor passes no `--space`; its environment names the space it serves.
-  other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise"],
+  // A service unit's supervisor passes no `--space`; its environment names the space it serves, and
+  // it re-execs this install's entry the way the service adapter does.
+  other = spawn(process.execPath, [process.argv[1]!, "-e", "setInterval(() => {}, 1 << 30)", "supervise"],
     { stdio: "ignore", env: { ...process.env, COTAL_SPACE: `${space}-other` } });
   await once(other, "spawn");
   assert.equal(supervisorMayServe(space), baseline, "a space-less supervisor whose environment names another space is not a manager of this one");
@@ -66,10 +67,18 @@ try {
   other.kill("SIGKILL");
   other = undefined;
 
-  // A process whose command line is a supervisor for this space, as `ps` reports it.
+  // A process whose command line is a supervisor for this space, as `ps` reports it. The scan counts
+  // it only when that command line carries this process's own CLI entry: a manager this install
+  // started re-execs that entry, and a manager another install started does not.
   decoy = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise", "--space", space], { stdio: "ignore" });
   await once(decoy, "spawn");
-  assert.equal(supervisorMayServe(space), true, "the decoy is seen as a supervisor that may serve the space");
+  assert.equal(supervisorMayServe(space), baseline, "a supervisor whose command line carries no CLI entry is not this install's manager");
+  decoy.kill("SIGKILL");
+  decoy = undefined;
+
+  decoy = spawn(process.execPath, [process.argv[1]!, "-e", "setInterval(() => {}, 1 << 30)", "supervise", "--space", space], { stdio: "ignore" });
+  await once(decoy, "spawn");
+  assert.equal(supervisorMayServe(space), true, "a supervisor that re-execs this install's entry may serve the space");
   let outcome: string;
   try {
     outcome = await readManagerContinuity({ space });
@@ -78,6 +87,32 @@ try {
   }
   assert.notEqual(outcome, "none", "a remote mesh served from this machine is read, not reported as running elsewhere");
   assert.ok(outcome.startsWith("refused: "), `an exchange that answers nothing ends the read in a refusal: ${outcome}`);
+  decoy.kill("SIGKILL");
+  decoy = undefined;
+
+  // Another install's entry, as a second prefix's `cotal` is: a real file elsewhere, named on the
+  // supervisor's command line. Replacing this install leaves that process untouched.
+  const otherInstall = join(root, "other-install");
+  mkdirSync(otherInstall, { mode: 0o700 });
+  symlinkSync(process.execPath, join(otherInstall, "cotal"));
+  decoy = spawn(process.execPath, [join(otherInstall, "cotal"), "-e", "setInterval(() => {}, 1 << 30)", "supervise", "--space", space], { stdio: "ignore" });
+  await once(decoy, "spawn");
+  assert.equal(supervisorMayServe(space), baseline, "a supervisor that loaded another install's entry is not a manager of this one");
+  assert.equal(supervisorInstall(space), baseline ? "this" : "other", "that supervisor is another install of this space, not an absent one");
+  if (!baseline) {
+    const lines: string[] = [];
+    const write = console.log;
+    console.log = (line?: unknown) => { lines.push(String(line ?? "")); };
+    try {
+      assert.equal(await readManagerContinuity({ space }), "none", "another install's manager is not custody for this one");
+      assert.equal(await readManagerContinuity({ space, on: "01arz3ndektsv4rrffq69g5fav" }), "none", "pinning the other install's instance does not make its custody this install's");
+    } finally {
+      console.log = write;
+    }
+    const text = lines.join("\n");
+    assert.equal(text.includes("runs under another install on this machine"), true, text);
+    assert.equal(text.includes("reading its custody"), false, text);
+  }
   console.log(`update-remote-custody: ok (${outcome.slice(0, 160)})`);
 } finally {
   decoy?.kill("SIGKILL");

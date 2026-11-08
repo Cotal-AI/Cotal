@@ -28,7 +28,7 @@ import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { supervisorMayServe } from "../lib/manager-proc.js";
+import { supervisorInstall, supervisorMayServe } from "../lib/manager-proc.js";
 import { processGone, readStackJournal, stackScopeRefusals } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import {
@@ -514,9 +514,17 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     // The skip holds only while no supervisor on THIS machine may be serving that space. A `cotal
     // manager start` or `cotal supervise` process here that serves a remote mesh loaded this
     // machine's install, so its custody is read like a local manager's; reporting it as elsewhere
-    // let the install go ahead and left that manager on the generation it had loaded.
+    // let the install go ahead and left that manager on the generation it had loaded. A supervisor
+    // that loaded another install's binary is that install's manager: replacing this one leaves it
+    // running, the same as a manager on another machine, and naming it with `--on` does not make
+    // its custody this install's to carry.
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
-      if (!supervisorMayServe(peek.space)) {
+      const install = supervisorInstall(peek.space);
+      if (install === "other") {
+        console.log(c.dim(`  ${peek.space}: this mesh's manager runs under another install on this machine; no custody here`));
+        return "none";
+      }
+      if (install === "absent") {
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
         return "none";
       }

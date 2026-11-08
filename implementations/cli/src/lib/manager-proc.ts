@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -137,22 +137,71 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
   return managerLiveness(space, root) === "alive";
 }
 
-/** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
- *  records its pid under whatever folder it was started from, so no one root's record can rule it
- *  out; the process table can. One whose argv names no space serves what its environment or folder
- *  selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that variable names the
- *  space it serves, and one it reads for another space is not a manager of this one. A supervisor
- *  whose environment cannot be read or names no space counts, and a process table that cannot be
- *  listed proves nothing. */
-export function supervisorMayServe(space: string): boolean {
+/** What a live supervisor of `space` on this machine belongs to. `this` loaded this process's CLI
+ *  entry. `other` loaded a different file, so it is another install of the same space and replacing
+ *  this one leaves it running. `absent` is no supervisor of the space. A process table that cannot
+ *  be listed, or an entry this process cannot name, is `this`: either one may still be this install.
+ *  A supervisor whose command line cannot be resolved to a file is `this` for the same reason. */
+export type SupervisorInstall = "this" | "other" | "absent";
+
+/** Which install a live supervisor of `space` on this machine belongs to. A supervisor records its
+ *  pid under whatever folder it was started from, so no one root's record can rule it out; the
+ *  process table can. One whose argv names no space serves what its environment or folder selects:
+ *  a service unit sets `COTAL_SPACE` and passes no `--space`, so that variable names the space it
+ *  serves, and one it reads for another space is not a manager of this one. A supervisor whose
+ *  environment cannot be read or names no space counts.
+ *
+ *  `cotal up`, `cotal supervise` and the manager service adapter all re-exec this process's CLI
+ *  entry, so a manager this install started names it. A manager another install on this machine
+ *  started loaded that install's binary. */
+export function supervisorInstall(space: string): SupervisorInstall {
   const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
-  if (ps.error || ps.status !== 0) return true;
-  return ps.stdout.split("\n").some((line) => {
+  if (ps.error || ps.status !== 0) return "this";
+  const own = ownInstallEntry();
+  let other = false;
+  for (const line of ps.stdout.split("\n")) {
     const row = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (!row || !commandIsCotalSupervisor(row[2]!)) return false;
+    if (!row || !commandIsCotalSupervisor(row[2]!)) continue;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(row[2]!)?.[1] ?? environmentSpace(Number(row[1]));
-    return named === undefined || named === space;
-  });
+    if (named !== undefined && named !== space) continue;
+    if (own !== undefined && !commandCarriesEntry(row[2]!, own)) { other = true; continue; }
+    return "this";
+  }
+  return other ? "other" : "absent";
+}
+
+/** Whether a live supervisor of THIS install on this machine may be serving `space`. */
+export function supervisorMayServe(space: string): boolean {
+  return supervisorInstall(space) === "this";
+}
+
+/** This process's CLI entry resolved through its symlinks, or undefined when it cannot be resolved.
+ *  An update that cannot name its own entry cannot tell its managers from another install's, so the
+ *  scan keeps counting every supervisor of the space. */
+function ownInstallEntry(): string | undefined {
+  const entry = process.argv[1];
+  if (entry === undefined) return undefined;
+  try {
+    return realpathSync(entry);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether `command` names `entry` as one of its arguments, resolved through symlinks the way this
+ *  process's own entry is. A token that is not a file is skipped: node flags, subcommands and flag
+ *  values are not entries. A token that looks like a path but cannot be resolved counts as this
+ *  entry, because an unreadable path is not proof of another install. */
+function commandCarriesEntry(command: string, entry: string): boolean {
+  for (const token of command.split(/\s+/)) {
+    if (token === "" || token.startsWith("-")) continue;
+    try {
+      if (realpathSync(token) === entry) return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return true;
+    }
+  }
+  return false;
 }
 
 /** The `COTAL_SPACE` a process was started with, read from its environment; undefined when the
