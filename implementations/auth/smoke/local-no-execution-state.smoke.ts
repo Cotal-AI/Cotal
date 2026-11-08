@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { connect } from "@nats-io/transport-node";
 import { createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, serverConfig, setupSpaceStreams, isReachable,
   standaloneConnectOpts, registry, actionContext, recordGoalIndex, readGoalIndex, recordAtomicKey, RECORD_KINDS, type RuntimeProvider } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, workspaceSecretStore, userAuthStateDir, recordMesh, assertUserAuthInfo, loadManagerInstanceIdentity, spaceKey } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, workspaceSecretStore, userAuthStateDir, recordMesh, assertUserAuthInfo, loadManagerInstanceIdentity, retireManagerInstanceIdentity, spaceKey } from "@cotal-ai/workspace";
 import { cotalAuthProvider } from "@cotal-ai/auth";
 import { Manager, type ManagerOptions } from "@cotal-ai/manager";
 import { formatSentinel, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
@@ -119,6 +119,17 @@ try {
     await ctx.kv.update(key, new TextEncoder().encode(JSON.stringify({ ...before, iid: mintLifecycleUid() })), row.revision);
   }
   check("local admission failures preserve capability and resolve no Runtime", readFileSync(path).equals(capability) && runtimeCalls === 0);
+  check("retirement removes the stopped identity but preserves its execution record",
+    retireManagerInstanceIdentity(root, space, local).outcome === "removed" && readFileSync(path).equals(capability));
+  manager = new Manager(localOpts); await manager.start(); running = true; ports.push(Number(new URL(manager.consoleUrl).port));
+  const replacement = loadManagerInstanceIdentity(root, space)!;
+  check("a retired execution record does not block a new local NONE instance",
+    replacement.instanceId !== local.instanceId && manager.execution === "none" && readFileSync(path).equals(capability));
+  await manager.stop(); running = false; manager = undefined;
+  // Construction claims the current capability before any wire registration.
+  manager = new Manager(localOpts);
+  check("construction selects the current instance with both old and current execution records",
+    manager.execution === "none" && loadManagerInstanceIdentity(root, space)?.instanceId === replacement.instanceId && readFileSync(path).equals(capability));
 } finally {
   await writer?.close();
   if (running) { try { await manager?.stop(); } catch { cleanupOK = false; } }
@@ -130,6 +141,6 @@ try {
   if (process.env.FIXTURE_OUT) writeFileSync(join(process.env.FIXTURE_OUT, `local-state-custody.${process.pid}.json`), JSON.stringify({ root, fixture: identity(process.pid), children, ports, managerClosed: cleanupOK, checks }, null, 2) + "\n", { mode: 0o600 });
   if (cleanupOK && existsSync(root)) rmSync(root, { recursive: true });
 }
-assert.equal(checks.length, 40, "all local admission, retained-state, witness and cleanup cells ran");
+assert.equal(checks.length, 43, "all local admission, retained-state, witness and cleanup cells ran");
 process.stdout.write(`local NONE state: ${checks.length} named assertions passed\n`);
 process.stdout.write(formatSentinel({ passed: checks.length, failed: 0 }) + "\n");

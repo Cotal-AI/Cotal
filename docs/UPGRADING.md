@@ -38,6 +38,28 @@ server is refused with a message naming `cotal setup`.
 - A plain Claude Code session loads the entry and the installed plugin's server, which are the same
   command and arguments, as one process.
 
+## Identity mint helpers take a mint
+
+`createManagerInstanceIdentity` and `createAuthInstanceIdentity` from `@cotal-ai/workspace` now
+take `mint`, a function that returns the identity. They call it after reading no existing record.
+They used to take the identity itself, so minting that argument happened before the helper could
+adopt an existing record.
+
+A restart still returns the stored identity. A fresh root still creates one record, and a second
+start that arrives while the first is creating it still adopts that record.
+
+### What stops working
+
+A call that passes an identity object no longer typechecks. Plain JavaScript that still passes one
+fails when the helper tries to call it. `loadManagerInstanceIdentity` and
+`loadAuthInstanceIdentity` are unchanged.
+
+### Before the upgrade
+
+Pass a function that returns the identity. A caller that already holds one passes
+`() => identity`. A caller that used to read the record and mint only when it was missing now makes
+the one call, and the helper does that read.
+
 ## More streams take a history limit after 0.139.1
 
 `cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and
