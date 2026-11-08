@@ -1,5 +1,15 @@
 # @cotal-ai/connector-core
 
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- 93794d5: Tell agents the channel-history retention limits in their shared briefing. State the default of no age limit and 1000 posts per sender per channel, identify the operator command for changing it, and warn that older posts may no longer be available.
+
 ## 0.148.2
 
 No changes in this release.

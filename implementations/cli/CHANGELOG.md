@@ -1,5 +1,24 @@
 # @cotal-ai/cli
 
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- 81b38de: A provisioner that closes and then rejects no longer replaces a successful provision, and a foreground spawn no longer retires the credential it just minted.
+- f3bfdea: Restore full backups on NATS 2.12 when a new consumer reports a zero acknowledgement floor. Keep the snapshot's replay start and require unused consumer counters before accepting the checkpoint.
+- fd5e4b9: Keep managed session transfers on the mesh selected for the launch. Reuse its space and broker for transcript carry and transfer authorization instead of repeating registry discovery.
+- dd76ef4: A refused spawn records a failed cleanup step the same way in the CLI and the manager, and both read a caught value through one helper.
+- Updated dependencies [7068f2b]
+- Updated dependencies [2d497ad]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+  - @cotal-ai/workspace@0.149.0
+
 ## 0.148.2
 
 ### Patch Changes

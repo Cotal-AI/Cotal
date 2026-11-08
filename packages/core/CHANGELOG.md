@@ -1,5 +1,13 @@
 # @cotal-ai/core
 
+## 0.149.0
+
+### Patch Changes
+
+- 7068f2b: Batch workflow inventory record reads so a few hundred completed runs do not require separate reads for every record. Preserve dotted endpoint names, program validation, deleted-record handling and unreadable revocation reporting. Only list credentials gain the records Direct Get permission; single-run reads and checkpoint answers keep their existing permissions.
+- 441ed3b: Skip an ordered watch rebuild's predecessor delete when the endpoint recorded the watch as its own and the connection's known publish claims exclude that request. This avoids repeated permission refusals without widening consumer-delete grants. The predecessor remains for broker inactive-threshold cleanup.
+- dd76ef4: A refused spawn records a failed cleanup step the same way in the CLI and the manager, and both read a caught value through one helper.
+
 ## 0.148.2
 
 No changes in this release.
