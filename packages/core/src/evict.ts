@@ -225,6 +225,29 @@ async function kick(evictorConn: NatsConnection, conn: LiveConn): Promise<void> 
   if (body?.error) throw new Error(`KICK cid ${conn.cid} on ${conn.serverId} refused: ${body.error.description ?? "unknown"}`);
 }
 
+/** What a complete account-scoped CONNZ page says about one connection id. */
+export type AccountCidSight = "in-account" | "absent" | "unreadable";
+
+/**
+ * KICK one connection only after a COMPLETE account-scoped CONNZ page says that connection id
+ * belongs to `accountId`. NATS 2.14's KICK takes a connection id and checks no account, so the
+ * check has to happen here, on a scan this caller completed, before the request leaves.
+ * `unreadable` and `absent` both refuse: a page that did not answer is not proof the connection
+ * is gone, and a connection this account cannot see is not this account's to drop.
+ */
+export async function kickAccountChecked(
+  evictorConn: NatsConnection,
+  observerConn: NatsConnection,
+  accountId: string,
+  target: LiveConn,
+): Promise<AccountCidSight> {
+  const page = await scanLive(observerConn, accountId, { pageLimit: 1024, maxWaitMs: 2000, settleMs: 250 });
+  if (!page.complete) return "unreadable";
+  if (!page.conns.some((conn) => conn.serverId === target.serverId && conn.cid === target.cid)) return "absent";
+  await kick(evictorConn, target);
+  return "in-account";
+}
+
 /**
  * Evict every live connection of one principal — the kill-live half of revocation, to be called
  * ONLY AFTER the deny-new is committed (ledger revoke / cred expiry / ACL removal). Scans, KICKs
@@ -263,7 +286,7 @@ export const KICK_CONCURRENCY = 16;
  */
 export async function evictDeniedPrincipals(
   observerConn: NatsConnection,
-  evictorConn: NatsConnection | (() => Promise<NatsConnection>),
+  evictorConn: NatsConnection | (() => Promise<NatsConnection>) | { kick: (target: LiveConn) => Promise<void> },
   accountId: string,
   principals: readonly string[],
   options: EvictOptions = {},
@@ -300,7 +323,9 @@ export async function evictDeniedPrincipals(
     else pending.set(p, { kicked: 0 });
   }
   if (pending.size === 0) return answer();
-  const kicker = typeof evictorConn === "function" ? await evictorConn() : evictorConn;
+  const supplied = typeof evictorConn === "object" && "kick" in evictorConn ? evictorConn.kick : undefined;
+  const kicker = supplied ? undefined : typeof evictorConn === "function" ? await evictorConn() : evictorConn;
+  const kickOne = (target: LiveConn) => supplied ? supplied(target) : kick(kicker as NatsConnection, target);
   // KICKs are independent per connection, so they run KICK_CONCURRENCY at a time; every one of them
   // settles before the verify re-scan reads the result.
   const kickAll = async (live: Map<string, LiveConn[]>) => {
@@ -308,7 +333,7 @@ export async function evictDeniedPrincipals(
     const worker = async () => {
       for (let next = queue.shift(); next; next = queue.shift()) {
         try {
-          await kick(kicker, next.t);
+          await kickOne(next.t);
           next.st.kicked++;
         } catch (e) {
           next.st.note = e instanceof Error ? e.message : String(e);
@@ -880,6 +905,9 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
   evictorCreds?: string;
   /** Loaded only after a complete scan finds a live match. Wins over `evictorCreds` when both are set. */
   openEvictor?: () => Promise<string>;
+  /** Kicks one scanned connection without a kick credential, using the observer connection this
+   *  wrapper already opened. When set, no evictor credential is opened and `openEvictor` is not called. */
+  kick?: (conn: NatsConnection, target: LiveConn) => Promise<void>;
   accountId: string;
   principals: readonly string[];
   options?: EvictOptions;
@@ -893,7 +921,7 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
   });
   let evictor: NatsConnection | undefined;
   try {
-    return await evictDeniedPrincipals(observer, async () => {
+    return await evictDeniedPrincipals(observer, opts.kick ? { kick: (target) => opts.kick!(observer, target) } : async () => {
       const creds = opts.openEvictor ? await opts.openEvictor() : opts.evictorCreds;
       if (creds === undefined)
         throw new Error("evictDeniedPrincipal: a live match requires the kick-only evictor credential");
@@ -909,3 +937,134 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
     await observer.drain().catch(() => {});
   }
 }
+
+/** One connection a space's own scan found, named the way {@link kick} names it. */
+export interface SpaceKickTarget {
+  serverId: string;
+  cid: number;
+}
+
+export type SpaceKickAnswer =
+  | { ok: true }
+  | { ok: false; reason: "absent" | "unreadable" | "unavailable" | "malformed" };
+
+/** A space publishes this only to itself: the daemon and the listener are users of the same account,
+ *  so the request never crosses an account boundary. The account check the listener then makes rides
+ *  the broker's own `$SYS.REQ.ACCOUNT.<account>.CONNZ`, which is a different subject. */
+const SPACE_KICK_SUBJECT = "cotal.kick.*.req";
+
+/** The one subject a space publishes a kick request on. */
+export function spaceKickSubject(accountId: string): string {
+  if (!/^[A-Z0-9]+$/.test(accountId)) throw new Error("space kick: the account id is not an account public key");
+  return `cotal.kick.${accountId}.req`;
+}
+
+/** The publish row for the credential that ASKS. The reply comes back on the connection's own
+ *  inbox, which that credential already holds, and this row never names the broker KICK. */
+export function spaceKickRequestPermissions(accountId: string): { pub: { allow: string[] } } {
+  return { pub: { allow: [spaceKickSubject(accountId)] } };
+}
+
+/** Subscribe rows for the one holder that SERVES the request. It subscribes per account, so a
+ *  request names an account the holder was given and no other. */
+export function spaceKickServePermissions(accountIds: readonly string[]): { sub: { allow: string[] } } {
+  return { sub: { allow: accountIds.map((accountId) => spaceKickSubject(accountId)) } };
+}
+
+function parseSpaceKick(data: Uint8Array): SpaceKickTarget | undefined {
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(data));
+  } catch {
+    return undefined;
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  const rec = body as Record<string, unknown>;
+  if (Object.keys(rec).length !== 2) return undefined;
+  if (typeof rec.serverId !== "string" || !/^[A-Za-z0-9_-]+$/.test(rec.serverId)) return undefined;
+  if (typeof rec.cid !== "number" || !Number.isSafeInteger(rec.cid) || rec.cid < 1) return undefined;
+  return { serverId: rec.serverId, cid: rec.cid };
+}
+
+/**
+ * Serve kick requests for the named accounts. Each request is checked with
+ * {@link kickAccountChecked} against that account before any broker KICK, and a request for an
+ * account this subscription does not name never arrives. One subscription per account, answered
+ * one at a time.
+ */
+export async function serveSpaceKicks(opts: {
+  /** The listener connection for one account. A missing one means that space is not served. */
+  listener: (accountId: string) => NatsConnection | undefined;
+  accounts: ReadonlyMap<string, { observer: NatsConnection; evictor: NatsConnection }>;
+}): Promise<{ stop: () => Promise<void> }> {
+  const subs = [...opts.accounts].flatMap(([accountId, conns]) => {
+    const conn = opts.listener(accountId);
+    if (!conn) return [];
+    const sub = conn.subscribe(spaceKickSubject(accountId));
+    const done = (async () => {
+      for await (const msg of sub) {
+        const target = parseSpaceKick(msg.data);
+        let answer: SpaceKickAnswer;
+        if (!target) answer = { ok: false, reason: "malformed" };
+        else {
+          try {
+            const sight = await kickAccountChecked(conns.evictor, conns.observer, accountId, { ...target, principal: "" });
+            answer = sight === "in-account" ? { ok: true } : { ok: false, reason: sight };
+          } catch {
+            answer = { ok: false, reason: "unavailable" };
+          }
+        }
+        msg.respond(enc(JSON.stringify(answer)));
+      }
+    })();
+    return { sub, done };
+  });
+  return {
+    stop: async () => {
+      for (const { sub } of subs) sub.unsubscribe();
+      await Promise.all(subs.map(({ done }) => done));
+    },
+  };
+}
+
+/** Ask the holder to kick one connection of this space's own account. The caller holds no kick
+ *  credential. No answer is `unavailable`, the same reading as a kick the broker refused. */
+export async function requestSpaceKick(opts: {
+  conn: NatsConnection;
+  accountId: string;
+  target: SpaceKickTarget;
+  timeoutMs?: number;
+}): Promise<SpaceKickAnswer> {
+  let msg;
+  try {
+    msg = await opts.conn.request(
+      spaceKickSubject(opts.accountId),
+      enc(JSON.stringify({ serverId: opts.target.serverId, cid: opts.target.cid })),
+      { timeout: opts.timeoutMs ?? 4000 },
+    );
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+  const answer = parseSpaceKickAnswer(msg.data);
+  return answer ?? { ok: false, reason: "malformed" };
+}
+
+function parseSpaceKickAnswer(data: Uint8Array): SpaceKickAnswer | undefined {
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(data));
+  } catch {
+    return undefined;
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  const rec = body as Record<string, unknown>;
+  if (rec.ok === true && Object.keys(rec).length === 1) return { ok: true };
+  if (rec.ok === false && Object.keys(rec).length === 2 &&
+    (rec.reason === "absent" || rec.reason === "unreadable" || rec.reason === "unavailable" || rec.reason === "malformed")) {
+    return { ok: false, reason: rec.reason };
+  }
+  return undefined;
+}
+
+/** The subject pattern the holder subscribes, exported so a grant audit can name it. */
+export const SPACE_KICK_REQUEST_SUBJECT = SPACE_KICK_SUBJECT;

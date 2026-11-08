@@ -37,6 +37,7 @@ import {
   mintLifecycleUid,
   DEV_OWNER,
   mintConnectionEvictorCreds,
+  mintKickRequestListenerCreds,
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
@@ -128,6 +129,7 @@ import {
   writeResult,
   type Report,
   connectionEvictorCredsKey,
+  kickListenerCredsKey,
   membershipConfigPath,
   membershipObserverCredsKey,
   membershipRwCredsKey,
@@ -5781,7 +5783,10 @@ async function provisionMembershipCreds(auth: SpaceAuth, root: string, space: st
     // close a revoked/removed principal's live connections. A space without it degrades to
     // deny-new-only (durable reauth) — surfaced loudly by the removal path, never silent.
     const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
-    // All four land through the per-kind resolvers (P7 §2 rule 1), and all four through the store's
+    // The listener that HEARS a kick request. Minted in the same window, because the system signing
+    // key is in memory only here. It cannot kick. The one kick holder reads it.
+    const listener = await mintKickRequestListenerCreds(auth, newIdentity());
+    // All five land through the per-kind resolvers (P7 §2 rule 1), and all five through the store's
     // `put`, which is the same `mkSecretDir` + atomic write the raw `writeSecretFile` did — the
     // difference being that it hardens the PER-SPACE dir the material now lives in rather than
     // `.cotal/` itself. This is the fresh-space branch, so nothing is there to migrate; it calls the
@@ -5791,6 +5796,7 @@ async function provisionMembershipCreds(auth: SpaceAuth, root: string, space: st
     await store.put(membershipObserverCredsKey(space, composition), observer);
     await store.put(membershipRwCredsKey(space, composition), rw);
     await store.put(connectionEvictorCredsKey(space, composition), evictor);
+    await store.put(kickListenerCredsKey(space, composition), listener);
     const configPath = membershipConfigPath(root, space);
     mkSecretDir(dirname(configPath));
     writeSecretFile(configPath, JSON.stringify({ accountId: auth.account.pub }));

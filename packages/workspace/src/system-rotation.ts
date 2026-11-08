@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   credsClaims,
   mintConnectionEvictorCreds,
+  mintKickRequestListenerCreds,
   mintMembershipObserverCreds,
   newIdentity,
   rotateSystemAccount,
@@ -15,6 +16,7 @@ import { retainSystemSigningSeed } from "./system-signing-seed.js";
 import { credentialFileExposure, readLocalRecordSource } from "./protected-records.js";
 import {
   connectionEvictorCredsKey,
+  kickListenerCredsKey,
   CONNECTION_EVICTOR_CREDS_KIND,
   membershipObserverCredsKey,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
@@ -114,10 +116,11 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
       "rotateSystemCreds: the broker operator seed is required to rotate the system account (this root holds a stripped signer) - run the rotation where the broker trust record lives",
     );
 
-  // In-memory first: the rotation and BOTH mints must succeed before anything is persisted.
+  // In-memory first: the rotation and all three mints must succeed before anything is persisted.
   const rotated = await rotateSystemAccount(auth);
   const observer = await mintMembershipObserverCreds(rotated, newIdentity());
   const evictor = await mintConnectionEvictorCreds(rotated, newIdentity());
+  const listener = await mintKickRequestListenerCreds(rotated, newIdentity());
 
   // Commit the trust record FIRST: the generation guard lives in this call, and it is what makes the
   // successor real. Only then the creds that record authorizes.
@@ -144,6 +147,7 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   await retainSystemSigningSeed(s, rotated); // the successor's seed replaces the retired account's
   await s.put(membershipObserverCredsKey(expectedSpace, composition), observer);
   await s.put(connectionEvictorCredsKey(expectedSpace, composition), evictor);
+  await s.put(kickListenerCredsKey(expectedSpace, composition), listener);
 
   return { gen: rotated.gen ?? 0, auth: rotated, expiresAt: credsClaims(observer).exp };
 }

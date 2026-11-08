@@ -11,6 +11,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog } from "./delivery.js";
 import { runFeedbackIntake } from "./feedback-intake.js";
 import { runDeliveryHost } from "./delivery-host.js";
+import { runKickHolder } from "./kick-holder.js";
 import { deliveryPreset, deliveryService, nativeDeliveryCommand } from "./delivery-service.js";
 import { runPending } from "./pending.js";
 import { pendingFlags, pendingView, validatePendingArguments } from "./pending-view.js";
@@ -95,7 +96,23 @@ const nativeIntake: Command = {
 const commands = deliveryCommands.map((command): Command => command === intake ? { ...command, hidden: true, summary: deprecatedDaemonEntrySummary("feedback-intake", command.summary) } : command);
 const daemonDeliver = deliveryCommands.find((command) => command.name === "__daemon-deliver")!;
 const deliver = deprecatedDaemonEntry("deliver", daemonDeliver, (args) => args.positionals[0] === "pending" ? "deliver pending" : "deliver");
-registry.register(...commands, deliver, nativeIntake, feedbackIntakePreset, feedbackIntakeProcess, nativeDeliveryCommand, deliveryPreset, deliveryService);
+
+const kickHolderCommand: Command = {
+  kind: "command", name: "__kick-holder", hidden: true,
+  summary: "the one process that holds this broker's kick credential",
+  flags: [{ name: "root", type: "string", value: "<root>" }, { name: "server", type: "string", value: "<url>" }],
+  async run(args) {
+    const root = String(args.values.root ?? ""), server = String(args.values.server ?? "");
+    if (!root || !server) throw new Error("kick holder: --root and --server are required");
+    const holder = await runKickHolder({ root, server });
+    const stop = () => { void holder.close().then(() => process.exit(0)); };
+    process.on("SIGTERM", stop);
+    process.on("SIGINT", stop);
+    await new Promise(() => {});
+  },
+};
+
+registry.register(...commands, deliver, nativeIntake, feedbackIntakePreset, feedbackIntakeProcess, nativeDeliveryCommand, deliveryPreset, deliveryService, kickHolderCommand);
 
 export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog };
 export { runDeliveryHost } from "./delivery-host.js";

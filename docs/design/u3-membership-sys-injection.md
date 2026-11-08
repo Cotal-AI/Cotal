@@ -1,15 +1,20 @@
 # Membership / `$SYS` credential injection
 
 > **Design** (non-normative) · Closes [embedding](../embedding.mdx) known gap 1
-> ("Delivery immediate live eviction and a fully-hosted membership feed"). Wire contract unchanged:
-> no new subject, no new stream, no new message type. This is a composition-root seam.
+> ("Delivery immediate live eviction and a fully-hosted membership feed"). A space daemon publishes a
+> kick request on `cotal.kick.<its own account>.req`, a subject of its own account. No new stream, no
+> new message type.
 >
 > **Status.** The reader side shipped in 0.36.0 (`ebefd2c5a`). The delivery daemon reads the `$SYS`
 > pair through the `SecretStore` seam in `implementations/delivery/src/sys-creds.ts` (`loadSysPair`),
 > with the shared tenancy, torn-rotation and store-aware repair checks of section 4. Injected scan
 > tenancy is validated at startup before admission (`959b59612`, 0.37.0), and a zero-match eviction
 > no longer needs the evictor (`ade42d529`, 0.51.0). The live smoke of section 6 is
-> `implementations/delivery/smoke/sys-injection-evict.smoke.ts`. One thing differs from section 2:
+> `implementations/delivery/smoke/sys-injection-evict.smoke.ts`. The kick credential is held by one
+> process per broker (`runKickHolder`). Each space has its own listener for that request. A space
+> daemon publishes a kick request for its own account
+> and never opens the credential. The holder kicks a connection only after a complete account-scoped
+> CONNZ page shows that connection id in the named account. One thing differs from section 2:
 > P7 segmented the pair in the same release, so the store keys landed as per-space builders,
 > `membershipObserverCredsKey(space, composition)` and `connectionEvictorCredsKey(space,
 > composition)` in `packages/workspace/src/space-segmentation.ts`. The workstation path keeps the

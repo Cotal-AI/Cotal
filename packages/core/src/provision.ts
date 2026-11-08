@@ -87,6 +87,7 @@ import {
   isTransferStream,
 } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
+import { spaceKickSubject } from "./evict.js";
 import {
   epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
   operatorInstrumentCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
@@ -1033,7 +1034,7 @@ export async function mintCreds(
   const listing = await prepareStaticListing(auth.space, profile, pr, opts, validDates.exp);
   const perms = profile === "endpoint-serve"
     ? endpointServePermissions(auth.space, pr, opts)
-    : listing?.permissions ?? permissionsFor(profile, auth.space, pr, opts);
+    : listing?.permissions ?? permissionsFor(profile, auth.space, pr, opts, auth.account.pub);
   const userJwt = await encodeUser(
     profile,
     fromPublic(identity.id),
@@ -1187,7 +1188,7 @@ export async function mintPublicUserJwt(
   };
   const perms = profile === "endpoint-serve"
     ? endpointServePermissions(auth.space, pr, opts)
-    : permissionsFor(profile, auth.space, pr, opts);
+    : permissionsFor(profile, auth.space, pr, opts, auth.account.pub);
   const validDates = userValidDates(profile, opts);
   if (validDates.exp === undefined) throw new Error(`mintPublicUserJwt: profile "${profile}" must be bounded`);
   const jwt = await encodeUser(profile, fromPublic(publicId), fromPublic(auth.account.pub),
@@ -1281,6 +1282,7 @@ export function permissionsFor(
   space: string,
   pr: MintPrincipal,
   opts: MintOpts,
+  accountPub?: string,
 ): Record<string, unknown> {
   // Guard the connId BEFORE any profile builds `_INBOX_<connId>.>`: in user mode connId is a client-
   // chosen nonce (untrusted), so a metacharacter here would escalate the inbox grant to every inbox.
@@ -1302,7 +1304,10 @@ export function permissionsFor(
     throw new Error("permissionsFor: an issued credential lists under its own generation; a listing generation beside it is refused (SPEC 13.15)");
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
-  if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
+  if (profile === "delivery") {
+    if (!accountPub) throw new Error("permissionsFor: the delivery profile names its own account's kick request, so the account public key is required");
+    return deliveryPermissions(space, pr, accountPub);
+  }
   if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon
@@ -2981,7 +2986,7 @@ function deprovisionerPermissions(space: string, pr: MintPrincipal, deprovisionT
  *  subscription — a leaked cred can't natively sniff the mixed pre-auth store. Honest blast radius
  *  (delivery-daemon.mdx): it can write any owner's `dlv` (the post-auth store agents trust); the future
  *  fan-out/reader cred split bounds that. */
-function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+function deliveryPermissions(space: string, pr: MintPrincipal, accountPub: string): Record<string, unknown> {
   const p = spacePrefix(space);
   const CHAT = chatStream(space), INBOX = inboxStream(space), DLV = dlvStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
@@ -3078,9 +3083,15 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // stale rather than as its own health. Bounded to the `.reply.` leaf, so it cannot publish to
     // the request subjects and forge a probe from a peer.
     livenessReplyGrant(space, "delivery"),
+    // The kick REQUEST for this space's own account. The broker KICK stays on the one kick
+    // credential; this row lets the daemon ask the holder and nothing more.
+    spaceKickSubject(accountPub),
   ];
   const sub = [
     `_INBOX_${pr.connId}.>`,
+    // The kick request's reply. The listener may publish `_INBOX.>`, and the client builds the reply
+    // subject under that prefix.
+    "_INBOX.>",
     `${p}.ctl.delivery.*.*`, // serve the delivery control service (queue-grouped; owner+actor caller slots)
     `${p}.ctl.delivery-admin.*.*`, // serve the privileged admin rail (reloadCreds; eviction executor next)
     // Serve the delivery plane's liveness probe (#1577), queue-grouped. Presence-only: the handler
@@ -3230,6 +3241,30 @@ export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Iden
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);
+}
+
+/** Subscribe and reply rows for the listener that hears one space's kick request. It subscribes to
+ *  that request and may publish only an `_INBOX` reply. It cannot publish a broker KICK. That grant
+ *  stays on {@link connectionEvictorPermissions}. */
+export function kickRequestListenerPermissions(): Record<string, unknown> {
+  return {
+    pub: { allow: ["_INBOX.>"] },
+    sub: { allow: ["cotal.kick.*.req"] },
+  };
+}
+
+/** Mint the listener that serves one space's kick requests. It is a user of that space's own account:
+ *  the request never leaves the account, and the listener holds no system credential. */
+export async function mintKickRequestListenerCreds(auth: SpaceAuth, identity: Identity, opts: MintOpts = {}): Promise<string> {
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed));
+  const userJwt = await encodeUser(
+    "kick-request-listener",
+    fromPublic(identity.id),
+    fromPublic(auth.account.pub),
+    kickRequestListenerPermissions(),
+    { signer, ...userValidDates("connection-evictor", opts) },
+  );
+  return new TextDecoder().decode(fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed))));
 }
 
 /**

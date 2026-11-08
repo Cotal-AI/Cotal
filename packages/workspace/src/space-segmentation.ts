@@ -99,6 +99,11 @@ export const MEMBERSHIP_OBSERVER_CREDS_KIND = "membership-observer.creds";
  *  observer's account-scoped scan. Keep the two spelled together for that reason. */
 export const CONNECTION_EVICTOR_CREDS_KIND = "connection-evictor.creds";
 
+/** The listener that HEARS a space's kick request. It subscribes and replies. It cannot publish
+ *  the broker KICK, which stays on {@link CONNECTION_EVICTOR_CREDS_KIND}. One per broker, minted in
+ *  the same window as the evictor and read by the one kick holder. */
+export const KICK_LISTENER_CREDS_KIND = "kick-listener.creds";
+
 /** The DATA account id the CONNZ/event subjects pin — non-secret, but kept 0600 beside the creds.
  *  The only P7 kind with no store reader: it is read raw by the eviction path's workstation
  *  cross-check, so its resolver returns a PATH ({@link membershipConfigPath}) and has no hosted arm
@@ -110,7 +115,7 @@ export const MEMBERSHIP_CONFIG_KIND = "membership.json";
  *  composition a key IS a path under `.cotal/`; see {@link migrateLegacyCotalMaterial} on why the
  *  migration is FS-composition-only. `delivery.creds` is here by the §3.2 widening. */
 export const P7_LEGACY_MATERIAL: readonly string[] = [
-  MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND,
+  MEMBERSHIP_OBSERVER_CREDS_KIND, CONNECTION_EVICTOR_CREDS_KIND, KICK_LISTENER_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND,
   MEMBERSHIP_CONFIG_KIND, DELIVERY_CREDS_KIND,
 ];
 
@@ -407,6 +412,12 @@ export function membershipObserverCredsKey(space: string, composition: SpaceMate
 /** {@link CONNECTION_EVICTOR_CREDS_KIND}'s key for `space` — see {@link spaceMaterialKey}. */
 export function connectionEvictorCredsKey(space: string, composition: SpaceMaterialComposition): string {
   return spaceMaterialKey(CONNECTION_EVICTOR_CREDS_KIND, space, composition);
+}
+
+/** {@link KICK_LISTENER_CREDS_KIND}'s key for `space`. One broker has one, kept with the space that
+ *  minted it. */
+export function kickListenerCredsKey(space: string, composition: SpaceMaterialComposition): string {
+  return spaceMaterialKey(KICK_LISTENER_CREDS_KIND, space, composition);
 }
 
 /** {@link MEMBERSHIP_CONFIG_KIND}'s PATH for `space`, migrated on first touch.

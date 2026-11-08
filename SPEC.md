@@ -7031,7 +7031,12 @@ expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the mana
 renewal owner (self-remint for its own credential; same-nkey re-sign + explicit `reloadCreds`
 adoption for the seed-less daemons); the two system-account credentials (`membership-observer`,
 `connection-evictor`) carry a 30d expiry and are renewable ONLY by a system-account rotation +
-broker restart; no persisted system-account minting secret exists, by design. On per-user-auth
+broker restart; no persisted system-account minting secret exists, by design. The kick credential
+publishes `$SYS.REQ.SERVER.*.KICK` and nothing else, and one process per broker holds it. A space
+daemon does not. It publishes a kick request on `cotal.kick.<its own account>.req`, a subject of its
+own account. One listener per space hears that subject, and the
+holder kicks only after a complete account-scoped CONNZ page shows that connection id in the named
+account. A connection the page does not show is not kicked. On per-user-auth
 spaces, static `agent`/`observer`/`admin` minting is retired entirely (the flip): agent identities
 exist only as owner+actor principals under a logged-in user, and the elevated profiles of this
 appendix are reached per-connection via the exchange-authored view claim instead (§10). The flip is

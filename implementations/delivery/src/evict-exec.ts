@@ -1,12 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   evictDeniedPrincipalsWithCreds,
+  dialerFor,
   isPlaneConnTuple,
   isPrincipalOwnerToken,
   observePlaneLivenessWithCreds,
   observePrincipalLivenessWithCreds,
   parsePrincipalKey,
+  requestSpaceKick,
   type EvictionResult,
   type PlaneLivenessQuery,
   type PlaneLivenessResult,
@@ -165,13 +168,13 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
  * never a choice the executor makes. Core opens each cred per call. Eviction is a rare repair step,
  * never a standing $SYS connection in the daemon.
  */
-export async function executeEviction(server: string, target: ScanTarget, principal: string): Promise<EvictionResult> {
-  return (await executeEvictions(server, target, [principal], "evictPrincipal"))[0]!;
+export async function executeEviction(server: string, target: ScanTarget, principal: string, ask?: () => string): Promise<EvictionResult> {
+  return (await executeEvictions(server, target, [principal], "evictPrincipal", ask))[0]!;
 }
 
 /** {@link executeEviction} for a SET of principals in one shared sweep (`evictPrincipals`): the
  *  same per-principal validation, one observer connection and one scan → KICK → verify for all. */
-export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals"): Promise<EvictionResult[]> {
+export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals", ask?: () => string): Promise<EvictionResult[]> {
   // Fail-closed principal validation — the KICK targets come from the observer's own CONNZ scan,
   // but the FILTER must be a REAL principal: syntax alone is not enough, because the eviction sweep's
   // CONNZ attribution only ever surfaces owners that pass isPrincipalOwnerToken with allowPlatform
@@ -195,8 +198,25 @@ export async function executeEvictions(server: string, target: ScanTarget, princ
     observerCreds: sys.observer,
     accountId,
     principals,
-    openEvictor: async () => (await loadCheckedSys(target, verb, "both")).evictor as string,
+    ...(ask ? { kick: kickThrough(server, ask, accountId) } : {}),
   });
+}
+
+/** Send one kick request on a connection opened from the daemon's own credential, then close it.
+ *  The kick credential is not read. One connection per kick: a sweep bounds how many are in flight. */
+function kickThrough(server: string, creds: () => string, accountId: string) {
+  return async (_conn: NatsConnection, one: { serverId: string; cid: number }) => {
+    const text = creds();
+    // The client appends `.<random>.<token>` and subscribes to `.<random>.*`. The listener may
+    // publish `_INBOX.>`, so the prefix is `_INBOX`.
+    const conn = await dialerFor(server)({ servers: server, authenticator: credsAuthenticator(new TextEncoder().encode(text)), inboxPrefix: "_INBOX", maxReconnectAttempts: 0 });
+    try {
+      const answer = await requestSpaceKick({ conn, accountId, target: one });
+      if (!answer.ok) throw new Error(`kick request ${answer.reason}`);
+    } finally {
+      await conn.drain().catch(() => {});
+    }
+  };
 }
 
 /**

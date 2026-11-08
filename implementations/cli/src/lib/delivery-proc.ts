@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, openSync, closeSync, writeFileSync, readFileSync, readSync, statSync } from "node:fs";
+import { join } from "node:path";
 import {
   DEFAULT_SERVER,
   LEASE_TTL_MS,
@@ -10,7 +11,7 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, kickListenerCredsKey, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -223,6 +224,30 @@ export function startDeliveryDetached(o: Opts = {}): number {
   return pid;
 }
 
+/** Start the one kick holder for this broker, if it is not already running. It holds the kick
+ *  credential and answers every space's kick request. A root with no listener credential starts
+ *  nothing: it was provisioned before the holder existed. */
+export async function startKickHolder(server: string): Promise<void> {
+  const root = cotalRoot();
+  const dir = authDir(root);
+  const store = workspaceSecretStore(root);
+  const spaces = listSpaceAccounts(dir);
+  const present = await Promise.all(spaces.map((space) => store.get(kickListenerCredsKey(space, { injected: false, root }))));
+  if (!present.some((creds) => creds !== undefined)) return;
+  const pidPath = join(root, ".cotal", "kick-holder.pid");
+  if (existsSync(pidPath)) {
+    const recorded = Number(readFileSync(pidPath, "utf8").trim());
+    if (Number.isInteger(recorded) && recorded > 0 && probeLiveness(recorded) !== "dead") return;
+  }
+  const [node, ...self] = daemonArgv();
+  const fd = openPrivateAppend(join(root, ".cotal", "kick-holder.log"));
+  const child = spawn(node, [...self, "__kick-holder", "--root", root, "--server", server], { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+  closeSync(fd);
+  child.unref();
+  if (!child.pid) throw new Error("kick holder spawned with no pid");
+  writePidPair(pidPath, child.pid);
+}
+
 /** The `✗` failure lines a daemon wrote to its log from byte `from` on, without the shard-release
  *  notice: the reason one launch gave for exiting. An unreadable log gives no reason. */
 function loggedFailure(path: string, from: number): string | undefined {
@@ -259,6 +284,7 @@ export async function ensureDelivery(
 
   const space = o.space ?? folderSpace();
   const root = cotalRoot();
+  await startKickHolder(o.server ?? DEFAULT_SERVER);
   if (oldHostingManagerVerdict(managerRecordState(space, root, { probe }), space, probe, root) === "stop-it") {
     console.error(
       "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
