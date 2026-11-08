@@ -126,9 +126,10 @@ try {
   check("a retired execution record does not block a new local NONE instance",
     replacement.instanceId !== local.instanceId && manager.execution === "none" && readFileSync(path).equals(capability));
   await manager.stop(); running = false; manager = undefined;
-  manager = new Manager(localOpts); await manager.start(); running = true; ports.push(Number(new URL(manager.consoleUrl).port));
-  check("restart selects the current instance with both old and current execution records",
-    loadManagerInstanceIdentity(root, space)?.instanceId === replacement.instanceId && readFileSync(path).equals(capability));
+  // Construction claims the current capability before any wire registration.
+  manager = new Manager(localOpts);
+  check("construction selects the current instance with both old and current execution records",
+    manager.execution === "none" && loadManagerInstanceIdentity(root, space)?.instanceId === replacement.instanceId && readFileSync(path).equals(capability));
 } finally {
   await writer?.close();
   if (running) { try { await manager?.stop(); } catch { cleanupOK = false; } }
