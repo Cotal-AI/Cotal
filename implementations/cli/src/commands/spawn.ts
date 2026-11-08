@@ -696,7 +696,8 @@ export async function launchManagedPersona(
     // Without a flag the harness is the persona pin or a default, which only the target manager
     // can read: ask it, so the carry looks with the connector the launch runs (#2899).
     const agent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
-    const claim = await carryTranscriptOrExit(flags, on, values.resume, agent);
+    // The carry and its transfer-writer view stay on the mesh selected for this launch.
+    const claim = await carryTranscriptOrExit({ ...flags, space: t.space, server: t.server }, on, values.resume, agent);
     if (claim !== undefined) resumeClaim = { claim, agent };
   }
   // The report that answers names the mesh in its heading, so this block names it once, in a field.
