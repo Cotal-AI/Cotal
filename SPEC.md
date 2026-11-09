@@ -5490,10 +5490,13 @@ when its credential carries both; a class grant covers neither, and one instance
 another. This is row containment, not the handle containment of §13.6, which lets a child pin an
 instance under a class grant. A manager minting a helper's standing grant under this bound confers
 no authority in the sense of §13.3: that sentence is about envelope content and the `auth` slot,
-whose conferral exists only as trusted redemption. A static agent mint MUST refuse an endpoint
-capability with a `target` or `journal`, on issue and on renewal: the static lifecycle terminal has
-no obligation drain (§13.1), and an untargeted request keys the `ep` sentinel, which no retirement
-drain reads (the `oblig` record, §13.7), so a retired caller leaves nothing that drain would settle. The static
+whose conferral exists only as trusted redemption. A static agent mint MUST refuse a third-party
+endpoint capability with a `target` or `journal`, on issue and on renewal: the static lifecycle
+terminal has no obligation drain (§13.1), and an untargeted request keys the `ep` sentinel, which no
+retirement drain reads (the `oblig` record, §13.7), so a retired caller leaves nothing that drain
+would settle. A reference endpoint's rows (§13.2) are outside that rule: they are the rows the
+`spawn`, `run` and `admin` capabilities already carry, and passing them as endpoint capabilities, as
+an instance-pinned caller does, grants nothing those do not. The static
 terminal revokes the helper's ledger rows and evicts its live connections, but a static credential
 copied off disk before the despawn stays valid until it expires, up to the managed credential's
 lifetime after its last renewal, and can reconnect and call the endpoint commands it carries. This

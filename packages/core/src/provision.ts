@@ -1024,18 +1024,20 @@ export async function mintCreds(
   profile: Profile,
   opts: MintOpts = {},
 ): Promise<string> {
-  // An issued static agent credential carries untargeted, unjournaled endpoint commands only. The
-  // static lifecycle terminal has no SPEC 13.1 obligation drain, so a targeted or journaled grant
-  // could leave accepted work keyed to a retired lifecycle that nothing settles. Refused before
-  // anything is signed or staged. The guard covers every issued agent mint: the managed spawn
-  // (through provisionAgent), the managed renewal and the foreground spawn. An unissued mint skips
-  // it, so a future caller that hands a static agent endpoint commands must mint it issued. The
-  // `spawn` and `admin` capabilities mint their own manager rows and are not endpoint capabilities,
-  // so they are unaffected.
+  // An issued static agent credential carries untargeted, unjournaled third-party endpoint commands
+  // only. The static lifecycle terminal has no SPEC 13.1 obligation drain, so a targeted or
+  // journaled grant could leave accepted work keyed to a retired lifecycle that nothing settles.
+  // Refused before anything is signed or staged. The guard covers every issued agent mint: the
+  // managed spawn (through provisionAgent), the managed renewal and the foreground spawn. An
+  // unissued mint skips it, so a future caller that hands a static agent endpoint commands must mint
+  // it issued. A reference endpoint (a single-label name such as `manager`, SPEC 13.2) is outside
+  // the guard: its targeted and journaled rows are the ones the `spawn`, `run` and `admin`
+  // capabilities already mint, and the same rows passed here, as an instance-pinned caller does,
+  // grant nothing those capabilities do not.
   if (profile === "agent" && opts.issued) {
-    const drained = opts.endpointCapabilities?.find((c) => c.target !== undefined || c.journal);
+    const drained = opts.endpointCapabilities?.find((c) => c.endpoint.includes(".") && (c.target !== undefined || c.journal));
     if (drained)
-      throw new Error(`mintCreds: an issued static agent credential carries untargeted, unjournaled endpoint commands only; "${drained.endpoint} ${drained.command}" is ${drained.target !== undefined ? "targeted" : "journaled"}, and the static lifecycle terminal has no obligation drain to settle what it could leave (SPEC 13.1, 13.15)`);
+      throw new Error(`mintCreds: an issued static agent credential carries untargeted, unjournaled third-party endpoint commands only; "${drained.endpoint} ${drained.command}" is ${drained.target !== undefined ? "targeted" : "journaled"}, and the static lifecycle terminal has no obligation drain to settle what it could leave (SPEC 13.1, 13.15)`);
   }
   const signer = nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed));
   const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
