@@ -330,7 +330,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
   const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir);
   if (r.status !== 0) {
-    fail(pkg, `npm install failed:\n${r.output.split("\n").slice(-8).join("\n")}`);
+    fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }
 
   // The spec's package must now be a prefix dependency — anything else is a failed install.
@@ -423,6 +423,15 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
       ? [c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`)]
       : []),
   ];
+}
+
+/** Why `npm install` did not finish, as one line. A spawn that cannot find npm says so. Any other
+ *  output keeps its last lines, joined, so a stored seed reason never carries a newline. */
+function npmInstallFailure(output: string): string {
+  const lines = output.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.some((line) => /^spawn error: spawn npm ENOENT\b/.test(line))) return "npm is not on PATH";
+  const tail = lines.slice(-8).join(" ");
+  return tail || "npm install produced no output";
 }
 
 function fail(p: string, why: string): never {

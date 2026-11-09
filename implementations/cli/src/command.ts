@@ -674,6 +674,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         deferSeedToLaunch();
       } else await reconcileSeededConnectors();
     } catch (e) {
+      // The seed runs before the command, so a command that asked for JSON has not reached its own
+      // failure path. The refusal is the envelope on stdout and no text report, as any later refusal is.
+      if (cmd && asksForJson(cmd, rest)) {
+        const message = e instanceof Error ? e.message : String(e);
+        const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, message.includes("`cotal ext seed --repair`") ? {} : {
+          remedy: "fix that, then run `cotal ext seed --repair`",
+        });
+        failureExit(cmd, failure, true, rest.includes("--plain"));
+      }
       stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
