@@ -109,7 +109,8 @@ const ANNOTATIONS = {
   cotal_feedback: {
     effect: "sends data to an external HTTPS intake (network egress)",
     availability: "always",
-    notes: "Keyless submissions need a contact email; never include secrets.",
+    notes:
+      "Keyless submissions need a contact email; never include secrets. A send is confirmed only by the intake's HTTP 202 receipt (`ok`, `id`, and `published`). Any other 2xx is an unconfirmed outcome and is not retried. A redirect is not followed.",
   },
   cotal_despawn: {
     effect: "stops a teammate (or yourself)",
