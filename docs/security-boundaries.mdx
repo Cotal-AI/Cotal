@@ -26,6 +26,8 @@ Signing-key rotation is the revocation mechanism for copied trust material. A st
 
 `membership-observer` and `connection-evictor` use the system-account signer. The trust record omits that signing seed. Own-broker CLI provisioning separately retains a host copy for caller issuance. The observer and evictor credentials expire after 30 days; retaining the key does not add a renewal loop to those running clients.
 
+The evictor's KICK is broker-wide, so on a broker with several spaces no space daemon holds it. The multi-space delivery host is the one process that does: it mints a kick-only user per kick from the retained seed, checks the connection against its own census of the asking lane's account, and refuses a connection that census does not list.
+
 Renewal issues a new system account with `cotal down` followed by `cotal up --rotate-sys`. This preserves the data account, agent credentials, and store. Earlier full backups become invalid because they bind the old operator JWT and system account. A new `cotal backup` is required after rotation.
 
 After these credentials expire, mesh delivery continues but the membership feed and live eviction stop. `cotal doctor auth` and the manager warn once 75% of the lifetime has elapsed.

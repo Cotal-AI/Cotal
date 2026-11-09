@@ -8,11 +8,13 @@ import {
   observePrincipalLivenessWithCreds,
   parsePrincipalKey,
   type EvictionResult,
+  type KickTarget,
   type PlaneLivenessQuery,
   type PlaneLivenessResult,
   type PrincipalLivenessResult,
 } from "@cotal-ai/core";
 import { CONNECTION_EVICTOR_CREDS_KIND, findCotalRoot, membershipConfigPath, MEMBERSHIP_OBSERVER_CREDS_KIND } from "@cotal-ai/workspace";
+import type { KickAuthority } from "./kick-authority.js";
 import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem, type SysCredsSource } from "./sys-creds.js";
 
 
@@ -164,14 +166,19 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
  * provisioning message. Deny-new-only (durable reauth) stays the caller's posture for that refusal,
  * never a choice the executor makes. Core opens each cred per call. Eviction is a rare repair step,
  * never a standing $SYS connection in the daemon.
+ *
+ * A lane of a multi-space host hands `authority` instead: it opens no kick credential, and each live
+ * match is kicked by the host's one kick authority, which checks the connection against its own
+ * census of this lane's account first (`kick-authority.ts`). The sweep and its verify re-scan stay
+ * this lane's, on its own observer.
  */
-export async function executeEviction(server: string, target: ScanTarget, principal: string): Promise<EvictionResult> {
-  return (await executeEvictions(server, target, [principal], "evictPrincipal"))[0]!;
+export async function executeEviction(server: string, target: ScanTarget, principal: string, authority?: KickAuthority): Promise<EvictionResult> {
+  return (await executeEvictions(server, target, [principal], "evictPrincipal", authority))[0]!;
 }
 
 /** {@link executeEviction} for a SET of principals in one shared sweep (`evictPrincipals`): the
  *  same per-principal validation, one observer connection and one scan → KICK → verify for all. */
-export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals"): Promise<EvictionResult[]> {
+export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals", authority?: KickAuthority): Promise<EvictionResult[]> {
   // Fail-closed principal validation — the KICK targets come from the observer's own CONNZ scan,
   // but the FILTER must be a REAL principal: syntax alone is not enough, because the eviction sweep's
   // CONNZ attribution only ever surfaces owners that pass isPrincipalOwnerToken with allowPlatform
@@ -195,7 +202,9 @@ export async function executeEvictions(server: string, target: ScanTarget, princ
     observerCreds: sys.observer,
     accountId,
     principals,
-    openEvictor: async () => (await loadCheckedSys(target, verb, "both")).evictor as string,
+    ...(authority !== undefined
+      ? { kick: (t: KickTarget) => authority.kick({ accountId, observerCreds: sys.observer, target: t }) }
+      : { openEvictor: async () => (await loadCheckedSys(target, verb, "both")).evictor as string }),
   });
 }
 

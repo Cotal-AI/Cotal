@@ -99,4 +99,6 @@ registry.register(...commands, deliver, nativeIntake, feedbackIntakePreset, feed
 
 export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog };
 export { runDeliveryHost } from "./delivery-host.js";
+export { hostKickAuthority, type KickAuthority, type KickRequest } from "./kick-authority.js";
+export { retainedBrokerSeed, type RetainedBrokerSeed } from "./sys-creds.js";
 export { runFeedbackIntake };

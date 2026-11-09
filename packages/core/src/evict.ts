@@ -213,10 +213,17 @@ function connzRound(
   });
 }
 
+/** One live connection named the way KICK names it: the server that holds it and its connection id
+ *  there. What a sweep hands a kicker, and what a kick authority checks against an account's census. */
+export interface KickTarget {
+  serverId: string;
+  cid: number;
+}
+
 /** KICK one connection by cid on the server that reported it. No per-cid ack from the broker; the
  *  caller's re-scan is the verification. A publish/permission failure is surfaced (thrown up), so a
  *  mis-scoped evictor cred fails loud rather than silently not-kicking. */
-async function kick(evictorConn: NatsConnection, conn: LiveConn): Promise<void> {
+export async function kickConnection(evictorConn: NatsConnection, conn: KickTarget): Promise<void> {
   // Request/reply so a broker-side error (bad permissions, unknown server) surfaces rather than a
   // fire-and-forget publish that a mis-scoped cred would swallow. The ServerAPIResponse `data` is
   // empty on success; we don't parse it (re-scan verifies) but DO honor an `error` field.
@@ -224,6 +231,32 @@ async function kick(evictorConn: NatsConnection, conn: LiveConn): Promise<void> 
   const body = res.json<{ error?: { description?: string } }>();
   if (body?.error) throw new Error(`KICK cid ${conn.cid} on ${conn.serverId} refused: ${body.error.description ?? "unknown"}`);
 }
+
+/** What one COMPLETE account-scoped CONNZ page says about a connection: it is in the account, it is
+ *  not, or the page did not answer whole. KICK takes a connection id and checks no account, so a
+ *  process that holds the broker-wide kick credential on behalf of several spaces decides here, on
+ *  a scan it completed itself, before the request leaves. `absent` and `unreadable` both refuse: a
+ *  page that did not answer is not proof the connection is gone, and a connection this account cannot
+ *  see is not this account's to drop. */
+export async function accountHoldsConnection(
+  observerConn: NatsConnection,
+  accountId: string,
+  target: KickTarget,
+  options: EvictOptions = {},
+): Promise<"present" | "absent" | "unreadable"> {
+  const page = await scanLive(observerConn, accountId, {
+    settleMs: options.settleMs ?? 250,
+    maxWaitMs: options.maxWaitMs ?? 2000,
+    pageLimit: options.pageLimit ?? 1024,
+  });
+  if (!page.complete) return "unreadable";
+  return page.conns.some((c) => c.serverId === target.serverId && c.cid === target.cid) ? "present" : "absent";
+}
+
+/** What a sweep kicks with: the kick-only evictor connection, a supplier that opens it once a live
+ *  match exists, or a kick function another process answers for, such as the one kick authority of a
+ *  multi-space delivery host. With a function, this process opens no kick credential. */
+export type Kicker = NatsConnection | (() => Promise<NatsConnection>) | { readonly kick: (target: KickTarget) => Promise<void> };
 
 /**
  * Evict every live connection of one principal — the kill-live half of revocation, to be called
@@ -237,7 +270,7 @@ async function kick(evictorConn: NatsConnection, conn: LiveConn): Promise<void> 
  */
 export async function evictDeniedPrincipal(
   observerConn: NatsConnection,
-  evictorConn: NatsConnection | (() => Promise<NatsConnection>),
+  evictorConn: Kicker,
   accountId: string,
   principal: string,
   options: EvictOptions = {},
@@ -263,7 +296,7 @@ export const KICK_CONCURRENCY = 16;
  */
 export async function evictDeniedPrincipals(
   observerConn: NatsConnection,
-  evictorConn: NatsConnection | (() => Promise<NatsConnection>),
+  evictorConn: Kicker,
   accountId: string,
   principals: readonly string[],
   options: EvictOptions = {},
@@ -300,7 +333,12 @@ export async function evictDeniedPrincipals(
     else pending.set(p, { kicked: 0 });
   }
   if (pending.size === 0) return answer();
-  const kicker = typeof evictorConn === "function" ? await evictorConn() : evictorConn;
+  const kickOne: (target: KickTarget) => Promise<void> = "kick" in evictorConn
+    ? evictorConn.kick
+    : await (async () => {
+      const conn = typeof evictorConn === "function" ? await evictorConn() : evictorConn;
+      return (target: KickTarget) => kickConnection(conn, target);
+    })();
   // KICKs are independent per connection, so they run KICK_CONCURRENCY at a time; every one of them
   // settles before the verify re-scan reads the result.
   const kickAll = async (live: Map<string, LiveConn[]>) => {
@@ -308,7 +346,7 @@ export async function evictDeniedPrincipals(
     const worker = async () => {
       for (let next = queue.shift(); next; next = queue.shift()) {
         try {
-          await kick(kicker, next.t);
+          await kickOne(next.t);
           next.st.kicked++;
         } catch (e) {
           next.st.note = e instanceof Error ? e.message : String(e);
@@ -880,6 +918,10 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
   evictorCreds?: string;
   /** Loaded only after a complete scan finds a live match. Wins over `evictorCreds` when both are set. */
   openEvictor?: () => Promise<string>;
+  /** Kicks one scanned connection on this sweep's behalf, in place of a kick credential this process
+   *  would open: the one kick authority of a multi-space host. When set, no evictor credential is
+   *  read or dialled here and `openEvictor` is never called. */
+  kick?: (target: KickTarget) => Promise<void>;
   accountId: string;
   principals: readonly string[];
   options?: EvictOptions;
@@ -893,7 +935,7 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
   });
   let evictor: NatsConnection | undefined;
   try {
-    return await evictDeniedPrincipals(observer, async () => {
+    return await evictDeniedPrincipals(observer, opts.kick !== undefined ? { kick: opts.kick } : async () => {
       const creds = opts.openEvictor ? await opts.openEvictor() : opts.evictorCreds;
       if (creds === undefined)
         throw new Error("evictDeniedPrincipal: a live match requires the kick-only evictor credential");
