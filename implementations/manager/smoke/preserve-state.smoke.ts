@@ -1076,24 +1076,24 @@ let openInventory: ManagerResumeAgent;
   const mismatch = await mismatchManager.resumePreserved(inventoryOf({ ...entry, identity: { mode: "static", id: newIdentity().id, lifecycleUid: uidFor("mismatch"), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } } }));
   check("static resume fails closed on credential/principal mismatch", !mismatch.ok && /does not match inventory principal/.test(mismatch.agents[0]?.reply.error ?? ""), mismatch.agents);
 
-  // A retained inventory whose endpoint commands pin an instance is refused like a fresh spawn naming
-  // one, at the control door and through the in-process call, rather than relaunched until a renewal
-  // refuses it.
-  const pinnedEntry: ManagerResumeAgent = {
-    ...entry,
-    launch: { ...entry.launch, endpoints: [{ endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000a" }] },
-  };
+  // A retained inventory whose endpoint commands pin an instance resumes like any other, at the
+  // control door and through the in-process call, and the session is launched with the pinned list,
+  // which a renewal lowers to that instance's rows.
+  const pinnedList = [{ endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000a" }];
+  const pinnedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, endpoints: pinnedList } };
   const pinDoor = managerWith((name) => fakeHandle(name), { resumeAttemptId: "pinned_resume" });
   (pinDoor as unknown as { auth: unknown }).auth = auth;
+  resetCapturedLaunch();
   const pinnedAtDoor = await control(pinDoor, "admin", "resumePreserved", { attemptId: "pinned_resume", inventory: inventoryOf(pinnedEntry) });
-  check("a resume whose inventory pins an endpoint instance is refused at the control door", !pinnedAtDoor.ok && /pins instance i0000000000000000000000000a/.test(pinnedAtDoor.error ?? ""), pinnedAtDoor.error);
+  check("a resume whose inventory pins an endpoint instance is accepted at the control door",
+    pinnedAtDoor.ok === true && JSON.stringify(capturedLaunch?.endpoints) === JSON.stringify(pinnedList), { reply: pinnedAtDoor, endpoints: capturedLaunch?.endpoints });
   const pinDirect = managerWith((name) => fakeHandle(name));
   (pinDirect as unknown as { auth: unknown }).auth = auth;
   resetCapturedLaunch();
   const pinnedDirect = await pinDirect.resumePreserved(inventoryOf(pinnedEntry));
-  check("and through the in-process call, before anything launches",
-    !pinnedDirect.ok && /pins instance i0000000000000000000000000a/.test(pinnedDirect.agents[0]?.reply.error ?? pinnedDirect.error ?? "") && capturedLaunch === undefined,
-    { result: pinnedDirect.agents[0]?.reply ?? pinnedDirect.error, launched: capturedLaunch?.name });
+  check("and through the in-process call, which launches the session with the pinned list",
+    pinnedDirect.ok && JSON.stringify(capturedLaunch?.endpoints) === JSON.stringify(pinnedList),
+    { result: pinnedDirect.agents[0]?.reply ?? pinnedDirect.error, endpoints: capturedLaunch?.endpoints });
 
   const replacementCreds = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: uidFor("replacement") });
   writeFileSync(credsPath, retainedCreds, { mode: 0o600 });

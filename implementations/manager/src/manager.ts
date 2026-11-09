@@ -7363,11 +7363,7 @@ export class Manager {
       // before any bound or exemption reads it.
       if (personaEndpoints !== undefined && this.meshMode === "user")
         return { ok: false, error: userMeshEndpointsRefusal("spawn") };
-      try {
-        endpoints = lowerPersonaEndpoints(personaEndpoints);
-      } catch (e) {
-        return { ok: false, error: `persona ${where}: ${rejectionText(e)}` };
-      }
+      endpoints = lowerPersonaEndpoints(personaEndpoints);
       // #651: fold the persona's model into the launch record, mirroring the variant line below
       // and the manifest branch above. Without this, a persona-file model (the common pin source)
       // never reaches `launch.model`, so the connector runs the seat on it while `ps --wide`/`--json`
@@ -8499,13 +8495,6 @@ export class Manager {
     try {
       if (entry.space !== this.space)
         return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.space}"` };
-      // The retained endpoint commands lower under the rule a fresh spawn's do, so a list this release
-      // would not mint is refused here instead of relaunched until a renewal refuses it.
-      try {
-        lowerPersonaEndpoints(entry.launch.endpoints);
-      } catch (e) {
-        return { ok: false, error: `retained agent ${entry.name}: ${rejectionText(e)}` };
-      }
       try {
         await this.loadSeatRuntime(entry.launch.runtime);
       } catch (e) {
@@ -12901,12 +12890,7 @@ export class Manager {
       composed = compose();
       if ("reply" in composed) return composed.reply;
       const kept = composed.def.capabilities ?? [];
-      let keptEndpoints: EpCapability[];
-      try {
-        keptEndpoints = lowerPersonaEndpoints(composed.def.endpoints);
-      } catch (e) {
-        return { ok: false, error: `define-persona: ${rejectionText(e)}` };
-      }
+      const keptEndpoints = lowerPersonaEndpoints(composed.def.endpoints);
       // A user-auth persona may not name the field at all; elsewhere `[]` hands on nothing to bound.
       const namesEndpoints = composed.def.endpoints !== undefined;
       const refused = kept.length || keptEndpoints.length || (namesEndpoints && this.meshMode === "user")

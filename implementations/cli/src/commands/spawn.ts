@@ -45,7 +45,6 @@ import {
   peerLabel,
   type AgentDef,
   type CompletionResult,
-  type EpCapability,
   type Connector,
   type CotalConfig,
   type ExtensionRef,
@@ -1536,12 +1535,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // static mesh the operator's own spawn mints them; an open mesh mints nothing.
   if (target.mode === "user" && def.endpoints !== undefined)
     throw new CommandFailure("refused", "UNSUPPORTED", `persona ${path} names \`endpoints\`, and on a per-user auth mesh endpoint access comes from the service owner's grants, which a persona cannot hand on (SPEC 13.15)`, { target: { space, path }, remedy: "drop `endpoints` from the persona, and grant the agent with `cotal service-endpoint grant` once it runs" });
-  let endpointCapabilities: EpCapability[];
-  try {
-    endpointCapabilities = lowerPersonaEndpoints(def.endpoints);
-  } catch (e) {
-    throw new CommandFailure("refused", "SCHEMA_INVALID", `persona ${path}: ${(e as Error).message}`, { target: { space, path } });
-  }
+  const endpointCapabilities = lowerPersonaEndpoints(def.endpoints);
   // Said once every check above has passed, so a refusal is never read as a launch that started.
   console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the

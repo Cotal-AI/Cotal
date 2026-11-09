@@ -12,7 +12,7 @@
  *   D. `--expires-at` sets the generation's horizon and the credential's expiry.
  *   E. the expiry flags are refused for a managed launch.
  *   F. a persona's endpoint commands are minted on the seat's credential, and an instance-pinned
- *      entry is refused before anything is provisioned.
+ *      entry is minted on that instance's rail alone, with that instance's describe.
  *
  * Needs `nats-server` on PATH. Run: pnpm smoke:foreground-issuance:live
  */
@@ -162,8 +162,13 @@ try {
     seatE?.endpoints === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), seatE?.endpoints);
   await stop(we);
   const wp = launch(["ep-pin"]);
-  await wp.closed;
-  check("an instance-pinned entry is refused before a seat starts", (await wp.seat) === undefined && /pins instance i0000000000000000000000000a/.test(wp.output) && !/FIXTURE_SEAT/.test(wp.output), wp.output);
+  const seatP = await wp.seat;
+  const pubP = seatP ? (credsClaims(readFileSync(seatP.creds, "utf8")) as { nats?: { pub?: { allow?: string[] } } } | undefined)?.nats?.pub?.allow ?? [] : [];
+  const instRow = (command: string) => seatP ? new RegExp(`^cotal\\.${space}\\.ep\\.v1\\.inst\\.com_example_orders\\.i0000000000000000000000000a\\.${command}\\.local\\.[A-Z0-9]+\\.${seatP.uid}\\.`) : /$^/;
+  check("an instance-pinned entry mints the command and the describe on that instance's rail",
+    pubP.some((r) => instRow("list").test(r)) && pubP.some((r) => instRow("describe").test(r)), pubP.filter((r) => r.includes("orders")));
+  check("and no class row for that endpoint", !pubP.some((r) => r.includes(".one.com_example_orders.")), pubP.filter((r) => r.includes("orders")));
+  await stop(wp);
   ok = true;
 } finally {
   for (const worker of workers) await stop(worker);
