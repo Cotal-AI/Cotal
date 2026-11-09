@@ -4,9 +4,9 @@
  *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, projectMovedTo, movedRootRemedy, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, stackJournalRoot, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -718,11 +718,48 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
  *  stack journal nor the broker configuration the definition names, whatever a still-running broker
  *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
 export function goneStackRoot(space: string): string | undefined {
+  const root = recordedStackRoot(space);
+  return root !== undefined && !existsSync(stackJournalPath(root)) && !existsSync(recordedStackConfig(space) ?? "") ? root : undefined;
+}
+
+/** The folder the saved stack broker of `space` starts in, read from that definition alone.
+ *  Undefined when the definition cannot be read or names no root. */
+function recordedStackRoot(space: string): string | undefined {
   try {
     const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
-    if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
-    return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
+    return launch?.type === "adapter" && launch.adapter === STACK_ADAPTER.broker && typeof launch.options.root === "string" ? launch.options.root : undefined;
   } catch { return undefined; }
+}
+
+/** The broker configuration that definition names, when it names one. */
+function recordedStackConfig(space: string): string | undefined {
+  try {
+    const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
+    return launch?.type === "adapter" && typeof launch.options.config === "string" ? launch.options.config : undefined;
+  } catch { return undefined; }
+}
+
+/** A stack whose recorded folder no longer holds its journal, because the project was moved or
+ *  renamed while the stack ran: the folder that now holds the journal, and the way back the commands
+ *  run there name. A folder that was deleted holds the journal nowhere, so this is undefined and the
+ *  gone-folder stop stays the way out. Undefined when the definition or a journal cannot be read. */
+export function movedStack(space: string): { root: string; recordedRoot: string; remedy: string } | undefined {
+  const recordedRoot = recordedStackRoot(space);
+  if (recordedRoot === undefined || existsSync(stackJournalPath(recordedRoot))) return undefined;
+  let holder: string | undefined;
+  const remedyFor = (found: string) => movedRootRemedy(recordedRoot, found);
+  try {
+    holder = projectMovedTo(dirname(recordedRoot), recordedRoot);
+    if (holder === undefined || stackJournalRoot(holder) !== recordedRoot) return undefined;
+    const journal = readStackJournal(holder)?.journal;
+    if (journal?.space !== space || journal.root !== recordedRoot) return undefined;
+    return { root: holder, recordedRoot, remedy: remedyFor(holder) };
+  } catch (e) {
+    const failure = e instanceof CommandFailure ? e : undefined;
+    const target = failure?.target as { root?: unknown; recordedRoot?: unknown; space?: unknown } | undefined;
+    if (holder !== undefined && failure?.code === "CONFLICT" && failure.remedy !== undefined && target?.root === holder && target?.recordedRoot === recordedRoot && target?.space === space) return { root: holder, recordedRoot, remedy: remedyFor(holder) };
+    return undefined;
+  }
 }
 
 /** Remove the controller stack definitions saved for `space` at `root`, with their stopped instance

@@ -28,6 +28,7 @@ import {
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
+import { movedStack } from "../lib/stack-journal.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { SPACE_MODES } from "./meshes-add.js";
@@ -75,6 +76,8 @@ export interface SpaceRow {
   /** Whether it is the space `cotal use` selected. */
   readonly current: boolean;
   readonly check: Check;
+  /** The project was moved or renamed: the folder that now holds its records, and the way back. */
+  readonly movedTo?: { readonly root: string; readonly remedy: string } | null;
   /** A discovered space's catalog name when it differs from the space, and the last fetch. */
   readonly catalog: { readonly name: string | null; readonly fetchedAt: string | null; readonly error: string | null } | null;
 }
@@ -220,7 +223,8 @@ function lifecycleCell(p: Pick<PreparedRow, "state" | "lastOperation">): Cell {
   return { text: "not started", tone: "waiting" };
 }
 
-function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
+function row(m: MeshEntry, current: string | null, check: Check, moved = false): SpaceRow {
+  const movedTo = moved ? movedProjectRow(m) : undefined;
   return {
     space: m.space,
     server: m.server,
@@ -232,13 +236,18 @@ function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
     modeChecked: m.unchecked !== true,
     current: m.space === current,
     check,
+    movedTo,
     catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
   };
 }
 
-/** One registration in full, as `space show` reports it. */
+/** Where a running stack's project was moved, when its journal now names this registration's root. */
+function movedProjectRow(m: MeshEntry): SpaceRow["movedTo"] {
+  const moved = m.origin === "catalog" ? undefined : movedStack(m.space);
+  return moved !== undefined && moved.recordedRoot === m.root ? { root: moved.root, remedy: moved.remedy } : null;
+}
 export function detail(m: MeshEntry, current: string | null, check: Check): SpaceDetail {
-  const base = row(m, current, check);
+  const base = row(m, current, check, true);
   return {
     kind: "space",
     ...base,
@@ -348,7 +357,7 @@ function spaceView(s: SpaceDetail): Report {
     ["server", s.server],
     ["mode", s.modeChecked ? s.mode : { text: `${s.mode}, not checked: added with --force`, tone: "waiting" }],
     ["origin", originText(s.origin)],
-    ["root", s.root],
+    ["root", s.movedTo ? { text: `${s.root} · moved to ${s.movedTo.root}`, tone: "failed" } : s.root],
     ["recorded", s.recordedAt],
   ];
   if (s.tlsRequired) fields.push(["tls", "required"]);
@@ -363,7 +372,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.fetchedAt) fields.push(["catalog fetched", s.catalog.fetchedAt]);
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
-  const hints: Cell[] = s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];
+  const hints: Cell[] = s.movedTo ? [{ text: s.movedTo.remedy, tone: "hint" }] : s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];
   if (!s.modeChecked) hints.push({ text: `check its mode by adding it again without --force: \`cotal space forget ${s.space}\`, then \`cotal space add ${s.space} --server ${s.server} --root ${s.root}\``, tone: "hint" });
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }

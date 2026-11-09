@@ -63,13 +63,43 @@ export function stackJournalRoot(root: string): string | undefined {
   }
 }
 
+/** The project folder under `start` whose stack journal names `recordedRoot`, other than that root
+ *  itself: where a moved or renamed project now holds the journal. The walk does not enter a project, a
+ *  control directory, a hidden directory or a directory it cannot read, and it reads only a small
+ *  stack journal. Undefined when none is found within the bound, so a large tree is not treated
+ *  as proof that the folder is gone. */
+export function projectMovedTo(start: string, recordedRoot: string): string | undefined {
+  const recorded = (() => { try { return realpathSync.native(recordedRoot); } catch { return resolve(recordedRoot); } })();
+  const same = (path: string) => { try { return realpathSync.native(path) === recorded; } catch { return resolve(path) === recorded; } };
+  const seen = new Set<string>();
+  const walk = (dir: string, depth: number): string | undefined => {
+    if (depth > 6 || seen.size > 4000) return undefined;
+    let entries: Dirent[];
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return undefined; }
+    for (const entry of entries) {
+      if (seen.size > 4000) return undefined;
+      if (entry.name === ".cotal" || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      const path = join(dir, entry.name);
+      if (!entry.isDirectory() || entry.isSymbolicLink() || seen.has(path)) continue;
+      seen.add(path);
+      if (stackJournalRoot(path) === recordedRoot && !same(path)) return path;
+      if (controlDirectory(path) !== undefined || existsSync(join(path, ".cotal"))) continue;
+      const found = walk(path, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  return walk(resolve(start), 0);
+}
+
 /** The way back for a project folder moved away from `recordedRoot`, the folder its records name. A
  *  broker from an earlier release that kept running there may have created empty folders at that path,
  *  which a plain move back would nest the project inside. */
-export function movedRootRemedy(recordedRoot: string): string {
+export function movedRootRemedy(recordedRoot: string, from?: string): string {
+  const folder = from === undefined ? "this folder" : from;
   return existsSync(recordedRoot)
-    ? `move what is now at ${recordedRoot} aside, such as empty folders a running broker created there, then move this folder back to ${recordedRoot} and run the command again there`
-    : `move this folder back to ${recordedRoot}, then run the command again there`;
+    ? `move what is now at ${recordedRoot} aside, such as empty folders a running broker created there, then move ${folder} back to ${recordedRoot} and run the command again there`
+    : `move ${folder} back to ${recordedRoot}, then run the command again there`;
 }
 
 /** The longest space name `space create` and `cotal up` accept. A local file that carries a space

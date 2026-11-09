@@ -144,6 +144,7 @@ import {
   stackStartedWithoutManager,
   stackOperationBlock,
   goneStackRoot,
+  movedStack,
   unfinishedStackOperation,
   type StackJournal,
   type StackOperationBlock,
@@ -363,6 +364,8 @@ type SelectedResult =
       root: string;
       /** The project folder is gone while this machine still records the space's stack there. */
       rootGone: boolean;
+      /** The project was moved or renamed: the folder that now holds its records, and the way back. */
+      movedTo?: { root: string; remedy: string };
       tlsRequired: boolean;
       eventsRequired: boolean;
       idp: string | null;
@@ -1305,6 +1308,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     source: target.source,
     root: target.root,
     rootGone: stackRootGone(target.space, target.root),
+    movedTo: movedSelection(target.space, target.root).movedTo,
     tlsRequired: Boolean(target.tlsRequired),
     eventsRequired: target.policy?.events === "required",
     idp: target.userAuth?.idp.url ?? null,
@@ -1347,11 +1351,16 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, true, gaps)) };
   }
   // A project folder moved after its stack started there keeps the seed under its new path, where a
-  // probe without it reads as authentication required. Name the move and the way back, as send does.
+  // probe without it reads as authentication required. Name the move and the way back, as send does,
+  // whether this command runs in the moved folder or in another one.
   const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
   if (moved) {
     hints.push(moved.remedy);
     return { resolved: false, code: "moved-folder", message: moved.message };
+  }
+  if (base.movedTo) {
+    hints.push(base.movedTo.remedy);
+    return { ...base, connection: "moved-folder", snapshot: { state: "skipped", reason: "project folder moved" } };
   }
   const preflight = await preflightTarget(target);
   if (!preflight.ok) {
@@ -1762,6 +1771,12 @@ function stackRootGone(space: string, root: string): boolean {
   return gone !== undefined && canonicalRoot(gone) === canonicalRoot(root);
 }
 
+/** The moved project of `space` when `root` is the folder its stack was recorded in. */
+function movedSelection(space: string, root: string): { movedTo: { root: string; remedy: string } | undefined } {
+  const moved = movedStack(space);
+  return moved !== undefined && canonicalRoot(moved.recordedRoot) === canonicalRoot(root) ? { movedTo: { root: moved.root, remedy: moved.remedy } } : { movedTo: undefined };
+}
+
 function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   if (s.connection === "ok" || s.connection === "reachable") return stateCell("reachable", "ok");
   const states: Readonly<Record<string, string>> = {
@@ -1774,6 +1789,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
     "auth-required": "authentication required",
     "open-wants-auth": "authentication required",
     "registry-open-now-auth": "authentication required",
+    "moved-folder": "project folder moved",
     "creds-rejected": "credentials rejected",
     "registry-creds-rejected": "credentials rejected",
     "address-held": "address held by another space",
@@ -1885,7 +1901,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ...(r.store?.state === "damaged" ? [["Store", stateCell(`damage logged at ${r.store.at}: ${r.store.warning}`, "failed")] as [string, Cell]] : []),
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
-    ["Project", s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
+    ["Project", s.movedTo ? stateCell(`${s.root} · moved to ${s.movedTo.root}`, "failed") : s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
     ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
     ["Persona catalog", s.personas.default === "valid" ? "default available" : stateCell(s.personas.default === "invalid" ? "default is invalid" : s.personas.default === "unreadable" ? "could not be read" : "no default persona", s.personas.default === "invalid" || s.personas.default === "unreadable" ? "failed" : "hint")],
   ];
@@ -2033,8 +2049,9 @@ function nextActions(r: StatusResult): Section {
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
   }
-  // A stack whose folder was deleted stops only from this machine's records.
-  if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
+  // A stack whose folder was deleted stops only from this machine's records. One whose folder was
+  // moved keeps its records, and readSelected already named the way back, so that stop is not offered.
+  if (r.selected.resolved && r.selected.rootGone && !r.selected.movedTo) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
   // A delivery member that runs with no lease is not replaced by `up`; `down` kills one that does not exit.
   const deliveryPid = stackDeliveryPid(r);
