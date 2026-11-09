@@ -113,6 +113,31 @@ try {
 } catch (error) {
   report.failure = error.message;
   process.exitCode = 1;
+  if (process.platform === "darwin" && installAttempted && existsSync(receipt)) {
+    try {
+      const { darwinLaunchdJob } = await import("@cotal-ai/seat");
+      const observed = darwinLaunchdJob(plan.unit);
+      const plist = spawnSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", plan.unitPath], {
+        encoding: "utf8", timeout: 10_000, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "pipe"],
+      });
+      assert.equal(plist.status, 0, "read the owned plist as data");
+      const expected = JSON.parse(plist.stdout);
+      // Presence/equality only: native process arguments never enter logs or artifacts.
+      report.launchd = { state: observed.state };
+      if (observed.state === "loaded") {
+        const job = observed.job;
+        Object.assign(report.launchd, {
+          labelMatches: job.label === expected.Label,
+          programPresent: typeof job.program === "string",
+          programMatches: job.program === expected.ProgramArguments?.[0],
+          argumentsPresent: Array.isArray(job.programArguments),
+          argumentsMatch: JSON.stringify(job.programArguments) === JSON.stringify(expected.ProgramArguments),
+          workingDirectoryPresent: typeof job.workingDirectory === "string",
+          workingDirectoryMatches: job.workingDirectory === expected.WorkingDirectory,
+        });
+      }
+    } catch { report.launchd = { diagnostic: "unavailable" }; }
+  }
 } finally {
   if (installAttempted && !clean) {
     report.cleanup = "retained";
@@ -130,6 +155,7 @@ try {
     if (clean && paths.dir) rmSync(paths.dir, { recursive: true, force: true });
     rmSync(root, { recursive: true });
   } else report.retainedHome = home;
+  report.outcome = process.exitCode ? "failed" : "passed";
   report.passed = report.checks.filter(c => c.passed).length;
   report.failed = report.checks.filter(c => !c.passed).length;
   writeFileSync(join(process.env.RUNNER_TEMP, "daemon-service-result.json"), JSON.stringify(report, null, 2) + "\n", { flag: "wx", mode: 0o600 });
