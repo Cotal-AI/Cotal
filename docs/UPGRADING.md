@@ -18,6 +18,28 @@ ends those pauses before filing its record; a cleanup failure leaves the migrati
 `migrateRun` rather than constructing old-shaped rows. This does not wire migration commits into
 the CLI or advance a run's source pin; those existing limits remain.
 
+## Terminal layout contract removed
+
+`@cotal-ai/core` no longer exports the `terminal` extension kind, so `TerminalLayout`, `Tab` and
+`Pane` are gone. `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register
+`tmuxTerminalProvider` and `cmuxTerminalProvider`. `cotal setup` was the only code that resolved a
+terminal provider, and it stopped opening tabs when it became configure-only, so nothing in Cotal
+reads the kind. A running mesh needs nothing. Spawned agents are unaffected, because the tmux and
+cmux runtimes never used these providers.
+
+### What stops working
+
+Importing `TerminalLayout`, `Tab` or `Pane` from `@cotal-ai/core`, or either provider from its
+package, fails to compile with TS2305. Plain JavaScript that imports either provider by name fails to
+load. `registry.resolve("terminal", "tmux")` and `registry.resolve("terminal", "cmux")` throw,
+because nothing registers that kind.
+
+### Before the upgrade
+
+Remove those imports. A host that opened tmux windows or cmux tabs through a provider can call the
+driver each package still exports, `tmux.openWindow` and `tmux.splitWindow`, or
+`cmux.openWorkspace` with its own layout JSON.
+
 ## Workflow workers require the host's language package version
 
 The shipped workflow worker checks its `@cotal-ai/lang` package version against the version the host
