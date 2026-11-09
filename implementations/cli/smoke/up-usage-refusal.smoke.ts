@@ -3,7 +3,7 @@
  * `--max-sessions 0`, `--max-sessions abc` and an unknown `--restore-only` value used to exit 3,
  * "Outcome unconfirmed", which tells a script the run may have had an effect. `--dry-run` without
  * `-f` used to start a real stack. A non-positive `--max-file-store` is refused the same way, as is a `--max-payload` that is
- * not a byte count nats-server starts on, one below the caller floor beside `--service-endpoints`,
+ * not a byte count nats-server starts on, one below the manager start floor, one below the caller floor beside `--service-endpoints`,
  * and one passed to the open broker configuration, which renders no payload limit.
  *
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
@@ -93,6 +93,7 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-file-store", "0"], message: /--max-file-store must be a positive integer/ },
   { args: ["--max-payload", "0"], message: /--max-payload must be a positive integer/ },
   { args: ["--max-payload", "67108865"], message: /--max-payload 67108865 is over 67108864 bytes \(64 MiB\), which nats-server refuses to start on/ },
+  { args: ["--max-payload", "263167"], message: /--max-payload 263167 is below 263168 bytes, the least the space's manager starts on/ },
   { args: ["--max-payload", "1048576", "--user-auth", "--service-endpoints"], message: /--max-payload 1048576 is below 2098176 bytes, the least a space with --service-endpoints starts on/ },
   { args: ["--max-payload", "2098176", "--open"], message: /--max-payload sets the broker's message size limit, which the open broker configuration does not render/ },
   { args: ["--restore", join(folder, "nonexistent"), "--restore-only", "full"], message: /--restore-only takes registry/ },
