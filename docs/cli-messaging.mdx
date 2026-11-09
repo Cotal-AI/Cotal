@@ -325,7 +325,7 @@ as `cotal send` refuses an empty message.
 | `inbox` | optional `peek` (default `false`) | `ok`: `peek`, `messages` |
 | `roster` | none | `ok`: `rows`, `view` |
 | `channelInfo` | `channel` | `ok`: `channel`, `registered`, `replay`, `readable`, `postable`, optional `description` and `instructions` |
-| `connection` | none | `ok`: `state`, `identity`, `bufferedInbox`, `joinedChannels`, `attention`, `channelModes` |
+| `connection` | none | `ok`: `state`, `identity`, `bufferedInbox`, `joinedChannels`, `attention`, `channelModes`, optional `reason` |
 | `invoke` | `endpoint` (1 to 200 characters), `command` (1 to 128), optional `args` (an object) and `timeoutMs` (an integer from 1 to 120000, default 30000) | `ok`: the endpoint's data, or `null` when it returned none |
 
 `identity` in the `connection` result names the session, and no other record names its space. It
@@ -343,6 +343,13 @@ with `code`, `message` and, when the native layer gave one, `cause` with its own
 have happened. The session never retries it, and it reports an unexpected failure of its own the
 same way. `failed` (`OPERATION_FAILED`) is a step that did not complete and had no effect. `stored`
 means the broker's stream accepted the message. It does not say anyone read it.
+
+A `send`, `dm` or `anycast` whose publish is not acknowledged, on a space whose streams this machine
+created, reads the chat stream once. When that stream is gone, as `cotal space delete` leaves it,
+the result is `refused` with `TARGET_UNAVAILABLE` and the same message `cotal send` gives, because
+nothing could store it. A read that fails for another reason leaves the result `unknown`. The same
+observation makes a later `connection` report `state` `disconnected` with that message as `reason`.
+The broker connection itself is unchanged, and `reason` is absent while the streams are present.
 
 
 ### Unsolicited records
@@ -404,9 +411,11 @@ reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
-broker accepts its credential until then unless its eviction was verified. Once the session has
-ended by itself and before the `end` record, a request refuses with `LIFECYCLE_BLOCKED` and
-`the session is ending; no new requests are accepted`. When the reader closes stdout, stderr says
+broker accepts its credential until then unless its eviction was verified. When a send already
+observed that the space's streams are gone and the retirement request then has an unknown outcome,
+`retirement` is `not-applicable` and `message` starts with the same refusal, then the request's own
+message. Once the session has ended by itself and before the `end` record, a request refuses with
+`LIFECYCLE_BLOCKED` and `the session is ending; no new requests are accepted`. When the reader closes stdout, stderr says
 `stdout closed by the reader; ending the session`, and no later record is written, `end` included.
 Any other failed write, such as to a full disk, says `stdout could not be written; ending the
 session` and the one line about lost output, and the session ends the same way with exit 3.

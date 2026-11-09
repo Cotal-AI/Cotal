@@ -33,6 +33,7 @@ import {
   type PresenceView,
 } from "@cotal-ai/core";
 import type { RefusalCode } from "../output.js";
+import { spaceStreamsAbsent, spaceStreamsExpected } from "../space-streams.js";
 import { mentionsName } from "./compose.js";
 import { ParticipantEngine } from "./engine.js";
 import type {
@@ -75,6 +76,20 @@ function classify(e: unknown): { outcome: "refused"; code: RefusalCode; message:
     if (code && e.outcome !== "unknown" && e.outcome !== "executed") return { outcome: "refused", code, message, native: { code: e.code, detail: e.details } };
   }
   return { outcome: "unknown", message };
+}
+
+/** A publish the broker did not acknowledge, after the chat stream of a space whose streams were
+ *  created here is gone. Nothing could store it, so it is the same refusal a one-shot send gives,
+ *  not an unknown outcome. A read that fails for any other reason leaves the original result. */
+async function absentStreams(endpoint: CotalEndpoint, space: string, mode: "open" | "static" | "user"): Promise<Refused | undefined> {
+  if (!spaceStreamsExpected(space, mode === "static" ? "auth" : mode)) return undefined;
+  try {
+    if ((await endpoint.chatRetention()).stream) return undefined;
+  } catch {
+    return undefined;
+  }
+  const failure = spaceStreamsAbsent(space, undefined);
+  return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: failure.message };
 }
 
 const refusedUsage = (message: string) => ({ outcome: "refused" as const, code: "USAGE_INVALID" as const, message });
@@ -168,6 +183,9 @@ export class NativeChatSession implements AdmittedChatSession {
   private closed: Promise<CloseReport> | undefined;
   /** Why the session ended itself, when it could not continue. */
   private lost: string | undefined;
+  /** The space's streams were observed gone, so a later connection report and close can say so
+   *  without another broker read. */
+  private streamsGone: string | undefined;
   /** What the full inbox let go that no gap has reported yet. */
   private overflow = { channelDropped: 0, directedDeferred: 0 };
   private overflowTimer: ReturnType<typeof setTimeout> | undefined;
@@ -282,7 +300,7 @@ export class NativeChatSession implements AdmittedChatSession {
       // Native multicast awaits the stream ack but does not return it (endpoint.ts:4231-4236): no seq.
       return { outcome: "stored", messageId: msg.id, channel, registered };
     } catch (e) {
-      return classify(e);
+      return this.afterPublish(e);
     }
   }
 
@@ -301,7 +319,7 @@ export class NativeChatSession implements AdmittedChatSession {
       const { msg, ack } = await ep.unicastAttributed(recipient.id, text, replyTo !== undefined ? { replyTo } : {});
       return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, recipientStatusAtSend };
     } catch (e) {
-      return classify(e);
+      return this.afterPublish(e);
     }
   }
 
@@ -310,7 +328,7 @@ export class NativeChatSession implements AdmittedChatSession {
       const { msg, ack } = await this.inputs.endpoint.anycastAttributed(role, text);
       return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate };
     } catch (e) {
-      return classify(e);
+      return this.afterPublish(e);
     }
   }
 
@@ -389,12 +407,13 @@ export class NativeChatSession implements AdmittedChatSession {
     return {
       outcome: "ok",
       value: {
-        state: this.state,
+        state: this.streamsGone ? "disconnected" : this.state,
         identity: this.inputs.identity,
         bufferedInbox: this.engine.bufferedCount(),
         joinedChannels: ep.joinedChannels(),
         attention: this.attention,
         channelModes: this.engine.channelModes(),
+        ...(this.streamsGone ? { reason: this.streamsGone } : {}),
       },
     };
   }
@@ -469,6 +488,8 @@ export class NativeChatSession implements AdmittedChatSession {
       let report: CloseReport;
       try { report = await this.inputs.retire(); }
       catch (e) { report = { retirement: "unknown", connectionClosed: "not-confirmed", message: (e as Error).message }; }
+      if (this.streamsGone && report.retirement === "unknown")
+        report = { ...report, retirement: "not-applicable", message: `${this.streamsGone}. ${report.message}` };
       ep.off("error", this.onError);
       if (this.lost) report = { ...report, lost: this.lost };
       this.setState("ended", this.lost);
@@ -476,6 +497,15 @@ export class NativeChatSession implements AdmittedChatSession {
       return stopped ? report : { ...report, connectionClosed: "not-confirmed" };
     })();
     return this.closed;
+  }
+
+  /** A publish the broker did not acknowledge. A missing chat stream is a refusal, because nothing
+   *  stored it. Anything else keeps its original classification. */
+  private async afterPublish(e: unknown): Promise<PublishResult> {
+    const gone = await absentStreams(this.inputs.endpoint, this.inputs.identity.space, this.inputs.identity.mode);
+    if (!gone) return classify(e);
+    this.streamsGone = gone.message;
+    return gone;
   }
 
   private setState(s: ConnectionState, reason?: string): void {
