@@ -14,7 +14,17 @@
  * renewal, which keeps `list` alone. It crashes the manager, lets a successor adopt the seat, and
  * renews again there. At each step the credential calls `list` and is refused `create`. A despawn ends the lifecycle: every ledger row of the
  * helper's credentials reads revoked, and a live connection made with a copy of its credential is
- * evicted.
+ * evicted. That cell grades the eviction only: a static credential copied off disk stays valid until
+ * it expires, so a copy that reconnects is let back in (SPEC 13.15 names that residual).
+ *
+ * Last, a pinned entry through the agent tools. The spawner also holds `list` on one instance of the
+ * endpoint, a second instance not yet serving, and hands that pin to a helper. The real
+ * `cotal_describe` and `cotal_invoke` handlers run over an endpoint on the helper's own credential.
+ * An unpinned describe, made while only the first instance serves, is answered there, which the
+ * class baseline allows, and warms the helper's class cache with that instance. Once the pinned
+ * instance serves, a call naming it reaches it; a call naming the other instance is refused by the
+ * broker and that handler receives nothing; an unpinned call never runs on the other instance; and
+ * with the pinned instance stopped, a pinned call fails and the other instance receives nothing.
  *
  * Run: pnpm smoke:persona-endpoints-served   (needs nats-server, tmux and node on PATH)
  */
@@ -33,8 +43,10 @@ import {
   RECORD_KINDS, parseLedgerRow, principalKey, provisionEndpointGateOpen, publishContractArtifact, readAcceptedRow, readEndpointGateGeneration,
   recordSpecKey, recordsBucket, registerServiceInstance, serveEndpoint, serveIssuanceGateKv, serverConfig, serviceContractTable, setupSpaceStreams,
   singleDocumentClosure, standaloneConnectOpts, withIssuerSession, writeServiceStatus,
+  CotalEndpoint, lowerPersonaEndpoints,
   type CredentialLedgerRow, type EpCaller, type IssuedCaller,
 } from "@cotal-ai/core";
+import { cotalToolSpecs, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
@@ -65,6 +77,12 @@ const CELLS = [
   "a renewal through the successor keeps list and leaves out create",
   "a despawn revokes every ledger row of the helper's lifecycle",
   "the despawn evicts a live connection made with a copy of the helper's credential",
+  "a served spawn hands on list pinned to one instance, as that instance's list and describe rows and no class row",
+  "an unpinned cotal_describe is answered by the instance that serves, which the class baseline allows",
+  "naming the pinned instance, cotal_describe and cotal_invoke reach it and its handler answers",
+  "naming the other instance, the broker refuses the call and that handler receives nothing",
+  "an unpinned cotal_invoke never runs the command on the other instance",
+  "with the pinned instance stopped, a pinned call fails and the other instance receives nothing",
 ];
 let pass = 0, fail = 0;
 const graded = new Set<string>();
@@ -102,7 +120,8 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir);
 let daemon: DeliveryDaemon | undefined; const managers: ChildProcess[] = [];
 const conns: NatsConnection[] = [];
-let served: ReturnType<typeof serveEndpoint> | undefined;
+const serving: Array<ReturnType<typeof serveEndpoint>> = [];
+const stoppers: Array<() => Promise<void>> = [];
 
 type Host = { child: ChildProcess; stdout: () => string; stderr: () => string };
 /** Start one manager process. A successor started while the dead one's lease still stands exits on
@@ -164,35 +183,47 @@ try {
   const artifacts = new Map<string, unknown>([[manifest.root, doc], [closureDigest, manifest]]);
   const readClusterArtifact = (d: string) => artifacts.get(d);
   const authority = { authorize: (name: string, who: string) => ({ authorized: name === ORDERS && who === DEV_OWNER, revision: 0 }) };
-  const instanceId = mintLifecycleUid(), serveIdentity = newIdentity();
-  const executorNc = await connectWith(await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: ORDERS, instanceId } }));
-  const ekvm = new Kvm(executorNc);
-  const recordsKv = await ekvm.open(recordsBucket(space)), authKv = await ekvm.open(epAuthBucket(space));
-  const storeCtx = await contractStoreContext(executorNc, space);
-  for (const value of [...table.artifactValues(), doc, manifest]) await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-  await provisionEndpointGateOpen(authKv, { endpoint: ORDERS, instanceId, principal: principalKey(DEV_OWNER, serveIdentity.id).key });
-  const { registrationRevision } = await registerServiceInstance(recordsKv, {
-    space, spec: { endpoint: ORDERS, owner: DEV_OWNER, clusterDigests: [closureDigest], protocol: { v: 1 } }, instanceId, registrant: { owner: DEV_OWNER }, authority,
-    barrier: endpointRegistrationBarrier(authKv, space, { endpoint: ORDERS, instanceId, opId: mintLifecycleUid() }), readClusterArtifact,
-    observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint: ORDERS, instanceId: holder }),
-  });
-  const fence = serveIssuanceGateKv(authKv, space, { endpoint: ORDERS, instanceId });
-  const readProcessEpoch = async () => (await fence.observe())!.processEpoch;
-  const epoch = await readProcessEpoch();
-  const grant = await authorizeServeGrant(recordsKv, { space, endpoint: ORDERS, instanceId, epoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact, readProcessEpoch });
-  await writeServiceStatus(recordsKv, { endpoint: ORDERS, instanceId, epoch, status: { state: SERVICE_READY, epoch, observedSpecRevision: registrationRevision }, readProcessEpoch });
-  const serveNc = await connectWith(await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }));
-  // What the handler received, by command and the caller the broker pinned on the subject: the
-  // observed arrival of each request.
-  const received: Array<{ command: string; actor: string }> = [];
-  served = serveEndpoint(serveNc, space, grant, ["list", "create"].map((command) => ({
-    command, contract: table.contracts[command]!,
-    handler: (ctx) => {
-      received.push({ command, actor: ctx.subject.caller.actor });
-      return { orders: command === "list" ? ["o-1"] : [] };
-    },
-  })), { public: true });
-  await serveNc.flush();
+  // What each handler received, by instance, command and the caller the broker pinned on the
+  // subject: the observed arrival of each request.
+  const received: Array<{ instance: string; command: string; actor: string }> = [];
+  let published = false;
+  const serveOrders = async (instanceId: string) => {
+    const serveIdentity = newIdentity();
+    const executorNc = await connectWith(await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: ORDERS, instanceId } }));
+    const ekvm = new Kvm(executorNc);
+    const recordsKv = await ekvm.open(recordsBucket(space)), authKv = await ekvm.open(epAuthBucket(space));
+    if (!published) {
+      const storeCtx = await contractStoreContext(executorNc, space);
+      for (const value of [...table.artifactValues(), doc, manifest]) await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
+      published = true;
+    }
+    await provisionEndpointGateOpen(authKv, { endpoint: ORDERS, instanceId, principal: principalKey(DEV_OWNER, serveIdentity.id).key });
+    const { registrationRevision } = await registerServiceInstance(recordsKv, {
+      space, spec: { endpoint: ORDERS, owner: DEV_OWNER, clusterDigests: [closureDigest], protocol: { v: 1 } }, instanceId, registrant: { owner: DEV_OWNER }, authority,
+      barrier: endpointRegistrationBarrier(authKv, space, { endpoint: ORDERS, instanceId, opId: mintLifecycleUid() }), readClusterArtifact,
+      observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint: ORDERS, instanceId: holder }),
+    });
+    const fence = serveIssuanceGateKv(authKv, space, { endpoint: ORDERS, instanceId });
+    const readProcessEpoch = async () => (await fence.observe())!.processEpoch;
+    const epoch = await readProcessEpoch();
+    const grant = await authorizeServeGrant(recordsKv, { space, endpoint: ORDERS, instanceId, epoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact, readProcessEpoch });
+    await writeServiceStatus(recordsKv, { endpoint: ORDERS, instanceId, epoch, status: { state: SERVICE_READY, epoch, observedSpecRevision: registrationRevision }, readProcessEpoch });
+    const serveNc = await connectWith(await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }));
+    const handle = serveEndpoint(serveNc, space, grant, ["list", "create"].map((command) => ({
+      command, contract: table.contracts[command]!,
+      handler: (ctx) => {
+        received.push({ instance: instanceId, command, actor: ctx.subject.caller.actor });
+        return { orders: command === "list" ? ["o-1"] : [] };
+      },
+    })), { public: true });
+    serving.push(handle);
+    await serveNc.flush();
+    return { instanceId, epoch, handle };
+  };
+  // The instance every class call reaches. The second instance, PINNED, is served near the end.
+  const classInstance = await serveOrders(mintLifecycleUid());
+  const epoch = classInstance.epoch;
+  const PINNED = mintLifecycleUid();
   const call = (nc: NatsConnection, caller: EpCaller, command: "list" | "create") =>
     epCall(nc, space, { mode: "one" }, { endpoint: ORDERS, command, contract: table.contracts[command]!, caller }, { deadlineMs: 8_000, currentEpoch: () => epoch })
       .then((r) => r.reply as Reply, asValue);
@@ -217,11 +248,13 @@ try {
     }
   };
 
-  // The spawner: an issued agent credential holding `spawn`, the worker role and `list`.
+  // The spawner: an issued agent credential holding `spawn`, the worker role and `list`, on the
+  // class rail and pinned to PINNED, as an operator persona naming both entries would mint it.
   const sid = newIdentity(), suid = mintLifecycleUid();
   const sIssued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 3600), acceptedToken: mintAcceptedToken() };
+  const spawnerEndpoints = lowerPersonaEndpoints([{ endpoint: ORDERS, commands: ["list"] }, { endpoint: ORDERS, commands: ["list"], instanceId: PINNED }]);
   const spawnerCreds = await withIssuerSession({ servers, space, auth, tls: false }, (s) =>
-    mintCreds(auth, sid, "agent", { lifecycleUid: suid, capabilities: ["spawn", "role:worker"], endpointCapabilities: [{ endpoint: ORDERS, command: "list" }], expiresInSeconds: 3600, issued: sIssued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+    mintCreds(auth, sid, "agent", { lifecycleUid: suid, capabilities: ["spawn", "role:worker"], endpointCapabilities: spawnerEndpoints, expiresInSeconds: 3600, issued: sIssued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   const spawner = { owner: DEV_OWNER, actor: sid.id, uid: suid, generation: sIssued.generation } as IssuedCaller;
   const spawnerNc = await connectWith(spawnerCreds);
   const own = await call(spawnerNc, spawner, "list");
@@ -340,11 +373,72 @@ try {
   }, 30_000);
   check("the despawn evicts a live connection made with a copy of the helper's credential",
     closedByKick && (audit?.broker?.kicked ?? 0) >= 1 && audit?.broker?.remaining === 0 && audit.broker.verifiedGone === true, { despawned, audit, stderr: first.stderr().slice(-2000) });
+
+  // A pinned entry, through the agent tools. PINNED is not serving yet.
+  const pinnedList = [{ endpoint: ORDERS, commands: ["list"], instanceId: PINNED }];
+  const pinnedReply = await manager("spawn", { name: "helper_pinned", agent: "tmux-adopt-stub", cwd: repo, events: false, persona: { prompt: "You list orders on one instance.", endpoints: pinnedList } });
+  let pinnedRecord: ReturnType<typeof readSeatRecord>;
+  await until(() => (pinnedRecord = readSeatRecord(root, space, "helper_pinned")) !== undefined, 60_000);
+  const pinnedIdentity = pinnedRecord?.agent.identity;
+  const pinnedSeat = pinnedIdentity?.mode === "static" ? { actor: pinnedIdentity.id, uid: pinnedIdentity.lifecycleUid, acceptedToken: pinnedIdentity.issued?.acceptedToken ?? "" } : undefined;
+  const pinnedCreds = pinnedSeat ? readFileSync(agentLifecycleSecretFilePaths(root, space, "helper_pinned", pinnedSeat.uid).creds, "utf8") : "";
+  const pinnedRows = pinnedCreds ? pubRows(pinnedCreds) : [];
+  const instRow = (command: string) => pinnedRows.some((r) => r.startsWith(`cotal.${space}.ep.v1.inst.com_example_orders.${PINNED}.${command}.`));
+  check("a served spawn hands on list pinned to one instance, as that instance's list and describe rows and no class row",
+    pinnedReply.ok === true && pinnedSeat !== undefined && JSON.stringify(pinnedRecord?.agent.launch.endpoints) === JSON.stringify(pinnedList)
+      && instRow("list") && instRow("describe") && !pinnedRows.some((r) => r.includes(".one.com_example_orders.")),
+    { pinnedReply, endpoints: pinnedRecord?.agent.launch.endpoints, rows: pinnedRows.filter((r) => r.includes("orders")), stderr: first.stderr().slice(-1500) });
+  if (!pinnedSeat) throw new Error("the pinned helper did not start");
+
+  // The real tool handlers, over an endpoint that connects with the helper's own credential.
+  const helperEp = new CotalEndpoint({ space, servers, tls: false, creds: pinnedCreds, lifecycleUid: pinnedSeat.uid, acceptedToken: pinnedSeat.acceptedToken, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { id: pinnedSeat.actor, name: "helper_pinned_tools", kind: "endpoint" } });
+  stoppers.push(() => helperEp.stop());
+  // A broker refusal is reported on the endpoint's error event as well as to the caller, as it is to
+  // a connector's agent, which listens for it.
+  const helperErrors: string[] = [];
+  helperEp.on("error", (e: unknown) => { helperErrors.push(String((e as Error).message).slice(0, 200)); });
+  await helperEp.start();
+  const toolConfig: AgentConfig = { space, name: "helper_pinned_tools", servers, tls: false, creds: pinnedCreds, kind: "agent", id: pinnedSeat.actor, lifecycleUid: pinnedSeat.uid, subscribe: [], allowSubscribe: [], allowPublish: [] };
+  const tools = cotalToolSpecs(toolConfig, "smoke");
+  const tool = async (name: "cotal_describe" | "cotal_invoke", args: Record<string, unknown>) => {
+    const r = await tools.find((t) => t.name === name)!.run({ ep: helperEp } as unknown as MeshAgent, toolConfig, args);
+    return { text: r.text, isError: r.isError === true };
+  };
+  const helperGot = (instance: string) => received.filter((r) => r.instance === instance && r.actor === pinnedSeat.actor).length;
+  const other = classInstance.instanceId;
+
+  // Only the class instance serves, so an unpinned describe resolves there and caches it.
+  const unpinnedDescribe = await tool("cotal_describe", { endpoint: ORDERS });
+  check("an unpinned cotal_describe is answered by the instance that serves, which the class baseline allows",
+    !unpinnedDescribe.isError && unpinnedDescribe.text.includes(`instance ${other}`), unpinnedDescribe);
+
+  const pinned = await serveOrders(PINNED);
+  const pinnedDescribe = await tool("cotal_describe", { endpoint: ORDERS, instance: PINNED });
+  const pinnedInvoke = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", instance: PINNED, timeoutMs: 8_000 });
+  check("naming the pinned instance, cotal_describe and cotal_invoke reach it and its handler answers",
+    !pinnedDescribe.isError && pinnedDescribe.text.includes(`instance ${PINNED}`)
+      && !pinnedInvoke.isError && pinnedInvoke.text.includes(`answered by instance ${PINNED}`) && pinnedInvoke.text.includes("o-1") && helperGot(PINNED) === 1,
+    { pinnedDescribe: pinnedDescribe.text.slice(0, 300), pinnedInvoke, pinnedGot: helperGot(PINNED) });
+
+  const toOther = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", instance: other, timeoutMs: 8_000 });
+  check("naming the other instance, the broker refuses the call and that handler receives nothing",
+    toOther.isError && /no caller grant|permission-denied|REFUSED BY THE BROKER/.test(toOther.text) && helperGot(other) === 0, { toOther, otherGot: helperGot(other) });
+
+  const unpinnedInvoke = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", timeoutMs: 8_000 });
+  check("an unpinned cotal_invoke never runs the command on the other instance",
+    !unpinnedInvoke.text.includes(`answered by instance ${other}`) && helperGot(other) === 0, { unpinnedInvoke, otherGot: helperGot(other) });
+
+  await pinned.handle.stop();
+  const pinnedGotBefore = helperGot(PINNED);
+  const stoppedCall = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", instance: PINNED, timeoutMs: 3_000 });
+  check("with the pinned instance stopped, a pinned call fails and the other instance receives nothing",
+    stoppedCall.isError && helperGot(other) === 0 && helperGot(PINNED) === pinnedGotBefore, { stoppedCall, otherGot: helperGot(other) });
 } catch (error) {
   console.log(`  the suite stopped early: ${(error as Error).stack ?? String(error)}`);
   for (const name of CELLS) if (!graded.has(name)) check(name, false, "not reached");
 } finally {
-  await served?.stop().catch(() => {});
+  for (const stop of stoppers) await stop().catch(() => {});
+  for (const handle of serving) await handle.stop().catch(() => {});
   for (const nc of conns) await close(nc);
   const managerExits = managers.map((child) => child.exitCode === null ? new Promise<void>((r) => child.once("exit", () => r())) : Promise.resolve());
   for (const child of managers) if (child.exitCode === null) stopGroup(child.pid);
