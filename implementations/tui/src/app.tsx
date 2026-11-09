@@ -1,6 +1,6 @@
 import { TextAttributes, type InputRenderable, type KeyEvent, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Index, Match, on, onCleanup, Show, Switch } from "solid-js"
 import type { ManagedRow } from "@cotal-ai/workspace/control"
 import { COMMAND_PALETTE_COMMAND, Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
@@ -373,9 +373,11 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       <text fg={theme.text.muted} attributes={TextAttributes.BOLD} wrapMode="none">
         {p.title}
       </text>
-      <text fg={theme.text.faint} wrapMode="none">
-        {p.right ?? ""}
-      </text>
+      <Show when={p.right}>
+        <text fg={theme.text.faint} wrapMode="none">
+          {p.right}
+        </text>
+      </Show>
     </box>
   )
 
@@ -673,21 +675,26 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   /** A reply or mention: who, where, and the start of what they wrote. A click opens it, as its
    *  number does. */
   const CardRow = (p: { card: Card; n: number; width: number }) => {
-    const e = p.card.entry
-    const where = e.delivery === "multicast" ? (e.channel ? `#${e.channel}` : "") : e.delivery === "anycast" ? `@${e.toService ?? "?"}` : "→ you"
+    const e = () => p.card.entry
+    const where = () => {
+      const m = e()
+      return m.delivery === "multicast" ? (m.channel ? `#${m.channel}` : "") : m.delivery === "anycast" ? `@${m.toService ?? "?"}` : "→ you"
+    }
     return (
       <box flexShrink={0} marginBottom={1} onMouseDown={() => openNeed(p.n)}>
         <text wrapMode="none" fg={gold()}>
           <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
           {p.card.kind === "reply" ? "↩ " : "@ "}
-          <span style={{ fg: nameFg(e.from) }}>{fit(e.from.name, p.width - 8 - where.length)}</span>
-          <span style={{ fg: theme.text.faint }}>{`  ${where}`}</span>
+          <span style={{ fg: nameFg(e().from) }}>{fit(e().from.name, p.width - 8 - where().length)}</span>
+          <span style={{ fg: theme.text.faint }}>{`  ${where()}`}</span>
         </text>
-        <text fg={theme.text.muted}>{fit(e.text.split("\n")[0]!, (p.width - 4) * 2)}</text>
+        <text fg={theme.text.muted}>{fit(e().text.split("\n")[0]!, (p.width - 4) * 2)}</text>
       </box>
     )
   }
 
+  // The rows are kept by slot. Every snapshot makes new waiting entries and cards, and a row remade
+  // between two frames drops a click on it.
   const Inspector = (p: { width: number }) => {
     const selected = () => {
       const r = selection()
@@ -703,26 +710,24 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
           when={waiting().length}
           fallback={<Show when={!cards().length}><text fg={theme.text.muted}>Nothing needs you.</text></Show>}
         >
-          <For each={waiting()}>
+          <Index each={waiting()}>
             {(a, i) => (
-              <box flexShrink={0} marginBottom={1} backgroundColor={openPeer() === a.card.id ? theme.background.raised.high : undefined} onMouseDown={() => openNeed(i())}>
+              <box flexShrink={0} marginBottom={1} backgroundColor={openPeer() === a().card.id ? theme.background.raised.high : undefined} onMouseDown={() => openNeed(i)}>
                 <text wrapMode="none" fg={theme.text.feedback.warning.base}>
-                  <span style={{ fg: theme.text.base }}>{`${i() + 1} `}</span>
+                  <span style={{ fg: theme.text.base }}>{`${i + 1} `}</span>
                   {"◐ "}
-                  <span style={{ fg: nameFg(a.card) }}>{fit(a.card.name, p.width - 8 - (a.card.role?.length ?? 0))}</span>
-                  <span style={{ fg: theme.text.faint }}>{a.card.role ? `  ${a.card.role}` : ""}</span>
+                  <span style={{ fg: nameFg(a().card) }}>{fit(a().card.name, p.width - 8 - (a().card.role?.length ?? 0))}</span>
+                  <span style={{ fg: theme.text.faint }}>{a().card.role ? `  ${a().card.role}` : ""}</span>
                 </text>
-                <text fg={theme.text.muted}>{fit(a.activity ?? "reported no question", (p.width - 4) * 3)}</text>
+                <text fg={theme.text.muted}>{fit(a().activity ?? "reported no question", (p.width - 4) * 3)}</text>
               </box>
             )}
-          </For>
+          </Index>
         </Show>
         <Show when={cards().length}>
           <Section title={`REPLIES AND MENTIONS · ${cards().length}`} />
           <box height={1} flexShrink={0} />
-          <For each={cards().slice(0, CARDS_SHOWN)}>
-            {(c, i) => <CardRow card={c} n={waiting().length + i()} width={p.width} />}
-          </For>
+          <Index each={cards().slice(0, CARDS_SHOWN)}>{(c, i) => <CardRow card={c()} n={waiting().length + i} width={p.width} />}</Index>
           <Show when={cards().length > CARDS_SHOWN}>
             <text fg={theme.text.faint} marginBottom={1}>{`+${cards().length - CARDS_SHOWN} more`}</text>
           </Show>
