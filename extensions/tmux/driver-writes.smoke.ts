@@ -41,7 +41,7 @@ async function waitFor(pred: () => boolean): Promise<boolean> {
   return pred();
 }
 
-const root = mkdtempSync(join(tmpdir(), "tmux-writes-"));
+const root = mkdtempSync(join(tmpdir(), "tmux  writes-"));
 const previous = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE, TMUX_TMPDIR: process.env.TMUX_TMPDIR };
 delete process.env.TMUX;
 delete process.env.TMUX_PANE;
@@ -55,6 +55,7 @@ try {
   native(["-f", "/dev/null", "new-session", "-d", "-s", "fixture-anchor", "-c", root, "/bin/sleep 30"]);
   [socket, server] = native(["display-message", "-p", "#{socket_path}\t#{pid}"]).split("\t");
   check("private server socket belongs to this fixture", socket.startsWith(`${root}/`) && /^\d+$/.test(server));
+  check("private socket path preserves repeated whitespace", socket.includes("tmux  writes-"));
   tmux.ensureSession(session, root);
   tmux.ensureSession(session, root);
   check("ensureSession preserves an existing session", tmux.serverPid() === server);
@@ -163,6 +164,15 @@ try {
     check("moved socket: the first server still holds its sessions",
       native(["-S", moved, "display-message", "-p", "#{pid}"]) === server && native(["-S", moved, "list-sessions", "-F", "#S"]).split("\n").includes(session));
   } finally {
+    // A failing check may have created a second private server. Stop it before restoring the first socket.
+    if (existsSync(socket!)) {
+      const replacement = spawnSync("tmux", ["-S", socket!, "display-message", "-p", "#{pid}"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      if (replacement.status === 0 && replacement.stdout.trim() !== server) {
+        native(["-S", socket!, "kill-server"]);
+        if (!await waitFor(() => spawnSync("tmux", ["-S", socket!, "display-message", "-p", "#{pid}"], { stdio: "ignore" }).status !== 0))
+          throw new Error("the second private server did not stop");
+      }
+    }
     renameSync(moved, socket!);
   }
   tmux.ensureSession(session, root);
