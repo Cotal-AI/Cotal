@@ -92,6 +92,7 @@ import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { directKvValue, refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
+import { loadManifest } from "../lib/manifest/index.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { retainedRemovalRemedy } from "../lib/team-text.js";
@@ -166,7 +167,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (typeof args.values.file !== "string" || stackFilePreview(args.values.file))) return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a
   // bare stop prints, so structured output carries it rather than refusing the flag.
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
@@ -274,6 +275,21 @@ function previewWholeStack(args: ParsedArgs): void {
       ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal down --preserve-state", description: "Stop the machine-home stack and keep its state for the next `cotal up`" }] }] }]
       : [{ title: "Next", blocks: [{ kind: "lines" as const, lines: ["No process of the machine-home stack is running, so there is nothing to stop."] }] }]),
   ] }));
+}
+
+/** A file-form dry-run previews this root's recorded stack when the manifest names its space and no
+ *  additive ledger exists. A ledger, another space, or a file that cannot be read stays on the
+ *  ledger teardown, which fails closed. */
+function stackFilePreview(file: string): boolean {
+  try {
+    const root = canonicalRoot(cotalRoot());
+    const local = localMeshesForRoot(root);
+    const sole = local[0];
+    if (local.length !== 1 || sole?.origin !== "up" || canonicalRoot(sole.root) !== root) return false;
+    if (loadManifest(file).manifest.space !== sole.space) return false;
+    const ledgers = listLedgerFiles(root, { requireReadable: true });
+    return ledgers.valid.length === 0 && ledgers.refused.length === 0;
+  } catch { return false; }
 }
 
 /** A bare stop, its preview included: no flag beyond --dry-run, --with-agents, --yes and the
@@ -526,6 +542,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if ((values.file || values.run) && values.space) {
     throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
+  if (values.file && values["dry-run"] && stackFilePreview(values.file)) return previewWholeStack(args);
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;

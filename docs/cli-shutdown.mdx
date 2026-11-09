@@ -331,7 +331,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--file <cotal.yaml>`, `-f` | none | Tear down this manifest's deploy |
 | `--run <id>` | none | Tear down one additive ledger, written by the retired `spawn -f` deploy, by its run id |
 | `--space <name>` | current space | With service names: the space whose saved definitions to stop. With bare `--dry-run`: confirm that space belongs to this root. A bare stop refuses it |
-| `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing |
+| `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing. `down -f <file> --dry-run` previews this root's recorded stack when the manifest names its space and no additive ledger exists |
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
 | `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
 | `--abandon-launch <instance-id>` | none | Controller stack, with `--yes`: record failed a member launch whose record names no process, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
