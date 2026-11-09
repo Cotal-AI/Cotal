@@ -1,7 +1,7 @@
-import { credsClaims, isAccountNkey, type SecretStore } from "@cotal-ai/core";
+import { credsClaims, isAccountNkey, mintConnectionEvictorCreds, nativeNkeySigner, newIdentity, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import {
   assertSingleSpaceBroker, authDir, connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND,
-  membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, segmentedKey,
+  loadSpaceAuth, membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, readSystemSigningSeed, segmentedKey,
 } from "@cotal-ai/workspace";
 
 /**
@@ -102,8 +102,11 @@ export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): 
     }`;
   const refusal = rotationRefusal(source.root);
   if (refusal === undefined) return "re-mint it with `cotal down` then `cotal up --rotate-sys`";
+  const evictor = kinds.length === 1 && kinds[0] === CONNECTION_EVICTOR_CREDS_KIND;
   return (
-    `${refusal}. There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +
+    `${refusal}. ${evictor
+      ? "The delivery daemon mints a missing connection evictor on its next start only on a single-space root that retained its system-account signing seed, so that does not apply here. "
+      : ""}There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +
     "so nothing re-signs it on this root until per-space segmentation lands"
   );
 }
@@ -226,4 +229,66 @@ export async function loadSysPair(source: SysCredsSource, need: SysCredsNeed): P
     need === "both" && evictor === undefined ? CONNECTION_EVICTOR_CREDS_KIND : undefined,
   ].filter((k): k is string => k !== undefined);
   return { ...(observer !== undefined ? { observer } : {}), ...(evictor !== undefined ? { evictor } : {}), missing };
+}
+
+/** The persisted trust of `space` with the retained system-account signing seed put back in memory,
+ *  or `undefined` when this root never retained one. The seed is checked the way caller issuance
+ *  checks it: it must name this space's own system account and derive that account. A seed that does
+ *  not is refused rather than used to sign a credential. */
+async function trustWithRetainedSeed(source: SysCredsSource): Promise<SpaceAuth | undefined> {
+  if (source.injected) return undefined;
+  const auth = loadSpaceAuth(authDir(source.root), source.space);
+  if (auth === undefined) return undefined;
+  const record = await readSystemSigningSeed(source.secrets, source.space);
+  if (record === undefined) return undefined;
+  if (record.sysPub !== auth.sys.pub)
+    throw new Error(`the retained system-account signing seed names account ${record.sysPub}, not this space's system account ${auth.sys.pub}; the custody record is stale - rotate the system account or restore the record`);
+  let derived: string;
+  try { derived = nativeNkeySigner(new TextEncoder().encode(record.signingSeed)).getPublicKey(); } catch { throw new Error("the retained system-account signing seed is not a valid account seed; restore the record or rotate the system account"); }
+  if (!isAccountNkey(derived) || derived !== record.sysPub)
+    throw new Error(`the retained system-account signing seed does not derive its recorded account ${record.sysPub}; restore the record or rotate the system account`);
+  return { ...auth, sys: { ...auth.sys, signingSeed: record.signingSeed } };
+}
+
+/**
+ * Mint the missing connection evictor on a single-space workstation root that retained its
+ * system-account signing seed.
+ *
+ * A space created before live eviction has the observer and no evictor. The trust record carries no
+ * seed, so the documented repair was a system-account rotation, which restarts the broker and makes
+ * earlier backups unrestorable. The root keeps that seed in its own custody record, and caller
+ * issuance already signs short-lived `$SYS` credentials from it after boot. The evictor is the same
+ * kind of credential: signed by the system account, scoped to one verb, and written where this daemon
+ * reads it.
+ *
+ * The heal is optional, so wherever it is not eligible it does nothing and startup admission runs
+ * as it did before, with the evictor optional. It writes nothing on a hosted store (no root to ask),
+ * on a root with no retained seed (nothing to sign with), where the evictor is already present (a
+ * half-rotated pair is never papered over), and on a root where the rotation itself would refuse:
+ * the evictor's kick reaches every connection on the broker, so a root that hosts several spaces, or
+ * whose tenant list will not read, stays on the rotation repair. That last answer comes from the
+ * guard itself, through {@link rotationRefusal}, not from a tenant count read here.
+ *
+ * It also writes nothing unless the observer is present and the retained seed's system account
+ * signed it. A rotation commits the trust record and the seed before it writes the pair, so a crash
+ * in that window leaves the observer on the retired account with no evictor; minting a successor
+ * evictor beside it would turn a root that admission still accepts into a torn pair that admission
+ * refuses at every start. That window stays on the rotation repair, as it was.
+ */
+export async function healConnectionEvictor(source: SysCredsSource): Promise<boolean> {
+  if (source.injected) return false;
+  if ((await source.secrets.get(connectionEvictorCredsKey(source.space, source))) !== undefined) return false;
+  if (rotationRefusal(source.root) !== undefined) return false;
+  const auth = await trustWithRetainedSeed(source);
+  if (auth === undefined) return false;
+  const observer = await source.secrets.get(membershipObserverCredsKey(source.space, source));
+  if (observer === undefined || issuerOf(observer) !== auth.sys.pub) return false;
+  await source.secrets.put(connectionEvictorCredsKey(source.space, source), await mintConnectionEvictorCreds(auth, newIdentity()));
+  return true;
+}
+
+/** The system account that signed `creds`, or `undefined` for a credential that will not decode;
+ *  the health check reports that one with its own message. */
+function issuerOf(creds: string): string | undefined {
+  try { return credsClaims(creds).iss; } catch { return undefined; }
 }

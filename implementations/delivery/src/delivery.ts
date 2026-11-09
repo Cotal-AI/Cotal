@@ -32,6 +32,7 @@ import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executeEvictions, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
+import { healConnectionEvictor } from "./sys-creds.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
 
 type Values = Record<string, string | undefined>;
@@ -609,6 +610,13 @@ async function runStartedDelivery(
   // The singleton lease is admission to serve this space, so the daemon must prove its scan tenancy
   // before it can claim that slot. A wrong-root process previously acquired and renewed lease.0,
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
+  // Before that proof, a single-space root that retained its system-account signing seed mints the
+  // connection evictor it never had. A space created before live eviction is missing exactly that
+  // credential, and without it a retiring seat's name stays reserved for as long as one connection
+  // still holds the principal. The heal writes nothing on a hosted store, a multi-space root, or a
+  // root with no retained seed, and it leaves an evictor that is already present untouched.
+  if (await healConnectionEvictor(scanTarget.source))
+    log.err("• delivery: minted the missing connection evictor from the retained system-account signing seed");
   await validateScanTargetAdmission(scanTarget);
   log.err(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
