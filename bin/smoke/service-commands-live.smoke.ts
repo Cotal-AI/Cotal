@@ -258,11 +258,11 @@ try {
     check("the controller control starts its broker", controllerUp.status === 0, out(controllerUp));
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
-    const controllerList = controller(["service", "--json"]);
+    const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
     const controllerRows = (JSON.parse(controllerList.stdout) as { result: { services: Row[] } }).result.services;
     check("a stopped controller member's Next remains cotal up", row(controllerRows, "stack-broker")?.next === "cotal up", controllerRows);
     for (const action of ["start", "restart"]) {
-      const refused = controller(["service", action, "stack-broker", "--json", ...(action === "restart" ? ["--yes"] : [])]);
+      const refused = controller(["service", action, "stack-broker", "--space", controllerSpace, "--json", ...(action === "restart" ? ["--yes"] : [])]);
       const refusal = JSON.parse(refused.stdout) as { error?: { code?: string } };
       check(`a real controller member still refuses an individual ${action}`, refused.status === 2 && refusal.error?.code === "LIFECYCLE_BLOCKED", refusal);
     }
