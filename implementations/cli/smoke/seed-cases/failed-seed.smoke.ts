@@ -11,7 +11,7 @@ try {
     const first = boot(cfg, noNpm);
     check("failed seed: the boot fails", first.status !== 0, first.stderr);
     check("failed seed: the reason follows the colon on the failure line",
-      /failed to seed connector "claude" from \S+: @cotal-ai\/connector-claude-code npm install failed:/.test(first.stderr), first.stderr);
+      /failed to seed connector "claude" from \S+: @cotal-ai\/connector-claude-code npm install failed: npm is not on PATH/.test(first.stderr) && !first.stderr.includes("\\u000a") && !first.stderr.includes("spawn npm ENOENT"), first.stderr);
     const next = boot(cfg, noNpm);
     check("failed seed: the next boot reports the failure and its reason, not an interruption",
       next.status !== 0 && /a previous connector seed failed \(package "claude", phase add\): failed to seed connector "claude"/.test(next.stderr) && /cotal ext seed --repair/.test(next.stderr) && !/interrupted/.test(next.stderr), next.stderr);
