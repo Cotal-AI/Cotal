@@ -84,6 +84,7 @@
     "smoke:runtime-host-starvation": "tsx implementations/runtime/smoke/host-starvation.smoke.ts",
     "smoke:runtime-mesh-notify": "tsx implementations/runtime/smoke/mesh-notify.smoke.ts",
     "smoke:runtime-migrate": "tsx implementations/runtime/smoke/migrate-run.smoke.ts",
+    "smoke:runtime-migration-orphan-pause": "tsx implementations/runtime/smoke/migration-orphan-pause.smoke.ts",
     "smoke:runtime-mesh-spawn": "tsx implementations/runtime/smoke/mesh-spawn.smoke.ts",
     "smoke:runtime-placement-grants": "tsx implementations/runtime/smoke/placement-grants.smoke.ts",
     "smoke:runtime-spawn-policy": "tsx implementations/runtime/smoke/spawn-policy.smoke.ts",
