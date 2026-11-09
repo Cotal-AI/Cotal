@@ -122,7 +122,7 @@ import { RunHosting, servedRequestSubject } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { rejectionText, attemptCleanup, describeCleanupFailures, type CleanupFailure } from "@cotal-ai/core";
 import { controlSession } from "./control-session.js";
-import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, supervisePolicy, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readReleasedSeatReference, readSeatRecord, removeReleasedSeatReference, removeSeatRecord, supervisePolicy, writeReleasedSeatReference, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
 // The static §13.1 lifecycle executor: the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
@@ -684,7 +684,8 @@ export interface ManagerOptions {
 
 export interface ManagerStopOptions {
   /** Stop and deprovision managed agents. The default releases detachable local custody and stops
-   *  only the in-process seats that cannot outlive the manager. */
+   *  only the in-process seats that cannot outlive the manager. A released seat that is still
+   *  running keeps running. A released seat the runtime already reports gone is retired. */
   withAgents?: boolean;
 }
 
@@ -1858,6 +1859,9 @@ export class Manager {
    *  of `agents` before they have exited, so a second teardown would find none and report success
    *  while the first still waits on a live seat. */
   private stopTask?: { withAgents: boolean; done: Promise<void> };
+  /** The serve epoch this stop captured before it cleared the serve loop. A retirement that runs
+   *  after that loop is gone still has to name the epoch the host considers current. */
+  private releasedStopEpoch: number | undefined;
   /** Held as an instance field so broker-owning smokes can compress the schedule without changing
    *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
   private staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
@@ -2516,6 +2520,11 @@ export class Manager {
     const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
     if (startupReconcile)
       void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${rejectionText(e)} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
+    // A default stop records a user-mode seat it released while the seat was still running. This
+    // start adopts that seat, or retires it when the runtime proves it gone. Static seats stay on
+    // the sweep above.
+    if (this.userMode)
+      void this.adoptReleasedSeats().catch((e) => console.error(`! a released seat was not adopted: ${rejectionText(e)}`));
     // The manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
@@ -3605,22 +3614,190 @@ export class Manager {
     return agent.handle.kind === "pty" && typeof agent.handle.release !== "function";
   }
 
-  /** Drop this manager's local custody of every seat that can outlive it. A pty seat whose handle
-   *  cannot be released lives in this process and closes with it, so it is left for {@link stop} to
-   *  stop instead. */
-  private releaseManagedAgents(): string[] {
+  /** Drop local custody of every seat that can outlive this process. A seat the runtime already
+   *  reports gone is returned so this stop can retire it. A seat that is still running is recorded
+   *  and kept: its exit watch retires it when the runtime proves it gone, and the record lets the
+   *  next manager do that if this process exits first. A seat this manager cannot record stays in
+   *  the map so the caller stops and retires it instead of releasing an untracked seat. */
+  private releaseManagedAgents(): { gone: ManagedAgent[]; kept: ManagedAgent[]; failures: string[] } {
     const managed = [...this.agents.values()].filter((a) => !this.isProcessBoundSeat(a));
+    const gone: ManagedAgent[] = [];
+    const kept: ManagedAgent[] = [];
     const failures: string[] = [];
     for (const a of managed) {
+      let exited = false;
+      try {
+        exited = a.handle.status() === "exited";
+      } catch {
+        // Status is not proof either way. Leave the seat for the caller to stop and retire.
+        continue;
+      }
+      const reference = a.handle.reference;
+      // A live seat with no reference still outlives this process (cmux, orca, herdr). Releasing it
+      // is the old default. It is not an in-process seat, and this stop must not hard-stop it.
+      if (!exited && !reference) {
+        try {
+          a.handle.release?.();
+        } catch (e) {
+          failures.push(`${a.name}: ${rejectionText(e)}`);
+          continue;
+        }
+        kept.push(a);
+        continue;
+      }
+      try {
+        writeSeatRecord(this.workspaceRoot, {
+          version: "cotal-seat-record/v1",
+          instanceId: this.managerInstanceId,
+          crashes: [],
+          agent: this.resumeEntryOf(a),
+        });
+        if (reference) {
+          writeReleasedSeatReference(this.workspaceRoot, this.space, a.name, {
+            version: "cotal-released-seat/v1",
+            lifecycleUid: a.lifecycleUid,
+            kind: reference.kind,
+            id: reference.id,
+          });
+        }
+      } catch {
+        if (exited) gone.push(a);
+        continue;
+      }
+      if (exited) {
+        gone.push(a);
+        continue;
+      }
       try {
         a.handle.release?.();
-        a.suppressCleanup = true;
-        this.agents.delete(a.name);
       } catch (e) {
         failures.push(`${a.name}: ${rejectionText(e)}`);
+        continue;
+      }
+      // Custodial release closes the client that carried the exit watch. Adopt the same seat back
+      // so the watch is on a live client. A seat that cannot be adopted stays recorded for the next
+      // start and is not torn down: the closed client cannot prove its exit.
+      if (a.handle.kind === "pty" && reference) {
+        try {
+          const runtime = this.runtimeFor(reference.kind);
+          if (typeof runtime.adopt !== "function") throw new Error(`runtime "${runtime.kind}" cannot adopt a seat`);
+          a.handle = runtime.adopt(reference);
+          this.watchExit(a);
+        } catch (e) {
+          console.error(`! ${a.name}: the released seat could not be watched after release (${rejectionText(e)}); the next start adopts it`);
+          this.agents.delete(a.name);
+          continue;
+        }
+      }
+      kept.push(a);
+    }
+    return { gone, kept, failures };
+  }
+
+  /** Retire one released seat the runtime already reports gone. The seat did not keep running, so
+   *  its lifecycle must not stay active after this stop. */
+  private async retireReleasedSeat(a: ManagedAgent): Promise<void> {
+    await this.awaitHandleExit(a.handle);
+    this.freeSlot(a, false, "process-exit");
+    await this.deprovision(this.teardownTarget(a));
+    this.reapChildrenOf(this.managedPrincipal(a));
+  }
+
+  /** Take back user-mode seats a previous manager released while they were still running. A seat
+   *  the runtime adopts is watched, and retired when that watch proves it gone. A seat the runtime
+   *  has already reaped is retired now. Anything the runtime cannot prove is left recorded. */
+  private async adoptReleasedSeats(): Promise<void> {
+    const dir = join(this.workspaceRoot, ".cotal", "seat-records", this.space);
+    if (!existsSync(dir)) return;
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith(".runtime-ref")) continue;
+      const name = file.slice(0, -".runtime-ref".length);
+      try {
+        await this.adoptReleasedSeat(name);
+      } catch (e) {
+        console.error(`! ${name}: the released seat was not adopted: ${rejectionText(e)}`);
       }
     }
-    return failures;
+  }
+
+  private async adoptReleasedSeat(name: string): Promise<void> {
+    const reference = readReleasedSeatReference(this.workspaceRoot, this.space, name);
+    const record = reference ? readSeatRecord(this.workspaceRoot, this.space, name) : undefined;
+    const identity = record?.agent.identity;
+    if (!reference || !record || identity?.mode !== "user" || identity.lifecycleUid !== reference.lifecycleUid) return;
+    try {
+      await this.validateRetainedAuthority(record.agent);
+    } catch (e) {
+      console.error(`! ${name}: the released seat's record was not adopted: ${rejectionText(e)}`);
+      return;
+    }
+    const held = this.agents.get(name);
+    if (held?.lifecycleUid === reference.lifecycleUid) return;
+    if (held) return;
+    const runtime = this.runtimeFor(reference.kind);
+    if (typeof runtime.adopt !== "function" || reference.kind !== runtime.kind) return;
+    let handle: AgentHandle;
+    try {
+      handle = runtime.adopt(reference);
+    } catch (e) {
+      const reap = (runtime as { reap?: (reference: { kind: string; id: string }) => Promise<{ outcome?: string }> }).reap;
+      if (typeof reap !== "function") return;
+      let outcome: string | undefined;
+      try {
+        outcome = (await reap.call(runtime, reference)).outcome;
+      } catch {
+        // The runtime could not prove the seat gone. Leave the record for a later start.
+        return;
+      }
+      if (outcome !== "reaped") return;
+      console.error(`! ${name}: the released seat is gone (${rejectionText(e)}); retiring its lifecycle`);
+      handle = {
+        name,
+        kind: runtime.kind,
+        reference: { kind: runtime.kind, id: reference.id },
+        status: () => "exited",
+        stop: () => {},
+        interrupt: () => {},
+        waitForExit: () => Promise.resolve(),
+        attach: () => { throw new Error(`released seat ${name} has exited`); },
+      };
+    }
+    const launch = record.agent.launch;
+    const agent: ManagedAgent = {
+      name,
+      role: record.agent.role,
+      agent: launch.connector,
+      id: principalKey(identity.owner, identity.actor).key,
+      lifecycleUid: identity.lifecycleUid,
+      userOwner: identity.owner,
+      secretPaths: {
+        actorToken: identity.actorToken.path,
+        sentinelCreds: identity.sentinelCredential.path,
+        health: identity.health.path,
+      },
+      spawner: record.agent.spawner,
+      authorityParent: record.agent.authorityParent,
+      startedAt: Date.parse(record.agent.startedAt) || Date.now(),
+      handle,
+      launch: {
+        source: launch.source,
+        runtime: launch.runtime,
+        cwd: launch.cwd,
+        model: launch.model,
+        variant: launch.variant,
+        subscribe: launch.subscribe,
+        allowSubscribe: launch.allowSubscribe,
+        allowPublish: launch.allowPublish,
+        capabilities: launch.capabilities,
+        events: launch.events,
+        shareTools: launch.shareTools,
+        forkSource: launch.forkSource,
+        sessionId: launch.sessionId,
+        unresolvedLaunchOptionKeys: launch.unresolvedLaunchOptionKeys,
+      },
+    };
+    this.agents.set(name, agent);
+    this.watchExit(agent);
   }
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -3744,14 +3921,22 @@ export class Manager {
     await this.awaitLifecycleDrain();
     let releaseFailures: string[] = [];
     let seatFailure: string | undefined;
+    let gone: ManagedAgent[] = [];
+    let kept: ManagedAgent[] = [];
     try {
       if (this.maintenanceState === "active" && !this.resumeRequired) {
         if (withAgents) await this.teardownManagedAgents();
         else {
           // An in-process seat cannot be detached from the process that is exiting, so the default
           // stop stops and deprovisions it as `withAgents` does instead of orphaning its footprint.
-          const inProcess = [...this.agents.values()].filter((a) => this.isProcessBoundSeat(a));
-          releaseFailures = this.releaseManagedAgents();
+          // A released seat that is still running stays in the map: its exit watch retires it once
+          // the runtime proves it gone, and this stop does not wait for that.
+          const detached = this.releaseManagedAgents();
+          gone = detached.gone;
+          kept = detached.kept;
+          releaseFailures = detached.failures;
+          const releasing = new Set([...gone, ...kept]);
+          const inProcess = [...this.agents.values()].filter((a) => !releasing.has(a));
           await this.teardownManagedAgents(inProcess);
         }
       } else {
@@ -3789,6 +3974,7 @@ export class Manager {
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
     const registrationRevision = this.serviceServe?.grant.registrationRevision;
+    this.releasedStopEpoch = this.serviceServe?.grant.epoch;
     await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
@@ -3800,6 +3986,19 @@ export class Manager {
     await step("stop session plane", () => this.stopSessionPlane());
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
+    // A seat released because it had already exited cannot come back. Retirement uses its own
+    // requester connection, so it runs after this manager's endpoint is gone.
+    if (gone.length && seatFailure === undefined) {
+      const retired = await Promise.all(gone.map(async (a) => {
+        try {
+          await this.retireReleasedSeat(a);
+          return undefined;
+        } catch (e) {
+          return `${a.name}: ${rejectionText(e)}`;
+        }
+      }));
+      for (const failure of retired) if (failure) releaseFailures.push(failure);
+    }
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
     if (seatFailure !== undefined) throw new Error(`${seatFailure}${also}`);
     if (releaseFailures.length)
@@ -5306,7 +5505,10 @@ export class Manager {
     this.agents.delete(a.name);
     this.recordContinuityAtStop(a, "stop");
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
-    this.dropSeatRecord(a);
+    // A released seat's record is the next manager's only pointer to it. It stays until the
+    // retirement is confirmed. Dropping it here let a refused retirement leave the lifecycle active
+    // with nothing left for that manager to adopt.
+    if (!this.releasedSeatPending(a)) this.dropSeatRecord(a);
     if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
     // End any live §13.6 attach session bound to THIS incarnation with the honest
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
@@ -5621,7 +5823,7 @@ export class Manager {
       const requestIdentity = newIdentity();
       const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
       const opId = managedRetirementOpId(a.lifecycleUid);
-      const serveEpoch = this.serviceServe?.grant.epoch ?? 0;
+      const serveEpoch = this.serviceServe?.grant.epoch ?? this.releasedStopEpoch ?? 0;
       const creds = this.remoteAuthority
         ? await this.remoteAuthority.mintRetirementRequester({ identity: requestIdentity, target: retirementTarget, opId, serveEpoch })
         : await mintCreds(this.auth!, requestIdentity, "retirement-requester", {
@@ -5672,6 +5874,10 @@ export class Manager {
     // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
     // lifecycle's. A late reply for a retired predecessor must never clear a successor's newer hold.
     const cur = this.retiring.get(a.name);
+    // The record names this incarnation only, so a confirmed retirement removes it and a successor's
+    // record stays. A mint authority that is still live keeps the record: the seat is gone, and the
+    // next manager has to be able to re-drive the revoke.
+    if (!(cur?.target.lifecycleUid === a.lifecycleUid && cur.standingAuthorityLive)) this.dropSeatRecord(a);
     if (cur && cur.target.lifecycleUid === a.lifecycleUid) {
       if (cur.standingAuthorityLive) {
         // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
@@ -11536,8 +11742,20 @@ export class Manager {
   private dropSeatRecord(a: { name: string; lifecycleUid: string }): void {
     try {
       removeSeatRecord(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
+      removeReleasedSeatReference(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
     } catch (error) {
       console.error(`! ${a.name}: its seat record could not be removed: ${rejectionText(error)}`);
+    }
+  }
+
+  /** True when a default stop wrote a runtime reference for this exact lifecycle and it is still
+   *  there. That file is what a later manager adopts, so a slot free must not remove it before the
+   *  retirement that confirms the lifecycle is gone. */
+  private releasedSeatPending(a: { name: string; lifecycleUid: string }): boolean {
+    try {
+      return readReleasedSeatReference(this.workspaceRoot, this.space, a.name)?.lifecycleUid === a.lifecycleUid;
+    } catch {
+      return false;
     }
   }
 

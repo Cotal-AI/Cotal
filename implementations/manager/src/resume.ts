@@ -246,3 +246,54 @@ export function removeSeatRecord(root: string, space: string, name: string, life
   }
   if (current?.agent.identity.lifecycleUid === lifecycleUid) rmSync(path, { force: true });
 }
+
+/** The runtime reference of a seat a default stop released while it was still running. The seat
+ *  record names the lifecycle. This file names the seat the next manager adopts, or retires once
+ *  the runtime proves it gone. It carries no secret. */
+const releasedSeatReference = z.strictObject({
+  version: z.literal("cotal-released-seat/v1"),
+  lifecycleUid: z.string().min(1).max(256),
+  kind: label,
+  id: z.string().min(1).max(512),
+});
+
+export type ReleasedSeatReference = z.infer<typeof releasedSeatReference>;
+
+export function releasedSeatReferencePath(root: string, space: string, name: string): string {
+  return join(root, ".cotal", "seat-records", space, `${name}.runtime-ref`);
+}
+
+export function writeReleasedSeatReference(root: string, space: string, name: string, reference: ReleasedSeatReference): void {
+  const path = releasedSeatReferencePath(root, space, name);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeSecretFileAtomic(path, `${JSON.stringify(releasedSeatReference.parse(reference))}\n`);
+}
+
+/** Undefined when this manager released no seat under that name. A file that does not parse throws. */
+export function readReleasedSeatReference(root: string, space: string, name: string): ReleasedSeatReference | undefined {
+  const path = releasedSeatReferencePath(root, space, name);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  const parsed = releasedSeatReference.safeParse(JSON.parse(text));
+  if (!parsed.success)
+    throw new Error(`released seat ${path}: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`).join("; ")}`);
+  return parsed.data;
+}
+
+/** Remove the reference of one incarnation. A reference of another incarnation under the same name is left. */
+export function removeReleasedSeatReference(root: string, space: string, name: string, lifecycleUid: string): void {
+  const path = releasedSeatReferencePath(root, space, name);
+  let current: ReleasedSeatReference | undefined;
+  try {
+    current = readReleasedSeatReference(root, space, name);
+  } catch {
+    rmSync(path, { force: true });
+    return;
+  }
+  if (current?.lifecycleUid === lifecycleUid) rmSync(path, { force: true });
+}
