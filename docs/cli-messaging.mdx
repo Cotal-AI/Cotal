@@ -687,11 +687,14 @@ The caller needs the native admin read authority; user-auth has no equivalent
 view here and refuses without a static or bare fallback. A failed read does
 not prune a locally saved mesh registration.
 
-Candidates are read without acknowledging DMs. The transient read consumer is
-deleted after the bounded pass. A finished candidate read whose deletion is
-confirmed exits 0. The candidate list is not evidence of delivery, a missing
-message or complete history. An unconfirmed cleanup, an unreadable candidate
-or an unfinished candidate read is reported as partial.
+Candidates are read without acknowledging DMs. The read creates one of this
+credential's history readers with a description unique to that read, and deletes
+only the reader that comes back with it. A name already held by another consumer
+is left in place and the read uses another authorized name. A finished candidate
+read whose deletion is confirmed exits 0. When every authorized name is held,
+the read is partial and deletes nothing. The candidate list is not evidence of
+delivery, a missing message or complete history. An unconfirmed cleanup, an
+unreadable candidate or an unfinished candidate read is reported as partial.
 Each candidate's `from` is the sender principal
 parsed from its stored message subject, which the broker binds to the sender's
 credential. The sender's own card is not printed, and a candidate that cannot

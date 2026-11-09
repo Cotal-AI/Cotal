@@ -1,9 +1,10 @@
 import {
-  CotalEndpoint, dialerFor, dmDurable, dmStream, historyReaderConsumer, idFromCreds, isConsumerNotFound,
+  CotalEndpoint, dialerFor, dmDurable, dmStream, HISTORY_READERS, historyReaderConsumer, idFromCreds, isConsumerAlreadyExists, isConsumerNotFound,
   parsePrincipalKey, parseSubject, standaloneConnectOpts, unicastSubject, type FlagSpec, type ParsedArgs, type Presence,
 } from "@cotal-ai/core";
 import { CommandFailure, connectOrThrow, isConnectRefusal, jsonFlag, plainFlag, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { randomUUID } from "node:crypto";
 import { parseDmDurable } from "./pending.js";
 
 export const pendingFlags = [jsonFlag, plainFlag,
@@ -83,16 +84,29 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
       candidates: [], candidateRead: "not-checked", candidateLimit: limit };
     if (recipient) {
       if (conn.creds === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this pending candidate read needs the static admin credential that may delete its own history reader; no unnamed consumer was created", { target: { space, requested, durable } });
-      const reader = historyReaderConsumer(idFromCreds(conn.creds), 0);
-      let opened = false;
+      const readerId = idFromCreds(conn.creds);
+      const description = `cotal pending read ${randomUUID()}`;
+      let owned: string | undefined;
       try {
         const js = jetstream(nc);
-        const created = await jsm.consumers.add(stream, {
-          name: reader, filter_subjects: [unicastSubject(space, recipient.owner, recipient.actor, "*", "*")],
-          deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: result.ackFloor + 1,
-          ack_policy: AckPolicy.None, inactive_threshold: 5 * 60 * 1_000_000_000,
-        });
-        opened = true;
+        let created: Awaited<ReturnType<typeof jsm.consumers.add>> | undefined;
+        for (let slot = 0; slot < HISTORY_READERS; slot++) {
+          const name = historyReaderConsumer(readerId, slot);
+          try {
+            const info = await jsm.consumers.add(stream, {
+              name, description, filter_subjects: [unicastSubject(space, recipient.owner, recipient.actor, "*", "*")],
+              deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: result.ackFloor + 1,
+              ack_policy: AckPolicy.None, inactive_threshold: 5 * 60 * 1_000_000_000,
+            });
+            if (info.config.description !== description) continue;
+            created = info;
+            owned = name;
+            break;
+          } catch (error) {
+            if (!isConsumerAlreadyExists(error)) throw error;
+          }
+        }
+        if (!created || owned === undefined) throw new Error("every history reader name this credential may delete is held by a consumer this read did not create");
         const consumer = js.consumers.getConsumerFromInfo(created);
         const count = Math.min(created.num_pending, limit);
         if (count) {
@@ -113,8 +127,8 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
         result.candidateRead = "bounded-from-ack-floor";
       } catch { warnings.push({ code: "CANDIDATE_READ_UNAVAILABLE", message: "The bounded candidate read did not complete; durable counts remain separate facts.", target: { space, durable } }); }
       finally {
-        if (opened) try {
-          if (await jsm.consumers.delete(stream, reader) !== true) warnings.push({ code: "EPHEMERAL_CLEANUP_UNCONFIRMED", message: "The transient read consumer's deletion was not confirmed; no DM was acknowledged.", target: { space, durable } });
+        if (owned !== undefined) try {
+          if (await jsm.consumers.delete(stream, owned) !== true) warnings.push({ code: "EPHEMERAL_CLEANUP_UNCONFIRMED", message: "The transient read consumer's deletion was not confirmed; no DM was acknowledged.", target: { space, durable } });
         } catch { warnings.push({ code: "EPHEMERAL_CLEANUP_UNCONFIRMED", message: "The transient read consumer's deletion was not confirmed; no DM was acknowledged.", target: { space, durable } }); }
       }
     } else result.candidateRead = "durable-name-unparseable";
