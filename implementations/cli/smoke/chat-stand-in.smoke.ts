@@ -189,6 +189,55 @@ if (mode === "plain" || mode === "stdio") {
     check("a granted join and send reach the endpoint", ok.outcome === "ok" && stored.outcome === "stored" && calls.join() === "joinChannel,getChannelConfig,multicast", { ok, stored, calls });
   }
 
+  console.log("3b. stream absence refuses before publishing and cannot settle an attempted write");
+  for (const kind of ["send", "dm", "anycast"] as const) {
+    let present = false, unreadable = false, publishes = 0;
+    const write = async () => {
+      publishes++;
+      present = false;
+      throw new Error("publish acknowledgement lost");
+    };
+    const endpoint = {
+      on: () => {}, off: () => {}, stop: async () => {},
+      getChannelConfig: () => undefined,
+      getRoster: () => [], presenceView: () => ({ state: "current" }),
+      joinedChannels: () => ["general"],
+      chatRetention: async () => {
+        if (unreadable) throw new Error("broker unavailable");
+        return { stream: present };
+      },
+      multicast: write, unicastAttributed: write, anycastAttributed: write,
+    } as unknown as CotalEndpoint;
+    const session = new NativeChatSession({
+      endpoint, identity: { ...identity, mode: "static", allowPublish: ["general"] },
+      retire: async () => ({ retirement: "unknown", connectionClosed: "confirmed", message: "retirement not confirmed" }),
+      words: cliWords({ raw: ["--stdio"], positionalIndices: [] }),
+    });
+    const send = () => kind === "send" ? session.send("hi", "general", [])
+      : kind === "dm" ? session.dm({ principal: "u_z.alice" }, "hi")
+      : session.anycast("planner", "hi");
+    const absent = await send();
+    check(`${kind}: known absence refuses without a publish`,
+      absent.outcome === "refused" && absent.code === "TARGET_UNAVAILABLE" && publishes === 0, { absent, publishes });
+    const missing = await session.connection();
+    check(`${kind}: connection reports the observed absence`,
+      missing.outcome === "ok" && missing.value.state === "disconnected" && !!missing.value.reason, missing);
+    present = true;
+    const recreated = await session.connection();
+    check(`${kind}: recreated streams clear the connection reason`,
+      recreated.outcome === "ok" && recreated.value.state === "connected" && recreated.value.reason === undefined, recreated);
+    const lostAck = await send();
+    check(`${kind}: absence after an attempted publish does not turn unknown into refused`,
+      lostAck.outcome === "unknown" && publishes === 1, { lostAck, publishes });
+    unreadable = true;
+    const unread = await send();
+    check(`${kind}: an unreadable preflight does not reuse cached absence as a refusal`,
+      unread.outcome === "unknown" && publishes === 2, { unread, publishes });
+    unreadable = false;
+    const close = await session.close();
+    check(`${kind}: missing chat stream does not confirm retirement`, close.retirement === "unknown", close);
+  }
+
   console.log("4. a typed principal reaches that principal, never a peer whose display name spells it");
   {
     // u_z.alice is not on the roster and this session never heard from it. The present peer

@@ -3,7 +3,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { describeDefault, findServicePreset, presetMissingOptions, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { describeDefault, findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -253,9 +253,13 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       const values = guided;
       definition = forName(() => servicePresetDefinition(preset, space, values, root, `add ${name}`));
     } else {
-      const file = await prompts.text({ message: "Version-1 service definition file", placeholder: "./reviews.service.json" });
+      const file = await prompts.text({
+        message: "Version-1 service definition file",
+        placeholder: "./reviews.service.json",
+        validate: (answer) => { try { importServiceDefinition(resolve(answer ?? ""), space); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); } },
+      });
       if (prompts.isCancel(file)) return cancelled("Service creation cancelled");
-      definition = forName(() => importServiceDefinition(resolve(file), space));
+      definition = importServiceDefinition(resolve(file), space);
     }
     refuseBrokerServer(definition);
     const answer = await prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false });
@@ -412,36 +416,42 @@ export function serviceComplete(argv: string[]): CompletionResult {
 function guidedDefault(preset: ServicePreset, space: string, root: string, option: string): { shown: string; filled: boolean } | undefined {
   const fallback = preset.defaults?.[option];
   if (!fallback) return undefined;
-  const unfilled = presetUnfilledDefaults(preset, space, root, {}).find((row) => row.name === option);
+  const unfilled = presetUnfilledDefaults(preset, space, root, {}).find((row) => row.name === presetFlagName(option));
   return unfilled ? { shown: unfilled.reason, filled: false } : { shown: describeDefault(fallback), filled: true };
 }
 
-/** Ask a preset's options the way its flags take them. An option with a default is asked as
- *  optional, and Enter leaves it out so the flag form's defaults fill it. A typed answer, including
- *  an empty one, is that answer. For a boolean, Enter is that empty answer and `y` is an explicit
- *  yes. An option with no default stays required, and Enter there is an empty answer, which the
- *  schema refuses as an explicit empty flag does. */
+/** Ask defaulted options as optional. Empty text and an unchanged boolean selection leave the
+ *  option out so the flag form's defaults fill it. Explicit overrides keep their value, and
+ *  required text without a default uses the same per-answer validation as the other forms. */
 async function guidedPreset(preset: ServicePreset, space: string, root: string): Promise<ParsedArgs["values"] | undefined> {
   servicePresetFlags(preset);
   const schema = resolveServiceAdapter(preset.adapter, {}, false).declaration.optionsSchema;
   const properties = schema.properties as Record<string, Record<string, unknown>>;
   const required = schema.required as string[] | undefined;
   const values: ParsedArgs["values"] = {};
-  for (const [name, option] of Object.entries(properties)) {
-    const fallback = guidedDefault(preset, space, root, name);
-    if (!required?.includes(name) || fallback) {
+  for (const [option, schema] of Object.entries(properties)) {
+    const name = presetFlagName(option);
+    const fallback = guidedDefault(preset, space, root, option);
+    if (!required?.includes(option) || fallback) {
       const set = await prompts.confirm({ message: fallback ? `Set --${name}? Its default is ${fallback.shown}.` : `Set optional --${name}?`, initialValue: false });
       if (prompts.isCancel(set)) return undefined;
       if (!set) continue;
     }
-    if (option.type === "boolean") {
-      const answer = await prompts.confirm({ message: fallback?.filled ? `Enable --${name}? Enter keeps its default, ${fallback.shown}.` : `Enable --${name}?`, initialValue: false });
+    if (schema.type === "boolean") {
+      const declared = preset.defaults?.[option];
+      const initialValue = declared && "value" in declared && typeof declared.value === "boolean" ? declared.value : false;
+      const answer = await prompts.confirm({ message: fallback?.filled ? `Enable --${name}? Enter keeps its default, ${fallback.shown}.` : `Enable --${name}?`, initialValue });
       if (prompts.isCancel(answer)) return undefined;
-      if (fallback?.filled && answer === false) continue;
+      if (fallback?.filled && answer === initialValue) continue;
       values[name] = answer;
     } else {
-      const kind = option.type === "string" ? "Non-secret value" : `JSON ${String(option.type)}`;
-      const answer = await prompts.text({ message: fallback ? `${kind} for --${name}. Enter keeps its default, ${fallback.shown}.` : `${kind} for --${name}` });
+      const kind = schema.type === "string" ? "Non-secret value" : `JSON ${String(schema.type)}`;
+      const answer = await prompts.text({
+        message: fallback ? `${kind} for --${name}. Enter keeps its default, ${fallback.shown}.` : `${kind} for --${name}`,
+        validate: (value) => fallback && (value ?? "") === "" ? undefined
+          : presetOptionRefusal(preset, name, value ?? "")
+            ?? (preset.adapter === brokerService.name && option === "server" ? brokerServerProblem(value ?? "") : undefined),
+      });
       if (prompts.isCancel(answer)) return undefined;
       if (fallback && answer === "") continue;
       values[name] = answer;

@@ -1,5 +1,27 @@
 # @cotal-ai/runtime
 
+## 0.151.2
+
+### Patch Changes
+
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+  - @cotal-ai/lang@0.151.2
+
+## 0.151.1
+
+### Patch Changes
+
+- dd3d984: Hosted workflow answers from the same OS login and host on a static-auth mesh now record one operator.
+  
+  The run command's control instrument keeps that actor across commands. Each command still mints a fresh credential and lifecycle. The OS login is read only after a static-auth instrument mint is selected. Signed-in users, managed seats, explicit credentials, and open meshes do not use it.
+- Updated dependencies [dd3d984]
+- Updated dependencies [f84069e]
+  - @cotal-ai/workspace@0.151.1
+  - @cotal-ai/core@0.151.1
+  - @cotal-ai/lang@0.151.1
+
 ## 0.151.0
 
 ### Minor Changes

@@ -30,10 +30,11 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths } from "../daemon/endpoint.js";
 import { planUninstall, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
-import { launchAgentLabel, launchAgentService, renderLaunchAgent } from "../daemon/install-darwin.js";
+import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
 let pass = 0, fail = 0;
@@ -63,6 +64,7 @@ const savedHome = process.env.HOME;
 try {
   const uid = process.getuid?.();
   const node = "/opt/cotal/1.2.3/bin/node";
+  const bootstrap = fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
   const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
 
   console.log("N1 plist");
@@ -71,6 +73,10 @@ try {
     check("home label is derived from the home", launchAgentLabel("/x") === `ai.cotal.daemon.${sha("/x").slice(0, 16)}`);
     const { text, sha256 } = renderLaunchAgent({ label: "ai.cotal.daemon", argv, searchPath: "/usr/bin:/bin", workingDirectory: "/Users/a", logPath: "/Users/a/.cotal/daemon/daemon.log" });
     check("arguments are escaped, one string each", text.includes("<string>/Users/a b/&amp;&lt;home&gt;</string>") && (text.match(/<string>/g) ?? []).length === argv.length + 5, text);
+    check("directory is carried by the bootstrap's arguments", text.includes(`<string>${xmlText(bootstrap)}</string><string>/Users/a</string><string>daemon</string><string>serve</string>`));
+    const alias = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "/usr/local/bin/cotal", "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
+    check("a CLI alias still pins this package's bootstrap", alias.text.includes(`<string>${xmlText(bootstrap)}</string>`) && !alias.text.includes("/usr/local/bin/daemon-cwd.js"));
+    check("no unobservable WorkingDirectory property is emitted", !text.includes("<key>WorkingDirectory</key>"));
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
     check("PATH is pinned", text.includes("<key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin</string></dict>"));
     check("digest is of the exact bytes", sha256 === sha(text));
@@ -101,7 +107,8 @@ try {
 
     let printStatus = 113;
     const r = recorder((c) => c.args[0] === "print" ? { status: printStatus, detail: printStatus === 125 ? "Domain does not support specified action" : "" } : {});
-    let observedJob: import("@cotal-ai/seat").DarwinLaunchdLookup = { state: "loaded", job: { label, program: argv[0], programArguments: argv, workingDirectory: home } };
+    const loadedArgv = [node, "--max-semi-space-size=1", bootstrap, home, ...argv.slice(3)];
+    let observedJob: import("@cotal-ai/seat").DarwinLaunchdLookup = { state: "loaded", job: { label, program: node, programArguments: loadedArgv } };
     const service = launchAgentService(r.run, () => observedJob);
     const plan = service.plan(paths, undefined, argv, () => "/usr/bin:/bin");
     check("plan reads the label in the user's GUI domain", r.calls.length === 1 && r.calls[0]!.file === "/bin/launchctl" && r.calls[0]!.args.join(" ") === `print ${target}`, r.calls);
@@ -134,13 +141,16 @@ try {
     check("check passes the unchanged plist after one domain read", r.calls.length === 1 && r.calls[0]!.args[0] === "print");
     check("a different recorded digest refuses CONFLICT", code(() => service.check({ ...receipt, unitSha256: "0".repeat(64) })) === "CONFLICT");
     printStatus = 0;
+    check("new loaded job proves its directory through arguments without a WorkingDirectory field", code(() => service.check(receipt)) === "none");
     const originalJob = observedJob;
     for (const badJob of [
       { state: "absent" as const },
       { state: "unavailable" as const, reason: "fixture" },
-      { state: "loaded" as const, job: { label, program: "/foreign", programArguments: argv, workingDirectory: home } },
-      { state: "loaded" as const, job: { label, program: argv[0], programArguments: ["foreign"], workingDirectory: home } },
-      { state: "loaded" as const, job: { label, program: argv[0], programArguments: argv } },
+      { state: "loaded" as const, job: { label, program: "/foreign", programArguments: loadedArgv } },
+      { state: "loaded" as const, job: { label, program: node, programArguments: ["foreign"] } },
+      { state: "loaded" as const, job: { label, program: node, programArguments: argv } },
+      { state: "loaded" as const, job: { label, programArguments: loadedArgv } },
+      { state: "loaded" as const, job: { label, program: node } },
     ]) {
       observedJob = badJob;
       r.calls.length = 0;
@@ -151,6 +161,28 @@ try {
     r.calls.length = 0;
     service.start(receipt);
     check("starting a loaded job never force-restarts it", r.calls.some((call) => call.args[0] === "kickstart") && !r.calls.some((call) => call.args.includes("-k")));
+    const newSource = readFileSync(plist, "utf8");
+    const legacyDirectory = `<key>WorkingDirectory</key><string>${xmlText(home)}</string>`;
+    const legacySource = newSource
+      .replace(/<key>ProgramArguments<\/key><array>[\s\S]*?<\/array>/, `<key>ProgramArguments</key><array>${argv.map(a => `<string>${xmlText(a)}</string>`).join("")}</array>`)
+      .replace("<key>EnvironmentVariables</key>", `${legacyDirectory}\n<key>EnvironmentVariables</key>`);
+    writeFileSync(plist, legacySource, { mode: 0o600 });
+    const legacyReceipt = { ...receipt, unitSha256: sha(legacySource) };
+    observedJob = { state: "loaded", job: { label, program: node, programArguments: argv } };
+    r.calls.length = 0;
+    check("legacy missing WorkingDirectory still refuses start", code(() => service.start(legacyReceipt)) === "CONFLICT");
+    check("legacy missing WorkingDirectory still refuses removal", code(() => service.remove(legacyReceipt)) === "CONFLICT");
+    check("legacy refusal changes no native job or source", r.calls.every(c => c.args[0] === "print") && readFileSync(plist, "utf8") === legacySource);
+    observedJob = { state: "loaded", job: { label, program: node, programArguments: argv, workingDirectory: home } };
+    check("legacy matching native directory remains accepted", code(() => service.check(legacyReceipt)) === "none");
+    observedJob = { state: "loaded", job: { label, program: node, programArguments: argv, workingDirectory: "/foreign" } };
+    check("legacy changed native directory still refuses", code(() => service.check(legacyReceipt)) === "CONFLICT");
+    const unknownSource = legacySource.replace(legacyDirectory, "");
+    writeFileSync(plist, unknownSource, { mode: 0o600 });
+    observedJob = { state: "loaded", job: { label, program: node, programArguments: argv } };
+    check("directory-free source without the bootstrap refuses", code(() => service.check({ ...receipt, unitSha256: sha(unknownSource) })) === "CONFLICT");
+    writeFileSync(plist, newSource, { mode: 0o600 });
+    observedJob = originalJob;
     printStatus = 0;
     r.calls.length = 0;
     check("a receipt naming another label refuses CONFLICT", code(() => service.remove({ ...receipt, unit: "com.example.other" })) === "CONFLICT");

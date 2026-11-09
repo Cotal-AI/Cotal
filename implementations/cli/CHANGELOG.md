@@ -1,5 +1,47 @@
 # @cotal-ai/cli
 
+## 0.151.2
+
+### Patch Changes
+
+- 1d47635: `cotal backup inspect` now refuses an artifact whose declared file is a symbolic link, FIFO or device, naming that file and the fault `not-regular`.
+  
+  Verify and restore already refused that file. Inspect checked the declared names and then reported the artifact as fine, so an operator who inspected before restoring was told a copy that cannot be restored was sound.
+- 0adb23c: A refused slash command in chat clears the input line.
+  
+  The refusal stays in the transcript, and the next command is typed on an empty line. A line kept because the session is not connected, a send is in flight, or no recipient is chosen stays. `/reply` with text says that it only chooses the recipient and that the message is typed after it.
+- f2f0a2b: Guided service and endpoint forms validate answers at each question so invalid input can be corrected without losing earlier answers.
+  
+  Preset answers use the option schema and path checks, including the broker server's existing address restrictions. Imports and endpoint references are checked before the form advances, and whole-definition validation remains in place before saving.
+- b709d87: A foreground `cotal up` on the retained launcher exits 130 on Ctrl-C and 143 on SIGTERM. A space named after its folder keeps its registration when that stop finishes.
+- 014d1d3: Let a file-form teardown dry-run inspect the recorded stack when no additive ledger exists, with consistent text and structured output. Keep explicit run selection and legacy ledger previews on their existing teardown path without requiring launch-time persona files. When file-form apply finds a recorded stack without an additive ledger, name the bare stack stop instead of suggesting an unknown run ID.
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+
+## 0.151.1
+
+### Patch Changes
+
+- ee5e222: Make `cotal config` read the space a launch in the current folder uses when another space is selected. Write receipts and missing-persona warnings use the same space, while explicit `--space` and `--user` reads keep their scopes.
+- 1f0e175: A closed terminal of a foreground `cotal up` now says the stack is still running and names `cotal down`, then exits 129.
+  
+  The stack keeps running, as before. The holding process removes its hold record as it exits, and a later `cotal down` removes one a killed holder left behind.
+- 35d1c85: Revoke a credential in the space its folder holds after that space is stopped, even while another space is selected.
+  
+  The recovery printed while the space is running now quotes a path a shell would split or expand, and so does the Next after the revocation.
+- acc85cf: `cotal setup --json` now reports a failed connector seed as one JSON document on stdout, with no text failure line on stderr.
+  
+  The seed runs before the command, so the refusal used to print one text line and leave stdout empty. A command that asks for JSON now gets the same envelope any later refusal writes. When npm is not on PATH, the reason says that instead of a raw spawn error with an embedded newline.
+- faf7c80: `cotal service` now points a stopped controller stack member at bare `cotal up`, and refuses to start or restart one by itself.
+  
+  Starting `stack-broker`, `stack-delivery` or `stack-manager` on its own, or the preset name that reaches it, launches the process and leaves the space unregistered, so later commands fail until `cotal down`. The start now stops before anything launches and tells you to run `cotal up`. The guard checks the saved adapter and controller journal, so a direct-process service with the same name still starts and restarts normally.
+- f84069e: The docs site now has a TypeScript reference for every published package, generated from source. Each of these packages' entry files gains a `@module index` comment so the reference names the main import path `index` instead of leaving it blank. The published code is otherwise unchanged.
+- Updated dependencies [dd3d984]
+- Updated dependencies [f84069e]
+  - @cotal-ai/workspace@0.151.1
+  - @cotal-ai/core@0.151.1
+
 ## 0.151.0
 
 ### Patch Changes

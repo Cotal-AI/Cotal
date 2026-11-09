@@ -1,5 +1,25 @@
 # @cotal-ai/workspace
 
+## 0.151.2
+
+### Patch Changes
+
+- 0adb23c: A refused slash command in chat clears the input line.
+  
+  The refusal stays in the transcript, and the next command is typed on an empty line. A line kept because the session is not connected, a send is in flight, or no recipient is chosen stays. `/reply` with text says that it only chooses the recipient and that the message is typed after it.
+- @cotal-ai/core@0.151.2
+
+## 0.151.1
+
+### Patch Changes
+
+- dd3d984: Hosted workflow answers from the same OS login and host on a static-auth mesh now record one operator.
+  
+  The run command's control instrument keeps that actor across commands. Each command still mints a fresh credential and lifecycle. The OS login is read only after a static-auth instrument mint is selected. Signed-in users, managed seats, explicit credentials, and open meshes do not use it.
+- f84069e: The docs site now has a TypeScript reference for every published package, generated from source. Each of these packages' entry files gains a `@module index` comment so the reference names the main import path `index` instead of leaving it blank. The published code is otherwise unchanged.
+- Updated dependencies [f84069e]
+  - @cotal-ai/core@0.151.1
+
 ## 0.151.0
 
 ### Minor Changes

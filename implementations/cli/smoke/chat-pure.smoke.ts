@@ -246,6 +246,9 @@ check("Ctrl-D with no draft leaves at once", keys(s0(), [{ kind: "ctrl-d" }]).in
   check("while disconnected nothing sends and the draft is kept", r.intent === undefined && r.state.draft === "keep me");
   const slash = keys(s, [{ kind: "char", text: "/who" }, { kind: "enter", shift: false }]);
   check("while disconnected /who waits and its line is kept", slash.intent === undefined && slash.state.draft === "/who");
+  const refused = keys(s, [{ kind: "char", text: "/reply pong back" }, { kind: "enter", shift: false }, { kind: "char", text: "/leave" }]);
+  check("a refused slash command clears its line, so the next command is not appended",
+    refused.intent === undefined && refused.state.draft === "/leave" && refused.state.transcript.some((e) => e.kind === "notice" && e.text.startsWith("/reply takes no arguments; it answers")), refused.state.draft);
   const recon = keys(s, [{ kind: "char", text: "/reconnect" }, { kind: "enter", shift: false }]);
   check("while disconnected /reconnect still runs", recon.intent?.kind === "slash");
   s = applyEvent(s, { type: "connection", state: "connected" });
