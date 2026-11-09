@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, readFileSync, rmSync } from "node:fs";
-import { relative } from "node:path";
+import { closeSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { isAbsolute, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
+import { cliPackageRoot } from "../seed/paths.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
@@ -137,22 +138,66 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
   return managerLiveness(space, root) === "alive";
 }
 
-/** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
- *  records its pid under whatever folder it was started from, so no one root's record can rule it
- *  out; the process table can. One whose argv names no space serves what its environment or folder
- *  selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that variable names the
- *  space it serves, and one it reads for another space is not a manager of this one. A supervisor
- *  whose environment cannot be read or names no space counts, and a process table that cannot be
- *  listed proves nothing. */
+/** Whether a live `cotal supervise` process that loaded this install may be serving `space`.
+ *  A supervisor records its pid under whatever folder it was started from, so no one root's record
+ *  can rule it out; the process table can. Replacing this install interrupts only a supervisor whose
+ *  command resolves inside this process's package. One whose command resolves somewhere else loaded
+ *  another install, and this update leaves it untouched, the same as a manager on another machine.
+ *  A command that cannot be resolved still counts: an unreadable path is not proof of another install.
+ *  One whose argv names no space serves what its environment or folder selects: a service unit sets
+ *  `COTAL_SPACE` and passes no `--space`, so that variable names the space it serves, and one it reads
+ *  for another space is not a manager of this one. A supervisor whose environment cannot be read or
+ *  names no space counts, and a process table that cannot be listed proves nothing. */
 export function supervisorMayServe(space: string): boolean {
   const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
   if (ps.error || ps.status !== 0) return true;
+  const install = thisPackageRoot();
   return ps.stdout.split("\n").some((line) => {
     const row = /^\s*(\d+)\s+(.*)$/.exec(line);
     if (!row || !commandIsCotalSupervisor(row[2]!)) return false;
+    if (install !== undefined && !supervisorLoaded(row[2]!, install)) return false;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(row[2]!)?.[1] ?? environmentSpace(Number(row[1]));
     return named === undefined || named === space;
   });
+}
+
+/** This process's package directory, or undefined when the entry cannot name one. Without a package
+ *  root the scan cannot tell installs apart, so every supervisor of the space still counts. */
+function thisPackageRoot(): string | undefined {
+  try {
+    return realpathSync(cliPackageRoot());
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether `command` names an executable that resolves inside `install`. The node binary is not the
+ *  executable: a `node <entry> supervise` command loaded the entry. A path that does not resolve, or
+ *  a command that names none, is not evidence of another install. */
+function supervisorLoaded(command: string, install: string): boolean {
+  let node: string | undefined;
+  try {
+    node = realpathSync(process.execPath);
+  } catch {
+    node = undefined;
+  }
+  const token = command.trim().split(/\s+/).find((word) => {
+    if (!isAbsolute(word)) return false;
+    try {
+      return realpathSync(word) !== node;
+    } catch {
+      return true;
+    }
+  });
+  if (token === undefined) return true;
+  let resolved: string;
+  try {
+    resolved = realpathSync(token);
+  } catch {
+    return true;
+  }
+  const fromInstall = relative(install, resolved);
+  return fromInstall === "" || (!fromInstall.startsWith("..") && !isAbsolute(fromInstall));
 }
 
 /** The `COTAL_SPACE` a process was started with, read from its environment; undefined when the
