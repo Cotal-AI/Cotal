@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'parse5';
-import { readDocument } from '@cotal-ai/docs-content';
+import { readDocument, documentationCategory } from '@cotal-ai/docs-content';
 import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -38,7 +38,7 @@ for (const { slug, kind, ids } of documents) {
     assert.equal(nodes.filter(node => attr(node, 'id') === id).length, 1, `preserved fragment: ${slug}/#${id}`);
   const source = await readDocument(new URL(`../../docs/${slug}.mdx`, import.meta.url).pathname);
   assert.equal(source.format, 'mdx', `direct MDX: ${slug}`);
-  assert.equal(source.metadata.kind, kind, `document mode: ${slug}`);
+  assert.equal(documentationCategory(source.metadata.kind, source.sourcePath), kind, `document mode: ${slug}`);
   assert(source.metadata.audience, `audience metadata: ${slug}`);
   const markdown = artifact(`${route}.md`);
   assert(markdown.startsWith(`# ${source.metadata.title}\n\n`), `complete Markdown title: ${slug}`);

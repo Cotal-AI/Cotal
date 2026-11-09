@@ -70,6 +70,65 @@ watchdog, timer writer and membership feed, so a second daemon for the space is 
 as before. A lane that loses the broker, its credential or its lease closes alone and the host
 reopens it; the other lanes keep serving.
 
+### Standby host
+
+Two provisioned multi-space hosts can stand by for the same space, each with its own root and
+scoped credentials for that space account. The host that takes the lease serves. The other host reports the held lease, opens no lane and retries every 5
+seconds. If the holder dies, its lease row expires with the bucket TTL, and the standby takes the
+row on a retry and serves. A host that comes back finds the new holder's row, does not serve, and
+does not delete or rewrite that row. There is no election, placement or failover command: the lease
+is the only arbiter, and nothing moves a space back to the first host.
+
+A host that is not provisioned for the space, holds a credential for another account, holds a
+malformed credential, or lacks the `$SYS` observer credential refuses on its own checks and never
+touches the lease. The `smoke:delivery-standby` suite runs two complete hosts on one machine and
+one broker through the kill, return and graceful-stop cases and prints observed takeover times.
+Those times are not an SLA. One machine with two host processes is not a test of two physical
+hosts or of a network partition. The fixture also replaces each host's delivery credential through
+its own store, crosses the initial expiry while the holder still serves, and refuses an invalid
+manifest without disturbing that holder. It does not test membership-credential renewal or
+system-account rotation.
+
+### Standby provisioning
+
+This is an operator-provisioned or embedded topology; the CLI has no cross-host standby enrollment
+command. Prepare two distinct roots with `.cotal`, one version-1 manifest per host, and the same
+broker URL and space account. Start each with `cotal deliver --spaces <manifest> --root <root>
+--server <url>` and the broker's required TLS setting. The manifests name spaces, not identities or
+credentials. A malformed manifest refuses the whole start; an invalid lane credential refuses that
+lane and is retried. Never copy another account's credential to make a lane open.
+
+A trusted provisioner uses the public mint helpers and writes each host's assigned SecretStore keys:
+
+| Input | Mint helper | Store key helper |
+| --- | --- | --- |
+| Delivery | `mintCreds` with profile `delivery` | `deliveryCredsKey` |
+| Membership writer | `mintCreds` with profile `membership-rw` | `membershipRwCredsKey` |
+| Account observer | `mintMembershipObserverCreds` | `membershipObserverCredsKey` |
+| Connection eviction | `mintConnectionEvictorCreds` | `connectionEvictorCredsKey` |
+
+The mint helpers come from `@cotal-ai/core`; the store key helpers and `workspaceSecretStore` come
+from `@cotal-ai/workspace`. A CLI host's keys use `{ injected: false, root }` with that host's root.
+Keep each host's delivery nkey stable across renewal and restart, and distinct from the other host's.
+The provisioning owner retains identity/signing custody and atomically replaces bounded credentials
+in each host's store before expiry. Delivery rereads its own key and proves renewed credentials
+against the broker; the membership feed uses its own renewed writer key. Neither host needs the
+account signer. A copied static credential file is not a renewal owner. See
+[delivery renewal](embedding-daemons.mdx#delivery) for the stock Manager/store continuity contract.
+
+The observer must be pinned to the same data account and broker the lane serves. Its scan results,
+not a caller-supplied connection ID, select eviction targets. The separate evictor is high-power:
+its native KICK permission is broker-wide, not account-confined. Keep it on trusted delivery hosts,
+never in a participant or tenant-controlled sandbox. On a broker that hosts several spaces, no space
+daemon holds it. The multi-space delivery host (`cotal deliver --spaces`) is the one process that
+kicks: when a space on its root retained the system-account signing seed, the host mints a kick-only
+user per kick from that seed, and a lane asks the host to kick each live match of its own sweep. The
+host kicks a connection only after its own complete census of the lane's account lists it, and the
+lane opens no kick credential. Observer and evictor credentials have their
+own provision/rotation lifecycle; do not infer their renewal from a delivery-credential refresh.
+Missing or inconsistent scan authority refuses admission or verified eviction. An operator must
+resolve that provisioning boundary explicitly, without clearing leases or fabricating scan results.
+
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
 `ctl.delivery-admin` rail. Agents' durable join, leave and membership-list requests go over its

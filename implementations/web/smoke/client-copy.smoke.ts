@@ -1,7 +1,7 @@
 /** The dashboard's copy and style rules hold across the client source: no em or en dashes (one pinned
  *  fallback string excepted), no uppercase text, no positive letter-spacing, no Geist or Work Sans, no
- *  network call outside api/, and a token file that defines both palettes. Tailwind classes live only
- *  in the copied shadcn parts, shadcn's colour names are bridged from ours, and every running
+ *  network call outside api/, and a token file that defines both palettes. shadcn.css scans the whole
+ *  client source for Tailwind classes, shadcn's colour names are bridged from ours, and every running
  *  animation in app.css stops under reduced motion, the working dot keeping a still halo. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -74,16 +74,11 @@ const block = (css: string, selector: string) => {
 const vars = (body: string) => new Map([...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()]));
 
 const light = block(tokens, ":root");
-const night = block(tokens, ':root[data-theme="dark"]');
-const media = block(tokens, "@media (prefers-color-scheme: dark)");
-const system = media && block(media, ':root:not([data-theme="light"])');
+const night = block(tokens, ".dark");
 ok("tokens.css defines the Quiet palette on :root", !!light && vars(light).get("--bg") === "#FFFFFF" && vars(light).get("--ink") === "#1F2430");
-ok('tokens.css defines the Night palette on :root[data-theme="dark"]', !!night && vars(night).get("--bg") === "#16181D" && vars(night).get("--ink") === "#E6E8EE");
-ok("tokens.css gives system the Night palette in a prefers-color-scheme: dark block that spares data-theme=light",
-  !!system && vars(system).get("--bg") === "#16181D" && vars(system).get("--ink") === "#E6E8EE");
-const nightVars = vars(night ?? ""), systemVars = vars(system ?? ""), lightVars = vars(light ?? "");
-ok("the system block and the dark block carry the same declarations",
-  nightVars.size > 0 && [...nightVars].every(([k, v]) => systemVars.get(k) === v) && systemVars.size === nightVars.size);
+ok("tokens.css defines the Night palette once, on shadcn's .dark class", !!night && vars(night).get("--bg") === "#16181D" && vars(night).get("--ink") === "#E6E8EE"
+  && !tokens.includes("data-theme") && !tokens.includes("prefers-color-scheme"));
+const nightVars = vars(night ?? ""), lightVars = vars(light ?? "");
 ok("every Night token overrides a Quiet token", [...nightVars.keys()].every((k) => lightVars.has(k)), [...nightVars.keys()].filter((k) => !lightVars.has(k)));
 ok("the fonts are Inter Variable and the system mono stack",
   lightVars.get("--body") === '"Inter Variable", system-ui, sans-serif' && lightVars.get("--mono") === 'ui-monospace, "SF Mono", Menlo, Consolas, monospace');
@@ -101,35 +96,35 @@ ok("app.css holds no colour literal, only tokens", literals.length === 0, litera
 const scoped = app.split("\n").filter((l) => /(^|[\s,>+~])\.v3(?![\w-])/.test(l));
 ok("app.css has no .v3 scope: no element has to carry a root class", scoped.length === 0, scoped);
 
-// The copied shadcn parts keep the type rules too: Tailwind classes, not CSS, so the checks above miss them.
-const shadcnLines = lines.filter((l) => l.rel.startsWith("ui/shadcn/"));
+// The type rules hold in the classes the app writes too: Tailwind classes, not CSS, so the checks
+// above miss them. ui/shadcn is the shadcn CLI's output, never edited by hand, and its default look is
+// the one the dashboard takes, so it is the one place they do not hold.
+const appTsx = (rel: string) => rel.endsWith(".tsx") && !rel.startsWith("ui/shadcn/");
 const loud = /(?<![\w-])(?:uppercase|tracking-(?:wide|wider|widest))(?![\w-])/;
-ok("no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest in ui/shadcn",
-  shadcnLines.length > 0 && hits(loud, (rel) => rel.startsWith("ui/shadcn/")).length === 0,
-  hits(loud, (rel) => rel.startsWith("ui/shadcn/")));
+ok("no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest outside the shadcn CLI's parts",
+  lines.some((l) => appTsx(l.rel) && l.text.includes("className")) && hits(loud, appTsx).length === 0,
+  hits(loud, appTsx));
 
-// Tailwind utilities come only from the copied shadcn files: shadcn.css scans ui/shadcn alone, so a
-// utility written anywhere else would silently do nothing, or match a class Tailwind happens to emit.
-// Product parts style with app.css classes. The ui-*, v3-* and ox-* names never match this list.
-const REFUSED = /^(?:flex|grid|hidden|border|rounded|truncate|text-sm|(?:p|px|py|gap|bg)-.+)$/;
-const tailwindOutside = lines
-  .filter((l) => l.rel.endsWith(".tsx") && !l.rel.startsWith("ui/shadcn/") && l.text.includes("className"))
-  .flatMap((l) => [...l.text.slice(l.text.indexOf("className")).matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)]
-    .flatMap((m) => (m[1] ?? m[2] ?? m[3]!).split(/\s+/))
-    .filter((token) => REFUSED.test(token.split(":").pop()!.replace(/^!/, "")))
-    .map((token) => `${l.rel}:${l.line}: ${token}`));
-ok("no Tailwind utility class outside ui/shadcn", tailwindOutside.length === 0, tailwindOutside);
+// The app passes Tailwind layout classes in className, as shadcn's convention has it, so shadcn.css
+// has to scan the whole client source. Its utilities import is source(none), which turns off
+// Tailwind's own detection, so a utility in a file no @source covers would silently do nothing.
+const shadcnCss = read(join(src, "styles", "shadcn.css"));
+const scanned = [...shadcnCss.matchAll(/@source\s+(?:not\s+)?["']([^"']+)["']/g)].map((m) => join(src, "styles", m[1]!));
+ok("shadcn.css scans all of client/src for Tailwind classes, and only through its own @source",
+  /@import\s+["']tailwindcss\/utilities\.css["'][^;]*\bsource\(none\)/.test(shadcnCss)
+    && scanned.includes(src) && !/@source\s+not\b/.test(shadcnCss),
+  scanned);
 
-/** shadcn's names, each set on :root from one of our tokens, so Night follows from our Night blocks. */
+/** shadcn's names, each set on :root from one of our tokens, so Night follows from our .dark block. */
 const BRIDGE: Record<string, string> = {
   "--background": "--bg", "--foreground": "--ink", "--card-foreground": "--ink", "--popover-foreground": "--ink",
   "--secondary-foreground": "--ink", "--accent-foreground": "--ink", "--muted": "--soft", "--secondary": "--soft",
   "--muted-foreground": "--dim", "--border": "--line", "--input": "--card-line", "--ring": "--focus",
   "--accent": "--hover", "--primary-foreground": "--primary-ink", "--destructive": "--red-ink", "--popover": "--card",
 };
-const unbridged = Object.entries(BRIDGE).filter(([name, ours]) => lightVars.get(name) !== `var(${ours})` || nightVars.has(name) || systemVars.has(name));
+const unbridged = Object.entries(BRIDGE).filter(([name, ours]) => lightVars.get(name) !== `var(${ours})` || nightVars.has(name));
 ok("tokens.css's :root defines each bridged shadcn name as var(--ours) per the map", unbridged.length === 0,
-  unbridged.map(([name]) => ({ name, root: lightVars.get(name), night: nightVars.get(name), system: systemVars.get(name) })));
+  unbridged.map(([name]) => ({ name, root: lightVars.get(name), night: nightVars.get(name) })));
 
 // Every class rule in app.css that runs an animation is stopped under reduced motion.
 const appRules = cssRules(app);
@@ -157,10 +152,14 @@ const ruleBody = (selector: string) => appRules.filter((r) => !reduced(r) && r.s
 ok("only a working Agents row keeps room for View work, and on a phone a row hides its host",
   /padding-right\s*:/.test(ruleBody(".ox-arow-w > .v3-arow")) && !/padding-right\s*:/.test(ruleBody(".ox-arow > .v3-arow")) && /display\s*:\s*none/.test(ruleBody(".ui-phone .ox-host")),
   [ruleBody(".ox-arow-w > .v3-arow"), ruleBody(".ox-arow > .v3-arow"), ruleBody(".ui-phone .ox-host")]);
-ok("the composer's pickers and a phone header's title shrink rather than push the page sideways",
-  /min-width\s*:\s*0/.test(ruleBody(".ui-crow > span.ui-pick")) && /overflow\s*:\s*hidden/.test(ruleBody(".ui-crow > span.ui-pick"))
+// The composer's mode line names the target, which can be a long channel or agent name. Its text
+// sits in the InputGroupText as Tailwind layout classes: the text may shrink and its name truncates.
+const composer = read(join(src, "ui", "Composer.tsx"));
+const modeLine = /<InputGroupText className="[^"]*(?<![\w-])min-w-0(?![\w-])[^"]*">\s*(?:<i\b[^>]*\/>\s*)?<span className="[^"]*(?<![\w-])truncate(?![\w-])[^"]*">\{to\}<\/span>/;
+ok("the composer's mode line and a phone header's title shrink rather than push the page sideways",
+  modeLine.test(composer)
     && /min-width\s*:\s*0/.test(ruleBody(".ui-phone .ui-bar h1")) && /overflow\s*:\s*hidden/.test(ruleBody(".ui-phone .ui-bar h1")),
-  [ruleBody(".ui-crow > span.ui-pick"), ruleBody(".ui-phone .ui-bar h1")]);
+  [modeLine.test(composer), ruleBody(".ui-phone .ui-bar h1")]);
 const animated = appRules.filter((r) => !reduced(r) && sets(r.body) && sets(r.body) !== "none")
   .flatMap((r) => r.selectors).filter((s) => s.includes("."));
 const stopped = new Set(appRules.filter((r) => reduced(r) && sets(r.body) === "none")

@@ -73,15 +73,15 @@ export function AgentTab({ store, controller = null, id, route }: {
       </div>
       {!(route?.view === "agent" && route.id === id) && <SessionPreview store={store} id={id} />}
       <div className="ui-actions">
-        <Button asChild size="sm" className="ox-btn">
+        <Button asChild size="sm">
           <a href={formatRoute({ view: "agent", id: row.id, tab: "work" })}>
-            <Icon icon={ArrowUpRight01Icon} size={16} />
+            <Icon icon={ArrowUpRight01Icon} data-icon="inline-start" />
             {`Open ${row.name}'s page`}
           </a>
         </Button>
-        <Button asChild variant="outline" size="sm" className="ox-btn">
+        <Button asChild variant="outline" size="sm">
           <a href={formatRoute(messageRoute(row.id, self))} onClick={() => focusComposer({ kind: "dm", to: row.id })}>
-            <Icon icon={Message01Icon} size={16} />
+            <Icon icon={Message01Icon} data-icon="inline-start" />
             Message
           </a>
         </Button>

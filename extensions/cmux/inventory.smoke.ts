@@ -4,7 +4,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cmux, cmuxTerminalProvider } from "./dist/index.js";
+import { cmux } from "./dist/index.js";
 
 if (process.platform === "win32") {
   console.log("SKIP: cmux's POSIX executable fixture is not supported on Windows");
@@ -39,7 +39,6 @@ const mode = (value: string) => writeFileSync(modeFile, value);
 const readers: Array<[string, () => unknown]> = [
   ["listWorkspaces", () => cmux.listWorkspaces()],
   ["workspaceRefs", () => cmux.workspaceRefs("cotal-probe")],
-  ["terminal refs", () => cmuxTerminalProvider.refs("cotal-probe")],
   ["workspaceState", () => cmux.workspaceState("workspace:5")],
 ];
 
@@ -48,7 +47,6 @@ try {
   mode("healthy");
   check("listWorkspaces preserves the default CLI line format", JSON.stringify(cmux.listWorkspaces()) === JSON.stringify(["* workspace:5 cotal-probe [selected]", "workspace:6 other-tab"]));
   check("workspaceRefs finds the requested label", JSON.stringify(cmux.workspaceRefs("cotal-probe")) === '["workspace:5"]');
-  check("the terminal provider reads the same refs", JSON.stringify(await cmuxTerminalProvider.refs("cotal-probe")) === '["workspace:5"]');
   check("a missing label in a successful listing is empty", cmux.workspaceRefs("absent-label").length === 0);
   check("workspaceState recognizes the short ref", cmux.workspaceState("workspace:5") === "running");
   check("workspaceState still requests and recognizes UUIDs", cmux.workspaceState(uuid) === "running");
@@ -73,7 +71,7 @@ try {
       check(`${name} refuses ${failure === "slow" ? "a timed-out CLI and kills its child" : failure === "missing" ? "a missing CLI" : "a failed CLI"}`, caught instanceof Error && expected);
     }
   }
-  if (passed + failed !== 22) throw new Error(`ran ${passed + failed} cells, expected 22`);
+  if (passed + failed !== 17) throw new Error(`ran ${passed + failed} cells, expected 17`);
 } catch (error) {
   failed++;
   console.error(`Unexpected fixture failure: ${error instanceof Error ? error.message : String(error)}`);

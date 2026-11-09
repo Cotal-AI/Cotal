@@ -25,7 +25,8 @@ import { initialState, type DashboardState, type Draft } from "../client/src/sta
 import { Compose, Composer, focusComposer } from "../client/src/ui/Composer.tsx";
 import { AgentProfile } from "../client/src/ui/agent/AgentProfile.tsx";
 import { bootReads, gate, harness, page } from "./controller-harness.js";
-import { mount } from "./mount.js";
+import { mount, type Mounted } from "./mount.js";
+import { inShell } from "./providers.js";
 import { renderShell } from "./render-shell.js";
 
 const { POST_OFF_CREDS, POST_OFF_EXPIRED, POST_OFF_USER } = await import("../src/web.js");
@@ -96,11 +97,30 @@ const started = harness({}).ctl;
 const centre = (patch: Partial<DashboardState>, route: Route = channelRoute) => {
   const store = createStore<DashboardState>({ ...initialState, ...seed(patch) });
   const html = renderToString(createElement(Shell, { store, controller: started, route, paneOpen: route.view === "channel", msgPerSecond: () => 0 }));
-  return (parse(html).querySelector("main.ui-center") as HTMLElement | null) ?? none();
+  return (parse(html).querySelector("main") as HTMLElement | null) ?? none();
 };
-const dockOf = (c: Element) => c.querySelector(".ui-dock .ui-dock-in") ?? none();
-const card = (c: Element) => c.querySelector(".ui-card.ui-composer") ?? none();
-const note = (c: Element) => c.querySelector(".ui-cnote") ?? none();
+const dockOf = (c: Element) => c.querySelector(".ui-dock") ?? none();
+/** The composer's box: the input group that holds the textarea, or the reason when posting is off. */
+const box = (c: Element) => c.querySelector('[data-slot="input-group"]') ?? none();
+/** The composer: its box and the note under it. */
+const card = (c: Element) => box(c).closest('[data-slot="field"]') ?? none();
+/** The note under the box: the description, or the refusal, which is an alert. */
+const note = (c: Element) => card(c).querySelector('[data-slot="field-description"], [role="alert"]') ?? none();
+/** The box's top line when it has no textarea: the reason posting is off, or that two agents talk. */
+const reason = (c: Element) => box(c).querySelector('[data-slot="input-group-addon"][data-align="block-start"]') ?? none();
+/** The row along the bottom of the box. */
+const row = (c: Element) => box(c).querySelector('[data-slot="input-group-addon"][data-align="block-end"]') ?? none();
+/** The send button, by the name it has while idle or sending. */
+const sendOf = (c: Element) => box(c).querySelector('button[aria-label="Send"], button[aria-label="Sending"]') as HTMLButtonElement | null;
+/** Each thing in the row: a button with its text and name, or a line of text. */
+const rowParts = (c: Element) =>
+  [...row(c).children].map((x) => {
+    const b = x.matches("button") ? x : x.querySelector("button");
+    return b ? ["button", textOf(b), b.getAttribute("aria-label")] : ["text", textOf(x), null];
+  });
+/** The messages the view's log draws, in order. */
+const messagesOf = (c: Element) => [...c.querySelectorAll('[role="log"] [data-slot="message"]')];
+const bodyOf = (m: Element) => textOf(m.querySelector('[data-slot="bubble-content"]'));
 const draftOf = (text: string, extra: Partial<Draft> = {}): Draft => ({ text, outgoing: [], ...extra });
 
 // ── 1. Where a view posts, and what is said ──────────────────────────────────────────────────────
@@ -238,67 +258,80 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
 }
 
 // ── 3. The composer, drawn ───────────────────────────────────────────────────────────────────────
+/** The words of the Tooltip `trigger` opens when it takes the keyboard focus: the role=tooltip element
+ *  Radix draws for it. */
+const tipOf = async (m: Mounted, trigger: Element | null | undefined): Promise<string> => {
+  await m.run(() => (trigger as HTMLElement | null)?.focus());
+  const tip = textOf(document.querySelector('[role="tooltip"]'));
+  await m.run(() => (trigger as HTMLElement | null)?.blur());
+  return tip;
+};
 {
   const c = centre({});
-  const k = card(c);
-  const box = k.querySelector("textarea") as HTMLTextAreaElement | null;
-  ok("3.1 the live box is a textarea whose placeholder is Message #review", box?.placeholder === "Message #review" && box.getAttribute("aria-label") === "Message #review", box?.outerHTML);
+  const area = box(c).querySelector("textarea");
+  ok("3.1 the live box is a textarea whose placeholder is Message #review", area?.placeholder === "Message #review" && area.getAttribute("aria-label") === "Message #review", area?.outerHTML);
   same("3.2 its row is Mention, the mode line, as operator and send",
-    [...k.querySelectorAll(".ui-crow > *")].map((x) => [x.tagName, x.className, textOf(x), x.getAttribute("title")]),
-    [["BUTTON", "ui-pick", "Mention", null], ["SPAN", "ui-sp", "", null], ["SPAN", "ui-pick", "to #review · 3 members", null], ["SPAN", "ui-pick", "as operator", null], ["BUTTON", "ui-send", "", "Send"]]);
+    rowParts(c),
+    [["button", "Mention", null], ["text", "to #review · 3 members", null], ["text", "as operator", null], ["button", "", "Send"]]);
   ok("3.3 the mode line counts the header's members and carries the channel's blue dot",
-    textOf(c.querySelector("header .ui-members")) === "3" && (k.querySelector(".ui-mode-dot") as HTMLElement | null)?.getAttribute("style")?.includes("var(--multi)") === true);
+    textOf(c.querySelector('header button[aria-label="3 members"]')) === "3" && (row(c).querySelector(".ui-mode-dot") as HTMLElement | null)?.getAttribute("style")?.includes("var(--multi)") === true);
   same("3.4 under it, the participant line", textOf(note(c)), "You'll show on the roster as operator when you post. Replies come to your DMs.");
-  ok("3.5 an empty box cannot be sent", (k.querySelector("button.ui-send") as HTMLButtonElement).disabled === true);
+  ok("3.5 an empty box cannot be sent", sendOf(c)?.disabled === true);
   ok("3.6 nothing is drawn until /api/meta has said what the dashboard can post as",
-    centre({ post: null }).querySelector(".ui-composer") === null && centre({ post: null }).querySelector(".ui-dock") === null);
+    centre({ post: null }).querySelector('[data-slot="input-group"]') === null && centre({ post: null }).querySelector(".ui-dock") === null);
 }
 {
   const c = centre({ post: CREDS_OFF });
-  const k = card(c);
-  ok("3.7 --creds: the reason with --creds as code, behind a lock", textOf(k.querySelector(".ui-reason")) === POST_OFF_CREDS && k.querySelector(".ui-reason code")?.textContent === "--creds" && k.getAttribute("aria-disabled") === "true");
+  ok("3.7 --creds: the reason with --creds as code, behind a lock",
+    textOf(reason(c)) === POST_OFF_CREDS && reason(c).querySelector("code")?.textContent === "--creds" && box(c).getAttribute("aria-disabled") === "true");
+  const offStore = createStore<DashboardState>({ ...initialState, ...seed({ post: CREDS_OFF }) });
+  const m = await mount(inShell(createElement(Composer, { store: offStore, target: REVIEW, where: "#review", to: "to #review" })));
+  const send = sendOf(m.container);
   same("3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason",
-    [textOf(k.querySelector(".ui-cmd code")), (k.querySelector("button.ui-send") as HTMLButtonElement | null)?.disabled, k.querySelector("button.ui-send")?.getAttribute("title")],
+    [textOf(box(c).querySelector(".ui-cmd code")), send?.disabled, await tipOf(m, send?.parentElement)],
     ['cotal send msg review "<text>"', true, POST_OFF_CREDS]);
+  await m.unmount();
   same("3.9 and the note says to restart without --creds, with both as code",
     [textOf(note(c)), [...note(c).querySelectorAll("code")].map((x) => x.textContent)], ["Restart cotal web without --creds to post here.", ["cotal web", "--creds"]]);
   const u = centre({ post: USER_OFF });
-  same("3.10 a sign-in mesh shows the server's reason as it came, and an empty note", [textOf(card(u).querySelector(".ui-reason")), textOf(note(u))], [POST_OFF_USER, ""]);
+  same("3.10 a sign-in mesh shows the server's reason as it came, and an empty note", [textOf(reason(u)), textOf(note(u))], [POST_OFF_USER, ""]);
 }
 {
   const inflight = { [composeKey(REVIEW)]: draftOf("And the next one", { outgoing: [{ seq: 1, text: "Approved. Run it.", ts: Date.now() }] }) };
   const c = centre({ drafts: inflight });
-  const send = card(c).querySelector("button.ui-send") as HTMLButtonElement | null;
+  const send = sendOf(c);
   ok("3.11 THE SEND BUTTON IS DISABLED WHILE A SEND IS IN FLIGHT, though the box holds text, and it spins",
-    send?.disabled === true && send.getAttribute("title") === "Sending" && send.querySelector(".ui-spin") !== null, send?.outerHTML);
-  const pending = c.querySelector(".ui-col .ui-msg.ui-pending") ?? none();
-  same("3.12 THE FADED SENDING ROW: the post shows as the operator's, faded, until the server answers",
-    [textOf(pending.querySelector(".ui-me")), textOf(pending.querySelector(".ui-mh b")), textOf(pending.querySelector(".ui-role")), textOf(pending.querySelector(".ui-tx"))],
-    ["OP", "operator", "operator", "Approved. Run it."]);
+    send?.disabled === true && send.getAttribute("aria-label") === "Sending" && send.querySelector('[role="status"]') !== null, send?.outerHTML);
+  const pending = messagesOf(c).find((m) => textOf(m.querySelector('[data-slot="message-header"]')).endsWith("sending")) ?? none();
+  same("3.12 THE FADED SENDING ROW: the post shows as the operator's, at the end side in the muted bubble, until the server answers",
+    [pending.getAttribute("data-align"), textOf(pending.querySelector('[data-slot="message-avatar"]')),
+      [...pending.querySelectorAll('[data-slot="message-header"] > :not(time)')].map((x) => textOf(x)),
+      pending.querySelector('[data-slot="bubble"]')?.getAttribute("data-variant"), bodyOf(pending)],
+    ["end", "OP", ["operator", "operator", "sending"], "muted", "Approved. Run it."]);
   const answered = centre({ drafts: { [composeKey(REVIEW)]: draftOf("", { outgoing: [{ seq: 1, text: "Approved. Run it.", ts: Date.now(), id: "m-9" }] }) } });
-  ok("3.13 once answered it is no longer faded, until the list holds the message itself",
-    answered.querySelector(".ui-col .ui-pending") === null && textOf(answered.querySelector(".ui-col .ui-msg .ui-tx")) === "Approved. Run it.");
+  const sent = messagesOf(answered);
+  same("3.13 once answered it is no longer faded, until the list holds the message itself",
+    sent.map((m) => [textOf(m.querySelector('[data-slot="message-header"]')).endsWith("sending"), m.querySelector('[data-slot="bubble"]')?.getAttribute("data-variant"), bodyOf(m)]),
+    [[false, "default", "Approved. Run it."]]);
   const arrived = centre({
     open: { channel: "review", messages: [{ msg: msg("m-9", OP, "Approved. Run it.", { channel: "review" }), senderId: OP }] },
     drafts: { [composeKey(REVIEW)]: draftOf("", { outgoing: [{ seq: 1, text: "Approved. Run it.", ts: Date.now(), id: "m-9" }] }) },
   });
-  ok("3.14 and once it does, the post is drawn once", arrived.querySelectorAll(".ui-col .ui-msg").length === 1, arrived.querySelectorAll(".ui-col .ui-msg").length);
+  ok("3.14 and once it does, the post is drawn once", messagesOf(arrived).length === 1, messagesOf(arrived).length);
 }
 {
   const refused = `Couldn't post to #review. The broker refused it: <img src=x onerror=alert(1)>. Your message is still here.`;
   const c = centre({ drafts: { [composeKey(REVIEW)]: draftOf("Approved. Run it.", { refused }) } });
-  const k = card(c);
-  ok("3.15 refused: the draft is in the box, the card is ringed, and Try again is the row",
-    (k.querySelector("textarea") as HTMLTextAreaElement | null)?.value === "Approved. Run it." && k.classList.contains("ui-composer-err")
-      && [...k.querySelectorAll(".ui-crow > button")].map((b) => textOf(b)).join() === "Try again", k.outerHTML);
+  const area = box(c).querySelector("textarea");
+  ok("3.15 refused: the draft is in the box, the box is marked invalid, and Try again is the row",
+    area?.value === "Approved. Run it." && area.getAttribute("aria-invalid") === "true" && card(c).getAttribute("data-invalid") === "true"
+      && rowParts(c).map(([, text]) => text).join() === "Try again", card(c).outerHTML);
   ok("3.16 the refusal is the note, as plain text: the server's markup is shown, never built",
-    textOf(note(c)) === refused && note(c).querySelector("img") === null && note(c).getAttribute("role") === "alert" && note(c).classList.contains("ui-cnote-err"), note(c).outerHTML);
+    textOf(note(c)) === refused && note(c).querySelector("img") === null && note(c).getAttribute("role") === "alert", note(c).outerHTML);
 }
 {
-  /** The dock's children: the card with how many rows it has and what the last one is, then the note. */
-  const shape = (c: Element) =>
-    [...dockOf(c).children].map((x) =>
-      x.classList.contains("ui-composer") ? ["card", x.children.length, x.lastElementChild?.className] : x.classList.contains("ui-cnote") ? ["note"] : [x.className]);
+  /** The box with how many rows it has, and whether the note sits under it. */
+  const shape = (c: Element) => [box(c).children.length, textOf(row(c)) !== "" || row(c).children.length > 0, note(c).parentElement === card(c)];
   const states = {
     live: centre({}),
     off: centre({ post: CREDS_OFF }),
@@ -306,18 +339,17 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
     sending: centre({ drafts: { [composeKey(REVIEW)]: draftOf("", { outgoing: [{ seq: 1, text: "x", ts: 1 }] }) } }),
     refused: centre({ drafts: { [composeKey(REVIEW)]: draftOf("x", { refused: "Couldn't post to #review. x. Your message is still here." }) } }),
   };
-  same("3.17 ONE DOCK HEIGHT: live, off (with and without a note), sending and refused each draw the same two elements, the card with its two rows and the note",
+  same("3.17 ONE STRUCTURE: live, off (with and without a note), sending and refused each draw the box with its two rows, the bottom one holding the controls, and the note under it",
     Object.fromEntries(Object.entries(states).map(([k, c]) => [k, shape(c)])),
-    Object.fromEntries(Object.keys(states).map((k) => [k, [["card", 2, "ui-crow"], ["note"]]])));
+    Object.fromEntries(Object.keys(states).map((k) => [k, [2, true, true]])));
 }
 {
   const c = centre({}, rv2Route);
-  const k = card(c);
   same("3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot",
-    [(k.querySelector("textarea") as HTMLTextAreaElement | null)?.placeholder, textOf(k.querySelectorAll(".ui-pick")[1]), (k.querySelector(".ui-mode-dot") as HTMLElement | null)?.getAttribute("style")?.includes("var(--uni)")],
+    [box(c).querySelector("textarea")?.placeholder, rowParts(c)[1]?.[1], (row(c).querySelector(".ui-mode-dot") as HTMLElement | null)?.getAttribute("style")?.includes("var(--uni)")],
     ["Message reviewer_2", "to reviewer_2", true]);
-  same("3.19 posting off there, the command is cotal send dm with the agent's id, which the CLI resolves exactly", textOf(card(centre({ post: CREDS_OFF }, rv2Route)).querySelector(".ui-cmd code")), 'cotal send dm local.rv2 "<text>"');
-  ok("3.20 a conversation between two agents has no composer", centre({}, { view: "dm", peer: "local.rev", with: "local.rv2" }).querySelector(".ui-composer textarea") === null);
+  same("3.19 posting off there, the command is cotal send dm with the agent's id, which the CLI resolves exactly", textOf(box(centre({ post: CREDS_OFF }, rv2Route)).querySelector(".ui-cmd code")), 'cotal send dm local.rv2 "<text>"');
+  ok("3.20 a conversation between two agents has no composer", centre({}, { view: "dm", peer: "local.rev", with: "local.rv2" }).querySelector("textarea") === null);
   const header = centre({ operatorId: OP, dms: [{ msg: msg("d1", OP, "hi", { to: "local.rv2" }), senderId: OP }] }, { view: "dm", peer: "local.rv2", with: OP }).querySelector("header") ?? none();
   ok("3.21 the conversation with the operator says operator (you) while the roster does not name it", textOf(header).includes("with operator (you)"), textOf(header));
   const both: Partial<DashboardState> = {
@@ -330,27 +362,31 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
   };
   const one = centre(both, rv2Route);
   same("3.22 a route naming only the agent opens the operator's conversation with it, not the agent's newest with someone else",
-    [[...one.querySelectorAll("header .ui-topic")].map((x) => textOf(x)).at(-1), [...one.querySelectorAll(".ui-scroll .ui-msg .ui-tx")].map((x) => textOf(x))],
+    [[...one.querySelectorAll("header .ui-topic")].map((x) => textOf(x)).at(-1), messagesOf(one).map(bodyOf)],
     ["with operator", ["Can you run it?"]]);
   const needs = centre({ roster: [...waitingRv2, operator], operatorId: OP });
   same("3.23 the Needs card's Message carries the operator's id once known, so it opens that conversation",
-    [...needs.querySelectorAll(".ui-needs a")].map((a) => a.getAttribute("href")), [formatRoute(messageRoute("local.rv2", OP))]);
+    [...dockOf(needs).querySelectorAll('[data-slot="card"] a')].map((a) => a.getAttribute("href")), [formatRoute(messageRoute("local.rv2", OP))]);
   const pair = centre({ operatorId: OP }, { view: "dm", peer: "local.rev", with: "local.rv2" });
-  const pairDock = dockOf(pair);
-  const link = pairDock.querySelector("a");
-  same("3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer",
-    [textOf(pairDock.querySelector(".ui-reason")), textOf(link), link?.getAttribute("href"), [...pairDock.children].map((x) => x.className), pairDock.querySelector(".ui-composer")?.children.length],
-    ["This conversation is between two agents.", "Message reviewer", formatRoute(messageRoute("local.rev", OP)), ["ui-card ui-composer", "ui-cnote"], 2]);
+  const link = box(pair).querySelector("a");
+  same("3.24 a conversation between two agents says so in the composer's box, with Message for the operator's own conversation with the peer",
+    [textOf(reason(pair)), textOf(link), link?.getAttribute("href"), box(pair).querySelector("textarea")],
+    ["This conversation is between two agents.", "Message reviewer", formatRoute(messageRoute("local.rev", OP)), null]);
   const evil = "x'; true; echo $(echo hi)";
   const tabStore = createStore<DashboardState>({ ...initialState, ...seed({ roster: [...roster, entry("local.evil", evil, "idle")] }) });
-  const tab = parse(renderToString(createElement(AgentProfile, { store: tabStore, id: "local.evil", clock: () => 2 })));
+  const tab = parse(renderToString(inShell(createElement(AgentProfile, { store: tabStore, id: "local.evil", clock: () => 2 }))));
   same("3.25 the agent's Profile quotes a hostile agent name in its attach and stop commands",
     [...tab.querySelectorAll(".ui-cmd code")].map((x) => x.textContent), [`cotal attach --name ${shellArg(evil)}`, `cotal stop --name ${shellArg(evil)}`]);
+  // The composer reads the phone width from the Sidebar's own hook, which measures the window.
+  const wide = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
   const phoneStore = createStore<DashboardState>({ ...initialState, ...seed({}) });
-  const phone = parse(renderToString(createElement(Shell, { store: phoneStore, controller: started, route: channelRoute, paneOpen: false, msgPerSecond: () => 0, phone: true }))).querySelector("main.ui-center") ?? none();
+  const phone = await mount(createElement(Shell, { store: phoneStore, controller: started, route: channelRoute, paneOpen: false, msgPerSecond: () => 0, phone: true }));
   same("3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send",
-    [...card(phone).querySelectorAll(".ui-crow > *")].map((x) => [x.tagName, x.className, textOf(x), x.getAttribute("aria-label")]),
-    [["BUTTON", "ui-pick", "", "Mention"], ["SPAN", "ui-sp", "", null], ["SPAN", "ui-pick", "to #review", null], ["BUTTON", "ui-send", "", "Send"]]);
+    rowParts(phone.container.querySelector("main") ?? none()),
+    [["button", "", "Mention"], ["text", "to #review", null], ["button", "", "Send"]]);
+  await phone.unmount();
+  Object.defineProperty(window, "innerWidth", { value: wide, configurable: true });
 }
 
 // ── 4. Mounted: typing, sending, and the Message buttons ─────────────────────────────────────────
@@ -379,19 +415,19 @@ const key = (el: Element, k: string, shiftKey = false) =>
   const h = harness({ ...quiet, send: async (_t, text) => { sent.push(text); throw new SendRefused(502, BROKER); } });
   h.store.set(seed());
   const { m } = await rig(h.store, h.ctl, channelRoute);
-  const box = () => m.container.querySelector(".ui-composer textarea") as HTMLTextAreaElement;
-  await m.run(() => type(box(), "Approved. Run it on build-box."));
+  const area = () => box(m.container).querySelector("textarea") as HTMLTextAreaElement;
+  await m.run(() => type(area(), "Approved. Run it on build-box."));
   ok("4.1 typing reaches the draft and the send button wakes", h.store.get().drafts[composeKey(REVIEW)]?.text === "Approved. Run it on build-box."
-    && (m.container.querySelector(".ui-composer .ui-send") as HTMLButtonElement).disabled === false);
-  await m.run(() => key(box(), "Enter", true));
+    && sendOf(m.container)?.disabled === false);
+  await m.run(() => key(area(), "Enter", true));
   ok("4.2 Shift+Enter does not send", sent.length === 0, sent);
-  await m.run(() => key(box(), "Enter"));
+  await m.run(() => key(area(), "Enter"));
   await m.run(() => undefined);
   ok("4.3 Enter sends, and after a refusal the draft is still in the box with the broker's refusal under it",
-    sent.join() === "Approved. Run it on build-box." && box().value === "Approved. Run it on build-box."
-      && textOf(m.container.querySelector(".ui-cnote")) === `Couldn't post to #review. The broker refused it: ${BROKER}. Your message is still here.`,
-    { sent, box: box().value, note: textOf(m.container.querySelector(".ui-cnote")) });
-  await m.run(() => (m.container.querySelector(".ui-composer .ui-crow .ui-btn") as HTMLButtonElement).click());
+    sent.join() === "Approved. Run it on build-box." && area().value === "Approved. Run it on build-box."
+      && textOf(note(m.container)) === `Couldn't post to #review. The broker refused it: ${BROKER}. Your message is still here.`,
+    { sent, box: area().value, note: textOf(note(m.container)) });
+  await m.run(() => ([...row(m.container).querySelectorAll("button")].find((b) => textOf(b) === "Try again") as HTMLButtonElement | undefined)?.click());
   await m.run(() => undefined);
   ok("4.4 Try again sends the draft again", sent.length === 2 && sent[1] === "Approved. Run it on build-box.", sent);
   await m.unmount();
@@ -401,7 +437,7 @@ const key = (el: Element, k: string, shiftKey = false) =>
   const h = harness(quiet);
   h.store.set(seed({ roster: [...waitingRv2, operator], operatorId: OP }));
   const { m, go } = await rig(h.store, h.ctl, channelRoute);
-  const link = [...m.container.querySelectorAll(".ui-needs a")].find((a) => textOf(a) === "Message reviewer_2") as HTMLAnchorElement | undefined;
+  const link = [...dockOf(m.container).querySelectorAll('[data-slot="card"] a')].find((a) => textOf(a) === "Message reviewer_2") as HTMLAnchorElement | undefined;
   await m.run(() => link?.click());
   await go(parseRoute(link?.getAttribute("href") ?? "", "/"));
   const focused = document.activeElement as HTMLTextAreaElement | null;
@@ -415,9 +451,9 @@ const key = (el: Element, k: string, shiftKey = false) =>
   const h = harness(quiet);
   h.store.set(seed({ roster: [...waitingRv2, operator], operatorId: OP }));
   const { m, go } = await rig(h.store, h.ctl, channelRoute);
-  const view = [...m.container.querySelectorAll(".ui-needs button")].find((b) => textOf(b) === "View agent") as HTMLButtonElement | undefined;
+  const view = [...dockOf(m.container).querySelectorAll('[data-slot="card"] button')].find((b) => textOf(b) === "View agent") as HTMLButtonElement | undefined;
   await m.run(() => view?.click());
-  const link = [...m.container.querySelectorAll(".ui-pane a")].find((a) => textOf(a) === "Message") as HTMLAnchorElement | undefined;
+  const link = [...m.container.querySelectorAll('section[aria-label="Details"] a')].find((a) => textOf(a) === "Message") as HTMLAnchorElement | undefined;
   await m.run(() => link?.click());
   await go(parseRoute(link?.getAttribute("href") ?? "", "/"));
   const focused = document.activeElement as HTMLTextAreaElement | null;
@@ -431,10 +467,10 @@ const key = (el: Element, k: string, shiftKey = false) =>
   const offStore = createStore<DashboardState>({ ...initialState, ...seed({ post: CREDS_OFF }) });
   const liveStore = createStore<DashboardState>({ ...initialState, ...seed() });
   const h = harness({});
-  const off = await mount(createElement(Composer, { store: offStore, target: RV2, where: "reviewer_2", to: "to reviewer_2" }));
+  const off = await mount(inShell(createElement(Composer, { store: offStore, target: RV2, where: "reviewer_2", to: "to reviewer_2" })));
   await off.run(() => focusComposer(RV2));
   await off.unmount();
-  const live = await mount(createElement(Compose.Provider, { value: h.ctl }, createElement(Composer, { store: liveStore, target: RV2, where: "reviewer_2", to: "to reviewer_2" })));
+  const live = await mount(inShell(createElement(Compose.Provider, { value: h.ctl }, createElement(Composer, { store: liveStore, target: RV2, where: "reviewer_2", to: "to reviewer_2" }))));
   ok("4.7 a focus request is spent by the composer that takes it, even one that cannot post, so a later visit does not take the focus",
     (document.activeElement as HTMLElement | null)?.tagName !== "TEXTAREA", (document.activeElement as HTMLElement | null)?.outerHTML);
   await live.unmount();
@@ -445,8 +481,9 @@ const key = (el: Element, k: string, shiftKey = false) =>
   const h = harness(quiet);
   h.store.set(seed({ roster: waitingRv2, post: CREDS_OFF }));
   const { m } = await rig(h.store, h.ctl, channelRoute);
-  const buttons = [...m.container.querySelectorAll(".ui-needs .ui-btns > *")].map((b) => [b.tagName, textOf(b)]);
-  const copy = [...m.container.querySelectorAll(".ui-needs button")].find((b) => textOf(b) === "Copy command") as HTMLButtonElement | undefined;
+  const needs = dockOf(m.container).querySelector('[data-slot="card"]') ?? none();
+  const buttons = [...needs.querySelectorAll('[data-slot="card-footer"] > *')].map((b) => [b.tagName, textOf(b)]);
+  const copy = [...needs.querySelectorAll("button")].find((b) => textOf(b) === "Copy command") as HTMLButtonElement | undefined;
   await m.run(() => copy?.click());
   same("4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id",
     [buttons, copied], [[["BUTTON", "View agent"], ["BUTTON", "Copy command"]], ['cotal send dm local.rv2 "<text>"']]);
@@ -455,20 +492,22 @@ const key = (el: Element, k: string, shiftKey = false) =>
 
 // ── 5. The sidebar footer ────────────────────────────────────────────────────────────────────────
 {
-  const foot = (patch: Partial<DashboardState>) => parse(renderShell(seed(patch), channelRoute, true)).querySelector(".ui-side-foot .ui-who span") ?? none();
-  const before = foot({ operatorId: OP });
-  same("5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover",
-    [textOf(before), before.getAttribute("title")], ["Not on the roster", "You'll show on the roster as operator when you post. Replies come to your DMs."]);
-  const after = foot({ operatorId: OP, roster: [...roster, operator] });
-  same("5.2 then On the roster, with its reason on hover",
-    [textOf(after), after.getAttribute("title")], ["On the roster", "You show on the roster as operator once you post, so agents can reply to you."]);
-  const off = foot({ post: CREDS_OFF });
-  same("5.3 posting off reads Read only, with the full reason on hover", [textOf(off), off.getAttribute("title")], ["Read only", POST_OFF_CREDS]);
+  /** The footer's roster line and the reason it carries, which its Tooltip shows on hover. */
+  const foot = (patch: Partial<DashboardState>) => {
+    const page = parse(renderShell(seed(patch), channelRoute, true));
+    const line = page.querySelector('[aria-label="Space"] [data-sidebar="footer"] [aria-describedby]');
+    return [textOf(line), textOf(line ? page.querySelector(`#${line.getAttribute("aria-describedby")}`) : null)];
+  };
+  same("5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line as its reason",
+    foot({ operatorId: OP }), ["Not on the roster", "You'll show on the roster as operator when you post. Replies come to your DMs."]);
+  same("5.2 then On the roster, with its reason",
+    foot({ operatorId: OP, roster: [...roster, operator] }), ["On the roster", "You show on the roster as operator once you post, so agents can reply to you."]);
+  same("5.3 posting off reads Read only, with the full reason", foot({ post: CREDS_OFF }), ["Read only", POST_OFF_CREDS]);
   const rows = parse(renderShell(seed({ operatorId: OP, dms: [{ msg: msg("d1", OP, "hi", { to: "local.rv2" }), senderId: OP }] }), channelRoute, true));
   ok("5.4 a conversation with the operator reads operator (you) in the sidebar while the roster does not name it",
-    [...rows.querySelectorAll(".ui-side-scroll .ui-row-lbl")].some((x) => textOf(x) === "operator (you), reviewer_2"),
-    [...rows.querySelectorAll(".ui-side-scroll .ui-row-lbl")].map((x) => textOf(x)));
-  const who = parse(renderShell(seed({ post: CREDS_OFF }), channelRoute, true)).querySelector(".ui-side-foot .ui-who") ?? none();
+    [...rows.querySelectorAll('[role="navigation"][aria-label="Places"] a')].some((x) => textOf(x) === "operator (you), reviewer_2"),
+    [...rows.querySelectorAll('[role="navigation"][aria-label="Places"] a')].map((x) => textOf(x)));
+  const who = parse(renderShell(seed({ post: CREDS_OFF }), channelRoute, true)).querySelector('[aria-label="Space"] [data-sidebar="footer"]') ?? none();
   const lineEl = who.querySelector("span[aria-describedby]");
   const why = lineEl ? who.querySelector(`#${lineEl.getAttribute("aria-describedby")}`) : null;
   same("5.5 the footer line takes the keyboard focus and carries its reason as its accessible description, not on hover alone",
@@ -485,8 +524,8 @@ const OP_META = { space: "main", pid: 1, post: PARTICIPANT, operatorId: OP };
   h.store.set(seed({ operatorId: null }));
   const opDm: Route = { view: "dm", peer: "local.rv2", with: OP };
   const { m } = await rig(h.store, h.ctl, opDm);
-  const footer = () => textOf(m.container.querySelector(".ui-side-foot .ui-who span"));
-  const dock = () => [textOf(m.container.querySelector(".ui-dock .ui-reason")), (m.container.querySelector(".ui-dock textarea") as HTMLTextAreaElement | null)?.placeholder ?? null];
+  const footer = () => textOf(m.container.querySelector('[aria-label="Space"] [data-sidebar="footer"] [aria-describedby]'));
+  const dock = () => [textOf(reason(m.container)), box(m.container).querySelector("textarea")?.placeholder ?? null];
   const before = [footer(), dock()];
   await m.run(() => h.ctl.onRoster([...roster, operator]));
   await m.run(() => undefined);

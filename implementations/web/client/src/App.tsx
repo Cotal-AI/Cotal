@@ -11,8 +11,8 @@ import { Navigate } from "./ui/navigate.js";
 import type { Controller } from "./state/controller.js";
 import { createStore, type Store } from "./state/store.js";
 import { initialState, type DashboardState } from "./state/types.js";
-import { useTheme } from "./theme.ts";
-import { usePhone } from "./viewport.ts";
+import { ThemeProvider } from "./ui/theme-provider.tsx";
+import { useIsMobile } from "#client/ui/shadcn/hooks/use-mobile.ts";
 
 const store = createStore(initialState);
 
@@ -57,10 +57,11 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
   useEffect(() => watchRoute(host, setRoute), [host]);
   useEffect(() => settleAddress(host, route), [host, route]);
   const navigate = useCallback((r: Route) => goTo(host, r), [host]);
-  const [theme, setTheme] = useTheme();
-  const phone = usePhone();
+  // Phone width as shadcn's Sidebar reads it, from the same hook, so the layout and the Sidebar agree.
+  const phone = useIsMobile();
   // The details panel opens beside a channel and beside an agent's page, on that agent's tab.
   return (
+    <ThemeProvider defaultTheme="system" storageKey="cotal.theme">
     <Navigate.Provider value={navigate}>
     <Shell
       store={store}
@@ -69,9 +70,8 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
       paneOpen={route.view === "channel" || route.view === "agent"}
       msgPerSecond={() => rate.perSecond(clock())}
       phone={phone}
-      theme={theme}
-      onTheme={setTheme}
     />
     </Navigate.Provider>
+    </ThemeProvider>
   );
 }

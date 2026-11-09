@@ -16,6 +16,9 @@
  * defeating deny-new, so reads are leader-served `STREAM.MSG.GET` (never `DIRECT.GET`) AND the
  * store is proved primary/un-mirrored/non-evicting at bind. Any read/shape/parse failure DENIES
  * the connect; there is no file-only fallback.
+ * Target-UID custody is checked before the credential. Alias custody is checked by the root
+ * mapping read, or explicitly for a descendant, before this invocation can allow. Both callout
+ * passes execute fresh reads; no observation is reused across signing or connections.
  */
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
@@ -170,14 +173,15 @@ export async function authorizeConnectCredential(reader: ConnectReader, t: Valid
     throw new EpEnvelopeError("permission-denied", "the bearer carries no lifecycle claim; a credential row is keyed by lifecycle uid (SPEC 13.1)");
 
   const { jsm, space } = internals(reader);
-  await assertOrdinaryNativeMutation({
-    async getRecord(key) {
+  const custodyReader = {
+    async getRecord(key: string) {
       const entry = await readRecordLeader(jsm, space, key);
       return entry === undefined ? undefined : {
-        value: new TextEncoder().encode(JSON.stringify(entry.value)), revision: entry.revision, operation: "PUT",
+        value: new TextEncoder().encode(JSON.stringify(entry.value)), revision: entry.revision, operation: "PUT" as const,
       };
     },
-  }, { lifecycleUid: uid, owner: t.owner, actor: t.act.actor });
+  };
+  await assertOrdinaryNativeMutation(custodyReader, { lifecycleUid: uid });
   const row = await readCredRowLeader(reader, uid, credid);
   if (row === undefined)
     throw new EpEnvelopeError("permission-denied", `no credential row cred.${uid}.${credid}; a revoked or never-issued credential does not connect (deny-new, SPEC 13.1)`);
@@ -201,5 +205,8 @@ export async function authorizeConnectCredential(reader: ConnectReader, t: Valid
       throw new EpEnvelopeError("permission-denied", `the lifecycle head for "${t.owner}/${t.act.actor}" is "${head.mapping.state}", not active; a root credential of a retiring/retired incarnation does not connect (SPEC 13.1)`);
     if (head.mapping.currentCredentialId !== credid)
       throw new EpEnvelopeError("permission-denied", `the current root credential for "${t.owner}/${t.act.actor}" is ${head.mapping.currentCredentialId ?? "(none)"}, not ${credid}; a superseded root issuance does not connect (deny-new, SPEC 13.1)`);
+  } else {
+    // Root mapping reads already check alias custody. Descendants still need that check.
+    await assertOrdinaryNativeMutation(custodyReader, { owner: t.owner, actor: t.act.actor });
   }
 }

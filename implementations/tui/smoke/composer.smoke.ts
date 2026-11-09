@@ -6,7 +6,7 @@
  * to it. The human writes in the input box under the conversation, which has the keys from launch;
  * tab moves them to the tree. The first enter opens the chat session and sends: a post to #general
  * with a mention, then a direct message to one reviewer, an answer to the waiting agent, `/reply` to
- * a direct message, and the refusals. Every send is read off the broker: a channel's history, the
+ * a direct message, replies to a message picked with `↑` or a click, and the refusals. Every send is read off the broker: a channel's history, the
  * space's direct-message history (an admin reader on the static space), the roster a reader watches,
  * and on the open broker its connections. Every refusal is read off the screen. Captures are kept
  * under the printed directory.
@@ -15,7 +15,7 @@
  * Run: pnpm --filter @cotal-ai/tui smoke
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -146,6 +146,14 @@ function middleLines(frame: string, width: number): string[] {
 const treeLines = (frame: string, width: number) => frame.split("\n").map((line) => [...line].slice(0, layoutFor(width).tree).join("").trim())
 /** The conversation column's text as one line, so a sentence the column wraps reads whole. */
 const middle = (frame: string, width: number) => middleLines(frame, width).join(" ")
+/** The toast's text as one line: what sits between the last two `┃` of each line it covers. */
+const toastOf = (frame: string) =>
+  frame
+    .split("\n")
+    .map((l) => l.split("┃"))
+    .filter((parts) => parts.length >= 3)
+    .map((parts) => parts.at(-2)!.trim())
+    .join(" ")
 const keys = (...k: string[]) => tmux("send-keys", "-t", "t", ...k)
 const type = (text: string) => keys("-l", text)
 // A key sent within tmux's escape-time after Escape would read as alt+<key>.
@@ -153,6 +161,16 @@ const esc = async () => {
   keys("Escape")
   await sleep(150)
 }
+/** A click where `text` starts on screen, as a terminal reports it in SGR mouse mode. */
+function click(text: string) {
+  const rows = capture().split("\n")
+  const y = rows.findIndex((l) => l.includes(text))
+  if (y < 0) throw new Error(`nothing to click: ${text} is not on screen`)
+  const x = [...rows[y]!.slice(0, rows[y]!.indexOf(text))].length + 1
+  type(`\x1b[<0;${x};${y + 1}M\x1b[<0;${x};${y + 1}m`)
+}
+/** Mouse-wheel turns up over the conversation column, as a terminal reports them in SGR mouse mode. */
+const wheelUp = (width: number, n: number) => type(`\x1b[<64;${layoutFor(width).tree + 4};6M`.repeat(n))
 const textOf = (m: CotalMessage) => (m.parts ?? []).map((p) => ("text" in p ? p.text : "")).join("")
 
 type Peer = { name: string; id: string; ep: CotalEndpoint; got: CotalMessage[] }
@@ -282,7 +300,8 @@ const SPACE_ROWS = 3
 const titleOf = (frame: string) => frame.split("\n").find((l) => l.includes("SPACES")) ?? ""
 const footer = (frame: string) => frame.trimEnd().split("\n").at(-1)!.trim()
 // A space is live once its conversation heads the middle column and the footer has nothing to report.
-const live = (space: string) => (frame: string) => titleOf(frame).includes(`  ${space}`) && !/Connecting to/.test(frame) && footer(frame) === "? help · ctrl+p commands"
+// While a switch closes the last space's session, the title already names the next space.
+const live = (space: string) => (frame: string) => titleOf(frame).includes(`  ${space}`) && !/Connecting to|Leaving /.test(frame) && footer(frame) === "? help · ctrl+p commands"
 const row = (s: Space, name: string): Presence | undefined => s.reader.getRoster().find((p) => p.card.name === name && p.status !== "offline")
 const chatRow = (s: Space) => s.reader.getRoster().find((p) => p.card.name === login && p.card.meta?.sessionKind === "chat" && p.status !== "offline")
 const times = (n: number, key: string) => Array<string>(n).fill(key)
@@ -397,6 +416,60 @@ async function run(s: Space, width: number, height: number, tag: string) {
   check(`${at}: on the roster, the name at the bottom of the tree turns gold`, gold.name === login && gold.fg === gold.gold, JSON.stringify(gold))
   if (s.mode === "static") check(`${at}: a static session's box names its end time`, lines(first).some((l) => /^#general · ends \d\d:\d\d$/.test(l)), first)
 
+  // The quoted row's text sits on the gold wash, accent 800 on a dark or a light terminal.
+  const lit = (text: string) => tmux("capture-pane", "-p", "-e", "-t", "t").split("\n").some((l) => strip(l).includes(`┃ ${text}`) && /48;2;(63;58;23|238;208;159)[m;]/.test(l))
+  const quoting = (who: string, start: string) => has(`↳ ${who}: “${start}`)
+  const planner = s.peer("planner/planner")
+  const pair = `who can pair on ingest? (${tag})`
+  const pairMsg = await planner.ep.multicast(pair, { channel: "general" })
+  await see((f) => inFeed(f, pair))
+  keys("Up")
+  const picked = await see((f) => quoting("planner", "who can pair")(f) && lit(pair))
+  save("quote-selected")
+  check(
+    `${at}: ↑ on an empty box quotes the newest message and highlights it; the line under the box names #general, no "replying to" line, and the footer is unchanged`,
+    quoting("planner", "who can pair")(picked) && lit(pair) && target(picked, "#general") && !picked.includes("replying to") && footer(picked) === "? help · ctrl+p commands",
+    picked,
+  )
+  keys("Up")
+  const older = await see(quoting(login, "hi @planner"))
+  keys("Down")
+  await see(quoting("planner", "who can pair"))
+  keys("Down")
+  const dropped = await see((f) => !f.includes("↳ "))
+  check(`${at}: ↑ moves the quote to an older message, and ↓ past the newest drops it`, quoting(login, "hi @planner")(older) && !dropped.includes("↳ "), `${older}\n${dropped}`)
+  keys("Up")
+  await see(quoting("planner", "who can pair"))
+  const pairReply = `I can pair (${tag})`
+  type(pairReply)
+  await see((f) => inBox(f, pairReply))
+  keys("Up")
+  await sleep(300)
+  const typed = capture()
+  save("quote-drafted")
+  check(`${at}: typing goes into the box under the quote, and with text in the box ↑ moves no quote`, inBox(typed, pairReply) && quoting("planner", "who can pair")(typed) && !typed.includes(`↳ ${login}:`), typed)
+  await esc()
+  const bare = await see((f) => !f.includes("↳ "))
+  keys("Up")
+  await sleep(300)
+  const still = capture()
+  check(`${at}: esc drops the quote and keeps the draft, and with text in the box ↑ quotes nothing`, !bare.includes("↳ ") && inBox(bare, pairReply) && !still.includes("↳ ") && inBox(still, pairReply), still)
+  click(pair)
+  const clicked = await see((f) => quoting("planner", "who can pair")(f) && lit(pair))
+  check(`${at}: a click quotes a message mid-draft and keeps the draft`, quoting("planner", "who can pair")(clicked) && lit(pair) && inBox(clicked, pairReply), clicked)
+  keys("Enter")
+  const replied = await until(general, (h) => h.some((m) => textOf(m) === pairReply))
+  const threaded = await see((f) => inFeed(f, pairReply) && !f.includes("↳ "))
+  await sleep(500)
+  const strays = (await dms()).filter((m) => textOf(m) === pairReply)
+  save("quote-sent")
+  const pairSent = replied.find((m) => textOf(m) === pairReply)
+  check(
+    `${at}: enter sends the reply to #general with replyTo naming the quoted message, sends no direct message, and its row shows ↩ planner`,
+    pairSent?.replyTo === pairMsg.id && pairSent.from.id === principal && strays.length === 0 && lines(threaded).some((l) => l.startsWith(`┃ ${login}  ↩ planner`)),
+    JSON.stringify({ want: pairMsg.id, got: pairSent, strays }),
+  )
+
   if (s.mode === "static") {
     await openRow(s, "#ops")
     const ops = `ops note (${tag})`
@@ -426,10 +499,10 @@ async function run(s: Space, width: number, height: number, tag: string) {
   await see(has("◐ coder-2 is waiting"), 4000)
   keys("j")
   await sleep(100)
-  keys("Tab")
+  await toBox()
   const answering = await see((f) => target(f, "answering coder-2"), 4000)
   save("answering")
-  check(`${at}: w in the tree, then j off the row, then tab: the box answers the waiting agent`, target(answering, "answering coder-2") && answering.includes("◐ coder-2 is waiting"), answering)
+  check(`${at}: w in the tree, then j off the row, then esc: the box answers the waiting agent`, target(answering, "answering coder-2") && answering.includes("◐ coder-2 is waiting"), answering)
   const answer = `approved, run it (${tag})`
   type(answer)
   keys("Enter")
@@ -437,7 +510,6 @@ async function run(s: Space, width: number, height: number, tag: string) {
   save("answer-sent")
   check(`${at}: the answer reaches the waiting agent's principal`, toCoder.some((m) => textOf(m) === answer && m.from.id === principal && m.to === s.peer("coder-2/coder").id), JSON.stringify(toCoder.filter((m) => textOf(m) === answer)))
 
-  const planner = s.peer("planner/planner")
   const ask = await planner.ep.unicast(principal, `can you approve 0042? (${tag})`)
   await until(dms, (h) => h.some((m) => m.id === ask?.id))
   await sleep(500)
@@ -445,7 +517,7 @@ async function run(s: Space, width: number, height: number, tag: string) {
   keys("Enter")
   const quoted = await see(has(`↳ planner: “can you approve 0042? (${tag})”`))
   save("reply-quote")
-  check(`${at}: /reply quotes the newest direct message and the box names who it answers`, quoted.includes(`↳ planner: “can you approve 0042? (${tag})”`) && target(quoted, "replying to planner"), quoted)
+  check(`${at}: /reply quotes the newest direct message and the line under the box names where it goes`, quoted.includes(`↳ planner: “can you approve 0042? (${tag})”`) && target(quoted, "@planner") && !quoted.includes("replying to"), quoted)
   const reply = `yes, go ahead (${tag})`
   type(reply)
   keys("Enter")
@@ -458,6 +530,99 @@ async function run(s: Space, width: number, height: number, tag: string) {
     JSON.stringify({ ask: ask?.id, got: toPlanner.filter((m) => textOf(m) === reply) }),
   )
 
+  await openRow(s, "planner")
+  const ship = `ship it today? (${tag})`
+  const shipMsg = await planner.ep.unicast(principal, ship)
+  await see((f) => inFeed(f, ship))
+  keys("Up")
+  const dmPicked = await see((f) => quoting("planner", "ship it today?")(f) && lit(ship))
+  save("dm-quote-selected")
+  check(`${at}: in planner's conversation, ↑ quotes its newest direct message and the line under the box names @planner`, lit(ship) && target(dmPicked, "@planner"), dmPicked)
+  const shipReply = `shipping now (${tag})`
+  type(shipReply)
+  await see((f) => inBox(f, shipReply))
+  save("dm-quote-drafted")
+  keys("Enter")
+  const toPlanner2 = await until(dms, (h) => h.some((m) => textOf(m) === shipReply))
+  const dmThreaded = await see((f) => inFeed(f, shipReply) && !f.includes("↳ "))
+  save("dm-quote-sent")
+  check(
+    `${at}: the picked direct message's reply reaches planner's principal with replyTo naming it, and its row shows ↩ planner`,
+    toPlanner2.some((m) => textOf(m) === shipReply && m.from.id === principal && m.to === planner.id && m.replyTo === shipMsg?.id) && lines(dmThreaded).some((l) => l.startsWith(`┃ ${login}`) && l.includes("↩ planner")),
+    JSON.stringify({ want: shipMsg?.id, got: toPlanner2.filter((m) => textOf(m) === shipReply) }),
+  )
+
+  const coder = s.peer("coder-2/coder").id
+  if (s.mode === "open") {
+    const burst = `standup in 5 (${tag})`
+    await planner.ep.unicast(coder, burst)
+    await planner.ep.unicast(principal, burst)
+    await see((f) => inFeed(f, burst))
+    keys("Up")
+    const burstPick = await see(has("↳ "), 3000).catch(() => capture())
+    save("burst-quote")
+    check(`${at}: ↑ passes over a direct-message burst whose first copy went to another agent, so no reply names that copy`, !burstPick.includes("↳ planner: “standup in 5") && quoting("planner", "ship it today?")(burstPick), burstPick)
+    await esc()
+    click(burst)
+    const refusal = await see((f) => says(f, "several recipients"), 3000)
+    save("burst-click")
+    check(`${at}: a click on that burst in planner's own conversation says to answer planner here, not to open it in the tree`, says(refusal, "that message went to several recipients; answer its sender here without a quote") && !refusal.includes("↳ planner: “standup in 5"), refusal)
+
+    const retro = `retro at 4 (${tag})`
+    const yours = await planner.ep.unicast(principal, retro)
+    await planner.ep.unicast(coder, retro)
+    await see((f) => lines(f).some((l) => l.includes(`→ ${login}, coder-2 ×2`)))
+    keys("Up")
+    const retroPick = await see(quoting("planner", "retro at 4"), 3000)
+    const retroReply = `retro works (${tag})`
+    type(retroReply)
+    keys("Enter")
+    const toPlanner3 = await until(dms, (h) => h.some((m) => textOf(m) === retroReply))
+    save("burst-yours-sent")
+    check(
+      `${at}: ↑ quotes a burst whose first copy came to the human, and the reply reaches planner with replyTo naming that copy`,
+      quoting("planner", "retro at 4")(retroPick) && toPlanner3.some((m) => textOf(m) === retroReply && m.to === planner.id && m.replyTo === yours?.id),
+      JSON.stringify({ want: yours?.id, got: toPlanner3.filter((m) => textOf(m) === retroReply) }),
+    )
+  } else {
+    const burst = `standup in 5 (${tag})`
+    await planner.ep.unicast(coder, burst)
+    const yours = await planner.ep.unicast(principal, burst)
+    await see((f) => inFeed(f, burst))
+    keys("Up")
+    const burstPick = await see(quoting("planner", "standup in 5"), 3000)
+    const burstReply = `standup works (${tag})`
+    type(burstReply)
+    keys("Enter")
+    const toPlanner3 = await until(dms, (h) => h.some((m) => textOf(m) === burstReply))
+    save("burst-sent")
+    check(
+      `${at}: the observer sees no direct messages here, so ↑ quotes the copy of a burst that came to the human, and the reply names that copy`,
+      quoting("planner", "standup in 5")(burstPick) && toPlanner3.some((m) => textOf(m) === burstReply && m.to === planner.id && m.replyTo === yours?.id),
+      JSON.stringify({ want: yours?.id, got: toPlanner3.filter((m) => textOf(m) === burstReply) }),
+    )
+  }
+  await see((f) => !f.includes("↳ "))
+  const walkedDms: string[] = []
+  for (let i = 0; i < 10; i++) {
+    keys("Up")
+    await sleep(200)
+    walkedDms.push(capture())
+  }
+  save("dm-walk")
+  check(
+    `${at}: in planner's conversation ↑ quotes only direct messages, never planner's #general posts`,
+    walkedDms.some((f) => f.includes("↳ planner:")) && walkedDms.every((f) => !target(f, "#general")),
+    walkedDms.find((f) => target(f, "#general")) ?? walkedDms.at(-1)!,
+  )
+  await esc()
+  if (width === 209) {
+    click(pair)
+    const post = await see((f) => says(f, "#general post"), 3000)
+    save("post-click-in-dm")
+    check(`${at}: a click on planner's #general post in planner's conversation refuses and says where to reply`, says(post, "that is a #general post; reply to it in #general") && !post.includes("↳ "), post)
+  }
+
   const before = (await general()).length
   const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
   save("unknown-slash")
@@ -468,7 +633,24 @@ async function run(s: Space, width: number, height: number, tag: string) {
   check(`${at}: an unknown slash command refuses and keeps the line`, says(unknown, "unknown command /foo; try") && inBox(unknown, "/foo"), unknown)
   check(`${at}: /who is not in the app and is not sent`, says(who, "/who is not in the app; the tree lists who is here") && (await general()).length === before, who)
 
+  const aside = `between agents (${tag})`
+  if (s.mode === "open") await planner.ep.unicast(coder, aside)
   const traffic = await openRow(s, "all traffic")
+  if (s.mode === "open") {
+    await see((f) => inFeed(f, aside))
+    keys("Up")
+    await sleep(300)
+    const up = capture()
+    click(aside)
+    const elsewhere = await see((f) => says(f, "not sent to you"), 3000)
+    save("between-agents")
+    check(
+      `${at}: in all traffic a direct message between two agents cannot be quoted: ↑ passes over it and a click refuses`,
+      !up.includes("↳ planner: “between agents") && says(elsewhere, "that direct message was not sent to you") && !elsewhere.includes("↳ planner: “between agents"),
+      `${up}\n${elsewhere}`,
+    )
+    await esc()
+  }
   const nowhere = await enter(`hello all (${tag})`, (f) => says(f, "choose a recipient first"))
   save("no-recipient")
   check(`${at}: all traffic has no recipient: the box says so, and enter refuses, keeps the draft and stores nothing`, target(traffic, "no recipient in all traffic") && says(nowhere, "choose a recipient first (open a channel or an agent)") && inBox(nowhere, `hello all (${tag})`) && (await general()).length === before, nowhere)
@@ -519,17 +701,59 @@ async function run(s: Space, width: number, height: number, tag: string) {
 
   const namesake = await s.namesake(tag)
   await until(() => row(s, login.toUpperCase()), (p) => p !== undefined)
+  // At 80x24 the name-in-use toast later opens where this click leaves the pointer, and a toast
+  // under the pointer does not time out.
+  if (s.mode === "open" && width === 209) {
+    const hello = `same name, other session (${tag})`
+    await namesake.ep.unicast(principal, hello)
+    await openRow(s, login.toUpperCase())
+    await see((f) => inFeed(f, hello))
+    click(hello)
+    const named = await see((f) => says(f, "under your name"), 3000)
+    save("namesake-click")
+    check(
+      `${at}: a direct message from another session under the human's name, in other letter case, refuses with a line that says so`,
+      says(named, "that is from another session under your name") && !named.includes(`↳ ${login.toUpperCase()}:`),
+      named,
+    )
+    const toNamesake = `for the other ${login.toUpperCase()} (${tag})`
+    await planner.ep.unicast(namesake.id, toNamesake)
+    await openRow(s, "all traffic")
+    await see((f) => inFeed(f, toNamesake))
+    keys("Up")
+    await sleep(300)
+    const up = capture()
+    click(toNamesake)
+    const notYours = await see((f) => says(f, "not sent to you"), 3000)
+    save("namesake-recipient")
+    check(
+      `${at}: in all traffic a direct message to another session under the human's name cannot be quoted: ↑ passes over it and a click refuses`,
+      !up.includes("↳ planner: “for the other") && says(notYours, "that direct message was not sent to you") && !notYours.includes("↳ planner: “for the other"),
+      `${up}\n${notYours}`,
+    )
+    await esc()
+  }
   const quit = await enter("/quit", (f) => says(f, "session ended"))
   const gone = await until(() => s.reader.getRoster().find((p) => p.card.id === principal), (p) => p === undefined || p.status === "offline")
   const left = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)
   save("quit")
   check(`${at}: /quit ends the session: its roster row goes offline${s.connections ? " and its connection closes" : ""}, and the box says enter opens a new one`, says(quit, `you ended it · enter opens a new one as ${login}`) && (gone === undefined || gone.status === "offline") && left === 0, quit)
 
+  await openRow(s, "planner")
+  const walked: string[] = []
+  for (let i = 0; i < 8; i++) {
+    keys("Up")
+    await sleep(250)
+    walked.push(capture())
+  }
+  save("quote-after-quit")
+  check(`${at}: after /quit, ↑ in planner's conversation quotes none of the human's own direct messages from the ended session`, walked.every((f) => !f.includes(`↳ ${login}:`)), walked.find((f) => f.includes(`↳ ${login}:`)) ?? walked.at(-1)!)
+  await esc()
+
   await toTree()
   keys("w")
   await see(has("◐ coder-2 is waiting"), 4000)
-  keys("Tab")
-  await sleep(150)
+  await toBox()
   const again = `still there? (${tag})`
   const reopened = await enter(again, (f) => says(f, "new session as"))
   const next = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal)
@@ -599,14 +823,30 @@ async function run(s: Space, width: number, height: number, tag: string) {
   await toTree()
   keys("w")
   await see(has("◐ coder-2 is waiting"), 4000)
-  keys("Tab")
-  await sleep(150)
+  await toBox()
   const bye = `signing off (${tag})`
   type(bye)
   keys("Enter")
   const third = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal && p.card.id !== principal2)
   const byeSent = await until(dms, (h) => h.some((m) => textOf(m) === bye))
   check(`${at}: back on the space, the first enter opens a new session and answers in one step`, !!third && byeSent.some((m) => textOf(m) === bye && m.from.id === third.card.id), JSON.stringify(byeSent.filter((m) => textOf(m) === bye)))
+
+  const backlog = Array.from({ length: 50 }, (_, i) => `ops line ${i} (${tag})`)
+  for (const t of backlog) await planner.ep.multicast(t, { channel: "ops" })
+  await openRow(s, "#ops")
+  const newest = backlog.at(-1)!
+  await see((f) => inFeed(f, newest))
+  wheelUp(width, 20)
+  const scrolled = await see((f) => !inFeed(f, newest), 3000).catch(() => capture())
+  await planner.ep.multicast(`meanwhile in general (${tag})`, { channel: "general" })
+  await sleep(1500)
+  const held = capture()
+  save("scrolled-back")
+  check(`${at}: the conversation scrolled back with the wheel stays there while the space updates`, !inFeed(scrolled, newest) && !inFeed(held, newest), held)
+  keys("Up")
+  await see(has("↳ "))
+  await esc()
+  await see((f) => inFeed(f, newest))
 
   keys("C-c")
   const asked = await see(has("Quit with 1 unsent draft?"), 4000)
@@ -651,9 +891,53 @@ async function rename(s: Space, tag: string) {
   writeFileSync(join(dir, `renamed-${tag}.ansi`), tmux("capture-pane", "-p", "-e", "-t", "t"))
   check(`${at}: Change your name shows the new name at the bottom of the tree, and the box still takes text once the dialog closes`, nameAtBottom(209).name === "ops-lead" && middleLines(typed, 209).includes(hello), renamed)
   check(`${at}: the next session appears under the new name on the roster and posts from it`, named?.card.meta?.sessionKind === "chat" && landed.some((m) => textOf(m) === hello && m.from.id === named.card.id), JSON.stringify(named?.card))
+
+  await openRow(s, "planner")
+  const dm = `from ops-lead (${tag})`
+  type(dm)
+  keys("Enter")
+  await until(() => s.reader.dmHistory({ limit: 500 }), (h) => h.some((m) => textOf(m) === dm && m.from.id === named?.card.id))
+  const back = `noted, ops-lead (${tag})`
+  await s.peer("planner/planner").ep.unicast(named?.card.id ?? "unknown", back)
+  await see((f) => middleLines(f, 209).includes(`┃ ${back}`))
   await dialog()
   keys("Enter")
   await see((f) => !f.includes("Your name is"), 4000)
+  type("/quit")
+  keys("Enter")
+  await see((f) => middle(f, 209).includes("session ended"))
+  const walked: string[] = []
+  for (let i = 0; i < 8; i++) {
+    keys("Up")
+    await sleep(250)
+    walked.push(capture())
+  }
+  writeFileSync(join(dir, `renamed-quote-after-quit-${tag}.txt`), walked.find((f) => f.includes("↳ ops-lead:")) ?? walked.at(-1)!)
+  check(
+    `${at}: after Change your name and /quit, ↑ in planner's conversation quotes none of the direct messages the ended ops-lead session sent`,
+    walked.some((f) => f.includes("↳ planner:")) && walked.every((f) => !f.includes("↳ ops-lead:")),
+    walked.find((f) => f.includes("↳ ops-lead:")) ?? walked.at(-1)!,
+  )
+  await esc()
+
+  const outside = cli("config", "set", "name", "ops-lead-2")
+  if (outside.status !== 0) throw new Error(`cotal config set name failed:\n${outside.stdout}${outside.stderr}`)
+  const offered = await see((f) => /enter opens a new one as \S+/.test(middle(f, 209)), 4000)
+  const shown = /enter opens a new one as (\S+)/.exec(middle(offered, 209))?.[1]
+  keys("Enter")
+  const opened = await see((f) => /new session as \S+; enter sends/.test(middle(f, 209)))
+  const told = /new session as (\S+); enter sends/.exec(middle(opened, 209))?.[1]
+  const joined = await until(
+    () => s.reader.getRoster().find((p) => p.card.meta?.sessionKind === "chat" && p.status !== "offline" && p.card.id !== named?.card.id && [login, "ops-lead-2"].includes(p.card.name)),
+    (p) => p !== undefined,
+  )
+  writeFileSync(join(dir, `renamed-outside-${tag}.txt`), opened)
+  check(
+    `${at}: with the name changed outside the app, the session enter opens joins under the name the box gave before and after the enter`,
+    !!shown && shown === told && joined?.card.name === told,
+    JSON.stringify({ shown, told, joined: joined?.card.name }),
+  )
+  cli("config", "unset", "name")
   keys("C-c")
   await see(has("EXIT=0"), 15000)
 }
@@ -696,6 +980,93 @@ async function switchWhileOpening(s: Space, tag: string) {
   await see(has("EXIT=0"), 15000)
 }
 
+/** A first message whose session cannot open, because the static space's manager is held. A switch
+ *  and a quit each stop waiting for it after 5 seconds and say it was not sent, and the space the
+ *  switch opens sends at once. */
+async function heldManager(s: Space, tag: string) {
+  const at = `${s.mode} 209x52`
+  const dot = join(s.root, ".cotal")
+  const pidFile = readdirSync(dot).find((f) => /^manager\.[^.]+\.pid$/.test(f))
+  if (!pidFile) throw new Error(`no manager pidfile in ${dot}`)
+  const manager = Number(readFileSync(join(dot, pidFile), "utf8").trim())
+  const other = new CotalEndpoint({ space: s.other.space, servers: server, card: { name: "reader", kind: "endpoint" }, consume: false, registerPresence: false })
+  other.on("error", () => {})
+  started.push(other)
+  await other.start()
+  const notSent = (frame: string) => toastOf(frame).replace(/\s+/g, "").includes("yourmessagewasnotsent")
+  const opening = (frame: string) => frame.includes(`joining ${s.space} as ${login}`)
+  const dir = join(captures, s.mode, "209x52")
+  mkdirSync(dir, { recursive: true })
+
+  launch(s.root, 209, 52, join(work, `${s.mode}-held.err`))
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
+  const first = `sent while the manager is held (${tag})`
+  type(first)
+  await see((f) => middleLines(f, 209).includes(first), 4000)
+  process.kill(manager, "SIGSTOP")
+  try {
+    keys("Enter")
+    await see(opening, 4000)
+    keys("Tab", ...times(40, "k"), ...times(s.other.row, "j"), "Enter")
+    const waited: string[] = []
+    const start = Date.now()
+    while (!live(s.other.space)(waited.at(-1) ?? "") && Date.now() - start < 20000) {
+      waited.push(capture())
+      await sleep(200)
+    }
+    const next = `sent on ${s.other.space} at once (${tag})`
+    type(next)
+    keys("Enter")
+    const after = await see(has("still being sent"), 1000)
+    const there = await until(() => other.channelHistory("general", { limit: 200 }), (h) => h.some((m) => textOf(m) === next), 4000)
+    writeFileSync(join(dir, `held-switch-${tag}.txt`), [...waited, after].join("\n----\n"))
+    check(
+      `${at}: while the switch waits for the first message, the conversation says it is leaving ${s.space}, not that it is finding the space for this folder`,
+      waited.some((f) => middle(f, 209).includes(`Leaving ${s.space}…`)) && !waited.some((f) => f.includes("Finding the space for this folder")),
+      waited.find((f) => f.includes("Finding the space for this folder")) ?? waited.at(-1)!,
+    )
+    check(`${at}: the switch says the first message was not sent`, [...waited, after].some(notSent), [...waited, after].map(toastOf).filter(Boolean).join("\n") || after)
+    check(
+      `${at}: on ${s.other.space}, enter sends at once while the message on ${s.space} still waits for its session`,
+      !after.includes("still being sent") && there.some((m) => textOf(m) === next),
+      `${Date.now() - start}ms after the switch\n${after}`,
+    )
+  } finally {
+    process.kill(manager, "SIGCONT")
+  }
+  keys("C-c")
+  await see(has("Quit with"), 4000)
+  keys("y")
+  await see(has("EXIT=0"), 15000)
+
+  launch(s.root, 209, 52, join(work, `${s.mode}-held-quit.err`))
+  await see((f) => live(s.space)(f) && nameAtBottom(209).name === login, 20000)
+  const last = `sent as the app quits (${tag})`
+  type(last)
+  await see((f) => middleLines(f, 209).includes(last), 4000)
+  process.kill(manager, "SIGSTOP")
+  let exited = ""
+  try {
+    keys("Enter")
+    await see(opening, 4000)
+    keys("C-c")
+    await see(has("Quit with 1 unsent draft?"), 4000)
+    keys("y")
+    exited = await see(has("EXIT=0"), 20000)
+  } finally {
+    process.kill(manager, "SIGCONT")
+  }
+  writeFileSync(join(dir, `held-quit-${tag}.txt`), exited)
+  check(
+    `${at}: quitting while the first message waits for its session says, as the app exits, that it was not sent`,
+    exited.replace(/\s+/g, "").includes(`${s.space}:thesessionwasstillopeningafter5seconds,soyourmessagewasnotsent`),
+    exited,
+  )
+  await sleep(3000)
+  const stored = (await s.reader.channelHistory("general", { limit: 200 })).filter((m) => textOf(m) === first || textOf(m) === last)
+  check(`${at}: neither message the app said was not sent was stored`, stored.length === 0, JSON.stringify(stored))
+}
+
 let stackUp = false
 try {
   const open = await openSpace()
@@ -719,6 +1090,11 @@ try {
     }
   for (const s of [open, stat]) await rename(s, s.mode)
   await switchWhileOpening(open, "sw")
+  try {
+    await heldManager(stat, "held")
+  } catch (e) {
+    check(`${stat.mode} 209x52: the held-manager flow ran to its end`, false, `${(e as Error).message}\n${capture()}`)
+  }
 } finally {
   try {
     tmux("kill-server")

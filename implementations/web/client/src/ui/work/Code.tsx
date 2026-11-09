@@ -5,6 +5,7 @@ import { highlight, type CodeToken } from "../../lib/highlight.js";
 import { shownName } from "../../lib/session.js";
 import { copy } from "../CopyCommand.tsx";
 import { Button } from "../shadcn/button.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
 import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockHeader, CodeBlockLine } from "../shadcn/code-block.tsx";
 
 /** The part of IntersectionObserver this part uses. Spelled out rather than taken from the DOM lib,
@@ -13,7 +14,7 @@ type Watcher = { observe(el: unknown): void; disconnect(): void };
 type WatcherClass = new (cb: (entries: { isIntersecting: boolean }[]) => void) => Watcher;
 
 /** The most characters of a fence's language word the header draws. The word is agent text of any
- *  length, so it is cut here and the whole word stays in the label's `title`. */
+ *  length, so it is cut here, and a cut word is whole in the label's Tooltip and screen reader text. */
 export const LANG_CAP = 24;
 
 /** A fenced block from an agent's prose (mock B1 and C, `sh-code`): its language as text, a Copy
@@ -47,14 +48,22 @@ export function Code({ lang, text }: { lang: string; text: string }) {
     };
   }, [text, lang]);
   const lines = tokens?.text === text && tokens.lang === lang ? tokens.lines : undefined;
+  const shown = lang && shownName(lang, LANG_CAP);
   return (
     <CodeBlock ref={ref} size="sm" className="ox-code">
       <CodeBlockHeader className="ox-code-h">
-        {lang && <span title={lang}>{shownName(lang, LANG_CAP)}</span>}
+        {shown && (shown === lang ? <span>{lang}</span> : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span><span aria-hidden="true">{shown}</span><span className="ui-sr">{lang}</span></span>
+            </TooltipTrigger>
+            <TooltipContent>{lang}</TooltipContent>
+          </Tooltip>
+        ))}
         {" "}
         <CodeBlockActions className="ox-code-acts">
-          <Button type="button" variant="ghost" size="xs" className="ox-copy" onClick={() => copy(text)}>
-            <Icon icon={Copy01Icon} size={16} />
+          <Button type="button" variant="ghost" size="xs" onClick={() => copy(text)}>
+            <Icon icon={Copy01Icon} data-icon="inline-start" />
             Copy
           </Button>
         </CodeBlockActions>

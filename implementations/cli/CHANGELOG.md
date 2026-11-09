@@ -1,5 +1,154 @@
 # @cotal-ai/cli
 
+## 0.151.0
+
+### Patch Changes
+
+- dacb515: `cotal login` no longer warns that chat refuses when you have saved a chat name, and a refused chat name now names the remedy the surface you use offers. When no handle is recorded and no name is saved, `cotal login` names both `--name` and `cotal config set name`; with a saved name it says chat sessions use it. `resolveChatName` now requires the caller's own `remedy` option, so `cotal chat` still offers `--name` and the terminal app offers Change your name (ctrl+p). A sign-in with no handle on record now also lists that remedy.
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- a50683c: A space created before live eviction gets its missing connection evictor the next time the delivery daemon starts, so a despawned seat's name is released without rotating the system account. The daemon mints it only on a root that hosts one space and retained its system-account signing seed, beside an observer that same system account signed; anywhere else, a root hosting several spaces included, the heal does nothing and the daemon starts as before. An evictor that is already present is left untouched.
+- 9803e8d: Show a failed legacy manager launch's new error line in up, including delivery-version recovery guidance. Reuse the private-log reader with a launch offset and file identity, and exclude ordinary console credential lines. Document current-CLI recovery for legacy pidfile roots.
+- b6ea792: `cotal update` no longer treats a supervisor from another install of the same space as custody for this install. A supervisor whose command names this install's CLI entry is still read, and a node binary or loader argument does not hide it.
+- 6661f53: A user-mode spawn or persona definition now refuses a name the bearer exchange cannot serve, before anything is enrolled. The name door applies the exchange's own 64-character actor bound, and auto-numbering stops at that bound instead of appending a suffix that would cross it.
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- 6249b27: Mark a `cotal invoke` refused by the fetched input contract as `not-executed`. The refusal runs nothing, and its native outcome was absent before.
+- Updated dependencies [8e2ba65]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/workspace@0.150.0
+
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- 81b38de: A provisioner that closes and then rejects no longer replaces a successful provision, and a foreground spawn no longer retires the credential it just minted.
+- f3bfdea: Restore full backups on NATS 2.12 when a new consumer reports a zero acknowledgement floor. Keep the snapshot's replay start and require unused consumer counters before accepting the checkpoint.
+- fd5e4b9: Keep managed session transfers on the mesh selected for the launch. Reuse its space and broker for transcript carry and transfer authorization instead of repeating registry discovery.
+- dd76ef4: A refused spawn records a failed cleanup step the same way in the CLI and the manager, and both read a caught value through one helper.
+- Updated dependencies [7068f2b]
+- Updated dependencies [2d497ad]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+  - @cotal-ai/workspace@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- 4c6505c: Export a registered remote user-auth space to a private connection-bundle file with `cotal space export <name> --out <private-file>`.
+  
+  Preserve recorded trust pins, transport and event policy, and existing sentinel custody without copying a login session or signing authority. Existing output paths and unsupported registrations refuse; secret material stays out of command output.
+- @cotal-ai/core@0.148.2
+  - @cotal-ai/workspace@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+  - @cotal-ai/workspace@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- c8cf718: Your own Claude Code and Codex conversations can now join an open or static mesh this computer runs with `cotal up`, not only a signed-in space. A natively bound conversation's `cotal_connect` opens its identity at once with the grant a bare `cotal spawn` gets on that mesh: the default persona's channels, role and capabilities, or the part of them a selection names. Concurrent requests for the same native session are serialized so they cannot create two identities. On a static mesh the space's local signing authority issues it as a terminal seat under its own lifecycle, and disconnecting, ending the session, or the next connection after a killed plugin server retires it with its issuance and broker footprint. A call without a native session, and a static mesh whose signing authority this account does not hold, open nothing. Signed-in spaces still require a person's approval. An endpoint whose credential expires more than about 24.8 days out, such as a terminal seat's with no expiry, no longer refreshes in a 1 ms loop and fails to connect.
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+  - @cotal-ai/workspace@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- 99cb97d: Keep self-updates of installed POSIX CLIs in the prefix owning the invoked package and bin link, including when bypassing the installer launcher with a vendored Node runtime. Refuse conflicting or incomplete global layouts before installation, and preserve separate global updates from local/npx copies and source checkouts.
+- @cotal-ai/core@0.147.8
+  - @cotal-ai/workspace@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- 05465ae: `cotal update` and `cotal update --self` take `--on <instance>`, the manager pin every other manager command takes, and pass it to the reconcile the new binary runs. An owner with several live managers on a user-auth mesh was refused at the continuity check with a remedy naming a flag the command did not have.
+- @cotal-ai/core@0.147.7
+  - @cotal-ai/workspace@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- ea56030: Keep a foreground native service attached to its owned child while startup readiness remains pending, so a manager still registering does not lose its controller at the background observation deadline. Individual readiness calls remain bounded, and background and HTTP deadlines are unchanged.
+- @cotal-ai/core@0.147.6
+  - @cotal-ai/workspace@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- 3f8da10: `cotal update` no longer reads a remote mesh's manager custody because of a `cotal supervise` process that serves another space through `COTAL_SPACE` with no `--space` argument. That read went to an unpinned manager selection and failed the reconcile whenever the owner had more than one live remote manager; the supervisor's environment now names the space it serves.
+- @cotal-ai/core@0.147.5
+  - @cotal-ai/workspace@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- c579bc5: `cotal update` reads the custody of a manager that serves a remote user mesh from this machine, where it used to report that the manager runs elsewhere and let the install leave that manager on its loaded generation. A `legacy` verdict on such a mesh names `cotal manager stop` as the stop before the cold update.
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+  - @cotal-ai/workspace@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+  - @cotal-ai/workspace@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+  - @cotal-ai/workspace@0.147.1
+
+## 0.147.0
+
+### Minor Changes
+
+- b8b0ff4: `cotal chat` opens a session under one stable name that agents can mention, with no random suffix. Without `--name`, it takes the new `name` preference (`cotal config set name <name>`), else your handle on a user-auth space, else your OS login on an open or static space. Every chat name is 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_`, so an `@name` reaches it. Breaking: `--name` no longer accepts a name outside that rule, such as one with a space or an `@`. `cotal login` now records a handle, the IdP's preferred user name, else its email's local part, else its name, the first that is a valid chat name, and `userStatus` returns it as `login.name`. The email is never the handle, so it does not appear in the roster. A user-auth sign-in made by an older cotal, or one whose IdP gives no valid chat name, has no handle on record, so `cotal chat` refuses with `AUTH_REQUIRED` until you sign in again or save a name. Once a `name` preference is saved, an older cotal refuses every preferences read with `defaults has an unknown key "name"` until it is upgraded or this version removes the name with `cotal config unset name`. The workspace exports `resolveChatName`, `chatNameProblem`, `nameInUse` and `nameInUseText`, and a second session under a name in use is warned with both ways to change it.
+
+### Patch Changes
+
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+  - @cotal-ai/workspace@0.147.0
+
 ## 0.146.0
 
 ### Minor Changes

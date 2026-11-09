@@ -197,9 +197,9 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     drawnPeers?.text === staleView(peers).text && drawnPeers?.text === staleLabel(peers), drawnPeers);
   ok("3.4 and the marks it draws are the store's, which the controller writes",
     drawnTwo?.text === staleLabel(two) && drawnTwo?.text !== drawnPeers?.text, { drawnPeers, drawnTwo });
-  ok("3.5 the shell carries the stale marker element it drives: hidden, tooltip and text all come from the view",
-    drawnNone !== undefined && "hidden" in drawnNone.attrs && drawnNone.attrs.title === "" && drawnNone.text === ""
-      && drawnTwo !== undefined && !("hidden" in drawnTwo.attrs) && drawnTwo.attrs.title === staleView(two).title,
+  ok("3.5 the shell draws the stale marker only while something is stale, as a note whose reasons come from the view",
+    drawnNone === undefined && staleView([]).hidden
+      && drawnTwo !== undefined && drawnTwo.role === "note" && drawnTwo.content.includes(staleView(two).title),
     { drawnNone, drawnTwo });
   // The boot reads every source through the controller, and the controller through `refreshAll`:
   // `startDashboard` holds no read of its own, and `httpApi` wraps every route in `readJson` (each

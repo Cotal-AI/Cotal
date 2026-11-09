@@ -96,7 +96,7 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
 };
 /** Seventeen scenario cells run before the final count cell. A throw lands in the catch as a
  * counted failure, so a partial run can never print the OK banner. */
-const EXPECTED_CELLS = 18;
+const EXPECTED_CELLS = 22;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
   const end = Date.now() + ms;
@@ -213,6 +213,7 @@ const daemonSink = { out: "", exited: false, exit: "" };
 let spaceAuth: SpaceAuth | undefined;
 let mgr1: InstanceType<typeof Manager> | undefined;
 let mgr2: InstanceType<typeof Manager> | undefined;
+let mgr3: InstanceType<typeof Manager> | undefined;
 /** The delivery daemon's state when a run fails (#1226). The process state separates dead from
  *  alive, and it is read before and after the probe, so a daemon that dies while the probe waits
  *  does not read as a live one that timed out. One fresh request on its rail, with the scoped
@@ -333,7 +334,11 @@ try {
   ok("plain Manager.stop() succeeds against a detachable live seat", stopError === undefined, { stopError });
   ok("#964: default stop leaves the managed child running", pidA !== undefined && alive(pidA), { pidA });
   ok("#964: default stop retains the minted credential", credsA !== undefined && existsSync(credsA), { credsA });
+  // #4005: the released seat is not forgotten. The stopped manager keeps no watch on it (its endpoint
+  // is gone), and its runtime reference is on disk for the next manager on this root.
   ok("#964: default stop drops the old manager table", (mgr1 as unknown as { agents: Map<string, unknown> }).agents.size === 0);
+  const releasedRef = join(root, ".cotal", "seat-records", SPACE, "seatA.runtime-ref");
+  ok("#4005: default stop records the released seat's runtime reference", existsSync(releasedRef), { releasedRef });
 
   // ── REAP phase: a second manager owns a separate root and deliberately reaps its seat ─────────
   const rootB = join(base, "rootB");
@@ -367,13 +372,27 @@ try {
   ok("#964: explicit stop deprovisions the minted credential", credsB !== undefined && (await until(() => !existsSync(credsB), 10_000)), { credsB });
   ok("#964: explicit reap does not kill the independently spared child", pidA !== undefined && alive(pidA), { pidA });
 
+  // ── RETIRE phase (#4005): the released seat exits with no manager alive; the next manager on the
+  // same root finds its record, cannot adopt the gone seat, and retires its lifecycle. ──────────
+  if (pidA !== undefined) { try { process.kill(pidA, "SIGKILL"); } catch { /* already gone */ } }
+  ok("#4005: the released seat's child is gone", pidA !== undefined && (await until(() => !alive(pidA), 10_000)), { pidA });
+  let startError: string | undefined;
+  try {
+    mgr3 = new Manager({ space: SPACE, servers: SERVER, runtime: "custodial-pty", workspaceRoot: root, secretStore: sharedSecretStore });
+    await mgr3.start();
+  } catch (e) {
+    startError = (e as Error).message;
+  }
+  ok("#4005: a next manager starts on the root that released the seat", startError === undefined, { startError });
+  ok("#4005: the next manager retires the gone released seat (its minted credential is deprovisioned)", credsA !== undefined && (await until(() => !existsSync(credsA), 30_000)), { credsA, releasedRef: existsSync(releasedRef) });
+
   ok("every cell ran (silently skipped cells must not read as green)", pass + fail === EXPECTED_CELLS - 1, { pass, fail, expected: EXPECTED_CELLS - 1 });
 } catch (e) {
   fail++;
   console.log(`  ✗ scenario threw: ${e instanceof Error ? e.message : String(e)}`);
 } finally {
   if (fail > 0) console.log(`  delivery daemon at failure: ${await daemonState()}`);
-  for (const m of [mgr1, mgr2]) {
+  for (const m of [mgr1, mgr2, mgr3]) {
     try { if (m) await m.stop({ withAgents: true }); } catch { /* teardown only */ }
   }
   // Backstop for seats the managers no longer track: only PIDs OUR children wrote to OUR pidfiles.

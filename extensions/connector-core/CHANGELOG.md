@@ -1,5 +1,83 @@
 # @cotal-ai/connector-core
 
+## 0.151.0
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- 38f5bb2: `@cotal-ai/core` no longer exports the `terminal` extension kind (`TerminalLayout`, `Tab` and `Pane`), and `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register `tmuxTerminalProvider` and `cmuxTerminalProvider`, along with the layout code only those providers used. Nothing in Cotal has resolved the kind since `cotal setup` became configure-only, while the contract and both providers still named `cotal setup` as their consumer. Spawned tmux and cmux agents launch as before; the cmux pane launcher keeps its `env -i` isolation and drops the login-shell and inherited-environment modes that only layout panes used. The upgrading guide lists the imports to remove.
+
+## 0.150.0
+
+### Patch Changes
+
+- c9d5969: `submitFeedback` confirms a send only from the documented 202 receipt, and a redirect no longer carries the submission to another origin.
+
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- 93794d5: Tell agents the channel-history retention limits in their shared briefing. State the default of no age limit and 1000 posts per sender per channel, identify the operator command for changing it, and warn that older posts may no longer be available.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+### Patch Changes
+
+- c8cf718: Your own Codex conversations can now join a Cotal mesh after you approve them: `cotal setup` installs a Cotal plugin into Codex, and a connected conversation is woken when messages arrive. The plugin's server binds to the conversation Codex names in each tool call's request metadata, opens and retires its identity through the existing `cotal app-identity` approval flow, queues at most one labelled notice per connection with Codex's `thread/queue/add` (the messages themselves are read with `cotal_inbox`), and publishes the conversation's own activity only from the moment of approval.
+- c8cf718: Allow authenticated hosted gateways to implement MCP Events discovery and subscription methods through an optional adapter, with transport-bound accounts and secret-safe protocol errors.
+- c8cf718: Your own Claude Code and Codex conversations can now join an open or static mesh this computer runs with `cotal up`, not only a signed-in space. A natively bound conversation's `cotal_connect` opens its identity at once with the grant a bare `cotal spawn` gets on that mesh: the default persona's channels, role and capabilities, or the part of them a selection names. Concurrent requests for the same native session are serialized so they cannot create two identities. On a static mesh the space's local signing authority issues it as a terminal seat under its own lifecycle, and disconnecting, ending the session, or the next connection after a killed plugin server retires it with its issuance and broker footprint. A call without a native session, and a static mesh whose signing authority this account does not hold, open nothing. Signed-in spaces still require a person's approval. An endpoint whose credential expires more than about 24.8 days out, such as a terminal seat's with no expiry, no longer refreshes in a 1 ms loop and fails to connect.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+### Patch Changes
+
+- 1d3edea: Correct bundled DM tool documentation so it no longer promises a stored sequence or complete recipient-status report. The existing tool response and message delivery are unchanged.
+- 9973a9a: Restore the descriptive classifications of migrated documentation pages in the offline docs index while preserving their current categories. Share category parsing between the bundle generator and website checks so a full classification is not mistaken for its category.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
 ## 0.146.0
 
 ### Minor Changes

@@ -1,15 +1,17 @@
 import { ArrowUpRight01Icon, Copy01Icon, UserGroupIcon } from "@hugeicons/core-free-icons";
 import { useEffect, useId, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import type { CotalMessage } from "../api/types.js";
 import { Icon } from "../icons/Icon.tsx";
+import { Button } from "#client/ui/shadcn/button.tsx";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#client/ui/shadcn/sheet.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { partsToText } from "../lib/parts.js";
 import type { RosterRow } from "../lib/roster.js";
 import { formatRoute } from "../lib/route.js";
 import { Avatar } from "./Avatar.tsx";
 import { copy } from "./CopyCommand.tsx";
-import { FocusTrap } from "./focusTrap.tsx";
 import { useBadgeOf } from "./identity.js";
+import { useReturnFocus } from "./returnFocus.ts";
 import { hhmm } from "../lib/time.js";
 
 /** A touch held this long on a message opens its actions. */
@@ -29,7 +31,6 @@ type Listens = {
   removeEventListener(type: string, listener: (e: Press) => void, capture?: boolean): void;
 };
 type Child = { parentElement: Listens | null };
-type Page = { document: { body: unknown } };
 
 /** A touch held `LONG_PRESS_MS` on the element around `child` (the message row) calls `onPress`. A
  *  mouse or a pen never does: they have the hover action. Moving more than `PRESS_SLOP_PX`, lifting
@@ -106,11 +107,14 @@ function useLongPress(child: { current: unknown }, onPress: () => void): void {
 /** The hover action row, and on touch the long-press sheet (agents mock S3, C "Focus", D and E).
  *
  *  - The action row (`ui-msg-acts`) holds one link, View work, to the sender's page at this message
- *    (`#/agent/<id>/work/<message id>`), titled "View <name>'s work at <hh:mm>". It shows on hover and
- *    while it holds focus, and stays in the tab order.
- *  - A touch held on the row opens a bottom sheet: the sender, "Message at <hh:mm>", then the same
- *    link, View agent (`onViewAgent`) and Copy text. It holds focus while open and closes on the
- *    scrim, on Escape or on any choice. It is drawn on the page's body, outside the row, so a press
+ *    (`#/agent/<id>/work/<message id>`), with "View <name>'s work at <hh:mm>" as its Tooltip and its
+ *    accessible description. It shows on hover and while it holds focus, and stays in the tab order.
+ *    It sits at the top end of the message's own box, where the scroller item around the message
+ *    does not clip it.
+ *  - A touch held on the row opens shadcn's Sheet from the bottom: the sender as its title, "Message
+ *    at <hh:mm>" as its description, then the same link, View agent (`onViewAgent`) and Copy text. It
+ *    holds focus while open and closes on the scrim, on Escape, on its Close button or on any choice,
+ *    and focus goes back where it was. It is drawn on the page's body, outside the row, so a press
  *    inside it is not a press on the row.
  *
  *  The caller draws it only for a verified sender on the roster (`peer`, the roster's row for
@@ -127,23 +131,31 @@ export function MessageActions({ msg, senderId, name, peer, onViewAgent }: {
   useLongPress(acts, () => setSheet(true));
   const at = hhmm(msg.ts);
   const href = formatRoute({ view: "agent", id: senderId, tab: "work", at: msg.id });
+  const hint = at ? `View ${name}'s work at ${at}` : `View ${name}'s work`;
+  const hintId = useId();
   return (
     <>
       <div ref={acts} className="ui-msg-acts">
-        <a href={href} title={at ? `View ${name}'s work at ${at}` : `View ${name}'s work`}>
-          <Icon icon={ArrowUpRight01Icon} size={16} className="ui-ic ui-ic16" />
-          View work
-        </a>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <a href={href} aria-describedby={hintId}>
+              <Icon icon={ArrowUpRight01Icon} size={16} className="ui-ic ui-ic16" />
+              View work
+            </a>
+          </TooltipTrigger>
+          <TooltipContent>{hint}</TooltipContent>
+        </Tooltip>
+        <span id={hintId} className="ui-sr">{hint}</span>
       </div>
-      {sheet && (
-        <ActionSheet msg={msg} senderId={senderId} name={name} peer={peer} at={at} href={href} onViewAgent={onViewAgent} onClose={() => setSheet(false)} />
-      )}
+      <ActionSheet open={sheet} onOpenChange={setSheet} msg={msg} senderId={senderId} name={name} peer={peer} at={at} href={href} onViewAgent={onViewAgent} />
     </>
   );
 }
 
-/** The long-press sheet (mock D, the first phone), on the page's body. */
-function ActionSheet({ msg, senderId, name, peer, at, href, onViewAgent, onClose }: {
+/** The long-press sheet (mock D, the first phone). */
+function ActionSheet({ open, onOpenChange, msg, senderId, name, peer, at, href, onViewAgent }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   msg: CotalMessage;
   senderId: string;
   name: string;
@@ -151,46 +163,37 @@ function ActionSheet({ msg, senderId, name, peer, at, href, onViewAgent, onClose
   at: string | undefined;
   href: string;
   onViewAgent: (id: string) => void;
-  onClose: () => void;
 }) {
   const badgeOf = useBadgeOf();
-  const label = useId();
-  // Only a press that starts on the scrim closes the sheet, so the end of the press that opened it
-  // does not close it again.
-  const onScrim = useRef(false);
-  const body = (globalThis as unknown as Page).document.body as Parameters<typeof createPortal>[1];
-  return createPortal(
-    <FocusTrap onEscape={onClose}>
-      <div
-        className="ui-msg-scrim"
-        onPointerDown={(e) => { onScrim.current = e.target === e.currentTarget; }}
-        onClick={(e) => {
-          if (e.target === e.currentTarget && onScrim.current) onClose();
-          onScrim.current = false;
-        }}
-      />
-      <div className="ui-card ui-msg-sheet" role="dialog" aria-modal="true" aria-labelledby={label}>
-        <div className="ui-msg-sheet-h" id={label}>
+  const returnFocus = useReturnFocus();
+  const close = () => onOpenChange(false);
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="bottom" {...returnFocus}>
+        <SheetHeader className="flex-row items-center gap-3">
           <Avatar vendor={peer.harness} status={peer.status} size={28} dot={false} badge={badgeOf(senderId)} />
-          <div>
-            <b>{name}</b>
-            <div className="ui-msg-sheet-sub">{at ? `Message at ${at}` : "Message"}</div>
+          <div className="flex flex-col gap-0.5">
+            <SheetTitle>{name}</SheetTitle>
+            <SheetDescription>{at ? `Message at ${at}` : "Message"}</SheetDescription>
           </div>
-        </div>
-        <a className="ui-row" href={href} onClick={onClose}>
-          <Icon icon={ArrowUpRight01Icon} className="ui-ic" />
-          <span className="ui-row-lbl">{`View ${name}'s work here`}</span>
-        </a>
-        <button type="button" className="ui-row" onClick={() => { onClose(); onViewAgent(senderId); }}>
-          <Icon icon={UserGroupIcon} className="ui-ic" />
-          <span className="ui-row-lbl">View agent</span>
-        </button>
-        <button type="button" className="ui-row" onClick={() => { copy(partsToText(msg.parts)); onClose(); }}>
-          <Icon icon={Copy01Icon} className="ui-ic" />
-          <span className="ui-row-lbl">Copy text</span>
-        </button>
-      </div>
-    </FocusTrap>,
-    body,
+        </SheetHeader>
+        <SheetFooter>
+          <Button asChild variant="ghost" className="justify-start">
+            <a href={href} onClick={close}>
+              <Icon icon={ArrowUpRight01Icon} data-icon="inline-start" />
+              {`View ${name}'s work here`}
+            </a>
+          </Button>
+          <Button type="button" variant="ghost" className="justify-start" onClick={() => { close(); onViewAgent(senderId); }}>
+            <Icon icon={UserGroupIcon} data-icon="inline-start" />
+            View agent
+          </Button>
+          <Button type="button" variant="ghost" className="justify-start" onClick={() => { copy(partsToText(msg.parts)); close(); }}>
+            <Icon icon={Copy01Icon} data-icon="inline-start" />
+            Copy text
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

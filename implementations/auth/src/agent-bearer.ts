@@ -4,7 +4,7 @@
 // `runAgentBearerEntry` before it loads anything else.
 import { readFileSync } from "node:fs";
 import { parseCommandArgs, type Command, type ParsedArgs } from "@cotal-ai/core/command";
-import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
+import { isCredentialTransportUrl } from "@cotal-ai/core/loopback";
 import { writePrivateRecord } from "@cotal-ai/core/secret-fs";
 import { assertLifecycleToken } from "@cotal-ai/core/subjects";
 import type { AgentAuthHealth } from "@cotal-ai/workspace";
@@ -69,7 +69,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       // Match the remote-registration and enrollment transport rule: HTTPS, except a loopback HTTP
       // literal where the actor token never leaves this machine. Names such as localhost get no
       // exception because name resolution chooses where the credential goes.
-      if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
+      if (!isCredentialTransportUrl(u))
         throw new Error(`agent-bearer: --exchange-url must be https://, except for a loopback HTTP literal (got ${u.protocol}//) - the actor token must never cross plaintext off this machine`);
       u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
       u.search = "";

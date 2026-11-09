@@ -50,6 +50,7 @@ const commands = (...names: string[]): ExtensionRef[] => names.map((name) => ({ 
 registry.provide({ provides: commands("supervise", "__daemon-manager", "__service-manager"), load: importing("manager", "auth", "runtime") });
 registry.provide({ provides: commands("deliver", "__daemon-deliver", "__service-delivery", "feedback-intake", "__service-feedback-intake"), load: importing("delivery", "auth") });
 registry.provide({ provides: commands("auth-service", "__daemon-auth-service", "__service-auth"), load: importing("auth") });
+registry.provide({ provides: [{ kind: "registry-service", name: "builtin" }], load: () => import("@cotal-ai/registry") });
 registry.provide({ provides: commands("__service-unit"), load: () => import("@cotal-ai/cli/service-unit") });
 registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth") });
 

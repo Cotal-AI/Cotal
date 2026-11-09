@@ -150,7 +150,10 @@ you saved with `cotal config set name <name>` ([preferences](config.mdx#preferen
 it takes the handle `cotal login` records from the IdP on a user-auth space, and your OS login on an
 open or static space. The name has no suffix, so an agent can mention you by it in every
 session. It carries no authority. A sign-in with no handle on record refuses as `AUTH_REQUIRED`
-until you sign in again or save a name. When another live participant already carries the name, the
+until you sign in again, pass `--name` or save a name. The default is held to the same rule, so an OS login with a
+space, such as `John Doe` on Windows, refuses as `USAGE_INVALID` until you pass `--name` or save a
+name. A handle an older cotal recorded that breaks the rule refuses the same way, and signing in
+again also fixes it. When another live participant already carries the name, the
 session still opens and warns on stderr, naming that participant, because a direct message by the name
 refuses as ambiguous while both are present.
 

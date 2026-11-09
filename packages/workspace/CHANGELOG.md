@@ -1,5 +1,123 @@
 # @cotal-ai/workspace
 
+## 0.151.0
+
+### Minor Changes
+
+- dacb515: `cotal login` no longer warns that chat refuses when you have saved a chat name, and a refused chat name now names the remedy the surface you use offers. When no handle is recorded and no name is saved, `cotal login` names both `--name` and `cotal config set name`; with a saved name it says chat sessions use it. `resolveChatName` now requires the caller's own `remedy` option, so `cotal chat` still offers `--name` and the terminal app offers Change your name (ctrl+p). A sign-in with no handle on record now also lists that remedy.
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- e7cb990: A stop sent through `control` can now name the run it means, so a run that replaced it under the same name is never stopped instead. `control` takes an optional `expectedTarget` (the row's `id` and `lifecycleUid`) that it passes to the manager request, which sends nothing when the name now resolves to another run. `ManagedRow` now carries the `lifecycleUid` every manager already reports, and the refusal no longer speaks only of attaching.
+- Updated dependencies [c986cc1]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- Updated dependencies [8e2ba65]
+  - @cotal-ai/core@0.150.0
+
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- Updated dependencies [7068f2b]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- 30d8538: An @mention at the end of a sentence, such as `thanks @ops-lead.`, now reaches the person it names. `mentionsIn` ends each name on a letter, digit or `_`, because a chat name cannot end in `.` or `-`, so `cotal send`, `cotal chat`, the console and the dashboard no longer store the mention as `ops-lead.`. When a chat session's default name breaks the chat name rule, such as an OS login of `John Doe`, the refusal prints on its own and names `--name` and `cotal config set name`, and for a handle an older cotal recorded, signing in again. `cotal login` prints the chat name it recorded, or `none` with how to save one.
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+
+## 0.147.0
+
+### Minor Changes
+
+- b8b0ff4: `cotal chat` opens a session under one stable name that agents can mention, with no random suffix. Without `--name`, it takes the new `name` preference (`cotal config set name <name>`), else your handle on a user-auth space, else your OS login on an open or static space. Every chat name is 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_`, so an `@name` reaches it. Breaking: `--name` no longer accepts a name outside that rule, such as one with a space or an `@`. `cotal login` now records a handle, the IdP's preferred user name, else its email's local part, else its name, the first that is a valid chat name, and `userStatus` returns it as `login.name`. The email is never the handle, so it does not appear in the roster. A user-auth sign-in made by an older cotal, or one whose IdP gives no valid chat name, has no handle on record, so `cotal chat` refuses with `AUTH_REQUIRED` until you sign in again or save a name. Once a `name` preference is saved, an older cotal refuses every preferences read with `defaults has an unknown key "name"` until it is upgraded or this version removes the name with `cotal config unset name`. The workspace exports `resolveChatName`, `chatNameProblem`, `nameInUse` and `nameInUseText`, and a second session under a name in use is warned with both ways to change it.
+
+### Patch Changes
+
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+
 ## 0.146.0
 
 ### Minor Changes

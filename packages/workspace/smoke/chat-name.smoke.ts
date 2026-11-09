@@ -26,6 +26,9 @@ const root = mkdtempSync(join(tmpdir(), "cotal-chat-name-"));
 const prefs = (name?: string): Preferences => ({ schemaVersion: 1, revision: 1, defaults: name === undefined ? {} : { name }, spaces: {} });
 const NONE = prefs();
 const IDP = "https://idp.example.test/api/auth";
+/** How `cotal chat` sets a session's name, and how the terminal app does. */
+const CLI = "pass `--name <name>`";
+const APP = "use Change your name (ctrl+p)";
 
 let status: UserAuthStatus = { idpUrl: IDP };
 const statusCalls: { space: string; actor: string }[] = [];
@@ -55,29 +58,35 @@ try {
     accepted.every((v) => chatNameProblem(v) === undefined), accepted.filter((v) => chatNameProblem(v) !== undefined));
   check("an @mention of every accepted name gives the name back whole",
     accepted.every((v) => JSON.stringify(mentionsIn(`@${v}`)) === JSON.stringify([v])), accepted.map((v) => mentionsIn(`@${v}`)));
+  const ended = accepted.flatMap((v) => [`thanks @${v}.`, `ask @${v}...`, `@${v}-`, `@${v}.-`]);
+  check("an @mention at the end of a sentence, or followed by a dash, gives the name back whole",
+    ended.every((t, i) => JSON.stringify(mentionsIn(t)) === JSON.stringify([accepted[Math.floor(i / 4)]])), ended.map((t) => mentionsIn(t)));
   check("the name preference is held to the same rule", preferenceValueProblem("name", "Ops Lead")?.endsWith(RULE) === true && preferenceValueProblem("name", "ops_lead") === undefined);
 
   console.log("2. open and static: the OS login, with no suffix");
   {
-    const a = await resolveChatName(open, { preferences: NONE, login: () => "manas" });
+    const a = await resolveChatName(open, { remedy: CLI, preferences: NONE, login: () => "manas" });
     check("an open space names the session the OS login, with no host or suffix", a.name === "manas" && a.source === "login" && a.from === "your OS login", a);
-    const s = await resolveChatName(staticTarget, { preferences: NONE, login: () => "manas" });
+    const s = await resolveChatName(staticTarget, { remedy: CLI, preferences: NONE, login: () => "manas" });
     check("a static space names it the OS login too", s.name === "manas" && s.source === "login", s);
-    const bad = await refusal(resolveChatName(open, { preferences: NONE, login: () => "" }));
-    check("an OS login that fails the rule refuses with the config remedy",
-      bad?.code === "USAGE_INVALID" && bad.message.includes(RULE) && bad.remedy === "save a name with `cotal config set name <name>`", bad);
+    const bad = await refusal(resolveChatName(open, { remedy: CLI, preferences: NONE, login: () => "" }));
+    check("an OS login that fails the rule refuses on its own, naming the caller's way and the config remedy",
+      bad?.code === "USAGE_INVALID" && bad.selfContained === true && bad.message.includes(RULE) && bad.remedy === "pass `--name <name>`, or save a name with `cotal config set name <name>`", bad);
+    const app = await refusal(resolveChatName(open, { remedy: APP, preferences: NONE, login: () => "" }));
+    check("the same refusal in a front end without --name names that front end's own way, and not --name",
+      app?.code === "USAGE_INVALID" && app.remedy === "use Change your name (ctrl+p), or save a name with `cotal config set name <name>`", app);
   }
 
   console.log("3. the flag, then the saved name, win over the mode's name");
   {
-    const flag = await resolveChatName(open, { flag: "alice", preferences: prefs("ops_lead"), login: () => "manas" });
+    const flag = await resolveChatName(open, { remedy: CLI, flag: "alice", preferences: prefs("ops_lead"), login: () => "manas" });
     check("--name wins over a saved name and the OS login", flag.name === "alice" && flag.source === "flag" && flag.from === "--name", flag);
-    const saved = await resolveChatName(open, { preferences: prefs("ops_lead"), login: () => "manas" });
+    const saved = await resolveChatName(open, { remedy: CLI, preferences: prefs("ops_lead"), login: () => "manas" });
     check("a saved name wins over the OS login", saved.name === "ops_lead" && saved.source === "preference" && saved.from === "your saved name", saved);
     statusCalls.length = 0;
-    const savedUser = await resolveChatName(user, { preferences: prefs("ops_lead") });
+    const savedUser = await resolveChatName(user, { remedy: CLI, preferences: prefs("ops_lead") });
     check("a saved name wins in user mode without reading the sign-in", savedUser.name === "ops_lead" && statusCalls.length === 0, { savedUser, statusCalls });
-    const badFlag = await refusal(resolveChatName(open, { flag: "", preferences: NONE }));
+    const badFlag = await refusal(resolveChatName(open, { remedy: CLI, flag: "", preferences: NONE }));
     check("a flag that fails the rule refuses with the --name remedy", badFlag?.code === "USAGE_INVALID" && badFlag.remedy === "pass another --name", badFlag);
   }
 
@@ -86,30 +95,34 @@ try {
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "human" } };
     statusCalls.length = 0;
     let osRead = false;
-    const a = await resolveChatName(user, { preferences: NONE, login: () => { osRead = true; return "manas"; } });
+    const a = await resolveChatName(user, { remedy: CLI, preferences: NONE, login: () => { osRead = true; return "manas"; } });
     check("a user space names the session the account name, read as the cli actor of that space",
       a.name === "human" && a.source === "account" && a.from === `your sign-in at ${IDP}` && JSON.stringify(statusCalls) === JSON.stringify([{ space: "demo", actor: "cli" }]), { a, statusCalls });
     check("user mode never reads the OS login", !osRead);
 
     status = { idpUrl: IDP };
     osRead = false;
-    const out = await refusal(resolveChatName(user, { preferences: NONE, login: () => { osRead = true; return "manas"; } }));
+    const out = await refusal(resolveChatName(user, { remedy: CLI, preferences: NONE, login: () => { osRead = true; return "manas"; } }));
     check("no cached login refuses as AUTH_REQUIRED naming the login command, with no OS-login fallback",
       out?.code === "AUTH_REQUIRED" && out.message === `not signed in to ${IDP}; run \`cotal login --idp ${IDP}\`` && !osRead, out);
 
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0 } };
-    const nameless = await refusal(resolveChatName(user, { preferences: NONE, login: () => "manas" }));
-    check("a login with no recorded name refuses as AUTH_REQUIRED, since signing in again fixes it, with both remedies",
+    const nameless = await refusal(resolveChatName(user, { remedy: CLI, preferences: NONE, login: () => "manas" }));
+    check("a login with no recorded name refuses as AUTH_REQUIRED, since signing in again fixes it, with every remedy",
       nameless?.code === "AUTH_REQUIRED" && nameless.message === `your sign-in at ${IDP} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`
-        && nameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, or save a name with \`cotal config set name <name>\``, nameless);
+        && nameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, pass \`--name <name>\`, or save a name with \`cotal config set name <name>\``, nameless);
+    const appNameless = await refusal(resolveChatName(user, { remedy: APP, preferences: NONE }));
+    check("the same refusal in the terminal app names its own way, and not --name",
+      appNameless?.code === "AUTH_REQUIRED" && appNameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, use Change your name (ctrl+p), or save a name with \`cotal config set name <name>\``, appNameless);
 
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "human@example.test" } };
-    const long = await refusal(resolveChatName(user, { preferences: NONE }));
-    check("an account name an earlier build recorded that fails the rule refuses with the config remedy", long?.code === "USAGE_INVALID" && long.remedy === "save a name with `cotal config set name <name>`", long);
+    const long = await refusal(resolveChatName(user, { remedy: CLI, preferences: NONE }));
+    check("an account name an earlier build recorded that fails the rule refuses on its own, naming signing in again, the caller's way and the config remedy",
+      long?.code === "USAGE_INVALID" && long.selfContained === true && long.remedy === `sign in again with \`cotal login --idp ${IDP}\`, pass \`--name <name>\`, or save a name with \`cotal config set name <name>\``, long);
 
-    const unknown = await refusal(resolveChatName({ ...user, userAuth: { ...user.userAuth!, provider: "absent-provider" } }, { preferences: NONE }));
+    const unknown = await refusal(resolveChatName({ ...user, userAuth: { ...user.userAuth!, provider: "absent-provider" } }, { remedy: CLI, preferences: NONE }));
     check("an unregistered auth provider refuses as UNSUPPORTED", unknown?.code === "UNSUPPORTED" && unknown.message.includes("absent-provider"), unknown);
-    const odd = await refusal(resolveChatName({ ...open, mode: "other" as MeshTarget["mode"] }, { preferences: NONE, login: () => "manas" }));
+    const odd = await refusal(resolveChatName({ ...open, mode: "other" as MeshTarget["mode"] }, { remedy: CLI, preferences: NONE, login: () => "manas" }));
     check("an unknown mode refuses instead of borrowing another mode's rule", odd?.code === "UNSUPPORTED", odd);
   }
 

@@ -26,6 +26,7 @@ import {
   type FlagSpec,
   type ParsedArgs,
   type RemoteManagerMaintenanceRequest,
+  rejectionText,
 } from "@cotal-ai/core";
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
@@ -36,7 +37,6 @@ import {
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
-import { rejectionText } from "./rejection-text.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";

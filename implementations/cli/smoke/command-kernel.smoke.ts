@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -14,7 +14,8 @@ import "../src/index.js"; // self-register the CLI commands (for the completion 
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
-import { executeUpdate, parseNpmVersion, printLegacyReport, reportRunningManagers, update, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
 
@@ -59,6 +60,7 @@ function updateRuntime(opts: {
     },
     selfArgv: () => ["/node", "/old/cotal.js"],
     checkout: () => opts.checkout ?? false,
+    installPrefix: () => undefined,
     npm: (args, inherit) => {
       events.push(`npm:${args.join(" ")}${inherit ? ":inherit" : ""}`);
       const r = opts.npm?.(args, inherit) ?? { status: 0, stdout: '"0.13.1"' };
@@ -658,8 +660,14 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "check", "json", "plain", "space", "server", "creds"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "check", "json", "plain", "space", "server", "creds", "on"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
+  assert.equal(parseCommandArgs(cmd!, ["--on", "inst_0123456789abcdefghijklmnopqrs"]).values.on, "inst_0123456789abcdefghijklmnopqrs", "update takes the manager pin every other manager command takes");
+  assert.throws(
+    () => validateUpdateArguments(parseCommandArgs(cmd!, ["--check", "--on", "x"])),
+    (e: unknown) => (e as { code?: string }).code === "USAGE_INVALID",
+    "--check reads this installation and takes no manager pin",
+  );
   assert.throws(
     () => parseCommandArgs(cmd!, ["--unknown"]),
     (e: unknown) => String((e as { code?: string }).code).startsWith("ERR_PARSE_ARGS"),
@@ -785,11 +793,14 @@ async function completionOut(positionals: string[]): Promise<string> {
 // --- #5027: the legacy verdict names the cold path past it, not just that this is not a hot update --
 {
   const lines: string[] = [];
-  printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", (line) => lines.push(line));
+  printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", undefined, (line) => lines.push(line));
   assert.ok(lines[0]?.includes("this update is not a hot update"), "the verdict line comes first");
   assert.ok(lines[1]?.includes("linkedin-animator: fork"), "each seat's continuity class is printed");
   assert.ok(lines[2]?.startsWith("  Next: stop that mesh with `cotal down --space alpha`"), `the next step names the stop for that space: ${lines[2]}`);
   assert.ok(lines[2]?.includes("then run this update again"), "and the rerun after it");
+  const remote: string[] = [];
+  printLegacyReport({ custody: "legacy", seats: [] }, "alpha", "cotal manager stop --space alpha", (line) => remote.push(line));
+  assert.ok(remote[1]?.startsWith("  Next: stop that mesh with `cotal manager stop --space alpha`"), `a remote mesh's manager is stopped through the manager verb: ${remote[1]}`);
 }
 
 // --- #1879: the continuity refusal carries the workspace renderer's remedy ------------------------
@@ -939,47 +950,61 @@ async function completionOut(positionals: string[]): Promise<string> {
     }
     const elapsedMs = Date.now() - started;
 
-    assert.equal(thrown, undefined, "#2158: a remote user mesh is skipped before the manager-caller mint");
-    assert.equal(verdict, "none", "#2158: a remote user mesh is skipped before the manager-caller mint");
-    assert.ok(
-      out.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
-      "#2158: the skip names the mesh and says its manager runs elsewhere",
-    );
+    if (supervisorMayServe("hosted")) {
+      // A supervisor on this machine whose command line names no space may be serving "hosted", so
+      // the remote entry is read like a local manager's and the read ends at the mint it cannot make.
+      assert.notEqual(thrown, undefined, "a remote user mesh a supervisor here may serve is read, not skipped");
+      assert.ok(
+        out.includes("hosted: a manager for this mesh runs on this machine; reading its custody"),
+        "the read names the mesh and says its manager runs on this machine",
+      );
+    } else {
+      assert.equal(thrown, undefined, "#2158: a remote user mesh is skipped before the manager-caller mint");
+      assert.equal(verdict, "none", "#2158: a remote user mesh is skipped before the manager-caller mint");
+      assert.ok(
+        out.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+        "#2158: the skip names the mesh and says its manager runs elsewhere",
+      );
+    }
     assert.ok(!out.includes("manager-caller"), "#2158: the skip names the mesh and says its manager runs elsewhere");
     assert.ok(
       !out.includes("running manager continuity check"),
       "#2158: the skip names the mesh and says its manager runs elsewhere",
     );
-    assert.ok(elapsedMs < 1_000, "#2158: the skip reaches no exchange");
+    if (!supervisorMayServe("hosted")) assert.ok(elapsedMs < 1_000, "#2158: the skip reaches no exchange");
 
     // A remote entry among several running meshes contributes none and does not clear a legacy verdict.
+    // A supervisor here that may serve any space reads the remote entry instead, so the cell holds
+    // only where none runs.
     function ambiguous2158(): never {
       throw new MeshTargetError("ambiguous-target", "multiple meshes running: alpha (/a), hosted (/h)", {
         available: ["alpha (/a)", "hosted (/h)"],
         spaces: ["alpha", "hosted"],
       });
     }
-    let out2 = "";
-    const realLog2 = console.log;
-    console.log = (s?: unknown) => void (out2 += `${s}\n`);
-    let verdict2: "none" | "legacy";
-    try {
-      verdict2 = await reportRunningManagers({}, async (flags) => {
-        if (typeof flags.space !== "string") ambiguous2158();
-        return flags.space === "hosted" ? readManagerContinuity(flags) : "legacy";
-      });
-    } finally {
-      console.log = realLog2;
+    if (!supervisorMayServe("hosted")) {
+      let out2 = "";
+      const realLog2 = console.log;
+      console.log = (s?: unknown) => void (out2 += `${s}\n`);
+      let verdict2: "none" | "legacy";
+      try {
+        verdict2 = await reportRunningManagers({}, async (flags) => {
+          if (typeof flags.space !== "string") ambiguous2158();
+          return flags.space === "hosted" ? readManagerContinuity(flags) : "legacy";
+        });
+      } finally {
+        console.log = realLog2;
+      }
+      assert.equal(
+        verdict2,
+        "legacy",
+        "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+      );
+      assert.ok(
+        out2.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+        "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+      );
     }
-    assert.equal(
-      verdict2,
-      "legacy",
-      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
-    );
-    assert.ok(
-      out2.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
-      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
-    );
   } finally {
     if (realHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = realHome;
@@ -1035,12 +1060,18 @@ async function completionOut(positionals: string[]): Promise<string> {
       });
     }
     process.chdir(shared);
-    const pair = await capture(() => reportRunningManagers({}, readManagerContinuity));
-    assert.equal(pair.verdict, "none", "two remote registrations in one folder name no manager here, so the update proceeds");
-    for (const space of ["cloud_a", "cloud_b"])
-      assert.ok(pair.out.includes(`${space}: this mesh's manager runs elsewhere; no custody on this machine`), `${space} is read by name and skipped`);
-    assert.ok(pair.out.includes("2 meshes running; reading each manager's continuity"), "the folder's two registrations are enumerated, not refused");
-    console.log("  ✓ update --self skips a never-started prepared space and reads a folder's two remote registrations by name");
+    if (supervisorMayServe("cloud_a")) {
+      // A supervisor here that may serve any space reads both remote entries instead of skipping them.
+      await assert.rejects(reportRunningManagers({}, readManagerContinuity), "a remote registration a supervisor here may serve is read, and the read refuses without its exchange");
+      console.log("  ✓ update --self skips a never-started prepared space; a supervisor here reads the folder's remote registrations instead of skipping them");
+    } else {
+      const pair = await capture(() => reportRunningManagers({}, readManagerContinuity));
+      assert.equal(pair.verdict, "none", "two remote registrations in one folder name no manager here, so the update proceeds");
+      for (const space of ["cloud_a", "cloud_b"])
+        assert.ok(pair.out.includes(`${space}: this mesh's manager runs elsewhere; no custody on this machine`), `${space} is read by name and skipped`);
+      assert.ok(pair.out.includes("2 meshes running; reading each manager's continuity"), "the folder's two registrations are enumerated, not refused");
+      console.log("  ✓ update --self skips a never-started prepared space and reads a folder's two remote registrations by name");
+    }
   } finally {
     process.chdir(cwd);
     removePreparedSpace("drafted");
@@ -1178,6 +1209,21 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(
     namedTarget.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update --space named-space --server nats://example:4222 --creds /tmp/creds.creds")),
     "self-update replacement child carries the selected target flags",
+  );
+
+  // #3239: an owner with several live managers names this machine's with `--on`; the reconcile the
+  // new binary runs reads the same manager, or it refuses the selection the parent just passed.
+  const pinnedTarget = updateRuntime({
+    npm: (args) => {
+      if (args[0] === "view") return { status: 0, stdout: '"0.13.2"' };
+      if (args[0] === "root") return { status: 0, stdout: "/alternate/global/node_modules\n" };
+      return { status: 0 };
+    },
+  });
+  assert.equal(await executeUpdate(true, pinnedTarget.rt, { space: "named-space", on: "66m64nqra6qn8q6xlakgpiwelikogaw" }), 0);
+  assert.ok(
+    pinnedTarget.events.some((event) => event.includes("global:reconcile:/alternate/global/node_modules:/node /alternate/global/node_modules/cotal-ai/dist/cotal.js update --space named-space --on 66m64nqra6qn8q6xlakgpiwelikogaw")),
+    "self-update replacement child carries the manager pin with the target flags",
   );
 
   const selfLegacy = updateRuntime({
@@ -1628,6 +1674,71 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   const streaming = renderReport(managedLaunchView({ ...result, acl: null, detached: false }), "plain");
   assert.match(streaming, /View:\s+attaching to the allocated incarnation\n/, "a streaming runtime still attaches in this terminal");
   assert.match(renderReport(managedLaunchView({ ...result, acl: null, streamsTerminal: null }), "plain"), /Runtime:\s+pty\n/, "a manager too old to report it is shown as before");
+}
+
+// Installed POSIX packages identify their prefix through the real package and global bin link.
+if (process.platform !== "win32") {
+  const temp = mkdtempSync(join(tmpdir(), "cotal-update-prefix-"));
+  const prefix = join(temp, "install with spaces");
+  const modules = join(prefix, "lib", "node_modules");
+  const pkg = join(modules, "cotal-ai");
+  const entry = join(pkg, "dist", "cotal.js");
+  const bin = join(prefix, "bin", "cotal");
+  let checks = 0;
+  const check = (value: unknown, label: string): void => { assert.ok(value, label); checks++; };
+  const refuses = (fn: () => unknown): void => { assert.throws(fn); checks++; };
+  try {
+    mkdirSync(join(pkg, "dist"), { recursive: true });
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.13.1", bin: { cotal: "dist/cotal.js" } }));
+    writeFileSync(entry, "// fixture entry\n");
+    symlinkSync(entry, bin);
+    check(installedUpdatePrefix(pkg, bin) === realpathSync(prefix), "bin entry identifies the invoked prefix");
+    check(installedUpdatePrefix(pkg, entry) === realpathSync(prefix), "direct entry identifies the same prefix");
+    symlinkSync(prefix, join(temp, "alias"));
+    check(installedUpdatePrefix(join(temp, "alias/lib/node_modules/cotal-ai"), bin) === realpathSync(prefix), "prefix aliases canonicalize");
+    unlinkSync(bin);
+    refuses(() => installedUpdatePrefix(pkg, entry));
+    const other = join(temp, "other.js");
+    writeFileSync(other, "// unrelated entry\n");
+    symlinkSync(other, bin);
+    refuses(() => installedUpdatePrefix(pkg, entry));
+    unlinkSync(bin);
+    symlinkSync(entry, bin);
+    refuses(() => installedUpdatePrefix(pkg, other));
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.13.1", bin: { cotal: other } }));
+    refuses(() => installedUpdatePrefix(pkg, other));
+    for (const rel of ["checkout/bin", "cache/_npx/123/node_modules/cotal-ai", "project/node_modules/cotal-ai"]) {
+      const local = join(temp, rel);
+      mkdirSync(local, { recursive: true });
+      check(installedUpdatePrefix(local, join(local, "cotal.js")) === undefined, `${rel} keeps the separate global destination`);
+    }
+    for (const mode of ["bound", "conflicting-prefix", "wrong-root", "broken-layout"] as const) {
+      const r = updateRuntime({
+        env: mode === "conflicting-prefix" ? { NPM_CONFIG_PREFIX: temp } : {},
+        npm: (args) => args[0] === "view" ? { status: 0, stdout: '"0.13.2"' }
+          : { status: 0, stdout: mode === "wrong-root" ? temp : modules },
+        spawn: (_file, _args, env) => {
+          check(env.npm_config_prefix === realpathSync(prefix), "reconcile child retains the selected prefix");
+          return { status: 0 };
+        },
+      });
+      r.rt.installPrefix = () => {
+        if (mode === "broken-layout") throw new Error("broken global bin link");
+        return realpathSync(prefix);
+      };
+      check(await executeUpdate(true, r.rt) === (mode === "bound" ? 0 : 1), `${mode} exit`);
+      if (mode === "bound") {
+        check(r.events.includes(`npm:root -g --prefix ${prefix}`), "root query uses the selected prefix");
+        check(r.events.some((e) => e.startsWith("global:install:") && e.includes(`install -g --prefix ${prefix} cotal-ai@0.13.2`)), "installation uses that same prefix");
+      } else {
+        check(!r.events.some((e) => e.startsWith("claim-global:") || e.startsWith("global:install:")), `${mode} refuses before locking or installing`);
+      }
+    }
+    console.log(`✓ update prefix: ${checks} checks`);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 }
 
 console.log("✓ command-kernel smoke passed");

@@ -33,10 +33,12 @@ import { registryFailure } from "../lib/registry-errors.js";
 import { SPACE_MODES } from "./meshes-add.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
+import { spaceExport } from "./space-export.js";
 
 export const spaceFlags = [
   jsonFlag,
   plainFlag,
+  { name: "out", type: "string", value: "<private-file>", description: "export: create a private connection-bundle file without overwriting", completion: "files" },
   { name: "server", type: "string", value: "<url>", description: "add: the space's broker URL" },
   { name: "root", type: "string", value: "<dir>", description: "add: the folder for the space's personas and, for an auth space, its .cotal/auth trust (default: this project; required outside one); create: the folder it starts in (default: this one)" },
   { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: auth when --root holds the space's trust, else open)" },
@@ -132,6 +134,12 @@ export async function space(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(values);
   const [sub, ...rest] = args.positionals;
   if (values.adopt !== undefined && sub !== "create") throw usage("--adopt belongs to space create");
+  if (values.out !== undefined && sub !== "export") throw usage("--out belongs to space export");
+  if (sub === "export") {
+    const invalid = ADD_FLAGS.find((flag) => values[flag] !== undefined);
+    if (invalid || values["dry-run"] !== undefined) throw usage("space export takes only --out and output formatting flags");
+    return spaceExport(rest, values.out, presentation);
+  }
   if (sub === "delete") {
     const invalid = ADD_FLAGS.find((flag) => flag !== "yes" && values[flag] !== undefined);
     if (invalid) throw usage(`--${invalid} belongs to space add, not delete`);
@@ -365,9 +373,9 @@ function spaceView(s: SpaceDetail): Report {
 export function spaceComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, spaceFlags);
   if (flag?.name === "mode") return { items: SPACE_MODES.map((value) => ({ value })), directive: "nofiles" };
-  if (flag?.name === "root" || flag?.name === "file") return { items: [], directive: "default" };
-  if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }], directive: "nofiles" };
-  if ((argv[0] === "show" || argv[0] === "forget" || argv[0] === "delete") && argv.length === 2)
+  if (flag?.name === "root" || flag?.name === "file" || flag?.name === "out") return { items: [], directive: "default" };
+  if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }, { value: "export" }], directive: "nofiles" };
+  if ((argv[0] === "show" || argv[0] === "forget" || argv[0] === "delete" || argv[0] === "export") && argv.length === 2)
     return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }

@@ -1,5 +1,69 @@
 # @cotal-ai/connector-claude-code
 
+## 0.151.0
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+### Patch Changes
+
+- c8cf718: Your own Claude Code and Codex conversations can now join an open or static mesh this computer runs with `cotal up`, not only a signed-in space. A natively bound conversation's `cotal_connect` opens its identity at once with the grant a bare `cotal spawn` gets on that mesh: the default persona's channels, role and capabilities, or the part of them a selection names. Concurrent requests for the same native session are serialized so they cannot create two identities. On a static mesh the space's local signing authority issues it as a terminal seat under its own lifecycle, and disconnecting, ending the session, or the next connection after a killed plugin server retires it with its issuance and broker footprint. A call without a native session, and a static mesh whose signing authority this account does not hold, open nothing. Signed-in spaces still require a person's approval. An endpoint whose credential expires more than about 24.8 days out, such as a terminal seat's with no expiry, no longer refreshes in a 1 ms loop and fails to connect.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
 ## 0.146.0
 
 No changes in this release.

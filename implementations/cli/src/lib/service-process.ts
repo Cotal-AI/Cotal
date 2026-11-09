@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, localRecordAccess, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { openPrivateAppend } from "@cotal-ai/core";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
@@ -15,15 +15,13 @@ import { instanceProjection, observeServiceProcess, processServiceHost, requireP
 import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./stack-journal.js";
 import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, startCustodiedService } from "./service-custody-win32.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
+import { lastLoggedLine, privateLog } from "./private-log.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 /** How long a launch with process readiness waits for an immediate exit before it reports the process running. */
 const PROCESS_SETTLE_MS = 1000;
 const gone = (state: string) => state === "gone" || state === "previous-boot" || state === "foreign-pid";
-/** A log this account may read and append to. Windows protects it with the access list Cotal sets
- *  when it creates the file and has no POSIX owner or mode to check, as for every local record. */
-const privateLog = (info: Stats) => info.isFile() && (localRecordAccess() === "windows-acl" || info.uid === process.getuid!() && (info.mode & 0o077) === 0);
 /** A record with no creation pin whose own state says no child exists: its launch failed before
  *  a process did. There is nothing to stop. */
 const neverLaunched = (value: ServiceInstance) => !value.process && gone(observeServiceProcess(value));
@@ -400,8 +398,11 @@ export async function readinessAddressSurvivors(space: string, names?: readonly 
   return warnings;
 }
 
-export async function serviceReadiness(row: ServiceInstanceSnapshot, definition: ServiceDefinitionInput, adapter?: { provider: LoadedServiceAdapter; context: ServiceAdapterContext }): Promise<ServiceInstanceSnapshot> {
+export async function serviceReadiness(row: ServiceInstanceSnapshot, definition: ServiceDefinitionInput, adapter?: { provider: LoadedServiceAdapter; context: ServiceAdapterContext }, foreground = false): Promise<ServiceInstanceSnapshot> {
   const deadline = Date.now() + definition.readiness.timeoutMs;
+  // A foreground native child can still be registering after the background observation window.
+  // Keep its controller alive while the adapter reports pending; each observation stays bounded.
+  const awaitNativeChild = foreground && definition.readiness.type === "adapter";
   // The last HTTP readiness observation, named when the deadline passes first: the status the
   // service answered with, or what a failed request saw.
   let seen: { status: number } | { failure: string } | undefined;
@@ -415,7 +416,7 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
       const began = Date.now();
       let observation;
       try {
-        observation = serviceAdapterReadiness(await adapterCall((signal) => adapter.provider.readiness({ ...adapter.context, process: { ...row.record.value.process! }, signal }), deadline - Date.now()));
+        observation = serviceAdapterReadiness(await adapterCall((signal) => adapter.provider.readiness({ ...adapter.context, process: { ...row.record.value.process! }, signal }), awaitNativeChild ? definition.readiness.timeoutMs : deadline - Date.now()));
         if (observation.state === "ready") {
           const process = row.record.value.process, observedAt = Date.parse(observation.observedAt);
           if (observation.process.pid !== process.pid || observation.process.token !== process.token || observedAt < began - 1000 || observedAt > Date.now() + 1000 || (adapter.provider.declaration.readiness === "endpoint") !== (observation.native !== undefined) || (adapter.provider.declaration.readiness === "listener") !== (observation.listener !== undefined)) throw new Error("unattributed adapter observation");
@@ -426,7 +427,7 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
         const uncertain = transition(row, { state: "unknown", readiness: "not-checked" });
         throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter did not establish current readiness for the owned process before its deadline, or returned mismatched evidence; no hook or launch was retried", { target: instanceProjection(uncertain), remedy: "inspect the original full instance and its launch request before another start" });
       }
-      await delay(Math.min(100, Math.max(0, deadline - Date.now())));
+      await delay(awaitNativeChild ? 100 : Math.min(100, Math.max(0, deadline - Date.now())));
       continue;
     }
     try {
@@ -439,7 +440,7 @@ export async function serviceReadiness(row: ServiceInstanceSnapshot, definition:
       seen = { failure: httpReadinessFailure(error) };
     }
     await delay(Math.min(100, Math.max(0, deadline - Date.now())));
-  } while (Date.now() < deadline);
+  } while (awaitNativeChild || Date.now() < deadline);
   const uncertain = transition(row, { state: "unknown", readiness: "not-checked" });
   if (definition.readiness.type === "http") {
     // The address alone is named: a definition's URL is kept out of reports, and its path may carry a token.
@@ -705,7 +706,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     // and that exit is then settled below with the code this parent observed.
     if (value.readiness.type === "process") await Promise.race([exit, delay(Math.min(PROCESS_SETTLE_MS, value.readiness.timeoutMs))]);
     let running: ServiceInstanceSnapshot;
-    try { running = await serviceReadiness(row, value, adapter); }
+    try { running = await serviceReadiness(row, value, adapter, options.foreground === true); }
     catch (error) {
       // Only an exit of the pinned child itself is settled here, with the exit this parent observed.
       if (!isCommandFailure(error) || error.code !== "OPERATION_FAILED" || observeServiceProcess(row.record.value) === "running") throw error;
@@ -1091,34 +1092,6 @@ export function readOwnedLogTail(path: string, tail: number) {
     const all = text.replace(/\n$/, "").split("\n");
     return { lines: text ? all.slice(-tail) : [], omittedBytes: start, path };
   } finally { closeSync(fd); }
-}
-
-/** The last line an owned private log holds past byte `from`, as one bounded line of operator output,
- *  or undefined when nothing was logged there or the log cannot be read as an owned file. */
-function lastLoggedLine(path: string, from: number): string | undefined {
-  let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
-  try {
-    const info = fstatSync(fd);
-    if (!privateLog(info) || info.size <= from) return undefined;
-    const length = Math.min(info.size - from, 8192), bytes = Buffer.alloc(length);
-    let read = 0;
-    while (read < length) { const count = readSync(fd, bytes, read, length - read, info.size - length + read); if (!count) break; read += count; }
-    const line = bytes.subarray(0, read).toString("utf8").split("\n").map((text) => text.trim()).filter(Boolean).pop();
-    return line ? oneLine(quotedLine(line)) : undefined;
-  } catch { return undefined; } finally { closeSync(fd); }
-}
-
-/** `line` as a refusal quotes it: whole up to 1000 characters, which holds a failure line with its
- *  causes. A longer one keeps its last `; next:` step, when that step is shorter than that, and as
- *  much of its start as the rest holds, with the line's length where the middle was cut, so the
- *  quote still ends in the step to take. */
-function quotedLine(line: string): string {
-  const max = 1000, chars = [...line];
-  if (chars.length <= max) return line;
-  const at = line.lastIndexOf("; next: "), step = at < 0 ? [] : [...line.slice(at)];
-  const kept = step.length < max ? step : [];
-  return `${chars.slice(0, max - kept.length).join("")}… (${chars.length} characters)${kept.join("")}`;
 }
 
 /** {@link ownedLogSlice} of a service instance's log, or undefined when no instance store exists. */

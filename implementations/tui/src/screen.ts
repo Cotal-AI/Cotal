@@ -1,7 +1,7 @@
 import type { Recipient } from "@cotal-ai/workspace/chat"
 import type { Entry } from "./catalog.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence } from "./live.js"
-import type { OwnTraffic } from "./talk.js"
+import type { OwnTraffic, You } from "./talk.js"
 
 /** One selectable tree row. The key is stable across snapshots, so the cursor stays on the same row
  *  while the roster re-sorts under it. */
@@ -68,6 +68,10 @@ export function conversationKey(open: Open): string {
   return `entry:${open.key}`
 }
 
+/** One conversation in one space: drafts survive conversation and space switches. */
+export type DraftKey = string & { readonly __draftKey: unique symbol }
+export const draftKey = (space: string, open: Open) => `${space}\0${conversationKey(open)}` as DraftKey
+
 /** Where writing in a conversation goes: its channel, the peer's exact principal or its role. All
  *  traffic and catalog rows have none. Derived on every read, so a draft never follows the human to
  *  another conversation. */
@@ -76,6 +80,45 @@ export function conversationRecipient(open: Open, mesh: Mesh): Recipient | undef
   if (open.kind === "peer") return { kind: "peer", principal: open.id, name: peerOf(mesh, open.id)?.card.name ?? open.id }
   if (open.kind === "role") return { kind: "role", role: open.role }
   return undefined
+}
+
+/** Whether a sender is the human: a session this app run opened, or one under their chat name in any
+ *  letter case. */
+export const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
+
+/** What the human did with a card in this app run: opened it, or dismissed it without replying. */
+export type Mark = "seen" | "dismissed"
+
+/** A message that still needs the human's answer, for the inspector: a reply to one they sent, or one
+ *  that mentions them. `open` is the conversation it opens: its channel, its sender's conversation or
+ *  its role's. */
+export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open }
+
+/** The conversation a card opens. A channel post with no channel or a role task with no role has
+ *  none, since it would open all traffic or an empty role. */
+const cardOpen = (e: FeedEntry): Open | undefined => {
+  if (e.delivery === "unicast") return { kind: "peer", id: e.from.id }
+  if (e.delivery === "multicast") return e.channel === undefined ? undefined : { kind: "channel", channel: e.channel }
+  return e.toService === undefined ? undefined : { kind: "role", role: e.toService }
+}
+
+/** The cards in `feed`, oldest first, the ids of the messages the human's own messages in it reply
+ *  to, and the ids of those own messages. A reply card answers one of the human's messages in `feed`
+ *  or in `sentBefore`, the ids an earlier call returned as `sent`. A message that both replies and
+ *  mentions is one reply card. The human's own messages and a message with no conversation to open
+ *  make none. */
+export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, sentBefore: ReadonlySet<string>): { cards: Card[]; answered: string[]; sent: string[] } {
+  const own = feed.filter((e) => isYou(you, e.from))
+  const sent = own.map((e) => e.id)
+  const yours = new Set([...sentBefore, ...sent])
+  const cards: Card[] = []
+  for (const e of feed) {
+    if (e.events || isYou(you, e.from)) continue
+    const kind = e.replyTo !== undefined && yours.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
+    const open = kind ? cardOpen(e) : undefined
+    if (kind && open) cards.push({ kind, entry: e, open })
+  }
+  return { cards, answered: own.flatMap((e) => (e.replyTo === undefined ? [] : [e.replyTo])), sent }
 }
 
 export const peerOf = (mesh: Mesh, id: string) => [...mesh.agents, ...mesh.endpoints].find((p) => p.card.id === id)

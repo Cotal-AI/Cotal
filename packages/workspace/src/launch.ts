@@ -123,8 +123,8 @@ export function readManagedLaunch(
   reply: ManagedLaunchReply,
   launch: Pick<ManagedLaunchResult, "space" | "requestedModel" | "detached">,
   target: Record<string, unknown>,
-): { result: ManagedLaunchResult; eventsNotice: string | undefined } {
-  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; streamsTerminal?: unknown; eventsNotice?: string; acl?: unknown };
+): { result: ManagedLaunchResult; eventsNotice: string | undefined; startupNotice: string | undefined } {
+  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; streamsTerminal?: unknown; eventsNotice?: string; startupNotice?: unknown; acl?: unknown };
   if (!d || typeof d.name !== "string" || typeof d.id !== "string" || typeof d.lifecycleUid !== "string" || typeof d.agent !== "string" || typeof d.mode !== "string" || !reply.managerInstanceId)
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "the manager reported a successful launch but did not supply the identity and manager needed for a safe handoff", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect `cotal ps` before doing anything else; do not relaunch" });
   const acl = managedLaunchAcl(d.acl);
@@ -136,5 +136,7 @@ export function readManagedLaunch(
   // spawn unattached against every manager below this version.
   const streamsTerminal = typeof d.streamsTerminal === "boolean" ? d.streamsTerminal : null;
   const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: launch.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: launch.requestedModel, detached: launch.detached, streamsTerminal, acl };
-  return { result, eventsNotice: d.eventsNotice };
+  // The manager's word that nothing wakes this seat while idle (its connector's clause); absent when
+  // its startup showed the state a wake needs, or when its runtime cannot tell.
+  return { result, eventsNotice: d.eventsNotice, startupNotice: typeof d.startupNotice === "string" && d.startupNotice ? d.startupNotice : undefined };
 }

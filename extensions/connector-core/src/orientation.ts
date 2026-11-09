@@ -54,7 +54,9 @@ export const CHANNEL_GUIDANCE =
   "On a durable channel, the usual kind, every agent on it gets the post unless it muted the channel, " +
   "and one that is offline gets it when it comes back; on a live channel, one that is disconnected or " +
   "busy then misses it, unless the post mentions it by a name only it has and it may read the channel. " +
-  "On a channel that replays history, agents who join later are shown it. A post " +
+  "On a channel that replays history, agents who join later are shown it. Channel history defaults " +
+  "to no age limit and 1000 posts per sender per channel; an operator can change those limits with " +
+  "cotal history limit, so older posts may no longer be available. A post " +
   "wakes an idle agent unless it set dnd or focus or made the channel quiet. @mention a peer only when " +
   "that peer must act now, since a mention wakes it even in dnd, and a mention in an acknowledgement " +
   "or sign-off starts a wake-up loop. When you are " +

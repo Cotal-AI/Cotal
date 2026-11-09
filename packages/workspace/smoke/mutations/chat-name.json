@@ -14,7 +14,7 @@
       "name": "the resolver appends a host suffix to the OS login",
       "file": "packages/workspace/src/chat/name.ts",
       "find": "found = { name: (opts.login ?? osLogin)(), source: \"login\"",
-      "replace": "found = { name: `${(opts.login ?? osLogin)()}@host-1a2b`, source: \"login\"",
+      "replace": "found = { name: `${(opts.login ?? osLogin)()}-host-1a2b`, source: \"login\"",
       "expectRed": "an open space names the session the OS login, with no host or suffix",
       "cell": "an open space names the session the OS login, with no host or suffix"
     },
@@ -29,8 +29,8 @@
     {
       "name": "user mode falls back to the OS login when the sign-in cannot name the session",
       "file": "packages/workspace/src/chat/name.ts",
-      "find": "  else if (target.mode === \"user\") found = await accountName(target);",
-      "replace": "  else if (target.mode === \"user\") found = await accountName(target).catch(() => ({ name: (opts.login ?? osLogin)(), source: \"login\" as const, from: \"your OS login\" }));",
+      "find": "  else if (target.mode === \"user\") ({ found, signIn } = await accountName(target));",
+      "replace": "  else if (target.mode === \"user\") ({ found, signIn } = await accountName(target).catch(() => ({ found: { name: (opts.login ?? osLogin)(), source: \"login\" as const, from: \"your OS login\" }, signIn: undefined })));",
       "expectRed": "no cached login refuses as AUTH_REQUIRED naming the login command, with no OS-login fallback",
       "cell": "no cached login refuses as AUTH_REQUIRED naming the login command, with no OS-login fallback"
     },

@@ -93,8 +93,8 @@
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
       "find": "  return pub.some((row) => row === \">\" || row === \"$SYS.>\" || row.startsWith(\"$SYS.REQ.USER\"));",
       "replace": "  return pub.some((row) => row.startsWith(\"$SYS.REQ.USER.INFO.\"));",
-      "expectRed": "no current profile can request its own server view",
-      "cell": "no current profile can request its own server view"
+      "expectRed": "only provisioner and teardown hold the server-view grant",
+      "cell": "only provisioner and teardown hold the server-view grant"
     },
     {
       "name": "an unclassified JetStream grant is waved through",

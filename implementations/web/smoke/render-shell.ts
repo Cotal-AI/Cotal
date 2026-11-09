@@ -5,6 +5,7 @@
  *  The import names `Shell.tsx` with its extension: the suites load it under tsx, and the
  *  coverage gate resolves an import to the file it names. For the same reason `Shell.tsx` and
  *  `ui/AppShell.tsx` name the `.tsx` files they import, so a mutation in them is reachable. */
+import { JSDOM } from "jsdom";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { Shell } from "../client/src/Shell.tsx";
@@ -42,10 +43,17 @@ export function paragraph(html: string, id: string): { attrs: Record<string, str
   return { attrs, text: unescapeHtml(m[2]) };
 }
 
-/** The stale marker (`ui/StaleMarker.tsx`) in `html`: the attributes of its box and the text of its
- *  bold label, unescaped. */
-export function staleMarker(html: string): { attrs: Record<string, string>; text: string } | undefined {
-  const m = /(<div class="ui-stale" id="stale"[^>]*>)[\s\S]*?<b>([^<]*)<\/b>/.exec(html);
-  if (!m) return undefined;
-  return { attrs: startTags(m[1], "div")[0], text: unescapeHtml(m[2]) };
+/** `html` parsed into a document, so a suite reads a server render by role, name and text. */
+export const parseHtml = (html: string): Document => new JSDOM(html).window.document as Document;
+
+/** The sidebar's stale marker (`ui/StaleMarker.tsx`, `#stale`) in `html`: its role, the text of its
+ *  title, and all the text a screen reader reads in it, where the reasons its Tooltip shows sit. */
+export function staleMarker(html: string): { role: string | null; text: string; content: string } | undefined {
+  const marker = parseHtml(html).getElementById("stale");
+  if (!marker) return undefined;
+  return {
+    role: marker.getAttribute("role"),
+    text: marker.querySelector('[data-slot="alert-title"]')?.textContent ?? "",
+    content: marker.textContent ?? "",
+  };
 }

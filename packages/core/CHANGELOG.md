@@ -1,5 +1,92 @@
 # @cotal-ai/core
 
+## 0.151.0
+
+### Minor Changes
+
+- 38f5bb2: `@cotal-ai/core` no longer exports the `terminal` extension kind (`TerminalLayout`, `Tab` and `Pane`), and `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register `tmuxTerminalProvider` and `cmuxTerminalProvider`, along with the layout code only those providers used. Nothing in Cotal has resolved the kind since `cotal setup` became configure-only, while the contract and both providers still named `cotal setup` as their consumer. Spawned tmux and cmux agents launch as before; the cmux pane launcher keeps its `env -i` isolation and drops the login-shell and inherited-environment modes that only layout panes used. The upgrading guide lists the imports to remove.
+
+### Patch Changes
+
+- c986cc1: Host permission-scoped endpoint discovery inside the auth service with explicit registry opt-in.
+  
+  The builtin auth-service preset accepts `--registry`; multi-space auth manifests enable it per entry. Embedders supply `registryService` through the same auth lifecycle. Signing authority stays in auth, reader and serving credentials stay separate, serving renewal uses the native issuance fence, and restart recovery retains the original instance and native gate operation. The registry is disabled by default and stops with its auth plane.
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- 7350dcc: The multi-space delivery host (`cotal deliver --spaces`) is now the one process on a broker that kicks a live connection. When a space on its root retained the system-account signing seed, every lane evicts through the host's kick authority: the lane scans its own account, the host checks each connection against its own complete census of that account, mints a kick-only user that lives five minutes, kicks, and keeps no `$SYS` connection open between kicks. A lane opens no `connection-evictor` credential, so a space created before live eviction on a multi-space broker completes its eviction barrier without a system-account rotation, and no per-space process holds the broker-wide KICK. The host says which posture it runs at start. A single-space daemon is unchanged. Core exports the pieces the host uses: `KickTarget`, `kickConnection`, `accountHoldsConnection`, and a `kick` function the eviction sweep can delegate to.
+- 6661f53: A user-mode spawn or persona definition now refuses a name the bearer exchange cannot serve, before anything is enrolled. The name door applies the exchange's own 64-character actor bound, and auto-numbering stops at that bound instead of appending a suffix that would cross it.
+
+## 0.150.0
+
+### Patch Changes
+
+- 8e2ba65: Report a refused service subscription once, preserving the broker error as its cause and keeping independent refusals observable.
+
+## 0.149.0
+
+### Patch Changes
+
+- 7068f2b: Batch workflow inventory record reads so a few hundred completed runs do not require separate reads for every record. Preserve dotted endpoint names, program validation, deleted-record handling and unreadable revocation reporting. Only list credentials gain the records Direct Get permission; single-run reads and checkpoint answers keep their existing permissions.
+- 441ed3b: Skip an ordered watch rebuild's predecessor delete when the endpoint recorded the watch as its own and the connection's known publish claims exclude that request. This avoids repeated permission refusals without widening consumer-delete grants. The predecessor remains for broker inactive-threshold cleanup.
+- dd76ef4: A refused spawn records a failed cleanup step the same way in the CLI and the manager, and both read a caught value through one helper.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+### Patch Changes
+
+- c8cf718: Your own Claude Code and Codex conversations can now join an open or static mesh this computer runs with `cotal up`, not only a signed-in space. A natively bound conversation's `cotal_connect` opens its identity at once with the grant a bare `cotal spawn` gets on that mesh: the default persona's channels, role and capabilities, or the part of them a selection names. Concurrent requests for the same native session are serialized so they cannot create two identities. On a static mesh the space's local signing authority issues it as a terminal seat under its own lifecycle, and disconnecting, ending the session, or the next connection after a killed plugin server retires it with its issuance and broker footprint. A call without a native session, and a static mesh whose signing authority this account does not hold, open nothing. Signed-in spaces still require a person's approval. An endpoint whose credential expires more than about 24.8 days out, such as a terminal seat's with no expiry, no longer refreshes in a 1 ms loop and fails to connect.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+### Patch Changes
+
+- 49e8694: Read retained endpoint credential families with the existing complete KV value scan instead of serial per-row requests. Keep family filtering, validation, revoked rows and registration barriers unchanged; interrupted scans refuse rather than returning partial evidence.
+  
+  Allow the CLI endpoint executor to acknowledge native flow control on its derived auth KV stream only, so large complete value scans do not stall. Other stream/account permissions, instance-pinned writes and credential lifetimes are unchanged.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+### Patch Changes
+
+- 30d8538: An @mention at the end of a sentence, such as `thanks @ops-lead.`, now reaches the person it names. `mentionsIn` ends each name on a letter, digit or `_`, because a chat name cannot end in `.` or `-`, so `cotal send`, `cotal chat`, the console and the dashboard no longer store the mention as `ops-lead.`. When a chat session's default name breaks the chat name rule, such as an OS login of `John Doe`, the refusal prints on its own and names `--name` and `cotal config set name`, and for a handle an older cotal recorded, signing in again. `cotal login` prints the chat name it recorded, or `none` with how to save one.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+### Minor Changes
+
+- b8b0ff4: `cotal chat` opens a session under one stable name that agents can mention, with no random suffix. Without `--name`, it takes the new `name` preference (`cotal config set name <name>`), else your handle on a user-auth space, else your OS login on an open or static space. Every chat name is 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_`, so an `@name` reaches it. Breaking: `--name` no longer accepts a name outside that rule, such as one with a space or an `@`. `cotal login` now records a handle, the IdP's preferred user name, else its email's local part, else its name, the first that is a valid chat name, and `userStatus` returns it as `login.name`. The email is never the handle, so it does not appear in the roster. A user-auth sign-in made by an older cotal, or one whose IdP gives no valid chat name, has no handle on record, so `cotal chat` refuses with `AUTH_REQUIRED` until you sign in again or save a name. Once a `name` preference is saved, an older cotal refuses every preferences read with `defaults has an unknown key "name"` until it is upgraded or this version removes the name with `cotal config unset name`. The workspace exports `resolveChatName`, `chatNameProblem`, `nameInUse` and `nameInUseText`, and a second session under a name in use is warned with both ways to change it.
+
 ## 0.146.0
 
 ### Minor Changes

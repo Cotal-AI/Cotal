@@ -101,6 +101,9 @@ For example, `cotal ext add @cotal-ai/orca` installs the Orca provider.
 Other providers include `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`.
 Runtime names come from the registry. A missing provider or application is refused rather than replaced with another runtime.
 
+On Linux, a moved socket belonging to a live tmux server makes the session check fail, even when its path contains repeated whitespace.
+Cotal leaves that server's sessions in place.
+
 <Callout type="warn" title="Stopping the manager stops its pty seats">
 
 The built-in `pty` runtime has no hot update.

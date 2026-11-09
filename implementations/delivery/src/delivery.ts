@@ -32,6 +32,8 @@ import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executeEvictions, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
+import { healConnectionEvictor } from "./sys-creds.js";
+import type { KickAuthority } from "./kick-authority.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
 
 type Values = Record<string, string | undefined>;
@@ -424,6 +426,10 @@ export interface DeliveryLaneOptions {
   rootNamed: boolean;
   tls: boolean;
   log: DeliveryLog;
+  /** The host's one kick authority. With it, this lane opens no kick credential and every live match
+   *  of an eviction is kicked through the host (`kick-authority.ts`). Without it, the lane kicks with
+   *  the space's own stored connection evictor, as a single-space daemon does. */
+  kickAuthority?: KickAuthority;
 }
 
 /**
@@ -443,7 +449,7 @@ export async function openDeliveryLane(options: DeliveryLaneOptions): Promise<Sp
       { values, positionals: [], raw: [] } as unknown as ParsedArgs,
       undefined,
       (release) => { releaseOnStartupFailure = release; },
-      { kind: "lane", root: options.root, log: options.log },
+      { kind: "lane", root: options.root, log: options.log, ...(options.kickAuthority !== undefined ? { kickAuthority: options.kickAuthority } : {}) },
     );
     // A release the close could not confirm is reported, never thrown at the host: the bucket TTL
     // expires a row left behind, as it does for a single-space daemon.
@@ -465,7 +471,7 @@ type DeliveryStatus = { state: "ready" | "draining" } | { state: "unavailable"; 
 type DeliveryOwner =
   | { kind: "cli" }
   | { kind: "hosted"; inputs: HostedContextInputs }
-  | { kind: "lane"; root: string; log: DeliveryLog };
+  | { kind: "lane"; root: string; log: DeliveryLog; kickAuthority?: KickAuthority };
 
 /** Every entry gets the same result, so a start-up path that hands back nothing fails to compile.
  * The hosted entry stamps the status with its context; the CLI runner owns its own wait; a lane
@@ -479,6 +485,7 @@ async function runStartedDelivery(
   const hosted = owner.kind === "hosted" ? owner.inputs : undefined;
   const held = owner.kind !== "cli";
   const log = owner.kind === "lane" ? owner.log : consoleLog;
+  const kickAuthority = owner.kind === "lane" ? owner.kickAuthority : undefined;
   const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
@@ -609,8 +616,18 @@ async function runStartedDelivery(
   // The singleton lease is admission to serve this space, so the daemon must prove its scan tenancy
   // before it can claim that slot. A wrong-root process previously acquired and renewed lease.0,
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
+  // Before that proof, a single-space root that retained its system-account signing seed mints the
+  // connection evictor it never had. A space created before live eviction is missing exactly that
+  // credential, and without it a retiring seat's name stays reserved for as long as one connection
+  // still holds the principal. The heal writes nothing on a hosted store, a multi-space root, or a
+  // root with no retained seed, and it leaves an evictor that is already present untouched.
+  // A lane of a host with a kick authority never opens a kick credential, so it mints none either.
+  if (kickAuthority === undefined && await healConnectionEvictor(scanTarget.source))
+    log.err("• delivery: minted the missing connection evictor from the retained system-account signing seed");
   await validateScanTargetAdmission(scanTarget);
   log.err(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
+  if (kickAuthority !== undefined)
+    log.err("• delivery: live eviction kicks through the host's kick authority; this lane opens no kick credential");
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
   // THIS daemon's connection nkey, pinned once. It is what the endpoint AUTHENTICATES as, and it is
   // what `card.id` must carry at construction (a creds SOURCE has no cred to derive it from yet).
@@ -994,9 +1011,9 @@ async function runStartedDelivery(
     },
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
     // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
-    evictPrincipal: (principal) => executeEviction(server, scanTarget, principal),
+    evictPrincipal: (principal) => executeEviction(server, scanTarget, principal, kickAuthority),
     // The same executor over a set: one shared sweep for a large credential family's holders.
-    evictPrincipals: (principals) => executeEvictions(server, scanTarget, principals),
+    evictPrincipals: (principals) => executeEvictions(server, scanTarget, principals, "evictPrincipals", kickAuthority),
     // Plane-claim liveness oracle (#29 HIGH 3): read-only $SYS CONNZ per call; the auth plane's
     // stale-claim reclaim gates on this verdict (any refusal/unknown blocks takeover, fail-closed).
     planeConnLiveness: (query) => executePlaneLiveness(server, scanTarget, query),

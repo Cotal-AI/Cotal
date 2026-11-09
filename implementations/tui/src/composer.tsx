@@ -4,10 +4,12 @@ import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
 import { DialogHeader, DialogLayout } from "../vendor/opencode/packages/tui/src/ui/dialog"
-import { draftKey, edited, replyFrom, settled, submit, unsent, type ComposerState, type Effect, type Tone } from "./compose.js"
-import type { Mesh } from "./live.js"
-import { clock, conversationRecipient, peerOf, type Open } from "./screen.js"
+import { edited, quotable, replyFrom, settled, submit, unquote, unsent, walk, type ComposerState, type Effect, type Tone } from "./compose.js"
+import type { FeedEntry, Mesh } from "./live.js"
+import { clock, conversationRecipient, draftKey, peerOf, type Open } from "./screen.js"
 import type { Talk } from "./talk.js"
+
+export { quoteRow } from "./compose.js"
 
 type Line = { text: string; fg: RGBA }
 
@@ -18,13 +20,15 @@ const where = (r: Recipient) => (r.kind === "channel" ? `#${r.channel}` : r.kind
  * The input box under the conversation: the quoted message of a reply, the text, and one line naming
  * where the message goes. The session's state and the latest outcome follow that line when there is
  * one. While `focused`, the box pushes the `compose` mode and then focuses the textarea, so letters
- * reach the text and the tree's keys stay off; `tab` hands the keys to the tree.
+ * reach the text and the tree's keys stay off; `tab` hands the keys to the tree. On an empty box `↑`
+ * and `↓` move the quote through the conversation's rows in `feed`, and `esc` drops it.
  */
 export function Composer(props: {
   talk: Talk
   space: string
   open: Open
   mesh: Mesh
+  feed: readonly FeedEntry[]
   state: ComposerState
   setState: (f: (s: ComposerState) => ComposerState) => void
   focused: boolean
@@ -38,10 +42,6 @@ export function Composer(props: {
   const key = () => draftKey(props.space, props.open)
   const draft = () => props.state.drafts[key()]
   const recipient = () => draft()?.reply?.to ?? conversationRecipient(props.open, props.mesh)
-  const self = () => {
-    const p = props.talk.phase()
-    return p.phase === "open" ? p.identity.principal : undefined
-  }
   const nextName = () => {
     const n = props.talk.name()
     return n.state === "ok" ? n.name.name : undefined
@@ -53,13 +53,12 @@ export function Composer(props: {
     return p.phase === "open" && p.identity.expiresAt !== undefined ? ` · ends ${clock(p.identity.expiresAt).slice(0, 5)}` : ""
   }
 
+  // The quote above the box names whom a reply answers, so this line names only where it goes.
   const target = () => {
     const r = recipient()
     if (!r) return "no recipient in all traffic"
-    const q = draft()?.reply
-    if (q) return `replying to ${q.from}${r.kind === "channel" ? ` in #${r.channel}` : ""}${ends()}`
     const peer = props.open.kind === "peer" ? peerOf(props.mesh, props.open.id) : undefined
-    if (peer?.status === "waiting") return `answering ${peer.card.name}${ends()}`
+    if (peer?.status === "waiting" && r.kind === "peer" && r.principal === peer.card.id) return `answering ${peer.card.name}${ends()}`
     return `${where(r)}${ends()}`
   }
 
@@ -107,11 +106,12 @@ export function Composer(props: {
         // Read before the wait, since a space switch or a catalog entry can unmount the box while
         // the send is out, and the send settles either way.
         const talk = props.talk
+        const space = props.space
         let result: PublishResult | undefined
         try {
           result = await talk.publish(effect.to, effect.text, effect.open)
         } finally {
-          props.setState((s) => (result ? settled(s, result) : unsent(s)))
+          props.setState((s) => (result ? settled(s, space, result) : unsent(s, space)))
         }
         return show(k)
       }
@@ -120,7 +120,7 @@ export function Composer(props: {
         return props.setState((s) => ({ ...s, notice: { key: k, ...out } }))
       }
       case "reply-latest":
-        return props.setState((s) => replyFrom(s, k, props.talk.latest(), self() ?? ""))
+        return props.setState((s) => replyFrom(s, k, props.talk.latest(), props.talk.you()))
       case "end": {
         const closed = await props.talk.end()
         return props.setState((s) => ({ ...s, notice: { key: k, tone: closed?.clean === false ? "waiting" : "ok", lines: [closed ? closed.summary : "no session was open"] } }))
@@ -143,6 +143,24 @@ export function Composer(props: {
   Keymap.createLayer(() => ({
     mode: "compose",
     commands: [{ id: "cotal.compose.tree", bind: "tab", title: "Move to the tree", group: "Move", run: () => props.toTree() }],
+  }))
+  // With text in the box, the arrows move its cursor.
+  const step = (by: -1 | 1) => {
+    const you = props.talk.you()
+    props.setState((s) => walk(s, key(), quotable(props.feed, you, props.open), you, props.open, by))
+  }
+  Keymap.createLayer(() => ({
+    mode: "compose",
+    enabled: (draft()?.text ?? "") === "",
+    commands: [
+      { id: "cotal.compose.older", bind: "up", title: "Quote an older message", group: "Reply", run: () => step(-1) },
+      { id: "cotal.compose.newer", bind: "down", title: "Quote a newer message", group: "Reply", run: () => step(1) },
+    ],
+  }))
+  Keymap.createLayer(() => ({
+    mode: "compose",
+    enabled: draft()?.reply !== undefined,
+    commands: [{ id: "cotal.compose.unquote", bind: "escape", title: "Drop the quote", group: "Reply", run: () => props.setState((s) => unquote(s, key())) }],
   }))
 
   const bg = theme.background.raised.base

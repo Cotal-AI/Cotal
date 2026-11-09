@@ -81,7 +81,7 @@ export async function resolveControlTarget(
   flags: ConnectFlags,
   profile: Profile,
   instanceId?: string,
-  opts: { onRefusal?: "exit" | "throw"; endpoint?: string; readOnly?: boolean } = {},
+  opts: { onRefusal?: "exit" | "throw"; endpoint?: string; readOnly?: boolean; operatorActor?: string; staticOperator?: boolean } = {},
 ): Promise<ControlTarget> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
   // A credential-less resolve that reads liveness sweeps once, unless the caller already swept for
@@ -138,7 +138,12 @@ export async function resolveControlTarget(
       };
     }
   }
-  const conn = await connect_(withSpace, profile, { ...(instanceId !== undefined ? { instanceId } : {}), readOnly: opts.readOnly });
+  const conn = await connect_(withSpace, profile, {
+    ...(instanceId !== undefined ? { instanceId } : {}),
+    ...(opts.operatorActor !== undefined ? { operatorActor: opts.operatorActor } : {}),
+    ...(opts.staticOperator === true ? { staticOperator: true } : {}),
+    readOnly: opts.readOnly,
+  });
   return {
     space: conn.space,
     server: conn.server,

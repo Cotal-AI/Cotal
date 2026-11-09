@@ -89,6 +89,11 @@ prints the attach command. Both exit 0, and `--json` reports them as `managed-la
 `waitingFor` naming the screen or null. The outcome stays unknown when the manager cannot say
 whether the process runs.
 
+A launch whose connector wakes an idle seat only after a confirmed startup, and whose startup
+opened its input screen without that confirmation, succeeds with a `STARTUP_NOTICE` warning
+carrying the connector's clause: mesh traffic does not wake that seat. The same clause rides the
+seat's `ps` row as `startupNotice`, shown as `no idle wake` beside its mesh status.
+
 A managed launch prints its `Managed launch` plan on stdout before its receipt, so
 `cotal spawn <persona> -d > out.txt` keeps both, and a refusal prints on stderr. With `--json`,
 stdout holds only the envelope and the plan stays on stderr. The manager that refuses a launch

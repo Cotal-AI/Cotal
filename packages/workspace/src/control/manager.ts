@@ -184,7 +184,7 @@ async function askManagerEp(
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
       if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
-        return { ok: false, code: "not-found", error: "the selected agent incarnation changed; refresh the agent list before attaching" };
+        return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
       // target block's subject arity). Mode `any` spans owners (operator reach); mode `owner` pins

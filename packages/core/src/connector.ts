@@ -368,6 +368,12 @@ export interface Connector extends Extension {
    *  manager's failure gives for a `ready` outcome. A runtime that does not report the outcome
    *  refuses such a spawn. */
   readonly onceNeedsConfirmed?: string;
+  /** A seat on this connector is woken while idle by mesh traffic only when its startup watch ended
+   *  `confirmed`. A plain spawn whose watch ended `ready` still succeeds; its reply carries this
+   *  clause as `startupNotice` and the seat's `ps` row carries it, so the spawner and the operator
+   *  learn that the seat does not wake on its own. A runtime that does not report the outcome
+   *  carries no notice. */
+  readonly idleWakeNeedsConfirmed?: string;
   /** The most once task text one turn frame of this connector carries, in UTF-16 code units, as
    *  {@link renderOnceTask} renders it. A `once` spawn whose rendered task is longer is refused at
    *  admission. Absent means the connector's frames carry any length. */

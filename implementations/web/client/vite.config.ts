@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,13 +19,24 @@ function packageOf(id: string): { name: string; root: string } | undefined {
 
 type Licensed = { package: string; version: string; license: string };
 
-/** Source copied into the client rather than installed: the shadcn/ui parts under src/ui/shadcn and
- *  the utilities copied into src/styles/shadcn.css. No module id names them. */
-const VENDORED: Licensed[] = [{ package: "shadcn/ui", version: "4.22.1", license: "MIT" }];
+/** Source copied into the client rather than installed: the shadcn/ui parts under src/ui/shadcn,
+ *  which the shadcn CLI writes from its registry. No module id names them. */
+const VENDORED: Licensed[] = [{ package: "shadcn/ui", version: "4.23.0", license: "MIT" }];
 
 /** Packages the stylesheet carries with no module id to find them by: Tailwind generates its theme
- *  and utilities into the stylesheet. Each is read from its own package.json, like the rest. */
-const CSS_ONLY = ["tailwindcss"];
+ *  and utilities into the stylesheet, and src/styles/shadcn.css imports tw-animate-css and shadcn's
+ *  tailwind.css. Each is read from its own package.json, like the rest. */
+const CSS_ONLY = ["shadcn", "tailwindcss", "tw-animate-css"];
+
+/** The package.json of an installed package, looked up along Node's own search path, since a package's
+ *  exports need not list its package.json. A package that is not installed fails the build. */
+function manifestOf(require: NodeJS.Require, name: string): string {
+  for (const dir of require.resolve.paths(name) ?? []) {
+    const manifest = join(dir, name, "package.json");
+    if (existsSync(manifest)) return manifest;
+  }
+  throw new Error(`bundle-licenses: ${name} is not installed`);
+}
 
 /** A package's version and license from its own package.json. A package with neither fails the build. */
 function licensed(name: string, manifest: string): Licensed {
@@ -55,7 +66,7 @@ function bundleLicenses(): Plugin {
       const require = createRequire(import.meta.url);
       const bundled = [
         ...[...found].map(([name, root]) => licensed(name, join(root, "package.json"))),
-        ...CSS_ONLY.map((name) => licensed(name, require.resolve(`${name}/package.json`))),
+        ...CSS_ONLY.map((name) => licensed(name, manifestOf(require, name))),
         ...VENDORED,
       ].sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0));
       this.emitFile({ type: "asset", fileName: "bundle-licenses.json", source: JSON.stringify({ bundled }, null, 2) + "\n" });
@@ -64,8 +75,8 @@ function bundleLicenses(): Plugin {
 }
 
 /** The theme boot script: `bootTheme` (src/lib/themeBoot.ts) as a classic script, run on the page's
- *  own storage and root element. */
-const THEME_BOOT_JS = `(${bootTheme.toString()})(() => localStorage, document.documentElement);\n`;
+ *  own storage, root element and OS setting. */
+const THEME_BOOT_JS = `(${bootTheme.toString()})(() => localStorage, document.documentElement, () => matchMedia("(prefers-color-scheme: dark)").matches);\n`;
 
 /** Writes `theme-boot.js` beside the page and puts it first in the page's head, ahead of the
  *  stylesheet and the module script the build adds. The stylesheet blocks the first paint and the

@@ -1,5 +1,67 @@
 # @cotal-ai/orca
 
+## 0.151.0
+
+### Patch Changes
+
+- 38f5bb2: `@cotal-ai/core` no longer exports the `terminal` extension kind (`TerminalLayout`, `Tab` and `Pane`), and `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register `tmuxTerminalProvider` and `cmuxTerminalProvider`, along with the layout code only those providers used. Nothing in Cotal has resolved the kind since `cotal setup` became configure-only, while the contract and both providers still named `cotal setup` as their consumer. Spawned tmux and cmux agents launch as before; the cmux pane launcher keeps its `env -i` isolation and drops the login-shell and inherited-environment modes that only layout panes used. The upgrading guide lists the imports to remove.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+No changes in this release.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
 ## 0.146.0
 
 No changes in this release.

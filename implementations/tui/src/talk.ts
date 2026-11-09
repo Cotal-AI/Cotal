@@ -35,8 +35,14 @@ export type TalkPhase =
   | { phase: "ended"; name: string; at: number; why: string }
   | { phase: "refused"; message: string; remedy?: string }
 
-/** The name the next session appears as, resolved when the space opens and again at each open. */
+/** The name the next session joins under: resolved when the space opens, when a session ends and on
+ *  Change your name, and at an open only when there is none to show, so a session joins under the
+ *  name the app showed. */
 export type NameState = { state: "resolving" } | { state: "ok"; name: ChatName } | { state: "refused"; message: string; remedy?: string }
+
+/** The human as a sender: the principals of the chat sessions this app run opened, in any space, and
+ *  the chat name, in lower case, that any other session of theirs carries. */
+export type You = { readonly principals: ReadonlySet<string>; readonly name?: string }
 
 /** The directed messages the session received and sent, as feed rows. */
 export type OwnTraffic = { received: readonly FeedEntry[]; sent: readonly FeedEntry[] }
@@ -65,12 +71,16 @@ export interface Talk {
   latest(): SessionMessage | undefined
   /** Whether a row's mentions name the human, under the open session's name or the next one's. */
   mentionsYou(e: FeedEntry): boolean
+  /** Who the human is as a sender. Each session joins under its own principal, and earlier ones stay
+   *  in the conversation. The name is the open session's, else the next one's. */
+  you(): You
   /** `/quit` and End your chat session. */
   end(): Promise<Closed | undefined>
   /** Saves the `name` preference, or unsets it, and resolves the name again. An open session keeps
    *  its name. Returns the refusal, if the write refused. */
   rename(name: string | undefined): Promise<string | undefined>
-  /** The space is closing: waits up to `graceMs` for a send in flight, then closes the session. */
+  /** The space is closing: waits up to `graceMs` for a send in flight, then closes the session. A
+   *  first message whose session is still opening by then is never sent, and the result says so. */
   close(graceMs?: number): Promise<Closed | undefined>
 }
 
@@ -83,6 +93,9 @@ export const APP_WORDS: ChatWords = {
 const NAME_REMEDY = "change it with ctrl+p, Change your name, to be reached by name"
 const OWN_ROWS = 200
 const QUIT_MS = 5000
+
+/** The principals of the chat sessions this app run opened, in every space it opened. */
+const opened = new Set<string>()
 
 /** What the app's session asks for. It reads nothing itself, because the observer reads every
  *  channel. A static or user session may post to the channel it opened on, as `cotal chat <channel>`
@@ -134,7 +147,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
 
   const resolveName = async (): Promise<ChatName | undefined> => {
     try {
-      const found = await resolveChatName(target)
+      const found = await resolveChatName(target, { remedy: "use Change your name (ctrl+p)" })
       setName({ state: "ok", name: found })
       return found
     } catch (e) {
@@ -152,6 +165,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
     const expired = id.expiresAt !== undefined && Date.now() >= id.expiresAt
     const why = ending ? "you ended it" : reason ? oneLine(reason) : expired ? (id.mode === "static" ? "static sessions last 15 minutes" : "user sessions last 8 hours") : "the session ended"
     setPhase({ phase: "ended", name: id.label, at: Date.now(), why })
+    void resolveName()
   }
 
   // The open session's name, else the name the next one would take.
@@ -170,7 +184,8 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       const p = phase().phase
       if (closing || p === "opening" || p === "open") return
       setPhase({ phase: "opening", name: current() ?? "" })
-      const found = await resolveName()
+      const shown = name()
+      const found = shown.state === "ok" ? shown.name : await resolveName()
       if (shut) return
       const n = name()
       if (!found) return void setPhase({ phase: "refused", message: `no name to join with: ${n.state === "refused" ? n.message : "unresolved"}`, ...(n.state === "refused" && n.remedy ? { remedy: n.remedy } : {}) })
@@ -185,6 +200,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       }
       if (shut) return void (await s.close())
       session = s
+      opened.add(s.identity().principal)
       ending = false
       unsubscribe = s.subscribe((ev) => {
         if (ev.type === "message") {
@@ -236,6 +252,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
       const n = current()
       return n !== undefined && mentionsName(e.mentions, n)
     },
+    you: () => ({ principals: opened, name: current()?.toLowerCase() }),
     end: async () => {
       const s = session
       if (!s) return undefined
@@ -253,11 +270,13 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
     },
     close: async (graceMs = QUIT_MS) => {
       closing = true
-      if (sending) await Promise.race([sending, new Promise((r) => setTimeout(r, graceMs))])
+      const late = sending !== undefined && (await Promise.race([sending.then(() => false), new Promise<boolean>((r) => setTimeout(() => r(true), graceMs))]))
+      const unopened = late && phase().phase === "opening"
       shut = true
       unsubscribe?.()
       const s = session
       session = undefined
+      if (unopened) return { clean: false, summary: `the session was still opening after ${graceMs / 1000} seconds, so your message was not sent` }
       if (!s) return undefined
       const report = await Promise.race([s.close(), new Promise<undefined>((r) => setTimeout(r, graceMs))])
       return report ? closed(s.identity(), report) : { clean: false, summary: `the session did not finish closing within ${graceMs / 1000} seconds; messages already sent remain under the space's retention policy` }

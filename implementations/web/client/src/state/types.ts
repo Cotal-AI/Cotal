@@ -32,8 +32,8 @@ export interface StoredMessage {
 export type Connection = "connecting" | "connected" | "reconnecting" | "closed";
 
 /** A post the composer sent. `id` is unset while the server has not answered, which is when the row
- *  shows faded, and set once it went out, until the feed delivers the message itself. `seq` keys the
- *  row. */
+ *  shows muted and sending, and set once it went out, until the feed delivers the message itself.
+ *  `seq` keys the row. */
 export interface Outgoing {
   seq: number;
   text: string;

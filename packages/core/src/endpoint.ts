@@ -824,6 +824,8 @@ export class CotalEndpoint extends EventEmitter {
    *  refusal to the refused subscription's callback and then dispatches that same instance on the
    *  connection status, so the callback owns it (see {@link subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
+  /** Service iterators and connection status can receive the same subscription denial. */
+  private readonly reportedSubRefusals = new WeakSet<PermissionViolationError>();
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
    *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
@@ -1665,8 +1667,12 @@ export class CotalEndpoint extends EventEmitter {
     if (this.stopped) return;
     clearTimeout(this.credsTimer);
     // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
-    // lifetimes are hours+ so the floor never engages there.
-    this.credsTimer = setTimeout(() => void this.renewCredsOnTimer(), Math.max(1_000, delayMs));
+    // lifetimes are hours+ so the floor never engages there. Node fires a delay above 2^31-1 ms after
+    // 1 ms, and a terminal seat's credential can run to 2106, so a later renewal waits in steps of
+    // that bound.
+    this.credsTimer = delayMs > MAX_TIMER_MS
+      ? setTimeout(() => this.armCredsRefresh(delayMs - MAX_TIMER_MS), MAX_TIMER_MS)
+      : setTimeout(() => void this.renewCredsOnTimer(), Math.max(1_000, delayMs));
     this.credsTimer.unref?.();
   }
 
@@ -2810,7 +2816,9 @@ export class CotalEndpoint extends EventEmitter {
         if (own) void answer().catch((e) => this.emit("error", e as Error));
         else inOrder = inOrder.then(answer).catch((e) => { this.emit("error", e as Error); });
       }
-    })().catch((e) => this.emit("error", e as Error));
+    })().catch((e) => {
+      if (!this.reportSubscriptionDenial(e)) this.emit("error", e as Error);
+    });
     return sub;
   }
 
@@ -4822,7 +4830,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
           && this.isOwnWatchDelete(s.error.subject))
           continue;
-        this.emit("error", describeStatusError(s.error));
+        if (!this.reportSubscriptionDenial(s.error)) this.emit("error", describeStatusError(s.error));
       }
     })().catch((e) => {
       // Defensive symmetry with the reachable in-loop epoch guard above. Measured against five real
@@ -4843,20 +4851,46 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
   }
 
+  /** Report a subscription denial once by error identity, whichever reporting path receives it first. */
+  private reportSubscriptionDenial(error: unknown): boolean {
+    if (!(error instanceof PermissionViolationError) || error.operation !== "subscription") return false;
+    if (!this.reportedSubRefusals.has(error)) {
+      this.reportedSubRefusals.add(error);
+      this.emit("error", describeStatusError(error));
+    }
+    return true;
+  }
+
   /** Wrap `nc.request` to record each publish denial nats.js rejects one of this connection's requests
-   *  with. nats.js rejects the pending request on the denied subject with the denial and then dispatches
-   *  that same error instance on the connection status, so the caller that received it (an empty history
-   *  read, a refused consumer delete, nats.js's own delete of a rebuilt watch's predecessor) owns it and
-   *  the status loop skips it. nats.js settles the request before it dispatches the status and this
+   *  with, and to keep one class of request off the wire. nats.js rejects the pending request on the
+   *  denied subject with the denial and then dispatches that same error instance on the connection
+   *  status, so the caller that received it (an empty history read, a refused consumer delete) owns it
+   *  and the status loop skips it. nats.js settles the request before it dispatches the status and this
    *  reaction sits directly on the promise it returns, so it runs before the status loop body, which is
    *  further microtasks away behind the status iterator. Any other denial is a different instance and is
    *  not recorded, including one on the same subject and one that arrives after its request timed out.
    *  A refused request inbox is rejected into every pending request but breaks every later one, so it
-   *  is not recorded either. */
+   *  is not recorded either.
+   *
+   *  The request that never reaches the broker is a delete of this connection's own watch consumer
+   *  whose subject the credential's publish claims exclude (#4123). nats.js rebuilds an ordered
+   *  consumer after a stall or a delivery gap by deleting its predecessor itself, with no hook before
+   *  the send and the refusal ignored, so the endpoint's own cleanup checks never see it. The claims
+   *  that exclude the subject are the same ones {@link watchConsumerDeleteDenied} reads, and unknown
+   *  claims still send: the broker remains the authority for every request that leaves. The rejection
+   *  handed back is the one a broker refusal produces, so the caller that ignores a refusal ignores
+   *  this one and the status loop treats it as a refusal it already owns. */
   private trackRequestDenials(nc: NatsConnection): WeakSet<PermissionViolationError> {
     const handed = new WeakSet<PermissionViolationError>();
     const request = nc.request.bind(nc);
     nc.request = (subject, payload, opts) => {
+      if (typeof subject === "string" && this.ungrantedOwnWatchDelete(subject)) {
+        const violation = new PermissionViolationError(
+          `Permissions Violation for Publish to "${subject}"`, "publish", subject,
+        );
+        handed.add(violation);
+        return Promise.reject(new RequestError("permissions violation", { cause: violation }));
+      }
       const reply = request(subject, payload, opts);
       reply.catch(({ cause }: Error) => {
         if (cause instanceof PermissionViolationError && cause.operation === "publish") handed.add(cause);
@@ -4864,6 +4898,14 @@ export class CotalEndpoint extends EventEmitter {
       return reply;
     };
     return handed;
+  }
+
+  /** A delete of one of this connection's own recorded watch consumers that its publish claims
+   *  exclude. Any other subject, and a delete whose claims are unknown, is sent. */
+  private ungrantedOwnWatchDelete(subject: string): boolean {
+    if (!this.isOwnWatchDelete(subject)) return false;
+    const permission = this.watchDeletePermissions.get(this.nc!)?.();
+    return Boolean(permission && !issuedPermitsSubject(permission, subject));
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a

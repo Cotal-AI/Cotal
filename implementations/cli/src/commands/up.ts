@@ -5692,8 +5692,10 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
  *
  *  WHY THIS IS SEPARATE FROM {@link provisionMembershipCreds}. That function mints the whole bundle
  *  in the fresh-space branch because the `$SYS` signing seed exists only there and is never
- *  persisted — true of `membership-observer.creds` and `connection-evictor.creds`, and the reason
- *  they can only be re-minted by a system-account rotation. It is NOT true of the other two.
+ *  persisted — true of `membership-observer.creds` and `connection-evictor.creds`. The delivery daemon
+ *  mints a missing evictor itself on a single-space root that retained its system-account signing
+ *  seed, so that one no longer needs a rotation; a root without the seed still needs one. It is NOT
+ *  true of the other two.
  *  `membership-rw.creds` is signed by the DATA account, whose signing seed IS persisted, and
  *  `membership.json` is just that account's public id. Neither needs the `$SYS` window, so binding
  *  them to it left every space provisioned before the feature permanently without the feed.

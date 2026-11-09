@@ -27,6 +27,7 @@ import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
 import { AgentsView } from "../client/src/ui/views/AgentsView.tsx";
 import { errorsDuring, mount } from "./mount.js";
+import { inShell } from "./providers.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -102,6 +103,13 @@ const panelAgent = (root: ParentNode): string => textOf(root.querySelector("sect
 const rowByName = (root: ParentNode, name: string): Element => Array.from(root.querySelectorAll(".v3-arow")).find((r) => textOf(r.querySelector("b")) === name) ?? gone();
 const names = (s: Section) => s.rows.map((r) => textOf(r.querySelector("b")));
 const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
+/** A row's attention mark, Do not disturb or Focus: the meta that is not the host. Its text is the
+ *  word, then the note its Tooltip shows, which it carries as screen reader text. */
+const attention = (row: Element) => row.querySelector(".v3-meta:not(.ox-host)");
+/** A row's status Badge: the status's icon and word. */
+const pill = (root: ParentNode) => root.querySelector("[data-slot=badge]");
+/** The Group by toggle group and its items, each a radio that says whether its grouping is on. */
+const groupBy = (root: ParentNode) => Array.from(root.querySelectorAll("[role=radiogroup][aria-label='Group by'] [role=radio]")) as HTMLButtonElement[];
 
 // 1. The status grouping
 {
@@ -146,25 +154,25 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
   same("2.17 a working agent with activity says the activity alone, with no progress suffix",
     [activity(rowByName(unsure, "ursa")), activity(rowByName(unsure, "kit"))], ["Reviewing the diff", "Editing the spec"]);
 
-  const dnd = rowByName(d, "reviewer_2").querySelector(".v3-meta[title]");
-  const focus = rowByName(d, "planner").querySelector(".v3-meta[title]");
-  same("2.10 Do not disturb shows its icon, its words and the tooltip that says what it does",
-    [textOf(dnd), dnd?.getAttribute("title"), svgOf(dnd) === iconMarkup(NotificationOff01Icon)],
-    ["Do not disturb", "Channel messages wait for its next turn. DMs and mentions still wake it.", true]);
-  same("2.11 Focus shows its icon, its words and its tooltip",
-    [textOf(focus), focus?.getAttribute("title"), svgOf(focus) === iconMarkup(Target02Icon)],
-    ["Focus", "Channel messages stay in the channel. DMs and role requests still reach it.", true]);
+  const dnd = attention(rowByName(d, "reviewer_2"));
+  const focus = attention(rowByName(d, "planner"));
+  same("2.10 Do not disturb shows its icon, its words and the tooltip that says what it does, read to a screen reader",
+    [textOf(dnd), svgOf(dnd) === iconMarkup(NotificationOff01Icon)],
+    ["Do not disturb Channel messages wait for its next turn. DMs and mentions still wake it.", true]);
+  same("2.11 Focus shows its icon, its words and its tooltip, read to a screen reader",
+    [textOf(focus), svgOf(focus) === iconMarkup(Target02Icon)],
+    ["Focus Channel messages stay in the channel. DMs and role requests still reach it.", true]);
   const open = [rowByName(d, "sven"), rowByName(d, "david")];
-  ok("2.12 an open agent, and one that reports no attention, show no badge", open.every((r) => r.querySelector(".v3-meta[title]") === null));
+  ok("2.12 an open agent, and one that reports no attention, show no badge", open.every((r) => attention(r) === null));
   const sven = rowByName(d, "sven");
   same("2.13 the host ends each row that is not working, behind the server icon, and the status word is not repeated",
-    [textOf(sven.querySelector(".v3-meta")), svgOf(sven.querySelector(".v3-meta")) === iconMarkup(ServerStack01Icon), sven.querySelector(".v3-spill") === null], ["mbp-david", true, true]);
+    [textOf(sven.querySelector(".v3-meta")), svgOf(sven.querySelector(".v3-meta")) === iconMarkup(ServerStack01Icon), pill(sven) === null], ["mbp-david", true, true]);
   same("2.13b a working row draws no host: View work takes its place, beside the row's button",
     [david.querySelector(".v3-meta"), textOf(david.parentElement?.querySelector(":scope > a.ox-act")), david.parentElement?.classList.contains("ox-arow-w")], [null, "View work", true]);
   ok("2.14 an offline row is dimmed", rowByName(d, "scout").classList.contains("v3-arow-off") && !david.classList.contains("v3-arow-off") && d.querySelector(".v3-arow-off .ui-av-off") !== null);
   const hostless = view({ roster: [entry("local.h", "hollow", "idle", { connector: "pi" })] });
   ok("2.15 an agent that reports no host shows none", rowByName(hostless, "hollow").querySelector(".v3-meta") === null);
-  const picked = parse(renderToString(createElement(AgentsView, { store: seed(), selected: "local.rev", clock: () => NOW })));
+  const picked = parse(renderToString(inShell(createElement(AgentsView, { store: seed(), selected: "local.rev", clock: () => NOW }))));
   ok("2.16 the row an address or the panel selected is marked, and no other", rowByName(picked, "reviewer").getAttribute("aria-current") === "true"
     && picked.querySelectorAll('.v3-arow[aria-current="true"]').length === 1 && david.getAttribute("aria-current") === null);
 }
@@ -209,28 +217,28 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
     && s.map((x) => `${x.label} ${x.count}`).join() === "build-box 2,mbp-david 3,zeta-box 1", s.map((x) => `${x.label} ${x.count}`));
   ok("4.2 a host header draws the server icon", s.every((x) => svgOf(x.head) === iconMarkup(ServerStack01Icon)));
   same("4.3 within a host the waiting agent comes first", s.map(names), [["reviewer", "scout"], ["david", "planner", "sven"], ["reviewer_2"]]);
-  const pills = Array.from(d.querySelectorAll(".v3-arow")).map((r) => `${textOf(r.querySelector("b"))}: ${r.querySelector(".v3-spill")?.className} ${textOf(r.querySelector(".v3-spill"))}`);
-  same("4.4 each row ends in its status icon and word, and no row repeats its host", pills, [
-    "reviewer: v3-spill v3-s-working Working", "scout: v3-spill v3-s-offline Offline", "david: v3-spill v3-s-working Working",
-    "planner: v3-spill v3-s-idle Idle", "sven: v3-spill v3-s-idle Idle", "reviewer_2: v3-spill v3-s-waiting Waiting",
+  const pills = Array.from(d.querySelectorAll(".v3-arow")).map((r) => `${textOf(r.querySelector("b"))}: ${pill(r)?.getAttribute("data-variant")} ${textOf(pill(r))} ${r.querySelector(".ox-host") !== null}`);
+  same("4.4 each row ends in its status icon and word, in its status's Badge variant, and no row repeats its host", pills, [
+    "reviewer: secondary Working false", "scout: outline Offline false", "david: secondary Working false",
+    "planner: outline Idle false", "sven: outline Idle false", "reviewer_2: default Waiting false",
   ]);
-  same("4.5 the pill's icon is the status's own", Array.from(d.querySelectorAll(".v3-spill")).map((p) => svgOf(p)).slice(0, 2), [Loading03Icon, UnavailableIcon].map(iconMarkup));
+  same("4.5 the pill's icon is the status's own", Array.from(d.querySelectorAll(".v3-arow")).map((r) => svgOf(pill(r))).slice(0, 2), [Loading03Icon, UnavailableIcon].map(iconMarkup));
   const unknown = view({ roster: [entry("local.p", "pell", "working", { host: "h1", progress: { kind: "unknown" } })] }, HOST_ROUTE);
-  same("4.6 a working agent's pill says Working when no progress is reported", textOf(unknown.querySelector(".v3-spill")), "Working");
+  same("4.6 a working agent's pill says Working when no progress is reported", textOf(pill(unknown.querySelector(".v3-arow") ?? gone())), "Working");
   same("4.7 a waiting agent's text carries no Reported time here, as in the mock", activity(rowByName(d, "reviewer_2")), "Needs approval to run pnpm smoke:ci");
-  ok("4.8 the attention badges stay in this grouping", textOf(rowByName(d, "planner").querySelector(".v3-meta[title]")) === "Focus" && textOf(rowByName(d, "reviewer_2").querySelector(".v3-meta[title]")) === "Do not disturb");
+  ok("4.8 the attention badges stay in this grouping", textOf(attention(rowByName(d, "planner"))).startsWith("Focus ") && textOf(attention(rowByName(d, "reviewer_2"))).startsWith("Do not disturb "));
   ok("4.9 the heartbeat line belongs to the status grouping, and the endpoints stay last here too", d.querySelector(".v3-eprow[style]") === null
     && d.querySelector("main .ui-col")?.lastElementChild?.classList.contains("v3-epsec") === true);
   const hostless = sections(view({ roster: [...ROSTER, entry("local.h", "hollow", "idle", { connector: "pi" })] }, HOST_ROUTE));
   ok("4.10 an agent that reports no host is in a last group of its own", hostless.at(-1)?.label === "No host reported" && names(hostless.at(-1)!).join() === "hollow" && hostless.length === 3, hostless.map((x) => x.label));
   ok("4.11 an offline agent stays under its host, dimmed", rowByName(d, "scout").classList.contains("v3-arow-off") && activity(rowByName(d, "scout")) === "Last heartbeat 09:12");
-  ok("4.12 the toggle says which grouping is on", Array.from(d.querySelectorAll(".v3-toggle button")).map((b) => `${textOf(b)}=${b.getAttribute("aria-pressed")}`).join() === "Status=false,Host=true");
+  ok("4.12 the toggle says which grouping is on", groupBy(d).map((b) => `${textOf(b)}=${b.getAttribute("aria-checked")}`).join() === "Status=false,Host=true");
 }
 
 {
   const unsure = view({ roster: [entry("local.u", "ursa", "working", { connector: "codex", host: "h1", activity: "Reviewing the diff", progress: { kind: "unknown" } })] }, HOST_ROUTE);
   same("4.13 the host grouping leaves the activity as the agent wrote it, beside the Working pill",
-    [activity(rowByName(unsure, "ursa")), textOf(unsure.querySelector(".v3-spill"))], ["Reviewing the diff", "Working"]);
+    [activity(rowByName(unsure, "ursa")), textOf(pill(unsure.querySelector(".v3-arow") ?? gone()))], ["Reviewing the diff", "Working"]);
 }
 
 // 5. The Needs route
@@ -246,43 +254,43 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
 // 6. The empty space
 {
   const none = view({ roster: [] });
-  ok("6.1 with no agent the empty space stands in, naming the space", textOf(none.querySelector(".ui-empty b")) === "No agents on main yet." && none.querySelector(".v3-by-status") === null && none.querySelector(".v3-toggle") === null);
+  ok("6.1 with no agent the empty space stands in, naming the space", textOf(none.querySelector("main [data-slot=empty-title]")) === "No agents on main yet." && none.querySelector(".v3-by-status") === null && groupBy(none).length === 0);
   same("6.2 and still heads the page Agents", textOf(none.querySelector("main .ui-bar h1")), "Agents");
-  ok("6.3 endpoints alone are no agents, so the empty space still stands in, with the endpoints below it", view({ roster: ROSTER.filter((p) => p.card.kind !== "agent") }).querySelector(".ui-empty") !== null
+  ok("6.3 endpoints alone are no agents, so the empty space still stands in, with the endpoints below it", view({ roster: ROSTER.filter((p) => p.card.kind !== "agent") }).querySelector("main [data-slot=empty]") !== null
     && textOf(view({ roster: ROSTER.filter((p) => p.card.kind !== "agent") }).querySelector(".v3-epsec")).includes("manager"));
-  ok("6.4 an offline agent is still an agent, so the list stands", view({ roster: ROSTER.filter((p) => p.status === "offline") }).querySelector(".ui-empty") === null);
-  same("6.5 the Needs route shows the empty space too", textOf(view({ roster: [] }, NEEDS_ROUTE).querySelector(".ui-empty b")), "No agents on main yet.");
+  ok("6.4 an offline agent is still an agent, so the list stands", view({ roster: ROSTER.filter((p) => p.status === "offline") }).querySelector("main [data-slot=empty]") === null);
+  same("6.5 the Needs route shows the empty space too", textOf(view({ roster: [] }, NEEDS_ROUTE).querySelector("main [data-slot=empty-title]")), "No agents on main yet.");
 }
 
 // 7. Mounted: the toggle and its saving
 const KEY = "cotal.agents.group";
-const pressed = (root: ParentNode) => Array.from(root.querySelectorAll(".v3-toggle button")).map((b) => `${textOf(b)}=${b.getAttribute("aria-pressed")}`).join();
-const click = (root: ParentNode, label: string) => (Array.from(root.querySelectorAll(".v3-toggle button")).find((b) => textOf(b) === label) as HTMLButtonElement).click();
+const pressed = (root: ParentNode) => groupBy(root).map((b) => `${textOf(b)}=${b.getAttribute("aria-checked")}`).join();
+const click = (root: ParentNode, label: string) => groupBy(root).find((b) => textOf(b) === label)!.click();
 const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
 {
   localStorage.clear();
   const store = seed();
-  const m = await mount(createElement(AgentsView, { store, clock: () => NOW }));
+  const m = await mount(inShell(createElement(AgentsView, { store, clock: () => NOW })));
   ok("7.1 with nothing saved the view opens grouped by status", pressed(m.container) === "Status=true,Host=false" && labels(m.container) === "Waiting,Working,Idle,Offline", labels(m.container));
   await m.run(() => click(m.container, "Host"));
-  ok("7.2 Host regroups by host and each row takes its status word", pressed(m.container) === "Status=false,Host=true" && labels(m.container) === "build-box,mbp-david" && m.container.querySelectorAll(".v3-spill").length === 6, labels(m.container));
+  ok("7.2 Host regroups by host and each row takes its status word", pressed(m.container) === "Status=false,Host=true" && labels(m.container) === "build-box,mbp-david" && Array.from(m.container.querySelectorAll(".v3-arow")).filter((r) => pill(r) !== null).length === 6, labels(m.container));
   ok("7.3 the choice is saved in this browser", localStorage.getItem(KEY) === "host", localStorage.getItem(KEY));
   await m.run(() => click(m.container, "Status"));
   ok("7.4 Status goes back, and that is saved too", labels(m.container) === "Waiting,Working,Idle,Offline" && localStorage.getItem(KEY) === "status", localStorage.getItem(KEY));
   await m.run(() => click(m.container, "Host"));
   await m.unmount();
-  const again = await mount(createElement(AgentsView, { store, clock: () => NOW }));
+  const again = await mount(inShell(createElement(AgentsView, { store, clock: () => NOW })));
   ok("7.5 a reload opens in the saved grouping", pressed(again.container) === "Status=false,Host=true" && labels(again.container) === "build-box,mbp-david", pressed(again.container));
   await again.unmount();
-  const addressed = await mount(createElement(AgentsView, { store, group: "status", focusWaiting: true, clock: () => NOW }));
+  const addressed = await mount(inShell(createElement(AgentsView, { store, group: "status", focusWaiting: true, clock: () => NOW })));
   ok("7.6 a view the address pins to status ignores the saved host (the Needs route)", labels(addressed.container) === "Waiting,Working,Idle,Offline", labels(addressed.container));
   await addressed.unmount();
   localStorage.setItem(KEY, "status");
-  const hostRoute = await mount(createElement(AgentsView, { store, group: "host", clock: () => NOW }));
+  const hostRoute = await mount(inShell(createElement(AgentsView, { store, group: "host", clock: () => NOW })));
   ok("7.7 and one the address pins to host ignores the saved status", labels(hostRoute.container) === "build-box,mbp-david", labels(hostRoute.container));
   await hostRoute.unmount();
   localStorage.setItem(KEY, "sideways");
-  const junk = await mount(createElement(AgentsView, { store, clock: () => NOW }));
+  const junk = await mount(inShell(createElement(AgentsView, { store, clock: () => NOW })));
   ok("7.8 a saved value that is neither grouping is ignored", pressed(junk.container) === "Status=true,Host=false", pressed(junk.container));
   await junk.unmount();
   localStorage.clear();
@@ -304,7 +312,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     let crashed: unknown;
     const errors = await errorsDuring(async () => {
       try {
-        m = await mount(createElement(AgentsView, { store: seed(), clock: () => NOW }));
+        m = await mount(inShell(createElement(AgentsView, { store: seed(), clock: () => NOW })));
         await m.run(() => click(m!.container, "Host"));
       } catch (e) {
         crashed = e;
@@ -312,7 +320,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     });
     ok("7.11 with storage blocked the view still draws, and the toggle still regroups for this page",
       crashed === undefined && m !== undefined && labels(m.container) === "build-box,mbp-david" && errors.length === 0, { labels: m && labels(m.container), errors, crashed: String(crashed) });
-    ok("7.12 and a server render with no storage at all draws the groups", parse(renderToString(createElement(AgentsView, { store: seed(), clock: () => NOW }))).querySelector(".v3-by-status") !== null);
+    ok("7.12 and a server render with no storage at all draws the groups", parse(renderToString(inShell(createElement(AgentsView, { store: seed(), clock: () => NOW })))).querySelector(".v3-by-status") !== null);
     await m?.unmount();
   } finally {
     if (real) Object.defineProperty(g, "localStorage", real);
@@ -325,21 +333,21 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   const proto = (dom.window as unknown as { HTMLElement: { prototype: { scrollIntoView?: (arg?: unknown) => void } } }).HTMLElement.prototype;
   proto.scrollIntoView = function (this: Element, arg?: unknown) { scrolled.push({ on: this, arg }); };
   try {
-    const m = await mount(createElement(AgentsView, { store: seed(), group: "status", focusWaiting: true, clock: () => NOW }));
+    const m = await mount(inShell(createElement(AgentsView, { store: seed(), group: "status", focusWaiting: true, clock: () => NOW })));
     const head = sections(m.container)[0].head;
     ok("8.1 the Needs route scrolls the Waiting group into view", scrolled.length === 1 && scrolled[0].on === head && JSON.stringify(scrolled[0].arg) === '{"block":"start"}', scrolled.length);
     ok("8.2 and focuses it, so the keyboard starts there", document.activeElement === head);
     await m.unmount();
     scrolled.length = 0;
-    const plain = await mount(createElement(AgentsView, { store: seed(), clock: () => NOW }));
+    const plain = await mount(inShell(createElement(AgentsView, { store: seed(), clock: () => NOW })));
     ok("8.3 the Agents route does neither", scrolled.length === 0 && document.activeElement === document.body);
     await plain.unmount();
-    const empty = await mount(createElement(AgentsView, { store: seed({ roster: without("local.rv2") }), group: "status", focusWaiting: true, clock: () => NOW }));
+    const empty = await mount(inShell(createElement(AgentsView, { store: seed({ roster: without("local.rv2") }), group: "status", focusWaiting: true, clock: () => NOW })));
     ok("8.4 with nobody waiting there is nothing to scroll to", scrolled.length === 0);
     const lateStore = seed({ roster: without("local.rv2") });
     await empty.unmount();
-    const later = await mount(createElement(AgentsView, { store: lateStore, group: "status", focusWaiting: true, clock: () => NOW }));
-    const toggle = later.container.querySelector(".v3-toggle button") as HTMLButtonElement;
+    const later = await mount(inShell(createElement(AgentsView, { store: lateStore, group: "status", focusWaiting: true, clock: () => NOW })));
+    const toggle = groupBy(later.container)[0];
     toggle.focus();
     await later.run(() => lateStore.set({ roster: ROSTER }));
     ok("8.5 an agent that starts waiting after the arrival neither scrolls nor takes the reader's focus", scrolled.length === 0 && document.activeElement === toggle && sections(later.container)[0].label === "Waiting", { scrolled: scrolled.length, active: document.activeElement?.tagName });
@@ -349,7 +357,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     await later.unmount();
 
     const loadStore = seed({ roster: [] });
-    const loading = await mount(createElement(AgentsView, { store: loadStore, group: "status", focusWaiting: true, clock: () => NOW }));
+    const loading = await mount(inShell(createElement(AgentsView, { store: loadStore, group: "status", focusWaiting: true, clock: () => NOW })));
     await loading.run(() => loadStore.set({ roster: ROSTER }));
     const loadedHead = sections(loading.container)[0].head;
     ok("8.7 a roster still loading when the Needs route opens is waited for: the Waiting group is focused once it arrives", scrolled.length === 1 && scrolled[0].on === loadedHead && document.activeElement === loadedHead, scrolled.length);
@@ -363,9 +371,9 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
       return createElement(AgentsView, { store: reentry, group: "status", focusWaiting: on, clock: () => NOW });
     };
     scrolled.length = 0;
-    const flipped = await mount(createElement(Flip));
+    const flipped = await mount(inShell(createElement(Flip)));
     await flipped.run(() => setOn(false));
-    (flipped.container.querySelector(".v3-toggle button") as HTMLButtonElement).focus();
+    groupBy(flipped.container)[0].focus();
     await flipped.run(() => setOn(true));
     ok("8.8 leaving the route and arriving on it again focuses the Waiting group again", scrolled.length === 2 && document.activeElement === sections(flipped.container)[0].head, scrolled.length);
     await flipped.unmount();
@@ -378,12 +386,12 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
 {
   const picked: string[] = [];
   const store = seed();
-  const m = await mount(createElement(AgentsView, { store, onPick: (id) => picked.push(id), clock: () => NOW }));
+  const m = await mount(inShell(createElement(AgentsView, { store, onPick: (id) => picked.push(id), clock: () => NOW })));
   await m.run(() => (rowByName(m.container, "sven") as HTMLButtonElement).click());
   await m.run(() => (rowByName(m.container, "reviewer_2") as HTMLButtonElement).click());
   same("9.1 a click on a row tells the caller which agent, by id", picked, ["local.sve", "local.rv2"]);
   await m.unmount();
-  const bare = await mount(createElement(AgentsView, { store, clock: () => NOW }));
+  const bare = await mount(inShell(createElement(AgentsView, { store, clock: () => NOW })));
   let failed: unknown;
   try { await bare.run(() => (rowByName(bare.container, "david") as HTMLButtonElement).click()); } catch (e) { failed = e; }
   ok("9.2 a row with nobody listening still clicks", failed === undefined);
@@ -401,7 +409,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
 }
 {
   const store = seed();
-  const m = await mount(createElement(AgentsView, { store, selected: "local.dav", clock: () => NOW }));
+  const m = await mount(inShell(createElement(AgentsView, { store, selected: "local.dav", clock: () => NOW })));
   const row = rowByName(m.container, "david") as HTMLButtonElement;
   row.focus();
   const errors = await errorsDuring(async () => {
@@ -424,7 +432,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   globalThis.setInterval = ((fn: () => void, ms?: number) => { const id = realSet(fn, ms); live.add(id); return id; }) as typeof setInterval;
   globalThis.clearInterval = ((id: Parameters<typeof clearInterval>[0]) => { live.delete(id); realClear(id); }) as typeof clearInterval;
   try {
-    const m = await mount(createElement(AgentsView, { store: seed(), clock: () => clock }));
+    const m = await mount(inShell(createElement(AgentsView, { store: seed(), clock: () => clock })));
     same("10.1 the line starts at the age of the stalest live heartbeat", line(m.container), "Oldest heartbeat among live agents: 2s ago");
     clock += 3000;
     await m.run(() => new Promise<void>((resolve) => setTimeout(resolve, 1200)));
@@ -432,10 +440,10 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     ok("10.3 the view holds a timer while mounted", live.size > 0, live.size);
     await m.unmount();
     ok("10.4 and unmounting stops every timer it started", live.size === 0, live.size);
-    const offline = await mount(createElement(AgentsView, { store: seed({ roster: ROSTER.filter((p) => p.status === "offline" || p.card.kind !== "agent") }), clock: () => clock }));
+    const offline = await mount(inShell(createElement(AgentsView, { store: seed({ roster: ROSTER.filter((p) => p.status === "offline" || p.card.kind !== "agent") }), clock: () => clock })));
     ok("10.5 a view with no heartbeat line to redraw holds no timer", live.size === 0 && line(offline.container) === "", live.size);
     await offline.unmount();
-    const host = await mount(createElement(AgentsView, { store: seed(), group: "host", clock: () => clock }));
+    const host = await mount(inShell(createElement(AgentsView, { store: seed(), group: "host", clock: () => clock })));
     ok("10.6 nor does the host grouping, which draws none", live.size === 0, live.size);
     await host.unmount();
   } finally {
@@ -468,7 +476,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   const first12 = crew.slice(0, 12).map((p) => p.card.id);
 
   const a = watcher();
-  const m = await mount(createElement(AgentsView, { store: seed({ roster: crew }), controller: a.controller, clock: () => NOW }));
+  const m = await mount(inShell(createElement(AgentsView, { store: seed({ roster: crew }), controller: a.controller, clock: () => NOW })));
   same("11.1 fourteen working agents hold the work of twelve open, the first twelve in display order, each once",
     [a.held(), a.calls.length], [first12, 12]);
   await m.unmount();
@@ -476,7 +484,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
 
   const b = watcher();
   const store = seed({ roster: crew });
-  const n = await mount(createElement(AgentsView, { store, controller: b.controller, clock: () => NOW }));
+  const n = await mount(inShell(createElement(AgentsView, { store, controller: b.controller, clock: () => NOW })));
   await n.run(() => store.set({ roster: crew.map((p) => (p.card.id === "local.w03" ? { ...p, status: "idle" as const } : p)) }));
   same("11.3 a working agent that turns idle closes its work, and the next working row takes its place",
     [b.calls.includes("close local.w03"), b.held()], [true, [...first12.filter((id) => id !== "local.w03"), "local.w12"]]);
@@ -487,7 +495,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   const start = { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "Bash", timestamp: ts };
   const dav = ROSTER.filter((p) => p.card.id === "local.dav");
   const c = watcher();
-  const live = await mount(createElement(AgentsView, { store: seed({ roster: dav, sessions: { "local.dav": session([start]) } }), controller: c.controller, clock: () => NOW }));
+  const live = await mount(inShell(createElement(AgentsView, { store: seed({ roster: dav, sessions: { "local.dav": session([start]) } }), controller: c.controller, clock: () => NOW })));
   const row = rowByName(live.container, "david");
   const step = row.querySelector(".ox-now");
   const link = row.parentElement?.querySelector(":scope > a.ox-act") ?? null;
@@ -501,7 +509,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     textOf(row.querySelector(".v3-aact")) === "Editing packages/core/src/presence.ts" && row.querySelector(".v3-aact.ox-shimmer, .v3-aact .ox-shimmer") === null);
   await live.unmount();
   const ended = { type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: "c1", isError: false }, timestamp: ts + 1000 };
-  const done = await mount(createElement(AgentsView, { store: seed({ roster: dav, sessions: { "local.dav": session([start, ended]) } }), controller: watcher().controller, clock: () => NOW }));
+  const done = await mount(inShell(createElement(AgentsView, { store: seed({ roster: dav, sessions: { "local.dav": session([start, ended]) } }), controller: watcher().controller, clock: () => NOW })));
   const quiet = rowByName(done.container, "david");
   ok("11.6 a working row whose call has finished shows no step line, and keeps View work", quiet.querySelector(".ox-now") === null && textOf(quiet.parentElement?.querySelector(":scope > a.ox-act")) === "View work");
   await done.unmount();
@@ -509,7 +517,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   same("11.7 the Working group's spokes turn and no other group's icon does",
     heads.map((h) => [h.label, h.head.querySelector("svg")?.classList.contains("ox-spin") ?? false]), [["Waiting", false], ["Working", true], ["Idle", false], ["Offline", false]]);
   const e = watcher();
-  const stale = await mount(createElement(AgentsView, { store: seed({ roster: crew, stale: [{ kind: "refused", name: "roster", reason: "observer presence watch silent" }] }), controller: e.controller, clock: () => NOW }));
+  const stale = await mount(inShell(createElement(AgentsView, { store: seed({ roster: crew, stale: [{ kind: "refused", name: "roster", reason: "observer presence watch silent" }] }), controller: e.controller, clock: () => NOW })));
   same("11.8 while the roster is only last seen no row reads its agent's work, since presence cannot say who works now", [e.calls.length, e.held()], [0, []]);
   await stale.unmount();
 }

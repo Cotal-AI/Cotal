@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Button } from "#client/ui/shadcn/button.tsx";
 import { markdownSegments } from "../../lib/md.js";
 import { Code } from "./Code.tsx";
 
@@ -26,7 +27,7 @@ export function Prose({ src, className, clamp = true }: { src: string; className
         ) : (
           <div key={i} className={long && !open && textLength(s.html) > CLAMP ? "ox-prose ui-clamp" : "ox-prose"} dangerouslySetInnerHTML={{ __html: s.html }} />
         ))}
-      {long && <button type="button" className="ui-more" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Show less" : "Show more"}</button>}
+      {long && <Button type="button" variant="link" size="sm" className="px-0" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Show less" : "Show more"}</Button>}
     </div>
   );
 }

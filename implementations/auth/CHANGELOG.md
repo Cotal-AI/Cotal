@@ -1,5 +1,159 @@
 # @cotal-ai/auth
 
+## 0.151.0
+
+### Patch Changes
+
+- c986cc1: Host permission-scoped endpoint discovery inside the auth service with explicit registry opt-in.
+  
+  The builtin auth-service preset accepts `--registry`; multi-space auth manifests enable it per entry. Embedders supply `registryService` through the same auth lifecycle. Signing authority stays in auth, reader and serving credentials stay separate, serving renewal uses the native issuance fence, and restart recovery retains the original instance and native gate operation. The registry is disabled by default and stops with its auth plane.
+- dacb515: `cotal login` no longer warns that chat refuses when you have saved a chat name, and a refused chat name now names the remedy the surface you use offers. When no handle is recorded and no name is saved, `cotal login` names both `--name` and `cotal config set name`; with a saved name it says chat sessions use it. `resolveChatName` now requires the caller's own `remedy` option, so `cotal chat` still offers `--name` and the terminal app offers Change your name (ctrl+p). A sign-in with no handle on record now also lists that remedy.
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [6e67bbf]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+  - @cotal-ai/lang@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- Updated dependencies [8e2ba65]
+- Updated dependencies [8ff39d3]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/lang@0.150.0
+  - @cotal-ai/workspace@0.150.0
+
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- 7068f2b: Batch workflow inventory record reads so a few hundred completed runs do not require separate reads for every record. Preserve dotted endpoint names, program validation, deleted-record handling and unreadable revocation reporting. Only list credentials gain the records Direct Get permission; single-run reads and checkpoint answers keep their existing permissions.
+- Updated dependencies [7068f2b]
+- Updated dependencies [2d497ad]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+  - @cotal-ai/workspace@0.149.0
+  - @cotal-ai/lang@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.2
+  - @cotal-ai/lang@0.148.2
+  - @cotal-ai/workspace@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+  - @cotal-ai/lang@0.148.1
+  - @cotal-ai/workspace@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+  - @cotal-ai/workspace@0.148.0
+  - @cotal-ai/lang@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.8
+  - @cotal-ai/lang@0.147.8
+  - @cotal-ai/workspace@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.7
+  - @cotal-ai/lang@0.147.7
+  - @cotal-ai/workspace@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.6
+  - @cotal-ai/lang@0.147.6
+  - @cotal-ai/workspace@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.5
+  - @cotal-ai/lang@0.147.5
+  - @cotal-ai/workspace@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- c733b63: Let remote manager boot scans skip cleared goal-index entries so a terminal goal does not prevent reconciliation of remaining live goals. Keep purged entries and malformed live rows as errors.
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+  - @cotal-ai/lang@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+  - @cotal-ai/lang@0.147.3
+  - @cotal-ai/workspace@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- 30d8538: An @mention at the end of a sentence, such as `thanks @ops-lead.`, now reaches the person it names. `mentionsIn` ends each name on a letter, digit or `_`, because a chat name cannot end in `.` or `-`, so `cotal send`, `cotal chat`, the console and the dashboard no longer store the mention as `ops-lead.`. When a chat session's default name breaks the chat name rule, such as an OS login of `John Doe`, the refusal prints on its own and names `--name` and `cotal config set name`, and for a handle an older cotal recorded, signing in again. `cotal login` prints the chat name it recorded, or `none` with how to save one.
+- ecd837e: Avoid checking alias custody twice within one root-credential validation pass. The existing later root mapping check, explicit descendant alias check, and independent pre-sign and post-sign authority reads remain in place.
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+  - @cotal-ai/workspace@0.147.2
+  - @cotal-ai/lang@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+  - @cotal-ai/lang@0.147.1
+  - @cotal-ai/workspace@0.147.1
+
+## 0.147.0
+
+### Minor Changes
+
+- b8b0ff4: `cotal chat` opens a session under one stable name that agents can mention, with no random suffix. Without `--name`, it takes the new `name` preference (`cotal config set name <name>`), else your handle on a user-auth space, else your OS login on an open or static space. Every chat name is 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_`, so an `@name` reaches it. Breaking: `--name` no longer accepts a name outside that rule, such as one with a space or an `@`. `cotal login` now records a handle, the IdP's preferred user name, else its email's local part, else its name, the first that is a valid chat name, and `userStatus` returns it as `login.name`. The email is never the handle, so it does not appear in the roster. A user-auth sign-in made by an older cotal, or one whose IdP gives no valid chat name, has no handle on record, so `cotal chat` refuses with `AUTH_REQUIRED` until you sign in again or save a name. Once a `name` preference is saved, an older cotal refuses every preferences read with `defaults has an unknown key "name"` until it is upgraded or this version removes the name with `cotal config unset name`. The workspace exports `resolveChatName`, `chatNameProblem`, `nameInUse` and `nameInUseText`, and a second session under a name in use is warned with both ways to change it.
+
+### Patch Changes
+
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+  - @cotal-ai/workspace@0.147.0
+  - @cotal-ai/lang@0.147.0
+
 ## 0.146.0
 
 ### Patch Changes

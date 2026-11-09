@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
-import { isLoopbackLiteral } from "./loopback.js";
+import { isCredentialTransportUrl } from "./loopback.js";
 import { assertLifecycleToken, assertValidOwnerToken } from "./subjects.js";
 
 /** The env var naming the handoff file inside the child. It carries a path, never a secret. */
@@ -69,7 +69,7 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
   } catch {
     throw new Error("the managed handoff's exchangeUrl is not a URL");
   }
-  if (exchange.protocol !== "https:" && !(exchange.protocol === "http:" && isLoopbackLiteral(exchange.hostname)))
+  if (!isCredentialTransportUrl(exchange))
     throw new Error("the managed handoff's exchangeUrl must be https://, except for a loopback HTTP literal");
   for (const k of LIST_FIELDS)
     if (!Array.isArray(doc[k]) || !(doc[k] as unknown[]).every((s) => typeof s === "string"))

@@ -1,11 +1,8 @@
-// Copied from the shadcn/ui registry, version 4.22.1 (radix base, Rhea style, Hugeicons icons) on
-// 2026-10-22. MIT licence, copyright (c) 2023 shadcn.
-// Edited: imports are relative with their extensions and `cn` comes from ./lib/utils.ts.
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "./lib/utils.ts"
+import { cn } from "cn"
 
-import { Button } from "./button.tsx"
+import { Button } from "#client/ui/shadcn/button.tsx"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Tick02Icon, Copy01Icon } from "@hugeicons/core-free-icons"
 
