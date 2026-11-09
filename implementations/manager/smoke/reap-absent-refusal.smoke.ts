@@ -176,25 +176,25 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
       (ts.isTypeOfExpression(outer) ? out.probes : out.bypass).push(`${where(node)} (line ${line(node)})`);
     }
     if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
-      const key = bindingKey(node.propertyName ?? node.name);
+      const key = node.dotDotDotToken ? undefined : bindingKey(node.propertyName ?? node.name);
       const declaration = node.parent.parent;
       const fromRuntime = ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined && isRuntime(declaration.initializer);
       if (key === "reap" || (key === undefined && fromRuntime)) out.bypass.push(`${where(node)} (line ${line(node)})`);
     }
-    // Reflect.get(rt, "reap"), Object.values(rt), and `{ ...rt }` reach reap without naming it. A call
-    // that merely takes the runtime, such as the guard or a spawn, does not: it is not an enumeration.
+    // Reflect.get(rt, "reap"), Object.values(rt), and `{ ...rt }` reach reap without naming it, and so
+    // does the same form on a runtimeFor result. A call that merely takes the runtime, such as the
+    // guard or a spawn, does not: it is not an enumeration.
     const calleeText = (expr: ts.Expression): string => {
       const bare = unwrap(expr);
       if (ts.isPropertyAccessExpression(bare) || ts.isElementAccessExpression(bare)) return calleeText(bare.expression);
       return bare.getText(source);
     };
-    const handsOut = (expr: ts.Expression): boolean => isRuntime(expr) && !isRuntimeCall(unwrap(expr));
     if (ts.isCallExpression(node)) {
       const callee = calleeText(node.expression);
-      if ((callee === "Reflect" || callee === "Object") && node.arguments.some(handsOut))
+      if ((callee === "Reflect" || callee === "Object") && node.arguments.some((arg) => isRuntime(arg)))
         out.bypass.push(`${where(node)} (line ${line(node)})`);
     }
-    if ((ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) && handsOut(node.expression))
+    if ((ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) && isRuntime(node.expression))
       out.bypass.push(`${where(node)} (line ${line(node)})`);
     ts.forEachChild(node, visit);
   };
@@ -235,6 +235,18 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
   ["an unreadable key on a runtimeFor result is a bypass",
     fixture('  private async later() { const key = "reap"; await this.runtimeFor(kind)[key](ref); }'),
     (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a rest binding of the runtime is a bypass",
+    fixture('  private async later() { const { kind, ...rest } = this.requiredRuntime; }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
+  ["a reflective read of a runtimeFor result is a bypass",
+    fixture('  private async later() { await Reflect.get(this.runtimeFor(kind), "reap")(ref); }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
+  ["Object.values of a runtimeFor result is a bypass",
+    fixture('  private async later() { Object.values(this.runtimeFor(kind)); }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
+  ["a spread of a runtimeFor result is a bypass",
+    fixture('  private async later() { const copy = { ...this.runtimeFor(kind) }; }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
 ];
 for (const [name, text, holds] of instrument) {
   const c = censusReaps("fixture.ts", text);
