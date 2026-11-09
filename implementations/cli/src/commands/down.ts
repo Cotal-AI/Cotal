@@ -167,7 +167,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
-  if (typeof args.values.file === "string" && args.values["dry-run"] === true && args.values.run === undefined) {
+  if (typeof args.values.file === "string" && args.values["dry-run"] === true && args.values.run === undefined && recordedStackPreview()) {
     const reason = manifestRead(args.values.file);
     if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: args.values.file } });
   }
@@ -552,10 +552,10 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if ((values.file || values.run) && values.space) {
     throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
-  if (values.file && values["dry-run"] && values.run === undefined) {
+  if (values.file && values["dry-run"] && values.run === undefined && recordedStackPreview()) {
     const reason = manifestRead(values.file);
     if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: values.file } });
-    if (recordedStackPreview()) return previewWholeStack(args);
+    return previewWholeStack(args);
   }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
