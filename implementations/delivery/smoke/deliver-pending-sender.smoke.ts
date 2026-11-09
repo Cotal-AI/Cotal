@@ -5,7 +5,7 @@
  *
  * A plain candidate line names the subject's sender principal as `from=` and prints the card only as
  * a trailing `label=`, sanitized: a healthy card, a card naming another principal, and a card that
- * carries control bytes and a line break. `--json` keeps its legacy candidate lines byte for byte.
+ * carries control bytes and a line break. `--json` prints those same principals inside one document.
  * `cotal pending` names the same subject principal as each candidate's `from` in `--json` and
  * `--plain`, within `--limit`, and keeps its partial cleanup warning. No read changes the durable's
  * pending or ack state, and every read opens as many consumers as the first `--json` read does.
@@ -184,15 +184,9 @@ try {
   );
 
   check("the --json read exits 0", jsonBefore.code === 0 && jsonAfter.code === 0, [jsonBefore.stderr, jsonAfter.stderr]);
-  const facts = JSON.parse(jsonBefore.stdout.split("\n")[0]) as unknown;
-  const legacy = [
-    JSON.stringify(facts),
-    "recent candidate ids (from the ack floor; not proof of a hole)",
-    ...[ok, claimed, escaped].map((m) => `  ${m.id}  from=[object Object]  ts=${m.ts}`),
-    "",
-  ].join("\n");
-  check("--json prints the legacy candidate lines unchanged", jsonBefore.stdout === legacy, jsonBefore.stdout);
-  check("--json output is identical before and after the plain read", jsonAfter.stdout === jsonBefore.stdout);
+  const legacyDoc = (stdout: string) => JSON.parse(stdout) as { result: { candidates: Array<{ id: string; from: string; ts: number }> } };
+  const before = legacyDoc(jsonBefore.stdout);
+  check("--json output is one document and is identical before and after the plain read", jsonAfter.stdout === jsonBefore.stdout && jsonBefore.stdout === `${JSON.stringify(before)}\n`);
   const doc = (r: { stdout: string }) => JSON.parse(r.stdout) as { completeness?: string; warnings: Array<{ code: string }>; result: { candidates: unknown[]; candidateRead: string; candidateLimit: number } };
   const [full, limited] = [doc(modernJson), doc(modernLimited)];
   check(
@@ -203,6 +197,11 @@ try {
     [modernJson.code, modernPlain.code, modernLimited.code, full.warnings, modernPlain.stderr],
   );
   const subjectRows = [[ok, healthy], [claimed, forger], [escaped, forger]] as const;
+  check(
+    "deliver pending --json names each candidate by its subject principal, never the claimed one",
+    JSON.stringify(before.result.candidates) === JSON.stringify(subjectRows.map(([m, s]) => ({ id: m.id, from: s.principal, ts: m.ts }))),
+    before.result.candidates,
+  );
   check(
     "pending --json names each candidate by its subject principal, never the claimed one",
     JSON.stringify(full.result.candidates) === JSON.stringify(subjectRows.map(([m, s]) => ({ id: m.id, from: s.principal, ts: m.ts }))),

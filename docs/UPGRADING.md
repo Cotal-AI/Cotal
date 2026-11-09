@@ -1394,8 +1394,8 @@ user-auth or open target gets no static-signing fallback.
 
 Use `cotal pending <agent>` to read native DM durable counts and bounded candidate IDs as one JSON
 or plain document. `--durable <exact-dm-durable>` targets an older lifecycle directly. The retained
-`deliver pending` spelling still uses its earlier output shape. Scripts must move to the `result`
-fields instead of assuming the old per-line format. Candidate IDs do not prove that the recipient
+`deliver pending` spelling prints the same plain lines as before. Its `--json` output is one
+document, with the candidate ids and a refused not-found outcome inside it. Candidate IDs do not prove that the recipient
 received a message or that the message history is complete. This route works only with the
 static-auth or open admin read authority. User-auth has no matching view yet.
 

@@ -636,18 +636,19 @@ manifest names, in one process; see [server daemons](#server-daemons). `deliver 
 is an operator-only read over one recipient's DM durable, for the moment after a send when the
 question is "what does the broker actually hold for them." It resolves `<name>` against a short
 presence watch (an `offline` card still counts, since the recipient may be dead, that is what
-the verb exists to inspect); when neither a card nor the durable can be found, it prints
-`✗ not-found: no agent "<name>" and no DM durable for it in space <s>` and exits non-zero, never
-`pending 0`. On a match it prints the durable name and one fact per line: `pending`,
+the verb exists to inspect). When neither a card nor the durable can be found, it refuses
+with `not-found` and exits non-zero, never `pending 0`. On a match it prints the durable name and one fact per line: `pending`,
 `ack-pending`, `delivered`, `ack-floor`, `created`, `frontier`, and the stream's `max_age` /
-`max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
-by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
-heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
-there, not proof that nothing was lost. Each plain candidate line prints `from=` with the sender
-principal parsed from the stored message subject, which the broker binds to the sender's
-credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
-The label is the sender's claim and can name another agent; control characters and brackets in it
-print as spaces. `--json` keeps its earlier candidate lines.
+`max_msgs_per_subject` / `discard` limits, followed by a bounded, unacked read of up to
+`--limit` (default 20) recent candidate message ids under the heading `recent candidate ids
+(from the ack floor; not proof of a hole)`, a list of what is there, not proof that nothing
+was lost. Each plain candidate line prints `from=` with the sender principal parsed from the
+stored message subject, which the broker binds to the sender's credential, then `ts=`, then
+`label=` with the name and role the sender wrote in its own message. The label is the
+sender's claim and can name another agent; control characters and brackets in it print as
+spaces. `--json` prints the same facts and those candidate ids as one object, with each
+candidate's `from` set to that subject principal. A name or durable that is not found is the
+same object with a refused outcome, not an empty stdout.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,

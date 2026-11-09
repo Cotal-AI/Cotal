@@ -747,7 +747,7 @@ try {
   const daveGone = await run(["deliver", "pending", "dave", "--creds", adminCreds, "--space", space, "--server", servers]);
   check(
     "`deliver pending dave` by name after the card expired exits non-zero with not-found",
-    daveExpired && daveGone.code !== 0 && /not-found: no agent "dave"/.test(daveGone.stderr),
+    daveExpired && daveGone.code !== 0 && /not-found/i.test(`${daveGone.stderr}\n${daveGone.stdout}`) && /no agent "dave"/.test(`${daveGone.stderr}\n${daveGone.stdout}`),
     { code: daveGone.code, stderr: daveGone.stderr },
   );
   const daveExpiredByDurable = await run(["deliver", "pending", "dave", "--durable", daveDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
@@ -759,7 +759,7 @@ try {
 
   const pendingMissing = await run(["deliver", "pending", "nobody-here-either", "--creds", adminCreds, "--space", space, "--server", servers]);
   check("`deliver pending` on an absent name exits non-zero", pendingMissing.code !== 0, pendingMissing.code);
-  check("`deliver pending` on an absent name says not-found", /not-found/i.test(pendingMissing.stderr), pendingMissing.stderr);
+  check("`deliver pending` on an absent name says not-found", /not-found/i.test(`${pendingMissing.stderr}\n${pendingMissing.stdout}`), pendingMissing.stderr);
 
   const pendingWrongCreds = await run(["deliver", "pending", "bob", "--creds", explicitCreds, "--space", space, "--server", servers]);
   check(

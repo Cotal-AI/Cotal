@@ -21,7 +21,7 @@ import {
   type ParsedArgs,
   type Presence,
 } from "@cotal-ai/core";
-import { connectOrExit } from "@cotal-ai/workspace";
+import { CommandFailure, connectOrExit, writeEnvelope } from "@cotal-ai/workspace";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 
 type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string; json?: boolean };
@@ -37,14 +37,20 @@ async function pollPresence(ep: CotalEndpoint, target: string): Promise<Presence
   return peer;
 }
 
-function notFound(name: string, space: string): never {
-  console.error(`✗ not-found: no agent "${name}" and no DM durable for it in space ${space}`);
-  process.exit(1);
+function refuse(json: boolean | undefined, message: string, target: { space: string; requested?: string; durable?: string }): never {
+  if (json) {
+    writeEnvelope({ schemaVersion: 1, command: "deliver pending", target, outcome: "refused", completeness: "not-checked", result: null, warnings: [], error: { code: "TARGET_NOT_FOUND", message } });
+    process.exit(2);
+  }
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target });
 }
 
-function notFoundDurable(durable: string, space: string): never {
-  console.error(`✗ not-found: no DM durable "${durable}" in space ${space}`);
-  process.exit(1);
+function notFound(name: string, space: string, json?: boolean): never {
+  refuse(json, `no agent "${name}" and no DM durable for it in space ${space}`, { space, requested: name });
+}
+
+function notFoundDurable(durable: string, space: string, json?: boolean): never {
+  refuse(json, `no DM durable "${durable}" in space ${space}`, { space, durable });
 }
 
 /** Inverse of {@link dmDurable} for the `dm_<owner>-<actor>-<lifecycleUid>` name form. Owner/actor
@@ -108,13 +114,16 @@ export async function runPending(args: ParsedArgs): Promise<void> {
     } finally {
       await ep.stop();
     }
-    if (!peer?.lifecycleUid) notFound(name, space);
+    if (!peer?.lifecycleUid) notFound(name, space, values.json);
     recip = parsePrincipalKey(peer.card.id) ?? undefined;
     durable = dmDurable(recip?.owner ?? name, recip?.actor ?? name, peer.lifecycleUid);
   }
   const stream = dmStream(space);
 
   const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds: conn.creds, tls }), maxReconnectAttempts: 0 });
+  let facts: { durable: string; pending: number; ackPending: number; delivered: number; ackFloor: number; created: string; frontier: number; max_age: number; max_msgs_per_subject: number; discard: string };
+  const candidates: Array<{ id: string; from: string; ts: number; label: string }> = [];
+  let candidateNote = "recent candidate ids (from the ack floor; not proof of a hole)";
   try {
     const jsm = await jetstreamManager(nc);
     let info;
@@ -122,14 +131,14 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       info = await jsm.consumers.info(stream, durable);
     } catch (e) {
       if (isConsumerNotFound(e)) {
-        if (values.durable) notFoundDurable(durable, space);
-        notFound(name, space);
+        if (values.durable) notFoundDurable(durable, space, values.json);
+        notFound(name, space, values.json);
       }
       throw e;
     }
     const streamInfo = await jsm.streams.info(stream);
     const frontier = Math.max(0, (info.config.opt_start_seq ?? 1) - 1);
-    const facts = {
+    facts = {
       durable,
       pending: info.num_pending,
       ackPending: info.num_ack_pending,
@@ -141,25 +150,12 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       max_msgs_per_subject: streamInfo.config.max_msgs_per_subject,
       discard: streamInfo.config.discard,
     };
-    if (values.json) {
-      console.log(JSON.stringify(facts));
-    } else {
-      console.log(durable);
-      console.log(`pending ${facts.pending}`);
-      console.log(`ack-pending ${facts.ackPending}`);
-      console.log(`delivered ${facts.delivered}`);
-      console.log(`ack-floor ${facts.ackFloor}`);
-      console.log(`created ${facts.created}`);
-      console.log(`frontier ${facts.frontier}`);
-      console.log(`max_age ${facts.max_age} max_msgs_per_subject ${facts.max_msgs_per_subject} discard ${facts.discard}`);
-    }
-
     // Bounded read of recent candidate ids from the ack floor - an ephemeral ordered consumer,
     // never acked, never durable. Not proof of a hole: it names what is there, nothing more.
     // Needs owner/actor to filter subjects; skipped (and said so) when neither a resolved card
     // nor an unambiguous --durable parse supplied them.
     if (!recip) {
-      console.log("recent candidate ids: not read (no resolved card)");
+      candidateNote = "recent candidate ids: not read (no resolved card)";
     } else {
       const js = jetstream(nc);
       const subjects = [unicastSubject(space, recip.owner, recip.actor, "*", "*")];
@@ -168,25 +164,19 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       try {
         const cinfo = await consumer.info(true);
         const pendingCandidates = Math.min(cinfo.num_pending, limit);
-        console.log("recent candidate ids (from the ack floor; not proof of a hole)");
         if (pendingCandidates > 0) {
           const iter = await consumer.consume({ max_messages: pendingCandidates });
           let seen = 0;
           try {
             for await (const m of iter) {
               const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from?: Partial<EndpointRef>; ts: number };
-              if (values.json) {
-                // Keep the legacy --json output unchanged, including its candidate lines.
-                console.log(`  ${body.id}  from=${String(body.from)}  ts=${body.ts}`);
-              } else {
-                // `from=` is the sender principal the broker bound into the stored subject. The card is
-                // the sender's own claim, so its name and role print last, as a label and nothing more.
-                const sender = parseSubject(m.subject)?.sender;
-                if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
-                const card = body.from;
-                const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
-                console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
-              }
+              // The broker binds the stored subject to the publishing credential. The card is the
+              // sender's own claim, so plain output prints it last, as a label and nothing more.
+              const sender = parseSubject(m.subject)?.sender;
+              if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
+              const card = body.from;
+              const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
+              candidates.push({ id: body.id, from: sender, ts: body.ts, label });
               seen++;
               if (seen >= pendingCandidates) break;
             }
@@ -201,4 +191,26 @@ export async function runPending(args: ParsedArgs): Promise<void> {
   } finally {
     await nc.drain();
   }
+  if (values.json) {
+    writeEnvelope({
+      schemaVersion: 1,
+      command: "deliver pending",
+      target: { space, requested: name, durable },
+      outcome: "ok",
+      completeness: "complete",
+      result: { ...facts, candidates: candidates.map(({ id, from, ts }) => ({ id, from, ts })) },
+      warnings: [],
+    });
+    return;
+  }
+  console.log(durable);
+  console.log(`pending ${facts.pending}`);
+  console.log(`ack-pending ${facts.ackPending}`);
+  console.log(`delivered ${facts.delivered}`);
+  console.log(`ack-floor ${facts.ackFloor}`);
+  console.log(`created ${facts.created}`);
+  console.log(`frontier ${facts.frontier}`);
+  console.log(`max_age ${facts.max_age} max_msgs_per_subject ${facts.max_msgs_per_subject} discard ${facts.discard}`);
+  console.log(candidateNote);
+  for (const row of candidates) console.log(`  ${row.id}  from=${row.from}  ts=${row.ts}${row.label}`);
 }
