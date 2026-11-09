@@ -406,7 +406,7 @@ Example:
 | `allowSubscribe` | string\[] | no       | Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter.                                                                                                                                                                                                                                                                                                                                                                         |
 | `allowPublish`   | string\[] | no       | Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter.                                                                                                                                                                                                                                                                                                                                                                           |
 | `capabilities`   | string\[] | no       | Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass \[] to clear it. Capabilities in the prompt's frontmatter are dropped.                                                                                                                                                           |
-| `endpoints`      | object\[] | no       | Optional endpoint commands written into the persona file, as \{ endpoint, commands } entries. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass \[] to clear it. Endpoints in the prompt's frontmatter are dropped.                                                                                                                                           |
+| `endpoints`      | object\[] | no       | Optional endpoint commands written into the persona file, as \{ endpoint, commands } entries, with instanceId for a command held on one instance. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass \[] to clear it. Endpoints in the prompt's frontmatter are dropped.                                                                                       |
 | `announce`       | string    | no       | Optional channel to post a one-line note on once the persona is saved. Omit it to keep the definition private to the manager's persona catalog. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal gives peers no reason to trust the request. Your post ACL applies as it does to any other message. |
 
 ## `cotal_personas`
@@ -445,16 +445,17 @@ List the endpoints registered in this space that this session can call, and for 
 
 *describe an endpoint*
 
-List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke.
+List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke, with the same instance if you pass one.
 
 * **Side-effect:** none; reads an endpoint's registered command surface.
 * **Available:** any session whose credential carries caller rows for the endpoint (describe rides them).
 * The surface is digest-verified against the contract store. Unknown fields in a reply are data.
 
-| Argument   | Type    | Required | Meaning                                                       |
-| ---------- | ------- | -------- | ------------------------------------------------------------- |
-| `endpoint` | string  | yes      | The endpoint name, e.g. com.example.orders.                   |
-| `refresh`  | boolean | no       | Resolve again instead of using this session's cached surface. |
+| Argument   | Type    | Required | Meaning                                                                                                                                                                                                                      |
+| ---------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `endpoint` | string  | yes      | The endpoint name, e.g. com.example.orders.                                                                                                                                                                                  |
+| `instance` | string  | no       | Optional instance id: call this one instance of the endpoint on its own rail, never another. Pass it when you were handed a command on one instance; cotal_orientation shows which. Omitted, the endpoint picks an instance. |
+| `refresh`  | boolean | no       | Resolve again instead of using this session's cached surface.                                                                                                                                                                |
 
 ## `cotal_invoke`
 
@@ -466,13 +467,14 @@ Call one command on a registered endpoint with JSON arguments, over this session
 * **Available:** only the commands your own credential has caller grants for; the broker refuses the rest.
 * `not-executed` means the command did not run; `unknown` means it may have. A reply over 200,000 characters of JSON is refused, not cut; ask for a smaller page. An error's message and details are held to the same limit, whether the endpoint answered with the error or the call was refused before it was sent: a message or details over it are withheld with their size, and the code and outcome still come through. Arguments refused by the input schema report outcome `not-executed`.
 
-| Argument    | Type    | Required | Meaning                                             |
-| ----------- | ------- | -------- | --------------------------------------------------- |
-| `endpoint`  | string  | yes      | The endpoint name, e.g. com.example.orders.         |
-| `command`   | string  | yes      | The command name from cotal_describe.               |
-| `args`      | record  | no       | The command's arguments as a JSON object.           |
-| `self`      | boolean | no       | Targeted commands only: act on this session itself. |
-| `timeoutMs` | number  | no       | Reply deadline in milliseconds (default 30000).     |
+| Argument    | Type    | Required | Meaning                                                                                                                                                                                                                      |
+| ----------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `endpoint`  | string  | yes      | The endpoint name, e.g. com.example.orders.                                                                                                                                                                                  |
+| `instance`  | string  | no       | Optional instance id: call this one instance of the endpoint on its own rail, never another. Pass it when you were handed a command on one instance; cotal_orientation shows which. Omitted, the endpoint picks an instance. |
+| `command`   | string  | yes      | The command name from cotal_describe.                                                                                                                                                                                        |
+| `args`      | record  | no       | The command's arguments as a JSON object.                                                                                                                                                                                    |
+| `self`      | boolean | no       | Targeted commands only: act on this session itself.                                                                                                                                                                          |
+| `timeoutMs` | number  | no       | Reply deadline in milliseconds (default 30000).                                                                                                                                                                              |
 
 ## `cotal_reconnect`
 

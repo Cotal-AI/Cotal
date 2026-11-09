@@ -3868,9 +3868,11 @@ are closed, so a revision-44 contract rejects either.
 manager MUST refuse, whatever the caller's standing, a single-label endpoint (§13.2), a reserved
 command (`describe`, `cancel`), a command that is not a command token, an empty `commands` list and
 any other key. Entries with the same endpoint and instance merge, so the order of the list does not
-change what it grants. Each command lowers to one untargeted, unjournaled caller capability on the
-endpoint's class rail (§13.9); the delegation bound measures it (§13.15), the helper's mint grants
-it, and a renewal grants it again. The reference manager refuses an entry with `instanceId`.
+change what it grants. Each command lowers to one untargeted, unjournaled caller capability (§13.9):
+on the endpoint's class rail, or with `instanceId` on that instance's rail alone, never the class
+rail. An entry with `instanceId` also lowers to that instance's `describe`, which a call that names
+the instance resolves through and the class baseline does not cover. The delegation bound measures
+every lowered capability (§13.15), the helper's mint grants it, and a renewal grants it again.
 `define-persona` checks `endpoints` against the definer as it checks `capabilities`, a kept list
 included. A user-auth manager MUST refuse a spawn or definition that names `endpoints`, `[]`
 included, because endpoint access there comes from the service owner's caller grants (§13.15).
@@ -5482,7 +5484,22 @@ those rows for the agent's own role and for each `role:<r>` token in its capabil
 hands on a role it was given either way. An endpoint command projects to the request rows an agent
 mint grants for its caller capability, with the reply rail and, for a goal-bearing command, the
 progress read, so a spawner hands on a command only when its own credential carries the same request
-row; a spawner whose grant pins one instance cannot hand on the class command. The helper's own
+row; a spawner whose grant pins one instance cannot hand on the class command. An instance-pinned
+entry projects to that instance's request row and its `describe` row, so a spawner hands it on only
+when its credential carries both; a class grant covers neither, and one instance does not cover
+another. This is row containment, not the handle containment of §13.6, which lets a child pin an
+instance under a class grant. A manager minting a helper's standing grant under this bound confers
+no authority in the sense of §13.3: that sentence is about envelope content and the `auth` slot,
+whose conferral exists only as trusted redemption. A static agent mint MUST refuse an endpoint
+capability with a `target` or `journal`, on issue and on renewal: the static lifecycle terminal has
+no obligation drain (§13.1), and an untargeted request keys the `ep` sentinel, which no retirement
+drain reads (the `oblig` record, §13.7), so a retired caller leaves nothing that drain would settle. The static
+terminal revokes the helper's ledger rows and evicts its live connections, but a static credential
+copied off disk before the despawn stays valid until it expires, up to the managed credential's
+lifetime after its last renewal, and can reconnect and call the endpoint commands it carries. This
+is a known gap against the enforced revocation §13.1 requires, the same one every static credential
+has, not a way of meeting it, and handing a helper endpoint commands widens what such a copy can
+call. The helper's own
 event channel is minted after allocation, keyed on a principal that does not exist when the bound
 runs, so it is measured as the spawner's own: a spawn that arms the helper's event plane is within
 only when the evidence permits a publish on the spawner's own event channel. A caller whose
@@ -7112,8 +7129,8 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |
 | 2026-11-09 | **A spawn result says when its seat is not woken by mesh traffic (§13.6 item 6), additive.** A connector MAY declare that an idle seat is woken only after a confirmed startup. A plain spawn of such a seat whose startup watch ended `ready` succeeds, and its result's `startupNotice` carries the connector's clause; the seat's `ps` row carries the same field. A `once` spawn of such a seat is refused as before. A reader that does not read `startupNotice` sees an ordinary success. |
-| 2026-11-04 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted class-rail caller capability, the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A single-label endpoint, a reserved command and an instance-pinned entry are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |
 | 2026-11-03 | **History limits for DMs and the backstop, and none (§4, §8).** `DM_<space>` gets a history limit like the chat stream's, with no age limit and no count limit by default, and unicast is at-least-once within it. Either part of a limit may be none (`max_age` 0, `max_msgs_per_subject` -1), and a reader MUST accept any limit an operator may set. In the reference the INBOX and DLV streams share an operator-set limit with a 2-hour age floor and 1000 per lifecycle by default, the trusted writer stamps each DLV copy with the count it wrote under (`Cotal-Delivery-Limit`, 1000 when absent), and the stored-copies notice compares against that stamp. |
 | 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |
 | 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
