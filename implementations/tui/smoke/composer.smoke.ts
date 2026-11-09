@@ -716,6 +716,22 @@ async function run(s: Space, width: number, height: number, tag: string) {
       says(named, "that is from another session under your name") && !named.includes(`↳ ${login.toUpperCase()}:`),
       named,
     )
+    const toNamesake = `for the other ${login.toUpperCase()} (${tag})`
+    await planner.ep.unicast(namesake.id, toNamesake)
+    await openRow(s, "all traffic")
+    await see((f) => inFeed(f, toNamesake))
+    keys("Up")
+    await sleep(300)
+    const up = capture()
+    click(toNamesake)
+    const notYours = await see((f) => says(f, "not sent to you"), 3000)
+    save("namesake-recipient")
+    check(
+      `${at}: in all traffic a direct message to another session under the human's name cannot be quoted: ↑ passes over it and a click refuses`,
+      !up.includes("↳ planner: “for the other") && says(notYours, "that direct message was not sent to you") && !notYours.includes("↳ planner: “for the other"),
+      `${up}\n${notYours}`,
+    )
+    await esc()
   }
   const quit = await enter("/quit", (f) => says(f, "session ended"))
   const gone = await until(() => s.reader.getRoster().find((p) => p.card.id === principal), (p) => p === undefined || p.status === "offline")
