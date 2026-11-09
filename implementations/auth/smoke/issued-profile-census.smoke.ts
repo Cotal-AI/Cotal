@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
+import { createSpaceAuth, serverConfig, isReachable, patternCovers } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
@@ -226,14 +226,20 @@ try {
     assert.deepEqual(importers.map((f) => f.slice(root.length)), []);
   });
 
-  await check("no current profile can request its own server view", async () => {
-    // Discovery needs `$SYS.REQ.USER.INFO`. If some profile already had it, adding it would not be
-    // part of the issuance change; this pins that it is.
-    // Positive control first: an emptiness result from a detector that finds nothing is worthless.
+  await check("only provisioner and teardown hold the server-view grant", async () => {
+    // These trusted profiles query their connection's account before native impact reads.
+    // Keep the holder set closed without granting discovery to peer-held profiles.
     assert.equal(holdsServerView({ pub: { allow: ["$SYS.REQ.USER.INFO"] } }), true);
     assert.equal(holdsServerView({ pub: { allow: [">"] } }), true);
     assert.equal(holdsServerView({ pub: { allow: ["cotal.x.>"] } }), false);
-    assert.deepEqual(fixtures.filter((f) => holdsServerView(f.permissions)).map((f) => `${f.profile}/${f.variant}`), []);
+    const holders = fixtures.filter((f) => holdsServerView(f.permissions));
+    assert.deepEqual(holders.map((f) => `${f.profile}/${f.variant}`).sort(), ["provisioner/default", "teardown/default"]);
+    for (const holder of holders) {
+      assert.ok(TRUSTED_PROFILES.includes(holder.profile));
+      assert.equal(PEER_HELD_PROFILES.includes(holder.profile), false);
+      const allow = (holder.permissions.pub as { allow: string[] }).allow;
+      assert.deepEqual(allow.filter((row) => patternCovers(row, "$SYS.REQ.USER.INFO")), ["$SYS.REQ.USER.INFO"]);
+    }
   });
 
   await check("the issued rail is spelled only by core's endpoint subject and grant builders", async () => {
