@@ -159,11 +159,11 @@ export async function completion(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof completionFlags>;
   const presentation = presentationOf(values);
   if (sub === undefined) {
-    const { status, unread, unsafe } = completionStatus();
+    const { status, unread, unsafe, repairs } = completionStatus();
     const count = unread.length + unsafe.reduce((sum, folder) => sum + folder.unopened, 0);
     const warnings = [...unsafe.map(folderWarning), ...unread];
     const partial = count ? { completeness: "partial" as const, warnings, partial: { message: `completion could not read ${count === 1 ? "one file" : `${count} files`}`, remedy: unread.length ? "review each named file without overwriting custom startup content" : "fix the folder the warning names, then run `cotal completion` again" } } : warnings.length ? { warnings } : {};
-    return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, (result) => statusView(result, unsafe));
+    return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, (result) => statusView(result, unsafe, repairs));
   }
   if (sub === "script") { process.stdout.write(SCRIPTS[shell!]!); return; }
   const sh = shell ?? currentShell();
@@ -204,6 +204,17 @@ export interface ShellCompletion {
  *  when one does, and how many existing files under them were not opened. */
 interface UnsafeFolder { readonly problem: string; readonly chmod?: string; readonly shells: Set<string>; unopened: number }
 
+/** A completion file whose refusal blocks install, with the chmod that fixes it when one does. */
+interface FileRepair { readonly shell: string; readonly chmod?: string }
+
+/** The `chmod` command in a file refusal's remedy, when the refusal has one. The trailing sentence is
+ *  removed only as a suffix: the same words can occur inside a shell-quoted path. */
+const chmodOf = (error: unknown): string | undefined => {
+  if (!isCommandFailure(error) || typeof error.remedy !== "string") return undefined;
+  const command = error.remedy.replace(/ and run the command again, or wire completion yourself from `cotal completion script <shell>`$/, "");
+  return command.startsWith("chmod ") ? command : undefined;
+};
+
 const folderWarning = (folder: UnsafeFolder): OutputWarning => ({
   code: "COMPLETION_FOLDER_UNSAFE",
   target: { shells: [...folder.shells] },
@@ -235,9 +246,10 @@ function readText(path: string): string | undefined | NodeJS.ErrnoException {
 
 /** Each shell's stub against the script this binary prints, a warning for each file it could not
  *  read, and each unsafe folder above them. Reads local files only. */
-export function completionStatus(): { status: CompletionStatus; unread: OutputWarning[]; unsafe: UnsafeFolder[] } {
+export function completionStatus(): { status: CompletionStatus; unread: OutputWarning[]; unsafe: UnsafeFolder[]; repairs: FileRepair[] } {
   const unread: OutputWarning[] = [];
   const unsafe = new Map<string, UnsafeFolder>();
+  const repairs: FileRepair[] = [];
   /** The unsafe folders above `path`, noted once for every shell under them. A check that cannot run
    *  here is left to the read, which reports it. */
   const unsafeAbove = (shell: string, path: string): UnsafeFolder | undefined => {
@@ -256,6 +268,8 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
     // The folder's warning says why, so a file under it is counted there instead of named again.
     if (folder) { folder.unopened++; return null; }
     const reason = isCommandFailure(text) ? text.message : text.code ?? text.message;
+    const chmod = chmodOf(text);
+    repairs.push({ shell, ...(chmod ? { chmod } : {}) });
     // A refusal that already names the file, such as a symlink's, is not prefixed with it again.
     unread.push({ code: "COMPLETION_UNREADABLE", target: { shell }, message: reason.startsWith(path) ? reason : `${path} could not be read: ${reason}` });
     return null;
@@ -274,7 +288,11 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
       ownership = "unreadable";
       const folder = unsafeAbove(shell, paths.stub);
       if (folder) folder.unopened++;
-      else unread.push({ code: "COMPLETION_OWNERSHIP_UNREADABLE", target: { shell }, message: isCommandFailure(error) ? `${error.message}${error.remedy ? `; ${error.remedy}` : ""}` : `the completion ownership record beside ${paths.stub} could not be read safely` });
+      else {
+        const chmod = chmodOf(error);
+        repairs.push({ shell, ...(chmod ? { chmod } : {}) });
+        unread.push({ code: "COMPLETION_OWNERSHIP_UNREADABLE", target: { shell }, message: isCommandFailure(error) ? `${error.message}${error.remedy ? `; ${error.remedy}` : ""}` : `the completion ownership record beside ${paths.stub} could not be read safely` });
+      }
     }
     if (!paths.rc) return { shell, stub: paths.stub, state, wiredIn: content === undefined || content === null ? null : dirname(paths.stub), ownership, legacyWiring: false };
     const rc = read(shell, paths.rc);
@@ -282,7 +300,7 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
     return { shell, stub: paths.stub, state, wiredIn: rc && holdsSourceLine(rc, paths.stub, shell) ? paths.rc : null, ownership, legacyWiring };
   });
   const detected = currentShell();
-  return { status: { shell: Object.hasOwn(SCRIPTS, detected) ? detected : null, shells }, unread, unsafe: [...unsafe.values()] };
+  return { status: { shell: Object.hasOwn(SCRIPTS, detected) ? detected : null, shells }, unread, unsafe: [...unsafe.values()], repairs };
 }
 
 const STATE: Record<ShellCompletion["state"], Styled> = {
@@ -303,12 +321,15 @@ function completionCell(shell: ShellCompletion): Styled {
   return { ...STATE[shell.state], mark: shell.state === "unreadable" || shell.state === "differs" ? "●" : "○" };
 }
 
-function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = []): Report {
+function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = [], repairs: readonly FileRepair[] = []): Report {
   const selected = status.shells.find((shell) => shell.shell === status.shell);
-  // An unsafe folder or unreadable record makes install and uninstall refuse, so the fix comes first and
-  // they are offered only once nothing stops them. Uninstall is offered only when something is installed.
+  // An unsafe folder, a refused file or an unreadable record makes install and uninstall refuse, so its
+  // chmod comes first. They are offered only when every block has one. Uninstall is offered only when
+  // something is installed.
   const blocking = selected ? unsafe.filter((folder) => folder.shells.has(selected.shell)) : [];
-  const changeable = selected?.ownership !== "unreadable" && blocking.every((folder) => folder.chmod);
+  const fileRepairs = selected ? repairs.filter((repair) => repair.shell === selected.shell) : [];
+  const fileChmods = [...new Set(fileRepairs.flatMap((repair) => repair.chmod ? [repair.chmod] : []))];
+  const changeable = selected?.ownership !== "unreadable" && blocking.every((folder) => folder.chmod) && fileRepairs.every((repair) => repair.chmod);
   const installed = !selected || selected.state !== "missing" || selected.wiredIn !== null || selected.ownership === "managed" || selected.ownership === "modified";
   const dangling = status.shells.filter((shell) => shell.state === "missing" && shell.wiredIn !== null);
   return {
@@ -330,7 +351,8 @@ function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = 
       ] },
       { title: "Next", blocks: [{ kind: "commands", items: [
         // A modified integration refuses a plain install or uninstall, so it is offered only with --force.
-        ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove group and other write access, so completion can read and change its files there" }] : []),
+        ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove the access another local account could use, so completion can read and change its files there" }] : []),
+        ...fileChmods.map((command) => ({ command, description: "Remove the access another local account could use, so completion can read and change this file" })),
         ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
         ...!changeable ? [] : [selected?.ownership === "modified"
           ? { command: `cotal completion install ${selected.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" }

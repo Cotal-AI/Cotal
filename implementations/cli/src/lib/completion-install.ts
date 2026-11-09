@@ -1,13 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, fsyncSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, fchmodSync, fchownSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, fsyncSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
 import { LOAD_NOW, SCRIPTS } from "./completion-scripts.js";
-import { CommandFailure, codeSpan } from "@cotal-ai/workspace";
+import { CommandFailure, codeSpan, localWriterGap } from "@cotal-ai/workspace";
 
-interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number }
+interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number; gid: number }
 /** `wiring.created` marks a startup file that `install` created, so `uninstall` removes it once it is empty. */
 interface Ownership { schemaVersion: 1; shell: string; stub: string; stubHash: string; wiring: { path: string; block: string; created?: true } | null }
 interface Paths { stub: string; rc?: string }
@@ -49,6 +49,19 @@ function supported(): void {
 interface Gap { path: string; problem: string; chmod?: string }
 const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : quote(path);
 const modeOf = (info: Stats) => `mode ${(info.mode & 0o777).toString(8).padStart(4, "0")}`;
+/** Why `info` is unsafe to read or replace, by the local-writer rule every protected path follows.
+ *  A group-writable entry the caller owns is accepted when its group is the caller's proven user
+ *  private group and it has no extended ACL. A private file also needs no group or other access.
+ *  A completion file, stub or ownership record must belong to the caller. Root may own a directory
+ *  above it, which the shared rule accepts, but not the file itself. */
+function writerGap(path: string, info: Stats, ancestor = false, privateFile = false): Gap | undefined {
+  if (!ancestor && !info.isSymbolicLink() && info.uid !== process.getuid!()) return { path, problem: "is owned by another user" };
+  if (privateFile && info.isFile() && !info.isSymbolicLink() && info.uid === process.getuid!() && (info.mode & 0o077) !== 0)
+    return { path, problem: `is not private to you (${modeOf(info)})`, chmod: "go-rwx" };
+  const gap = localWriterGap(path, info, ancestor);
+  if (!gap) return undefined;
+  return { path, problem: `${gap.reason}${gap.chmod ? ` (${modeOf(info)})` : ""}`, ...(gap.chmod ? { chmod: gap.chmod } : {}) };
+}
 
 /** The chmod commands that fix `gaps`, one per mode. */
 const chmodsFor = (gaps: Gap[]) => [...new Set(gaps.map((gap) => gap.chmod))].map((mode) => `chmod ${mode} ${gaps.filter((gap) => gap.chmod === mode).map((gap) => shellPath(gap.path)).join(" ")}`);
@@ -83,26 +96,20 @@ function parentGaps(path: string, create = false): Gap[] {
     if (!create) return above;
     mkdirSync(path, { mode: 0o700 }); info = lstatSync(path);
   }
-  const sticky = info.uid === 0 && (info.mode & 0o1000) !== 0;
-  const gap: Gap | undefined = info.isSymbolicLink() ? { path, problem: "is a symlink" } : !info.isDirectory() ? { path, problem: "is not a directory" }
-    : info.uid !== 0 && info.uid !== process.getuid!() ? { path, problem: "is owned by another user" }
-    : (info.mode & 0o022) !== 0 && !sticky ? { path, problem: `is writable by group or others (${modeOf(info)})`, chmod: "go-w" } : undefined;
+  const gap = !info.isSymbolicLink() && !info.isDirectory() ? { path, problem: "is not a directory" } : writerGap(path, info, true);
   return gap ? [gap, ...above] : above;
 }
 function safeParents(path: string, create = false): void {
   const gaps = parentGaps(path, create);
   if (gaps.length) throw unsafe(gaps);
 }
-/** Why an existing shell file is unsafe to read or replace: it must be an owned, bounded regular file
- *  without group or other write access, and a private one also without their read access. */
+/** Why an existing shell file is unsafe to read or replace. A private file must also have no group
+ *  or other access. Group write on an owned file is accepted only for the caller's proven user
+ *  private group with no extended ACL, the same rule as every other protected path. */
 function fileGap(path: string, info: Stats, privateFile: boolean): Gap | undefined {
-  if (info.isSymbolicLink()) return { path, problem: "is a symlink" };
-  if (!info.isFile()) return { path, problem: "is not a regular file" };
-  if (info.uid !== process.getuid!()) return { path, problem: "is owned by another user" };
-  if (privateFile && (info.mode & 0o077) !== 0) return { path, problem: `is not private to you (${modeOf(info)})`, chmod: "go-rwx" };
-  if ((info.mode & 0o022) !== 0) return { path, problem: `is writable by group or others (${modeOf(info)})`, chmod: "go-w" };
-  if (info.size > 2 * 1024 * 1024) return { path, problem: "is larger than 2 MiB" };
-  return undefined;
+  if (!info.isSymbolicLink() && !info.isFile()) return { path, problem: "is not a regular file" };
+  if (info.isFile() && info.size > 2 * 1024 * 1024) return { path, problem: "is larger than 2 MiB" };
+  return writerGap(path, info, false, privateFile);
 }
 /** {@link fileGap} for an existing file, read without opening it, and every unsafe folder above it. */
 function pathGaps(path: string, privateFile = false, link = true): Gap[] {
@@ -136,12 +143,12 @@ function read(path: string, privateFile = false): Snapshot | undefined {
     const after = fstatSync(fd);
     if (length > 2 * 1024 * 1024 || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new CommandFailure("refused", "CONFLICT", "the shell file changed while it was read; no replacement was made", { target: { path } });
     const content = bytes.subarray(0, length);
-    return { bytes: content, hash: hash(content), dev: before.dev, ino: before.ino, mode: before.mode & 0o777 };
+    return { bytes: content, hash: hash(content), dev: before.dev, ino: before.ino, mode: before.mode & 0o777, gid: before.gid };
   } finally { closeSync(fd); }
 }
 function same(path: string, expected: Snapshot | undefined): void {
   const current = read(path);
-  if (expected ? !current || current.hash !== expected.hash || current.dev !== expected.dev || current.ino !== expected.ino || current.mode !== expected.mode : current !== undefined) throw new CommandFailure("refused", "CONFLICT", "the shell file changed since review; no other writer's content was replaced", { target: { path } });
+  if (expected ? !current || current.hash !== expected.hash || current.dev !== expected.dev || current.ino !== expected.ino || current.mode !== expected.mode || current.gid !== expected.gid : current !== undefined) throw new CommandFailure("refused", "CONFLICT", "the shell file changed since review; no other writer's content was replaced", { target: { path } });
 }
 function write(path: string, expected: Snapshot | undefined, bytes: Buffer | string, mode: number): void {
   same(path, expected);
@@ -151,9 +158,18 @@ function write(path: string, expected: Snapshot | undefined, bytes: Buffer | str
   let attempted = false;
   let published = false;
   try {
-    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     created = true;
-    try { writeFileSync(fd, bytes); fchmodSync(fd, mode); fsyncSync(fd); } finally { closeSync(fd); }
+    try {
+      // A setgid parent can give the replacement a different group. Keep it private until the
+      // original group is restored, then check its final access before writing any shell content.
+      if (expected && fstatSync(fd).gid !== expected.gid) fchownSync(fd, process.getuid!(), expected.gid);
+      fchmodSync(fd, mode);
+      const gap = fileGap(temporary, fstatSync(fd), false);
+      if (gap) throw unsafe([gap]);
+      writeFileSync(fd, bytes);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
     same(path, expected);
     attempted = true;
     if (expected) { renameSync(temporary, path); published = true; created = false; }
