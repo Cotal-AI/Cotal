@@ -15,7 +15,7 @@ import { managerLogPath } from "../lib/manager-proc.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
-import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { addedDefinitionStep, isStackMember, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { assertManagerLogin } from "./stack-user-auth.js";
 import { localRecordName } from "../lib/protected-records.js";
 import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
@@ -111,6 +111,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
     if (resolved) announcePresetTarget(resolved, space, presentation);
+    // A preset name reaches the stack member built on it. Starting that member by itself launches
+    // its process and leaves the space unregistered, so it refuses before the start saves or launches.
+    if ((mode === "start" || mode === "restart") && isStackMember(space, resolved?.name ?? suppliedName!))
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${resolved?.name ?? suppliedName} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: { space, name: resolved?.name ?? suppliedName, ...(resolved && resolved.requested !== resolved.name ? { requested: resolved.requested } : {}) }, remedy: "start the stack with `cotal up`" });
     if (resolved?.saved === null && mode === "start" && args.values["dry-run"] && !store.read(resolved.name)) return previewPresetStart(resolved, space, root, args, presentation, commandName);
     try { return await serviceAction(resolved ? { ...args, positionals: [mode, resolved.name] } : args, space, root, commandName, resolved); }
     catch (error) {
@@ -301,7 +305,10 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
       rows.push({ name: row.name, preset, definition: row.name, state: `inherited from ${row.record.value.root}`, needs: [], next: `cotal service remove ${row.name} --space ${space} --yes` });
       continue;
     }
-    rows.push({ name: row.name, preset, definition: row.name, state, needs: [], next: preset === "manager" && managers === 1 ? `cotal manager ${action}` : `cotal service ${action} ${row.name}` });
+    // A stack member starts and stops with the stack. Starting one by itself leaves its process
+    // running and the space unregistered, which no command except down then accepts.
+    const next = state !== "running" && isStackMember(space, row.name) ? "cotal up" : preset === "manager" && managers === 1 ? `cotal manager ${action}` : `cotal service ${action} ${row.name}`;
+    rows.push({ name: row.name, preset, definition: row.name, state, needs: [], next });
   }
   for (const preset of catalog) {
     let covered = false;
