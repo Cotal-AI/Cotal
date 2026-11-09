@@ -5,6 +5,7 @@ import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, isComm
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
+import { brokerServerProblem, brokerService } from "./broker-service.js";
 
 const reserved = new Set(["help", "no-color", "no-input", "space", "json", "plain", "file", "preset", "exec", "cwd", "yes", "instance", "new-instance", "foreground", "with-agents", "dry-run", "tail", "follow"]);
 
@@ -197,6 +198,7 @@ export function presetOptionRefusal(preset: ServicePreset, name: string, value: 
   try {
     validateServiceAdapterOptions({ ...adapter.declaration, optionsSchema: { ...adapter.declaration.optionsSchema, required: [] } }, { [option]: parsed }, label);
     if (adapter.declaration.paths?.[option]) validateServiceAdapterPaths(adapter.declaration, { [option]: parsed }, label);
+    if (preset.adapter === brokerService.name && option === "server") return brokerServerProblem(String(parsed));
   }
   catch (error) { return isCommandFailure(error) ? error.message : String(error); }
   return undefined;

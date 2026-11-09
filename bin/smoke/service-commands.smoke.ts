@@ -37,7 +37,7 @@ type ServicePreset = import("@cotal-ai/workspace").ServicePreset;
 const { cacheServicePreset, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { execWords } = await import("../../implementations/cli/src/lib/exec-words.js");
 const { serviceDefinitionStore } = await import("../../implementations/cli/src/lib/service-definitions.js");
-const { presetDefaultOptions, presetMaterialPath, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
+const { presetDefaultOptions, presetMaterialPath, presetOptionRefusal, resolveServicePreset, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
 const { controlsRecordedAdapter, resolveServiceAdapter } = await import("../../implementations/cli/src/lib/service-adapters.js");
 await import("@cotal-ai/cli");
 await import("@cotal-ai/manager");
@@ -72,6 +72,14 @@ for (const [line, what] of [["echo 'x", "single quote that is never closed"], ["
   const result = words(line);
   check(`--exec ${JSON.stringify(line)} refuses: ${what}`, typeof result === "string" && result.startsWith("USAGE_INVALID: ") && result.includes(what), result);
 }
+
+// Guided broker answers use the same address rule as the final definition save.
+const guidedBroker = resolveServicePreset("broker");
+check("a guided broker server rejects DNS before the next question", presetOptionRefusal(guidedBroker, "server", "nats://localhost:4222")?.includes("concrete IP literal") === true);
+check("a guided broker server rejects wildcard binds", presetOptionRefusal(guidedBroker, "server", "nats://0.0.0.0:4222")?.includes("wildcard bind") === true);
+check("a guided broker server accepts a concrete address", presetOptionRefusal(guidedBroker, "server", "nats://127.0.0.1:4222") === undefined);
+const credentialAddress = presetOptionRefusal(guidedBroker, "server", "nats://fixture:secret@127.0.0.1:4222");
+check("a guided broker server refusal withholds credential-bearing input", credentialAddress !== undefined && !credentialAddress.includes("fixture:secret"));
 
 // ---- A preset's defaults are a closed declaration ----------------------------------------------
 const base = { kind: "service-preset" as const, name: "fixture", summary: "fixture", adapter: "fixture-adapter", timeoutMs: 1000 };
