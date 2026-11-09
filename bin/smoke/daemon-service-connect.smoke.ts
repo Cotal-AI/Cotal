@@ -46,7 +46,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -56,13 +56,15 @@ import { createHash } from "node:crypto";
 import { peerCredentials } from "@cotal-ai/seat";
 import {
   CotalEndpoint, EpEnvelopeError, SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, compileContract, epCall, unansweredRequest, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
-  writeSecretFileAtomic, type SecretStore,
+  writeSecretFileAtomic, mintMembershipObserverCreds, mintConnectionEvictorCreds, type SecretStore,
 } from "@cotal-ai/core";
 import {
   deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { askManager } from "@cotal-ai/workspace/control";
+import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
@@ -96,6 +98,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -141,14 +144,26 @@ const key = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
+let catalog: unknown;
+let catalogSpace: string | undefined;
+let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
+  if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const answer = await fetch(`${catalogTarget}${req.url.slice(`/space/${catalogSpace}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+    res.writeHead(answer.status);
+    return void res.end(Buffer.from(await answer.arrayBuffer()));
+  }
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
   if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
+    if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
     const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
     jwtsIssued.push(token);
@@ -373,7 +388,7 @@ try {
       const lines: string[] = [];
       let failure: Record<string, any> | undefined;
       try {
-        await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 0,
+        await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 0,
           report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
       } catch (e) { failure = e as Record<string, any>; }
       check("C1b it ends partial, not a success and not a plain failure", failure?.outcome === "partial", failure && { outcome: failure.outcome, code: failure.code });
@@ -509,7 +524,7 @@ try {
       await disconnectS(ON);
       check("C17 instrument: not connected, and no resume record, before setup runs", stateOf(await statusS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
       const lines: string[] = [];
-      const r = await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 60,
+      const r = await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 60,
         report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
       check("C17 it reaches connected", r.state === "connected", r);
       check("C17 it ran four steps, in order", r.steps.map((x) => x.step).join(",") === "install,sign-in,register,connect", r.steps);
@@ -523,13 +538,34 @@ try {
       check("C17 nothing secret reached its progress lines", !lines.some((l) => [SESSION, ...jwtsIssued].some((t) => l.includes(t))) && !lines.some((l) => /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(l)));
     });
 
+    await cell("BASELINE shipped setup connects but provides no Manager to call", async () => {
+      const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "setup", "--no-manager", "--space", ON, "--wait", "0", "--json"], {
+        cwd: root,
+        env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "", err = "";
+      child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+      const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+      const doc = JSON.parse(out) as { result?: { state?: string } };
+      check("BASELINE shipped setup exits 0 connected", code === 0 && doc.result?.state === "connected", { code, out, err });
+      const idpToken = (await (await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } })).json() as { token: string }).token;
+      const catalogResponse = await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/manager-instances`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken }) });
+      const catalog = await catalogResponse.json() as { complete?: boolean; instances?: unknown[] };
+      check("BASELINE owner's complete Manager catalog is empty", catalogResponse.ok && catalog.complete === true && catalog.instances?.length === 0, catalog);
+      const callerResponse = await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken, actor: "cli", view: "manager-caller" }) });
+      const refusal = await callerResponse.json() as { error?: string; code?: string };
+      check("BASELINE manager-caller has no Manager to call", !callerResponse.ok, { status: callerResponse.status, ...refusal });
+      console.log(`  BASELINE connected setup exit=${code}, complete catalog instances=${catalog.instances?.length}, manager-caller HTTP=${callerResponse.status}`);
+    });
+
     await cell("C17b setup stops at the space's own refusal and connects nothing", async () => {
       // A refused proposal is not a wait: nothing is pending, so this is a refusal at the register
       // step and the connect step never runs.
       const lines: string[] = [];
       let failure: Record<string, any> | undefined;
       try {
-        await runSetup({ paths, daemonHome: undefined, space: DENY, peerUid, peerPid, waitSeconds: 60,
+        await runSetup({ paths, daemonHome: undefined, noManager: true, space: DENY, peerUid, peerPid, waitSeconds: 60,
           report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
       } catch (e) { failure = e as Record<string, any>; }
       check("C17b it refuses rather than claiming a connection", failure?.outcome === "refused" && failure?.code === "PERMISSION_DENIED", failure && { outcome: failure.outcome, code: failure.code });
@@ -591,6 +627,100 @@ try {
       const crashed = child.exitCode !== 0 && existsSync(paths.socket);
       d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
+    });
+
+    await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
+      seedUnitReceipt();
+      await d.close();
+      grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+      const original = findMesh(ON)!;
+      const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
+      const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
+      const composition = { injected: true } as const;
+      await deliveryStore.put(deliveryCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "delivery"));
+      await deliveryStore.put(membershipRwCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "membership-rw"));
+      await deliveryStore.put(membershipObserverCredsKey(ON, composition), await mintMembershipObserverCreds(ctx[0]!.auth, newIdentity()));
+      await deliveryStore.put(connectionEvictorCredsKey(ON, composition), await mintConnectionEvictorCreds(ctx[0]!.auth, newIdentity()));
+      const delivery = await startDeliveryService({ context: { accountPublicKey: ctx[0]!.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: ON, servers, store: deliveryStore, storeIdentity: deliveryStore.identity, stateDir: join(root, "delivery") });
+      // Like remote-manager-goal-reader: this owned loopback stack is plaintext, while the public
+      // face advertises production TLS. Pin the fixture transport explicitly, with a warm policy.
+      recordMesh({ ...original, server: published.server, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), userAuth: { ...published.userAuth, remote: true, sentinelCredsPath: original.userAuth!.sentinelCredsPath } });
+      const discovery = { ...published, space: ON, tlsRequired: false, userAuth: { ...published.userAuth, endpoints: { url: `${idpOrigin}/space/${ON}` } } };
+      catalogSpace = ON; catalogTarget = svc[0]!.publicUrl!.replace(/\/$/, "");
+      catalog = { v: 1, account: { idpUrl, issuer: idpOrigin, sub: "machine-owner" }, spaces: [{ id: ON, slug: ON, name: "Daemon smoke", kind: "team", role: "owner", registration: discovery }] };
+      removeMesh(ON);
+      check("H0 requested space is absent from local registry before setup", findMesh(ON) === undefined);
+      const prefix = join(root, "config", "cotal", "extensions");
+      const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js" }));
+      const coreUrl = pathToFileURL(join(repo, "packages/core/dist/index.js")).href;
+      const seatScript = join(root, "seat.mjs");
+      writeFileSync(seatScript, `import {CotalEndpoint} from ${JSON.stringify(coreUrl)}; import {readFileSync} from 'node:fs'; import {execFile} from 'node:child_process';
+const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(e,out)=>e?reject(e):resolve(out.trim())));
+const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
+      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
+      writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: false }] }] }));
+      const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const cli = async (...args: string[]) => {
+        const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+        const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+        return { code, doc: JSON.parse(out) as Record<string, any>, err };
+      };
+      const startDaemon = async () => {
+        const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        child.stdout.resume(); child.stderr.resume();
+        for (let i = 0; i < 100; i++) { try { await ask(paths.socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
+        throw new Error("shipped daemon did not answer");
+      };
+      let child = await startDaemon();
+      try {
+        const setup = await cli("setup", "--space", ON, "--wait", "0");
+        console.log("  H1 setup", JSON.stringify(setup));
+        check("H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.manager?.state === "answering", setup);
+        if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
+        const manager = setup.doc.result.manager;
+        check("H0 setup discovers the space through daemon-held sign-in", findMesh(ON)?.origin === "catalog");
+        const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+        const client = { versionSkew: (s: string) => s, roster: async () => [] };
+        const status = await askManager(client, ON, servers, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+        check("H1 independent manager-caller status answers from selected instance", status.ok);
+        const launch = await askManager(client, ON, servers, "start", { name: "daemon_smoke_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Smoke stand-in, no model or external services.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+        console.log("  H1 spawn goal", JSON.stringify({ ok: launch.ok, error: launch.error, receipt: launch.request }));
+        check("H1 spawn goal is accepted by hosted instance (installed stand-in connector)", launch.request !== undefined && launch.request.managerInstanceId === manager.instanceId);
+        check("H1 stand-in seat joins through native user auth", launch.ok, launch.error);
+        if (launch.ok) await askManager(client, ON, servers, "stop", { name: "daemon_smoke_seat" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+        const intent = join(home, "daemon", `space.${Buffer.from(ON).toString("hex")}`, "manager-host.json");
+        check("H1 hosting intent recorded after status", existsSync(intent));
+        process.kill(manager.pid, "SIGKILL");
+        let replacement: Record<string, any> = {};
+        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering" && replacement.pid !== manager.pid) break; await sleep(250); }
+        check("H2 killed Manager restarts and answers without a command", replacement.state === "answering" && replacement.pid !== manager.pid, replacement);
+        await killAndAwaitExit(child, "SIGKILL");
+        child = await startDaemon();
+        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering") break; await sleep(250); }
+        check("H3 killed daemon resumes answering Manager without setup", replacement.state === "answering", replacement);
+        await cli("service-disconnect", "--space", ON);
+        check("H4 disconnect forgets intent and stops Manager", !existsSync(intent) && resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped");
+        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+        const refused = await cli("setup", "--space", ON, "--wait", "0");
+        const before = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        await sleep(3500);
+        const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        check("H5 missing supervise scope refuses with native cause and remedy", refused.code === 2 && /supervise|scope/i.test(refused.doc.error?.message ?? "") && /supervise/.test(refused.doc.error?.remedy ?? ""), refused);
+        check("H5 one permanent refusal, no child restart loop or intent", before.state === "refused" && after.state === "refused" && before.restarts === after.restarts && !existsSync(intent), { before, after });
+        await cli("service-disconnect", "--space", ON);
+        await cli("setup", "--no-manager", "--space", ON, "--wait", "0");
+        check("H6 --no-manager starts no child or hosting intent", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
+      } finally {
+        await killAndAwaitExit(child, "SIGTERM");
+        recordMesh(original);
+        catalog = undefined; catalogSpace = undefined; catalogTarget = undefined;
+        await delivery.close();
+        d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home });
+      }
     });
 
     await cell("C8 the owner revokes: ended, never connected again", async () => {
