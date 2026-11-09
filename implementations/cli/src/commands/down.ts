@@ -167,7 +167,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (typeof args.values.file !== "string" || stackFilePreview(args.values.file))) return;
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && typeof args.values.file !== "boolean") return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a
   // bare stop prints, so structured output carries it rather than refusing the flag.
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
@@ -277,16 +277,22 @@ function previewWholeStack(args: ParsedArgs): void {
   ] }));
 }
 
+/** Why a file-form dry-run cannot read its manifest, or undefined when the file resolves. A missing
+ *  or malformed file is reported as itself, never as a missing ledger. */
+function manifestRead(file: string): string | undefined {
+  try { loadManifest(file); return undefined; }
+  catch (error) { return `cannot read ${file}: ${(error as Error).message}`; }
+}
+
 /** A file-form dry-run previews this root's recorded stack when the manifest can be read and no
  *  additive ledger exists. A ledger, or a file that cannot be read, stays on the ledger teardown,
  *  which fails closed. */
-function stackFilePreview(file: string): boolean {
+function recordedStackPreview(): boolean {
   try {
     const root = canonicalRoot(cotalRoot());
     const local = localMeshesForRoot(root);
     const sole = local[0];
     if (local.length !== 1 || sole?.origin !== "up" || canonicalRoot(sole.root) !== root) return false;
-    loadManifest(file);
     const ledgers = listLedgerFiles(root, { requireReadable: true });
     return ledgers.valid.length === 0 && ledgers.refused.length === 0;
   } catch { return false; }
@@ -542,7 +548,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if ((values.file || values.run) && values.space) {
     throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
-  if (values.file && values["dry-run"] && stackFilePreview(values.file)) return previewWholeStack(args);
+  if (values.file && values["dry-run"]) {
+    const reason = manifestRead(values.file);
+    if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: values.file } });
+    if (recordedStackPreview()) return previewWholeStack(args);
+  }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
