@@ -362,7 +362,7 @@ type SelectedResult =
       mode: MeshTarget["mode"];
       source: string;
       root: string;
-      /** The project folder is gone while this machine still records the space's stack there. */
+      /** The project folder is gone while this machine still records the space's stack there. False when the folder was found elsewhere. */
       rootGone: boolean;
       /** The project was moved or renamed: the folder that now holds its records, and the way back. */
       movedTo?: { root: string; remedy: string };
@@ -1300,6 +1300,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     return result;
   }
   const target = selected.target;
+  const found = movedSelection(target.space, target.root);
   const base = {
     resolved: true as const,
     space: target.space,
@@ -1307,8 +1308,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     mode: target.mode,
     source: target.source,
     root: target.root,
-    rootGone: stackRootGone(target.space, target.root),
-    movedTo: movedSelection(target.space, target.root).movedTo,
+    rootGone: found.movedTo ? false : stackRootGone(target.space, target.root),
+    movedTo: found.movedTo,
     tlsRequired: Boolean(target.tlsRequired),
     eventsRequired: target.policy?.events === "required",
     idp: target.userAuth?.idp.url ?? null,
