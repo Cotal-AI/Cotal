@@ -35,9 +35,8 @@ export async function directKvValue<T>(
 }
 
 
-import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, standaloneConnectOpts } from "@cotal-ai/core";
-import { CommandFailure, findMesh, localProcessPath, stderrLine, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
-import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, mintCreds, mintLifecycleUid, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
+import { canonicalRoot, CommandFailure, findMesh, getSpaceAuth, localProcessPath, stderrLine, workspaceSecretStore, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 
 /** One KV subject's last row as its revision and broker write time, without creating a consumer.
@@ -83,11 +82,15 @@ async function liveUnrecordedDaemonNames(
   if (!watched.length) return [];
   const mesh = findMesh(context.space);
   if (!mesh?.server || !(await isReachable(mesh.server))) return [];
-  const resolved = await connectOrExit({ space: context.space, server: mesh.server }, "deployer");
-  const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
+  // The lease read is the hosting folder's own account, not a sign-in. `down` stops the stack this
+  // folder started, and that folder holds the account seed. A folder that does not host the space has
+  // no seed to mint from, so it cannot read the lease and does not stop the broker either.
+  if (mesh.origin !== "up" || canonicalRoot(mesh.root) !== canonicalRoot(context.root)) return [];
+  const auth = await getSpaceAuth(workspaceSecretStore(context.root), context.space);
+  if (!auth) return [];
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), tls: resolved.tls }),
+    ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "deployer", { lifecycleUid: mintLifecycleUid() }), tls: mesh.tlsRequired === true }),
     maxReconnectAttempts: 0,
   });
   try {
