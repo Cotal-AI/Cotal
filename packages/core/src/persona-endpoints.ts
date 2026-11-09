@@ -103,15 +103,22 @@ export function personaEndpointPartName(cap: Pick<EpCapability, "endpoint" | "co
 }
 
 /**
- * The caller capabilities a parsed list grants: one untargeted, unjournaled capability per command
- * on the class rail. Throws on an instance-pinned entry, which this release does not lower yet.
+ * The caller capabilities a parsed list grants, each untargeted and unjournaled. A class entry
+ * grants one capability per command on the endpoint's class rail. An entry with `instanceId` grants
+ * each command on that instance's rail only, never the class rail, plus that instance's `describe`,
+ * which a pinned call resolves through and the class baseline does not cover. User-auth issuance
+ * appends the same describe row to an instance grant.
  */
 export function lowerPersonaEndpoints(entries: readonly PersonaEndpoint[] | undefined): EpCapability[] {
   const out: EpCapability[] = [];
   for (const e of entries ?? []) {
-    if (e.instanceId !== undefined)
-      throw new Error(`"endpoints": the entry for ${e.endpoint} pins instance ${e.instanceId}, and instance-pinned entries are not handed on yet; name the endpoint without an instanceId`);
-    for (const command of e.commands) out.push({ endpoint: e.endpoint, command });
+    if (e.instanceId === undefined) {
+      for (const command of e.commands) out.push({ endpoint: e.endpoint, command });
+      continue;
+    }
+    const pin = { instanceId: e.instanceId, instanceOnly: true };
+    for (const command of e.commands) out.push({ endpoint: e.endpoint, command, ...pin });
+    out.push({ endpoint: e.endpoint, command: "describe", ...pin });
   }
   return out;
 }

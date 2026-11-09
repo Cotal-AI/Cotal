@@ -323,9 +323,12 @@ ok("the refusal reads as the rule the file broke",
   ok("a reordered endpoints list parses to the same canonical list", JSON.stringify(a) === JSON.stringify(b), { a, b });
   ok("two instances of one endpoint stay two entries beside the class entry",
     a?.length === 3 && a.filter((e) => e.instanceId !== undefined).length === 2, a);
-  const classOnly = forward.filter((e) => e.instanceId === undefined);
-  ok("a reordered class list lowers to the same capabilities",
-    JSON.stringify(lowerPersonaEndpoints(parsePersonaEndpoints(classOnly, "t"))) === JSON.stringify(lowerPersonaEndpoints(parsePersonaEndpoints([...classOnly].reverse(), "t"))));
+  ok("a reordered list, pinned entries included, lowers to the same capabilities",
+    JSON.stringify(lowerPersonaEndpoints(a)) === JSON.stringify(lowerPersonaEndpoints(b)));
+  ok("each pinned entry lowers to its instance rail alone plus that instance's describe",
+    JSON.stringify(lowerPersonaEndpoints(a).filter((c) => c.instanceId !== undefined).map((c) => `${c.command}@${c.instanceId}:${c.instanceOnly}`)) ===
+      JSON.stringify(["list@i0000000000000000000000000a:true", "describe@i0000000000000000000000000a:true", "list@i0000000000000000000000000b:true", "describe@i0000000000000000000000000b:true"]),
+    lowerPersonaEndpoints(a));
   const refuse = (label: string, body: string, want: RegExp) => {
     const f = join(dir, `ep-bad-${label.replace(/\W+/g, "-")}.md`);
     writeFileSync(f, `---\nname: bad\nsubscribe: []\nendpoints: ${body}\n---\n`);

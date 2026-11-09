@@ -9,6 +9,7 @@ import { capabilityWithin, grantOverreach, grantParts, issuedSpawnerStanding, ty
 import type { IssuedCaller } from "../src/endpoint-subjects.js";
 import type { EpCapability } from "../src/endpoint-grants.js";
 import { spacePrefix } from "../src/subjects.js";
+import { lowerPersonaEndpoints } from "../src/persona-endpoints.js";
 
 let pass = 0;
 let fail = 0;
@@ -213,6 +214,27 @@ console.log("endpoints");
   // A baseline command adds no row, so it cannot be shown to be held, and is refused.
   const baseline = names(over(evidence({}), { endpoints: [{ endpoint: "delivery", command: "join" }] }));
   ok("a command the baseline already grants adds no row and is refused", same(baseline, ["endpoints:delivery join"]), baseline);
+
+  // A pinned persona entry, as the persona field lowers it: the instance rail only, plus that
+  // instance's describe, each measured as its own part.
+  const A = "ia000000000000000000000000a", B = "ib000000000000000000000000b";
+  const pinnedA = lowerPersonaEndpoints([{ endpoint: "com.example.orders", commands: ["list"], instanceId: A }]);
+  ok("a pinned entry lowers to the instance command and the instance describe, both instance-only",
+    same(pinnedA.map((c) => `${c.command}@${c.instanceId}:${c.instanceOnly === true}`).sort(), [`describe@${A}:true`, `list@${A}:true`]), pinnedA);
+  const minted = evidence({ endpointCapabilities: pinnedA });
+  const prefix = `${spacePrefix(space)}.ep.v1`;
+  const pub = minted.publish.allow.mode === "patterns" ? minted.publish.allow.patterns : [];
+  ok("a pinned entry's credential has no class row for its command or its describe",
+    !pub.some((r) => r.startsWith(`${prefix}.one.com_example_orders.`)) && pub.some((r) => r.startsWith(`${prefix}.inst.com_example_orders.${A}.list.`)) && pub.some((r) => r.startsWith(`${prefix}.inst.com_example_orders.${A}.describe.`)),
+    pub.filter((r) => r.includes("com_example_orders")));
+  ok("a spawner holding the pinned entry hands it on", over(minted, { endpoints: pinnedA }).length === 0);
+  const partial = names(over(evidence({ endpointCapabilities: [pinA] }), { endpoints: pinnedA }));
+  ok("a spawner with the instance command but not the instance describe is refused on the describe part",
+    same(partial, [`endpoints:com.example.orders describe on instance ${A}`]), partial);
+  const classOnly = names(over(held, { endpoints: pinnedA }));
+  ok("a class grant covers neither part of a pinned entry", same(classOnly, [`endpoints:com.example.orders describe on instance ${A}`, `endpoints:com.example.orders list on instance ${A}`]), classOnly);
+  const otherInstance = names(over(minted, { endpoints: lowerPersonaEndpoints([{ endpoint: "com.example.orders", commands: ["list"], instanceId: B }]) }));
+  ok("a pin on instance A covers neither part of the same entry on instance B", same(otherInstance, [`endpoints:com.example.orders describe on instance ${B}`, `endpoints:com.example.orders list on instance ${B}`]), otherInstance);
 }
 
 console.log("token rule (ledger)");
