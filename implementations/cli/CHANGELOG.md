@@ -1,5 +1,24 @@
 # @cotal-ai/cli
 
+## 0.151.2
+
+### Patch Changes
+
+- 1d47635: `cotal backup inspect` now refuses an artifact whose declared file is a symbolic link, FIFO or device, naming that file and the fault `not-regular`.
+  
+  Verify and restore already refused that file. Inspect checked the declared names and then reported the artifact as fine, so an operator who inspected before restoring was told a copy that cannot be restored was sound.
+- 0adb23c: A refused slash command in chat clears the input line.
+  
+  The refusal stays in the transcript, and the next command is typed on an empty line. A line kept because the session is not connected, a send is in flight, or no recipient is chosen stays. `/reply` with text says that it only chooses the recipient and that the message is typed after it.
+- f2f0a2b: Guided service and endpoint forms validate answers at each question so invalid input can be corrected without losing earlier answers.
+  
+  Preset answers use the option schema and path checks, including the broker server's existing address restrictions. Imports and endpoint references are checked before the form advances, and whole-definition validation remains in place before saving.
+- b709d87: A foreground `cotal up` on the retained launcher exits 130 on Ctrl-C and 143 on SIGTERM. A space named after its folder keeps its registration when that stop finishes.
+- 014d1d3: Let a file-form teardown dry-run inspect the recorded stack when no additive ledger exists, with consistent text and structured output. Keep explicit run selection and legacy ledger previews on their existing teardown path without requiring launch-time persona files. When file-form apply finds a recorded stack without an additive ledger, name the bare stack stop instead of suggesting an unknown run ID.
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+
 ## 0.151.1
 
 ### Patch Changes
