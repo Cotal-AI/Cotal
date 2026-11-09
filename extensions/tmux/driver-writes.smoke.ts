@@ -154,8 +154,8 @@ try {
   chmodSync(socketDir, 0o777);
   process.env.TMUX_TMPDIR = unsafe;
   try {
-    failure("ensureSession", ["new-session", "-d", "-s", "refused", "-x", "200", "-y", "50", "-c", root],
-      () => tmux.ensureSession("refused", root), "create session refused", "unsafe permissions");
+    failure("ensureSession", ["has-session", "-t", "refused"],
+      () => tmux.ensureSession("refused", root), "check session refused", "unsafe permissions");
     const refused = caught(() => new TmuxRuntime("refused").spawn("probe", { command: "/bin/true", args: [] }, root));
     check("runtime SpawnRefused retains the native creation reason", refused instanceof SpawnRefused && refused.message.includes("unsafe permissions"));
   } finally {

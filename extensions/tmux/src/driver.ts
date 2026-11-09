@@ -38,18 +38,23 @@ export function currentSession(): string {
   }
 }
 
+/** True only when tmux itself says `session` is not on its server, or that no server is running.
+ *  Any other failed query throws. A connection error is not absence: tmux uses that report both when
+ *  a server's socket was moved and when no server has ever listened there. */
 function hasSession(session: string): boolean {
   try {
-    execFileSync("tmux", ["-u", "has-session", "-t", session], { stdio: "ignore" });
+    execFileSync("tmux", ["-u", "has-session", "-t", session], { stdio: ["ignore", "ignore", "pipe"] });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (noServer(err) || isSessionAbsent(err)) return false;
+    throw new Error(`tmux: couldn't check session ${session}: ${failureText(err)}`, { cause: err });
   }
 }
 
-/** Ensure a detached tmux session exists; creates it if absent. A detached session has no client
- *  to size it, and some tmux builds then treat its window as sizeless — so `split-window` fails
- *  with "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
+/** Ensure a detached tmux session exists. It is created only when tmux says the session is absent or
+ *  no server is running; a failed check throws instead of creating. A detached session has no client
+ *  to size it, and some tmux builds then treat its window as sizeless, so `split-window` fails with
+ *  "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
 export function ensureSession(session: string, cwd: string): void {
   if (hasSession(session)) return;
   try {
@@ -80,6 +85,13 @@ export function windowAliveRef(windowId: string): boolean {
  *  start of stderr counts. A missing socket or an unsafe socket directory is a failed call. */
 function noServer(err: unknown): boolean {
   return String((err as { stderr?: unknown }).stderr ?? "").startsWith("no server running on ");
+}
+
+/** True when tmux itself says the named session is not on the server it reached. tmux reports that
+ *  as `can't find session: <name>`, and the socket path or the name may itself hold those words, so
+ *  only the start of stderr counts. */
+function isSessionAbsent(err: unknown): boolean {
+  return String((err as { stderr?: unknown }).stderr ?? "").startsWith("can't find session: ");
 }
 
 /** A failed tmux call's text: tmux's stderr, then Node's message, which names the command. */
