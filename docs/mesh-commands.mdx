@@ -582,7 +582,7 @@ Registered declaration:
   "targeted": false,
   "capability": "manager.read",
   "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
-  "outputDigest": "sha256:7157974d7b0e7b1c0d52a76b410451f547598383f0d4490d81d29b37a146f108"
+  "outputDigest": "sha256:d5d9fbb35faf16c8f4ff7992dcf7d30bd6b25cd44c41f46985cde237279699b4"
 }
 ```
 
@@ -680,6 +680,11 @@ Output schema:
           }
         }
       },
+      "startupNotice": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      },
       "activeAt": {
         "type": "number"
       },
@@ -776,7 +781,7 @@ Registered declaration:
   "targeted": false,
   "capability": "manager.read",
   "inputDigest": "sha256:c74bfe6c0426cf31f56796a48992639eb08a46c36f7dd7205b497cf2c83a8382",
-  "outputDigest": "sha256:02ded1a202858d47e44e303c28b31c42ac1a55c792327a96647812ed294fafd4"
+  "outputDigest": "sha256:a3cda221ec4afbdf90578b619232bd5c4ab4af2872a12df1ad8cd7ef58ab0aa2"
 }
 ```
 
@@ -881,6 +886,11 @@ Output schema:
           "type": "number"
         }
       }
+    },
+    "startupNotice": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
     },
     "activeAt": {
       "type": "number"
