@@ -17,7 +17,8 @@
  * back. At 209x52 the relaunched app then gets two new mentions and an agent posts 250 messages in
  * #ops: both cards stay listed, one is answered and goes, and after 250 more posts in #design it
  * stays gone. The other, whose message has left the loaded rows and #design's history, is still
- * listed after a switch to another space and back, and still opens, quotes and takes a reply.
+ * listed after a switch to another space and back, and still opens, quotes and takes a reply. The
+ * human then posts, the agent posts 250 more in #ops, and a peer's reply to that post makes a card.
  * Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, so it is not part of smoke:ci, which runs Node 22.
@@ -671,6 +672,19 @@ try {
       check(`${size}: the reply to it reaches #design with that card's id`, dated?.replyTo === launchDate.id && dated.channel === "design", JSON.stringify(dated))
       const left = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 18") && !inspector(f, width).some((l) => l.includes("pick a launch date")), "the second answered card to leave", 5000).catch(() => capture())
       check(`${size}: that card then leaves the list too`, left.includes("REPLIES AND MENTIONS · 18") && !inspector(left, width).some((l) => l.includes("pick a launch date")) && footer(left) === "? help · ctrl+p commands", left)
+
+      send(`ship it on friday (${size})`)
+      const friday = await until(() => planner.got.find((m) => textOf(m) === `ship it on friday (${size})`), "the human's post in #design at planner", 5000)
+      await flood(3, "ops")
+      await planner.ep.multicast(`friday works (${size})`, { channel: "design", replyTo: friday.id })
+      await toTop()
+      const late = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 19"), "a reply card", 5000).catch(() => capture())
+      save(dir, "17-reply-to-a-post-out-of-the-feed")
+      check(
+        `${size}: a reply to the human's post after ${FLOOD} posts in another channel makes a reply card at the top`,
+        late.includes("REPLIES AND MENTIONS · 19") && /^2 ↩ planner\s+#design$/.test(cardHeads(late, width)[0] ?? "") && late.includes("friday works"),
+        late,
+      )
     }
 
     await toTree()

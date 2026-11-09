@@ -204,7 +204,8 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   209x52 an agent then posts 250 messages in another channel, and it checks that two new cards stay
   listed, that one answered goes and stays gone after 250 more posts, and that the other, whose
   message has left the loaded rows, is still listed after a switch to another space and back, then
-  quotes it and sends a reply a peer receives with its id.
+  quotes it and sends a reply a peer receives with its id. It then checks that a reply to a post
+  you sent before 250 more posts in another channel still makes a card.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
