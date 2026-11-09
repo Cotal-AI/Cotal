@@ -167,9 +167,16 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
-  if (typeof args.values.file === "string" && args.values["dry-run"] === true && args.values.run === undefined && recordedStackPreview()) {
-    const reason = manifestRead(args.values.file);
-    if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: args.values.file } });
+  if (typeof args.values.file === "string" && args.values.run === undefined && recordedStackPreview()) {
+    if (args.values["dry-run"] === true) {
+      const reason = manifestRead(args.values.file);
+      if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: args.values.file } });
+    } else if (Object.entries(args.values).every(([name, value]) => value === undefined || ["file", "yes", "dry-run", "json", "plain"].includes(name))) {
+      throw new CommandFailure("refused", "UNSUPPORTED", "file-form apply requires an additive deployment ledger; this folder records a stack started by up, so nothing was stopped", {
+        target: { root: canonicalRoot(cotalRoot()), file: args.values.file },
+        remedy: "run `cotal down` from this stack's root; no run ID is needed",
+      });
+    }
   }
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (args.values.file === undefined || typeof args.values.file === "string" && recordedStackPreview())) return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a

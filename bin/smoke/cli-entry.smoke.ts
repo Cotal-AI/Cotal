@@ -940,6 +940,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && !(r.stdout + r.stderr).includes("SCHEMA_INVALID")
         && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
   }
+  for (const format of [[], ["--json"], ["--plain"]]) {
+    const r = cotal(["down", "-f", "old.yaml", ...format], (home) => prepare(home, false), noSeed);
+    check(`file-form apply ${format[0] ?? "text"} names the recorded stack's stop without inventing a run ID`,
+      r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && (r.stdout + r.stderr).includes("no run ID is needed")
+        && !(r.stdout + r.stderr).includes("--run <id>"), shown(r));
+  }
   const noLedger = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
   check("no-ledger recorded-stack preview still validates the manifest's persona",
     noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));

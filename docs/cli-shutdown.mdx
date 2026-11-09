@@ -340,7 +340,9 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
 A legacy ledger preview selects the saved ledger by the manifest's source hash. It does not
-reload launch-time persona files, so a missing persona does not prevent that preview.
+reload launch-time persona files, so a missing persona does not prevent that preview. When this
+root records a stack without an additive ledger, file-form apply refuses `UNSUPPORTED` and
+names bare `cotal down` from that root. It does not require a run ID or stop the stack implicitly.
 
 For an additive ledger from the retired `spawn -f`, `down -f` keeps an authenticated channel when
 membership cannot be read. Its output includes the read failure, rather than calling every failure
