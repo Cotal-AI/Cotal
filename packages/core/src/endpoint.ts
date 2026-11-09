@@ -7138,11 +7138,13 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Warn once when the broker reports this endpoint's own DM inbox missing while the connection is
-   *  up, as after a store reset that the client's reconnect rode through. nats.js keeps checking and
-   *  resumes pulling if the inbox comes back, so this only reports. One report can be a passing state,
-   *  so the warning waits for a second one; the several 409s a delete answers pending pulls with count
-   *  once. A pull means the consumer was found again, which re-arms the warning. The loop ends when
-   *  the consumer is stopped, by `stop()` or by a rebuild replacing this connection. */
+   *  up, as after a store reset that the client's reconnect rode through, or after a manager restart
+   *  deletes the inbox. nats.js keeps checking and resumes pulling if the inbox comes back, so this
+   *  only reports. A `consumer_deleted` status is the consumer going away, so it warns at once. A
+   *  not-found can be a passing state, so that warning waits for a second report; the several 409s a
+   *  delete answers pending pulls with count once. A pull means the consumer was found again, which
+   *  re-arms the warning. The loop ends when the consumer is stopped, by `stop()` or by a rebuild
+   *  replacing this connection. */
   private watchInbox(msgs: ConsumerMessages, stream: string, durable: string): void {
     const boundNc = this.nc;
     void (async () => {
@@ -7158,6 +7160,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.type === "consumer_deleted") {
           if (deleted) continue;
           deleted = true;
+          absences = 1; // the deletion itself is the second report: warn on this one
         } else if (s.type !== "consumer_not_found" && s.type !== "stream_not_found") continue;
         if (++absences === 2)
           this.emitRecoverable(new Error(

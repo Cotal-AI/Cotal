@@ -190,12 +190,20 @@ export class NativeChatSession implements AdmittedChatSession {
     this.emit({ type: "presence", row, change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
   };
   private readonly onError = () => { /* surfaced through call results; never thrown at the UI */ };
-  /** A reconnect that finds this session's own DM durable gone cannot succeed by retrying: the
-   *  session was retired while the broker was away, as a stack restart retires the sessions its old
-   *  manager admitted. The session ends with that reason instead of reporting reconnecting for good. */
+  /** The session's own DM inbox is gone, so a later send is stored for a recipient that will
+   *  never be told. A reconnect that finds the durable gone cannot succeed by retrying: the session
+   *  was retired while the broker was away, as a stack restart retires the sessions its old manager
+   *  admitted. The same loss while the connection stays up, as a manager restart retires the slot
+   *  and deletes the inbox without dropping the broker, is the endpoint's "DM inbox missing"
+   *  warning. Either way the session ends with the reason instead of staying connected and silent. */
   private readonly onWarning = (e: Error) => {
-    if (this.state === "connected" || this.closed || !isConsumerNotFound(e)) return;
-    this.lost = "this session can no longer reconnect: its inbox is gone from the broker, because the space restarted or retired the session while the connection was down; open a new session";
+    if (this.closed) return;
+    const reconnectingGone = this.state !== "connected" && isConsumerNotFound(e);
+    const stillConnectedGone = this.state === "connected" && e.message.startsWith("DM inbox missing:");
+    if (!reconnectingGone && !stillConnectedGone) return;
+    this.lost = reconnectingGone
+      ? "this session can no longer reconnect: its inbox is gone from the broker, because the space restarted or retired the session while the connection was down; open a new session"
+      : "this session can no longer receive direct messages: its inbox is gone from the broker, because the manager restarted and retired the session; open a new session";
     void this.close();
   };
 

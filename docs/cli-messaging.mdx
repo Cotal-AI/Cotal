@@ -267,10 +267,17 @@ admissions take no role.
 A session that ends by leaving, by end of input or at its lifetime exits 0 when its connection
 close was confirmed and it was retired, or was an open-mesh session with nothing to retire. It exits
 4 when its connection close was confirmed and its retirement was requested but not confirmed. It
-exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
-was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
+exits 3 when the retirement outcome is unknown and the session did not end itself, when its
+connection close was not confirmed, or when no close was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
 space restarted and retired it while the connection was down, ends by itself with that reason and
-exits 5 when its close is confirmed. On a static mesh, leaving waits up to 30 seconds for the
+exits 5 when its close is confirmed. A manager restart does the same while the connection stays
+up: the old manager retires the session and removes its inbox, the session writes its end record
+saying the inbox is gone and to open a new session, and the process exits 5. That exit holds when
+the retire call does not reach the old manager and the close report says the retirement outcome is
+unknown. Until the end record, a send to the old name can be stored for a session that is still
+listed and will never be told. A send after the record does not resolve the old name.
+
+On a static mesh, leaving waits up to 30 seconds for the
 manager to answer the retirement. When the delivery daemon does not answer, the manager waits 15
 seconds for it, then reports the retirement pending and names the daemon, and the session exits 4.
 In the terminal view Ctrl-C and Ctrl-D leave. A slash command the grammar refuses clears the input
