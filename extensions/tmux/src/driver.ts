@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,18 +38,22 @@ export function currentSession(): string {
   }
 }
 
+/** True only when tmux itself says `session` is not on its server, that no server is running, or
+ *  that nothing listens at the socket path it would use. Any other failed query throws. */
 function hasSession(session: string): boolean {
   try {
-    execFileSync("tmux", ["-u", "has-session", "-t", session], { stdio: "ignore" });
+    execFileSync("tmux", ["-u", "has-session", "-t", session], { stdio: ["ignore", "ignore", "pipe"] });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (noServer(err) || isSessionAbsent(err) || noListener(err)) return false;
+    throw new Error(`tmux: couldn't check session ${session}: ${failureText(err)}`, { cause: err });
   }
 }
 
-/** Ensure a detached tmux session exists; creates it if absent. A detached session has no client
- *  to size it, and some tmux builds then treat its window as sizeless — so `split-window` fails
- *  with "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
+/** Ensure a detached tmux session exists. It is created only when tmux says the session is absent or
+ *  no server is running; a failed check throws instead of creating. A detached session has no client
+ *  to size it, and some tmux builds then treat its window as sizeless, so `split-window` fails with
+ *  "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
 export function ensureSession(session: string, cwd: string): void {
   if (hasSession(session)) return;
   try {
@@ -80,6 +84,42 @@ export function windowAliveRef(windowId: string): boolean {
  *  start of stderr counts. A missing socket or an unsafe socket directory is a failed call. */
 function noServer(err: unknown): boolean {
   return String((err as { stderr?: unknown }).stderr ?? "").startsWith("no server running on ");
+}
+
+/** True when tmux itself says the named session is not on the server it reached. tmux reports that
+ *  as `can't find session: <name>`, and the socket path or the name may itself hold those words, so
+ *  only the start of stderr counts. */
+function isSessionAbsent(err: unknown): boolean {
+  return String((err as { stderr?: unknown }).stderr ?? "").startsWith("can't find session: ");
+}
+
+/** True when tmux could not connect because nothing is bound at its socket path. tmux reports a
+ *  failed connect as `error connecting to <socket> (<reason>)`, and it gives that same report for a
+ *  path where no server has ever listened and for a live server whose socket file was moved aside.
+ *  The two differ in the kernel: a server stays bound at the path it listened on, so the bind table
+ *  still names that path after the file is gone, and creating a session there would start a second
+ *  server beside the one holding the seats. A path whose file is present failed for another reason,
+ *  such as a refused permission, and is not absence. */
+function noListener(err: unknown): boolean {
+  const socket = /^error connecting to (.+) \([^()]*\)$/.exec(stderrOf(err).split("\n")[0] ?? "")?.[1];
+  if (socket === undefined || existsSync(socket)) return false;
+  return !listenerBoundAt(socket);
+}
+
+/** True when a Unix socket is bound and listening at `path`. Linux lists every Unix socket in
+ *  /proc/net/unix as `Num RefCount Protocol Flags Type St Inode Path`, with St 01 for a listener and
+ *  the path it bound, which outlives a rename of the socket file. No other platform exposes the bind
+ *  table, so there a missing socket file reads as no listener, as tmux itself reads it. */
+function listenerBoundAt(path: string): boolean {
+  if (process.platform !== "linux") return false;
+  return readFileSync("/proc/net/unix", "utf8").split("\n").some((line) => {
+    const fields = line.trim().split(/\s+/);
+    return fields.length >= 8 && fields[5] === "01" && fields.slice(7).join(" ") === path;
+  });
+}
+
+function stderrOf(err: unknown): string {
+  return String((err as { stderr?: unknown }).stderr ?? "");
 }
 
 /** A failed tmux call's text: tmux's stderr, then Node's message, which names the command. */
