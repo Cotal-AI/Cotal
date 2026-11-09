@@ -1272,6 +1272,9 @@ interface ManagedAgent {
   /** Set on a `once` seat: the goal of its one task, and why this manager stopped the seat, if it
    *  did. The task is cancelled with that reason when the seat's exit is proved before it ended. */
   once?: { ref: GoalRef; stopReason?: string; retire?: string };
+  /** The connector's clause when this seat's startup ended `ready` on a connector whose idle wake
+   *  needs a confirmed startup: mesh traffic does not wake the seat. On the spawn reply and the ps row. */
+  startupNotice?: string;
   /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
   suppressCleanup?: boolean;
   /** The TERMINALIZING latch: flipped SYNCHRONOUSLY before the first await on every
@@ -7962,6 +7965,17 @@ export class Manager {
           return { ok: false, error };
         }
       }
+      // A plain seat on such a connector starts whatever its startup showed. One whose watch opened the
+      // input screen without the prompt is not woken by mesh traffic, and the spawn says so instead of
+      // starting it silently without push (#5737).
+      if (!onceTask && connector.idleWakeNeedsConfirmed !== undefined && runtime.reportsStartupOutcome) {
+        const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
+        if (managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
+        if (startup === "ready") {
+          managed.startupNotice = connector.idleWakeNeedsConfirmed;
+          console.error(`! ${name}: ${connector.idleWakeNeedsConfirmed}`);
+        }
+      }
       if (managed.launch.carried) {
         const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
@@ -8024,7 +8038,7 @@ export class Manager {
       // "no role", so dropping the key preserves the reply (surfaced by readiness:live).
       // A host that granted other channels than this spawn asked for: the receipt carries both.
       const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish }, enrolled.material) : undefined;
-      const okData = { name, agent, id: managed.id, mode: handle.kind, streamsTerminal: runtime.streamsTerminal, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}), ...(onceTask ? { once: { goalId: onceTask.ref.goalId, ...(onceTask.deadlineAt !== undefined ? { deadlineAt: onceTask.deadlineAt } : {}) } } : {}) };
+      const okData = { name, agent, id: managed.id, mode: handle.kind, streamsTerminal: runtime.streamsTerminal, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(managed.startupNotice !== undefined ? { startupNotice: managed.startupNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}), ...(onceTask ? { once: { goalId: onceTask.ref.goalId, ...(onceTask.deadlineAt !== undefined ? { deadlineAt: onceTask.deadlineAt } : {}) } } : {}) };
       // The task is served once the succeeded terminal is written, so a served task always has it
       // and a successor reads it as the readiness verdict. Every failure arm above ran before it. A
       // terminal this call did not commit never served the task: the seat is stopped, which cancels it.
@@ -13264,6 +13278,7 @@ export class Manager {
         mesh: seen?.status ?? "absent",
         ...(a.joinIssue ? { joinHealth: { state: "degraded" as const, reason: a.joinIssue } } : {}),
         ...(condition ? { condition } : {}),
+        ...(a.startupNotice !== undefined ? { startupNotice: a.startupNotice } : {}),
         ...(activeAt !== undefined ? { activeAt } : {}),
         // `current` is the only state in which `mesh` is a verdict; the other two are the
         // observer's own condition and travel on the row (older CLIs ignore the field).

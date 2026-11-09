@@ -49,6 +49,9 @@ export const AGENT_ROW_SCHEMA = deepFreeze({
         since: { type: "number" },
       },
     },
+    // The connector's clause when the seat's startup showed that mesh traffic does not wake it while
+    // idle (SPEC §13.6 item 6). Optional: absent when it does, or when the manager could not tell.
+    startupNotice: { type: "string", minLength: 1, maxLength: 1024 },
     // The roster's `activeAt` (SPEC §6): epoch ms of the seat's last harness-reported work progress.
     // Optional: absent when the connector reports none, and on rows from managers that predate it.
     activeAt: { type: "number" },

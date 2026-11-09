@@ -168,6 +168,9 @@ type AgentRow = {
   joinHealth?: { state: "degraded"; reason: string };
   /** The harness-reported presence condition beside `mesh`; absent when none was reported. */
   condition?: { code: string; source?: string; message?: string; since?: number };
+  /** The connector's clause when the seat's startup showed that mesh traffic does not wake it while
+   *  idle; absent when it does, or when the manager could not tell. */
+  startupNotice?: string;
   /** Epoch ms of the seat's last reported work progress; absent when none was reported. */
   activeAt?: number;
   /** The manager's own presence-view state when it built the row; absent from older managers. */
@@ -325,7 +328,7 @@ function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId
  *  on. A row from a manager that predates `meshView` carries no field and renders as before.
  *  An offline verdict says how long it has stood when the row carries `offlineSince` (#1208), so a
  *  seat that dropped a minute ago reads differently from one that dropped two days ago. */
-export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince" | "joinHealth">, now = Date.now()): Styled {
+export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince" | "joinHealth" | "startupNotice">, now = Date.now()): Styled {
   if (r.meshView === "stale") return { text: "mesh unknown (manager's presence view is stale)", tone: "waiting" };
   if (r.meshView === "unpopulated") return { text: "mesh unknown (manager's presence view not yet populated)", tone: "waiting" };
   if (r.joinHealth?.state === "degraded")
@@ -335,7 +338,8 @@ export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "
   // active 40m ago`, not a bare `waiting`, and a turn that stopped advancing shows the age of its
   // last event.
   const { condition, ages } = presenceFacts(r, now);
-  const detail = condition + ages;
+  // The manager's word that nothing wakes this seat while idle; `--wide` and `--json` carry the clause.
+  const detail = condition + ages + (r.startupNotice ? " · no idle wake" : "");
   if (r.mesh === "absent") return { text: `not in roster${detail}`, tone: "waiting" };
   if (r.mesh === "offline")
     return { text: `${r.offlineSince === undefined ? "mesh offline" : `mesh offline for ${fmtUptime(now - r.offlineSince)}`}${detail}`, tone: "hint" };
@@ -367,8 +371,9 @@ const authTone = (r: AgentRow): Tone => (r.authHealth === "auth-renewal-failed" 
  *  in the compact identity, so repeating them here would make wide output noisier without adding
  *  provenance. Only fields the manager actually recorded appear; lifecycle uid is required on every
  *  row. */
-function wideFields(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): [string, string][] {
+function wideFields(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume" | "startupNotice">): [string, string][] {
   const fields: [string, string][] = [];
+  if (r.startupNotice) fields.push(["idle wake", `off: ${r.startupNotice}`]);
   if (r.provider) fields.push(["provider", r.provider]);
   if (r.cwd) fields.push(["cwd", r.cwd]);
   if (r.pid !== undefined) fields.push(["pid", String(r.pid)]);
@@ -384,7 +389,7 @@ function wideFields(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "
 }
 
 /** {@link wideFields} as one line of facts. */
-export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): string[] {
+export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume" | "startupNotice">): string[] {
   return wideFields(r).map(([label, value]) => `${label} ${value}`);
 }
 

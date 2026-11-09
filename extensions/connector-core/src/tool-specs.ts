@@ -1702,7 +1702,7 @@ export function cotalToolSpecs(
           const d = reply.data as {
             name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
             pinAudit?: { requested: string; error: string; unreported?: true };
-            once?: { goalId: string; deadlineAt?: number }; waitingFor?: string;
+            once?: { goalId: string; deadlineAt?: number }; waitingFor?: string; startupNotice?: string;
           } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
@@ -1736,7 +1736,10 @@ export function cotalToolSpecs(
           const task = d?.once
             ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
             : "";
-          return ok(spawnResult({ requested: name, started: who, renamed: actual !== name, mode, model: d?.model, join, waitingFor: d?.waitingFor, once: d?.once !== undefined }) + task);
+          // The manager's word that nothing wakes the seat while idle: a DM to it waits for a turn
+          // somebody else starts, so the spawner must not hand it work and go idle waiting.
+          const wake = d?.startupNotice ? ` It joined, but ${d.startupNotice}. A message to it waits until someone starts its next turn.` : "";
+          return ok(spawnResult({ requested: name, started: who, renamed: actual !== name, mode, model: d?.model, join, waitingFor: d?.waitingFor, once: d?.once !== undefined }) + task + wake);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);
         }
