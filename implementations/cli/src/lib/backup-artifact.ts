@@ -318,7 +318,7 @@ function copyPinnedFile(source: string, destination: string | undefined, expecte
   }
 }
 
-/** The existing exact-name/metadata checks shared by staging and read-only inspection. */
+/** The exact-name, regular-file and metadata checks shared by inspect, verify and staging. */
 function validateArtifactInventory(artifact: string, manifest: BackupManifest): void {
   for (const file of manifest.files) safeFileName(file.path);
   const expected = new Set(["manifest.json", ...manifest.files.map((file) => file.path)]);
@@ -331,6 +331,12 @@ function validateArtifactInventory(artifact: string, manifest: BackupManifest): 
     throw invalidManifest("its file inventory does not match the folder");
   if (new Set(manifest.files.map((file) => file.path)).size !== manifest.files.length)
     throw invalidManifest("it declares a file more than once");
+  // Inspect, verify and staging share this inventory. A declared name that is a symbolic link,
+  // FIFO or device is refused here, before any read follows it, the way a linked manifest is.
+  for (const file of manifest.files) {
+    const stat = lstatSync(join(artifact, file.path));
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new ArtifactFileFault(file.path, "not-regular");
+  }
   for (const file of manifest.files) {
     if (!Number.isSafeInteger(file.size) || file.size < 0 || !/^[0-9a-f]{64}$/.test(file.sha256) ||
         !["snapshot", "checkpoints"].includes(file.kind) ||
