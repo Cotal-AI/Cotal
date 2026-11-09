@@ -347,7 +347,9 @@ exists, and there `help` says the folder is gone instead of showing a space.
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
 143. This holds for `watch`, `chat`, `console`, `history --follow`, `channel members --follow` and
-`join`, and for `service logs --follow`, the `--wait` follows and a foreground `up`. The JSON
+`join`, and for `service logs --follow`, the `--wait` follows and a foreground `up`. A hangup of a
+foreground `up` is not a stop: the command prints that the stack is still running and names
+`cotal down`, then exits 129. The JSON
 streams of `watch`, `chat --stdio`, `history --follow` and `channel members --follow` end with an
 `end` record whose reason is `interrupted` for SIGINT or `terminated` for SIGTERM. Inside a terminal
 view a key that leaves, such as `q` or Ctrl-C, is not a signal, and the view exits as it does when
