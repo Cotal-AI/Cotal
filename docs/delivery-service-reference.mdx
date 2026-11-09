@@ -70,6 +70,24 @@ watchdog, timer writer and membership feed, so a second daemon for the space is 
 as before. A lane that loses the broker, its credential or its lease closes alone and the host
 reopens it; the other lanes keep serving.
 
+### Standby host
+
+Two hosts can stand by for the same space. Provision each host with its own root and its own scoped
+`delivery` credential for the space, and start both with `cotal deliver --spaces`. The host that
+takes the lease serves. The other host reports the held lease, opens no lane and retries every 5
+seconds. If the holder dies, its lease row expires with the bucket TTL, and the standby takes the
+row on a retry and serves. A host that comes back finds the new holder's row, does not serve, and
+does not delete or rewrite that row. There is no election, placement or failover command: the lease
+is the only arbiter, and nothing moves a space back to the first host.
+
+A host that is not provisioned for the space, holds a credential for another account, holds a
+malformed credential, or lacks the `$SYS` observer credential refuses on its own checks and never
+touches the lease. The `smoke:delivery-standby` suite runs two complete hosts on one machine and
+one broker through the kill, return and graceful-stop cases. In that suite the standby took the
+lease about 19 seconds after the holder was killed, and about 5 seconds after a graceful stop. These
+are single-run measurements of that topology, not a bound. One machine with two host processes is
+not a test of two physical hosts or of a network partition.
+
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
 `ctl.delivery-admin` rail. Agents' durable join, leave and membership-list requests go over its
