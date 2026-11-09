@@ -14,7 +14,10 @@
  * in the open conversation makes a card already drawn as seen. `x` in the inspector dismisses a card
  * and leaves a waiting agent, and sixteen more cards are all reached by the arrows. After the app
  * quits and starts again on the same space, the replied card stays gone and the dismissed ones are
- * back. Captures are kept under the printed directory.
+ * back. At 209x52 the relaunched app then gets two new mentions and an agent posts 250 messages in
+ * #ops: both cards stay listed, one is answered and goes, and after 250 more posts it stays gone
+ * while the other, whose message has left the loaded rows, still opens, quotes and takes a reply.
+ * Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, so it is not part of smoke:ci, which runs Node 22.
  * Run: pnpm --filter @cotal-ai/tui smoke
@@ -43,6 +46,8 @@ const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))
 const socket = `cotal-tui-cards-${process.pid}`
 const tmux = (...args: string[]) => execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8" })
 const space = "team-alpha"
+// Posts in another channel, more than the 200 rows of all traffic the app reads.
+const FLOOD = 250
 
 let pass = 0
 let fail = 0
@@ -578,6 +583,73 @@ try {
           : summaryOf(relaunched, width) === "1 needs you · 2 mentions"),
       relaunched,
     )
+
+    if (width === 209) {
+      const flood = async (round: number) => {
+        for (let k = 1; k <= FLOOD; k++) await coder.ep.multicast(`ops line ${round}.${k} (${size})`, { channel: "ops" })
+        await openRow("all traffic")
+        await waitFor(has(`ops line ${round}.${FLOOD} (${size})`), `the ${FLOOD} posts in #ops`)
+      }
+      const toTop = async () => {
+        await toTree()
+        keys("Tab", ...times(30, "k"))
+        await highlight("1 ◐ coder-2", "the highlight on the first item")
+      }
+      const signOff = await reviewer.ep.multicast(`@${me} sign off the release (${size})`, { channel: "general", mentions: [me] })
+      const launchDate = await planner.ep.multicast(`@${me} pick a launch date (${size})`, { channel: "design", mentions: [me] })
+      await toTop()
+      const fresh = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 20") && /^2 @ planner\s+#design$/.test(cardHeads(f, width)[0] ?? ""), "two more cards").catch(() => capture())
+      check(`${size}: two new mentions make two cards at the top of the list`, fresh.includes("REPLIES AND MENTIONS · 20") && /^3 @ reviewer\s+#general$/.test(cardHeads(fresh, width)[1] ?? ""), fresh)
+      keys("Escape")
+      await flood(1)
+      await toTop()
+      const busy = capture()
+      save(dir, "13-after-busy-channel")
+      const busyHeads = cardHeads(busy, width)
+      check(
+        `${size}: after ${FLOOD} posts in another channel both cards are still listed, newest first`,
+        busy.includes("REPLIES AND MENTIONS · 20") && /^2 @ planner\s+#design$/.test(busyHeads[0] ?? "") && /^3 @ reviewer\s+#general$/.test(busyHeads[1] ?? "") && busy.includes("sign off the release") && busy.includes("pick a launch date"),
+        busy,
+      )
+
+      keys("Down", "Down")
+      await highlight("3 @ reviewer", "down to the mention in #general")
+      keys("Enter")
+      const quotedOld = await waitFor((f) => titled("#general")(f) && quoteLine(f, width).startsWith(`↳ reviewer: “@${me} sign off`), "enter to open and quote the mention in #general", 5000).catch(() => capture())
+      check(`${size}: enter on the card that outlived the busy channel opens #general and quotes it`, titled("#general")(quotedOld) && quoteLine(quotedOld, width).startsWith(`↳ reviewer: “@${me} sign off`), quotedOld)
+      send(`signed off (${size})`)
+      const signed = await until(() => reviewer.got.find((m) => textOf(m) === `signed off (${size})`), "the reply at reviewer", 5000).catch(() => undefined)
+      check(`${size}: the reply reaches #general with that card's id`, signed?.replyTo === signOff.id && signed.channel === "general", JSON.stringify(signed))
+      const answered = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 19") && !inspector(f, width).some((l) => l.includes("sign off the release")), "the answered card to leave", 5000).catch(() => capture())
+      check(`${size}: the answered card leaves the list`, answered.includes("REPLIES AND MENTIONS · 19") && !inspector(answered, width).some((l) => l.includes("sign off the release")), answered)
+
+      await flood(2)
+      await toTop()
+      const later = capture()
+      save(dir, "14-after-second-busy-round")
+      check(
+        `${size}: after ${FLOOD} more posts the answered card stays gone and the unanswered one stays listed`,
+        later.includes("REPLIES AND MENTIONS · 19") && !inspector(later, width).some((l) => l.includes("sign off the release")) && /^2 @ planner\s+#design$/.test(cardHeads(later, width)[0] ?? ""),
+        later,
+      )
+
+      keys("Down")
+      await highlight("2 @ planner", "down to the mention in #design")
+      keys("Enter")
+      const gone = await waitFor((f) => titled("#design")(f) && quoteLine(f, width).startsWith(`↳ planner: “@${me} pick a launch date`), "enter to open and quote the mention in #design", 5000).catch(() => capture())
+      save(dir, "15-quoted-message-out-of-the-feed")
+      check(
+        `${size}: enter on a card whose message left the loaded rows opens #design and quotes it, with the message no longer in the conversation`,
+        titled("#design")(gone) && quoteLine(gone, width).startsWith(`↳ planner: “@${me} pick a launch date`) && !middle(gone, width).some((l) => !l.startsWith("↳ ") && l.includes("pick a launch date")),
+        gone,
+      )
+      send(`tomorrow (${size})`)
+      const dated = await until(() => planner.got.find((m) => textOf(m) === `tomorrow (${size})`), "the reply at planner", 5000).catch(() => undefined)
+      check(`${size}: the reply to it reaches #design with that card's id`, dated?.replyTo === launchDate.id && dated.channel === "design", JSON.stringify(dated))
+      const left = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 18") && !inspector(f, width).some((l) => l.includes("pick a launch date")), "the second answered card to leave", 5000).catch(() => capture())
+      check(`${size}: that card then leaves the list too`, left.includes("REPLIES AND MENTIONS · 18") && !inspector(left, width).some((l) => l.includes("pick a launch date")) && footer(left) === "? help · ctrl+p commands", left)
+    }
+
     await toTree()
     keys("q")
     await waitFor(has("EXIT=0"), "q to quit the relaunched app with status 0")
