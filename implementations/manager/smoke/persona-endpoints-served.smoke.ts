@@ -20,11 +20,13 @@
  * Last, a pinned entry through the agent tools. The spawner also holds `list` on one instance of the
  * endpoint, a second instance not yet serving, and hands that pin to a helper. The real
  * `cotal_describe` and `cotal_invoke` handlers run over an endpoint on the helper's own credential.
- * An unpinned describe, made while only the first instance serves, is answered there, which the
- * class baseline allows, and warms the helper's class cache with that instance. Once the pinned
- * instance serves, a call naming it reaches it; a call naming the other instance is refused by the
- * broker and that handler receives nothing; an unpinned call never runs on the other instance; and
- * with the pinned instance stopped, a pinned call fails and the other instance receives nothing.
+ * While only the first instance serves, an unpinned invoke and then an unpinned describe resolve
+ * there, which the class baseline allows, and fill both of the helper's class caches with that
+ * instance; the invoke itself is refused, since the helper holds no class row. Once the pinned
+ * instance serves, a call naming it reaches it and leaves both caches as they were; a call naming the
+ * other instance is refused by the broker and that handler receives nothing; an unpinned call never
+ * runs on the other instance; and with the pinned instance stopped, a pinned call goes unanswered and
+ * the other instance receives nothing.
  *
  * Run: pnpm smoke:persona-endpoints-served   (needs nats-server, tmux and node on PATH)
  */
@@ -78,11 +80,12 @@ const CELLS = [
   "a despawn revokes every ledger row of the helper's lifecycle",
   "the despawn evicts a live connection made with a copy of the helper's credential",
   "a served spawn hands on list pinned to one instance, as that instance's list and describe rows and no class row",
-  "an unpinned cotal_describe is answered by the instance that serves, which the class baseline allows",
-  "naming the pinned instance, cotal_describe and cotal_invoke reach it and its handler answers",
+  "while only the other instance serves, an unpinned cotal_invoke of list resolves there and never runs there",
+  "an unpinned cotal_describe is answered by the other instance, which the class baseline allows, and both class caches hold it",
+  "naming the pinned instance, cotal_describe and cotal_invoke reach it, its handler answers, and both class caches still hold the other instance",
   "naming the other instance, the broker refuses the call and that handler receives nothing",
-  "an unpinned cotal_invoke never runs the command on the other instance",
-  "with the pinned instance stopped, a pinned call fails and the other instance receives nothing",
+  "an unpinned cotal_invoke, with both instances serving, never runs the command on the other instance",
+  "with the pinned instance stopped, a pinned call goes unanswered rather than refused, and the other instance receives nothing",
 ];
 let pass = 0, fail = 0;
 const graded = new Set<string>();
@@ -406,33 +409,49 @@ try {
   };
   const helperGot = (instance: string) => received.filter((r) => r.instance === instance && r.actor === pinnedSeat.actor).length;
   const other = classInstance.instanceId;
+  // The endpoint's two class caches: the full discovery handle a describe stores, and the
+  // command-specific handle an unpinned invoke stores. A pinned call reads and writes neither.
+  const caches = helperEp as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }>; resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string } }>> };
+  const cached = () => ({ full: caches.resolvedServices.get(ORDERS)?.responder.instanceId, list: caches.resolvedCommandServices.get(ORDERS)?.get("list")?.responder.instanceId });
+  const refusedByBroker = (text: string) => /no caller grant|permission-denied|REFUSED BY THE BROKER/.test(text);
 
-  // Only the class instance serves, so an unpinned describe resolves there and caches it.
+  // Only the other instance serves. An unpinned invoke resolves there and stores that handle before
+  // its class publish is refused; the helper holds no class row, and the retry on that instance's
+  // rail is refused too. The describe after it stores the full handle, also from there.
+  const warmInvoke = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", timeoutMs: 8_000 });
+  check("while only the other instance serves, an unpinned cotal_invoke of list resolves there and never runs there",
+    warmInvoke.isError && refusedByBroker(warmInvoke.text) && cached().list === other && helperGot(other) === 0, { warmInvoke, cached: cached(), otherGot: helperGot(other) });
   const unpinnedDescribe = await tool("cotal_describe", { endpoint: ORDERS });
-  check("an unpinned cotal_describe is answered by the instance that serves, which the class baseline allows",
-    !unpinnedDescribe.isError && unpinnedDescribe.text.includes(`instance ${other}`), unpinnedDescribe);
+  check("an unpinned cotal_describe is answered by the other instance, which the class baseline allows, and both class caches hold it",
+    !unpinnedDescribe.isError && unpinnedDescribe.text.includes(`instance ${other}`) && cached().full === other && cached().list === other, { unpinnedDescribe: unpinnedDescribe.text.slice(0, 300), cached: cached() });
 
   const pinned = await serveOrders(PINNED);
   const pinnedDescribe = await tool("cotal_describe", { endpoint: ORDERS, instance: PINNED });
+  const afterDescribe = cached();
   const pinnedInvoke = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", instance: PINNED, timeoutMs: 8_000 });
-  check("naming the pinned instance, cotal_describe and cotal_invoke reach it and its handler answers",
+  const afterInvoke = cached();
+  check("naming the pinned instance, cotal_describe and cotal_invoke reach it, its handler answers, and both class caches still hold the other instance",
     !pinnedDescribe.isError && pinnedDescribe.text.includes(`instance ${PINNED}`)
-      && !pinnedInvoke.isError && pinnedInvoke.text.includes(`answered by instance ${PINNED}`) && pinnedInvoke.text.includes("o-1") && helperGot(PINNED) === 1,
-    { pinnedDescribe: pinnedDescribe.text.slice(0, 300), pinnedInvoke, pinnedGot: helperGot(PINNED) });
+      && !pinnedInvoke.isError && pinnedInvoke.text.includes(`answered by instance ${PINNED}`) && pinnedInvoke.text.includes("o-1") && helperGot(PINNED) === 1
+      && afterDescribe.full === other && afterDescribe.list === other && afterInvoke.full === other && afterInvoke.list === other,
+    { pinnedDescribe: pinnedDescribe.text.slice(0, 300), pinnedInvoke, pinnedGot: helperGot(PINNED), afterDescribe, afterInvoke });
 
   const toOther = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", instance: other, timeoutMs: 8_000 });
   check("naming the other instance, the broker refuses the call and that handler receives nothing",
-    toOther.isError && /no caller grant|permission-denied|REFUSED BY THE BROKER/.test(toOther.text) && helperGot(other) === 0, { toOther, otherGot: helperGot(other) });
+    toOther.isError && refusedByBroker(toOther.text) && helperGot(other) === 0, { toOther, otherGot: helperGot(other) });
 
   const unpinnedInvoke = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", timeoutMs: 8_000 });
-  check("an unpinned cotal_invoke never runs the command on the other instance",
+  check("an unpinned cotal_invoke, with both instances serving, never runs the command on the other instance",
     !unpinnedInvoke.text.includes(`answered by instance ${other}`) && helperGot(other) === 0, { unpinnedInvoke, otherGot: helperGot(other) });
 
+  // A valid instance the helper holds rows for, but that no longer serves, is unanswered: a
+  // different fault from the broker refusing an instance the helper holds no row for.
   await pinned.handle.stop();
   const pinnedGotBefore = helperGot(PINNED);
   const stoppedCall = await tool("cotal_invoke", { endpoint: ORDERS, command: "list", instance: PINNED, timeoutMs: 3_000 });
-  check("with the pinned instance stopped, a pinned call fails and the other instance receives nothing",
-    stoppedCall.isError && helperGot(other) === 0 && helperGot(PINNED) === pinnedGotBefore, { stoppedCall, otherGot: helperGot(other) });
+  check("with the pinned instance stopped, a pinned call goes unanswered rather than refused, and the other instance receives nothing",
+    stoppedCall.isError && /deadline-exceeded|unavailable|no describe reply/.test(stoppedCall.text) && !refusedByBroker(stoppedCall.text) && helperGot(other) === 0 && helperGot(PINNED) === pinnedGotBefore,
+    { stoppedCall, otherGot: helperGot(other), helperErrors });
 } catch (error) {
   console.log(`  the suite stopped early: ${(error as Error).stack ?? String(error)}`);
   for (const name of CELLS) if (!graded.has(name)) check(name, false, "not reached");
