@@ -2312,10 +2312,15 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // the failure is logged, never swallowed silently. Teardown is AWAITED before the broker is
   // signalled, so it never races a broker that is already going away.
   let stopping = false;
+  // The signal that asked for the stop. The broker is then signalled SIGTERM, so its own exit
+  // status is not the command's: SIGINT exits 130 and SIGTERM exits 143, as a controller stack's
+  // foreground stop does.
+  let stopSignal: "SIGINT" | "SIGTERM" | undefined;
   let teardown: Promise<void> | undefined;
-  const stop = () => {
+  const stop = (signal: "SIGINT" | "SIGTERM") => {
     if (stopping) return; // a second Ctrl-C during teardown must not start a second teardown
     stopping = true;
+    stopSignal = signal;
     // Once the broker has exited, its handler below is already running this teardown and reads
     // `stopping` when it is done.
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -2334,10 +2339,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       child.kill("SIGTERM");
     })();
   };
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
-  // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
-  // so a later `cotal spawn` doesn't try to join a dead mesh.
+  process.on("SIGINT", () => stop("SIGINT"));
+  process.on("SIGTERM", () => stop("SIGTERM"));
+  // The broker is gone. Drop the registration this stop recorded, and the `current` pointer when it
+  // names that registration, so a later `cotal spawn` does not join a dead mesh. A space named after
+  // its folder keeps both, as `cotal down` does, so the name stays the folder's.
   child.on("exit", async (code, signal) => {
     if (failedListeners.has(child)) return;
     removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
@@ -2359,11 +2365,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // this broker by design (it is the operator's, and only they remove it), so unrecording it on
       // our exit would delete a registration this process never owned.
       const mine = findMesh(space);
-      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot()) {
+      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot() && !keepsRegistration(mine)) {
         removeMesh(space);
         if (getCurrent() === space) clearCurrent();
       }
-      if (activationFinished) process.exit(code ?? 0);
+      if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
     } else {
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
       // `up` reopens that SAME store instead of falling back to the root's default, and a
