@@ -5467,7 +5467,10 @@ export class Manager {
     this.agents.delete(a.name);
     this.recordContinuityAtStop(a, "stop");
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
-    this.dropSeatRecord(a);
+    // A released seat's record is the next manager's only pointer to it. It stays until the
+    // retirement is confirmed. Dropping it here let a refused retirement leave the lifecycle active
+    // with nothing left for that manager to adopt.
+    if (!this.releasedSeatPending(a)) this.dropSeatRecord(a);
     if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
     // End any live §13.6 attach session bound to THIS incarnation with the honest
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
@@ -5833,6 +5836,10 @@ export class Manager {
     // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
     // lifecycle's. A late reply for a retired predecessor must never clear a successor's newer hold.
     const cur = this.retiring.get(a.name);
+    // The record names this incarnation only, so a confirmed retirement removes it and a successor's
+    // record stays. A mint authority that is still live keeps the record: the seat is gone, and the
+    // next manager has to be able to re-drive the revoke.
+    if (!(cur?.target.lifecycleUid === a.lifecycleUid && cur.standingAuthorityLive)) this.dropSeatRecord(a);
     if (cur && cur.target.lifecycleUid === a.lifecycleUid) {
       if (cur.standingAuthorityLive) {
         // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
@@ -11700,6 +11707,17 @@ export class Manager {
       removeReleasedSeatReference(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
     } catch (error) {
       console.error(`! ${a.name}: its seat record could not be removed: ${rejectionText(error)}`);
+    }
+  }
+
+  /** True when a default stop wrote a runtime reference for this exact lifecycle and it is still
+   *  there. That file is what a later manager adopts, so a slot free must not remove it before the
+   *  retirement that confirms the lifecycle is gone. */
+  private releasedSeatPending(a: { name: string; lifecycleUid: string }): boolean {
+    try {
+      return readReleasedSeatReference(this.workspaceRoot, this.space, a.name)?.lifecycleUid === a.lifecycleUid;
+    } catch {
+      return false;
     }
   }
 
