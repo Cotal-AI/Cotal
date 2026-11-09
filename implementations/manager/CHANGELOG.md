@@ -1,5 +1,25 @@
 # @cotal-ai/manager
 
+## 0.151.0
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- af1b5da: The reap census reads manager.ts with the type checker: any value whose type carries `reap` is a runtime, so an alias, field, return value, awaited promise, conditional, rest copy or destructured binding needs no shape of its own, an untyped value fails closed, and a spread, rest copy or `Reflect.*`/`Object.*` call that takes a runtime is a bypass.
+- 2dc2c93: A manager's default stop records each detachable seat it releases, so the next manager on that workspace adopts the seat or retires its lifecycle once the runtime proves it gone; a released seat that already exited is retired by the stop itself.
+- 6661f53: A user-mode spawn or persona definition now refuses a name the bearer exchange cannot serve, before anything is enrolled. The name door applies the exchange's own 64-character actor bound, and auto-numbering stops at that bound instead of appending a suffix that would cross it.
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [e70e96d]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+  - @cotal-ai/seat@0.151.0
+
 ## 0.150.0
 
 ### Patch Changes
