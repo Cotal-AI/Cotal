@@ -142,6 +142,11 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
   };
   const isRuntime = (node: ts.Expression): boolean => {
     const bare = unwrap(node);
+    const computed = ts.isElementAccessExpression(bare) ? unwrap(bare.argumentExpression) : undefined;
+    if (
+      ts.isElementAccessExpression(bare) && bare.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      computed !== undefined && (ts.isStringLiteralLike(computed) || ts.isNumericLiteral(computed)) && computed.text === "requiredRuntime"
+    ) return true;
     if (ts.isPropertyAccessExpression(bare)) {
       const receiver = unwrap(bare.expression);
       if (receiver.kind === ts.SyntaxKind.ThisKeyword && (bare.name.text === "requiredRuntime" || bare.name.text === "runtime")) return true;
@@ -185,15 +190,21 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
   for (let grew = true; grew;) {
     const before = aliases.size;
     const collect = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && node.initializer) {
-        bind(node.name, isRuntime(node.initializer), node.type);
-        const value = unwrap(node.initializer);
-        if (ts.isIdentifier(node.name) && ts.isObjectLiteralExpression(value)) {
-          for (const property of value.properties) {
-            if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || !isRuntime(property.initializer)) continue;
-            aliases.add(`${node.name.text}.${property.name.text}`);
+      if (ts.isVariableDeclaration(node)) {
+        if (node.initializer !== undefined) {
+          bind(node.name, isRuntime(node.initializer), node.type);
+          const value = unwrap(node.initializer);
+          if (ts.isIdentifier(node.name) && ts.isPropertyAccessExpression(value)) {
+            const object = unwrap(value.expression);
+            if (ts.isIdentifier(object) && (object.text === "Reflect" || object.text === "Object")) aliases.add(node.name.text);
           }
-        }
+          if (ts.isIdentifier(node.name) && ts.isObjectLiteralExpression(value)) {
+            for (const property of value.properties) {
+              if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || !isRuntime(property.initializer)) continue;
+              aliases.add(`${node.name.text}.${property.name.text}`);
+            }
+          }
+        } else bind(node.name, false, node.type);
       } else if (ts.isParameter(node)) bind(node.name, false, node.type);
       else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && isRuntime(node.right)) aliases.add(node.left.text);
       else if (ts.isPropertyDeclaration(node) && ts.isIdentifier(node.name) && typeNamesRuntime(node.type)) aliases.add(`this.${node.name.text}`);
@@ -201,10 +212,18 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
         const declared = node.initializer.declarations[0];
         if (declared !== undefined) bind(declared.name, isRuntime(node.expression), declared.type);
       } else if (ts.isCatchClause(node) && node.variableDeclaration !== undefined) bind(node.variableDeclaration.name, false, node.variableDeclaration.type);
-      else if (ts.isReturnStatement(node) && node.expression !== undefined && ts.isCallExpression(unwrap(node.expression)) && isRuntime(node.expression)) {
-        let owner: ts.Node | undefined = node;
-        while (owner !== undefined && !ts.isMethodDeclaration(owner) && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
-        if (owner !== undefined && owner.name !== undefined && ts.isIdentifier(owner.name)) aliases.add(owner.name.text);
+      else if (
+        (ts.isReturnStatement(node) && node.expression !== undefined && ts.isCallExpression(unwrap(node.expression)) && isRuntime(node.expression)) ||
+        ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && node.body !== undefined && ts.isCallExpression(unwrap(node.body as ts.Expression)) && isRuntime(node.body as ts.Expression))
+      ) {
+        const returned = ts.isReturnStatement(node) ? node : node.parent;
+        let owner: ts.Node | undefined = returned;
+        while (
+          owner !== undefined && !ts.isMethodDeclaration(owner) && !ts.isFunctionDeclaration(owner) &&
+          !ts.isPropertyDeclaration(owner) && !ts.isVariableDeclaration(owner)
+        ) owner = owner.parent;
+        const ownerName = owner !== undefined && "name" in owner && owner.name !== undefined && ts.isIdentifier(owner.name) ? owner.name.text : undefined;
+        if (ownerName !== undefined) aliases.add(ownerName);
       }
       ts.forEachChild(node, collect);
     };
@@ -242,8 +261,8 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
         ? unwrap(callee.expression)
         : ts.isElementAccessExpression(callee) && literalKey(callee.argumentExpression) !== undefined
           ? unwrap(callee.expression)
-          : undefined;
-      const reflective = receiver !== undefined && ts.isIdentifier(receiver) && (receiver.text === "Reflect" || receiver.text === "Object");
+          : ts.isIdentifier(callee) && aliases.has(callee.text) ? callee : undefined;
+      const reflective = receiver !== undefined && ts.isIdentifier(receiver) && (receiver.text === "Reflect" || receiver.text === "Object" || aliases.has(receiver.text));
       if (reflective && node.arguments.some((arg) => isRuntime(arg))) out.bypass.push(`${where(node)} (line ${line(node)})`);
     }
     if ((ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) && isRuntime(node.expression)) out.bypass.push(`${where(node)} (line ${line(node)})`);
@@ -331,6 +350,18 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
   ["Reflect read of a value that is not a runtime is not a bypass",
     fixture('  private async later() { Reflect["get"](other, "reap"); }'),
     (c) => c.bypass.length === 0],
+  ["a Runtime binding with no initializer is a runtime",
+    fixture('  private async later() { const key = "reap"; let runtime: Runtime; await runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["an arrow that returns runtimeFor is a runtime",
+    fixture('  private pick = () => this.runtimeFor(kind);\n  private async later() { const key = "reap"; await this.pick()[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a local copy of Reflect.get is a bypass",
+    fixture('  private async later(runtime: Runtime) { const get = Reflect.get; await get(runtime, "reap")(ref); }'),
+    (c) => c.bypass.length === 1],
+  ["a computed requiredRuntime is a runtime",
+    fixture('  private async later() { const key = "reap"; await this["requiredRuntime"][key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
 ];
 for (const [name, text, holds] of instrument) {
   const c = censusReaps("fixture.ts", text);
