@@ -92,20 +92,20 @@ check(
   { renderings },
 );
 
-/** Every reap in a source file, read from its syntax tree. `guarded` is each `requireRuntimeReap`
+/** Every reap in a source file, read with the type checker. `guarded` is each `requireRuntimeReap`
  *  call, named by the callables that contain it (`Class.method`, with `<anonymous>` for an unnamed
- *  callback). `bypass` is every other use of a runtime's `reap`: a direct call, a read, or a
- *  destructured binding, which would see `absent` without the refusal. A key the census cannot read
- *  (`runtime[key]`, `{ [key]: f } = runtime`) on a runtime origin fails closed as a bypass. A runtime
- *  origin is `this.requiredRuntime`, the `this.runtime` field that getter returns, a call of
- *  `runtimeFor`, a returned runtime, a runtime stored on an object, a name bound from one of those,
- *  or a binding whose type names `Runtime`. A `Reflect.*` or `Object.*` call, written with a dot or
- *  a literal key, or a spread that takes one reaches `reap` without naming it, so that is a bypass
- *  too. `probes` are the `typeof x.reap` feature checks, which call nothing.
+ *  callback). `bypass` is every other way to reach a runtime's `reap`, which would see `absent`
+ *  without the refusal: a `.reap` read or call on anything, a `reap` key in a binding, and on a
+ *  runtime value a key the census cannot read (`runtime[key]`, `{ [key]: f } = runtime`), a spread
+ *  or rest copy, or a `Reflect.*` or `Object.*` call that takes it. A runtime value is any
+ *  expression whose static type carries a `reap` member, so an alias, a field, a return value, an
+ *  awaited promise, a conditional, a rest copy or a destructured binding all count without the
+ *  census naming their shapes; a value the checker cannot type (`any`, `unknown`) counts too, so an
+ *  untyped path fails closed. `probes` are the `typeof x.reap` feature checks, which call nothing.
  *  `elements` counts each element access by how it was classified, so the census says how much it
  *  read. */
-function censusReaps(fileName: string, text: string): { guarded: string[]; bypass: string[]; probes: string[]; elements: Record<string, number> } {
-  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+function censusReaps(program: ts.Program, source: ts.SourceFile): { guarded: string[]; bypass: string[]; probes: string[]; elements: Record<string, number> } {
+  const checker = program.getTypeChecker();
   const nameOf = (node: ts.Node): string => {
     if (ts.isClassLike(node)) return node.name?.text ?? "<class>";
     if (ts.isConstructorDeclaration(node)) return "constructor";
@@ -123,116 +123,25 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
     return names.join(".") || "<top level>";
   };
   const line = (node: ts.Node) => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+  const at = (node: ts.Node) => `${where(node)} (line ${line(node)})`;
+  const carriesReap = (type: ts.Type): boolean =>
+    type.isUnion() ? type.types.some(carriesReap)
+      : (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 || type.getProperty("reap") !== undefined;
+  const isRuntime = (node: ts.Node): boolean => carriesReap(checker.getTypeAtLocation(node));
+  // `Reflect.get`, `Object.values`, `Object.assign` and the rest of those two namespaces, however
+  // the callee is spelled (`Reflect["get"]`, a local copy of `Reflect.get`): the resolved callee is
+  // a member of `Reflect` or of `ObjectConstructor`.
+  const reflective = (callee: ts.Expression): boolean => {
+    const type = checker.getTypeAtLocation(callee);
+    const symbol = type.getSymbol() ?? type.aliasSymbol;
+    const name = symbol === undefined ? "" : checker.getFullyQualifiedName(symbol);
+    return name.startsWith("Reflect.") || name.startsWith("ObjectConstructor.");
+  };
+  // A key the census can read: a literal, or in a binding a plain or quoted name. Anything else
+  // (`[key]`, `[a + b]`) is undefined.
   const unwrap = (node: ts.Expression): ts.Expression =>
     ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node)
       ? unwrap(node.expression) : node;
-  // A runtime origin is `this.requiredRuntime`, the `this.runtime` field that getter returns, a call
-  // of `runtimeFor`, a returned runtime, a runtime stored on an object, a name bound from one of
-  // those, or a binding whose type names `Runtime`.
-  const aliases = new Set<string>();
-  const typeNamesRuntime = (type: ts.TypeNode | undefined): boolean => {
-    if (!type) return false;
-    if (ts.isTypeReferenceNode(type)) return type.typeName.getText(source) === "Runtime" || type.typeName.getText(source).endsWith(".Runtime");
-    if (ts.isUnionTypeNode(type) || ts.isIntersectionTypeNode(type)) return type.types.some(typeNamesRuntime);
-    if (ts.isParenthesizedTypeNode(type)) return typeNamesRuntime(type.type);
-    if (ts.isArrayTypeNode(type)) return typeNamesRuntime(type.elementType);
-    if (ts.isTypeLiteralNode(type)) return type.members.some((member) => ts.isPropertySignature(member) && typeNamesRuntime(member.type));
-    if (ts.isTupleTypeNode(type)) return type.elements.some((element) => ts.isTypeNode(element) && typeNamesRuntime(element));
-    return false;
-  };
-  const isRuntime = (node: ts.Expression): boolean => {
-    const bare = unwrap(node);
-    const computed = ts.isElementAccessExpression(bare) ? unwrap(bare.argumentExpression) : undefined;
-    if (
-      ts.isElementAccessExpression(bare) && bare.expression.kind === ts.SyntaxKind.ThisKeyword &&
-      computed !== undefined && (ts.isStringLiteralLike(computed) || ts.isNumericLiteral(computed)) &&
-      (computed.text === "requiredRuntime" || computed.text === "runtime")
-    ) return true;
-    if (ts.isPropertyAccessExpression(bare)) {
-      const receiver = unwrap(bare.expression);
-      if (receiver.kind === ts.SyntaxKind.ThisKeyword && (bare.name.text === "requiredRuntime" || bare.name.text === "runtime")) return true;
-      const holder = ts.isIdentifier(receiver) ? receiver.text : receiver.kind === ts.SyntaxKind.ThisKeyword ? "this" : undefined;
-      if (holder !== undefined && aliases.has(`${holder}.${bare.name.text}`)) return true;
-    }
-    if (ts.isCallExpression(bare) && bare.expression) {
-      const called = unwrap(bare.expression);
-      if (ts.isPropertyAccessExpression(called) && called.name.text === "runtimeFor") return true;
-      const calledName = ts.isIdentifier(called) ? called.text : ts.isPropertyAccessExpression(called) ? called.name.text : undefined;
-      if (calledName !== undefined && aliases.has(calledName)) return true;
-    }
-    return ts.isIdentifier(bare) && aliases.has(bare.text);
-  };
-  const bind = (name: ts.BindingName | undefined, fromRuntime: boolean, type?: ts.TypeNode): void => {
-    if (name === undefined) return;
-    if (ts.isIdentifier(name)) {
-      if (!aliases.has(name.text) && (fromRuntime || typeNamesRuntime(type))) aliases.add(name.text);
-      return;
-    }
-    for (const element of name.elements) {
-      if (!ts.isBindingElement(element) || element.dotDotDotToken !== undefined) continue;
-      const elementType = elementTypeOf(type, element);
-      bind(element.name, fromRuntime, elementType);
-    }
-  };
-  const elementTypeOf = (type: ts.TypeNode | undefined, element: ts.BindingElement): ts.TypeNode | undefined => {
-    if (type === undefined || !ts.isIdentifier(element.name)) return undefined;
-    if (ts.isTypeLiteralNode(type) && ts.isObjectBindingPattern(element.parent)) {
-      const propertyName = element.propertyName ?? element.name;
-      const match = type.members.find((member) => ts.isPropertySignature(member) && member.name.getText(source) === propertyName.getText(source));
-      return match !== undefined && ts.isPropertySignature(match) ? match.type : undefined;
-    }
-    if (ts.isTupleTypeNode(type) && ts.isArrayBindingPattern(element.parent)) {
-      const index = element.parent.elements.indexOf(element);
-      const elementType = type.elements[index];
-      return elementType !== undefined && ts.isTypeNode(elementType) ? elementType : undefined;
-    }
-    return undefined;
-  };
-  for (let grew = true; grew;) {
-    const before = aliases.size;
-    const collect = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node)) {
-        if (node.initializer !== undefined) {
-          bind(node.name, isRuntime(node.initializer), node.type);
-          const value = unwrap(node.initializer);
-          if (ts.isIdentifier(node.name) && ts.isPropertyAccessExpression(value)) {
-            const object = unwrap(value.expression);
-            if (ts.isIdentifier(object) && (object.text === "Reflect" || object.text === "Object")) aliases.add(node.name.text);
-          }
-          if (ts.isIdentifier(node.name) && ts.isObjectLiteralExpression(value)) {
-            for (const property of value.properties) {
-              if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || !isRuntime(property.initializer)) continue;
-              aliases.add(`${node.name.text}.${property.name.text}`);
-            }
-          }
-        } else bind(node.name, false, node.type);
-      } else if (ts.isParameter(node)) bind(node.name, false, node.type);
-      else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && isRuntime(node.right)) aliases.add(node.left.text);
-      else if (ts.isPropertyDeclaration(node) && ts.isIdentifier(node.name) && typeNamesRuntime(node.type)) aliases.add(`this.${node.name.text}`);
-      else if (ts.isForOfStatement(node) && ts.isVariableDeclarationList(node.initializer)) {
-        const declared = node.initializer.declarations[0];
-        if (declared !== undefined) bind(declared.name, isRuntime(node.expression), declared.type);
-      } else if (ts.isCatchClause(node) && node.variableDeclaration !== undefined) bind(node.variableDeclaration.name, false, node.variableDeclaration.type);
-      else if (
-        (ts.isReturnStatement(node) && node.expression !== undefined && ts.isCallExpression(unwrap(node.expression)) && isRuntime(node.expression)) ||
-        ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && node.body !== undefined && ts.isCallExpression(unwrap(node.body as ts.Expression)) && isRuntime(node.body as ts.Expression))
-      ) {
-        const returned = ts.isReturnStatement(node) ? node : node.parent;
-        let owner: ts.Node | undefined = returned;
-        while (
-          owner !== undefined && !ts.isMethodDeclaration(owner) && !ts.isFunctionDeclaration(owner) &&
-          !ts.isPropertyDeclaration(owner) && !ts.isVariableDeclaration(owner)
-        ) owner = owner.parent;
-        const ownerName = owner !== undefined && "name" in owner && owner.name !== undefined && ts.isIdentifier(owner.name) ? owner.name.text : undefined;
-        if (ownerName !== undefined) aliases.add(ownerName);
-      }
-      ts.forEachChild(node, collect);
-    };
-    collect(source);
-    grew = aliases.size > before;
-  }
-  // A key the census can read: a literal, or in a binding a plain or quoted name. Anything else
-  // (`[key]`, `[a + b]`) is undefined.
   const literalKey = (key: ts.Expression): string | undefined => {
     const bare = unwrap(key);
     return ts.isStringLiteralLike(bare) || ts.isNumericLiteral(bare) ? bare.text : undefined;
@@ -253,25 +162,14 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
     if (reap) {
       let outer: ts.Node = node.parent;
       while (ts.isParenthesizedExpression(outer)) outer = outer.parent;
-      (ts.isTypeOfExpression(outer) ? out.probes : out.bypass).push(`${where(node)} (line ${line(node)})`);
+      (ts.isTypeOfExpression(outer) ? out.probes : out.bypass).push(at(node));
     }
-    // A reflective or enumerating call, or a spread, reaches reap without naming it.
-    if (ts.isCallExpression(node) && node.expression) {
-      const callee = unwrap(node.expression);
-      const receiver = ts.isPropertyAccessExpression(callee)
-        ? unwrap(callee.expression)
-        : ts.isElementAccessExpression(callee) && literalKey(callee.argumentExpression) !== undefined
-          ? unwrap(callee.expression)
-          : ts.isIdentifier(callee) && aliases.has(callee.text) ? callee : undefined;
-      const reflective = receiver !== undefined && ts.isIdentifier(receiver) && (receiver.text === "Reflect" || receiver.text === "Object" || aliases.has(receiver.text));
-      if (reflective && node.arguments.some((arg) => isRuntime(arg))) out.bypass.push(`${where(node)} (line ${line(node)})`);
-    }
-    if ((ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) && isRuntime(node.expression)) out.bypass.push(`${where(node)} (line ${line(node)})`);
+    // A reflective or enumerating call, a spread or a rest copy reaches reap without naming it.
+    if (ts.isCallExpression(node) && reflective(node.expression) && node.arguments.some(isRuntime)) out.bypass.push(at(node));
+    if ((ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) && isRuntime(node.expression)) out.bypass.push(at(node));
     if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
-      const key = bindingKey(node.propertyName ?? node.name);
-      const declaration = node.parent.parent;
-      const fromRuntime = ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined && isRuntime(declaration.initializer);
-      if (key === "reap" || (key === undefined && fromRuntime)) out.bypass.push(`${where(node)} (line ${line(node)})`);
+      const key = node.dotDotDotToken !== undefined ? undefined : bindingKey(node.propertyName ?? node.name);
+      if (key === "reap" || (key === undefined && isRuntime(node.parent))) out.bypass.push(at(node));
     }
     ts.forEachChild(node, visit);
   };
@@ -279,9 +177,37 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
   return out;
 }
 
-// The census has to tell a reviewed site from a moved or new one, so it first reads four small
-// sources that each break the reviewed set in a way a nearest-header scan misses.
-const fixture = (body: string) => `class Manager {\n  private async reapOrphanSeat() { await requireRuntimeReap(rt, ref); }\n${body}\n}\n`;
+// The instrument sources are typed like the manager: a `Runtime` with `reap`, a class that holds
+// one behind `requiredRuntime` and `runtimeFor`, and the free names the bodies use. Each body is
+// one file of a program over the default library, so `await`, `Promise` and `Reflect` resolve.
+const fixture = (body: string) => `interface Ref { kind: string; id: string }
+interface Runtime { kind: string; reserve(): Ref; reap(ref: Ref): Promise<{ outcome: string }> }
+type Picker = (kind: string) => Runtime;
+declare const rt: Runtime; declare const r: Runtime; declare const ref: Ref; declare const kind: string; declare const flag: boolean;
+declare const other: { name: string }; declare const stranger: { reap(ref: Ref): void };
+declare function requireRuntimeReap(runtime: Runtime, reference: Ref): Promise<unknown>;
+class Manager {
+  private readonly runtime!: Runtime;
+  private get requiredRuntime(): Runtime { return this.runtime; }
+  private runtimeFor(kind: string): Runtime { return this.runtime; }
+  private readonly table: Record<string, Runtime> = {};
+  private async reapOrphanSeat() { await requireRuntimeReap(rt, ref); }
+${body}
+}
+export {};
+`;
+const fixtureProgram = (sources: string[]): ts.Program => {
+  const options: ts.CompilerOptions = { strict: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, noEmit: true, lib: ["lib.es2022.d.ts"], types: [] };
+  const names = sources.map((_, i) => `/fixture/${i}.ts`);
+  const host = ts.createCompilerHost(options);
+  const underlying = { getSourceFile: host.getSourceFile, fileExists: host.fileExists, readFile: host.readFile };
+  host.fileExists = (file) => names.includes(file) || underlying.fileExists(file);
+  host.readFile = (file) => (names.includes(file) ? sources[names.indexOf(file)] : underlying.readFile(file));
+  host.getSourceFile = (file, languageVersion, onError, shouldCreate) =>
+    names.includes(file) ? ts.createSourceFile(file, sources[names.indexOf(file)]!, languageVersion, true, ts.ScriptKind.TS) : underlying.getSourceFile(file, languageVersion, onError, shouldCreate);
+  return ts.createProgram({ rootNames: names, options, host });
+};
+
 const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolean][] = [
   ["a reap moved into a class arrow property is named by that property", fixture("  private later = async () => { await requireRuntimeReap(rt, ref); };"),
     (c) => c.guarded.includes("Manager.later")],
@@ -295,7 +221,7 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
     fixture('  private async later() { const key = "reap"; const rt = this.requiredRuntime; await this.requiredRuntime[key](ref); await rt[key](ref); }'),
     (c) => c.bypass.length === 2 && c.elements["unreadable, on the runtime"] === 2],
   ["a quoted or computed reap binding is a bypass",
-    fixture('  private async later() { const { "reap": a } = this.requiredRuntime; const { ["reap"]: b } = other; }'),
+    fixture('  private async later() { const { "reap": a } = this.requiredRuntime; const { ["reap"]: b } = stranger; }'),
     (c) => c.bypass.length === 2 && c.bypass.every((b) => b.startsWith("Manager.later"))],
   ["a reflective read of reap is a bypass",
     fixture('  private async later() { await Reflect.get(this.requiredRuntime, "reap")(ref); }'),
@@ -324,8 +250,8 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
   ["a for-of Runtime binding is a runtime",
     fixture('  private async later(list: Runtime[]) { const key = "reap"; for (const runtime of list) await runtime[key](ref); }'),
     (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
-  ["a catch Runtime binding is a runtime",
-    fixture('  private async later() { const key = "reap"; try {} catch (runtime: Runtime) { await runtime[key](ref); } }'),
+  ["a runtime asserted inside a catch clause is a runtime",
+    fixture('  private async later() { const key = "reap"; try {} catch (e) { const runtime = e as Runtime; await runtime[key](ref); } }'),
     (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
   ["a nested Runtime binding is a runtime",
     fixture('  private async later(bag: { runtime: Runtime }) { const key = "reap"; const { runtime } = bag; await runtime[key](ref); }'),
@@ -343,16 +269,16 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
     fixture('  private async later() { Object["values"](this.requiredRuntime); }'),
     (c) => c.bypass.length === 1],
   ["a returned value that is not a runtime is not a runtime",
-    fixture('  private pick(): string { return "pty"; }\n  private async later() { const key = "reap"; await this.pick()[key](ref); }'),
+    fixture('  private pick(): Record<string, (ref: Ref) => void> { return {}; }\n  private async later() { const key = "reap"; await this.pick()[key](ref); }'),
     (c) => c.bypass.length === 0 && c.elements["unreadable, not on the runtime"] === 1],
   ["a property that is not a runtime is not a runtime",
-    fixture('  private async later() { const key = "reap"; const bag = { name: "pty" }; await bag.name[key](ref); }'),
+    fixture('  private async later() { const key = "reap"; const bag = { name: {} as Record<string, (ref: Ref) => void> }; await bag.name[key](ref); }'),
     (c) => c.bypass.length === 0 && c.elements["unreadable, not on the runtime"] === 1],
   ["Reflect read of a value that is not a runtime is not a bypass",
     fixture('  private async later() { Reflect["get"](other, "reap"); }'),
     (c) => c.bypass.length === 0],
   ["a Runtime binding with no initializer is a runtime",
-    fixture('  private async later() { const key = "reap"; let runtime: Runtime; await runtime[key](ref); }'),
+    fixture('  private async later() { const key = "reap"; let runtime!: Runtime; await runtime[key](ref); }'),
     (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
   ["an arrow that returns runtimeFor is a runtime",
     fixture('  private pick = () => this.runtimeFor(kind);\n  private async later() { const key = "reap"; await this.pick()[key](ref); }'),
@@ -366,11 +292,77 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
   ["a computed this.runtime is a runtime",
     fixture('  private async later() { const key = "reap"; await this["runtime"][key](ref); }'),
     (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a rest copy of the runtime is a bypass",
+    fixture('  private async later() { const { kind, ...rest } = this.requiredRuntime; }'),
+    (c) => c.bypass.length === 1 && c.bypass[0]!.startsWith("Manager.later")],
+  ["an unreadable key on a rest copy is a bypass",
+    fixture('  private async later() { const key = "reap"; const { kind, ...rest } = this.requiredRuntime; await rest[key](ref); }'),
+    (c) => c.bypass.length === 2 && c.elements["unreadable, on the runtime"] === 1],
+  ["Object.values of a rest copy is a bypass",
+    fixture('  private async later() { const { kind, ...rest } = this.requiredRuntime; Object.values(rest); }'),
+    (c) => c.bypass.length === 2],
+  ["Reflect.get on a rest copy is a bypass",
+    fixture('  private async later() { const { ...rest } = this.requiredRuntime; await Reflect.get(rest, "reap")(ref); }'),
+    (c) => c.bypass.length === 2],
+  ["Object.assign of the runtime is a bypass",
+    fixture('  private async later() { const copy = Object.assign({}, this.requiredRuntime); }'),
+    (c) => c.bypass.length === 1],
+  ["a parenthesized runtimeFor callee is a runtime",
+    fixture('  private async later() { const key = "reap"; await (this.runtimeFor)(kind)[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["an asserted runtimeFor callee is a runtime",
+    fixture('  private async later() { const key = "reap"; await (this.runtimeFor as Picker)(kind)[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a class field initialized from runtimeFor is a runtime",
+    fixture('  private backend = this.runtimeFor(kind);\n  private async later() { const key = "reap"; await this.backend[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a class field assigned from runtimeFor is a runtime",
+    fixture('  private backend: Runtime | undefined;\n  private async later() { const key = "reap"; this.backend = this.runtimeFor(kind); await this.backend[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a rest parameter of runtimes is a runtime",
+    fixture('  private async later(...list: Runtime[]) { const key = "reap"; for (const runtime of list) await runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a destructured parameter typed Runtime is a runtime",
+    fixture('  private async later({ runtime }: { runtime: Runtime }) { const key = "reap"; await runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a returned parameter is a runtime",
+    fixture('  private pick(runtime: Runtime) { return runtime; }\n  private async later() { const key = "reap"; await this.pick(r)[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a declared Runtime return type is a runtime",
+    fixture('  private pick(): Runtime { return this.table[kind]!; }\n  private async later() { const key = "reap"; await this.pick()[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a shorthand property holding a runtime is a runtime",
+    fixture('  private async later(runtime: Runtime) { const key = "reap"; const bag = { runtime }; await bag.runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["an array literal element bound from the runtime is a runtime",
+    fixture('  private async later() { const key = "reap"; const [runtime] = [this.requiredRuntime]; await runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a conditional that may yield the runtime is a runtime",
+    fixture('  private async later(fallback: Runtime) { const key = "reap"; const runtime = flag ? this.requiredRuntime : fallback; await runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a union that may be the runtime is a runtime",
+    fixture('  private async later(maybe: Runtime | { name: string }) { const key = "reap"; if ("reap" in maybe) await maybe[key as keyof Runtime]; }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["an awaited runtime is a runtime",
+    fixture('  private async later(pending: Promise<Runtime>) { const key = "reap"; const runtime = await pending; await runtime[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a for-in key read on the runtime is a bypass",
+    fixture('  private async later() { for (const k in this.requiredRuntime) this.requiredRuntime[k as keyof Runtime]; }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a value the checker cannot type fails closed",
+    fixture('  private async later(loose: any) { const key = "reap"; await loose[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["Object.values, a rest copy and a spread of a value that is not a runtime are not bypasses",
+    fixture('  private async later() { Object.values(other); const { ...rest } = other; const copy = { ...other }; }'),
+    (c) => c.bypass.length === 0],
 ];
-for (const [name, text, holds] of instrument) {
-  const c = censusReaps("fixture.ts", text);
+const instrumentProgram = fixtureProgram(instrument.map(([, text]) => text));
+const instrumentErrors = ts.getPreEmitDiagnostics(instrumentProgram).map((d) => `${d.file?.fileName ?? "?"}: ${ts.flattenDiagnosticMessageText(d.messageText, " ")}`);
+check("CONTROL (census instrument): every instrument source typechecks, so each reading is a reading of types", instrumentErrors.length === 0, instrumentErrors);
+instrument.forEach(([name, , holds], i) => {
+  const c = censusReaps(instrumentProgram, instrumentProgram.getSourceFile(`/fixture/${i}.ts`)!);
   check(`CONTROL (census instrument): ${name}`, holds(c), c);
-}
+});
 
 // The real file. What each reviewed site does with a refusal:
 //   reapOrphanedResumeSeat: returns it, and the resume does not relaunch over that seat.
@@ -379,7 +371,12 @@ for (const [name, text, holds] of instrument) {
 // restartSupervisedSeat no longer calls requireRuntimeReap. It proves the previous seat's local work
 // ended through runtime.reapWork before the resume launches, and a refusal there stays with that proof.
 const REVIEWED_SITES = ["Manager.reapOrphanSeat", "Manager.reapOrphanedResumeSeat", "Manager.spawnCustodied"];
-const census = censusReaps(managerFile, managerSrc);
+const managerConfig = ts.getParsedCommandLineOfConfigFile(resolve(here, "..", "tsconfig.json"), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: (d) => { throw new Error(ts.flattenDiagnosticMessageText(d.messageText, " ")); } })!;
+const managerProgram = ts.createProgram({ rootNames: [managerFile], options: { ...managerConfig.options, noEmit: true } });
+const managerSource = managerProgram.getSourceFile(managerFile)!;
+const managerErrors = managerProgram.getSemanticDiagnostics(managerSource).map((d) => ts.flattenDiagnosticMessageText(d.messageText, " "));
+check("CONTROL: manager.ts typechecks, so the census read its types and not error types", managerErrors.length === 0, managerErrors);
+const census = censusReaps(managerProgram, managerSource);
 check(
   `CONTROL: every requireRuntimeReap call in manager.ts sits in a reviewed callable (${REVIEWED_SITES.join(", ")})`,
   JSON.stringify([...census.guarded].sort()) === JSON.stringify(REVIEWED_SITES),
