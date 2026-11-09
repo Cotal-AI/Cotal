@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +78,44 @@ try {
   }
   assert.notEqual(outcome, "none", "a remote mesh served from this machine is read, not reported as running elsewhere");
   assert.ok(outcome.startsWith("refused: "), `an exchange that answers nothing ends the read in a refusal: ${outcome}`);
+  decoy.kill("SIGKILL");
+  await once(decoy, "exit");
+  decoy = undefined;
+
+  // #5902: a supervisor that loaded ANOTHER install's CLI entry is no custody of this install, however
+  // it was started; one that loaded this process's entry is read whatever node binary or loader ran
+  // it; one whose entry cannot be told apart still counts.
+  const idle = "setInterval(() => {}, 1 << 30)";
+  const thisEntry = process.argv[1]!;
+  const otherInstall = join(root, "other-install", "lib", "node_modules", "cotal-ai");
+  mkdirSync(join(otherInstall, "dist"), { recursive: true });
+  writeFileSync(join(otherInstall, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
+  const otherEntry = join(otherInstall, "dist", "cotal.js");
+  writeFileSync(otherEntry, `${idle};\n`);
+  mkdirSync(join(root, "other-install", "bin"), { recursive: true });
+  const otherShim = join(root, "other-install", "bin", "cotal");
+  symlinkSync(otherEntry, otherShim);
+  const otherNode = join(root, "othernode");
+  symlinkSync(process.execPath, otherNode);
+  const loader = join(root, "loader.mjs");
+  writeFileSync(loader, "export {};\n");
+  const cases: [string, string, string[], boolean][] = [
+    ["another install's entry", process.execPath, [otherEntry, "supervise", "--space", space], baseline],
+    ["another install's bin symlink", process.execPath, [otherShim, "supervise", "--space", space], baseline],
+    ["another install's entry behind a loader", process.execPath, ["--import", loader, otherEntry, "supervise", "--space", space], baseline],
+    ["this process's entry", process.execPath, ["-e", idle, thisEntry, "supervise", "--space", space], true],
+    ["this process's entry under another node binary", otherNode, ["-e", idle, thisEntry, "supervise", "--space", space], true],
+    ["this process's entry behind a loader", process.execPath, ["--import", loader, "-e", idle, thisEntry, "supervise", "--space", space], true],
+    ["an entry that cannot be told apart", process.execPath, ["-e", idle, "cotal.js", "supervise", "--space", space], true],
+  ];
+  for (const [what, exe, args, expected] of cases) {
+    decoy = spawn(exe, args, { stdio: "ignore", cwd: root });
+    await once(decoy, "spawn");
+    assert.equal(supervisorMayServe(space), expected, `${what}: ${expected ? "is read as a supervisor of this install" : "adds no custody for this install"}`);
+    decoy.kill("SIGKILL");
+    await once(decoy, "exit");
+    decoy = undefined;
+  }
   console.log(`update-remote-custody: ok (${outcome.slice(0, 160)})`);
 } finally {
   decoy?.kill("SIGKILL");

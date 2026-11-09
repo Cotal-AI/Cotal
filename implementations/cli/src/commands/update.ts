@@ -511,10 +511,11 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       }
       if (e.code !== "unknown-space" && e.code !== "no-meshes") throw e;
     }
-    // The skip holds only while no supervisor on THIS machine may be serving that space. A `cotal
-    // manager start` or `cotal supervise` process here that serves a remote mesh loaded this
-    // machine's install, so its custody is read like a local manager's; reporting it as elsewhere
-    // let the install go ahead and left that manager on the generation it had loaded.
+    // The skip holds only while no supervisor that loaded THIS install may be serving that space.
+    // A `cotal manager start` or `cotal supervise` process here that loaded this install and serves a
+    // remote mesh is read like a local manager. A supervisor whose command resolves in another
+    // install is untouched by replacing this one, so it is no custody here, the same as a manager
+    // that runs on another machine.
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
       if (!supervisorMayServe(peek.space)) {
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));

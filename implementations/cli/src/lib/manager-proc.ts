@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, readFileSync, rmSync } from "node:fs";
-import { relative } from "node:path";
+import { closeSync, fstatSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
+import { entryScript } from "../seed/paths.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
@@ -138,22 +139,74 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
   return managerLiveness(space, root) === "alive";
 }
 
-/** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
- *  records its pid under whatever folder it was started from, so no one root's record can rule it
- *  out; the process table can. One whose argv names no space serves what its environment or folder
- *  selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that variable names the
- *  space it serves, and one it reads for another space is not a manager of this one. A supervisor
- *  whose environment cannot be read or names no space counts, and a process table that cannot be
- *  listed proves nothing. */
+/** Whether a live `cotal supervise` process that loaded this install may be serving `space`.
+ *  A supervisor records its pid under whatever folder it was started from, so no one root's record
+ *  can rule it out; the process table can. Replacing this install interrupts a supervisor only when
+ *  one of its arguments resolves to this process's own CLI entry. A node binary, a loader, and any
+ *  other absolute argument are not that entry. A command that names no resolvable entry still counts:
+ *  an unreadable path is not proof of another install. One whose argv names no space serves what its
+ *  environment or folder selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that
+ *  variable names the space it serves, and one it reads for another space is not a manager of this one.
+ *  A supervisor whose environment cannot be read or names no space counts, and a process table that
+ *  cannot be listed proves nothing. */
 export function supervisorMayServe(space: string): boolean {
   const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
   if (ps.error || ps.status !== 0) return true;
+  const entry = thisCliEntry();
   return ps.stdout.split("\n").some((line) => {
     const row = /^\s*(\d+)\s+(.*)$/.exec(line);
     if (!row || !commandIsCotalSupervisor(row[2]!)) return false;
+    if (entry !== undefined && !supervisorLoadedEntry(row[2]!, entry)) return false;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(row[2]!)?.[1] ?? environmentSpace(Number(row[1]));
     return named === undefined || named === space;
   });
+}
+
+/** This process's CLI entry, or undefined when that file cannot be resolved. Without it the scan
+ *  cannot tell installs apart, so every supervisor of the space still counts. */
+function thisCliEntry(): string | undefined {
+  try {
+    return realpathSync(entryScript());
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether `command` loaded `entry`. The match is the argument that resolves to that file. A node
+ *  binary, a loader, and a relative entry are not another install. Custody stays unless an argument
+ *  resolves to a different install's CLI entry, so an identity that cannot be established still counts. */
+function supervisorLoadedEntry(command: string, entry: string): boolean {
+  for (const word of command.trim().split(/\s+/)) {
+    if (!isAbsolute(word)) continue;
+    let resolved: string;
+    try {
+      resolved = realpathSync(word);
+    } catch {
+      continue;
+    }
+    if (resolved === entry) return true;
+    if (isCliEntry(resolved)) return false;
+  }
+  return true;
+}
+
+/** Whether `path` is a CLI entry file: `cotal.js` under a package declaring that bin, or `cotal.ts`
+ *  under the checkout package that ships `bin/cotal.ts`. A node binary and a loader are neither. */
+function isCliEntry(path: string): boolean {
+  const name = basename(path);
+  if (name !== "cotal.js" && name !== "cotal.ts") return false;
+  for (let dir = dirname(path); ; dir = dirname(dir)) {
+    let pkg: { name?: unknown; bin?: { cotal?: unknown } | string };
+    try {
+      pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as typeof pkg;
+    } catch {
+      if (dirname(dir) === dir) return false;
+      continue;
+    }
+    if (name === "cotal.ts") return pkg.name === "cotal-monorepo";
+    const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cotal;
+    return typeof bin === "string" && basename(bin) === name;
+  }
 }
 
 /** The `COTAL_SPACE` a process was started with, read from its environment; undefined when the
