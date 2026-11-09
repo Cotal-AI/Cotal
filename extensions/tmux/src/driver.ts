@@ -113,8 +113,9 @@ function noListener(err: unknown): boolean {
 function listenerBoundAt(path: string): boolean {
   if (process.platform !== "linux") return false;
   return readFileSync("/proc/net/unix", "utf8").split("\n").some((line) => {
-    const fields = line.trim().split(/\s+/);
-    return fields.length >= 8 && fields[5] === "01" && fields.slice(7).join(" ") === path;
+    // Only the seven metadata fields are whitespace-separated; keep the path verbatim.
+    const entry = /^(?:\S+\s+){5}(\S+)\s+\S+\s+(.*)$/.exec(line);
+    return entry?.[1] === "01" && entry[2] === path;
   });
 }
 
