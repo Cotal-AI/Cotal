@@ -1,5 +1,36 @@
 # cotal-ai
 
+## 0.151.2
+
+### Patch Changes
+
+- 3b551a1: Fix start and uninstall for newly installed macOS daemons.
+  
+  New LaunchAgents bind their working directory through the verified argument vector and set it before the CLI loads. Existing plists with a WorkingDirectory property keep their original native verification requirement; this does not migrate or force-remove them.
+- f2f0a2b: Guided service and endpoint forms validate answers at each question so invalid input can be corrected without losing earlier answers.
+  
+  Preset answers use the option schema and path checks, including the broker server's existing address restrictions. Imports and endpoint references are checked before the form advances, and whole-definition validation remains in place before saving.
+- 014d1d3: Let a file-form teardown dry-run inspect the recorded stack when no additive ledger exists, with consistent text and structured output. Keep explicit run selection and legacy ledger previews on their existing teardown path without requiring launch-time persona files. When file-form apply finds a recorded stack without an additive ledger, name the bare stack stop instead of suggesting an unknown run ID.
+- 9d727ad: `cotal pending <agent>` now exits 0 when its bounded candidate read finishes and the temporary reader is deleted.
+  
+  The read uses one of the admin credential's own history readers and deletes only the reader it created. A reader already under one of those names is left in place, and a read that cannot find a free name stays partial. A fetch that returns fewer messages than it requested, including one that expires, also stays partial.
+- Updated dependencies [1d47635]
+- Updated dependencies [0adb23c]
+- Updated dependencies [f2f0a2b]
+- Updated dependencies [b709d87]
+- Updated dependencies [014d1d3]
+- Updated dependencies [9d727ad]
+  - @cotal-ai/cli@0.151.2
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/delivery@0.151.2
+  - @cotal-ai/auth@0.151.2
+  - @cotal-ai/manager@0.151.2
+  - @cotal-ai/runtime@0.151.2
+  - @cotal-ai/connector-core@0.151.2
+  - @cotal-ai/registry@0.151.2
+  - @cotal-ai/core@0.151.2
+  - @cotal-ai/seat@0.151.2
+
 ## 0.151.1
 
 ### Patch Changes
