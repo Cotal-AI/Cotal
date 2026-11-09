@@ -18,6 +18,7 @@ import { brokerLaunchAt } from "../lib/broker-service.js";
 import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
@@ -206,6 +207,9 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
  *  it found nothing running. */
 export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = [], preview = false): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
+  // A killed foreground holder leaves its record, and a stopped stack has no holder. A preview
+  // removes nothing.
+  if (!preview) releaseDeadForegroundHold(target.root);
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
   if (remaining.length) {
     const lines = remaining.map(recordedProcessLine);
@@ -574,6 +578,8 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     try { cleared = removeStaleLocalRecords(root, journal.space); }
     catch (error) { failure = new CommandFailure("partial", "OPERATION_PARTIAL", `every member stopped, but a stale process record under the root was not removed (${(error as Error).message})`, { target, changed, remedy: "inspect the process records under the root's .cotal; nothing was retried" }); }
   }
+  // A foreground holder that was killed leaves its record, and a stopped stack has no holder.
+  if (!failure) releaseDeadForegroundHold(root);
   settle(failure ? (failure.outcome === "unknown" ? "unknown" : failure.outcome === "partial" ? "partial" : failure.outcome === "failed" ? "failed" : "refused") : "completed");
   const warnings: OutputWarning[] = [
     ...(settled || abandoned || stranded || cleared.length ? [

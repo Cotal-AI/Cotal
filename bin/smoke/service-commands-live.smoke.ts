@@ -87,6 +87,8 @@ let managerUp = false;
 let helloUp = false;
 let upStackUp = false;
 let presetBrokerUp = false;
+let customBrokerUp = false;
+let controllerAt: Parameters<typeof cotal>[2] | undefined;
 try {
   if (process.platform !== "linux") console.log("  - SKIP every cell: the native manager child is Linux-only");
   else {
@@ -232,6 +234,39 @@ try {
     // ---- A preset broker stops even when its log file was moved away -----------------------------
     const presetSpace = cotal(["space", "create", PRESET_SPACE, "--root", presetRoot]);
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
+    const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
+    check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
+    const customList = cotal(["service", "--space", PRESET_SPACE, "--json"]);
+    const customRows = (JSON.parse(customList.stdout) as { result: { services: Row[] } }).result.services;
+    check("that custom service's Next starts the service rather than a controller stack", row(customRows, "stack-broker")?.next === "cotal service start stack-broker", customRows);
+    customBrokerUp = true;
+    const customStart = cotal(["service", "start", "stack-broker", "--space", PRESET_SPACE]);
+    check("a matching stack name does not refuse a direct-process start", customStart.status === 0 && /Recorded state:\s+running/.test(out(customStart)), out(customStart));
+    const customRestart = cotal(["service", "restart", "stack-broker", "--space", PRESET_SPACE, "--yes"]);
+    check("a matching stack name does not refuse a direct-process restart", customRestart.status === 0, out(customRestart));
+    const customStop = cotal(["service", "stop", "stack-broker", "--space", PRESET_SPACE, "--yes"]);
+    customBrokerUp = customStop.status !== 0;
+    check("the direct-process control stops through its own service record", customStop.status === 0, out(customStop));
+
+    const controllerRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-commands-controller-`));
+    const controllerSpace = "servicecommandscontroller";
+    const prepared = cotal(["space", "create", controllerSpace, "--root", controllerRoot]);
+    check("a separate space is prepared for the real controller-member control", prepared.status === 0, out(prepared));
+    controllerAt = { root: controllerRoot, env, anchor: recordSmokeSandbox({ root: controllerRoot, cotalHome: join(home, ".cotal"), xdgConfigHome: xdg }) };
+    const controller = (args: string[]) => cotal(args, 180_000, controllerAt);
+    const controllerUp = controller(["up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`]);
+    check("the controller control starts its broker", controllerUp.status === 0, out(controllerUp));
+    const controllerDown = controller(["down", "--yes"]);
+    check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
+    const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
+    const controllerRows = (JSON.parse(controllerList.stdout) as { result: { services: Row[] } }).result.services;
+    check("a stopped controller member's Next remains cotal up", row(controllerRows, "stack-broker")?.next === "cotal up", controllerRows);
+    for (const action of ["start", "restart"]) {
+      const refused = controller(["service", action, "stack-broker", "--space", controllerSpace, "--json", ...(action === "restart" ? ["--yes"] : [])]);
+      const refusal = JSON.parse(refused.stdout) as { error?: { code?: string } };
+      check(`a real controller member still refuses an individual ${action}`, refused.status === 2 && refusal.error?.code === "LIFECYCLE_BLOCKED", refusal);
+    }
+
     const { findNatsServer } = await import("../../implementations/cli/src/lib/nats-bin.js");
     const presetServer = `nats://127.0.0.1:${await freePort()}`, log = join(presetRoot, "logs", "broker.log"), config = join(presetRoot, ".cotal", "broker.conf");
     mkdirSync(dirname(log), { mode: 0o700 });
@@ -249,6 +284,17 @@ try {
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
+  if (controllerAt) {
+    const down = cotal(["down", "--yes"], 180_000, controllerAt);
+    check("teardown confirms the controller control is stopped", down.status === 0, out(down));
+    if (down.status !== 0) throw new Error(`controller cleanup did not confirm a stop; retained ${controllerAt.root}`);
+    rmSync(controllerAt.root, { recursive: true, force: true });
+  }
+  if (customBrokerUp) {
+    const stop = cotal(["service", "stop", "stack-broker", "--space", PRESET_SPACE, "--yes"]);
+    check("teardown stops the custom service with a stack member name", stop.status === 0, out(stop));
+    if (stop.status !== 0) throw new Error(`custom service cleanup did not confirm a stop; retained ${presetRoot}`);
+  }
   if (presetBrokerUp) {
     const stop = cotal(["service", "stop", "b0", "--space", PRESET_SPACE, "--yes"]);
     check("teardown stops the preset broker", stop.status === 0, out(stop));

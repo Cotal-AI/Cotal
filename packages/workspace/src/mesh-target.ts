@@ -713,8 +713,9 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * for this root is the target, and its heading says the selection applies outside the folder. A
  * space prepared here and never started, and one whose stack here is stopped (its registration gone
  * with only its journal or rendered broker configuration left, or its broker not answering the run's
- * liveness sweep), is the target of `up`, `down`, `space show` and `status`'s folder section only —
- * the commands that are about the folder itself. Everything else run there targets the selection,
+ * liveness sweep), is the target of `up`, `down`, `space show` and `status`'s folder section only.
+ * `auth revoke-credential` resolves the stopped space through {@link folderSpaceHeld} instead,
+ * because the revocation belongs to that space's account. Everything else run there targets the selection,
  * and the run says under its heading what this folder holds ({@link noteFolderSpaceHeld}). A folder
  * whose records are those of a stack that runs elsewhere ({@link recordsRunElsewhere}) is not released
  * to the selection: the command refuses and names where that stack runs. Nor is one whose own stack
@@ -808,9 +809,11 @@ function heldSpace(folder: { root: string; registered: readonly string[]; prepar
 }
 
 /** The space this folder holds that is not running, which only the commands about the folder itself
- *  name: `up`, `down`, `space show` and `status`'s folder section. Every other command run here
- *  targets the selection. Undefined outside a project, where a space registered for this root may
- *  still be running, and where the folder holds none. */
+ *  name: `up`, `down`, `space show` and `status`'s folder section. `auth revoke-credential` names the
+ *  stopped one too, through this, because its account issued a credential minted here; a prepared one
+ *  never started holds no such account. Every other command run here targets the selection. Undefined
+ *  outside a project, where a space registered for this root may still be running, and where the folder
+ *  holds none. */
 export function folderSpaceHeld(cwd: string): { space: string; root: string; state: "prepared" | "stopped" } | undefined {
   const folder = folderSpaces(cwd, loadMeshes());
   if (!folder || folder.registered.length) return undefined;
