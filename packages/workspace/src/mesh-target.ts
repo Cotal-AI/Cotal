@@ -809,9 +809,11 @@ function heldSpace(folder: { root: string; registered: readonly string[]; prepar
 }
 
 /** The space this folder holds that is not running, which only the commands about the folder itself
- *  name: `up`, `down`, `space show`, `status`'s folder section and `auth revoke-credential`. Every
- *  other command run here targets the selection. Undefined outside a project, where a space registered
- *  for this root may still be running, and where the folder holds none. */
+ *  name: `up`, `down`, `space show` and `status`'s folder section. `auth revoke-credential` names the
+ *  stopped one too, through this, because its account issued a credential minted here; a prepared one
+ *  never started holds no such account. Every other command run here targets the selection. Undefined
+ *  outside a project, where a space registered for this root may still be running, and where the folder
+ *  holds none. */
 export function folderSpaceHeld(cwd: string): { space: string; root: string; state: "prepared" | "stopped" } | undefined {
   const folder = folderSpaces(cwd, loadMeshes());
   if (!folder || folder.registered.length) return undefined;
