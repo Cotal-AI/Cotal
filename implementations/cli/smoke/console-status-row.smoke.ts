@@ -18,7 +18,7 @@ function check(label: string, cond: boolean, extra?: unknown): void {
 
 const row = (over: Partial<ManagedRow> = {}): ManagedRow => ({
   name: "w1", id: "local.AAA", role: "worker", agent: "claude",
-  mode: "seat", status: "running", uptimeMs: 5 * 60_000, mesh: "idle", ...over,
+  mode: "seat", status: "running", uptimeMs: 5 * 60_000, mesh: "idle", lifecycleUid: "uid-w1", ...over,
 });
 
 console.log("1. presence `working` never reaches the operator as a bare word");

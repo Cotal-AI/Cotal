@@ -1,6 +1,7 @@
 import { TextAttributes, type InputRenderable, type KeyEvent, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js"
+import type { ManagedRow } from "@cotal-ai/workspace/control"
 import { COMMAND_PALETTE_COMMAND, Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
 import { SplitBorder } from "../vendor/opencode/packages/tui/src/ui/border"
@@ -254,8 +255,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     dialog.replace(() => <NameDialog talk={t} done={() => dialog.clear()} />)
   }
 
-  // The stop names the seat, so it is offered only for a seat a manager reports, under a name no
-  // other managed seat holds.
+  // The stop is pinned to the run the overview shows, so it is offered only for a seat a manager
+  // reports. The manager finds the seat by name, so no other managed seat may hold it.
   const askStop = () => {
     const r = selection()
     if (r?.kind !== "peer" || r.presence.card.kind !== "agent") return toast.show({ variant: "info", message: "Select an agent to stop it" })
@@ -269,17 +270,18 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     if (s.phase === "stopping") return toast.show({ variant: "warning", message: `Still stopping ${s.name}` })
     setStop({ phase: "confirm", name })
     dialog.replace(
-      () => <ConfirmStop name={name} answer={(a) => answerStop(name, a)} />,
+      () => <ConfirmStop name={name} answer={(a) => answerStop(row, a)} />,
       () => setStop((cur) => (cur.phase === "confirm" ? { phase: "idle" } : cur)),
     )
   }
-  const answerStop = async (name: string, a: Answer) => {
+  const answerStop = async (row: ManagedRow, a: Answer) => {
     dialog.clear()
     const s = session()
     if (a === "cancel" || !s) return
     const force = a === "force"
+    const name = row.name
     setStop({ phase: "stopping", name, force })
-    const r = await s.stop(name, !force)
+    const r = await s.stop(row, !force)
     if (session() !== s) return
     const done: Stop = r.ok ? { phase: "done", text: `${force ? "force-killed" : "stopped"} ${name}`, tone: "success" } : { phase: "done", text: `stop: ${r.error}`, tone: "error" }
     setStop(done)
