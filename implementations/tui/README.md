@@ -86,7 +86,9 @@ login. The name at the bottom of the left column is dim until then and gold afte
 - `↑` and `↓` pass over what a reply cannot answer, and a click on it says why: your own direct
   messages, and direct messages between two others. In an agent's conversation only direct
   messages are quoted, so a reply there never posts to a channel. A message is yours when it comes
-  from a session the app opened, or from any session under your name in any letter case.
+  from a session the app opened, or from any session under your name in any letter case. A direct
+  message is to you only when it went to a session the app opened, so one sent to your session from
+  an earlier run of the app cannot be quoted.
 - `@name` in a channel post mentions that peer, as `cotal send` does. A message that mentions you
   is marked `@you`.
 - A line that starts with `/` is a command: `/reply` quotes the newest direct message you received
@@ -108,11 +110,12 @@ elsewhere means `/quit`, then `enter` in that channel.
 Your session ends when you switch spaces, quit, or type `/quit`. A message you sent with `enter`
 just before still goes if it finishes sending within 5 seconds, the first one included while its
 session opens. When that first message's session is still opening after 5 seconds, the message is
-not sent: a switch warns you and keeps its draft, and a quit says so as the app exits. While a
-switch waits, the conversation reads `Leaving <space>…`. A message still sending in one space
-never holds up `enter` in another. After it ends, `enter` opens a new session under a new identity
-and sends nothing; the next `enter` sends. Quitting with unsent drafts asks first. Quitting closes
-the session and prints how it closed.
+not sent: a switch warns you and keeps its draft, and a quit says so as the app exits. A later
+message that takes longer than 5 seconds is not waited for, and the switch or quit closes the
+session without a warning. While a switch waits, the conversation reads `Leaving <space>…`. A
+message still sending in one space never holds up `enter` in another. After it ends, `enter` opens
+a new session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent
+drafts asks first. Quitting closes the session and prints how it closed.
 
 ## Vendored OpenCode code
 
@@ -159,7 +162,7 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   agents is quoted only when its first copy came to you, and its reply names your copy.
   After Change your name and `/quit`, `↑` passes over your own direct messages.
   `↑` and a click also pass over a namesake's message, an agent's channel posts in its
-  conversation, and a direct message between two agents in all traffic.
+  conversation, and in all traffic a direct message between two agents or to a namesake.
   With the static space's manager held, a switch and a quit each say the first message was not
   sent, and the space switched to sends at once.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
