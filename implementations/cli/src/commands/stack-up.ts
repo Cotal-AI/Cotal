@@ -1012,13 +1012,15 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const refusal = unserved && isCommandFailure(error) && error.outcome === "refused" ? error : undefined;
     if (unserved && refusal) {
       mark("broker", { state: "stopped", code: refusal.code });
-      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
+      // The members this start planned and never reached stay unknown. not-attempted is the record
+      // of a member the start chose to leave out, as `up --no-manager` records the manager.
+      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "unknown", code: "OPERATION_UNKNOWN" });
       settle("refused");
       throw new CommandFailure("refused", refusal.code, refusal.message, { target: { root, space, operation: journal.operation.id, members: journal.members }, changed: [instanceProjection(unserved.stopped)], ...(refusal.remedy ? { remedy: refusal.remedy } : {}) });
     }
     if (unserved) {
       mark("broker", { state: "stopped", code: "OPERATION_FAILED" });
-      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
+      for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "unknown", code: "OPERATION_UNKNOWN" });
       settle("failed");
       const nativeCause = error instanceof JetStreamApiError && Number.isSafeInteger(error.code) ? { code: String(error.code) } : undefined;
       // JetStream answers 10047, insufficient storage resources, when the file store cannot hold a
@@ -1041,7 +1043,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const uncertain = failure === undefined || failure.outcome === "unknown";
     const pending = failedRole ? journal.members.find((row) => row.role === failedRole) : journal.members.find((row) => row.state === "planned");
     if (pending) mark(pending.role, { state: uncertain ? "unknown" : failure?.outcome === "refused" ? "refused" : "failed", code: failure?.code ?? "OPERATION_UNKNOWN" });
-    for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "not-attempted" });
+    for (const row of journal.members.filter((member) => member.state === "planned")) mark(row.role, { state: "unknown", code: "OPERATION_UNKNOWN" });
     settle(uncertain ? "unknown" : changed.length ? "partial" : failure?.outcome === "failed" ? "failed" : "refused");
     const outcome = uncertain ? "unknown" : changed.length ? "partial" : failure!.outcome;
     // Keep typed broker codes, never the server's arbitrary description or the raw error object.

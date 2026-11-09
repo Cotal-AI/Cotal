@@ -662,10 +662,11 @@ export function stackStartedWithoutManager(journal: StackJournal): boolean {
   return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
 }
 
-/** Whether the stack's last `up` ended with no recorded outcome and planned no manager, as
- *  `up --no-manager` does. */
+/** Whether the stack's last `up` ended without completing and planned no manager, as
+ *  `up --no-manager` does. A member it planned and never reached is recorded unknown, so a failed
+ *  start that planned the manager does not read as one that left it out. */
 export function interruptedUpLeftManagerOut(journal: StackJournal): boolean {
-  return journal.operation.kind === "up" && stackOperationUnsettled(journal) && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+  return journal.operation.kind === "up" && journal.operation.phase !== "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
 }
 
 /** Whether an `up` on this root is starting the stack's manager for `space` now: the journal records
