@@ -241,7 +241,7 @@ file refuses an empty one or one that is not valid UTF-8 with `SCHEMA_INVALID`, 
 sends anything, because a run's source must not be empty and its text is never replaced. A hosted
 start sends the program to the manager in one message, so a program over the broker's message limit
 (`max_payload`) is refused `UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
-and amendments are attributed to the authenticated caller, never a supplied name. Local answers and
+and amendments are attributed to the authenticated caller, never a supplied name. On a static-auth mesh that caller is one actor derived from the OS login and host, so hosted run commands from that login and host record the same actor. Each command still mints a fresh short-lived credential and lifecycle. A signed-in user keeps that user's `cli` actor, and a managed seat keeps the seat's name. Local answers and
 amendments require `--by <who>`; a missing or empty value refuses `USAGE_INVALID` before contacting
 the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
 replays the run's recorded journal
