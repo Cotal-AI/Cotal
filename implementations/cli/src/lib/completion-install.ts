@@ -51,8 +51,11 @@ const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : qu
 const modeOf = (info: Stats) => `mode ${(info.mode & 0o777).toString(8).padStart(4, "0")}`;
 /** Why `info` is unsafe to read or replace, by the local-writer rule every protected path follows.
  *  A group-writable entry the caller owns is accepted when its group is the caller's proven user
- *  private group and it has no extended ACL. A private file also needs no group or other access. */
+ *  private group and it has no extended ACL. A private file also needs no group or other access.
+ *  A completion file, stub or ownership record must belong to the caller. Root may own a directory
+ *  above it, which the shared rule accepts, but not the file itself. */
 function writerGap(path: string, info: Stats, ancestor = false, privateFile = false): Gap | undefined {
+  if (!ancestor && !info.isSymbolicLink() && info.uid !== process.getuid!()) return { path, problem: "is owned by another user" };
   if (privateFile && info.isFile() && !info.isSymbolicLink() && info.uid === process.getuid!() && (info.mode & 0o077) !== 0)
     return { path, problem: `is not private to you (${modeOf(info)})`, chmod: "go-rwx" };
   const gap = localWriterGap(path, info, ancestor);

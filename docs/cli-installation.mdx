@@ -679,9 +679,10 @@ ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symli
 owner or unsafe file access before it creates anything. A missing startup directory is named, with
 `ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every
 refused startup file, stub, record and directory on the way to them with its reason, and one another
-local account could write with its mode and one `chmod` that fixes them all. Group write on a file
+local account could write with its mode and one `chmod` that fixes them all. Bare `completion`
+offers that `chmod` before `install`. Group write on a file
 you own is accepted when the group is your proven user private group and the file has no extended
-ACL. A startup file that is a
+ACL. A file you do not own stays refused. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never
