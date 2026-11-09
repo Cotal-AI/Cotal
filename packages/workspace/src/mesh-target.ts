@@ -1046,10 +1046,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   }
 
   const root = findCotalRoot(cwd);
-  // A fresh folder with a team file and no `.cotal/` is that file's project. An ancestor `.cotal/`
-  // belongs to another folder, so it does not take this command.
-  const beside = canonicalRoot(root) === canonicalRoot(cwd) ? undefined : nearbyMeshManifest(cwd);
-  if (beside) throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${cwd}`, { root: cwd, manifest: beside });
+  // A team file in this directory is this folder's file unless a project above it contains the
+  // directory. The file is read before that project is inherited.
+  const beside = nearbyMeshManifest(cwd);
+  if (beside && !isGenuineSpace(root))
+    throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${cwd}`, { root: cwd, manifest: beside });
   if (isGenuineSpace(root)) {
     // The DISK is the tenant authority for this root, before any registry record: a broker whose
     // auth dir holds several accounts stays several tenants even when only one of them happens to
